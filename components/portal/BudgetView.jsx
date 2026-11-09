@@ -112,7 +112,7 @@ export default function BudgetView({
     }
     if (label.includes("Overheads as %")) {
       const z47 = parseT(5, 0.309);
-      const z48 = parseT(6, 0.20);
+      const z48 = parseT(6, 0);
       if (numVal > z47) return "#f4cccc";
       if (numVal >= z48) return "#d9ead3";
       return "#fce5cd";

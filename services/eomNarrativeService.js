@@ -1,18 +1,20 @@
 import zlib from "zlib";
-import { getDriveClient, getSlidesClient, getGoogleAuth, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
-import { redisClient } from "./redisClient";
-import { anthropic } from "./claudeClient";
-import { logClaudeUsage_ } from "./systemConfig";
-import { logPmaActivity } from "./pmaLogger";
-import { getSessionUser } from "./authService";
-import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces";
+import { getDriveClient, getSlidesClient, getGoogleAuth, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { redisClient } from "./redisClient.js";
+import { anthropic } from "./claudeClient.js";
+import { logClaudeUsage_ } from "./systemConfig.js";
+import { logPmaActivity } from "./pmaLogger.js";
+import { getSessionUser } from "./authService.js";
+import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces.js";
 import {
   REPORTING_CONTROL_SHEET_ID,
   CLIENT_VERSION_TRACKER_SHEET_ID,
   DEFAULT_REPORTING_WEBAPP_URL,
   ensureEomReportingTabs_,
+  getEomReportingControlState,
+  saveEomReportingControlState,
   isValidGoogleScriptUrl
-} from "./eomTools";
+} from "./eomTools.js";
 
 // ============================================================================
 // 1. PURE NODE.JS IN-MEMORY .PPTX (ZIP + XML) PARSER
@@ -582,7 +584,8 @@ function normalizeTextForComparison_(text) {
 
 /**
  * Resolves the target month's presentation ID and up to 4 prior monthly presentations
- * using ReportsLog on Reporting Control sheet + the client's Mgmt Reports Drive folder.
+ * using Supabase `eom_reporting_control_state` (`reportsLogByClient` + `configsByClient`)
+ * and the client's Mgmt Reports Drive folder.
  */
 async function resolveClientPresentations_(sheets, drive, clientName, reportMonthKey, providedFolderUrl) {
   const deckMap = new Map(); // monthKey ("YYYY-MM") -> { monthKey, presentationId, reportUrl, title }
@@ -591,80 +594,50 @@ async function resolveClientPresentations_(sheets, drive, clientName, reportMont
   let clientSheetId = "";
   let masterSheetId = "";
 
-  // 1. Read ReportsLog, EomReportingConfig, and RepControl on Reporting Control sheet
+  // 1. Read ReportsLog & Config from Supabase `eom_reporting_control_state` and `getAllClients`
   try {
-    const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
-      spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-      ranges: [
-        "ReportsLog!A1:Z100",
-        "EomReportingConfig!A2:I500",
-        "RepControl!A5:BZ100"
-      ],
-      valueRenderOption: "FORMATTED_VALUE"
-    }));
+    const [state, clientsData] = await Promise.all([
+      getEomReportingControlState(sheets),
+      getAllClients(sheets, { isAdmin: true }, false),
+    ]);
 
-    const logRows = batchResp.data.valueRanges?.[0]?.values || [];
-    const cfgRows = batchResp.data.valueRanges?.[1]?.values || [];
-    const repRows = batchResp.data.valueRanges?.[2]?.values || [];
+    const cTarget = String(clientName || "").trim().toLowerCase();
+    const matchedClient = (clientsData?.clientsArray || []).find(
+      (c) => String(c.clientName || "").trim().toLowerCase() === cTarget
+    );
+    if (matchedClient) {
+      if (!clientSheetId && matchedClient.clientSheetId) clientSheetId = matchedClient.clientSheetId;
+      if (!masterSheetId && matchedClient.masterSheetId) masterSheetId = matchedClient.masterSheetId;
+      if (!reconSheetId && matchedClient.reconSheetId) reconSheetId = matchedClient.reconSheetId;
+      if (!folderUrl && matchedClient.mgmtReportsFolderUrl) folderUrl = matchedClient.mgmtReportsFolderUrl;
+    }
 
-    const headerRow = logRows[0] || [];
-    const colMonthKeys = headerRow.map((h, i) => (i === 0 ? "" : parseHeaderToMonthKeyLocal_(h)));
+    const confKey = Object.keys(state?.configsByClient || {}).find((k) => k.trim().toLowerCase() === cTarget);
+    const conf = confKey ? state.configsByClient[confKey] : null;
+    if (conf) {
+      if (!folderUrl && conf.folderUrl) folderUrl = String(conf.folderUrl).trim();
+      if (!reconSheetId && conf.reconSheetId) reconSheetId = String(conf.reconSheetId).trim();
+    }
 
-    for (let r = 1; r < logRows.length; r++) {
-      const row = logRows[r] || [];
-      if (String(row[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase()) {
-        for (let c = 1; c < row.length; c++) {
-          const url = String(row[c] || "").trim();
-          const mKey = colMonthKeys[c];
-          const presId = extractDriveIdFromUrl_(url);
-          if (mKey && presId) {
-            deckMap.set(mKey, {
-              monthKey: mKey,
-              presentationId: presId,
-              reportUrl: url,
-              title: `${clientName} (${headerRow[c] || mKey})`
-            });
-          }
-        }
-        break;
+    const logKey = Object.keys(state?.reportsLogByClient || {}).find((k) => k.trim().toLowerCase() === cTarget);
+    const logEntries = logKey ? state.reportsLogByClient[logKey] || [] : [];
+    for (const item of logEntries) {
+      const mKey = item.month;
+      const presId = extractDriveIdFromUrl_(item.reportUrl);
+      if (mKey && presId) {
+        deckMap.set(mKey, {
+          monthKey: mKey,
+          presentationId: presId,
+          reportUrl: item.reportUrl,
+          title: item.reportName || `${clientName} (${mKey})`,
+        });
       }
-    }
-
-    if (!folderUrl) {
-      const cfgMatch = cfgRows.find(r => String(r[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase());
-      if (cfgMatch && cfgMatch[4]) folderUrl = String(cfgMatch[4]).trim();
-    }
-
-    // RepControl columns: 0=Client, 16=Client sheet, 17=Master sheet, 32=Mgmt Reports folder, 34=Recon sheet
-    const repMatch = repRows.find(r => String(r[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase());
-    if (repMatch) {
-      if (!clientSheetId && repMatch[16]) clientSheetId = extractSheetIdFromUrl(repMatch[16]) || "";
-      if (!masterSheetId && repMatch[17]) masterSheetId = extractSheetIdFromUrl(repMatch[17]) || "";
-      if (!folderUrl && repMatch[32]) folderUrl = String(repMatch[32]).trim();
-      if (!reconSheetId && repMatch[34]) reconSheetId = extractSheetIdFromUrl(repMatch[34]) || "";
     }
   } catch (err) {
-    console.warn(`[resolveClientPresentations_] Reporting Control lookup note for ${clientName}:`, err.message);
+    console.warn(`[resolveClientPresentations_] Supabase state lookup note for ${clientName}:`, err.message);
   }
 
-  // 2. Fallback to Client Version Tracker if folderUrl is still missing
-  if (!folderUrl) {
-    try {
-      const trackerResp = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: CLIENT_VERSION_TRACKER_SHEET_ID,
-        range: "Clients!A2:BA100",
-        valueRenderOption: "FORMATTED_VALUE"
-      }));
-      const matchRow = (trackerResp.data.values || []).find(
-        r => String(r[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase()
-      );
-      if (matchRow && matchRow[52]) {
-        folderUrl = String(matchRow[52]).trim();
-      }
-    } catch (_) {}
-  }
-
-  // 3. Also scan the client's Mgmt Reports Drive folder for presentations containing a 4-digit yyMM code (e.g. "Eleven 2609 Management Report Sep26")
+  // 2. Also scan the client's Mgmt Reports Drive folder for presentations containing a 4-digit yyMM code (e.g. "Eleven 2609 Management Report Sep26")
   const folderId = extractDriveIdFromUrl_(folderUrl);
   if (folderId) {
     try {
@@ -973,70 +946,23 @@ function checkOverheadConsistency_(slides) {
 }
 
 // ============================================================================
-// 4. DRAFT PERSISTENCE IN REPORTING CONTROL SHEET (`EomNarrativeDrafts`)
+// 4. DRAFT PERSISTENCE IN SUPABASE (`eom_reporting_control_state`)
 // ============================================================================
 
 async function ensureNarrativeDraftsTab_(sheets) {
-  await ensureEomReportingTabs_(sheets, REPORTING_CONTROL_SHEET_ID);
-  try {
-    const meta = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-      fields: "sheets.properties.title"
-    }));
-    const existing = new Set((meta.data.sheets || []).map(s => s.properties?.title));
-    if (!existing.has("EomNarrativeDrafts")) {
-      await withRetry(() => sheets.spreadsheets.batchUpdate({
-        spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-        requestBody: {
-          requests: [{
-            addSheet: {
-              properties: {
-                title: "EomNarrativeDrafts",
-                gridProperties: { rowCount: 500, columnCount: 8, frozenRowCount: 1 }
-              }
-            }
-          }]
-        }
-      }));
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-        range: "EomNarrativeDrafts!A1:F1",
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [["ClientName", "ReportMonthKey", "PresentationId", "Status", "DraftsJson", "UpdatedAt"]]
-        }
-      }));
-    }
-  } catch (err) {
-    console.warn("[ensureNarrativeDraftsTab_] Note:", err.message);
-  }
+  return;
 }
 
 async function readSavedNarrativeDrafts_(sheets, clientName, reportMonthKey) {
   try {
-    await ensureNarrativeDraftsTab_(sheets);
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-      range: "EomNarrativeDrafts!A2:F500",
-      valueRenderOption: "FORMATTED_VALUE"
-    }));
-    const rows = resp.data.values || [];
-    const match = rows.find(
-      r =>
-        String(r[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase() &&
-        String(r[1] || "").trim() === reportMonthKey
-    );
+    const state = await getEomReportingControlState(sheets);
+    const key = `${String(clientName || "").trim().toLowerCase()}::${String(reportMonthKey || "").trim()}`;
+    const match = state?.narrativeDrafts?.[key];
     if (!match) return { status: null, draftsBySlide: {}, updatedAt: null };
-    let draftsBySlide = {};
-    if (match[4]) {
-      try {
-        draftsBySlide = JSON.parse(match[4]) || {};
-      } catch (_) {}
-    }
     return {
-      status: match[3] || "drafted",
-      draftsBySlide,
-      updatedAt: match[5] || null
+      status: match.status || "drafted",
+      draftsBySlide: match.draftsBySlide || {},
+      updatedAt: match.updatedAt || null,
     };
   } catch (err) {
     console.warn("[readSavedNarrativeDrafts_] Note:", err.message);
@@ -1044,95 +970,45 @@ async function readSavedNarrativeDrafts_(sheets, clientName, reportMonthKey) {
   }
 }
 
-async function saveNarrativeDraftsRecord_(sheets, {
-  clientName,
-  reportMonthKey,
-  presentationId,
-  status,
-  draftsBySlide,
-  totalNarrativeSlides
-}) {
-  await ensureNarrativeDraftsTab_(sheets);
+async function saveNarrativeDraftsRecord_(
+  sheets,
+  { clientName, reportMonthKey, presentationId, status, draftsBySlide, totalNarrativeSlides }
+) {
   const now = new Date().toISOString();
-  const draftsJson = JSON.stringify(draftsBySlide || {});
+  const state = await getEomReportingControlState(sheets);
+  if (!state.narrativeDrafts) state.narrativeDrafts = {};
+  if (!state.configsByClient) state.configsByClient = {};
 
-  const resp = await withRetry(() => sheets.spreadsheets.values.get({
-    spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-    range: "EomNarrativeDrafts!A2:F500"
-  }));
-  const rows = resp.data.values || [];
-  const existingIdx = rows.findIndex(
-    r =>
-      String(r[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase() &&
-      String(r[1] || "").trim() === reportMonthKey
-  );
+  const draftKey = `${String(clientName || "").trim().toLowerCase()}::${String(reportMonthKey || "").trim()}`;
+  state.narrativeDrafts[draftKey] = {
+    clientName,
+    reportMonthKey,
+    presentationId: presentationId || "",
+    status: status || "drafted",
+    draftsBySlide: draftsBySlide || {},
+    totalNarrativeSlides: totalNarrativeSlides || Object.keys(draftsBySlide || {}).length,
+    updatedAt: now,
+  };
 
-  const rowValues = [clientName, reportMonthKey, presentationId || "", status || "drafted", draftsJson, now];
+  // Also update narrativeStatusByMonth in configsByClient so ReportingTab shows the status badge immediately
+  const cTarget = String(clientName || "").trim().toLowerCase();
+  const confKey = Object.keys(state.configsByClient).find((k) => k.trim().toLowerCase() === cTarget) || clientName;
+  const prevConf = state.configsByClient[confKey] || {};
+  const statusByMonth = { ...(prevConf.narrativeStatusByMonth || {}) };
+  const draftedCount = Object.values(draftsBySlide || {}).filter((d) => d && d.text && String(d.text).trim()).length;
+  statusByMonth[reportMonthKey] = {
+    status: status || "drafted",
+    draftedCount,
+    totalSlides: totalNarrativeSlides || draftedCount,
+    updatedAt: now,
+  };
+  state.configsByClient[confKey] = {
+    ...prevConf,
+    narrativeStatusByMonth: statusByMonth,
+    updatedAt: now,
+  };
 
-  if (existingIdx === -1) {
-    await withRetry(() => sheets.spreadsheets.values.append({
-      spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-      range: "EomNarrativeDrafts!A:F",
-      valueInputOption: "RAW",
-      requestBody: { values: [rowValues] }
-    }));
-  } else {
-    const sheetRow = existingIdx + 2;
-    await withRetry(() => sheets.spreadsheets.values.update({
-      spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-      range: `EomNarrativeDrafts!A${sheetRow}:F${sheetRow}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [rowValues] }
-    }));
-  }
-
-  // Also update NarrativeStatusByMonth in EomReportingConfig!I so ReportingTab shows the status badge immediately
-  try {
-    const cfgResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-      range: "EomReportingConfig!A2:I500"
-    }));
-    const cfgRows = cfgResp.data.values || [];
-    const cfgIdx = cfgRows.findIndex(r => String(r[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase());
-    let statusByMonth = {};
-    if (cfgIdx !== -1 && cfgRows[cfgIdx]?.[8]) {
-      try {
-        const parsed = JSON.parse(String(cfgRows[cfgIdx][8]));
-        if (parsed && typeof parsed === "object") statusByMonth = parsed;
-      } catch (_) {}
-    }
-
-    const draftedCount = Object.values(draftsBySlide || {}).filter(d => d && d.text && String(d.text).trim()).length;
-    statusByMonth[reportMonthKey] = {
-      status: status || "drafted",
-      draftedCount,
-      totalSlides: totalNarrativeSlides || draftedCount,
-      updatedAt: now
-    };
-    const statusJson = JSON.stringify(statusByMonth);
-
-    if (cfgIdx === -1) {
-      await withRetry(() => sheets.spreadsheets.values.append({
-        spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-        range: "EomReportingConfig!A:I",
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [[clientName, "", "", "", "", "", now, "", statusJson]]
-        }
-      }));
-    } else {
-      const cfgSheetRow = cfgIdx + 2;
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-        range: `EomReportingConfig!I${cfgSheetRow}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[statusJson]] }
-      }));
-    }
-  } catch (cfgErr) {
-    console.warn("[saveNarrativeDraftsRecord_] Config badge update note:", cfgErr.message);
-  }
-
+  await saveEomReportingControlState(state);
   return { updatedAt: now };
 }
 
@@ -2250,6 +2126,244 @@ export async function handleEomSaveNarrativeDraft(req, res, sheets) {
  * narrative commentary into each slide's text box while preserving font, size, and bullet styling,
  * as well as adding or removing the red flag (🚩) shape on each slide.
  */
+/**
+ * Native Google Slides API executor for applying narrative commentary and red flags
+ * directly via `slides.presentations.batchUpdate` without requiring a GAS Web App.
+ */
+async function applyNarrativeToSlidesNative_(presentationId, slideUpdates = []) {
+  const slidesApi = await getSlidesClient();
+  const presRes = await slidesApi.presentations.get({ presentationId });
+  const slides = presRes.data.slides || [];
+  const requests = [];
+  const slideResults = [];
+
+  const ptToEmu = (pt) => Math.round(pt * 12700);
+  const pulseDarkBlueRgb = { red: 0, green: 71 / 255, blue: 171 / 255 }; // #0047AB
+
+  for (const update of slideUpdates) {
+    const slideNumber = Number(update.slideNumber);
+    const rawNewText = sanitizeNarrativePunctuation_(String(update.newText || "")).trim();
+    const isTakeawaysSlide = Boolean(update.isTakeawaysSlide);
+    const hasFlagExplicit = typeof update.hasFlag === "boolean" ? update.hasFlag : null;
+
+    if (!slideNumber || slideNumber < 1 || slideNumber > slides.length || (!rawNewText && hasFlagExplicit === null)) {
+      slideResults.push({ slideNumber, updated: false, reason: "Skipped empty or out-of-range slide" });
+      continue;
+    }
+
+    const slide = slides[slideNumber - 1];
+    const pageId = slide.objectId;
+
+    let existingFlagId = null;
+    const candidates = [];
+
+    for (const pe of slide.pageElements || []) {
+      if (!pe.shape?.text?.textElements) continue;
+      const txt = pe.shape.text.textElements
+        .map((te) => te.textRun?.content || "")
+        .join("")
+        .trim();
+
+      const scaleX = pe.transform?.scaleX ?? 1;
+      const scaleY = pe.transform?.scaleY ?? 1;
+      const widthPt = ((pe.size?.width?.magnitude || 0) * Math.abs(scaleX)) / 12700;
+      const heightPt = ((pe.size?.height?.magnitude || 0) * Math.abs(scaleY)) / 12700;
+      const leftPt = (pe.transform?.translateX || 0) / 12700;
+      const topPt = (pe.transform?.translateY || 0) / 12700;
+
+      if (txt.includes("🚩") && txt.replace(/🚩/g, "").trim() === "") {
+        existingFlagId = pe.objectId;
+        continue;
+      }
+      if ((topPt > 340 && leftPt > 580 && widthPt < 85) || txt === "‹#›" || /^\d{1,2}$/.test(txt)) {
+        continue;
+      }
+      if (topPt < 45 || widthPt < 95 || heightPt < 35) continue;
+
+      candidates.push({
+        objectId: pe.objectId,
+        textLen: txt.length,
+        area: widthPt * heightPt,
+      });
+    }
+
+    candidates.sort((a, b) => b.textLen - a.textLen || b.area - a.area);
+    let targetShapeId = candidates[0]?.objectId || null;
+    const hadExistingText = (candidates[0]?.textLen || 0) > 0;
+
+    // 1. Add or remove red flag (🚩) shape
+    if (hasFlagExplicit === true && !existingFlagId) {
+      const flagId = `pulse_flag_${slideNumber}_${Date.now().toString(36).slice(-4)}`;
+      requests.push(
+        {
+          createShape: {
+            objectId: flagId,
+            shapeType: "TEXT_BOX",
+            elementProperties: {
+              pageObjectId: pageId,
+              size: {
+                width: { magnitude: ptToEmu(43.2), unit: "EMU" },
+                height: { magnitude: ptToEmu(44.3), unit: "EMU" },
+              },
+              transform: {
+                scaleX: 1,
+                scaleY: 1,
+                translateX: ptToEmu(659.7),
+                translateY: ptToEmu(50.1),
+                unit: "EMU",
+              },
+            },
+          },
+        },
+        {
+          insertText: {
+            objectId: flagId,
+            insertionIndex: 0,
+            text: "🚩",
+          },
+        },
+        {
+          updateTextStyle: {
+            objectId: flagId,
+            style: { fontSize: { magnitude: 21, unit: "PT" } },
+            textRange: { type: "ALL" },
+            fields: "fontSize",
+          },
+        }
+      );
+    } else if (hasFlagExplicit === false && existingFlagId) {
+      requests.push({ deleteObject: { objectId: existingFlagId } });
+    }
+
+    if (!rawNewText) {
+      slideResults.push({ slideNumber, pageId, updated: true, flagOnly: true });
+      continue;
+    }
+
+    if (!targetShapeId) {
+      targetShapeId = `pulse_nar_${slideNumber}_${Date.now().toString(36).slice(-4)}`;
+      requests.push({
+        createShape: {
+          objectId: targetShapeId,
+          shapeType: "TEXT_BOX",
+          elementProperties: {
+            pageObjectId: pageId,
+            size: {
+              width: { magnitude: ptToEmu(136.6), unit: "EMU" },
+              height: { magnitude: ptToEmu(148.0), unit: "EMU" },
+            },
+            transform: {
+              scaleX: 1,
+              scaleY: 1,
+              translateX: ptToEmu(547.4),
+              translateY: ptToEmu(161.3),
+              unit: "EMU",
+            },
+          },
+        },
+      });
+    } else if (hadExistingText) {
+      requests.push({
+        deleteText: {
+          objectId: targetShapeId,
+          textRange: { type: "ALL" },
+        },
+      });
+    }
+
+    const rawLines = rawNewText
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const formattedLines = rawLines.map((line) => {
+      const stripped = line.replace(/^[•■▪●\-–*]\s*/, "").trim();
+      const isHdr = /^month in review$/i.test(stripped) || /^key takeaways/i.test(stripped);
+      return isHdr ? stripped : `■  ${stripped}`;
+    });
+    const fullText = formattedLines.join("\n");
+
+    requests.push(
+      {
+        insertText: {
+          objectId: targetShapeId,
+          insertionIndex: 0,
+          text: fullText,
+        },
+      },
+      {
+        updateTextStyle: {
+          objectId: targetShapeId,
+          style: {
+            fontFamily: "Manrope",
+            fontSize: { magnitude: isTakeawaysSlide ? 8 : 9, unit: "PT" },
+            bold: false,
+            foregroundColor: { opaqueColor: { rgbColor: pulseDarkBlueRgb } },
+          },
+          textRange: { type: "ALL" },
+          fields: "fontFamily,fontSize,bold,foregroundColor",
+        },
+      }
+    );
+
+    // Bold section headers and "The flag:" prefix
+    let cursor = 0;
+    for (const line of formattedLines) {
+      const isHdr = /^month in review$/i.test(line) || /^key takeaways/i.test(line);
+      if (isHdr && line.length > 0) {
+        requests.push({
+          updateTextStyle: {
+            objectId: targetShapeId,
+            style: {
+              bold: true,
+              fontSize: { magnitude: 9, unit: "PT" },
+            },
+            textRange: {
+              type: "FIXED_RANGE",
+              startIndex: cursor,
+              endIndex: cursor + line.length,
+            },
+            fields: "bold,fontSize",
+          },
+        });
+      } else {
+        const flagMatch = line.match(/^(■\s+The flag\s*:)/i);
+        if (flagMatch) {
+          requests.push({
+            updateTextStyle: {
+              objectId: targetShapeId,
+              style: { bold: true },
+              textRange: {
+                type: "FIXED_RANGE",
+                startIndex: cursor,
+                endIndex: cursor + flagMatch[1].length,
+              },
+              fields: "bold",
+            },
+          });
+        }
+      }
+      cursor += line.length + 1;
+    }
+
+    slideResults.push({ slideNumber, pageId, updated: true });
+  }
+
+  if (requests.length > 0) {
+    await slidesApi.presentations.batchUpdate({
+      presentationId,
+      requestBody: { requests },
+    });
+  }
+
+  return {
+    success: true,
+    updatedCount: slideResults.filter((r) => r.updated).length,
+    slideResults,
+  };
+}
+
 export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser?.isAdmin) {
@@ -2276,12 +2390,6 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
   }
 
   const targetWebAppUrl = String(webAppUrl || process.env.REPORTING_WEBAPP_URL || DEFAULT_REPORTING_WEBAPP_URL).trim();
-  if (!isValidGoogleScriptUrl(targetWebAppUrl)) {
-    return res.status(400).json({
-      success: false,
-      error: "Invalid Reporting Web App URL configured."
-    });
-  }
 
   const candidateSecrets = Array.from(new Set([
     (process.env.CRON_SECRET || "").trim(),
@@ -2291,52 +2399,44 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
   ].filter(Boolean)));
 
   try {
-    let gasResp = null;
-    let gasText = "";
     let gasData = null;
 
-    for (const secret of candidateSecrets) {
-      gasResp = await fetch(targetWebAppUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "APPLY_NARRATIVE",
-          secret,
-          clientName,
-          presentationId,
-          donorPresentationId: donorPresentationId || "",
-          folderUrl: folderUrl || "",
-          slideUpdates: slideUpdates.map(u => ({
-            slideNumber: Number(u.slideNumber),
-            shapeName: u.shapeName || "",
-            newText: sanitizeNarrativePunctuation_(String(u.newText || "")),
-            hasFlag: typeof u.hasFlag === "boolean" ? u.hasFlag : undefined,
-            isTakeawaysSlide: Boolean(u.isTakeawaysSlide)
-          }))
-        })
-      });
-      gasText = await gasResp.text();
-      gasData = null;
-      try {
-        gasData = JSON.parse(gasText);
-      } catch (_) {}
-      if (!gasData || gasData.success || !String(gasData.error || "").includes("Invalid secret token")) {
-        break;
+    if (isValidGoogleScriptUrl(targetWebAppUrl) && candidateSecrets.length > 0) {
+      for (const secret of candidateSecrets) {
+        try {
+          const gasResp = await fetch(targetWebAppUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "APPLY_NARRATIVE",
+              secret,
+              clientName,
+              presentationId,
+              donorPresentationId: donorPresentationId || "",
+              folderUrl: folderUrl || "",
+              slideUpdates: slideUpdates.map(u => ({
+                slideNumber: Number(u.slideNumber),
+                shapeName: u.shapeName || "",
+                newText: sanitizeNarrativePunctuation_(String(u.newText || "")),
+                hasFlag: typeof u.hasFlag === "boolean" ? u.hasFlag : undefined,
+                isTakeawaysSlide: Boolean(u.isTakeawaysSlide)
+              }))
+            })
+          });
+          const gasText = await gasResp.text();
+          try {
+            gasData = JSON.parse(gasText);
+          } catch (_) {}
+          if (!gasData || gasData.success || !String(gasData.error || "").includes("Invalid secret token")) {
+            break;
+          }
+        } catch (_) {}
       }
     }
 
-    if (!gasData) {
-      return res.status(502).json({
-        success: false,
-        error: `Reporting Web App returned HTTP ${gasResp?.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, "").trim() || "non-JSON"}). Ensure the updated Reporting Control script is deployed.`
-      });
-    }
-
-    if (!gasData.success) {
-      return res.status(200).json({
-        success: false,
-        error: gasData.error || "Failed to apply narrative to Google Slides presentation."
-      });
+    // If GAS Web App was unavailable or returned an error, execute 100% natively via Google Slides API
+    if (!gasData || !gasData.success) {
+      gasData = await applyNarrativeToSlidesNative_(presentationId, slideUpdates);
     }
 
     // Persist applied status in EomNarrativeDrafts and EomReportingConfig!I

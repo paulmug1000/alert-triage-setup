@@ -481,7 +481,7 @@ export default function ScenariosView({
     const num = parseFloat(String(valStr).replace(/%/g, "")) / 100;
     if (isNaN(num)) return null;
 
-    const t = performanceData?.thresholds || [0.495, 0.445, 0, 0, 0, 0.309, 0.2, 0, 0, 0, 0.145, 0.05, 0, 0, 0, 0.705, 0.66, 0.54];
+    const t = performanceData?.thresholds || [0.495, 0.445, 0, 0, 0, 0.309, 0, 0, 0, 0, 0.145, 0.05, 0, 0, 0, 0.705, 0.66, 0.54];
     const parseT = (idx, def) => {
       const v = t[idx];
       if (v === undefined || v === null || v === "") return def;
@@ -500,7 +500,7 @@ export default function ScenariosView({
     }
     if (l.includes("overheads as %") || l.includes("overheads %")) {
       const z47 = parseT(5, 0.309);
-      const z48 = parseT(6, 0.20);
+      const z48 = parseT(6, 0);
       if (num > z47) return { bg: "#f4cccc", color: "#0047AB" };
       if (num >= z48) return { bg: "#d9ead3", color: "#0047AB" };
       return { bg: "#fce5cd", color: "#0047AB" };

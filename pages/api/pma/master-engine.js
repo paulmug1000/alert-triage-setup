@@ -7,6 +7,8 @@ import {
   getStage2Status,
   migrateClientMasterAndReconToSupabase,
   setClientMasterMode,
+  seedClientSheetToSupabase,
+  setClientMode,
   materializeClientSheetFromMaster,
   restoreClientSheetImportranges,
   getVirtualTabForInspector,
@@ -68,6 +70,7 @@ export default async function handler(req, res) {
       action,
       clientName = "APPTEST",
       masterMode,
+      clientMode,
       syncType = "all",
       sheetRole = "master",
       tabName = "KeyInfo",
@@ -117,6 +120,42 @@ export default async function handler(req, res) {
         action: "CLIENT_MASTER_MODE_CHANGED",
         summary: `Switched ${cleanClient} master engine mode to "${masterMode}"`,
         details: { clientName: cleanClient, masterMode },
+        userEmail: sessionUser.email || "Admin",
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "seed_client_sheet") {
+      const sheets = await getSheetsClient();
+      const summary = await seedClientSheetToSupabase(sheets, cleanClient);
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_SHEET_SEEDED_TO_SUPABASE",
+        summary: `Seeded Client Sheet for ${cleanClient} into Supabase (${summary.clientTabsSynced} client tabs, ${summary.outgoingsNotesCount} outgoings notes)`,
+        details: summary,
+        userEmail: sessionUser.email || "Admin",
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, summary, status });
+    }
+
+    if (action === "set_client_mode") {
+      if (clientMode !== "sheet" && clientMode !== "supabase") {
+        return res.status(400).json({ success: false, error: "Invalid clientMode. Expected 'sheet' or 'supabase'." });
+      }
+      const sheets = await getSheetsClient();
+      const updated = await setClientMode(cleanClient, clientMode);
+      await refreshPrecomputedAlerts_(sheets, acId);
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_PORTAL_MODE_CHANGED",
+        summary: `Switched ${cleanClient} client portal engine mode to "${clientMode}"`,
+        details: { clientName: cleanClient, clientMode },
         userEmail: sessionUser.email || "Admin",
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);

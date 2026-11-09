@@ -1483,6 +1483,9 @@ export async function createGasEnvironment({
     }
   }
 
+  const initialE21 = String(kiSheet?.valuesGrid?.[20]?.[4] ?? "");
+  const initialI29 = String(kiSheet?.valuesGrid?.[28]?.[8] ?? "");
+
   // Clear any stale concurrency locks in DataChgAlert!B4:I4 before starting
   const dcaSheet = masterSS.getSheetByName("DataChgAlert");
   if (dcaSheet && dcaSheet.valuesGrid[3]) {
@@ -1502,7 +1505,7 @@ export async function createGasEnvironment({
         spreadsheetId: ctx.clientSheetId,
         ranges: ["ConfCalcs!A1:JG5001", "PipeCalcs!A1:JG1000", "Outgoings!A1:AX295"],
         valueRenderOption: "UNFORMATTED_VALUE",
-        _bypassSupabaseVirtualSheet: true,
+        _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
       });
       const vRanges = resp?.data?.valueRanges || [];
       if (vRanges[0]?.values) {
@@ -1583,10 +1586,11 @@ export async function createGasEnvironment({
     }
 
     const isClientSheet = cleanId === ctx.clientSheetId;
+    const bypassVirtual = isClientSheet ? ctx.clientMode !== "supabase" : true;
     const metaResp = await sheets.spreadsheets.get({
       spreadsheetId: cleanId,
       fields: "properties.title,sheets(properties(sheetId,title,index,gridProperties))",
-      _bypassSupabaseVirtualSheet: true,
+      _bypassSupabaseVirtualSheet: bypassVirtual,
     });
 
     const remoteSS = new VirtualSpreadsheet({
@@ -1616,14 +1620,14 @@ export async function createGasEnvironment({
           spreadsheetId: cleanId,
           ranges,
           valueRenderOption: "UNFORMATTED_VALUE",
-          _bypassSupabaseVirtualSheet: true,
+          _bypassSupabaseVirtualSheet: bypassVirtual,
         }),
         sheets.spreadsheets.values
           .batchGet({
             spreadsheetId: cleanId,
             ranges,
             valueRenderOption: "FORMULA",
-            _bypassSupabaseVirtualSheet: true,
+            _bypassSupabaseVirtualSheet: bypassVirtual,
           })
           .catch(() => ({ data: { valueRanges: [] } })),
       ]);
@@ -1645,7 +1649,7 @@ export async function createGasEnvironment({
             spreadsheetId: cleanId,
             ranges: noteRanges,
             fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
-            _bypassSupabaseVirtualSheet: true,
+            _bypassSupabaseVirtualSheet: bypassVirtual,
           });
           for (const sh of notesResp?.data?.sheets || []) {
             const tName = sh.properties?.title;
@@ -1691,7 +1695,9 @@ export async function createGasEnvironment({
 
     for (const [remoteId, remoteSS] of envState.remoteSpreadsheets.entries()) {
       if (remoteSS.remoteMutationPhases.length === 0) continue;
-      if (remoteId === ctx.clientSheetId) clientSheetWasMutated = true;
+      const isClientSheet = remoteId === ctx.clientSheetId;
+      if (isClientSheet) clientSheetWasMutated = true;
+      const bypassVirtual = isClientSheet ? ctx.clientMode !== "supabase" : true;
 
       const phases = remoteSS.remoteMutationPhases.splice(0, remoteSS.remoteMutationPhases.length);
       for (const phase of phases) {
@@ -1699,7 +1705,7 @@ export async function createGasEnvironment({
           await sheets.spreadsheets.values.batchClear({
             spreadsheetId: remoteId,
             requestBody: { ranges: phase.ranges },
-            _bypassSupabaseVirtualSheet: true,
+            _bypassSupabaseVirtualSheet: bypassVirtual,
           });
         } else if (phase.type === "values" && phase.data.length > 0) {
           await sheets.spreadsheets.values.batchUpdate({
@@ -1708,13 +1714,13 @@ export async function createGasEnvironment({
               valueInputOption: "USER_ENTERED",
               data: phase.data,
             },
-            _bypassSupabaseVirtualSheet: true,
+            _bypassSupabaseVirtualSheet: bypassVirtual,
           });
         } else if (phase.type === "structural" && phase.requests.length > 0) {
           await sheets.spreadsheets.batchUpdate({
             spreadsheetId: remoteId,
             requestBody: { requests: phase.requests },
-            _bypassSupabaseVirtualSheet: true,
+            _bypassSupabaseVirtualSheet: bypassVirtual,
           });
         }
       }
@@ -1777,6 +1783,28 @@ export async function createGasEnvironment({
 
       if (upserts.length > 0) {
         invalidateMasterEngineCache(ctx.clientName);
+      }
+
+      // Mirror KeyInfo!E21 and KeyInfo!I29 to Client Sheet if they changed
+      const curKi = masterSS.getSheetByName("KeyInfo");
+      if (curKi && sheets && ctx.clientSheetId) {
+        const curE21 = String(curKi.valuesGrid?.[20]?.[4] ?? "");
+        const curI29 = String(curKi.valuesGrid?.[28]?.[8] ?? "");
+        if (curE21 !== initialE21 || curI29 !== initialI29) {
+          try {
+            await sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: ctx.clientSheetId,
+              requestBody: {
+                valueInputOption: "RAW",
+                data: [
+                  { range: "KeyInfo!E21", values: [[curE21]] },
+                  { range: "KeyInfo!I29", values: [[curI29]] },
+                ],
+              },
+              _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
+            });
+          } catch (_) {}
+        }
       }
     }
   }

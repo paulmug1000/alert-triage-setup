@@ -1,4 +1,4 @@
-import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
 import { memoryCache } from "./cacheService.js";
@@ -14,6 +14,12 @@ import {
   runNativeRevenueComparison,
   syncVirtualMgmtRepGridNative,
 } from "./masterSyncEngine.js";
+import { renderMgmtRepChartsFromGrid, normalizeReportLabel } from "./mgmtRepChartRenderer.js";
+import {
+  computeNativeMgmtRepForClient,
+  buildNativeStyledTables,
+  updateGoogleSlidesPresentationNative,
+} from "./mgmtRepEngine.js";
 
 // Moved from triage.js local scope
 let eomTabsVerified = false;
@@ -2514,55 +2520,248 @@ export const DEFAULT_CHART_REFS = [
   { code: "[Util20]", range: "A1223:J1244", label: "Utilisation 20" }
 ];
 
-/**
- * Ensures EomReportingConfig and ChartRefs tabs exist in Reporting Control spreadsheet
- */
-export async function ensureEomReportingTabs_(sheets, spreadsheetId = REPORTING_CONTROL_SHEET_ID) {
-  const targetId = REPORTING_CONTROL_SHEET_ID;
-  try {
-    const meta = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId: targetId,
-      fields: "sheets.properties.title"
-    }));
-    const existingTitles = new Set(meta.data.sheets?.map(s => s.properties?.title) || []);
-    const requests = [];
+const EOM_REPORTING_STATE_KEY = "eom_reporting_control_state";
 
-    if (!existingTitles.has("EomReportingConfig")) {
-      requests.push({
-        addSheet: {
-          properties: {
-            title: "EomReportingConfig",
-            gridProperties: { rowCount: 100, columnCount: 10, frozenRowCount: 1 }
-          }
+function extractDriveResourceIdLocal_(urlOrId) {
+  if (!urlOrId) return "";
+  const s = String(urlOrId).trim();
+  const folderMatch = s.match(/\/folders\/([a-zA-Z0-9-_]+)/);
+  if (folderMatch) return folderMatch[1];
+  const fileMatch = s.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  if (fileMatch) return fileMatch[1];
+  const idMatch = s.match(/([a-zA-Z0-9-_]{25,})/);
+  return idMatch ? idMatch[1] : "";
+}
+
+/**
+ * Loads the unified EoM Reporting Control state from Supabase `public.system_config`
+ * (`key = 'eom_reporting_control_state'`). If not yet seeded in Supabase, performs a one-time
+ * automatic migration from the legacy Reporting Control & Client Version Tracker spreadsheets.
+ */
+export async function getEomReportingControlState(sheets) {
+  const sb = getSupabaseAdmin();
+  if (sb) {
+    try {
+      const { data: cfgRow, error } = await sb
+        .from("system_config")
+        .select("value")
+        .eq("key", EOM_REPORTING_STATE_KEY)
+        .maybeSingle();
+      if (!error && cfgRow?.value && typeof cfgRow.value === "object" && cfgRow.value.seededAt) {
+        return cfgRow.value;
+      }
+    } catch (err) {
+      console.warn("[getEomReportingControlState] Supabase read note:", err.message);
+    }
+  }
+
+  // One-time seed from legacy Reporting Control & Client Version Tracker spreadsheets
+  const state = {
+    seededAt: new Date().toISOString(),
+    systemWebAppUrl: process.env.REPORTING_WEBAPP_URL || DEFAULT_REPORTING_WEBAPP_URL,
+    configsByClient: {},
+    chartRefs: [...DEFAULT_CHART_REFS],
+    reportsLogByClient: {},
+    narrativeDrafts: {},
+  };
+
+  if (sheets) {
+    try {
+      const trackerResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: CLIENT_VERSION_TRACKER_SHEET_ID,
+          range: "Clients!A2:BA100",
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      );
+      (trackerResp.data.values || []).forEach((row) => {
+        const cName = String(row[0] || "").trim();
+        const folder = String(row[52] || "").trim();
+        if (cName && folder) {
+          state.configsByClient[cName] = {
+            ...(state.configsByClient[cName] || {}),
+            folderUrl: folder,
+          };
         }
       });
-    }
+    } catch (_) {}
 
-    if (requests.length > 0) {
-      await withRetry(() => sheets.spreadsheets.batchUpdate({
-        spreadsheetId: targetId,
-        requestBody: { requests }
-      }));
-    }
+    try {
+      const batchResp = await withRetry(() =>
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+          ranges: [
+            "EomReportingConfig!A2:I500",
+            "ChartRefs!A1:C100",
+            "ReportsLog!A1:Z100",
+            "RepControl!A5:BZ100",
+            "EomNarrativeDrafts!A2:F500",
+          ],
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      );
 
-    if (!existingTitles.has("EomReportingConfig")) {
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: targetId,
-        range: "EomReportingConfig!A1:G1",
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [["ClientName", "EmailTo", "EmailSubj", "EmailBody", "FolderUrl", "WebAppUrl", "UpdatedAt"]]
+      const configRows = batchResp.data.valueRanges?.[0]?.values || [];
+      const chartRefsRows = batchResp.data.valueRanges?.[1]?.values || [];
+      const logRows = batchResp.data.valueRanges?.[2]?.values || [];
+      const repRows = batchResp.data.valueRanges?.[3]?.values || [];
+      const draftRows = batchResp.data.valueRanges?.[4]?.values || [];
+
+      configRows.forEach((r) => {
+        const cName = String(r[0] || "").trim();
+        if (!cName) return;
+        if (cName === "__SYSTEM__") {
+          if (r[5]) state.systemWebAppUrl = String(r[5]).trim();
+          return;
         }
-      }));
+        let overheadFinalisedByMonth = {};
+        if (r[7]) {
+          try {
+            const parsed = JSON.parse(String(r[7]));
+            if (parsed && typeof parsed === "object") overheadFinalisedByMonth = parsed;
+          } catch (_) {}
+        }
+        let narrativeStatusByMonth = {};
+        if (r[8]) {
+          try {
+            const parsed = JSON.parse(String(r[8]));
+            if (parsed && typeof parsed === "object") narrativeStatusByMonth = parsed;
+          } catch (_) {}
+        }
+        const prev = state.configsByClient[cName] || {};
+        state.configsByClient[cName] = {
+          ...prev,
+          emailTo: r[1] || prev.emailTo || "",
+          emailSubj: r[2] || prev.emailSubj || "",
+          emailBody: r[3] || prev.emailBody || "",
+          folderUrl: r[4] || prev.folderUrl || "",
+          webAppUrl: r[5] || prev.webAppUrl || "",
+          updatedAt: r[6] || prev.updatedAt || "",
+          overheadFinalisedByMonth,
+          narrativeStatusByMonth,
+        };
+      });
+
+      repRows.forEach((r) => {
+        const cName = String(r[0] || "").trim();
+        if (!cName || cName === "Client") return;
+        const prev = state.configsByClient[cName] || {};
+        const repFolder = String(r[32] || "").trim();
+        const repRecon = extractSheetIdFromUrl(r[34]) || "";
+        const repEmailTo = String(r[66] || "").trim();
+        const repEmailSubj = String(r[67] || "").trim();
+        const repEmailBody = String(r[68] || "").trim();
+        state.configsByClient[cName] = {
+          ...prev,
+          folderUrl: prev.folderUrl || repFolder || "",
+          reconSheetId: prev.reconSheetId || repRecon || "",
+          emailTo: prev.emailTo || repEmailTo || "",
+          emailSubj: prev.emailSubj || repEmailSubj || "",
+          emailBody: prev.emailBody || repEmailBody || "",
+        };
+      });
+
+      const parsedRefs = [];
+      chartRefsRows.forEach((r) => {
+        const code = String(r[0] || "").trim();
+        const range = String(r[1] || "").trim();
+        const label = String(r[2] || "").trim();
+        if (!code || !range || code === "Chart code" || code === "Speaker notes code") return;
+        parsedRefs.push({ code, range, label: label || code.replace(/^\[|\]$/g, "") });
+      });
+      if (parsedRefs.length > 0) {
+        state.chartRefs = parsedRefs;
+      }
+
+      const headerRow = logRows[0] || [];
+      const colMonthKeys = headerRow.map((h, i) => (i === 0 ? "" : parseHeaderToMonthKey_(h)));
+      for (let r = 1; r < logRows.length; r++) {
+        const row = logRows[r] || [];
+        const cName = String(row[0] || "").trim();
+        if (!cName) continue;
+        state.reportsLogByClient[cName] = [];
+        for (let c = 1; c < row.length; c++) {
+          const url = String(row[c] || "").trim();
+          const mKey = colMonthKeys[c];
+          if (url && mKey) {
+            state.reportsLogByClient[cName].push({
+              month: mKey,
+              reportUrl: url,
+              reportName: `${cName} Management Report (${headerRow[c] || mKey})`,
+              createdAt: "",
+            });
+          }
+        }
+      }
+
+      draftRows.forEach((r) => {
+        const cName = String(r[0] || "").trim();
+        const mKey = String(r[1] || "").trim();
+        if (!cName || !mKey) return;
+        let draftsBySlide = {};
+        if (r[4]) {
+          try {
+            draftsBySlide = JSON.parse(String(r[4])) || {};
+          } catch (_) {}
+        }
+        state.narrativeDrafts[`${cName.toLowerCase()}::${mKey}`] = {
+          clientName: cName,
+          reportMonthKey: mKey,
+          presentationId: r[2] || "",
+          status: r[3] || "drafted",
+          draftsBySlide,
+          updatedAt: r[5] || "",
+        };
+      });
+    } catch (seedErr) {
+      console.warn("[getEomReportingControlState] Seed note:", seedErr.message);
     }
-  } catch (err) {
-    console.warn("[ensureEomReportingTabs_] Note:", err.message);
   }
+
+  await saveEomReportingControlState(state);
+  return state;
+}
+
+export async function saveEomReportingControlState(state) {
+  const sb = getSupabaseAdmin();
+  if (!sb || !state) return false;
+  try {
+    await sb.from("system_config").upsert(
+      {
+        key: EOM_REPORTING_STATE_KEY,
+        value: {
+          ...state,
+          seededAt: state.seededAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "key" }
+    );
+    return true;
+  } catch (err) {
+    console.warn("[saveEomReportingControlState] Supabase write note:", err.message);
+    return false;
+  }
+}
+
+function findClientKeyCaseInsensitive_(objMap, clientName) {
+  if (!objMap || !clientName) return clientName;
+  const target = String(clientName).trim().toLowerCase();
+  const found = Object.keys(objMap).find((k) => k.trim().toLowerCase() === target);
+  return found || String(clientName).trim();
+}
+
+/**
+ * Legacy compatibility no-op (state now lives in Supabase system_config)
+ */
+export async function ensureEomReportingTabs_(sheets, spreadsheetId = REPORTING_CONTROL_SHEET_ID) {
+  return;
 }
 
 /**
  * Loads all reporting control clients, configuration, chart references, and latest presentations
- * All stored directly in Reporting Control spreadsheet (REPORTING_CONTROL_SHEET_ID)
+ * directly from Supabase (`eom_reporting_control_state` + `clients`).
  */
 export async function handleEomGetReportingData(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -2571,151 +2770,54 @@ export async function handleEomGetReportingData(req, res, sheets) {
   }
 
   const { eomMonthKey, reportMonthKey } = req.body;
-  const rcId = REPORTING_CONTROL_SHEET_ID;
   const targetReportMonth = reportMonthKey || eomMonthKey;
 
   try {
-    await ensureEomReportingTabs_(sheets, rcId);
-
-    // 1. Fetch clients from getAllClients
-    const clientsData = await getAllClients(sheets, { isAdmin: true }, false);
+    const [clientsData, state] = await Promise.all([
+      getAllClients(sheets, { isAdmin: true }, false),
+      getEomReportingControlState(sheets),
+    ]);
     const clientsArray = clientsData.clientsArray || [];
+    const configMap = state.configsByClient || {};
+    const logsByClient = state.reportsLogByClient || {};
+    const systemWebAppUrl = state.systemWebAppUrl || process.env.REPORTING_WEBAPP_URL || DEFAULT_REPORTING_WEBAPP_URL;
+    const chartRefs = Array.isArray(state.chartRefs) && state.chartRefs.length > 0 ? state.chartRefs : DEFAULT_CHART_REFS;
 
-    // 2. Fetch folder URLs from Client Version Tracker (Col 53: Mgmt Reports folder)
-    const trackerFolders = {};
-    try {
-      const trackerResp = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: CLIENT_VERSION_TRACKER_SHEET_ID,
-        range: "Clients!A2:BA100",
-        valueRenderOption: "FORMATTED_VALUE"
-      }));
-      (trackerResp.data.values || []).forEach(row => {
-        const cName = String(row[0] || "").trim();
-        const folder = String(row[52] || "").trim(); // Col 53 is 0-index 52
-        if (cName && folder) trackerFolders[cName] = folder;
-      });
-    } catch (tErr) {
-      console.warn("Tracker folders fetch note:", tErr.message);
-    }
-
-    // 3. Fetch EomReportingConfig from Reporting Control spreadsheet
-    const configResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: rcId,
-      range: "EomReportingConfig!A2:I500",
-      valueRenderOption: "FORMATTED_VALUE"
-    }));
-    const configMap = {};
-    let systemWebAppUrl = process.env.REPORTING_WEBAPP_URL || DEFAULT_REPORTING_WEBAPP_URL;
-    (configResp.data.values || []).forEach(r => {
-      const cName = String(r[0] || "").trim();
-      if (!cName) return;
-      if (cName === "__SYSTEM__") {
-        if (r[5]) systemWebAppUrl = String(r[5]).trim();
-        return;
-      }
-      let overheadFinalisedByMonth = {};
-      if (r[7]) {
-        try {
-          const parsed = JSON.parse(String(r[7]));
-          if (parsed && typeof parsed === "object") overheadFinalisedByMonth = parsed;
-        } catch (_) { }
-      }
-      let narrativeStatusByMonth = {};
-      if (r[8]) {
-        try {
-          const parsed = JSON.parse(String(r[8]));
-          if (parsed && typeof parsed === "object") narrativeStatusByMonth = parsed;
-        } catch (_) { }
-      }
-      configMap[cName] = {
-        emailTo: r[1] || "",
-        emailSubj: r[2] || "",
-        emailBody: r[3] || "",
-        folderUrl: r[4] || "",
-        webAppUrl: r[5] || "",
-        overheadFinalisedByMonth,
-        narrativeStatusByMonth
-      };
-    });
-
-    // 4. Fetch ChartRefs from Reporting Control spreadsheet
-    const chartRefsResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: rcId,
-      range: "ChartRefs!A1:C100",
-      valueRenderOption: "FORMATTED_VALUE"
-    }));
-    const chartRefs = [];
-    (chartRefsResp.data.values || []).forEach(r => {
-      const code = String(r[0] || "").trim();
-      const range = String(r[1] || "").trim();
-      const label = String(r[2] || "").trim();
-      if (!code || code === "Chart code" || code === "Speaker notes code") return;
-      chartRefs.push({ code, range, label: label || code.replace(/^\[|\]$/g, "") });
-    });
-
-    // 5. Fetch ReportsLog matrix from Reporting Control spreadsheet
-    const logResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: rcId,
-      range: "ReportsLog!A1:Z100",
-      valueRenderOption: "FORMATTED_VALUE"
-    }));
-    const logRows = logResp.data.values || [];
-    const headerRow = logRows[0] || [];
-    const colMonthKeys = headerRow.map((h, i) => i === 0 ? "" : parseHeaderToMonthKey_(h));
-
-    const logsByClient = {};
-    for (let r = 1; r < logRows.length; r++) {
-      const row = logRows[r];
-      const cName = String(row[0] || "").trim();
-      if (!cName) continue;
-      logsByClient[cName] = [];
-      for (let c = 1; c < row.length; c++) {
-        const url = String(row[c] || "").trim();
-        const mKey = colMonthKeys[c];
-        if (url && mKey) {
-          logsByClient[cName].push({
-            month: mKey,
-            reportUrl: url,
-            reportName: `${cName} Management Report (${headerRow[c] || mKey})`,
-            createdAt: ""
-          });
-        }
-      }
-    }
-
-    // 6. Match clients and construct payload
-    const clients = clientsArray.map(c => {
+    const clients = clientsArray.map((c) => {
       const name = c.clientName;
-      const conf = configMap[name] || {};
-      const folderUrl = conf.folderUrl || trackerFolders[name] || "";
-      const history = logsByClient[name] || logsByClient[c.clientName] || [];
-      const monthReport = history.find(h => h.month === targetReportMonth) || null;
+      const confKey = findClientKeyCaseInsensitive_(configMap, name);
+      const logKey = findClientKeyCaseInsensitive_(logsByClient, name);
+      const conf = configMap[confKey] || {};
+      const folderUrl = conf.folderUrl || c.mgmtReportsFolderUrl || "";
+      const history = logsByClient[logKey] || [];
+      const monthReport = history.find((h) => h.month === targetReportMonth) || null;
       const latestReport = monthReport || history[0] || null;
 
       const overheadFinalisedByMonth = conf.overheadFinalisedByMonth || {};
-      const overheadFinalisedAt = targetReportMonth ? (overheadFinalisedByMonth[targetReportMonth] || null) : null;
+      const overheadFinalisedAt = targetReportMonth ? overheadFinalisedByMonth[targetReportMonth] || null : null;
       const narrativeStatusByMonth = conf.narrativeStatusByMonth || {};
-      const narrativeStatusForMonth = targetReportMonth ? (narrativeStatusByMonth[targetReportMonth] || null) : null;
+      const narrativeStatusForMonth = targetReportMonth ? narrativeStatusByMonth[targetReportMonth] || null : null;
 
       return {
         clientName: name,
         clientSheetId: c.clientSheetId,
         masterSheetId: c.masterSheetId,
+        reconSheetId: conf.reconSheetId || c.reconSheetId || "",
         masterSheetUrl: c.masterSheetId ? `https://docs.google.com/spreadsheets/d/${c.masterSheetId}/edit` : "",
         clientSheetUrl: c.clientSheetId ? `https://docs.google.com/spreadsheets/d/${c.clientSheetId}/edit` : "",
-        folderUrl: folderUrl,
+        folderUrl,
         hasDeckConfigured: !!folderUrl,
         emailTo: conf.emailTo || "",
         emailSubj: conf.emailSubj || "End of month queries",
         emailBody: conf.emailBody || "",
         webAppUrl: conf.webAppUrl || systemWebAppUrl || c.webAppUrl || "",
-        latestReport: latestReport,
+        latestReport,
         reportHistory: history,
         overheadFinalisedByMonth,
         overheadFinalisedAt,
         isOverheadFinalised: Boolean(overheadFinalisedAt),
         narrativeStatusByMonth,
-        narrativeStatusForMonth
+        narrativeStatusForMonth,
       };
     });
 
@@ -2723,7 +2825,7 @@ export async function handleEomGetReportingData(req, res, sheets) {
       success: true,
       clients,
       systemWebAppUrl,
-      chartRefs: chartRefs.length > 0 ? chartRefs : DEFAULT_CHART_REFS
+      chartRefs,
     });
   } catch (err) {
     console.error("❌ handleEomGetReportingData error:", err);
@@ -2732,7 +2834,7 @@ export async function handleEomGetReportingData(req, res, sheets) {
 }
 
 /**
- * Saves reporting email template, folder, or system web app URL to Reporting Control spreadsheet
+ * Saves reporting email template, folder, or system web app URL to Supabase `eom_reporting_control_state`
  */
 export async function handleEomSaveReportingConfig(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -2741,49 +2843,31 @@ export async function handleEomSaveReportingConfig(req, res, sheets) {
   }
 
   const { clientName, emailTo, emailSubj, emailBody, folderUrl, webAppUrl } = req.body;
-  const rcId = REPORTING_CONTROL_SHEET_ID;
-
   if (!clientName) {
     return res.status(400).json({ success: false, error: "Missing clientName" });
   }
 
   try {
-    await ensureEomReportingTabs_(sheets, rcId);
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: rcId,
-      range: "EomReportingConfig!A2:G500"
-    }));
-    const rows = resp.data.values || [];
-    const existingIdx = rows.findIndex(r => String(r[0] || "").trim() === clientName);
+    const state = await getEomReportingControlState(sheets);
     const now = new Date().toISOString();
 
-    const rowData = [
-      clientName,
-      emailTo !== undefined ? emailTo : (rows[existingIdx]?.[1] || ""),
-      emailSubj !== undefined ? emailSubj : (rows[existingIdx]?.[2] || ""),
-      emailBody !== undefined ? emailBody : (rows[existingIdx]?.[3] || ""),
-      folderUrl !== undefined ? folderUrl : (rows[existingIdx]?.[4] || ""),
-      webAppUrl !== undefined ? webAppUrl : (rows[existingIdx]?.[5] || ""),
-      now
-    ];
-
-    if (existingIdx === -1) {
-      await withRetry(() => sheets.spreadsheets.values.append({
-        spreadsheetId: rcId,
-        range: "EomReportingConfig!A:G",
-        valueInputOption: "RAW",
-        requestBody: { values: [rowData] }
-      }));
+    if (clientName === "__SYSTEM__") {
+      if (webAppUrl !== undefined) state.systemWebAppUrl = String(webAppUrl).trim();
     } else {
-      const sheetRow = existingIdx + 2;
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: rcId,
-        range: `EomReportingConfig!A${sheetRow}:G${sheetRow}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [rowData] }
-      }));
+      const confKey = findClientKeyCaseInsensitive_(state.configsByClient, clientName);
+      const prev = state.configsByClient[confKey] || {};
+      state.configsByClient[confKey] = {
+        ...prev,
+        emailTo: emailTo !== undefined ? emailTo : prev.emailTo || "",
+        emailSubj: emailSubj !== undefined ? emailSubj : prev.emailSubj || "",
+        emailBody: emailBody !== undefined ? emailBody : prev.emailBody || "",
+        folderUrl: folderUrl !== undefined ? folderUrl : prev.folderUrl || "",
+        webAppUrl: webAppUrl !== undefined ? webAppUrl : prev.webAppUrl || "",
+        updatedAt: now,
+      };
     }
 
+    await saveEomReportingControlState(state);
     return res.status(200).json({ success: true, clientName });
   } catch (err) {
     console.error("❌ handleEomSaveReportingConfig error:", err);
@@ -2792,7 +2876,7 @@ export async function handleEomSaveReportingConfig(req, res, sheets) {
 }
 
 /**
- * Saves (creates or updates) a chart and table reference in ChartRefs tab on Reporting Control sheet
+ * Saves (creates or updates) a chart and table reference in Supabase `eom_reporting_control_state`
  */
 export async function handleEomSaveChartRef(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -2808,39 +2892,28 @@ export async function handleEomSaveChartRef(req, res, sheets) {
   const rawCode = String(code).trim();
   const cleanCode = rawCode.startsWith("[") && rawCode.endsWith("]") ? rawCode : `[${rawCode.replace(/^\[+|\]+$/g, "")}]`;
   const cleanRange = String(range).trim();
-  const cleanLabel = String(label || "").trim();
-  const rcId = REPORTING_CONTROL_SHEET_ID;
+  const cleanLabel = String(label || "").trim() || cleanCode.replace(/^\[|\]$/g, "");
 
   try {
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: rcId,
-      range: "ChartRefs!A1:C100"
-    }));
-    const rows = resp.data.values || [];
+    const state = await getEomReportingControlState(sheets);
+    const refs = Array.isArray(state.chartRefs) ? [...state.chartRefs] : [...DEFAULT_CHART_REFS];
     const lookupCode = originalCode || cleanCode;
-    const existingIdx = rows.findIndex((r, i) => i > 0 && String(r[0] || "").trim() === lookupCode);
+    const existingIdx = refs.findIndex((r) => String(r.code || "").trim() === lookupCode);
 
+    const newItem = { code: cleanCode, range: cleanRange, label: cleanLabel };
     if (existingIdx !== -1) {
-      const sheetRow = existingIdx + 1;
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: rcId,
-        range: `ChartRefs!A${sheetRow}:C${sheetRow}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[cleanCode, cleanRange, cleanLabel]] }
-      }));
+      refs[existingIdx] = newItem;
     } else {
-      await withRetry(() => sheets.spreadsheets.values.append({
-        spreadsheetId: rcId,
-        range: "ChartRefs!A:C",
-        valueInputOption: "RAW",
-        requestBody: { values: [[cleanCode, cleanRange, cleanLabel]] }
-      }));
+      refs.push(newItem);
     }
+
+    state.chartRefs = refs;
+    await saveEomReportingControlState(state);
 
     return res.status(200).json({
       success: true,
       message: `Reference ${cleanCode} saved successfully.`,
-      chartRef: { code: cleanCode, range: cleanRange, label: cleanLabel }
+      chartRef: newItem,
     });
   } catch (err) {
     console.error("❌ handleEomSaveChartRef error:", err);
@@ -2849,7 +2922,7 @@ export async function handleEomSaveChartRef(req, res, sheets) {
 }
 
 /**
- * Deletes a chart and table reference from ChartRefs tab on Reporting Control sheet
+ * Deletes a chart and table reference from Supabase `eom_reporting_control_state`
  */
 export async function handleEomDeleteChartRef(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -2862,47 +2935,16 @@ export async function handleEomDeleteChartRef(req, res, sheets) {
     return res.status(400).json({ success: false, error: "Missing code to delete." });
   }
 
-  const rcId = REPORTING_CONTROL_SHEET_ID;
-
   try {
-    const meta = await sheets.spreadsheets.get({
-      spreadsheetId: rcId,
-      fields: "sheets.properties"
-    });
-    const sheetObj = meta.data.sheets.find(s => s.properties.title === "ChartRefs");
-    if (!sheetObj) {
-      return res.status(404).json({ success: false, error: "ChartRefs sheet not found." });
-    }
-    const sheetId = sheetObj.properties.sheetId;
-
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: rcId,
-      range: "ChartRefs!A1:C100"
-    }));
-    const rows = resp.data.values || [];
-    const targetIdx = rows.findIndex((r, i) => i > 0 && String(r[0] || "").trim() === code);
-
+    const state = await getEomReportingControlState(sheets);
+    const refs = Array.isArray(state.chartRefs) ? [...state.chartRefs] : [...DEFAULT_CHART_REFS];
+    const targetIdx = refs.findIndex((r) => String(r.code || "").trim() === code);
     if (targetIdx === -1) {
       return res.status(404).json({ success: false, error: `Reference ${code} not found.` });
     }
-
-    await withRetry(() => sheets.spreadsheets.batchUpdate({
-      spreadsheetId: rcId,
-      requestBody: {
-        requests: [
-          {
-            deleteDimension: {
-              range: {
-                sheetId: sheetId,
-                dimension: "ROWS",
-                startIndex: targetIdx,
-                endIndex: targetIdx + 1
-              }
-            }
-          }
-        ]
-      }
-    }));
+    refs.splice(targetIdx, 1);
+    state.chartRefs = refs;
+    await saveEomReportingControlState(state);
 
     return res.status(200).json({ success: true, message: `Reference ${code} deleted successfully.` });
   } catch (err) {
@@ -3014,105 +3056,267 @@ function formatMonthKeyShort_(monthKey) {
 }
 
 /**
- * Updates the ReportsLog matrix on the Reporting Control spreadsheet
+ * Updates the ReportsLog history in Supabase `eom_reporting_control_state`
  */
 async function updateReportsLogMatrix_(sheets, rcId, clientName, reportUrl, effectiveReportMonth) {
   if (!clientName || !reportUrl || !effectiveReportMonth) return;
   try {
-    const logResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: rcId,
-      range: "ReportsLog!A1:Z100",
-      valueRenderOption: "FORMATTED_VALUE"
-    }));
-    const logRows = logResp.data.values || [];
-    const headerRow = logRows[0] || ["Client"];
-
-    let targetColIdx = -1;
-    for (let c = 1; c < headerRow.length; c++) {
-      if (parseHeaderToMonthKey_(headerRow[c]) === effectiveReportMonth) {
-        targetColIdx = c;
-        break;
-      }
-    }
-
+    const state = await getEomReportingControlState(sheets);
+    if (!state.reportsLogByClient) state.reportsLogByClient = {};
+    const logKey = findClientKeyCaseInsensitive_(state.reportsLogByClient, clientName);
+    const list = Array.isArray(state.reportsLogByClient[logKey]) ? [...state.reportsLogByClient[logKey]] : [];
     const shortHeader = formatMonthKeyShort_(effectiveReportMonth);
-
-    if (targetColIdx === -1) {
-      if (headerRow.length > 1 && headerRow[1]) {
-        const meta = await sheets.spreadsheets.get({
-          spreadsheetId: rcId,
-          fields: "sheets.properties"
-        });
-        const logSheetObj = meta.data.sheets?.find(s => s.properties?.title === "ReportsLog");
-        if (logSheetObj) {
-          await withRetry(() => sheets.spreadsheets.batchUpdate({
-            spreadsheetId: rcId,
-            requestBody: {
-              requests: [{
-                insertDimension: {
-                  range: {
-                    sheetId: logSheetObj.properties.sheetId,
-                    dimension: "COLUMNS",
-                    startIndex: 1,
-                    endIndex: 2
-                  },
-                  inheritFromBefore: false
-                }
-              }]
-            }
-          }));
-        }
-      }
-      targetColIdx = 1;
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: rcId,
-        range: "ReportsLog!B1",
-        valueInputOption: "RAW",
-        requestBody: { values: [[shortHeader]] }
-      }));
-    }
-
-    let clientRowIdx = -1;
-    for (let r = 1; r < logRows.length; r++) {
-      if (String(logRows[r]?.[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase()) {
-        clientRowIdx = r;
-        break;
-      }
-    }
-
-    const colLetter = colIdxToLetter_(targetColIdx);
-    if (clientRowIdx !== -1) {
-      const sheetRow = clientRowIdx + 1;
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: rcId,
-        range: `ReportsLog!${colLetter}${sheetRow}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[reportUrl]] }
-      }));
+    const entry = {
+      month: effectiveReportMonth,
+      reportUrl,
+      reportName: `${clientName} Management Report (${shortHeader || effectiveReportMonth})`,
+      createdAt: new Date().toISOString(),
+    };
+    const existingIdx = list.findIndex((item) => item.month === effectiveReportMonth);
+    if (existingIdx !== -1) {
+      list[existingIdx] = entry;
     } else {
-      const sheetRow = Math.max(logRows.length + 1, 2);
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: rcId,
-        range: `ReportsLog!A${sheetRow}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[clientName]] }
-      }));
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: rcId,
-        range: `ReportsLog!${colLetter}${sheetRow}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[reportUrl]] }
-      }));
+      list.unshift(entry);
     }
+    list.sort((a, b) => String(b.month || "").localeCompare(String(a.month || "")));
+    state.reportsLogByClient[logKey] = list;
+    await saveEomReportingControlState(state);
   } catch (err) {
     console.warn(`[updateReportsLogMatrix_] Note for ${clientName}:`, err.message);
   }
 }
 
 /**
+ * Native replacement for `updateReconTab` in `reporting-control/Code.gs`:
+ * Ensures the `yyMM` tab exists on the client's Recon Sheet by duplicating `Template`,
+ * moving it to index 1, setting A1 to `${reportMonthKey}-01`, and formatting A1 as `mmm yy`.
+ */
+async function updateReconTabNative_(sheets, reconSheetId, reportMonthKey) {
+  const cleanReconId = extractDriveResourceIdLocal_(reconSheetId);
+  if (!cleanReconId || !reportMonthKey || !/^\d{4}-\d{2}$/.test(reportMonthKey)) return;
+  try {
+    const [yStr, mStr] = reportMonthKey.split("-");
+    const targetTabName = `${yStr.slice(-2)}${mStr}`;
+    const meta = await withRetry(() =>
+      sheets.spreadsheets.get({
+        spreadsheetId: cleanReconId,
+        fields: "sheets.properties(sheetId,title,index)",
+      })
+    );
+    const allSheets = meta.data.sheets || [];
+    if (allSheets.some((s) => s.properties?.title === targetTabName)) {
+      return; // Tab already exists
+    }
+    const templateSheet = allSheets.find((s) => s.properties?.title === "Template");
+    if (!templateSheet) return;
+
+    const copyResp = await withRetry(() =>
+      sheets.spreadsheets.sheets.copyTo({
+        spreadsheetId: cleanReconId,
+        sheetId: templateSheet.properties.sheetId,
+        requestBody: { destinationSpreadsheetId: cleanReconId },
+      })
+    );
+    const newSheetId = copyResp.data.sheetId;
+
+    await withRetry(() =>
+      sheets.spreadsheets.batchUpdate({
+        spreadsheetId: cleanReconId,
+        requestBody: {
+          requests: [
+            {
+              updateSheetProperties: {
+                properties: {
+                  sheetId: newSheetId,
+                  title: targetTabName,
+                  index: 0,
+                },
+                fields: "title,index",
+              },
+            },
+            {
+              repeatCell: {
+                range: {
+                  sheetId: newSheetId,
+                  startRowIndex: 0,
+                  endRowIndex: 1,
+                  startColumnIndex: 0,
+                  endColumnIndex: 1,
+                },
+                cell: {
+                  userEnteredFormat: {
+                    numberFormat: { type: "DATE", pattern: "mmm yy" },
+                  },
+                },
+                fields: "userEnteredFormat.numberFormat",
+              },
+            },
+          ],
+        },
+      })
+    );
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId: cleanReconId,
+        range: `'${targetTabName}'!A1`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[`${reportMonthKey}-01`]] },
+      })
+    );
+  } catch (err) {
+    console.warn(`[updateReconTabNative_] Note for ${cleanReconId}:`, err.message);
+  }
+}
+
+/**
+ * Resolves the target Google Slides presentation for UPDATE or creates it from the previous
+ * month's presentation for GENERATE (trying Drive API `files.copy` first and falling back
+ * to the lightweight sheetless GAS `COPY_DECK` helper when personal My Drive quota applies).
+ */
+async function resolveOrCreateClientPresentation_({
+  drive,
+  clientName,
+  folderUrl,
+  reportMonthKey,
+  mode,
+  isFirstBatch,
+  state,
+  targetWebAppUrl,
+  candidateSecrets,
+}) {
+  const folderId = extractDriveResourceIdLocal_(folderUrl);
+  if (!folderId) {
+    throw new Error(`Missing Management Reports folder URL for ${clientName}.`);
+  }
+
+  const [yNum, mNum] = String(reportMonthKey || "2026-10").split("-").map(Number);
+  const prevY = mNum === 1 ? yNum - 1 : yNum;
+  const prevM = mNum === 1 ? 12 : mNum - 1;
+  const shortMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  const targetCode = `${String(yNum).slice(-2)}${String(mNum).padStart(2, "0")}`;
+  const templateCode = `${String(prevY).slice(-2)}${String(prevM).padStart(2, "0")}`;
+  const targetFileStr = `${shortMonths[mNum - 1]} ${String(yNum).slice(-2)}`;
+  const templateFileStr = `${shortMonths[prevM - 1]} ${String(prevY).slice(-2)}`;
+  const targetCompactStr = `${shortMonths[mNum - 1]}${String(yNum).slice(-2)}`;
+  const templateCompactStr = `${shortMonths[prevM - 1]}${String(prevY).slice(-2)}`;
+
+  const listResp = await withRetry(() =>
+    drive.files.list({
+      q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.presentation' and trashed = false`,
+      fields: "files(id, name, webViewLink, modifiedTime)",
+      orderBy: "name desc, modifiedTime desc",
+      pageSize: 50,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    })
+  );
+  const files = listResp.data.files || [];
+
+  const existingTargetFile = files.find((f) => String(f.name || "").includes(targetCode));
+
+  if (mode === "UPDATE" || !isFirstBatch) {
+    if (existingTargetFile) {
+      return {
+        presentationId: existingTargetFile.id,
+        reportUrl: existingTargetFile.webViewLink || `https://docs.google.com/presentation/d/${existingTargetFile.id}/edit`,
+        reportName: existingTargetFile.name,
+      };
+    }
+    const logKey = findClientKeyCaseInsensitive_(state?.reportsLogByClient, clientName);
+    const logHit = (state?.reportsLogByClient?.[logKey] || []).find((h) => h.month === reportMonthKey);
+    const logPresId = extractDriveResourceIdLocal_(logHit?.reportUrl);
+    if (logPresId) {
+      return {
+        presentationId: logPresId,
+        reportUrl: logHit.reportUrl,
+        reportName: logHit.reportName || `${clientName} Management Report (${targetFileStr})`,
+      };
+    }
+    throw new Error(`No existing presentation containing "${targetCode}" found in folder for ${clientName}.`);
+  }
+
+  // mode === "GENERATE" on first batch:
+  if (existingTargetFile) {
+    return {
+      presentationId: existingTargetFile.id,
+      reportUrl: existingTargetFile.webViewLink || `https://docs.google.com/presentation/d/${existingTargetFile.id}/edit`,
+      reportName: existingTargetFile.name,
+    };
+  }
+
+  let templateFile = files.find((f) => String(f.name || "").includes(templateCode));
+  if (!templateFile) {
+    templateFile = files.find((f) => /\b2\d(0[1-9]|1[0-2])\b/.test(String(f.name || ""))) || files[0];
+  }
+  if (!templateFile) {
+    throw new Error(`No template presentation (${templateCode}) found in folder for ${clientName}.`);
+  }
+
+  const newName = String(templateFile.name || `${clientName} ${targetCode} Management Report ${targetCompactStr}`)
+    .replace(templateCode, targetCode)
+    .replace(templateFileStr, targetFileStr)
+    .replace(templateCompactStr, targetCompactStr);
+
+  // 1. Try direct Google Drive API copy first
+  try {
+    const copyRes = await drive.files.copy({
+      fileId: templateFile.id,
+      requestBody: {
+        name: newName,
+        parents: [folderId],
+      },
+      fields: "id, name, webViewLink",
+      supportsAllDrives: true,
+    });
+    if (copyRes?.data?.id) {
+      return {
+        presentationId: copyRes.data.id,
+        reportUrl: copyRes.data.webViewLink || `https://docs.google.com/presentation/d/${copyRes.data.id}/edit`,
+        reportName: copyRes.data.name || newName,
+      };
+    }
+  } catch (driveCopyErr) {
+    // 2. Fallback to sheetless GAS COPY_DECK action if personal My Drive quota applies
+    if (targetWebAppUrl && isValidGoogleScriptUrl(targetWebAppUrl) && candidateSecrets?.length > 0) {
+      for (const secret of candidateSecrets) {
+        try {
+          const gasResp = await fetch(targetWebAppUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "COPY_DECK",
+              secret,
+              folderId,
+              templateFileId: templateFile.id,
+              newName,
+            }),
+          });
+          const gasData = await gasResp.json();
+          if (gasData?.success && gasData.presentationId) {
+            return {
+              presentationId: gasData.presentationId,
+              reportUrl: gasData.reportUrl || `https://docs.google.com/presentation/d/${gasData.presentationId}/edit`,
+              reportName: gasData.reportName || newName,
+            };
+          }
+          if (gasData && !String(gasData.error || "").includes("Invalid secret token")) {
+            break;
+          }
+        } catch (_) {}
+      }
+    }
+    throw new Error(`Could not duplicate presentation ${templateFile.name}: ${driveCopyErr.message}`);
+  }
+
+  throw new Error(`Could not create presentation for ${clientName}.`);
+}
+
+/**
  * Executes a reporting action (GENERATE, UPDATE, EMAIL) across target clients.
- * Supports multi-stage execution via `step` ("PREPARE_MASTER" | "SLIDES_BATCH" | "FINALIZE")
- * so the frontend can display detailed step-by-step progress and avoid long request timeouts.
+ * For GENERATE and UPDATE, executes 100% natively via `computeNativeMgmtRepForClient`
+ * and `updateGoogleSlidesPresentationNative` without requiring `Reporting Control` or a Google Master Sheet.
  */
 export async function handleEomRunReportingAction(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -3130,7 +3334,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
     automationCommanderSheetId,
     chartMapOverride,
     batchIndex = 0,
-    clientResults: incomingClientResults
+    clientResults: incomingClientResults,
   } = req.body;
 
   const acId = resolveAcSheetId_(automationCommanderSheetId);
@@ -3147,7 +3351,6 @@ export async function handleEomRunReportingAction(req, res, sheets) {
   const effectiveWorkMonth = eomMonthKey || reportMonthKey;
 
   try {
-    // 1. Resolve target date for reports (e.g. "2026-09" -> 2026-09-01)
     let rawTargetDate = null;
     if (effectiveReportMonth && /^\d{4}-\d{2}$/.test(effectiveReportMonth)) {
       const [y, m] = effectiveReportMonth.split("-").map(Number);
@@ -3158,65 +3361,41 @@ export async function handleEomRunReportingAction(req, res, sheets) {
     }
     const targetDateFormatted = rawTargetDate.toISOString().slice(0, 10);
 
+    const state = await getEomReportingControlState(sheets);
+    const chartRefsList = Array.isArray(state.chartRefs) && state.chartRefs.length > 0 ? state.chartRefs : [...DEFAULT_CHART_REFS];
+
     // ── STAGE 1: PREPARE_MASTER ────────────────────────────────────────────────
     if (step === "PREPARE_MASTER") {
-      for (const c of clients) {
-        if (c.masterSheetId) {
-          await ensureOverheadAlignmentAndMonth_(sheets, c.masterSheetId, effectiveReportMonth, targetDateFormatted);
+      let primaryMgmtGrid = null;
+      for (let i = 0; i < clients.length; i++) {
+        const c = clients[i];
+        const computed = await computeNativeMgmtRepForClient({
+          sheets,
+          clientName: c.clientName,
+          clientSheetId: c.clientSheetId,
+          masterSheetId: c.masterSheetId,
+          reportMonthKey: effectiveReportMonth,
+          persistToSupabase: true,
+        });
+        if (i === 0 && computed?.mgmtGrid) {
+          primaryMgmtGrid = computed.mgmtGrid;
         }
       }
 
-      let chartRefsList = [...DEFAULT_CHART_REFS];
-      try {
-        const crResp = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-          range: "ChartRefs!A1:C100",
-          valueRenderOption: "FORMATTED_VALUE"
-        }));
-        const parsed = [];
-        (crResp.data.values || []).forEach(r => {
-          const code = String(r[0] || "").trim();
-          const rng = String(r[1] || "").trim();
-          const lbl = String(r[2] || "").trim();
-          if (code && rng && code !== "Chart code" && code !== "Speaker notes code") {
-            parsed.push({ code, range: rng, label: lbl || code.replace(/^\[|\]$/g, "") });
-          }
-        });
-        if (parsed.length > 0) chartRefsList = parsed;
-      } catch (crErr) {
-        console.warn("Could not read ChartRefs in PREPARE_MASTER:", crErr.message);
-      }
-
       let activeChartRefs = chartRefsList;
-      const primaryClient = clients[0];
-      if (primaryClient?.masterSheetId && chartRefsList.length > 0) {
-        try {
-          const batchRanges = chartRefsList.map(ref =>
-            ref.range.includes("!") ? ref.range : `MgmtRep!${ref.range}`
-          );
-          const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
-            spreadsheetId: primaryClient.masterSheetId,
-            ranges: batchRanges,
-            valueRenderOption: "FORMATTED_VALUE"
+      if (primaryMgmtGrid && chartRefsList.length > 0) {
+        const styledTables = buildNativeStyledTables(primaryMgmtGrid, chartRefsList);
+        const filtered = styledTables
+          .filter((tbl) => tbl.rows.some((r) => r.some((cell) => String(cell.text || "").trim() !== "")))
+          .map((tbl) => ({
+            code: tbl.code,
+            range: tbl.rangeA1,
+            label: tbl.label,
+            rowCount: tbl.rowCount,
+            colCount: tbl.colCount,
           }));
-          const valueRanges = batchResp.data.valueRanges || [];
-          const filtered = [];
-          chartRefsList.forEach((ref, idx) => {
-            const rows = valueRanges[idx]?.values || [];
-            const hasContent = rows.some(row => Array.isArray(row) && row.some(cell => String(cell || "").trim() !== ""));
-            if (hasContent) {
-              filtered.push({
-                ...ref,
-                rowCount: rows.length,
-                colCount: rows[0]?.length || 0
-              });
-            }
-          });
-          if (filtered.length > 0) {
-            activeChartRefs = filtered;
-          }
-        } catch (bgErr) {
-          console.warn(`Batch range check note for ${primaryClient.clientName}:`, bgErr.message);
+        if (filtered.length > 0) {
+          activeChartRefs = filtered;
         }
       }
 
@@ -3225,7 +3404,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
         step: "PREPARE_MASTER",
         targetDateFormatted,
         totalRefsCount: chartRefsList.length,
-        activeChartRefs
+        activeChartRefs,
       });
     }
 
@@ -3259,190 +3438,234 @@ export async function handleEomRunReportingAction(req, res, sheets) {
       logPmaActivity(sheets, {
         automationCommanderSheetId: acId,
         category: "REPORTING",
-        action: mode === "GENERATE" ? "Generated Management Reports" : (mode === "UPDATE" ? "Updated Management Decks" : "Drafted End of Month Emails"),
-        summary: `${mode === "GENERATE" ? "Generated reports" : (mode === "UPDATE" ? "Updated decks" : "Drafted emails")} for ${clients.map(c => c.clientName).join(", ")} (Report: ${effectiveReportMonth}, Cycle: ${effectiveWorkMonth})`,
-        details: { mode, reportMonthKey: effectiveReportMonth, eomMonthKey: effectiveWorkMonth, clients: clients.map(c => c.clientName), clientResults: resultsToProcess }
-      }).catch(e => console.error("PMA log failed:", e));
+        action: mode === "GENERATE" ? "Generated Management Reports" : mode === "UPDATE" ? "Updated Management Decks" : "Drafted End of Month Emails",
+        summary: `${mode === "GENERATE" ? "Generated reports" : mode === "UPDATE" ? "Updated decks" : "Drafted emails"} for ${clients.map((c) => c.clientName).join(", ")} (Report: ${effectiveReportMonth}, Cycle: ${effectiveWorkMonth})`,
+        details: { mode, reportMonthKey: effectiveReportMonth, eomMonthKey: effectiveWorkMonth, clients: clients.map((c) => c.clientName), clientResults: resultsToProcess },
+      }).catch((e) => console.error("PMA log failed:", e));
 
       return res.status(200).json({
         success: true,
         step: "FINALIZE",
-        tasksCompletedCount
+        tasksCompletedCount,
       });
     }
 
-    // ── STAGE 2 (SLIDES_BATCH) OR FULL LEGACY FLOW ─────────────────────────────
-    if (!step && (mode === "GENERATE" || mode === "UPDATE")) {
-      for (const c of clients) {
-        if (c.masterSheetId) {
-          try {
-            await withRetry(() => sheets.spreadsheets.values.update({
-              spreadsheetId: c.masterSheetId,
-              range: "MgmtRep!B1",
-              valueInputOption: "USER_ENTERED",
-              requestBody: { values: [[targetDateFormatted]] }
-            }));
-          } catch (mErr) {
-            console.warn(`Master MgmtRep date update note for ${c.clientName}:`, mErr.message);
-          }
+    const targetWebAppUrl = String(
+      webAppUrlOverride || state.systemWebAppUrl || process.env.REPORTING_WEBAPP_URL || clients[0]?.webAppUrl || DEFAULT_REPORTING_WEBAPP_URL
+    ).trim();
+
+    const candidateSecrets = Array.from(
+      new Set(
+        [
+          (process.env.CRON_SECRET || "").trim(),
+          (process.env.AGENT_TRIGGER_SECRET || "").trim(),
+          (process.env.REPORTING_WEBAPP_SECRET || "").trim(),
+          "triage-cron-2026-AY4K2LDMXBV8DS7",
+        ].filter(Boolean)
+      )
+    );
+
+    // ── EMAIL MODE (delegates to GAS GmailApp.createDraft) ─────────────────────
+    if (mode === "EMAIL") {
+      if (!targetWebAppUrl || !isValidGoogleScriptUrl(targetWebAppUrl)) {
+        return res.status(400).json({
+          success: false,
+          error: "Valid Reporting Web App URL is required to draft emails in Gmail.",
+        });
+      }
+
+      const baseGasPayload = {
+        action: "EMAIL",
+        targetMonth: effectiveReportMonth,
+        clients: clients.map((c) => ({
+          clientName: c.clientName,
+          emailTo: c.emailTo || "",
+          emailSubj: c.emailSubj || "End of month queries",
+          emailBody: c.emailBody || "",
+        })),
+      };
+
+      let gasResp = null;
+      let gasText = "";
+      let gasData = null;
+      for (const secret of candidateSecrets) {
+        gasResp = await fetch(targetWebAppUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...baseGasPayload, secret }),
+        });
+        gasText = await gasResp.text();
+        gasData = null;
+        try {
+          gasData = JSON.parse(gasText);
+        } catch (_) {}
+        if (!gasData || gasData.success || !String(gasData.error || "").includes("Invalid secret token")) {
+          break;
         }
       }
-    }
 
-    // 3. Resolve Web App URL
-    const targetWebAppUrl = String(webAppUrlOverride || process.env.REPORTING_WEBAPP_URL || clients[0]?.webAppUrl || DEFAULT_REPORTING_WEBAPP_URL).trim();
-    if (!targetWebAppUrl) {
-      return res.status(400).json({
-        success: false,
-        error: "Reporting Web App URL is not configured. Please enter the deployed Google Apps Script Web App URL in settings."
-      });
-    }
-
-    if (!isValidGoogleScriptUrl(targetWebAppUrl)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid Web App URL: Target URL must strictly be a Google Apps Script Web App ending with /exec."
-      });
-    }
-
-    const candidateSecrets = Array.from(new Set([
-      (process.env.CRON_SECRET || "").trim(),
-      (process.env.AGENT_TRIGGER_SECRET || "").trim(),
-      (process.env.REPORTING_WEBAPP_SECRET || "").trim(),
-      "triage-cron-2026-AY4K2LDMXBV8DS7"
-    ].filter(Boolean)));
-    if (candidateSecrets.length === 0) {
-      return res.status(500).json({
-        success: false,
-        error: "Reporting Web App secret is not configured on the server."
-      });
-    }
-
-    // 4. Resolve chartMap (use chartMapOverride if provided for chunked batch, else read ChartRefs)
-    let chartMap = chartMapOverride && typeof chartMapOverride === "object" ? chartMapOverride : null;
-    if (!chartMap && (mode === "GENERATE" || mode === "UPDATE")) {
-      try {
-        const crResp = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-          range: "ChartRefs!A1:B100",
-          valueRenderOption: "FORMATTED_VALUE"
-        }));
-        const mapObj = {};
-        (crResp.data.values || []).forEach(r => {
-          const code = String(r[0] || "").trim();
-          const rng = String(r[1] || "").trim();
-          if (code && rng && code !== "Chart code" && code !== "Speaker notes code") {
-            mapObj[code] = rng;
-          }
+      if (!gasData) {
+        return res.status(502).json({
+          success: false,
+          error: `Reporting Web App returned HTTP ${gasResp?.status}.`,
         });
-        if (Object.keys(mapObj).length > 0) chartMap = mapObj;
-      } catch (crErr) {
-        console.warn("Could not read ChartRefs for job payload:", crErr.message);
       }
-    }
-
-    // If this is batchIndex > 0 of a GENERATE job, the deck was already created in batchIndex 0, so use UPDATE
-    const effectiveGasAction = (step === "SLIDES_BATCH" && mode === "GENERATE" && batchIndex > 0)
-      ? "UPDATE"
-      : mode;
-
-    const baseGasPayload = {
-      action: effectiveGasAction,
-      targetMonth: effectiveReportMonth,
-      chartMap: chartMap || undefined,
-      skipMasterUpdate: step === "SLIDES_BATCH" && batchIndex > 0,
-      skipChartRefresh: step === "SLIDES_BATCH" && batchIndex > 0,
-      clients: clients.map(c => ({
-        clientName: c.clientName,
-        masterSheetUrl: c.masterSheetUrl || (c.masterSheetId ? `https://docs.google.com/spreadsheets/d/${c.masterSheetId}/edit` : ""),
-        folderUrl: c.folderUrl || "",
-        emailTo: c.emailTo || "",
-        emailSubj: c.emailSubj || "End of month queries",
-        emailBody: c.emailBody || ""
-      }))
-    };
-
-    let gasResp = null;
-    let gasText = "";
-    let gasData = null;
-    for (const secret of candidateSecrets) {
-      gasResp = await fetch(targetWebAppUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...baseGasPayload, secret })
-      });
-      gasText = await gasResp.text();
-      gasData = null;
-      try { gasData = JSON.parse(gasText); } catch (e) { }
-      if (!gasData || gasData.success || !String(gasData.error || "").includes("Invalid secret token")) {
-        break;
+      if (!gasData.success) {
+        return res.status(200).json({ success: false, error: gasData.error || "Email drafting failed", results: gasData.results || [] });
       }
-    }
 
-    if (!gasData) {
-      console.error(`❌ Reporting Web App returned HTTP ${gasResp.status}:`, gasText.slice(0, 300));
-      return res.status(502).json({
-        success: false,
-        error: `Reporting Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 150).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify script deployment.`
+      const clientResults = gasData.results || [];
+      for (const resItem of clientResults) {
+        if (resItem.success) {
+          try {
+            await autoCompleteTaskByKeyword_(sheets, acId, resItem.clientName, effectiveWorkMonth, "data request email");
+          } catch (_) {}
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: `Successfully drafted ${clientResults.filter((r) => r.success).length} email(s) in Gmail.`,
+        results: clientResults,
       });
     }
 
-    if (!gasData.success) {
-      return res.status(200).json({ success: false, error: gasData.error || "Reporting action failed", results: gasData.results || [] });
+    // ── NATIVE SLIDES EXECUTION (GENERATE / UPDATE) ────────────────────────────
+    const drive = await getDriveClient();
+    const isFirstBatch = !step || batchIndex === 0;
+    const skipChartRefresh = Boolean(step === "SLIDES_BATCH" && batchIndex > 0);
+
+    let batchRefsList = chartRefsList;
+    if (chartMapOverride && typeof chartMapOverride === "object") {
+      batchRefsList = Object.entries(chartMapOverride).map(([code, range]) => ({
+        code,
+        range,
+        label: code.replace(/^\[|\]$/g, ""),
+      }));
     }
 
-    const clientResults = gasData.results || [];
+    const clientResults = [];
+    const sb = getSupabaseAdmin();
+
+    for (const c of clients) {
+      const cName = c.clientName;
+      try {
+        const confKey = findClientKeyCaseInsensitive_(state.configsByClient, cName);
+        const clientConf = state.configsByClient?.[confKey] || {};
+        const folderUrl = c.folderUrl || clientConf.folderUrl || "";
+        const reconSheetId = c.reconSheetId || clientConf.reconSheetId || "";
+
+        // 1. Load or compute MgmtRep grid
+        let mgmtGrid = null;
+        if (!isFirstBatch && sb) {
+          const { data: gridRow } = await sb
+            .from("master_sheet_grids")
+            .select("values_grid")
+            .eq("client_name", cName)
+            .eq("sheet_role", "master")
+            .eq("tab_name", "MgmtRep")
+            .maybeSingle();
+          if (Array.isArray(gridRow?.values_grid) && gridRow.values_grid.length > 500) {
+            mgmtGrid = gridRow.values_grid;
+          }
+        }
+        if (!mgmtGrid) {
+          const computed = await computeNativeMgmtRepForClient({
+            sheets,
+            clientName: cName,
+            clientSheetId: c.clientSheetId,
+            masterSheetId: c.masterSheetId,
+            reportMonthKey: effectiveReportMonth,
+            persistToSupabase: true,
+          });
+          mgmtGrid = computed.mgmtGrid;
+        }
+
+        // 2. Update Recon Sheet tab if GENERATE on first batch
+        if (mode === "GENERATE" && isFirstBatch && reconSheetId) {
+          await updateReconTabNative_(sheets, reconSheetId, effectiveReportMonth);
+        }
+
+        // 3. Resolve or create target presentation
+        const presInfo = await resolveOrCreateClientPresentation_({
+          drive,
+          clientName: cName,
+          folderUrl,
+          reportMonthKey: effectiveReportMonth,
+          mode,
+          isFirstBatch,
+          state,
+          targetWebAppUrl,
+          candidateSecrets,
+        });
+
+        // 4. Update charts + tables natively via Google Slides API
+        const slideRes = await updateGoogleSlidesPresentationNative({
+          presentationId: presInfo.presentationId,
+          mgmtGrid,
+          chartRefsList: batchRefsList,
+          targetMonthKey: effectiveReportMonth,
+          mode: mode === "GENERATE" && isFirstBatch ? "GENERATE" : "UPDATE",
+          skipChartRefresh,
+        });
+
+        clientResults.push({
+          clientName: cName,
+          success: true,
+          presentationId: presInfo.presentationId,
+          reportUrl: presInfo.reportUrl,
+          reportName: presInfo.reportName || slideRes.reportName,
+          tablesUpdated: slideRes.tablesUpdated,
+          chartsUpdated: slideRes.chartsUpdated,
+          message: mode === "GENERATE" ? "Report generated successfully" : "Deck updated successfully",
+        });
+      } catch (clientErr) {
+        console.error(`❌ Native reporting error for ${cName}:`, clientErr);
+        clientResults.push({
+          clientName: cName,
+          success: false,
+          error: clientErr.message || "Report execution failed",
+        });
+      }
+    }
 
     if (step === "SLIDES_BATCH") {
       return res.status(200).json({
         success: true,
         step: "SLIDES_BATCH",
         batchIndex,
-        results: clientResults
+        results: clientResults,
       });
     }
 
-    // 5. Phase 3: Post-processing (ReportsLog matrix & EoM task auto-completion)
+    // Full single-step execution post-processing
     for (const resItem of clientResults) {
       const cName = resItem.clientName;
-      if (resItem.success) {
-        if ((mode === "GENERATE" || mode === "UPDATE") && resItem.reportUrl) {
-          await updateReportsLogMatrix_(sheets, REPORTING_CONTROL_SHEET_ID, cName, resItem.reportUrl, effectiveReportMonth);
-          try {
-            await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "monthly management report");
-          } catch (tErr) {
-            console.warn(`Task auto-completion note for ${cName}:`, tErr.message);
-          }
-        } else if (mode === "EMAIL") {
-          try {
-            await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "data request email");
-          } catch (tErr) {
-            console.warn(`Task auto-completion note for ${cName}:`, tErr.message);
-          }
-        }
+      if (resItem.success && resItem.reportUrl) {
+        await updateReportsLogMatrix_(sheets, REPORTING_CONTROL_SHEET_ID, cName, resItem.reportUrl, effectiveReportMonth);
+        try {
+          await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "monthly management report");
+        } catch (_) {}
       }
     }
 
-    // Log PMA Activity
     logPmaActivity(sheets, {
       automationCommanderSheetId: acId,
       category: "REPORTING",
-      action: mode === "GENERATE" ? "Generated Management Reports" : (mode === "UPDATE" ? "Updated Management Decks" : "Drafted End of Month Emails"),
-      summary: `${mode === "GENERATE" ? "Generated reports" : (mode === "UPDATE" ? "Updated decks" : "Drafted emails")} for ${clients.map(c => c.clientName).join(", ")} (Report: ${effectiveReportMonth}, Cycle: ${effectiveWorkMonth})`,
-      details: { mode, reportMonthKey: effectiveReportMonth, eomMonthKey: effectiveWorkMonth, clients: clients.map(c => c.clientName), clientResults }
-    }).catch(e => console.error("PMA log failed:", e));
+      action: mode === "GENERATE" ? "Generated Management Reports" : "Updated Management Decks",
+      summary: `${mode === "GENERATE" ? "Generated reports" : "Updated decks"} for ${clients.map((c) => c.clientName).join(", ")} (Report: ${effectiveReportMonth}, Cycle: ${effectiveWorkMonth})`,
+      details: { mode, reportMonthKey: effectiveReportMonth, eomMonthKey: effectiveWorkMonth, clients: clients.map((c) => c.clientName), clientResults },
+    }).catch((e) => console.error("PMA log failed:", e));
 
     if (res.writableEnded || req.closed) return;
     return res.status(200).json({
       success: true,
-      message: mode === "GENERATE"
-        ? `Successfully generated ${clientResults.filter(r => r.success).length} report(s).`
-        : (mode === "UPDATE"
-          ? `Successfully updated ${clientResults.filter(r => r.success).length} deck(s).`
-          : `Successfully drafted ${clientResults.filter(r => r.success).length} email(s) in Gmail.`),
-      results: clientResults
+      message:
+        mode === "GENERATE"
+          ? `Successfully generated ${clientResults.filter((r) => r.success).length} report(s).`
+          : `Successfully updated ${clientResults.filter((r) => r.success).length} deck(s).`,
+      results: clientResults,
     });
-
   } catch (err) {
     console.error("❌ handleEomRunReportingAction error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -4096,14 +4319,14 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
   try {
     const { masterSheetId, clientName, reportMonthKey, checkboxOverrides, automationCommanderSheetId } = req.body || {};
     const mId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
-    if (!mId) {
-      return res.status(400).json({ success: false, error: "Master Sheet ID is required." });
+    if (!mId && !clientName) {
+      return res.status(400).json({ success: false, error: "Master Sheet ID or clientName is required." });
     }
     if (!checkboxOverrides || typeof checkboxOverrides !== "object") {
       return res.status(400).json({ success: false, error: "checkboxOverrides map is required." });
     }
 
-    // Read MgmtRep!A372:F493 to build the exact 122-row boolean column for F372:F493
+    // Read MgmtRep!A372:F493 (from Supabase virtual grid or Google Sheet) to build the exact 122-row boolean column
     const currentResp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: mId,
       range: "MgmtRep!A372:F493",
@@ -4112,6 +4335,7 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
     const rawRows = currentResp.data.values || [];
 
     const colFValues = [];
+    const checkedCategoriesMap = {};
     let checkedCount = 0;
     for (let i = 0; i < 122; i++) {
       const sheetRow = 372 + i;
@@ -4125,72 +4349,57 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
         const val = Boolean(checkboxOverrides[sheetRow]);
         if (val) checkedCount++;
         colFValues.push([val]);
+        checkedCategoriesMap[cat] = val;
       } else {
         const existingVal = Boolean(r[5] === true || String(r[5] || "").toUpperCase() === "TRUE");
         if (existingVal) checkedCount++;
         colFValues.push([existingVal]);
+        checkedCategoriesMap[cat] = existingVal;
       }
     }
 
-    await withRetry(() => sheets.spreadsheets.values.update({
-      spreadsheetId: mId,
-      range: "MgmtRep!F372:F493",
-      valueInputOption: "RAW",
-      requestBody: { values: colFValues }
-    }));
-
     const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: mId });
-    if (supaCtx && supaCtx.masterMode === "supabase") {
-      await syncVirtualMgmtRepGridNative(sheets, supaCtx.clientName, reportMonthKey, null);
+    if (!supaCtx || supaCtx.masterMode !== "supabase") {
+      try {
+        await withRetry(() => sheets.spreadsheets.values.update({
+          spreadsheetId: mId,
+          range: "MgmtRep!F372:F493",
+          valueInputOption: "RAW",
+          requestBody: { values: colFValues }
+        }));
+      } catch (_) {}
     }
+
+    await computeNativeMgmtRepForClient({
+      sheets,
+      clientName: supaCtx?.clientName || clientName,
+      masterSheetId: mId,
+      reportMonthKey,
+      checkedCategoriesOverride: checkedCategoriesMap,
+      persistToSupabase: true,
+    });
 
     const refreshed = await readAndParseOverheadExpenses_(sheets, mId, null);
     const effectiveMonthKey = reportMonthKey || monthStrToEomKey_(refreshed.currentMonthFormatted) || "";
     const finalisedAt = new Date().toISOString();
     let overheadFinalisedByMonth = {};
 
-    // Persist finalised status per client + report month in EomReportingConfig (Col H) on Reporting Control sheet
+    // Persist finalised status per client + report month in Supabase eom_reporting_control_state
     if (clientName && effectiveMonthKey) {
       try {
-        await ensureEomReportingTabs_(sheets, REPORTING_CONTROL_SHEET_ID);
-        const cfgResp = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-          range: "EomReportingConfig!A2:H500"
-        }));
-        const cfgRows = cfgResp.data.values || [];
-        const existingIdx = cfgRows.findIndex(r => String(r[0] || "").trim() === clientName);
-
-        if (existingIdx !== -1 && cfgRows[existingIdx]?.[7]) {
-          try {
-            const parsed = JSON.parse(String(cfgRows[existingIdx][7]));
-            if (parsed && typeof parsed === "object") overheadFinalisedByMonth = parsed;
-          } catch (_) { }
-        }
+        const state = await getEomReportingControlState(sheets);
+        const confKey = findClientKeyCaseInsensitive_(state.configsByClient, clientName);
+        const prevConf = state.configsByClient[confKey] || {};
+        overheadFinalisedByMonth = { ...(prevConf.overheadFinalisedByMonth || {}) };
         overheadFinalisedByMonth[effectiveMonthKey] = finalisedAt;
-        const jsonStr = JSON.stringify(overheadFinalisedByMonth);
-
-        if (existingIdx === -1) {
-          await withRetry(() => sheets.spreadsheets.values.append({
-            spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-            range: "EomReportingConfig!A:H",
-            valueInputOption: "RAW",
-            requestBody: {
-              values: [[clientName, "", "", "", "", "", finalisedAt, jsonStr]]
-            }
-          }));
-        } else {
-          const cfgSheetRow = existingIdx + 2;
-          await withRetry(() => sheets.spreadsheets.values.update({
-            spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-            range: `EomReportingConfig!G${cfgSheetRow}:H${cfgSheetRow}`,
-            valueInputOption: "RAW",
-            requestBody: {
-              values: [[finalisedAt, jsonStr]]
-            }
-          }));
-        }
+        state.configsByClient[confKey] = {
+          ...prevConf,
+          overheadFinalisedByMonth,
+          updatedAt: finalisedAt,
+        };
+        await saveEomReportingControlState(state);
       } catch (cfgErr) {
-        console.warn("Could not persist overhead finalised status to EomReportingConfig:", cfgErr.message);
+        console.warn("Could not persist overhead finalised status to Supabase state:", cfgErr.message);
       }
     }
 
@@ -5144,4 +5353,107 @@ export {
   handleEomSaveNarrativeDraft,
   handleEomApplyNarrativeToDeck
 } from "./eomNarrativeService.js";
+
+/**
+ * Generates a complete Management Report Preview (all styled tables + Native SVG charts
+ * + optional side-by-side Legacy Google Sheets chart PNGs from the client's Google Slides deck)
+ * 100% natively via `computeNativeMgmtRepForClient` + `buildNativeStyledTables`.
+ */
+export async function handleEomPreviewMgmtReport(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  const { clientName, clientSheetId, masterSheetId, reportMonthKey, reportUrl } = req.body || {};
+  if (!masterSheetId && !clientName && !clientSheetId) {
+    return res.status(400).json({ success: false, error: "Missing clientName or masterSheetId." });
+  }
+
+  try {
+    // 1. Compute complete MgmtRep grid & Native SVG charts from Client Sheet + Supabase Master tables
+    const { mgmtGrid, charts } = await computeNativeMgmtRepForClient({
+      sheets,
+      clientName,
+      clientSheetId,
+      masterSheetId,
+      reportMonthKey,
+      persistToSupabase: true,
+    });
+
+    // 2. If reportUrl is available, fetch legacy Google Sheets chart PNGs from the Google Slides deck for side-by-side comparison
+    const legacyPngByChartId = {};
+    if (reportUrl) {
+      const m = String(reportUrl).match(/[-\w]{25,}/);
+      const presentationId = m ? m[0] : "";
+      if (presentationId) {
+        try {
+          const { google } = await import("googleapis");
+          const auth = new google.auth.GoogleAuth({
+            credentials: {
+              type: "service_account",
+              project_id: process.env.SERVICE_ACCOUNT_PROJECT_ID || "default-project",
+              private_key: String(process.env.SERVICE_ACCOUNT_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
+              client_email: process.env.SERVICE_ACCOUNT_EMAIL,
+            },
+            scopes: ["https://www.googleapis.com/auth/presentations.readonly"],
+          });
+          const slidesClient = google.slides({ version: "v1", auth });
+          const pres = await slidesClient.presentations.get({ presentationId });
+          const urlMap = [];
+          for (const s of pres.data.slides || []) {
+            for (const el of s.pageElements || []) {
+              if (el.sheetsChart?.chartId && el.sheetsChart?.contentUrl) {
+                urlMap.push({ chartId: el.sheetsChart.chartId, url: el.sheetsChart.contentUrl });
+              }
+            }
+          }
+          await Promise.all(
+            urlMap.map(async (item) => {
+              try {
+                const r = await fetch(item.url);
+                if (r.ok) {
+                  const buf = Buffer.from(await r.arrayBuffer());
+                  legacyPngByChartId[item.chartId] = `data:image/png;base64,${buf.toString("base64")}`;
+                }
+              } catch (_) {}
+            })
+          );
+        } catch (deckErr) {
+          console.warn("[handleEomPreviewMgmtReport] Could not fetch legacy deck chart PNGs:", deckErr.message);
+        }
+      }
+    }
+
+    const enrichedCharts = charts.map((ch) => ({
+      ...ch,
+      legacyPngDataUri: legacyPngByChartId[ch.chartIds?.[0]] || "",
+      subSparklines: (ch.subSparklines || []).map((sp) => ({
+        ...sp,
+        legacyPngDataUri: legacyPngByChartId[sp.chartId] || "",
+      })),
+    }));
+
+    // 3. Build styled table blocks natively (applying base styles + 61 conditional format rules)
+    const state = await getEomReportingControlState(sheets);
+    const chartRefsList = Array.isArray(state?.chartRefs) && state.chartRefs.length > 0 ? state.chartRefs : DEFAULT_CHART_REFS;
+    const allStyledTables = buildNativeStyledTables(mgmtGrid, chartRefsList);
+    const styledTables = allStyledTables.filter((tbl) =>
+      tbl.rows.some((r) => r.some((c) => String(c.v || "").trim() !== ""))
+    );
+
+    return res.status(200).json({
+      success: true,
+      clientName,
+      reportMonthKey,
+      b1Display: mgmtGrid[0]?.[1] || reportMonthKey || "",
+      charts: enrichedCharts,
+      tables: styledTables,
+    });
+  } catch (err) {
+    console.error("❌ handleEomPreviewMgmtReport error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 

@@ -14,6 +14,20 @@
 const MS_PER_DAY = 86400000;
 const EPOCH_OFFSET_DAYS = 25569; // Days between 1899-12-30 and 1970-01-01
 const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS_FULL = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
 
 export function todaySerial() {
   const now = new Date();
@@ -80,11 +94,15 @@ export function toSerialOrNull(val) {
   if (/^-?\d+(\.\d+)?$/.test(cleanedNum)) {
     return Number(cleanedNum);
   }
-  // Check D-MMM-YY or DD-MMM-YYYY (e.g. "5-Aug-25", "11-Sep-25", "09-Nov-26 07:15")
-  const dmyMatch = str.match(/^(\d{1,2})[-/\s]([A-Za-z]{3})[-/\s](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  // Check D-MMM-YY or DD-MMM-YYYY (e.g. "5-Aug-25", "11-Sep-25", "09-Nov-26 07:15", "09-Nov-26, 07:15")
+  const dmyMatch = str.match(/^(\d{1,2})[-/\s]([A-Za-z]{3,9})[-/\s](\d{2,4})(?:,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (dmyMatch) {
     const d = Number(dmyMatch[1]);
-    const mIdx = MONTHS_SHORT.findIndex((m) => m.toLowerCase() === dmyMatch[2].toLowerCase());
+    const mToken = dmyMatch[2].toLowerCase();
+    let mIdx = MONTHS_SHORT.findIndex((m) => m.toLowerCase() === mToken);
+    if (mIdx < 0) {
+      mIdx = MONTHS_FULL.findIndex((m) => m.toLowerCase() === mToken);
+    }
     let y = Number(dmyMatch[3]);
     if (y < 100) y += y >= 70 ? 1900 : 2000;
     if (mIdx >= 0) {
@@ -98,8 +116,22 @@ export function toSerialOrNull(val) {
       return baseSerial;
     }
   }
-  // Check DD/MM/YYYY (UK format)
-  const ukSlash = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  // Check Month-Year strings (e.g. "November 2025", "Nov 2025", "Nov-25", "Nov-2025")
+  const myMatch = str.match(/^([A-Za-z]{3,9})[-/\s]+(\d{2,4})$/);
+  if (myMatch) {
+    const mToken = myMatch[1].toLowerCase();
+    let mIdx = MONTHS_SHORT.findIndex((m) => m.toLowerCase() === mToken);
+    if (mIdx < 0) {
+      mIdx = MONTHS_FULL.findIndex((m) => m.toLowerCase() === mToken);
+    }
+    if (mIdx >= 0) {
+      let y = Number(myMatch[2]);
+      if (y < 100) y += y >= 70 ? 1900 : 2000;
+      return ymdToSerial(y, mIdx + 1, 1);
+    }
+  }
+  // Check DD/MM/YYYY (UK format, with optional comma before time e.g. "23/03/2022, 00:15")
+  const ukSlash = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (ukSlash) {
     const d = Number(ukSlash[1]);
     const m = Number(ukSlash[2]);
@@ -129,7 +161,10 @@ export function toSerialOrNull(val) {
   const parsed = Date.parse(str);
   if (!Number.isNaN(parsed)) {
     const dt = new Date(parsed);
-    return ymdToSerial(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
+    if (str.endsWith("Z")) {
+      return ymdToSerial(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
+    }
+    return ymdToSerial(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
   }
   return null;
 }
@@ -2031,7 +2066,41 @@ export function evaluateKeyInfoAndPLComp(grids) {
   const plFromApp = grids.PLFromApp;
   const plAdds = grids.PLAdds;
   const year0PL = grids.Year0PLFromApp;
-  if (!Array.isArray(keyInfo) || !Array.isArray(plComp)) return;
+  const crmList = grids.CRMList;
+  if (!Array.isArray(keyInfo)) return;
+
+  // KeyInfo!E21 (Product lines missing from E23:E75 vs CRMList!AN4:AN5004)
+  // KeyInfo!I29 (Lead sources missing from I32:I75 vs CRMList!AL4:AL5004)
+  if (Array.isArray(crmList)) {
+    const evalMissingCrmMapping = (kiStartR0, kiEndR0, kiCol0, crmCol0) => {
+      const currentSet = new Set();
+      for (let r0 = kiStartR0; r0 <= kiEndR0 && r0 < keyInfo.length; r0++) {
+        const v = getCell(keyInfo, r0, kiCol0);
+        if (!isBlankCell(v)) currentSet.add(String(v).trim().toLowerCase());
+      }
+      const seenMaster = new Set();
+      const missingVals = [];
+      const maxCrmR0 = Math.min(crmList.length - 1, 5003);
+      for (let r0 = 3; r0 <= maxCrmR0; r0++) {
+        const v = getCell(crmList, r0, crmCol0);
+        if (isBlankCell(v)) continue;
+        const rawStr = String(v).trim();
+        if (!rawStr) continue;
+        const lower = rawStr.toLowerCase();
+        if (seenMaster.has(lower)) continue;
+        seenMaster.add(lower);
+        if (!currentSet.has(lower)) {
+          missingVals.push(rawStr);
+        }
+      }
+      return missingVals.length > 0
+        ? `${missingVals.length} missing: ${missingVals.join(", ")}`
+        : "0 missing";
+    };
+
+    setCell(keyInfo, 20, 4, evalMissingCrmMapping(22, 74, 4, 39)); // E21: E23:E75 vs CRMList!AN4:AN5004
+    setCell(keyInfo, 28, 8, evalMissingCrmMapping(31, 74, 8, 37)); // I29: I32:I75 vs CRMList!AL4:AL5004
+  }
 
   // KeyInfo!O6 = COUNTA(G5:G104)
   let gCount = 0;
@@ -2058,7 +2127,7 @@ export function evaluateKeyInfoAndPLComp(grids) {
   clearRect(keyInfo, 1, Math.max(keyInfo.length - 1, 200), 56, 56); // BE
   writeRect(keyInfo, 1, 56, uniqueCats, 1);
 
-  if (!Array.isArray(plFromApp)) return;
+  if (!Array.isArray(plComp) || !Array.isArray(plFromApp)) return;
 
   // PLComp Row 1: F1:K1 (cols 5..10), M1:R1 (cols 12..17), T1:Y1 (cols 19..24) = PLFromApp!H1:M1 (cols 7..12)
   for (let i = 0; i < 6; i++) {

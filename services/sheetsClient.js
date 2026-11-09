@@ -272,7 +272,11 @@ function createPooledSheetsClient_(poolType = "interactive") {
 
     if (!bypassVirtual && resolvedSheetId) {
       const ctx = await resolveSupabaseSheetContext({ spreadsheetId: resolvedSheetId });
-      if (ctx && ctx.masterMode === "supabase" && (ctx.sheetRole === "master" || ctx.sheetRole === "recon")) {
+      if (
+        ctx &&
+        ((ctx.masterMode === "supabase" && (ctx.sheetRole === "master" || ctx.sheetRole === "recon")) ||
+          (ctx.clientMode === "supabase" && ctx.sheetRole === "client"))
+      ) {
         const primaryRawSheets = getPoolEntries_()[0]?.rawSheets || null;
         return handleVirtualSheetsCall({
           namespace,

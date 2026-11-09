@@ -23,6 +23,10 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
   const [stage2Migrating, setStage2Migrating] = useState(false);
   const [stage2Materializing, setStage2Materializing] = useState(false);
   const [stage2SwitchingMode, setStage2SwitchingMode] = useState(false);
+  const [stage4Seeding, setStage4Seeding] = useState(false);
+  const [stage4SwitchingMode, setStage4SwitchingMode] = useState(false);
+  const [showStage4Sql, setShowStage4Sql] = useState(false);
+  const [copiedStage4Sql, setCopiedStage4Sql] = useState(false);
   const [stage2SyncingType, setStage2SyncingType] = useState("");
   const [clockWorking, setClockWorking] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -143,6 +147,70 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
       setFeedbackMsg({ type: "error", text: err.message });
     } finally {
       setStage2SwitchingMode(false);
+    }
+  };
+
+  const handleSeedClientSheet = async (clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedStage2Client;
+    setStage4Seeding(true);
+    setFeedbackMsg(null);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "seed_client_sheet",
+          clientName: targetClient,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.status) setStage2Data(data.status);
+        const s = data.summary || {};
+        setFeedbackMsg({
+          type: "success",
+          text: `Seeded ${targetClient} Client Sheet into Supabase (${s.clientTabsSynced || 0} client tabs, ${s.outgoingsNotesCount || 0} outgoings cell notes).`,
+        });
+      } else {
+        setFeedbackMsg({ type: "error", text: data.error || "Client Sheet seeding failed." });
+      }
+    } catch (err) {
+      setFeedbackMsg({ type: "error", text: err.message });
+    } finally {
+      setStage4Seeding(false);
+    }
+  };
+
+  const handleSetClientMode = async (targetMode, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedStage2Client;
+    setStage4SwitchingMode(true);
+    setFeedbackMsg(null);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_client_mode",
+          clientName: targetClient,
+          clientMode: targetMode,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.status) setStage2Data(data.status);
+        setFeedbackMsg({
+          type: "success",
+          text: `Switched ${targetClient} Client Portal engine to ${targetMode === "supabase" ? "Supabase engine" : "Google Sheets (legacy)"}.`,
+        });
+      } else {
+        setFeedbackMsg({ type: "error", text: data.error || "Could not switch client portal mode." });
+      }
+    } catch (err) {
+      setFeedbackMsg({ type: "error", text: err.message });
+    } finally {
+      setStage4SwitchingMode(false);
     }
   };
 
@@ -377,15 +445,21 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
     ) || null;
   const activeClientName = activeClientObj?.client_name || selectedStage2Client || "APPTEST";
   const activeClientMode = activeClientObj?.master_mode || "sheet";
+  const activeClientPortalMode = activeClientObj?.client_mode || "sheet";
   const isMaterialized = Boolean(
     stage2Data?.keyInfoMeta?.client_materialized_at || activeClientObj?.materializedAt
   );
   const hasVirtualTabs =
-    (stage2Data?.availableTabs?.master?.length || 0) + (stage2Data?.availableTabs?.recon?.length || 0) > 0;
+    (stage2Data?.availableTabs?.master?.length || 0) +
+      (stage2Data?.availableTabs?.recon?.length || 0) +
+      (stage2Data?.availableTabs?.client?.length || 0) >
+    0;
+  const hasClientVirtualTabs = (stage2Data?.availableTabs?.client?.length || 0) > 0;
 
   const supabaseEngineClientsCount = allClients.filter((c) => c.master_mode === "supabase").length;
+  const supabasePortalClientsCount = allClients.filter((c) => c.client_mode === "supabase").length;
   const migratedClientsCount = allClients.filter(
-    (c) => (c.masterTabCount || 0) + (c.reconTabCount || 0) > 0
+    (c) => (c.masterTabCount || 0) + (c.reconTabCount || 0) + (c.clientTabCount || 0) > 0
   ).length;
 
   const visibleOverviewClients = showAllStage2Clients
@@ -393,7 +467,8 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
     : allClients.filter(
       (c) =>
         c.master_mode === "supabase" ||
-        (c.masterTabCount || 0) + (c.reconTabCount || 0) > 0 ||
+        c.client_mode === "supabase" ||
+        (c.masterTabCount || 0) + (c.reconTabCount || 0) + (c.clientTabCount || 0) > 0 ||
         String(c.client_name || "").trim().toUpperCase() ===
         String(activeClientName || "").trim().toUpperCase()
     );
@@ -447,17 +522,35 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                   color: "#166534",
                 }}
               >
-                {supabaseEngineClientsCount} live on Supabase · {migratedClientsCount} synced
+                {supabaseEngineClientsCount} master live · {supabasePortalClientsCount} portal live · {migratedClientsCount} synced
               </span>
             )}
           </div>
           <p style={{ margin: 0, fontSize: "12px", color: "#6b7280", lineHeight: "1.5" }}>
-            Manage client Master and Bank Recon workbooks in Supabase PostgreSQL, remove Client Sheet{" "}
+            Manage client Master, Bank Recon, and Client Portal workbooks in Supabase PostgreSQL, remove Client Sheet{" "}
             <code>IMPORTRANGE</code> links, run native syncs, and inspect virtual workbooks and GAS execution logs.
           </p>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          {stage2Data?.stage4MigrationSql && (
+            <button
+              type="button"
+              onClick={() => setShowStage4Sql((prev) => !prev)}
+              style={{
+                padding: "7px 12px",
+                fontSize: "12px",
+                fontWeight: "600",
+                color: showStage4Sql ? "#1e40af" : "#374151",
+                background: showStage4Sql ? "#eff6ff" : "#f9fafb",
+                border: `1px solid ${showStage4Sql ? "#93c5fd" : "#d1d5db"}`,
+                borderRadius: "6px",
+                cursor: "pointer",
+              }}
+            >
+              {showStage4Sql ? "Hide Stage 4 SQL" : "Stage 4 schema SQL"}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -516,6 +609,69 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
           }}
         >
           {feedbackMsg.text}
+        </div>
+      )}
+
+      {/* Collapsible Stage 4 SQL script */}
+      {showStage4Sql && stage2Data?.stage4MigrationSql && (
+        <div
+          style={{
+            marginBottom: "16px",
+            padding: "14px",
+            background: "#f8fafc",
+            border: "1px solid #cbd5e1",
+            borderRadius: "8px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "8px",
+              flexWrap: "wrap",
+              marginBottom: "8px",
+            }}
+          >
+            <div style={{ fontSize: "12px", color: "#334155", fontWeight: 600 }}>
+              Stage 4 Client Sheet Engine SQL migration (<code>0004_stage4_client_sheet_engine.sql</code>)
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard?.writeText(stage2Data.stage4MigrationSql);
+                setCopiedStage4Sql(true);
+                setTimeout(() => setCopiedStage4Sql(false), 2000);
+              }}
+              style={{
+                padding: "5px 10px",
+                fontSize: "11px",
+                fontWeight: "600",
+                color: "#fff",
+                background: copiedStage4Sql ? "#166534" : "#1a56db",
+                border: "none",
+                borderRadius: "6px",
+                cursor: "pointer",
+              }}
+            >
+              {copiedStage4Sql ? "Copied SQL" : "Copy SQL script"}
+            </button>
+          </div>
+          <pre
+            style={{
+              maxHeight: "220px",
+              overflowY: "auto",
+              background: "#0f172a",
+              color: "#e2e8f0",
+              padding: "10px 12px",
+              borderRadius: "6px",
+              fontSize: "11px",
+              fontFamily: "monospace",
+              margin: 0,
+            }}
+          >
+            {stage2Data.stage4MigrationSql}
+          </pre>
         </div>
       )}
 
@@ -808,9 +964,11 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                     String(c.client_name || "").trim().toUpperCase() ===
                     String(activeClientName || "").trim().toUpperCase();
                   const isSupabase = c.master_mode === "supabase";
+                  const isClientSupabase = c.client_mode === "supabase";
                   const mTabs = c.masterTabCount || 0;
                   const rTabs = c.reconTabCount || 0;
-                  const hasTabs = mTabs + rTabs > 0;
+                  const cTabs = c.clientTabCount || 0;
+                  const hasTabs = mTabs + rTabs + cTabs > 0;
                   const mat = Boolean(c.materializedAt);
                   const tools = [c.accountingTool, c.crmTool].filter(Boolean).join(" · ") || "—";
 
@@ -842,21 +1000,35 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                         </div>
                       </td>
                       <td style={{ padding: "7px 10px" }}>
-                        <span
-                          style={{
-                            padding: "2px 7px",
-                            borderRadius: "999px",
-                            fontWeight: "600",
-                            fontSize: "10px",
-                            background: isSupabase ? "#dcfce7" : "#f1f5f9",
-                            color: isSupabase ? "#166534" : "#475569",
-                          }}
-                        >
-                          {isSupabase ? "Supabase engine" : "Google Sheets"}
-                        </span>
+                        <div style={{ display: "inline-flex", gap: "4px", flexWrap: "wrap" }}>
+                          <span
+                            style={{
+                              padding: "2px 7px",
+                              borderRadius: "999px",
+                              fontWeight: "600",
+                              fontSize: "10px",
+                              background: isSupabase ? "#dcfce7" : "#f1f5f9",
+                              color: isSupabase ? "#166534" : "#475569",
+                            }}
+                          >
+                            {isSupabase ? "Master: Supabase" : "Master: Sheets"}
+                          </span>
+                          <span
+                            style={{
+                              padding: "2px 7px",
+                              borderRadius: "999px",
+                              fontWeight: "600",
+                              fontSize: "10px",
+                              background: isClientSupabase ? "#dbeafe" : "#f1f5f9",
+                              color: isClientSupabase ? "#1e40af" : "#475569",
+                            }}
+                          >
+                            {isClientSupabase ? "Portal: Supabase" : "Portal: Sheets"}
+                          </span>
+                        </div>
                       </td>
                       <td style={{ padding: "7px 10px", color: hasTabs ? "#1e293b" : "#94a3b8" }}>
-                        {hasTabs ? `${mTabs} master / ${rTabs} recon tabs` : "Not synced"}
+                        {hasTabs ? `${mTabs} master / ${rTabs} recon / ${cTabs} client` : "Not synced"}
                       </td>
                       <td style={{ padding: "7px 10px" }}>
                         <span
@@ -1212,7 +1384,149 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         </div>
       </div>
 
-      {/* Step 4: Native Next.js comparison & sync triggers for selected client */}
+      {/* Step 4 & Step 5: Stage 4 Client Sheet Seeding & Client Portal Engine Mode */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+          gap: "12px",
+          marginBottom: "12px",
+        }}
+      >
+        <div
+          style={{
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            borderRadius: "8px",
+            padding: "12px 14px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <div style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
+              4. {activeClientName} Client Sheet virtual workbook ({activeClientObj?.clientTabCount || 0} tabs)
+            </div>
+            <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+              {hasClientVirtualTabs
+                ? `Seeded: ${activeClientObj?.clientTabCount || 31} Client Sheet tabs & Outgoings cell notes stored in Supabase.`
+                : `Seeds all 31 Client Sheet tabs (values, formulas & cell notes) for ${activeClientName} into Supabase.`}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+            {hasClientVirtualTabs && (
+              <button
+                type="button"
+                onClick={() => {
+                  setInspectorInitialRole("client");
+                  setInspectorOpen(true);
+                }}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: "11px",
+                  fontWeight: "600",
+                  borderRadius: "6px",
+                  border: "1px solid #93c5fd",
+                  background: "#eff6ff",
+                  color: "#1e40af",
+                  cursor: "pointer",
+                }}
+              >
+                Inspect client tabs
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={!s2Ready || stage4Seeding}
+              onClick={() => handleSeedClientSheet(activeClientName)}
+              style={{
+                padding: "6px 11px",
+                fontSize: "11px",
+                fontWeight: "600",
+                borderRadius: "6px",
+                border: "1px solid #cbd5e1",
+                background: hasClientVirtualTabs ? "#dcfce7" : "#ffffff",
+                color: hasClientVirtualTabs ? "#166534" : "#1e293b",
+                cursor: !s2Ready || stage4Seeding ? "not-allowed" : "pointer",
+              }}
+            >
+              {stage4Seeding
+                ? "Seeding..."
+                : hasClientVirtualTabs
+                  ? "Re-seed Client Sheet"
+                  : "4. Seed Client Sheet to Supabase"}
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            borderRadius: "8px",
+            padding: "12px 14px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <div style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
+              5. {activeClientName} Client Portal engine mode
+            </div>
+            <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+              {activeClientPortalMode === "supabase"
+                ? `Active: all ${activeClientName} Pulse Portal views, edits, and formula calculations run 100% on Supabase.`
+                : `Legacy: ${activeClientName} Pulse Portal is currently reading and writing to its Google Client Sheet.`}
+            </div>
+          </div>
+
+          <div style={{ display: "inline-flex", background: "#e2e8f0", borderRadius: "6px", padding: "3px", gap: "3px" }}>
+            <button
+              type="button"
+              disabled={stage4SwitchingMode}
+              onClick={() => handleSetClientMode("sheet", activeClientName)}
+              style={{
+                padding: "5px 10px",
+                fontSize: "12px",
+                fontWeight: "600",
+                borderRadius: "5px",
+                border: "none",
+                cursor: stage4SwitchingMode ? "default" : "pointer",
+                background: activeClientPortalMode === "sheet" ? "#fff" : "transparent",
+                color: activeClientPortalMode === "sheet" ? "#0f172a" : "#475569",
+              }}
+            >
+              Google Sheets
+            </button>
+            <button
+              type="button"
+              disabled={!s2Ready || !hasClientVirtualTabs || stage4SwitchingMode}
+              onClick={() => handleSetClientMode("supabase", activeClientName)}
+              style={{
+                padding: "5px 10px",
+                fontSize: "12px",
+                fontWeight: "600",
+                borderRadius: "5px",
+                border: "none",
+                cursor: !s2Ready || !hasClientVirtualTabs || stage4SwitchingMode ? "not-allowed" : "pointer",
+                background: activeClientPortalMode === "supabase" ? "#1e40af" : "transparent",
+                color: activeClientPortalMode === "supabase" ? "#fff" : "#475569",
+              }}
+            >
+              Supabase engine
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Step 6: Native Next.js comparison & sync triggers for selected client */}
       {s2Ready && hasVirtualTabs && (
         <div
           style={{
@@ -1229,7 +1543,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
           }}
         >
           <div style={{ fontSize: "12px", fontWeight: "600", color: "#334155" }}>
-            4. Test & run native syncs on {activeClientName}:
+            6. Test & run native syncs on {activeClientName}:
           </div>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             {[
@@ -1362,7 +1676,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
           isOpen={inspectorOpen}
           onClose={() => setInspectorOpen(false)}
           clientName={activeClientName}
-          availableTabs={stage2Data?.availableTabs || { master: [], recon: [] }}
+          availableTabs={stage2Data?.availableTabs || { master: [], recon: [], client: [] }}
           initialSheetRole={inspectorInitialRole}
         />
       )}

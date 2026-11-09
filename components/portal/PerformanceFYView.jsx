@@ -262,10 +262,10 @@ export default function PerformanceFYView({
     }
     if (l.includes("overheads as %") || l.includes("overheads %")) {
       const high = parseT(5, 0.309);
-      const low = parseT(6, 0.20);
-      if (num <= low) return { bg: "#d9ead3", color: "#0047AB" };
-      if (num <= high) return { bg: "#fce5cd", color: "#0047AB" };
-      return { bg: "#f4cccc", color: "#0047AB" };
+      const low = parseT(6, 0);
+      if (num > high) return { bg: "#f4cccc", color: "#0047AB" };
+      if (num >= low) return { bg: "#d9ead3", color: "#0047AB" };
+      return { bg: "#fce5cd", color: "#0047AB" };
     }
     if (l.includes("operating profit %") || l.includes("operating profit margin")) {
       const high = parseT(10, 0.145);

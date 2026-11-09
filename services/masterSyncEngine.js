@@ -23,6 +23,7 @@ import { autoReconcileClientBankTransactions } from "./bankTransactionsService.j
 import { createGasEnvironment } from "./gasRuntime/gasEnvironment.js";
 import { createMasterGasInstance } from "./gasRuntime/compiledMasterGas.js";
 import { toNumber } from "./gasRuntime/sheetValueUtils.js";
+import { computeNativeMgmtRepForClient } from "./mgmtRepEngine.js";
 
 async function resolveActiveAccountingSession_(ctx) {
   for (const tool of ["xero", "quickbooks"]) {
@@ -357,7 +358,7 @@ export async function refreshNativeChartOfAccounts(sheets, clientName) {
         range: `KeyInfo!AW2:AW${colValues.length + 1}`,
         valueInputOption: "RAW",
         requestBody: { values: colValues },
-        _bypassSupabaseVirtualSheet: true,
+        _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
       });
     } catch (_) {}
   }
@@ -506,168 +507,17 @@ export async function runNativeRevenueComparison(sheets, clientName, customTarge
 }
 
 /**
- * 4B. Dynamically populate MgmtRep!B1 and MgmtRep!A371:AG493 in Supabase master_sheet_grids
- * from Client Sheet Outgoings & Budget so EoM Overhead Expenses Management works seamlessly.
+ * 4B. Dynamically populate the full MgmtRep virtual grid in Supabase master_sheet_grids
+ * from Client Sheet + Supabase Master tables via the Native MgmtRep Engine.
  */
 export async function syncVirtualMgmtRepGridNative(sheets, clientName, reportMonthKey = null, isoDateToWrite = null) {
-  const supabase = getSupabaseAdmin();
-  if (!supabase || !sheets) return false;
-
-  const ctx = await resolveSupabaseSheetContext({ clientName });
-  if (!ctx?.clientSheetId) return false;
-
-  const [{ data: mgmtRow }, outResp, budResp] = await Promise.all([
-    supabase
-      .from("master_sheet_grids")
-      .select("values_grid")
-      .eq("client_name", ctx.clientName)
-      .eq("sheet_role", "master")
-      .eq("tab_name", "MgmtRep")
-      .maybeSingle(),
-    sheets.spreadsheets.values.get({
-      spreadsheetId: ctx.clientSheetId,
-      range: "Outgoings!A1:AZ250",
-      valueRenderOption: "UNFORMATTED_VALUE",
-      _bypassSupabaseVirtualSheet: true,
-    }),
-    sheets.spreadsheets.values.get({
-      spreadsheetId: ctx.clientSheetId,
-      range: "Budget!A1:AZ250",
-      valueRenderOption: "UNFORMATTED_VALUE",
-      _bypassSupabaseVirtualSheet: true,
-    }),
-  ]);
-
-  const mgmtGrid = Array.isArray(mgmtRow?.values_grid)
-    ? mgmtRow.values_grid.map((r) => (Array.isArray(r) ? [...r] : []))
-    : [];
-  while (mgmtGrid.length < 495) mgmtGrid.push([]);
-
-  if (!mgmtGrid[0]) mgmtGrid[0] = [];
-  if (isoDateToWrite) {
-    mgmtGrid[0][1] = isoDateToWrite; // MgmtRep!B1
-  }
-
-  const targetDate = parseCellDate_(isoDateToWrite || reportMonthKey || mgmtGrid[0]?.[1]);
-  if (!targetDate) return false;
-  const targetYear = targetDate.getFullYear();
-  const targetMonth = targetDate.getMonth();
-
-  const outGrid = outResp.data.values || [];
-  const budGrid = budResp.data.values || [];
-  const outHeader = outGrid[0] || [];
-  const budHeader = budGrid[0] || [];
-
-  let outMonthCol0 = -1;
-  for (let c = 6; c < outHeader.length; c++) {
-    const d = parseCellDate_(outHeader[c]);
-    if (d && d.getFullYear() === targetYear && d.getMonth() === targetMonth) {
-      outMonthCol0 = c;
-      break;
-    }
-  }
-
-  let budMonthCol0 = -1;
-  for (let c = 6; c < budHeader.length; c++) {
-    const d = parseCellDate_(budHeader[c]);
-    if (d && d.getFullYear() === targetYear && d.getMonth() === targetMonth) {
-      budMonthCol0 = c;
-      break;
-    }
-  }
-
-  const budgetByCatLower = new Map();
-  for (let r = 120; r < budGrid.length; r++) {
-    const cat = String(budGrid[r]?.[0] || "").trim();
-    if (!cat) continue;
-    const rawVal = budMonthCol0 !== -1 ? budGrid[r]?.[budMonthCol0] : "";
-    if (rawVal !== "" && rawVal !== undefined && rawVal !== null) {
-      budgetByCatLower.set(cat.toLowerCase(), toNumber(rawVal));
-    }
-  }
-
-  if (!mgmtGrid[370]) mgmtGrid[370] = [];
-  mgmtGrid[370][0] = "";
-  mgmtGrid[370][1] = "Actual";
-  mgmtGrid[370][2] = "Budget";
-  mgmtGrid[370][3] = "Variance";
-  mgmtGrid[370][4] = "%";
-
-  const checkedRightRows = [];
-
-  for (let i = 0; i < 122; i++) {
-    const mgmtRow0 = 371 + i;
-    const outRow0 = 125 + i;
-    if (!mgmtGrid[mgmtRow0]) mgmtGrid[mgmtRow0] = [];
-    const outRow = outGrid[outRow0] || [];
-    const cat = String(outRow[0] || "").trim();
-    const isTotal = /^total other expenses/i.test(cat);
-
-    mgmtGrid[mgmtRow0][0] = cat;
-    if (!cat) {
-      mgmtGrid[mgmtRow0][1] = "";
-      mgmtGrid[mgmtRow0][2] = "";
-      mgmtGrid[mgmtRow0][3] = "";
-      mgmtGrid[mgmtRow0][4] = "";
-      mgmtGrid[mgmtRow0][5] = false;
-      continue;
-    }
-
-    const actualNum = outMonthCol0 !== -1 ? toNumber(outRow[outMonthCol0]) : 0;
-    const hasBudget = budgetByCatLower.has(cat.toLowerCase());
-    const budgetNum = hasBudget ? budgetByCatLower.get(cat.toLowerCase()) : null;
-    const varNum = (budgetNum ?? 0) - actualNum;
-
-    let pctStr = "";
-    if (!hasBudget) pctStr = "#DIV/0!";
-    else if (Math.abs(actualNum) < 0.005 && Math.abs(budgetNum) < 0.005) pctStr = "0%";
-    else if (Math.abs(budgetNum) < 0.005) pctStr = "!!!";
-    else pctStr = `${Math.round((varNum / budgetNum) * 100)}%`;
-
-    const existingChecked = mgmtGrid[mgmtRow0][5];
-    const isChecked = isTotal
-      ? false
-      : existingChecked === true || String(existingChecked || "").toUpperCase() === "TRUE";
-
-    mgmtGrid[mgmtRow0][1] = actualNum;
-    mgmtGrid[mgmtRow0][2] = hasBudget ? budgetNum : "";
-    mgmtGrid[mgmtRow0][3] = varNum;
-    mgmtGrid[mgmtRow0][4] = pctStr;
-    mgmtGrid[mgmtRow0][5] = isChecked;
-
-    if (isChecked && !isTotal) {
-      checkedRightRows.push({ cat, actualNum, budgetVal: hasBudget ? budgetNum : "", varNum, pctStr });
-    }
-  }
-
-  for (let i = 0; i < 122; i++) {
-    const mgmtRow0 = 371 + i;
-    const right = checkedRightRows[i];
-    mgmtGrid[mgmtRow0][27] = right ? right.cat : "";
-    mgmtGrid[mgmtRow0][28] = right ? right.actualNum : "";
-    mgmtGrid[mgmtRow0][29] = right ? right.budgetVal : "";
-    mgmtGrid[mgmtRow0][30] = "";
-    mgmtGrid[mgmtRow0][31] = right ? right.varNum : "";
-    mgmtGrid[mgmtRow0][32] = right ? right.pctStr : "";
-  }
-
-  await supabase.from("master_sheet_grids").upsert(
-    {
-      client_id: ctx.clientId,
-      client_name: ctx.clientName,
-      sheet_role: "master",
-      tab_name: "MgmtRep",
-      values_grid: mgmtGrid,
-      formulas_grid: mgmtGrid,
-      row_count: mgmtGrid.length,
-      col_count: Math.max(35, ...mgmtGrid.map((r) => r.length)),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "client_name,sheet_role,tab_name" }
-  );
-
-  invalidateMasterEngineCache(ctx.clientName);
-  return true;
+  const result = await computeNativeMgmtRepForClient({
+    sheets,
+    clientName,
+    reportMonthKey: isoDateToWrite || reportMonthKey,
+    persistToSupabase: true,
+  });
+  return Boolean(result?.mgmtGrid);
 }
 
 /**

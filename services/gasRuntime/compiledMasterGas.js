@@ -32,6 +32,7 @@ export function createMasterGasInstance(env) {
 /**
  * PART 1: CORE, HELPERS, AND XERO-SPECIFIC FUNCTIONS
  * 
+ * v2.78 (Strip leading formula-escape apostrophe when comparing existing vs sanitized invoice fields in getInvoiceFieldChanges_ to prevent false-positive description updates)
  * v2.77 (Harden sanitizeSheetCell_ against leading-apostrophe/whitespace formula bypasses while preserving pure numeric arithmetic formulas, and sanitize writeToAutoLog inputs)
  * v2.76 (Escape formula-leading strings in writeToGoogleSheet and writePLToGoogleSheet via sanitizeSheetCell_ / sanitizeSheetMatrix_)
  * v2.75 (Support proportional part-payment amounts in Lines mode for Xero)
@@ -768,11 +769,14 @@ function getInvoiceFieldChanges_(oldRow, newRow, headersMap, timeZone) {
     }
 
     // General fields (Client Name, Inv Number, Description, Type, Status, Currency, etc.)
-    const isDiff = (typeof valuesAreDifferent === 'function') ? valuesAreDifferent(oldVal, newVal) : (oldVal !== newVal);
+    const stripFormulaEscape = (v) => (typeof v === 'string' && /^'[=+\-@]/.test(v)) ? v.slice(1) : v;
+    const cmpOld = stripFormulaEscape(oldVal);
+    const cmpNew = stripFormulaEscape(newVal);
+    const isDiff = (typeof valuesAreDifferent === 'function') ? valuesAreDifferent(cmpOld, cmpNew) : (cmpOld !== cmpNew);
     if (isDiff) {
       const headerName = headersMap[c] || `Col ${c}`;
-      const oldFormatted = (oldVal === null || oldVal === undefined || String(oldVal).trim() === '') ? 'Blank' : String(oldVal).trim();
-      const newFormatted = (newVal === null || newVal === undefined || String(newVal).trim() === '') ? 'Blank' : String(newVal).trim();
+      const oldFormatted = (cmpOld === null || cmpOld === undefined || String(cmpOld).trim() === '') ? 'Blank' : String(cmpOld).trim();
+      const newFormatted = (cmpNew === null || cmpNew === undefined || String(cmpNew).trim() === '') ? 'Blank' : String(cmpNew).trim();
       if (oldFormatted !== newFormatted) {
         changes.push(`${headerName}: '${oldFormatted}' -> '${newFormatted}'`);
       }
@@ -7203,6 +7207,8 @@ async function logMyQuickBooksTaxCodesWithIDs() {
  * ==      CRM TASKS (CRMComp) LOGIC      ==
  * =========================================
  *
+ * v3.07 (Normalize leading formula-escape apostrophes in valuesAreDifferent string comparison)
+ * v3.06 (Ensure direct expense App ID and Status copy correctly from Pipeline to Confirmed by supporting Dir inv and Direct inv aliases)
  * v3.05 (Enforce KeyInfo!Q9 stage scope and expectedStageName guard in updateCheckedRows and updateCheckedRowsRight to prevent Confirmed writes on Pipeline-only clients)
  * v3.04 (Ensure newly populated parent rows in Pipeline and Confirmed are unhidden when created by CRM sync)
  * v3.03 (Apply sanitizeSheetCell_ to CRM discrepancy updates, new row creations, child-row cascades, and instant Pipeline/Confirmed copies)
@@ -7329,9 +7335,9 @@ function valuesAreDifferent(val1, val2) {
     return Math.abs(n1 - n2) > 0.005;
   }
 
-  // Fallback to strict string comparison
-  const s1 = String(v1).replace(/[\u00A0\s]+/g, ' ').trim();
-  const s2 = String(v2).replace(/[\u00A0\s]+/g, ' ').trim();
+  // Fallback to strict string comparison (normalizing leading formula-escape apostrophe)
+  const s1 = String(v1).replace(/^'(?=[=+\-@])/, '').replace(/[\u00A0\s]+/g, ' ').trim();
+  const s2 = String(v2).replace(/^'(?=[=+\-@])/, '').replace(/[\u00A0\s]+/g, ' ').trim();
   return s1 !== s2;
 }
 
@@ -13718,6 +13724,8 @@ async function getBrokerExcelAccessToken_() {
 /**
  * ----------------------------------------------------------------
  * 7_COST_SYNC
+ * v3.46 (Protect paid/settled expense slots and blank-ID locked historical entries in runSheetAudit from being treated as automatic PLACE-EXP placeholders)
+ * v3.45 (In analyseExpenseSlots_, recognize placeholder expenses by description as well as App ID so missing or blank App IDs do not prevent automated gap rebalancing)
  * v3.44 (Mirror Outgoings cell notes A1:AV111 to Client Sheet OutgNotes tab in pullOutgoingsNotes without clearing parser columns CH:HG)
  * v3.43 (Add transaction-level change attribution to automated P&L Outgoings sync AutoLog entries: report added, removed, recategorized, date-moved, and amount-updated transactions)
  * v3.42 (Roll overdue unpaid accounting bills in Outgoings with status Received forward to active forecast pay run, matching Confirmed sweep)
@@ -13805,16 +13813,10 @@ const COST_CONFIG = {
   }
 };
 
-function isPlaceholderExpenseId_(id, desc = "") {
-    if (id) {
-        const s = String(id).toUpperCase();
-        if (s.includes("PLACE-EXP") || s.includes("MANUAL-ENTRY") || s.includes("UNRECON-GAP") || s.includes("PLACE-GAP") || s.includes("MANUAL-GAP") || s.includes("PLACEHOLDER") || s.startsWith("PLACE") || s.startsWith("MANUAL")) return true;
-    }
-    if (desc) {
-        const d = String(desc).toUpperCase();
-        if (d.includes("PLACE-EXP") || d.includes("MANUAL-ENTRY") || d.includes("UNRECON-GAP") || d.includes("PLACE-GAP") || d.includes("MANUAL-GAP") || d.includes("PLACEHOLDER") || d.startsWith("MANUAL") || d.startsWith("PLACE")) return true;
-    }
-    return false;
+function isPlaceholderExpenseId_(id) {
+    if (!id) return false;
+    const s = String(id).toUpperCase();
+    return s.includes("PLACE-EXP") || s.includes("MANUAL-ENTRY") || s.includes("UNRECON-GAP") || s.includes("PLACE-GAP") || s.includes("MANUAL-GAP") || s.includes("PLACEHOLDER") || s.startsWith("PLACE") || s.startsWith("MANUAL");
 }
 
 /**
@@ -15818,6 +15820,11 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
       return count;
   };
   // --- HELPER: Analyse expense slots for a single row ---
+  const isPaidSlot_ = (row, s) => {
+      if (!s || s.status === -1) return false;
+      const st = String(row[s.status] || "").trim().toLowerCase();
+      return st === "paid" || st === "complete" || st === "part-paid (paid)";
+  };
   const analyseExpenseSlots_ = (row) => {
       let realFilled = 0;
       let manualIndices = [];
@@ -15825,8 +15832,7 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
       slots.forEach((s, idx) => {
           const val = parseFloat(row[s.amt]);
           const idVal = String(row[s.id] || "");
-          const descVal = String(row[s.desc] || "");
-          const isManual = isPlaceholderExpenseId_(idVal, descVal);
+          const isManual = !isPaidSlot_(row, s) && isPlaceholderExpenseId_(idVal);
           const hasVal = !isNaN(val) && val > 0;
           if (isManual) manualIndices.push(idx);
           else if (hasVal) realFilled += val;
@@ -16129,7 +16135,7 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
                               dateChanged = true;
                           }
                       }
-                      const isManual = isPlaceholderExpenseId_(rowData[s.id], rowData[s.desc]);
+                      const isManual = !isPaidSlot_(rowData, s) && isPlaceholderExpenseId_(rowData[s.id]);
                       const isNewCreation = !isManual && currentVal === 0;
 
                       if (Math.abs(currentVal - alloc.amt) > 0.01 || dateChanged || isNewCreation) {
@@ -16157,7 +16163,7 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
                   // Clear other manual slots
                   for (let g = allocations.length; g < groupAvailableSlots.length; g++) {
                       const ge = groupAvailableSlots[g];
-                      if (isPlaceholderExpenseId_(data[ge.dataIdx][slots[ge.slotIdx].id], data[ge.dataIdx][slots[ge.slotIdx].desc])) {
+                      if (!isPaidSlot_(data[ge.dataIdx], slots[ge.slotIdx]) && isPlaceholderExpenseId_(data[ge.dataIdx][slots[ge.slotIdx].id])) {
                           clearConfirmedSlot_(targetSheet, ge.dataIdx + 1, slots[ge.slotIdx]);
                           totalUpdates++;
                           const client = (colClient !== -1) ? data[ge.dataIdx][colClient] : clientName || "Unknown";
@@ -16224,10 +16230,10 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
       const endDate = rawCalcEnd ? new Date(rawCalcEnd) : new Date();
 
       if (gapNeeded > 0.05) {
-          // Count legitimate Xero expenses
-          const s1_real = (parseMoney(row[slots[0].amt]) > 0) && !isPlaceholderExpenseId_(row[slots[0].id], row[slots[0].desc]);
-          const s2_real = (parseMoney(row[slots[1].amt]) > 0) && !isPlaceholderExpenseId_(row[slots[1].id], row[slots[1].desc]);
-          const s3_real = (parseMoney(row[slots[2].amt]) > 0) && !isPlaceholderExpenseId_(row[slots[2].id], row[slots[2].desc]);
+          // Count legitimate Xero/settled expenses
+          const s1_real = (parseMoney(row[slots[0].amt]) > 0) && (isPaidSlot_(row, slots[0]) || !isPlaceholderExpenseId_(row[slots[0].id]));
+          const s2_real = (parseMoney(row[slots[1].amt]) > 0) && (isPaidSlot_(row, slots[1]) || !isPlaceholderExpenseId_(row[slots[1].id]));
+          const s3_real = (parseMoney(row[slots[2].amt]) > 0) && (isPaidSlot_(row, slots[2]) || !isPlaceholderExpenseId_(row[slots[2].id]));
           const xeroCount = (s1_real ? 1 : 0) + (s2_real ? 1 : 0) + (s3_real ? 1 : 0);
 
           const splitRules = calculateProjectSplit_(gapNeeded, expenseLogicMode, startDate, endDate, retainerDayVal, xeroCount);
@@ -16265,7 +16271,7 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
                       }
                   }
 
-                  const isManual = isPlaceholderExpenseId_(row[s.id], row[s.desc]);
+                  const isManual = !isPaidSlot_(row, s) && isPlaceholderExpenseId_(row[s.id]);
                   const isNewCreation = !isManual && currentAmt === 0;
 
                   if (Math.abs(currentAmt - rule.amt) > 0.01 || dateChanged || isNewCreation) {
@@ -16503,7 +16509,14 @@ function writeConfirmedManualEntry_(sheet, row, slotCols, amount, dateObj, descT
         }
         addStyle(slotCols.id);
     }
-    if (slotCols.status !== -1) sheet.getRange(row, slotCols.status + 1).setValue("");
+    if (slotCols.status !== -1) {
+        const existingStatus = (existingRow && existingRow[slotCols.status] !== undefined)
+            ? String(existingRow[slotCols.status] || "").trim().toLowerCase()
+            : "";
+        if (existingStatus !== "paid" && existingStatus !== "complete" && existingStatus !== "part-paid (paid)") {
+            sheet.getRange(row, slotCols.status + 1).setValue("");
+        }
+    }
     
     if (slotCols.days !== -1) {
         const rawDays = (existingRow && existingRow[slotCols.days] !== undefined)

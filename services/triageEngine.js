@@ -4337,44 +4337,113 @@ export async function handleAnalyzeAlert(req, res, sheets) {
 
         // ── Branch 2: Outgoings tab expense (OG-) ──────────────────────────
         if (source.startsWith("OG-")) {
-          const normalise = s => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
-          const vendorNorm = normalise(vendorName);
+          // Clean vendor name: strip parentheses content, and strip multiple spaces with trailing tags (e.g. "Maryann W         ANRPR inv1")
+          let cleanVendorName = vendorName;
+          if (cleanVendorName.includes("(")) {
+            cleanVendorName = cleanVendorName.slice(0, cleanVendorName.indexOf("(")).trim();
+          }
+          if (/\s{2,}/.test(cleanVendorName)) {
+            cleanVendorName = cleanVendorName.split(/\s{2,}/)[0].trim();
+          }
+
+          let outgoingsVendorRow = -1;
+          let resolvedVendorName = cleanVendorName || vendorName;
+
+          try {
+            // 1. Search Outgoings tab (A13:AV110) with cell notes to match by transactionId / App ID
+            // Every Outgoings expense cell has a note containing {App ID: <transactionId>}
+            const outgoingsResp = await sheets.spreadsheets.get({
+              spreadsheetId: alert.clientId,
+              ranges: ["Outgoings!A13:AV110"],
+              fields: "sheets(data(rowData(values(note,formattedValue))))",
+            });
+            const rowData = outgoingsResp?.data?.sheets?.[0]?.data?.[0]?.rowData || [];
+
+            if (transactionId) {
+              for (let i = 0; i < rowData.length; i++) {
+                const values = rowData[i]?.values || [];
+                const hasMatchingNote = values.some(cell => {
+                  const note = cell?.note || "";
+                  return note && (note.includes(`{App ID: ${transactionId}}`) || note.includes(transactionId));
+                });
+                if (hasMatchingNote) {
+                  outgoingsVendorRow = i + 13; // 1-indexed sheet row
+                  const sheetVendor = String(values[0]?.formattedValue || "").trim();
+                  if (sheetVendor) resolvedVendorName = sheetVendor;
+                  break;
+                }
+              }
+            }
+
+            // 2. If not found by note/App ID, search by vendor name in Column A
+            if (outgoingsVendorRow === -1) {
+              const normalise = s => String(s || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+              const cleanNorm = normalise(cleanVendorName);
+              const rawNorm = normalise(vendorName);
+
+              // 2a. Exact normalized match
+              for (let i = 0; i < rowData.length; i++) {
+                const sheetVendor = String(rowData[i]?.values?.[0]?.formattedValue || "").trim();
+                const sheetNorm = normalise(sheetVendor);
+                if (!sheetNorm) continue;
+
+                if (sheetNorm === cleanNorm || sheetNorm === rawNorm) {
+                  outgoingsVendorRow = i + 13;
+                  resolvedVendorName = sheetVendor;
+                  break;
+                }
+              }
+
+              // 2b. Fuzzy / substring / token match if still not found
+              if (outgoingsVendorRow === -1 && (cleanNorm || rawNorm)) {
+                for (let i = 0; i < rowData.length; i++) {
+                  const sheetVendor = String(rowData[i]?.values?.[0]?.formattedValue || "").trim();
+                  const sheetNorm = normalise(sheetVendor);
+                  if (!sheetNorm) continue;
+
+                  if (cleanNorm.includes(sheetNorm) || sheetNorm.includes(cleanNorm) ||
+                      rawNorm.includes(sheetNorm) || sheetNorm.includes(rawNorm)) {
+                    outgoingsVendorRow = i + 13;
+                    resolvedVendorName = sheetVendor;
+                    break;
+                  }
+
+                  const tokens1 = cleanVendorName.toLowerCase().split(/\s+/).filter(Boolean);
+                  const tokens2 = sheetVendor.toLowerCase().split(/\s+/).filter(Boolean);
+                  if (tokens1.length > 0 && tokens2.length > 0) {
+                    const first1 = tokens1[0];
+                    const first2 = tokens2[0];
+                    const last1 = tokens1[tokens1.length - 1];
+                    const last2 = tokens2[tokens2.length - 1];
+                    if (last1 === last2 && (first1.startsWith(first2.slice(0, 4)) || first2.startsWith(first1.slice(0, 4)))) {
+                      outgoingsVendorRow = i + 13;
+                      resolvedVendorName = sheetVendor;
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.log(`  ⚠ Error reading Outgoings tab: ${e.message}`);
+          }
 
           // Sub-case: VAT mismatch
           if (isVATMismatch) {
             const newVATValue = vatAmount > 0 ? "Yes" : "No";
-
-            // Find vendor row in Outgoings (rows 13-110 = 0-indexed 12-109, col A)
-            let outgoingsVendorRow = -1;
-            try {
-              const outgoingsResp = await sheets.spreadsheets.values.get({
-                spreadsheetId: alert.clientId,
-                range: "Outgoings!A13:B110",
-              });
-              const outgoingsRows2 = outgoingsResp.data.values || [];
-              for (let i = 0; i < outgoingsRows2.length; i++) {
-                const rowVendor = normalise(String(outgoingsRows2[i]?.[0] || ""));
-                if (rowVendor === vendorNorm) {
-                  outgoingsVendorRow = i + 13; // 1-indexed sheet row
-                  break;
-                }
-              }
-            } catch (e) {
-              console.log(`  ⚠ Error reading Outgoings tab: ${e.message}`);
-            }
-
             const writeActions = outgoingsVendorRow !== -1 ? [`write ${newVATValue} to B${outgoingsVendorRow}`] : [];
             const rowSuffix = outgoingsVendorRow !== -1 ? ` (Row ${outgoingsVendorRow})` : "";
 
             const options = [
               {
                 optionId: 1,
-                title: `Update VAT setting to "${newVATValue}" for "${vendorName}" in Outgoings tab${rowSuffix}`,
+                title: `Update VAT setting to "${newVATValue}" for "${resolvedVendorName}" in Outgoings tab${rowSuffix}`,
                 actionButtonText: `Update Pulse`,
                 matchType: "existing_job",
                 jobRow: outgoingsVendorRow !== -1 ? outgoingsVendorRow : alert.rowNumber,
-                jobName: vendorName,
+                jobName: resolvedVendorName,
                 tabName: "Outgoings",
+                vatUpdate: outgoingsVendorRow !== -1 ? { cells: [`B${outgoingsVendorRow}`], newValue: newVATValue } : null,
                 explanation: `Accounting system shows VAT ${vatAmount > 0 ? `of £${vatAmount.toFixed(2)}` : "not applied"} for this expense. Updating vendor VAT setting in Outgoings tab to "${newVATValue}".`,
                 matchingDetails: {
                   unmatchedJobSummary: {
@@ -4390,7 +4459,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                   discrepancies: `VAT mismatch - accounting system has VAT ${vatAmount > 0 ? "applied" : "not applied"}, Pulse shows opposite`,
                 },
                 recommendedActions: [
-                  `Update Outgoings VAT setting for "${vendorName}" to "${newVATValue}"`,
+                  `Update Outgoings VAT setting for "${resolvedVendorName}" to "${newVATValue}"`,
                   ...writeActions
                 ],
               },
@@ -4400,7 +4469,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 actionButtonText: `Ignore discrepancy`,
                 matchType: "ignore",
                 jobRow: outgoingsVendorRow !== -1 ? outgoingsVendorRow : alert.rowNumber,
-                jobName: vendorName,
+                jobName: resolvedVendorName,
                 explanation: `Mark this discrepancy as ignored. No changes will be made to either Pulse or the accounting system.`,
                 recommendedActions: [
                   `Mark this discrepancy as ignored - no changes will be made to either system`,
@@ -4412,14 +4481,15 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           }
 
           // Sub-case: Other Outgoings discrepancies (Amount, Date, Description, Status)
+          const rowSuffix = outgoingsVendorRow !== -1 ? ` (Row ${outgoingsVendorRow})` : "";
           const options = [
             {
               optionId: 1,
-              title: `Update ${activeFlags.join(", ") || "expense details"} in Pulse for "${vendorName}" (${source})`,
+              title: `Update ${activeFlags.join(", ") || "expense details"} in Pulse for "${resolvedVendorName}" (${source})${rowSuffix}`,
               actionButtonText: `Update Pulse`,
               matchType: "existing_job",
-              jobRow: alert.rowNumber,
-              jobName: vendorName,
+              jobRow: outgoingsVendorRow !== -1 ? outgoingsVendorRow : alert.rowNumber,
+              jobName: resolvedVendorName,
               tabName: "Outgoings",
               explanation: `Accounting system shows: Amount £${expAmount.toFixed(2)}, Date: ${expDate}, Description: "${expDescription}". Updating Outgoings entry in Pulse to match.`,
               matchingDetails: {
@@ -4431,12 +4501,12 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 },
               },
               matchAnalysis: {
-                matchConfidence: "Medium",
+                matchConfidence: outgoingsVendorRow !== -1 ? "High" : "Medium",
                 reasonForChoice: `Discrepancy: ${activeFlags.join(", ") || "Data mismatch"}. Accounting system shows Amount: £${expAmount.toFixed(2)}, Date: ${expDate}. Updating Outgoings entry in Pulse to match.`,
                 discrepancies: activeFlags.join(", ") || "Data mismatch",
               },
               recommendedActions: [
-                `Update Outgoings ${source} entry for "${vendorName}" to match accounting: Amount £${expAmount.toFixed(2)}, Date ${expDate}`,
+                `Update Outgoings ${source} entry for "${resolvedVendorName}" to match accounting: Amount £${expAmount.toFixed(2)}, Date ${expDate}`,
               ],
             },
             {
@@ -4444,8 +4514,8 @@ export async function handleAnalyzeAlert(req, res, sheets) {
               title: `Ignore discrepancy (keep Pulse value)`,
               actionButtonText: `Ignore discrepancy`,
               matchType: "ignore",
-              jobRow: alert.rowNumber,
-              jobName: vendorName,
+              jobRow: outgoingsVendorRow !== -1 ? outgoingsVendorRow : alert.rowNumber,
+              jobName: resolvedVendorName,
               explanation: `Mark this discrepancy as ignored. No changes will be made to either Pulse or the accounting system.`,
               recommendedActions: [
                 `Mark this discrepancy as ignored - no changes will be made to either system`,
@@ -8094,7 +8164,62 @@ export async function handleAcceptOption(req, res, sheets) {
       }
     }
 
+    // Safety fallback: if this is an Outgoings tab update but no cells were parsed from recommendedActions,
+    // resolve the vendor row directly in handleAcceptOption!
+    if (cellUpdates.length === 0 && (option.tabName === "Outgoings" || alert.sheetName === "DirComp" || alert.type === "expense")) {
+      const isVatAction = (option.title && /vat/i.test(option.title)) || (option.recommendedActions && option.recommendedActions.some(a => /vat/i.test(a)));
+      if (isVatAction) {
+        const newVatVal = (option.title && /to\s+["']?no["']?/i.test(option.title)) ? "No" : "Yes";
+        const txId = String(alert.data?.confirmed?.[0] || alert.data?.accounting?.[6] || alert.summary?.appId || alert.summary?.transactionId || "").trim();
+        const expectedVendor = String(option.jobName || alert.summary?.job || alert.data?.confirmed?.[3] || "").trim().toLowerCase();
+
+        let resolvedRow = -1;
+        try {
+          const ogResp = await sheets.spreadsheets.get({
+            spreadsheetId: alert.clientId,
+            ranges: ["Outgoings!A13:AV110"],
+            fields: "sheets(data(rowData(values(note,formattedValue))))",
+          });
+          const ogRows = ogResp?.data?.sheets?.[0]?.data?.[0]?.rowData || [];
+
+          if (txId) {
+            for (let i = 0; i < ogRows.length; i++) {
+              const vals = ogRows[i]?.values || [];
+              if (vals.some(c => (c?.note || "").includes(txId))) {
+                resolvedRow = i + 13;
+                break;
+              }
+            }
+          }
+          if (resolvedRow === -1 && expectedVendor) {
+            const cleanExpected = expectedVendor.replace(/[^a-z0-9]/g, "");
+            for (let i = 0; i < ogRows.length; i++) {
+              const rowV = String(ogRows[i]?.values?.[0]?.formattedValue || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+              if (rowV && (rowV === cleanExpected || rowV.includes(cleanExpected) || cleanExpected.includes(rowV))) {
+                resolvedRow = i + 13;
+                break;
+              }
+            }
+          }
+          if (resolvedRow !== -1) {
+            console.log(`  ✅ Safety fallback resolved Outgoings vendor row: B${resolvedRow} = "${newVatVal}"`);
+            cellUpdates.push({ cell: `B${resolvedRow}`, value: newVatVal });
+          }
+        } catch (fbErr) {
+          console.warn("Outgoings safety fallback resolution error:", fbErr.message);
+        }
+      }
+    }
+
     console.log(`  Parsed ${cellUpdates.length} cell updates`);
+
+    if (cellUpdates.length === 0) {
+      console.error(`  ❌ No cell updates could be parsed or resolved for option: "${option.title}"`);
+      return res.status(400).json({
+        success: false,
+        error: `Could not identify any cells to update in the spreadsheet for "${option.jobName || option.title}". No changes were written.`,
+      });
+    }
 
     // ── ROW RE-VERIFICATION ──────────────────────────────────────────────
     // Cell references were generated at analysis time pointing to Confirmed tab rows.
@@ -8134,7 +8259,8 @@ export async function handleAcceptOption(req, res, sheets) {
               let foundRow = -1;
               for (let i = 0; i < ogRows.length; i++) {
                 const v = String(ogRows[i]?.[0] || "").toLowerCase().trim();
-                if (v === expectedVendor || (expectedVendor && v.includes(expectedVendor)) || (expectedVendor && expectedVendor.includes(v))) {
+                if (!v) continue;
+                if (v === expectedVendor || (expectedVendor && (v.includes(expectedVendor) || expectedVendor.includes(v)))) {
                   foundRow = i + 13;
                   break;
                 }
@@ -8471,6 +8597,16 @@ export async function handleAcceptOption(req, res, sheets) {
         } catch (adjErr) {
           console.warn("handleAcceptOption placeholder adjustment skipped:", adjErr.message);
         }
+      }
+
+      if (writeTab === "Outgoings" && alert.masterSheetId) {
+        handleFireOutgoingsPull({
+          body: {
+            clientSheetId: alert.clientId,
+            masterSheetId: alert.masterSheetId,
+            clientName: alert.clientName,
+          }
+        }, { status: () => ({ json: () => { } }) }, sheets).catch(() => { });
       }
     }
 

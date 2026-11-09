@@ -113,7 +113,7 @@ export default function MonthView({
   const activeMonthData = payload?.months?.[activePeriod] || (activePeriod === "curr" ? payload?.currMonth : null) || payload?.currMonth;
   const currMonth = activeMonthData;
   const chartData = payload?.chartData;
-  const thresholds = activeMonthData?.thresholds || payload?.currMonth?.thresholds || [0.5, 0.45, 0, 0, 0, 0.309, 0.2, 0, 0, 0, 0.15, 0.05];
+  const thresholds = activeMonthData?.thresholds || payload?.currMonth?.thresholds || [0.5, 0.45, 0, 0, 0, 0.309, 0, 0, 0, 0, 0.15, 0.05];
   const headerSummaryText = activeMonthData?.headerText || "";
 
   const monthPeriod = activeMonthData?.monthPeriod || "Current Month";
@@ -208,7 +208,7 @@ export default function MonthView({
     if (rowIndex === 27 || l.includes("overheads as %") || l.includes("overheads %")) {
       // Overheads as %
       const z47 = parseT(5, 0.309);
-      const z48 = parseT(6, 0.20);
+      const z48 = parseT(6, 0);
       if (num > z47) return "#f4cccc";
       if (num >= z48) return "#d9ead3";
       return "#fce5cd";

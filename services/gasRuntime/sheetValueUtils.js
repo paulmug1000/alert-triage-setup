@@ -54,6 +54,8 @@ const DATE_HEADER_PATTERNS = new Set([
   "date",
   "sent date",
   "fully paid on",
+  "fully paid on date",
+  "fully paid date",
   "pay date",
   "due date",
   "date paid",
@@ -61,17 +63,31 @@ const DATE_HEADER_PATTERNS = new Set([
   "paid date",
   "start date",
   "end date",
+  "project start",
+  "project end",
+  "date job will start",
+  "date job will end",
   "date added to pipeline",
   "date confirmed",
+  "date conf",
   "issue date",
   "txn date",
   "created",
+  "created at",
+  "created date",
+  "date created",
   "updated",
+  "updated at",
+  "updated date",
   "close date",
+  "close month",
+  "expected close",
   "expected close date",
+  "won date",
   "won time",
   "add time",
   "update time",
+  "last contact date",
 ]);
 
 const INV_DASH_DATE_COLS = new Set([6, 7, 21, 22, 36, 37, 53, 54, 66, 67, 82, 83, 97, 98]);
@@ -92,10 +108,11 @@ const CRM_COMP_PCT_COLS = new Set([7, 30, 47, 66, 123, 142, 158]);
 const CRM_LIST_PCT_COLS = new Set([7, 34, 85, 131]);
 
 const CONF_PIPE_CALCS_DATE_COLS = new Set([
-  3, 37, 38, 43, 50, 57, 78, 85, 146, 147, 156, 164, 165, 174, 175, 176, 178, 179, 180,
+  3, 37, 38, 43, 50, 57, 78, 85, 92, 146, 147, 156, 164, 165, 174, 175, 176, 178, 179, 180,
 ]);
 
 const MONTH_ROW0_TABS = new Set([
+  "AppData",
   "Outgoings",
   "Dashboard",
   "Performance",
@@ -126,7 +143,16 @@ function isExplicitDateHeader_(hRaw) {
     return false;
   }
   if (DATE_HEADER_PATTERNS.has(h)) return true;
-  if (h.endsWith(" date") || h.startsWith("date ") || h === "timestamp") return true;
+  if (
+    h.endsWith(" date") ||
+    h.startsWith("date ") ||
+    h.startsWith("created ") ||
+    h.startsWith("updated ") ||
+    h.endsWith(" time") ||
+    h === "timestamp"
+  ) {
+    return true;
+  }
   if (/^(inv|exp|cost)\s*\d+\s*(send|sent|rec|paid|pay|due)?\s*date$/i.test(h)) return true;
   if (/^(inv|exp|cost)\s*\d+\s*(send|sent|paid)$/i.test(h)) return true;
   return false;
@@ -159,6 +185,9 @@ export function isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid = 
 
   if (MONTH_ROW0_TABS.has(tabName)) {
     if (row0 === 0 && col0 >= 6 && isPlausibleSerial) return true;
+  }
+  if (tabName === "AppData" && (row0 === 42 || row0 === 60 || row0 === 71 || row0 === 86) && col0 >= 6 && isPlausibleSerial) {
+    return true;
   }
   if (tabName === "Cash" && row0 === 0 && col0 >= 1 && isPlausibleSerial) return true;
   if (tabName === "PLFromApp" && row0 === 0 && col0 >= 1 && isPlausibleSerial) return true;
@@ -206,12 +235,36 @@ export function isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid = 
   if (tabName === "RevComp" && (row0 === 0 || row0 === 1) && col0 === 2 && isPlausibleSerial) return true;
   if (tabName === "RevFromApp" && row0 >= 1 && col0 === 0 && isPlausibleSerial) return true;
 
-  if ((tabName === "ConfCalcs" || tabName === "PipeCalcs") && row0 >= 1 && CONF_PIPE_CALCS_DATE_COLS.has(col0) && isPlausibleSerial) {
+  if (
+    (tabName === "ConfCalcs" || tabName === "PipeCalcs" || tabName === "Confirmed" || tabName === "Pipeline") &&
+    row0 >= 1 &&
+    CONF_PIPE_CALCS_DATE_COLS.has(col0) &&
+    isPlausibleSerial
+  ) {
     return true;
   }
 
-  if (tabName === "DataFromCRM" && row0 >= 1 && (col0 === 5 || col0 === 6 || col0 === 11) && isPlausibleSerial) {
+  if (tabName === "Salaries" && row0 >= 3 && (col0 === 4 || col0 === 5) && isPlausibleSerial) {
     return true;
+  }
+  if (tabName === "Calcs" && row0 >= 1 && (col0 === 1 || col0 === 2) && isPlausibleSerial) {
+    return true;
+  }
+  if (tabName === "GPbyPL" && (row0 === 0 || row0 === 1) && col0 >= 6 && isPlausibleSerial) {
+    return true;
+  }
+  if (tabName === "Report" && (row0 === 0 || row0 === 230) && col0 === 1 && isPlausibleSerial) {
+    return true;
+  }
+  if (tabName === "DataForReport" && row0 === 14 && col0 === 0 && isPlausibleSerial) {
+    return true;
+  }
+
+  if (tabName === "DataFromCRM" && row0 >= 1 && isPlausibleSerial) {
+    if (fullGrid?.[0]) {
+      return isExplicitDateHeader_(fullGrid[0][col0]);
+    }
+    return col0 === 5 || col0 === 6 || col0 === 11;
   }
   if (tabName === "InvFromApp" && row0 >= 1 && (col0 === 0 || col0 === 5 || col0 === 6 || col0 === 13) && isPlausibleSerial) {
     // Check row 0 header if available
@@ -247,10 +300,18 @@ export function isFormattedDateString(val) {
   if (typeof val !== "string") return false;
   const s = val.trim();
   if (!s || s.length < 5 || s.length > 32) return false;
-  if (/^\d{1,2}[-/\s][A-Za-z]{3}[-/\s]\d{2,4}(\s+\d{1,2}:\d{2}(:\d{2})?)?$/.test(s)) return true;
-  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}(\s+\d{1,2}:\d{2}(:\d{2})?)?$/.test(s)) return true;
+  if (/^\d{1,2}[-/\s][A-Za-z]{3,9}[-/\s]\d{2,4}(,?\s+\d{1,2}:\d{2}(:\d{2})?)?$/.test(s)) return true;
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}(,?\s+\d{1,2}:\d{2}(:\d{2})?)?$/.test(s)) return true;
   if (/^\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z?)?$/.test(s)) return true;
   if (/^[A-Za-z]{3}\s+\d{1,2}-[A-Za-z]{3}\s+\d{1,2}:\d{2}$/.test(s)) return true;
+  const myMatch = s.match(/^([A-Za-z]{3,9})[-/\s]+(\d{2,4})$/);
+  if (myMatch) {
+    const mToken = myMatch[1].toLowerCase();
+    const isMonth =
+      MONTHS_SHORT.some((m) => m.toLowerCase() === mToken) ||
+      MONTHS_FULL.some((m) => m.toLowerCase() === mToken);
+    if (isMonth) return true;
+  }
   return false;
 }
 
@@ -296,6 +357,25 @@ export function dateToSerial(dt) {
   return daySerial + msInDay / 86400000;
 }
 
+const CONF_PIPE_CURRENCY_COLS = new Set([32, 33, 41, 48, 55, 74, 76, 83, 90, 106]);
+
+function formatWholeCurrency_(val) {
+  const rounded = Math.sign(val) * Math.round(Math.abs(val) + 1e-7);
+  if (rounded === 0) return "£0";
+  const sign = rounded < 0 ? "-" : "";
+  return `${sign}£${Math.abs(rounded).toLocaleString("en-GB")}`;
+}
+
+function formatTwoDecCurrency_(val) {
+  const rounded = Math.sign(val) * (Math.round(Math.abs(val) * 100 + 1e-7) / 100);
+  if (rounded === 0) return "£0.00";
+  const sign = rounded < 0 ? "-" : "";
+  return `${sign}£${Math.abs(rounded).toLocaleString("en-GB", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 /**
  * Formats an unformatted cell value for display (`FORMATTED_VALUE` / `getDisplayValues()`).
  */
@@ -313,13 +393,94 @@ export function formatCellForDisplay(sheetRole, tabName, row0, col0, val, fullGr
     if (isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid, notesGrid)) {
       return formatSerialForCell_(sheetRole, tabName, row0, col0, val);
     }
-    // Check percentage columns in CRMComp / CRMList / DataFromCRM
+    // Check percentage columns in CRMComp / CRMList / DataFromCRM / Confirmed / Pipeline / Outgoings / Budget
     if (
       (tabName === "CRMComp" && row0 >= 6 && CRM_COMP_PCT_COLS.has(col0)) ||
       (tabName === "CRMList" && row0 >= 1 && CRM_LIST_PCT_COLS.has(col0)) ||
       (tabName === "DataFromCRM" && row0 >= 1 && col0 === 7)
     ) {
       return `${(val * 100).toFixed(2)}%`;
+    }
+    if (
+      ((tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
+        row0 >= 1 &&
+        col0 === 39) ||
+      ((tabName === "Outgoings" || tabName === "Budget") && row0 >= 11 && col0 === 4 && val <= 1) ||
+      (tabName === "Outgoings" && row0 === 111 && col0 === 0) ||
+      (tabName === "Budget" && row0 === 142 && col0 === 0) ||
+      (tabName === "NBtoFind" && row0 === 20 && col0 === 0)
+    ) {
+      return `${Math.round(val * 100)}%`;
+    }
+    if (
+      (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
+      row0 >= 1 &&
+      CONF_PIPE_CURRENCY_COLS.has(col0)
+    ) {
+      return formatTwoDecCurrency_(val);
+    }
+    if (tabName === "Salaries") {
+      if (row0 >= 3 && row0 <= 368) {
+        if (col0 === 2) return formatTwoDecCurrency_(val);
+        if (col0 === 3) return val.toFixed(2);
+        if (col0 === 6 || col0 === 8 || col0 === 9) return `${Math.round(val * 100)}%`;
+      }
+      if (col0 >= 11 && row0 >= 3 && row0 <= 368) {
+        return formatTwoDecCurrency_(val);
+      }
+    }
+    if (tabName === "NBtoFind" && row0 >= 2 && row0 <= 23 && col0 >= 6) {
+      return formatWholeCurrency_(val);
+    }
+    if (tabName === "AppData") {
+      if (row0 >= 41 && row0 <= 56 && col0 === 25) {
+        return `${(val * 100).toFixed(2)}%`;
+      }
+      if ((row0 === 57 || row0 === 58) && col0 === 25) {
+        return `${Math.round(val * 100)}%`;
+      }
+      if ((row0 === 19 || row0 === 27 || row0 === 31 || row0 === 33 || row0 === 78) && col0 >= 6) {
+        return `${Math.round(val * 100)}%`;
+      }
+      if (
+        col0 >= 6 &&
+        ((row0 >= 2 && row0 <= 33) ||
+          (row0 >= 46 && row0 <= 48) ||
+          (row0 >= 52 && row0 <= 54) ||
+          row0 === 61 ||
+          row0 === 62 ||
+          row0 === 73 ||
+          row0 === 75 ||
+          row0 === 77 ||
+          row0 === 80 ||
+          row0 === 82 ||
+          (row0 >= 87 && row0 <= 89))
+      ) {
+        return formatWholeCurrency_(val);
+      }
+    }
+    if (tabName === "Budget" && col0 >= 6) {
+      if (row0 === 36 || row0 === 44) {
+        return `${Math.round(val * 100)}%`;
+      }
+      if (row0 >= 2 && row0 <= 46) {
+        return formatWholeCurrency_(val);
+      }
+    }
+    if (tabName === "Cash" && col0 >= 1 && row0 >= 2 && row0 <= 77) {
+      if (row0 === 36) {
+        return formatTwoDecCurrency_(val);
+      }
+      return formatWholeCurrency_(val);
+    }
+    if (tabName === "Outgoings" && col0 >= 6 && row0 >= 5 && row0 <= 295) {
+      if (row0 >= 125 && row0 <= 224 && col0 >= 36 && col0 <= 47) {
+        return formatTwoDecCurrency_(val);
+      }
+      return formatWholeCurrency_(val);
+    }
+    if (!Number.isInteger(val) && String(val).length > 11) {
+      return String(Number(val.toPrecision(10)));
     }
     return String(val);
   }
@@ -340,13 +501,18 @@ function formatSerialForCell_(sheetRole, tabName, row0, col0, serial) {
     return `${String(day).padStart(2, "0")}-${mShort}-${yy} ${hh}:${mm}`;
   }
 
-  if (tabName === "KeyInfo" && row0 === 1 && col0 === 1) {
+  if (
+    (tabName === "KeyInfo" && row0 === 1 && col0 === 1) ||
+    (tabName === "Salaries" && row0 >= 3 && (col0 === 4 || col0 === 5))
+  ) {
     return `${day}-${mShort}-${year}`;
   }
 
   if (
     (MONTH_ROW0_TABS.has(tabName) && row0 === 0 && col0 >= 6) ||
+    (tabName === "AppData" && (row0 === 42 || row0 === 60 || row0 === 71 || row0 === 86) && col0 >= 6) ||
     (tabName === "Cash" && row0 === 0 && col0 >= 1) ||
+    (tabName === "Salaries" && row0 === 0 && col0 >= 2) ||
     (tabName === "TimeComp" && row0 === 3 && col0 >= 1)
   ) {
     return `${mShort} ${yy}`;

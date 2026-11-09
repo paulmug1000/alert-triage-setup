@@ -100,6 +100,13 @@ export default function ReportingTab({
   const [narrativeDirty, setNarrativeDirty] = useState(false);
   const [zoomedSlidePreview, setZoomedSlidePreview] = useState(null); // { slideNumber, slideTitle, base64 }
 
+  // Report tables & side-by-side chart preview modal state
+  const [reportPreviewClient, setReportPreviewClient] = useState(null);
+  const [reportPreviewLoading, setReportPreviewLoading] = useState(false);
+  const [reportPreviewError, setReportPreviewError] = useState("");
+  const [reportPreviewData, setReportPreviewData] = useState(null);
+  const [reportPreviewTab, setReportPreviewTab] = useState("charts"); // 'charts' | 'tables'
+
   // Default report covered month is 1 month prior to the EoM work cycle (e.g. 2026-10 cycle reports on 2026-09)
   const defaultReportMonthKey = useMemo(() => {
     return eomWorkMonthToTargetMonth(eomMonthKey) || eomMonthKey;
@@ -1651,6 +1658,36 @@ export default function ReportingTab({
     }
   };
 
+  // Open report tables & side-by-side charts preview modal
+  const openReportPreviewModal = async (client) => {
+    setReportPreviewClient(client);
+    setReportPreviewLoading(true);
+    setReportPreviewError("");
+    setReportPreviewData(null);
+    setReportPreviewTab("charts");
+    const activeReportEntry = (client.reportHistory || []).find(h => h.month === selectedReportMonthKey) || client.latestReport || null;
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_preview_mgmt_report",
+          clientName: client.clientName,
+          masterSheetId: client.masterSheetId,
+          reportMonthKey: selectedReportMonthKey,
+          reportUrl: activeReportEntry?.reportUrl || ""
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to load report preview");
+      setReportPreviewData(data);
+    } catch (err) {
+      setReportPreviewError(err.message);
+    } finally {
+      setReportPreviewLoading(false);
+    }
+  };
+
   if (!isAdmin) {
     return (
       <div style={{ padding: "40px 20px", textAlign: "center", color: "#64748b" }}>
@@ -2454,7 +2491,25 @@ export default function ReportingTab({
 
                       {/* Quick Links */}
                       <td style={{ padding: "12px 16px" }}>
-                        <div style={{ display: "flex", gap: "10px", fontSize: "12px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px", flexWrap: "wrap" }}>
+                          {client.masterSheetId && (
+                            <button
+                              type="button"
+                              onClick={() => openReportPreviewModal(client)}
+                              style={{
+                                background: "#eff6ff",
+                                border: "1px solid #bfdbfe",
+                                borderRadius: "4px",
+                                padding: "3px 8px",
+                                fontSize: "12px",
+                                fontWeight: 600,
+                                color: "#1d4ed8",
+                                cursor: "pointer"
+                              }}
+                            >
+                              Preview report
+                            </button>
+                          )}
                           {client.masterSheetUrl && (
                             <a
                               href={client.masterSheetUrl}
@@ -4954,6 +5009,290 @@ export default function ReportingTab({
           </div>
         );
       })()}
+
+      {/* ── REPORT TABLES & SIDE-BY-SIDE CHARTS PREVIEW MODAL ──────────────── */}
+      {reportPreviewClient && (
+        <div
+          onClick={() => setReportPreviewClient(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.65)",
+            zIndex: 9998,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px"
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#f8fafc",
+              borderRadius: "12px",
+              width: "100%",
+              maxWidth: "1420px",
+              maxHeight: "92vh",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.35)"
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              background: "#ffffff",
+              borderBottom: "1px solid #e2e8f0",
+              padding: "16px 24px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "16px",
+              flexWrap: "wrap"
+            }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "#0f172a" }}>
+                    Management report preview — {reportPreviewClient.clientName}
+                  </h2>
+                  <span style={{
+                    padding: "2px 10px",
+                    borderRadius: "999px",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    background: "#eff6ff",
+                    color: "#1d4ed8",
+                    border: "1px solid #bfdbfe"
+                  }}>
+                    {reportMonthLabel}
+                  </span>
+                </div>
+                <div style={{ fontSize: "12px", color: "#64748b", marginTop: "3px" }}>
+                  Side-by-side comparison of current Google Sheets charts vs. the new 100% spreadsheet-free Pulse SVG Chart Engine, plus all styled report tables.
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <button
+                  type="button"
+                  onClick={() => setReportPreviewTab("charts")}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    border: reportPreviewTab === "charts" ? "1px solid #2563eb" : "1px solid #cbd5e1",
+                    background: reportPreviewTab === "charts" ? "#2563eb" : "#ffffff",
+                    color: reportPreviewTab === "charts" ? "#ffffff" : "#334155",
+                    cursor: "pointer"
+                  }}
+                >
+                  Charts comparison ({reportPreviewData?.charts?.length || 0})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportPreviewTab("tables")}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    border: reportPreviewTab === "tables" ? "1px solid #2563eb" : "1px solid #cbd5e1",
+                    background: reportPreviewTab === "tables" ? "#2563eb" : "#ffffff",
+                    color: reportPreviewTab === "tables" ? "#ffffff" : "#334155",
+                    cursor: "pointer"
+                  }}
+                >
+                  Styled tables ({reportPreviewData?.tables?.length || 0})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportPreviewClient(null)}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    border: "1px solid #cbd5e1",
+                    background: "#ffffff",
+                    color: "#475569",
+                    cursor: "pointer"
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: "20px 24px", overflowY: "auto", flex: 1 }}>
+              {reportPreviewLoading && (
+                <div style={{ padding: "60px 20px", textAlign: "center", color: "#475569" }}>
+                  <Spinner size="24px" />
+                  <div style={{ marginTop: "12px", fontSize: "13px", fontWeight: 600 }}>
+                    Loading management report tables and rendering side-by-side charts...
+                  </div>
+                </div>
+              )}
+
+              {reportPreviewError && (
+                <div style={{ padding: "16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", color: "#b91c1c", fontSize: "13px" }}>
+                  {reportPreviewError}
+                </div>
+              )}
+
+              {!reportPreviewLoading && reportPreviewData && reportPreviewTab === "charts" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+                  {(reportPreviewData.charts || []).map((ch) => (
+                    <div
+                      key={ch.id}
+                      style={{
+                        background: "#ffffff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "10px",
+                        padding: "18px 20px"
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                        <div style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>
+                          Slide {ch.slideNumber} — {ch.title}
+                        </div>
+                        <span style={{ fontSize: "11px", color: "#64748b" }}>
+                          Native SVG chart engine
+                        </span>
+                      </div>
+
+                      {ch.subSparklines && ch.subSparklines.length > 0 ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                          {ch.subSparklines.map((sp) => (
+                            <div
+                              key={sp.chartId}
+                              style={{
+                                display: "grid",
+                                gridTemplateColumns: sp.legacyPngDataUri ? "180px 1fr 1fr" : "180px 1fr",
+                                alignItems: "center",
+                                gap: "16px",
+                                padding: "8px 0",
+                                borderTop: "1px solid #f1f5f9"
+                              }}
+                            >
+                              <div style={{ fontSize: "12px", fontWeight: 600, color: "#334155" }}>{sp.label}</div>
+                              {sp.legacyPngDataUri && (
+                                <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "6px", textAlign: "center" }}>
+                                  <div style={{ fontSize: "10px", color: "#64748b", marginBottom: "4px" }}>Current deck chart</div>
+                                  <img src={sp.legacyPngDataUri} alt={sp.label} style={{ height: "44px", objectFit: "contain" }} />
+                                </div>
+                              )}
+                              <div style={{ background: "#ffffff", border: "1px solid #bfdbfe", borderRadius: "6px", padding: "6px", textAlign: "center" }}>
+                                <div style={{ fontSize: "10px", color: "#1d4ed8", marginBottom: "4px", fontWeight: 600 }}>New native Pulse SVG</div>
+                                <div dangerouslySetInnerHTML={{ __html: sp.svg }} style={{ display: "inline-block" }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={{
+                          display: "grid",
+                          gridTemplateColumns: ch.legacyPngDataUri ? "1fr 1fr" : "1fr",
+                          gap: "20px"
+                        }}>
+                          {ch.legacyPngDataUri && (
+                            <div>
+                              <div style={{ fontSize: "12px", fontWeight: 600, color: "#64748b", marginBottom: "6px" }}>
+                                Current Google Sheets chart (from Google Slides deck)
+                              </div>
+                              <div style={{
+                                background: "#ffffff",
+                                border: "1px solid #cbd5e1",
+                                borderRadius: "8px",
+                                padding: "12px",
+                                display: "flex",
+                                justifyContent: "center",
+                                alignItems: "center"
+                              }}>
+                                <img src={ch.legacyPngDataUri} alt={ch.title} style={{ maxWidth: "100%", maxHeight: "360px", objectFit: "contain" }} />
+                              </div>
+                            </div>
+                          )}
+                          <div>
+                            <div style={{ fontSize: "12px", fontWeight: 600, color: "#1d4ed8", marginBottom: "6px" }}>
+                              New native Pulse SVG chart (100% spreadsheet-free)
+                            </div>
+                            <div
+                              style={{
+                                background: "#ffffff",
+                                border: "2px solid #93c5fd",
+                                borderRadius: "8px",
+                                padding: "12px",
+                                display: "flex",
+                                justifyContent: "center",
+                                alignItems: "center"
+                              }}
+                              dangerouslySetInnerHTML={{
+                                __html: ch.svg.replace(/width="\d+" height="\d+"/, 'style="width:100%;height:auto;max-height:360px;"')
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!reportPreviewLoading && reportPreviewData && reportPreviewTab === "tables" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+                  {(reportPreviewData.tables || []).map((tbl) => (
+                    <div
+                      key={tbl.code}
+                      style={{
+                        background: "#ffffff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "10px",
+                        padding: "18px 20px"
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                        <div style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>
+                          {tbl.label} <span style={{ color: "#2563eb", fontFamily: "monospace", fontSize: "12px", marginLeft: "6px" }}>{tbl.code}</span>
+                        </div>
+                        <span style={{ fontSize: "11px", color: "#64748b" }}>{tbl.range}</span>
+                      </div>
+                      <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "6px" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                          <tbody>
+                            {(tbl.rows || []).map((row, rIdx) => (
+                              <tr key={rIdx}>
+                                {(row || []).map((cell, cIdx) => (
+                                  <td
+                                    key={cIdx}
+                                    style={{
+                                      background: cell.bg || "#ffffff",
+                                      color: cell.fg || "#000000",
+                                      fontWeight: cell.b ? 700 : 400,
+                                      fontStyle: cell.i ? "italic" : "normal",
+                                      textAlign: cell.a === "right" ? "right" : (cell.a === "center" ? "center" : "left"),
+                                      padding: "5px 8px",
+                                      border: "1px solid #e2e8f0",
+                                      whiteSpace: "nowrap"
+                                    }}
+                                  >
+                                    {cell.v || "\u00A0"}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

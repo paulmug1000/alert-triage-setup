@@ -15,7 +15,7 @@ export default function AdminWorkbookInspectorModal({
   isOpen,
   onClose,
   clientName = "APPTEST",
-  availableTabs = { master: [], recon: [] },
+  availableTabs = { master: [], recon: [], client: [] },
   initialSheetRole = "master",
 }) {
   const [sheetRole, setSheetRole] = useState(initialSheetRole || "master");
@@ -44,6 +44,8 @@ export default function AdminWorkbookInspectorModal({
   const [editValue, setEditValue] = useState("");
   const [savingCell, setSavingCell] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
+  const [wrapText, setWrapText] = useState(false);
+  const [expandCellBar, setExpandCellBar] = useState(false);
 
   useEffect(() => {
     if (isOpen && initialSheetRole) {
@@ -52,7 +54,12 @@ export default function AdminWorkbookInspectorModal({
   }, [isOpen, initialSheetRole]);
 
   const tabsForRole = useMemo(() => {
-    const list = sheetRole === "recon" ? availableTabs?.recon || [] : availableTabs?.master || [];
+    const list =
+      sheetRole === "recon"
+        ? availableTabs?.recon || []
+        : sheetRole === "client"
+          ? availableTabs?.client || []
+          : availableTabs?.master || [];
     return list.filter((t) => t.tab_name !== "GasExecLogs" && t.tab_name !== "GasScriptProps");
   }, [sheetRole, availableTabs]);
 
@@ -62,7 +69,9 @@ export default function AdminWorkbookInspectorModal({
       const preferred =
         sheetRole === "master"
           ? tabsForRole.find((t) => t.tab_name === "KeyInfo") || tabsForRole[0]
-          : tabsForRole[0];
+          : sheetRole === "client"
+            ? tabsForRole.find((t) => t.tab_name === "Dashboard") || tabsForRole[0]
+            : tabsForRole[0];
       if (preferred) setSelectedTab(preferred.tab_name);
     }
   }, [isOpen, sheetRole, tabsForRole, selectedTab]);
@@ -86,7 +95,7 @@ export default function AdminWorkbookInspectorModal({
           sheetRole: effectiveRole,
           tabName: effectiveTab,
           maxRows: isExecRole ? 60 : 350,
-          maxCols: isExecRole ? 10 : 60,
+          maxCols: isExecRole ? 10 : effectiveRole === "client" ? 110 : 60,
         }),
       });
       const data = await res.json();
@@ -181,7 +190,7 @@ export default function AdminWorkbookInspectorModal({
     for (const r of activeGrid) {
       if (Array.isArray(r) && r.length > maxC) maxC = r.length;
     }
-    return Math.min(60, Math.max(12, maxC));
+    return Math.min(110, Math.max(12, maxC));
   }, [activeGrid]);
 
   const handleSelectCell = (r, c) => {
@@ -345,6 +354,22 @@ export default function AdminWorkbookInspectorModal({
               </button>
               <button
                 type="button"
+                onClick={() => setSheetRole("client")}
+                style={{
+                  padding: "5px 12px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  borderRadius: "6px",
+                  border: "none",
+                  cursor: "pointer",
+                  background: sheetRole === "client" ? "#ffffff" : "transparent",
+                  color: sheetRole === "client" ? "#0f172a" : "#475569",
+                }}
+              >
+                Client portal ({availableTabs?.client?.length || 0} tabs)
+              </button>
+              <button
+                type="button"
                 onClick={() => setSheetRole("executions")}
                 style={{
                   padding: "5px 12px",
@@ -362,47 +387,66 @@ export default function AdminWorkbookInspectorModal({
             </div>
 
             {sheetRole !== "executions" && (
-              <div
-                style={{
-                  display: "inline-flex",
-                  background: "#e2e8f0",
-                  borderRadius: "8px",
-                  padding: "3px",
-                }}
-              >
+              <>
+                <div
+                  style={{
+                    display: "inline-flex",
+                    background: "#e2e8f0",
+                    borderRadius: "8px",
+                    padding: "3px",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("values")}
+                    style={{
+                      padding: "5px 10px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      borderRadius: "6px",
+                      border: "none",
+                      cursor: "pointer",
+                      background: viewMode === "values" ? "#ffffff" : "transparent",
+                      color: viewMode === "values" ? "#0f172a" : "#475569",
+                    }}
+                  >
+                    Displayed values
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("formulas")}
+                    style={{
+                      padding: "5px 10px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      borderRadius: "6px",
+                      border: "none",
+                      cursor: "pointer",
+                      background: viewMode === "formulas" ? "#ffffff" : "transparent",
+                      color: viewMode === "formulas" ? "#0f172a" : "#475569",
+                    }}
+                  >
+                    Formulas
+                  </button>
+                </div>
                 <button
                   type="button"
-                  onClick={() => setViewMode("values")}
+                  onClick={() => setWrapText((prev) => !prev)}
                   style={{
                     padding: "5px 10px",
                     fontSize: "12px",
                     fontWeight: 600,
                     borderRadius: "6px",
-                    border: "none",
+                    border: wrapText ? "1px solid #2563eb" : "1px solid #cbd5e1",
                     cursor: "pointer",
-                    background: viewMode === "values" ? "#ffffff" : "transparent",
-                    color: viewMode === "values" ? "#0f172a" : "#475569",
+                    background: wrapText ? "#eff6ff" : "#ffffff",
+                    color: wrapText ? "#1d4ed8" : "#475569",
                   }}
+                  title="Toggle multi-line text wrapping across all cells in the grid"
                 >
-                  Displayed values
+                  {wrapText ? "Wrap text: on" : "Wrap text"}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode("formulas")}
-                  style={{
-                    padding: "5px 10px",
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    borderRadius: "6px",
-                    border: "none",
-                    cursor: "pointer",
-                    background: viewMode === "formulas" ? "#ffffff" : "transparent",
-                    color: viewMode === "formulas" ? "#0f172a" : "#475569",
-                  }}
-                >
-                  Formulas
-                </button>
-              </div>
+              </>
             )}
           </div>
 
@@ -737,7 +781,7 @@ export default function AdminWorkbookInspectorModal({
                 padding: "8px 20px",
                 borderBottom: "1px solid #e2e8f0",
                 display: "flex",
-                alignItems: "center",
+                alignItems: expandCellBar || editValue.includes("\n") || editValue.length > 120 ? "flex-start" : "center",
                 gap: "10px",
                 background: "#ffffff",
               }}
@@ -758,20 +802,58 @@ export default function AdminWorkbookInspectorModal({
               >
                 {selectedTab}!{coordLabel}
               </span>
-              <input
-                type="text"
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                placeholder="Cell value..."
+              {expandCellBar || editValue.includes("\n") || editValue.length > 120 ? (
+                <textarea
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  placeholder="Cell value..."
+                  rows={expandCellBar ? 10 : Math.min(8, Math.max(3, editValue.split("\n").length))}
+                  style={{
+                    flex: 1,
+                    padding: "6px 10px",
+                    fontSize: "12px",
+                    fontFamily: "monospace",
+                    lineHeight: 1.5,
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                    resize: "vertical",
+                    whiteSpace: "pre-wrap",
+                  }}
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  placeholder="Cell value..."
+                  style={{
+                    flex: 1,
+                    padding: "6px 10px",
+                    fontSize: "12px",
+                    fontFamily: "monospace",
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                  }}
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => setExpandCellBar((prev) => !prev)}
                 style={{
-                  flex: 1,
                   padding: "6px 10px",
                   fontSize: "12px",
-                  fontFamily: "monospace",
+                  fontWeight: 500,
                   borderRadius: "6px",
                   border: "1px solid #cbd5e1",
+                  background: expandCellBar ? "#eff6ff" : "#f8fafc",
+                  color: expandCellBar ? "#1d4ed8" : "#334155",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
                 }}
-              />
+                title="Expand or collapse the cell value box"
+              >
+                {expandCellBar ? "Collapse cell" : "Expand cell"}
+              </button>
               <button
                 type="submit"
                 disabled={savingCell}
@@ -784,6 +866,7 @@ export default function AdminWorkbookInspectorModal({
                   background: "#2563eb",
                   color: "#ffffff",
                   cursor: savingCell ? "wait" : "pointer",
+                  whiteSpace: "nowrap",
                 }}
               >
                 {savingCell ? "Saving..." : "Save cell"}
@@ -868,25 +951,31 @@ export default function AdminWorkbookInspectorModal({
                         </td>
                         {Array.from({ length: visibleColCount }).map((_, cIdx) => {
                           const val = rowArr[cIdx] ?? "";
+                          const valStr = String(val);
                           const isSel = isSelectedRow && selectedCell.c === cIdx;
+                          const shouldWrapCell =
+                            wrapText || (isSel && (expandCellBar || valStr.includes("\n") || valStr.length > 120));
                           return (
                             <td
                               key={cIdx}
                               onClick={() => handleSelectCell(rIdx, cIdx)}
+                              onDoubleClick={() => setExpandCellBar((prev) => !prev)}
                               style={{
                                 border: isSel ? "2px solid #2563eb" : "1px solid #e2e8f0",
                                 padding: "4px 8px",
-                                maxWidth: "240px",
+                                maxWidth: shouldWrapCell ? "560px" : "240px",
                                 overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
+                                textOverflow: shouldWrapCell ? "clip" : "ellipsis",
+                                whiteSpace: shouldWrapCell ? "pre-wrap" : "nowrap",
+                                wordBreak: shouldWrapCell ? "break-word" : "normal",
+                                verticalAlign: shouldWrapCell ? "top" : "middle",
                                 cursor: "cell",
                                 background: isSel ? "#eff6ff" : "#ffffff",
-                                color: String(val).startsWith("=") ? "#1d4ed8" : "#0f172a",
+                                color: valStr.startsWith("=") ? "#1d4ed8" : "#0f172a",
                               }}
-                              title={String(val)}
+                              title={valStr}
                             >
-                              {String(val)}
+                              {valStr}
                             </td>
                           );
                         })}

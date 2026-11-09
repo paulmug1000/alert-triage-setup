@@ -66,7 +66,8 @@ import {
   handleEomAddZeroBudgetCategory, handleEomConfirmOverheadExpenses,
   handleEomGetNarrativeWorkbench, handleEomGenerateNarrative,
   handleEomSaveNarrativeDraft, handleEomApplyNarrativeToDeck,
-  handleEomGetRevenueCheck, handleEomRunRevenueComparison, handleEomSaveRevenueCheckNotes
+  handleEomGetRevenueCheck, handleEomRunRevenueComparison, handleEomSaveRevenueCheckNotes,
+  handleEomPreviewMgmtReport
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
@@ -1555,6 +1556,8 @@ export default async function handler(req, res) {
       return await handleEomRunRevenueComparison(req, res, sheets);
     } else if (action === "eom_save_revenue_check_notes") {
       return await handleEomSaveRevenueCheckNotes(req, res, sheets);
+    } else if (action === "eom_preview_mgmt_report") {
+      return await handleEomPreviewMgmtReport(req, res, sheets);
 
     } else if (action === "get_flag_sweep_log") {
       const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);

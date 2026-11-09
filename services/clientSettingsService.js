@@ -1084,6 +1084,10 @@ export async function saveClientSettings({
   if (redisClient?.isOpen) {
     try {
       await redisClient.del(redisKey);
+      if (clientSheetId) {
+        await redisClient.del(`pulse:portal:payload:${clientSheetId}`);
+        await redisClient.del(`pulse:portal:performance:${clientSheetId}`);
+      }
       if (settings.customisation) {
         const cleanKey = String(clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
         const setupKey = `pulse:setup:${cleanKey}`;

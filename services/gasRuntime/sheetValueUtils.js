@@ -92,7 +92,7 @@ const DATE_HEADER_PATTERNS = new Set([
 
 const INV_DASH_DATE_COLS = new Set([6, 7, 21, 22, 36, 37, 53, 54, 66, 67, 82, 83, 97, 98]);
 const INV_APP_DATE_COLS = new Set([6, 7, 78, 79]);
-const INV_COMP_DATE_COLS = new Set([6, 7, 8, 15, 16, 51, 52]);
+const INV_COMP_DATE_COLS = new Set([6, 7, 8, 15, 16, 51, 52, 63, 64]);
 
 const JNL_APP_DATE_COLS = new Set([0, 7, 12]);
 const DIR_DASH_DATE_COLS = new Set([0, 6, 7, 8, 15, 23, 30, 31, 38, 47, 55, 62, 70, 79, 85, 87, 94, 102, 122, 123, 155, 156]);

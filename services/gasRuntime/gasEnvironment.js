@@ -1396,6 +1396,7 @@ export async function createGasEnvironment({
       .from("master_sheet_grids")
       .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
       .eq("client_name", ctx.clientName)
+      .in("sheet_role", ["master", "recon"])
       .in("tab_name", ACTIVE_GAS_MASTER_TABS),
     supabase
       .from("master_sheet_grids")

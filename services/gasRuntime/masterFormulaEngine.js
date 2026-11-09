@@ -824,22 +824,22 @@ export function evaluateInvComp(grids) {
     }
 
     const P = matchedRight ? matchedRight[6] : ""; // Sent date (AZ)
-    let Q = ""; // Fully paid on (BB)
+    let Q = ""; // Pay date (BA = matchedRight[7])
     if (!isBlankCell(F)) {
       if (W !== 1) {
-        Q = matchedRight ? matchedRight[8] : "";
+        Q = matchedRight ? matchedRight[7] : "";
       } else {
         let maxPaid = 0;
         for (const rRow of rightBaseRows) {
           if (String(rRow[5] ?? "").toLowerCase() === mKey) {
-            const bbNum = toNumOrZero(rRow[8]);
-            if (bbNum > maxPaid) maxPaid = bbNum;
+            const baNum = toNumOrZero(rRow[7]);
+            if (baNum > maxPaid) maxPaid = baNum;
           }
         }
         Q = maxPaid === 0 ? "" : maxPaid;
       }
     }
-    const R = matchedRight ? matchedRight[9] : ""; // Status (BC)
+    const R = matchedRight ? matchedRight[8] : ""; // Status (BB = matchedRight[8])
 
     const T = S === 1 ? "" : !gsEq(A, N) ? 1 : "";
     const U = S === 1 ? "" : Math.abs(toNumOrZero(C) - toNumOrZero(O)) > 0.02 ? 1 : "";
@@ -853,7 +853,7 @@ export function evaluateInvComp(grids) {
         for (const rRow of rightBaseRows) {
           if (
             String(rRow[5] ?? "").toLowerCase() === fKey &&
-            Math.floor(gsN(toSerialOrNull(rRow[8]) ?? rRow[8])) === iInt
+            Math.floor(gsN(toSerialOrNull(rRow[7]) ?? rRow[7])) === iInt
           ) {
             foundMatch = true;
             break;
@@ -895,27 +895,31 @@ export function evaluateInvComp(grids) {
     const AV = rRow[2]; // Invoice amount
     const AY = rRow[5]; // Invoice no
     const AZ = rRow[6]; // Sent date
-    const BC = rRow[9]; // Status
+    const BA = rRow[7]; // Pay date
+    const BB = rRow[8]; // Status
 
     const ayKey = String(AY ?? "").toLowerCase();
     const matchedLeft = ayKey ? leftByInvNo.get(ayKey) : null;
 
-    // BH: Invoice no (F=5), BI: Client (A=0), BJ: Invoice amount (C=2), BK: Sent date (G=6), BL: Original due date (H=7), BM: Fully paid on (I=8), BN: Status (J=9)
+    // BH: Invoice no (F=5), BI: Invoice amount (C=2), BJ: Total excl VAT (D=3), BK: VAT included (E=4), BL: Sent date (G=6), BM: Fully paid on (I=8), BN: Status (J=9)
     const BH = matchedLeft ? matchedLeft[5] : "";
-    const BI = matchedLeft ? matchedLeft[0] : "";
-    const BJ = matchedLeft ? matchedLeft[2] : "";
-    const BK = matchedLeft ? matchedLeft[6] : "";
-    const BL = matchedLeft ? matchedLeft[7] : "";
+    const BI = matchedLeft ? matchedLeft[2] : "";
+    const BJ = matchedLeft ? matchedLeft[3] : "";
+    const BK = matchedLeft ? matchedLeft[4] : "";
+    const BL = matchedLeft ? matchedLeft[6] : "";
     const BM = matchedLeft ? matchedLeft[8] : "";
     const BN = matchedLeft ? matchedLeft[9] : "";
 
     const BO = !isBlankCell(AT) && isBlankCell(BH) ? 1 : "";
-    const bhKey = String(BH ?? "").toLowerCase();
-    const BS = BO === 1 || isBlankCell(BH) ? "" : (rightInvCounts.get(bhKey) || 0) > 1 ? 1 : "";
-    const BP = BO === 1 || BS === 1 ? "" : Math.abs(toNumOrZero(AV) - toNumOrZero(BJ)) > 0.02 ? 1 : "";
-    const BQ = BO === 1 ? "" : Math.floor(gsN(toSerialOrNull(AZ) ?? AZ)) !== Math.floor(gsN(toSerialOrNull(BK) ?? BK)) ? 1 : "";
-    const bcPartPaid = String(BC ?? "").toLowerCase().includes("part-paid");
-    const BR = BO === 1 ? "" : !gsEq(BC, BN) && !(gsEq(BN, "Sent") && bcPartPaid) ? 1 : "";
+    const BP = BO === 1 ? "" : Math.abs(toNumOrZero(AV) - toNumOrZero(BI)) > 0.02 ? 1 : "";
+    const BQ = BO === 1 ? "" : Math.floor(gsN(toSerialOrNull(AZ) ?? AZ)) !== Math.floor(gsN(toSerialOrNull(BL) ?? BL)) ? 1 : "";
+    const BR =
+      BO === 1 || !gsEq(BN, "Paid") || gsEq(BN, "Draft")
+        ? ""
+        : Math.floor(gsN(toSerialOrNull(BA) ?? BA)) !== Math.floor(gsN(toSerialOrNull(BM) ?? BM))
+          ? 1
+          : "";
+    const BS = BO === 1 ? "" : !gsEq(BN, BB) ? 1 : "";
 
     const rFlagSum = toNumOrZero(BO) + toNumOrZero(BP) + toNumOrZero(BQ) + toNumOrZero(BR) + toNumOrZero(BS);
     const BW = rFlagSum === 0 ? "" : AT;

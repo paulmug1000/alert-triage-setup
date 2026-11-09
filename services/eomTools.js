@@ -112,7 +112,7 @@ async function syncEomTaskStatusToSupabase_(clientName, monthKey, taskId, status
       record_type: "client_tasks",
       tasks_payload: payload,
     }, { onConflict: "work_month_key,client_name,record_type" });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 export async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, linkedFunctionValue, workMonthKey) {
@@ -417,7 +417,7 @@ export async function handleEomSaveClientTask(req, res, sheets) {
         const defTplIds = new Set(defRows.filter(r => r[1]).map(r => r[1]));
         const defNames = new Set(defRows.map(r => (r[2] || "").trim().toLowerCase()).filter(Boolean));
         const isDef = (existingTplId && defTplIds.has(existingTplId)) ||
-                      (existingName && defNames.has(existingName));
+          (existingName && defNames.has(existingName));
         if (!isDef) {
           return res.status(403).json({ success: false, error: "Forbidden: Only administrators can modify non-default tasks." });
         }
@@ -436,7 +436,7 @@ export async function handleEomSaveClientTask(req, res, sheets) {
       const defTplIds = new Set(defRows.filter(r => r[1]).map(r => r[1]));
       const defNames = new Set(defRows.map(r => (r[2] || "").trim().toLowerCase()).filter(Boolean));
       const isDef = (taskTemplateId && defTplIds.has(taskTemplateId)) ||
-                    (taskName && defNames.has(taskName.trim().toLowerCase()));
+        (taskName && defNames.has(taskName.trim().toLowerCase()));
       if (!isDef) {
         return res.status(403).json({ success: false, error: "Forbidden: Only administrators can assign non-default tasks." });
       }
@@ -2033,10 +2033,17 @@ export async function handleEomPushOutgoings(req, res, sheets) {
     }));
 
     // 2. Execute pushOutgoings natively when in Supabase engine mode, or via Master Web App otherwise
+    let gasData = null;
     if (isSupabaseMaster) {
-      await pushOutgoingsToClientSheetNative(sheets, supaCtx.clientName || clientName, {
+      gasData = await pushOutgoingsToClientSheetNative(sheets, supaCtx.clientName || clientName, {
         includeUnreconciled: isInclUnrec,
       });
+      if (!gasData || gasData.success === false) {
+        return res.status(200).json({
+          success: false,
+          error: gasData?.error || "Push outgoings failed",
+        });
+      }
     } else {
       const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
       const action = isInclUnrec ? "push_outgoings_with_pl_adds" : "push_outgoings";
@@ -2055,7 +2062,6 @@ export async function handleEomPushOutgoings(req, res, sheets) {
       });
 
       const gasText = await gasResp.text();
-      let gasData = null;
       try { gasData = JSON.parse(gasText); } catch (e) { }
       if (!gasData) {
         console.error(`❌ Master Web App ${action} failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
@@ -3942,7 +3948,7 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
         }));
         const c1Url = c1Resp.data.values?.[0]?.[0] || "";
         targetBudgetSheetId = extractSheetIdFromUrl(c1Url) || "";
-      } catch (_) {}
+      } catch (_) { }
     }
     if (!targetBudgetSheetId) targetBudgetSheetId = mId;
 
@@ -4637,7 +4643,7 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
             valueRenderOption: "FORMATTED_VALUE"
           }));
           targetClientSheetId = extractSheetIdFromUrl(c1Resp.data.values?.[0]?.[0] || "");
-        } catch (_) {}
+        } catch (_) { }
       }
 
       let monthlyResp = null;

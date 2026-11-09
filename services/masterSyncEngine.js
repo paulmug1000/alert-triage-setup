@@ -106,6 +106,54 @@ function summarizeComparisonsFromMasterSS_(masterSS, clientName) {
   };
 }
 
+const _lastComparisonRecomputeMap = new Map();
+const _inFlightComparisonMap = new Map();
+
+export function markMasterComparisonsFresh(clientName) {
+  if (!clientName) return;
+  _lastComparisonRecomputeMap.set(String(clientName).trim().toLowerCase(), Date.now());
+}
+
+/**
+ * Ensures `ConfCalcs`, `PipeCalcs`, `InvComp`, `DirComp`, `CRMComp`, and `PLComp` in Supabase
+ * are freshly recomputed against the live Client Sheet (`Confirmed`, `Pipeline`, `Outgoings`)
+ * if the client is on `master_mode === 'supabase'` and hasn't been recomputed within `maxAgeMs`.
+ */
+export async function ensureFreshMasterComparisons(
+  sheets,
+  { clientName = "", spreadsheetId = "", maxAgeMs = 15000 } = {}
+) {
+  if (!sheets) return null;
+  const ctx = await resolveSupabaseSheetContext({ clientName, spreadsheetId });
+  if (!ctx || ctx.masterMode !== "supabase") return null;
+
+  const key = String(ctx.clientName || "").trim().toLowerCase();
+  const lastAt = _lastComparisonRecomputeMap.get(key) || 0;
+  if (maxAgeMs > 0 && Date.now() - lastAt < maxAgeMs) {
+    return null;
+  }
+
+  if (_inFlightComparisonMap.has(key)) {
+    return _inFlightComparisonMap.get(key);
+  }
+
+  const p = (async () => {
+    try {
+      const res = await recomputeClientComparisonsInSupabase(sheets, ctx.clientName);
+      _lastComparisonRecomputeMap.set(key, Date.now());
+      return res;
+    } catch (err) {
+      console.warn(`[ensureFreshMasterComparisons] Warning for ${ctx.clientName}:`, err.message);
+      return null;
+    } finally {
+      _inFlightComparisonMap.delete(key);
+    }
+  })();
+
+  _inFlightComparisonMap.set(key, p);
+  return p;
+}
+
 /**
  * Recomputes all Master comparison tabs (`InvAppList`, `InvDashList`, `InvComp`,
  * `JnlAppList`, `DirDashList`, `DirComp`, `CRMList`, `CRMComp`, `KeyInfo`, `PLComp`, `DataChgAlert`)
@@ -121,6 +169,7 @@ export async function recomputeClientComparisonsInSupabase(sheets, clientName = 
     autoReconcileFn: autoReconcileClientBankTransactions,
   });
   await env.finalizeExecution({ recordExecution: false });
+  markMasterComparisonsFresh(ctx.clientName);
 
   return summarizeComparisonsFromMasterSS_(env.masterSS, ctx.clientName);
 }
@@ -145,6 +194,7 @@ export async function recomputeCrmComparisonInSupabase(sheets, clientName, reque
   }
   env.recomputeMasterFormulasSync();
   await env.finalizeExecution({ recordExecution: false });
+  markMasterComparisonsFresh(ctx.clientName);
 
   const crmCompGrid = crmCompSheet?.valuesGrid || [];
   const mode = String(crmCompGrid[1]?.[1] || requestedMode || "Pipeline").trim();
@@ -699,6 +749,7 @@ export async function runNativeMasterSync({
     triggerSource: triggerLabel,
     summary: latestAutoSummary,
   });
+  markMasterComparisonsFresh(ctx.clientName);
 
   // Invalidate Redis activity cache so AutoLog entries appear immediately in PMA > Activity
   await invalidateClientActivityCache(ctx.clientName);

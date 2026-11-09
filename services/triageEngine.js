@@ -36,7 +36,7 @@ import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId } from "./userPermissions.js";
 import { getSupabaseAdmin } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
-import { runNativeMasterSync } from "./masterSyncEngine.js";
+import { runNativeMasterSync, ensureFreshMasterComparisons } from "./masterSyncEngine.js";
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -547,6 +547,9 @@ export async function readRecentAutoLogEntries_(sheets, masterSheetId, limit = 3
 export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null) {
   try {
     console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
+    if (!cachedData) {
+      await ensureFreshMasterComparisons(sheets, { spreadsheetId });
+    }
     let allRows = [];
     if (cachedData && cachedData.length > 0) {
       allRows = cachedData;
@@ -665,6 +668,9 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
 export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null, categoryConfig = null) {
   try {
     console.log(`\n📖 Reading DirComp alerts from ${spreadsheetId}...`);
+    if (!cachedData) {
+      await ensureFreshMasterComparisons(sheets, { spreadsheetId });
+    }
     let allRows = [];
     let resolvedCategoryConfig = categoryConfig;
     if (cachedData && resolvedCategoryConfig) {
@@ -2299,15 +2305,15 @@ export async function handleRunFlagSweep(req, res, sheets) {
             const sb = getSupabaseAdmin();
             const [{ data: sched }, { data: dcaRow }] = sb
               ? await Promise.all([
-                  sb.from("sync_schedules").select("*").eq("client_name", supaCtx.clientName).maybeSingle(),
-                  sb
-                    .from("master_sheet_grids")
-                    .select("values_grid")
-                    .eq("client_name", supaCtx.clientName)
-                    .eq("sheet_role", "master")
-                    .eq("tab_name", "DataChgAlert")
-                    .maybeSingle(),
-                ])
+                sb.from("sync_schedules").select("*").eq("client_name", supaCtx.clientName).maybeSingle(),
+                sb
+                  .from("master_sheet_grids")
+                  .select("values_grid")
+                  .eq("client_name", supaCtx.clientName)
+                  .eq("sheet_role", "master")
+                  .eq("tab_name", "DataChgAlert")
+                  .maybeSingle(),
+              ])
               : [{ data: null }, { data: null }];
 
             // DataChgAlert!Y2:Y4 is the canonical source of truth edited in PMA Client Settings -> Main -> Automation frequencies
@@ -2377,6 +2383,10 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 syncType: seqType,
                 userEmail: "System (Scheduled Sweep)",
               });
+            }
+
+            if (dueTypes.length === 0 && actionableDue && (hasInvoice || hasExpense)) {
+              await ensureFreshMasterComparisons(sheets, { clientName: client.clientName });
             }
 
             const nowMs = Date.now();
@@ -6554,7 +6564,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
     const isForeignCurrency = invoiceCurrency && invoiceCurrency !== primaryCurrency;
     console.log(`  Currency: invoice=${invoiceCurrency}, primary=${primaryCurrency}, foreign=${isForeignCurrency}`);
 
-      // Amount tolerance: £5.00 (500p) domestic, 10% of invoice amount for foreign
+    // Amount tolerance: £5.00 (500p) domestic, 10% of invoice amount for foreign
     invoiceAmtForMatch = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
     const amtToleranceFn = (slotAmt) => {
       if (isForeignCurrency) {

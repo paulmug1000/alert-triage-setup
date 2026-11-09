@@ -709,16 +709,54 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
 
     const sDate = baseStartDate || parseSheetDate(parentRow.startDate);
     const effectiveEndVal = currentEndDateVal !== undefined ? currentEndDateVal : parentRow.endDate;
-    const eDate = parseSheetDate(effectiveEndVal);
-    let monthsCount = job.rows.length;
-    if (isNoEndDateSentinel(effectiveEndVal)) {
-      const d18Months = (typeof noEndDateRetainerMonths === "number" && noEndDateRetainerMonths > 0) ? noEndDateRetainerMonths : 18;
-      monthsCount = Math.max(job.rows.length, d18Months);
-    } else if (sDate && eDate && eDate > sDate) {
-      const diffDays = (eDate.getTime() - sDate.getTime()) / (24 * 60 * 60 * 1000);
-      const diffMonths = Math.round(diffDays / 30.4375);
-      monthsCount = Math.max(job.rows.length, diffMonths);
+    const isNoEnd = isNoEndDateSentinel(effectiveEndVal);
+    const eDate = isNoEnd ? null : parseSheetDate(effectiveEndVal);
+
+    // Multi-month child rows & schedule interval detection:
+    // In Pulse, retainer child rows can represent multiple months of revenue (e.g. quarterly = 3 months, 6-monthly = 6 months).
+    // 1. Detect cadence interval between child row dates (fallback to 1 if monthly).
+    const childRows = job.rows.filter((r) => !r.isParent);
+    const childDates = childRows.map((cr) => parseSheetDate(cr.invoiceSlots?.[0]?.sentDate || cr.startDate)).filter(Boolean);
+    let detectedInterval = 1;
+    if (childDates.length >= 2) {
+      const d1 = childDates[childDates.length - 2];
+      const d2 = childDates[childDates.length - 1];
+      const diffDays = Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / 86400000);
+      const calc = Math.round(diffDays / 30);
+      if (calc > 0) detectedInterval = calc;
     }
+
+    // 2. Sum the actual months covered by child rows based on invoice amount ratio or date cadence
+    let totalChildRowMonths = 0;
+    childRows.forEach((cr) => {
+      let childAmt = 0;
+      (cr.invoiceSlots || []).forEach((s) => {
+        const amt = parseFloat(String(s.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+        if (amt > 0) childAmt += amt;
+      });
+      if (childAmt <= 0 && cr.revenue) {
+        childAmt = parseFloat(String(cr.revenue).replace(/[£$€,\s]/g, "")) || 0;
+      }
+      if (rawRev > 0 && childAmt > 0) {
+        totalChildRowMonths += Math.max(1, Math.round(childAmt / rawRev));
+      } else {
+        totalChildRowMonths += detectedInterval;
+      }
+    });
+
+    // 3. Contract duration in months:
+    // For fixed-term contracts (sDate & eDate), duration is strictly determined by dates (or child row coverage if larger).
+    // Never conflate total spreadsheet rows (which include the parent header row) with month count.
+    let monthsCount = childRows.length > 0 ? totalChildRowMonths : 1;
+    if (isNoEnd) {
+      const d18Months = (typeof noEndDateRetainerMonths === "number" && noEndDateRetainerMonths > 0) ? noEndDateRetainerMonths : 18;
+      monthsCount = Math.max(totalChildRowMonths, d18Months);
+    } else if (sDate && eDate && eDate >= sDate) {
+      const diffDays = (eDate.getTime() - sDate.getTime()) / (24 * 60 * 60 * 1000);
+      const diffMonths = Math.max(1, Math.round(diffDays / 30.4375));
+      monthsCount = Math.max(diffMonths, totalChildRowMonths);
+    }
+
     totalRevenue = rawRev * monthsCount;
     totalDirectCosts = rawCost * monthsCount;
 
@@ -728,18 +766,22 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
       let priorPeriodsCount = 0;
 
       for (let p = 0; p < monthsCount; p++) {
+        // Stop projecting periods that start after the contract end date
+        const pStart = addMonths(sDate, p);
+        if (eDate && pStart > eDate) break;
+
         const nextPStart = addMonths(sDate, p + 1);
         const pEnd = new Date(nextPStart.getFullYear(), nextPStart.getMonth(), nextPStart.getDate() - 1, 23, 59, 59, 999);
 
         if (pEnd < now) {
           priorPeriodsCount++;
-          const periodRev = job.rows[p]?.revenue ? (parseFloat(String(job.rows[p].revenue).replace(/[£$€,\s]/g, "")) || rawRev) : rawRev;
-          expectedPriorRevenue += periodRev;
-
-          const periodCost = job.rows[p]?.directCosts ? (parseFloat(String(job.rows[p].directCosts).replace(/[£$€,\s]/g, "")) || rawCost) : rawCost;
-          expectedPriorCosts += periodCost;
+          expectedPriorRevenue += rawRev;
+          expectedPriorCosts += rawCost;
         }
       }
+
+      expectedPriorRevenue = Math.min(expectedPriorRevenue, totalRevenue);
+      expectedPriorCosts = Math.min(expectedPriorCosts, totalDirectCosts);
 
       leftToInvoice = Math.max(0, expectedPriorRevenue - realInvoiced);
       priorMonthsUninvoicedCount = rawRev > 0 ? Math.ceil(leftToInvoice / rawRev) : (leftToInvoice > 0 ? 1 : 0);

@@ -76,11 +76,8 @@ const CORE_MASTER_TABS = [
   "Dashboard",
   "Performance",
   "Cash",
-  "NBtoFind",
-  "VAT",
   "Tax",
   "Calcs",
-  "AppCompare",
   "DataForReport",
 ];
 
@@ -643,14 +640,14 @@ export async function handleVirtualSheetsCall({
       isFormula || isUnformatted
         ? sliced
         : formatGridForDisplay(
-            sheetRole,
-            parsed.tabName,
-            sliced,
-            parsed.startRow0 ?? 0,
-            parsed.startCol0 ?? 0,
-            rec.values_grid || [],
-            rec.notes_grid || {}
-          );
+          sheetRole,
+          parsed.tabName,
+          sliced,
+          parsed.startRow0 ?? 0,
+          parsed.startCol0 ?? 0,
+          rec.values_grid || [],
+          rec.notes_grid || {}
+        );
     return {
       status: 200,
       data: {
@@ -701,14 +698,14 @@ export async function handleVirtualSheetsCall({
         isFormula || isUnformattedReq
           ? sliced
           : formatGridForDisplay(
-              sheetRole,
-              item.parsed.tabName,
-              sliced,
-              item.parsed.startRow0 ?? 0,
-              item.parsed.startCol0 ?? 0,
-              rec.values_grid || [],
-              rec.notes_grid || {}
-            );
+            sheetRole,
+            item.parsed.tabName,
+            sliced,
+            item.parsed.startRow0 ?? 0,
+            item.parsed.startCol0 ?? 0,
+            rec.values_grid || [],
+            rec.notes_grid || {}
+          );
       valueRanges.push({
         range: item.raw,
         majorDimension: "ROWS",
@@ -937,8 +934,8 @@ export async function handleVirtualSheetsCall({
                     userEnteredValue: formVal.startsWith("=")
                       ? { formulaValue: formVal }
                       : isNumeric
-                      ? { numberValue: numClean }
-                      : { stringValue: strVal },
+                        ? { numberValue: numClean }
+                        : { stringValue: strVal },
                     note: noteStr,
                     effectiveFormat: {
                       backgroundColor: { red: 1, green: 1, blue: 1 },
@@ -2366,8 +2363,24 @@ export async function getVirtualTabForInspector({
     };
   }
 
-  const vGrid = (data.values_grid || []).slice(0, maxRows).map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []));
-  const fGrid = (data.formulas_grid || []).slice(0, maxRows).map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []));
+  const rawSlice = (data.values_grid || [])
+    .slice(0, maxRows)
+    .map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []));
+  const vGrid =
+    tabName === "GasExecLogs"
+      ? rawSlice
+      : formatGridForDisplay(
+        sheetRole,
+        tabName,
+        rawSlice,
+        0,
+        0,
+        data.values_grid || [],
+        data.notes_grid || {}
+      );
+  const fGrid = (data.formulas_grid || [])
+    .slice(0, maxRows)
+    .map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []));
 
   return {
     clientName,
@@ -2405,8 +2418,13 @@ export async function updateVirtualTabCellFromInspector({
   const nextForms = applyWriteToGrid2D_(rec.formulas_grid || rec.values_grid || [], parsed, [[value]]);
   await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid);
 
-  if (sheetRole === "master" && sheets) {
-    await mirrorMasterWriteToClientSheetIfNeeded_(ctx, sheets, [{ range: `${tabName}!${colLetter}${Number(rowIndex0) + 1}`, values: [[value]] }]);
+  if (sheetRole === "master") {
+    await recomputeMasterFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
+    if (sheets) {
+      await mirrorMasterWriteToClientSheetIfNeeded_(ctx, sheets, [
+        { range: `${tabName}!${colLetter}${Number(rowIndex0) + 1}`, values: [[value]] },
+      ]);
+    }
   }
 
   return {

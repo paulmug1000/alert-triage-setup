@@ -107,12 +107,26 @@ const MONTH_ROW0_TABS = new Set([
 
 function isExplicitDateHeader_(hRaw) {
   if (!hRaw || typeof hRaw !== "string") return false;
-  const h = hRaw.trim().toLowerCase().replace(/\s+/g, " ");
+  const h = hRaw
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
   if (!h) return false;
-  if (h.includes("days") || h.includes("mismatch") || h.includes("update") || h.includes("push") || h.includes("ignore")) {
+  if (
+    h.includes("days") ||
+    h.includes("mismatch") ||
+    h.includes("update ") ||
+    h.includes("push") ||
+    h.includes("ignore") ||
+    h.includes("to date") ||
+    h.includes("ytd")
+  ) {
     return false;
   }
   if (DATE_HEADER_PATTERNS.has(h)) return true;
+  if (h.endsWith(" date") || h.startsWith("date ") || h === "timestamp") return true;
   if (/^(inv|exp|cost)\s*\d+\s*(send|sent|rec|paid|pay|due)?\s*date$/i.test(h)) return true;
   if (/^(inv|exp|cost)\s*\d+\s*(send|sent|paid)$/i.test(h)) return true;
   return false;
@@ -210,9 +224,17 @@ export function isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid = 
     return true;
   }
 
-  // Dynamic header check on row 0 for Confirmed, Pipeline, DataFromCRM, CRMGoogleBridge, etc.
-  if (row0 >= 1 && fullGrid?.[0] && isPlausibleSerial) {
-    if (isExplicitDateHeader_(fullGrid[0][col0])) return true;
+  // Dynamic header check on header rows (row 0, 1, 4, 5) for Confirmed, Pipeline, InvFromApp, DataFromCRM, InvComp, DirComp, CRMComp, etc.
+  if (row0 >= 1 && fullGrid && isPlausibleSerial) {
+    if (fullGrid[0] && isExplicitDateHeader_(fullGrid[0][col0])) return true;
+    if (row0 >= 2 && fullGrid[1] && isExplicitDateHeader_(fullGrid[1][col0])) return true;
+    if (row0 >= 5 && fullGrid[4] && isExplicitDateHeader_(fullGrid[4][col0])) return true;
+    if (row0 >= 6 && fullGrid[5] && isExplicitDateHeader_(fullGrid[5][col0])) return true;
+  }
+
+  // Row 0 month/date headers on financial/calculation tabs (e.g. Year0PLFromApp, StarterPL, OrinYrCalcs, YrCalcs, MgmtRep)
+  if (row0 === 0 && col0 >= 1 && typeof val === "number" && val >= 40000 && val <= 60000) {
+    return true;
   }
 
   return false;
@@ -315,7 +337,7 @@ function formatSerialForCell_(sheetRole, tabName, row0, col0, serial) {
     const totalMins = Math.round(frac * 1440);
     const hh = String(Math.floor(totalMins / 60) % 24).padStart(2, "0");
     const mm = String(totalMins % 60).padStart(2, "0");
-    return `${ String(day).padStart(2, "0")}-${mShort}-${yy} ${hh}:${mm}`;
+    return `${String(day).padStart(2, "0")}-${mShort}-${yy} ${hh}:${mm}`;
   }
 
   if (tabName === "KeyInfo" && row0 === 1 && col0 === 1) {

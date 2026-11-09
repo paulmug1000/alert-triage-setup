@@ -15,7 +15,11 @@ import {
   setSupabaseClockEnabled,
   triggerSupabaseClockNow,
 } from "../../../services/masterEngineService.js";
-import { runNativeMasterSync } from "../../../services/masterSyncEngine.js";
+import {
+  runNativeMasterSync,
+  ensureFreshMasterComparisons,
+  recomputeClientComparisonsInSupabase,
+} from "../../../services/masterSyncEngine.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -28,7 +32,7 @@ async function refreshPrecomputedAlerts_(sheets, acId) {
       headers: {},
     };
     const mockRes = {
-      status: () => ({ json: () => {} }),
+      status: () => ({ json: () => { } }),
     };
     await handleStorePrecomputed(mockReq, mockRes, sheets);
   } catch (err) {
@@ -94,7 +98,7 @@ export default async function handler(req, res) {
         summary: `Migrated Master & Recon sheets for ${cleanClient} into Supabase (${summary.masterTabsSynced} master tabs, ${summary.reconTabsSynced} recon tabs)`,
         details: summary,
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, summary, status });
     }
@@ -114,7 +118,7 @@ export default async function handler(req, res) {
         summary: `Switched ${cleanClient} master engine mode to "${masterMode}"`,
         details: { clientName: cleanClient, masterMode },
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, updated, status });
     }
@@ -130,7 +134,7 @@ export default async function handler(req, res) {
         summary: `Materialized ${result.materializedRangesCount} IMPORTRANGE ranges on ${cleanClient} Client Sheet`,
         details: result,
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ ...result, status });
     }
@@ -146,13 +150,23 @@ export default async function handler(req, res) {
         summary: `Restored ${result.restoredRangesCount} IMPORTRANGE formulas on ${cleanClient} Client Sheet`,
         details: result,
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ ...result, status });
     }
 
     if (action === "run_native_sync") {
       const sheets = await getSheetsClient();
+      if (syncType === "recompute") {
+        const comparisons = await recomputeClientComparisonsInSupabase(sheets, cleanClient);
+        await refreshPrecomputedAlerts_(sheets, acId);
+        const status = await getStage2Status(cleanClient);
+        return res.status(200).json({
+          success: true,
+          syncResult: { clientName: cleanClient, syncType: "recompute", comparisons },
+          status,
+        });
+      }
       const syncResult = await runNativeMasterSync({
         sheets,
         clientName: cleanClient,
@@ -165,6 +179,25 @@ export default async function handler(req, res) {
     }
 
     if (action === "get_tab_grid") {
+      const LIVE_COMPARISON_TABS = new Set([
+        "InvComp",
+        "DirComp",
+        "CRMComp",
+        "PLComp",
+        "InvDashList",
+        "DirDashList",
+        "CRMList",
+        "InvAppList",
+        "JnlAppList",
+        "ConfCalcs",
+        "PipeCalcs",
+      ]);
+      if (sheetRole === "master" && LIVE_COMPARISON_TABS.has(tabName)) {
+        try {
+          const sheets = await getSheetsClient();
+          await ensureFreshMasterComparisons(sheets, { clientName: cleanClient, maxAgeMs: 15000 });
+        } catch (_) { }
+      }
       const gridData = await getVirtualTabForInspector({
         clientName: cleanClient,
         sheetRole,
@@ -197,7 +230,7 @@ export default async function handler(req, res) {
         summary: `Updated ${cleanClient} (${sheetRole}) ${tabName}!${updateRes.cellCoord} to "${value ?? ""}"`,
         details: updateRes,
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       return res.status(200).json(updateRes);
     }
 

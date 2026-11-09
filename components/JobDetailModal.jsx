@@ -14,7 +14,8 @@ import {
   addMonths,
   toSheetDateFormat,
   formatCurrency,
-  parseLikelihoodValue
+  parseLikelihoodValue,
+  getJobFinancialMetrics
 } from "./JobsView";
 import {
   isPlaceholderInvoice,
@@ -500,105 +501,16 @@ export default function JobDetailModal({
   const plOptions = Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort();
   const lsOptions = Array.from(new Set([...(leadSources || []), leadSrcVal].filter(Boolean))).sort();
 
-  // Financial metrics
-  const getJobFinancialMetrics = () => {
-    if (!job || !job.rows || job.rows.length === 0) {
-      return { revenue: 0, realInvoiced: 0, placeholderInvoiced: 0, leftToInvoice: 0, directCosts: 0, realCostsReceived: 0, placeholderCosts: 0, costsLeftToReceive: 0 };
-    }
-
-    const rawRev = parseFloat(String(revVal !== undefined ? revVal : (parentRow.revenue || "0")).replace(/[£$€,\s]/g, "")) || 0;
-    const rawCost = parseFloat(String(directCostsVal !== undefined ? directCostsVal : (parentRow.directCosts || "0")).replace(/[£$€,\s]/g, "")) || 0;
-
-    let realInvoiced = 0;
-    let placeholderInvoiced = 0;
-    job.rows.forEach((r) => {
-      (r.invoiceSlots || []).forEach((slot) => {
-        const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
-        if (amt > 0) {
-          const ref = String(slot.ref || "").trim();
-          if (isPlaceholderInvoice(ref, slot.status) || !ref) {
-            placeholderInvoiced += amt;
-          } else {
-            realInvoiced += amt;
-          }
-        }
-      });
-    });
-
-    let realCostsReceived = 0;
-    let placeholderCosts = 0;
-    job.rows.forEach((r) => {
-      (r.expenseSlots || []).forEach((slot) => {
-        const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
-        if (amt > 0) {
-          if (isPlaceholderExpense(slot)) {
-            placeholderCosts += amt;
-          } else {
-            realCostsReceived += amt;
-          }
-        }
-      });
-    });
-
-    let totalRevenue = rawRev;
-    let totalDirectCosts = rawCost;
-    let leftToInvoice = 0;
-    let costsLeftToReceive = 0;
-
-    if (!isConfirmed) {
-      leftToInvoice = 0;
-      costsLeftToReceive = 0;
-    } else if (isRetainer) {
-      const now = new Date();
-      let baseStartDate = parseSheetDate(parentRow.startDate) || parseSheetDate(parentRow.dateConf);
-      const sDate = baseStartDate || parseSheetDate(parentRow.startDate);
-      const effectiveEndVal = endDateVal !== undefined ? endDateVal : parentRow.endDate;
-      const eDate = parseSheetDate(effectiveEndVal);
-      let monthsCount = job.rows.length;
-      if (isNoEndDateSentinel(effectiveEndVal)) {
-        const d18Months = (typeof noEndDateRetainerMonths === "number" && noEndDateRetainerMonths > 0) ? noEndDateRetainerMonths : 18;
-        monthsCount = Math.max(job.rows.length, d18Months);
-      } else if (sDate && eDate && eDate > sDate) {
-        const diffDays = (eDate.getTime() - sDate.getTime()) / (24 * 60 * 60 * 1000);
-        monthsCount = Math.max(job.rows.length, Math.round(diffDays / 30.4375));
-      }
-      totalRevenue = rawRev * monthsCount;
-      totalDirectCosts = rawCost * monthsCount;
-
-      if (sDate) {
-        let expectedPriorRevenue = 0;
-        let expectedPriorCosts = 0;
-        for (let p = 0; p < monthsCount; p++) {
-          const nextPStart = addMonths(sDate, p + 1);
-          const pEnd = new Date(nextPStart.getFullYear(), nextPStart.getMonth(), nextPStart.getDate() - 1, 23, 59, 59, 999);
-          if (pEnd < now) {
-            const periodRev = job.rows[p]?.revenue ? (parseFloat(String(job.rows[p].revenue).replace(/[£$€,\s]/g, "")) || rawRev) : rawRev;
-            expectedPriorRevenue += periodRev;
-            const periodCost = job.rows[p]?.directCosts ? (parseFloat(String(job.rows[p].directCosts).replace(/[£$€,\s]/g, "")) || rawCost) : rawCost;
-            expectedPriorCosts += periodCost;
-          }
-        }
-        leftToInvoice = Math.max(0, expectedPriorRevenue - realInvoiced);
-        costsLeftToReceive = Math.max(0, expectedPriorCosts - realCostsReceived);
-      }
-    } else {
-      leftToInvoice = totalRevenue > 0 ? Math.max(0, totalRevenue - realInvoiced) : 0;
-      costsLeftToReceive = totalDirectCosts > 0 ? Math.max(0, totalDirectCosts - realCostsReceived) : 0;
-    }
-
-    return {
-      revenue: totalRevenue,
-      realInvoiced,
-      placeholderInvoiced,
-      leftToInvoice,
-      directCosts: totalDirectCosts,
-      realCostsReceived,
-      placeholderCosts,
-      costsLeftToReceive
-    };
-  };
-
-  const metrics = getJobFinancialMetrics();
+  // Financial metrics (matches JobsView)
+  const metrics = getJobFinancialMetrics(
+    job,
+    isRetainer,
+    isConfirmed,
+    revVal,
+    directCostsVal,
+    noEndDateRetainerMonths,
+    endDateVal
+  );
 
   // Gather invoice slots
   const getJobInvoiceItems = () => {

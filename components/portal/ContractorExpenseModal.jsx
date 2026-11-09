@@ -74,9 +74,13 @@ export default function ContractorExpenseModal({
   const [payDate, setPayDate] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState(null);
 
   React.useEffect(() => {
+    if (isOpen) {
+      setConfirmingDelete(false);
+    }
     if (isOpen && contractor) {
       const defaults = computeDefaultContractorDates(
         monthLabel,
@@ -194,7 +198,6 @@ export default function ContractorExpenseModal({
 
   const handleDelete = async () => {
     if (isFieldLocked) return;
-    if (!window.confirm("Are you sure you want to delete this expense item?")) return;
 
     setIsDeleting(true);
     setError(null);
@@ -473,23 +476,65 @@ export default function ContractorExpenseModal({
             }}
           >
             {!isNew && !isFieldLocked && (
-              <button
-                type="button"
-                onClick={handleDelete}
-                disabled={isSaving || isDeleting}
-                style={{
-                  background: "transparent",
-                  border: "1px solid #fecaca",
-                  color: "#dc2626",
-                  borderRadius: "6px",
-                  padding: "6px 14px",
-                  fontSize: "12.5px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                {isDeleting ? "Deleting..." : "Delete expense"}
-              </button>
+              confirmingDelete ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <button
+                    type="button"
+                    onClick={handleDelete}
+                    disabled={isSaving || isDeleting}
+                    style={{
+                      background: "#dc2626",
+                      border: "none",
+                      color: "#ffffff",
+                      borderRadius: "6px",
+                      padding: "6px 12px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      cursor: isDeleting ? "wait" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px"
+                    }}
+                  >
+                    {isDeleting ? "Deleting..." : "Confirm delete"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(false)}
+                    disabled={isDeleting}
+                    style={{
+                      background: "#ffffff",
+                      border: "1px solid #cbd5e1",
+                      color: "#475569",
+                      borderRadius: "6px",
+                      padding: "6px 10px",
+                      fontSize: "12px",
+                      fontWeight: 500,
+                      cursor: "pointer"
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  disabled={isSaving || isDeleting}
+                  style={{
+                    background: "transparent",
+                    border: "1px solid #fecaca",
+                    color: "#dc2626",
+                    borderRadius: "6px",
+                    padding: "6px 14px",
+                    fontSize: "12.5px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  Delete expense
+                </button>
+              )
             )}
 
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>

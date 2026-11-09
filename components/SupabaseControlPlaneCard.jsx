@@ -1946,13 +1946,15 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                 </div>
               )}
 
-              <AdminWorkbookInspectorModal
-                isOpen={inspectorOpen}
-                onClose={() => setInspectorOpen(false)}
-                clientName={activeClientName}
-                availableTabs={stage2Data?.availableTabs || { master: [], recon: [] }}
-                initialSheetRole={inspectorInitialRole}
-              />
+              {inspectorOpen && (
+                <AdminWorkbookInspectorModal
+                  isOpen={inspectorOpen}
+                  onClose={() => setInspectorOpen(false)}
+                  clientName={activeClientName}
+                  availableTabs={stage2Data?.availableTabs || { master: [], recon: [] }}
+                  initialSheetRole={inspectorInitialRole}
+                />
+              )}
             </>
           );
         })()}

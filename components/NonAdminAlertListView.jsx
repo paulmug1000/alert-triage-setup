@@ -625,6 +625,7 @@ export default function NonAdminAlertListView({
                         </div>
 
                         {alert.alertType === "retainer_invoice" && (() => {
+                          const confirmedRow = m.confirmedRow || alert.confirmedRow;
                           const jobName = m.jobName || alert.jobName;
                           const endClientName = m.endClientName || alert.endClientName;
                           const revenue = m.revenue || alert.revenue;
@@ -686,6 +687,7 @@ export default function NonAdminAlertListView({
                                           alertMeta: {
                                             ...alert,
                                             ...m,
+                                            confirmedRow,
                                             jobName,
                                             endClientName,
                                             lastInvoiceDate,
@@ -709,6 +711,7 @@ export default function NonAdminAlertListView({
                                           alertMeta: {
                                             ...alert,
                                             ...m,
+                                            confirmedRow,
                                             jobName,
                                             endClientName,
                                             lastInvoiceDate,
@@ -735,6 +738,7 @@ export default function NonAdminAlertListView({
                                         alertMeta: {
                                           ...alert,
                                           ...m,
+                                          confirmedRow,
                                           jobName,
                                           endClientName,
                                           lastInvoiceDate,

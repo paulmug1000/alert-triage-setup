@@ -1,10 +1,23 @@
-import React from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
-export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automationCommanderSheetId, clientSheetId, masterSheetId, clientName, onClose, onResolved }) {
+export default function RetainerSplitInvoiceModal({
+  alertMeta,
+  alertKey,
+  automationCommanderSheetId,
+  clientSheetId,
+  masterSheetId,
+  clientName,
+  isAdmin: propIsAdmin,
+  onClose,
+  onResolved
+}) {
   const { allClientsMap, user } = useAppGlobals();
-  const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
+  const isAdmin = propIsAdmin !== undefined
+    ? Boolean(propIsAdmin)
+    : Boolean(user?.isAdmin || user?.role === "Admin");
+
   const effectiveClientName = clientName || alertMeta?.clientName || "";
   const resolvedClientSheetId = clientSheetId
     || alertMeta?.clientSheetId
@@ -15,81 +28,137 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
     || (effectiveClientName && allClientsMap?.[effectiveClientName]?.masterSheetId)
     || (effectiveClientName && Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === effectiveClientName.toLowerCase())?.masterSheetId);
 
-  const [loading, setLoading] = React.useState(true);
-  const [preview, setPreview] = React.useState(null);
-  const [applying, setApplying] = React.useState(false);
-  const [error, setError] = React.useState("");
+  const [loading, setLoading] = useState(true);
+  const [preview, setPreview] = useState(null);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState("");
+  const [retryKey, setRetryKey] = useState(0);
 
-  React.useEffect(() => {
-    let cancelled = false;
+  const fetchPreview = useCallback(async () => {
     if (!resolvedClientSheetId) {
       setError(isAdmin ? "Could not find the client's spreadsheet ID. Please ensure the client sheet is configured." : "Could not find client configuration in Pulse.");
       setLoading(false);
       return;
     }
-    (async () => {
-      try {
-        const res = await fetch("/api/triage", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "compute_retainer_split_invoice_preview",
-            clientSheetId: resolvedClientSheetId,
-            masterSheetId: resolvedMasterSheetId,
-            clientName: effectiveClientName,
-            client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
-            lastInvoiceDate: alertMeta.lastInvoiceDate,
-            possibleMatchSentDate: alertMeta.possibleMatchSentDate,
-            possibleMatchAmount: alertMeta.possibleMatchAmount,
-            possibleMatchInvoiceNo: alertMeta.possibleMatchInvoiceNo,
-            possibleMatchVatAmount: alertMeta.possibleMatchVatAmount,
-            possibleMatchStatus: alertMeta.possibleMatchStatus,
-            possibleMatchConfirmedRow: alertMeta.possibleMatchConfirmedRow,
-          }),
-        });
-        const data = await res.json();
-        if (cancelled) return;
-        if (!data.success) { setError(data.error || "Could not compute the split."); setLoading(false); return; }
+
+    setLoading(true);
+    setError("");
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 30000); // 30-second timeout
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          action: "compute_retainer_split_invoice_preview",
+          clientSheetId: resolvedClientSheetId,
+          masterSheetId: resolvedMasterSheetId,
+          clientName: effectiveClientName,
+          client: alertMeta?.endClientName,
+          jobName: alertMeta?.jobName,
+          parentRowNum: alertMeta?.confirmedRow,
+          lastInvoiceDate: alertMeta?.lastInvoiceDate,
+          possibleMatchSentDate: alertMeta?.possibleMatchSentDate,
+          possibleMatchAmount: alertMeta?.possibleMatchAmount,
+          possibleMatchInvoiceNo: alertMeta?.possibleMatchInvoiceNo,
+          possibleMatchVatAmount: alertMeta?.possibleMatchVatAmount,
+          possibleMatchStatus: alertMeta?.possibleMatchStatus,
+          possibleMatchConfirmedRow: alertMeta?.possibleMatchConfirmedRow,
+        }),
+      });
+      clearTimeout(timeoutId);
+
+      const data = await res.json();
+      if (!data.success) {
+        setError(data.error || "Could not compute the split.");
+      } else {
         setPreview(data);
-        setLoading(false);
-      } catch (e) {
-        if (!cancelled) { setError(e.message); setLoading(false); }
       }
-    })();
-    return () => { cancelled = true; };
-  }, [alertMeta, resolvedClientSheetId, resolvedMasterSheetId, effectiveClientName, isAdmin]);
+    } catch (e) {
+      clearTimeout(timeoutId);
+      if (e.name === "AbortError") {
+        setError("Working out the split timed out. Please try again.");
+      } else {
+        setError(e.message || "Could not compute the split.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    resolvedClientSheetId,
+    resolvedMasterSheetId,
+    effectiveClientName,
+    alertMeta?.endClientName,
+    alertMeta?.jobName,
+    alertMeta?.confirmedRow,
+    alertMeta?.lastInvoiceDate,
+    alertMeta?.possibleMatchSentDate,
+    alertMeta?.possibleMatchAmount,
+    alertMeta?.possibleMatchInvoiceNo,
+    alertMeta?.possibleMatchVatAmount,
+    alertMeta?.possibleMatchStatus,
+    alertMeta?.possibleMatchConfirmedRow,
+    isAdmin
+  ]);
+
+  useEffect(() => {
+    fetchPreview();
+  }, [fetchPreview, retryKey]);
 
   const close = () => { if (!applying) onClose(); };
 
   const handleConfirm = async () => {
     if (!preview) return;
-    setApplying(true); setError("");
+    setApplying(true);
+    setError("");
     try {
       const res = await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "apply_retainer_split_invoice",
-          clientSheetId: resolvedClientSheetId, masterSheetId: resolvedMasterSheetId,
+          clientSheetId: resolvedClientSheetId,
+          masterSheetId: resolvedMasterSheetId,
           automationCommanderSheetId,
           clientName: effectiveClientName,
-          client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
+          client: alertMeta?.endClientName,
+          jobName: alertMeta?.jobName,
+          parentRowNum: alertMeta?.confirmedRow,
           missingRowNum: preview.missingRowNum,
           standardMonthlyAmount: preview.standardMonthlyAmount,
-          altAmount: preview.altAmount, altSentDate: preview.altSentDate, altInvoiceNo: preview.altInvoiceNo, altStatus: preview.altStatus,
-          vatAmount: preview.vatAmount, difference: preview.difference,
-          extraJobName: preview.extraJobName, extraJobMonth: preview.extraJobMonth, extraJobYear: preview.extraJobYear,
+          altAmount: preview.altAmount,
+          altSentDate: preview.altSentDate,
+          altInvoiceNo: preview.altInvoiceNo,
+          altStatus: preview.altStatus,
+          vatAmount: preview.vatAmount,
+          difference: preview.difference,
+          extraJobName: preview.extraJobName,
+          extraJobMonth: preview.extraJobMonth,
+          extraJobYear: preview.extraJobYear,
           existingConfirmedRow: preview.existingJobInfo?.confirmedRow,
         }),
       });
       const data = await res.json();
-      if (!data.success) { setError(data.error || "Failed to apply the split."); setApplying(false); return; }
+      if (!data.success) {
+        setError(data.error || "Failed to apply the split.");
+        setApplying(false);
+        return;
+      }
 
       if (alertKey && automationCommanderSheetId) {
         try {
           await fetch("/api/triage", {
-            method: "POST", headers: { "Content-Type": "application/json" },
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               action: "resolve_proactive_alert",
-              automationCommanderSheetId, alertKey,
+              automationCommanderSheetId,
+              alertKey,
               clientName: effectiveClientName || alertMeta?.endClientName || "",
               resolution: "Invoice split between retainer and extra revenue job",
             }),
@@ -100,15 +169,22 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
       }
       await onResolved();
       onClose();
-    } catch (e) { setError(e.message); setApplying(false); }
+    } catch (e) {
+      setError(e.message || "Failed to apply the split.");
+      setApplying(false);
+    }
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-      onClick={e => { if (e.target === e.currentTarget) close(); }}>
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={e => { if (e.target === e.currentTarget) close(); }}
+    >
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 500px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Split invoice - {alertMeta.endClientName}</h3>
+          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>
+            Split invoice - {alertMeta?.endClientName}
+          </h3>
           {!applying && <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>}
         </div>
 
@@ -121,11 +197,31 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
             {applying && <div style={{ fontSize: "12px", color: "#999" }}>Please don&apos;t close this window until it&apos;s done.</div>}
           </div>
         ) : error && !preview ? (
-          <div style={{ fontSize: "13px", color: "#d32f2f", background: "#fff5f5", padding: "12px", borderRadius: "6px" }}>{error}</div>
+          <div>
+            <div style={{ fontSize: "13px", color: "#d32f2f", background: "#fff5f5", padding: "12px", borderRadius: "6px", marginBottom: "16px" }}>
+              {error}
+            </div>
+            <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={close}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => setRetryKey(k => k + 1)}
+                style={{ padding: "8px 16px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}
+              >
+                Try again
+              </button>
+            </div>
+          </div>
         ) : preview && (
           <>
             <div style={{ fontSize: "13px", color: "#333", marginBottom: "16px" }}>
-              <div><strong>Job:</strong> {alertMeta.jobName}</div>
+              <div><strong>Job:</strong> {alertMeta?.jobName}</div>
               <div style={{ marginTop: "8px", padding: "10px", background: "#ecfeff", border: "1px solid #a5f3fc", borderRadius: "6px" }}>
                 The retainer&apos;s <strong>{preview.missingRowPeriodLabel}</strong> invoice{isAdmin ? ` (row ${preview.missingRowNum})` : ""} will be recorded at the standard <strong>£{preview.standardMonthlyAmount.toFixed(2)}</strong>, using invoice #{preview.altInvoiceNo} sent {preview.altSentDate}.
               </div>
@@ -142,10 +238,20 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
             {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginBottom: "12px" }}>{error}</div>}
 
             <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
-              <button onClick={close} disabled={applying}
-                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
-              <button onClick={handleConfirm} disabled={applying}
-                style={{ padding: "8px 22px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
+              <button
+                type="button"
+                onClick={close}
+                disabled={applying}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirm}
+                disabled={applying}
+                style={{ padding: "8px 22px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}
+              >
                 Confirm split
               </button>
             </div>

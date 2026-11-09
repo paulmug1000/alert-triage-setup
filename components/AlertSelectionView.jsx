@@ -3248,6 +3248,7 @@ export default function AlertSelectionView({
           clientSheetId={retainerAlertResolution.clientSheetId || selectedClient?.clientSheetId}
           masterSheetId={retainerAlertResolution.masterSheetId || selectedClient?.masterSheetId}
           clientName={retainerAlertResolution.alertMeta?.clientName || selectedClient?.clientName}
+          isAdmin={isAdmin}
           onClose={() => setRetainerAlertResolution(null)}
           onResolved={() => loadProactiveAlerts()}
         />
@@ -3260,6 +3261,7 @@ export default function AlertSelectionView({
           clientSheetId={retainerSplitInvoice.clientSheetId || selectedClient?.clientSheetId}
           masterSheetId={retainerSplitInvoice.masterSheetId || selectedClient?.masterSheetId}
           clientName={retainerSplitInvoice.alertMeta?.clientName || selectedClient?.clientName}
+          isAdmin={isAdmin}
           onClose={() => setRetainerSplitInvoice(null)}
           onResolved={() => loadProactiveAlerts()}
         />

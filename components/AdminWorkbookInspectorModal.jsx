@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 
 function colIdxToLetter(idx0) {
   let n = Number(idx0) + 1;
@@ -31,6 +31,10 @@ export default function AdminWorkbookInspectorModal({
     formulasGrid: [],
     updatedAt: null,
   });
+  const [execLogsGrid, setExecLogsGrid] = useState([]);
+
+  const gridReqIdRef = useRef(0);
+  const execReqIdRef = useRef(0);
 
   const [expandedExecRow, setExpandedExecRow] = useState(1);
   const [copiedExecRow, setCopiedExecRow] = useState(null);
@@ -49,7 +53,7 @@ export default function AdminWorkbookInspectorModal({
 
   const tabsForRole = useMemo(() => {
     const list = sheetRole === "recon" ? availableTabs?.recon || [] : availableTabs?.master || [];
-    return list;
+    return list.filter((t) => t.tab_name !== "GasExecLogs" && t.tab_name !== "GasScriptProps");
   }, [sheetRole, availableTabs]);
 
   useEffect(() => {
@@ -64,9 +68,12 @@ export default function AdminWorkbookInspectorModal({
   }, [isOpen, sheetRole, tabsForRole, selectedTab]);
 
   const loadTabGrid = async (role = sheetRole, tab = selectedTab) => {
-    const effectiveRole = role === "executions" ? "master" : role;
-    const effectiveTab = role === "executions" ? "GasExecLogs" : tab;
+    const isExecRole = role === "executions" || tab === "GasExecLogs";
+    const effectiveRole = isExecRole ? "master" : role;
+    const effectiveTab = isExecRole ? "GasExecLogs" : tab;
     if (!effectiveTab) return;
+
+    const reqId = isExecRole ? ++execReqIdRef.current : ++gridReqIdRef.current;
     setLoading(true);
     setError("");
     try {
@@ -78,22 +85,23 @@ export default function AdminWorkbookInspectorModal({
           clientName,
           sheetRole: effectiveRole,
           tabName: effectiveTab,
-          maxRows: role === "executions" ? 60 : 350,
-          maxCols: role === "executions" ? 10 : 60,
+          maxRows: isExecRole ? 60 : 350,
+          maxCols: isExecRole ? 10 : 60,
         }),
       });
       const data = await res.json();
-      if (!res.ok || !data.success) {
-        if (role === "executions") {
-          setGridData({
-            rowCount: 0,
-            colCount: 0,
-            valuesGrid: [],
-            formulasGrid: [],
-            updatedAt: null,
-          });
+      if (isExecRole) {
+        if (reqId !== execReqIdRef.current) return;
+        if (!res.ok || !data.success) {
+          setExecLogsGrid([]);
           return;
         }
+        setExecLogsGrid(Array.isArray(data.valuesGrid) ? data.valuesGrid : []);
+        return;
+      }
+
+      if (reqId !== gridReqIdRef.current) return;
+      if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to load workbook tab");
       }
       setGridData({
@@ -140,7 +148,10 @@ export default function AdminWorkbookInspectorModal({
   };
 
   useEffect(() => {
-    if (isOpen && (selectedTab || sheetRole === "executions")) {
+    if (!isOpen) return;
+    if (sheetRole === "executions") {
+      loadTabGrid("executions", "GasExecLogs");
+    } else if (selectedTab) {
       loadTabGrid(sheetRole, selectedTab);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -224,7 +235,7 @@ export default function AdminWorkbookInspectorModal({
   };
 
   const handleExportCsv = () => {
-    const rows = activeGrid || [];
+    const rows = sheetRole === "executions" ? execLogsGrid || [] : activeGrid || [];
     const csvLines = rows.map((r) =>
       (Array.isArray(r) ? r : [])
         .map((c) => {
@@ -240,7 +251,7 @@ export default function AdminWorkbookInspectorModal({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${clientName}_${sheetRole}_${selectedTab}.csv`;
+    a.download = `${clientName}_${sheetRole}_${sheetRole === "executions" ? "GasExecLogs" : selectedTab}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -519,7 +530,7 @@ export default function AdminWorkbookInspectorModal({
 
             <div style={{ flex: 1, overflow: "auto", padding: "16px 20px" }}>
               {(() => {
-                const rawRows = Array.isArray(gridData.valuesGrid) ? gridData.valuesGrid.slice(1) : [];
+                const rawRows = Array.isArray(execLogsGrid) ? execLogsGrid.slice(1) : [];
                 const q = searchQuery.trim().toLowerCase();
                 const execRows = rawRows
                   .map((r, idx) => ({ row: Array.isArray(r) ? r : [], rowNumber: idx + 1 }))
@@ -551,6 +562,28 @@ export default function AdminWorkbookInspectorModal({
 
                 return (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div
+                      style={{
+                        padding: "6px 14px",
+                        display: "grid",
+                        gridTemplateColumns: "180px minmax(240px, 1.4fr) 150px 90px 105px 1fr 28px",
+                        alignItems: "center",
+                        gap: "12px",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        color: "#64748b",
+                        borderBottom: "1px solid #e2e8f0",
+                        marginBottom: "2px",
+                      }}
+                    >
+                      <span>Timestamp</span>
+                      <span>Function / sequence</span>
+                      <span>Trigger source</span>
+                      <span>Duration</span>
+                      <span>Status</span>
+                      <span>Summary</span>
+                      <span style={{ textAlign: "right" }}>Log</span>
+                    </div>
                     {execRows.map(({ row, rowNumber }) => {
                       const [ts, fnName, triggerSource, duration, status, summary, transcript] = row;
                       const isExpanded = expandedExecRow === rowNumber;

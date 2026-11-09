@@ -2339,7 +2339,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               if (isForced) return true;
               if (!lastIso) return true;
               const lastMs = new Date(lastIso).getTime();
-              return isNaN(lastMs) || Date.now() - lastMs >= reqMs;
+              const effectiveReqMs = Math.max(0, reqMs - 3 * 60 * 1000);
+              return isNaN(lastMs) || Date.now() - lastMs >= effectiveReqMs;
             };
 
             hasInvoice = isValidFrequency(effectiveInvFreq);

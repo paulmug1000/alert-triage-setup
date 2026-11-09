@@ -37,7 +37,7 @@ import {
 import {
   handleGetAllClients, handleGetAssignedExpenses, handleMarkExpenseAssigned,
   handlePruneAssignedExpenses, handleGetOutgoingsInbox, handleGetInvoicesInbox,
-  handleCreateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
+  handleCreateOutgoingsVendor, handleUpdateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
   handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote, handleSetMakingUpCosZero, handleSetMakingUpCosTarget,
@@ -258,6 +258,7 @@ export default async function handler(req, res) {
       apply_retainer_split_invoice: ["retainers", "jobs", "invoices", "cash"],
       delete_retainer: ["retainers", "jobs", "invoices", "cash"],
       create_outgoings_vendor: ["outgoings"],
+      update_outgoings_vendor: ["outgoings"],
       update_outgoing_note: ["outgoings", "cash"],
       set_making_up_cos_zero: ["outgoings", "cash"],
       set_making_up_cos_target: ["outgoings", "views", "settings"],
@@ -644,6 +645,8 @@ export default async function handler(req, res) {
       return await handleGetInvoicesInbox(req, res, sheets);
     } else if (action === "create_outgoings_vendor") {
       return await handleCreateOutgoingsVendor(req, res, sheets);
+    } else if (action === "update_outgoings_vendor") {
+      return await handleUpdateOutgoingsVendor(req, res, sheets);
     } else if (action === "get_outgoings") {
       return await handleGetOutgoings(req, res, sheets);
     } else if (action === "check_outgoings_cell") {

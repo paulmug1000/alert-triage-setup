@@ -4,7 +4,7 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { parseMonthHeader, FULL_MONTH_NAMES } from "./viewsService.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
-import { matchesClientName } from "./sharedHelpers.js";
+import { matchesClientName } from "./userPermissions.js";
 
 
 // Google Sheets light green 3 (used on Incredibble Cash tab)

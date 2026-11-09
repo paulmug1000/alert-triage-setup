@@ -12,6 +12,26 @@
  * - Keeps unreconciled items in the bank transactions list until they clear.
  */
 
+const MONTH_NAMES_SHORT = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+];
+
+const MONTH_MAP = {
+  jan: "01", january: "01",
+  feb: "02", february: "02",
+  mar: "03", march: "03",
+  apr: "04", april: "04",
+  may: "05",
+  jun: "06", june: "06",
+  jul: "07", july: "07",
+  aug: "08", august: "08",
+  sep: "09", sept: "09", september: "09",
+  oct: "10", october: "10",
+  nov: "11", november: "11",
+  dec: "12", december: "12"
+};
+
 export function parseAmount(val) {
   if (val == null || val === "") return 0;
   if (typeof val === "number") return isNaN(val) ? 0 : val;
@@ -31,22 +51,106 @@ export function normalizeDateStr(d) {
     return `${year}-${month}-${day}`;
   }
   const s = String(d).trim();
-  const m1 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-  if (m1) {
-    const day = m1[1].padStart(2, "0");
-    const month = m1[2].padStart(2, "0");
-    let year = m1[3];
+  if (!s) return "";
+
+  // 0. Excel serial number: e.g. 46316
+  const num = Number(s);
+  if (!isNaN(num) && num >= 35000 && num <= 60000) {
+    const utcDays = num - 25569;
+    const date = new Date(utcDays * 86400 * 1000);
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(date.getUTCDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  // 1. ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss
+  const mIso = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (mIso) {
+    const year = mIso[1];
+    const month = mIso[2].padStart(2, "0");
+    const day = mIso[3].padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  // 2. Textual DD-MMM-YY(YY) or DD MMM YY(YY): e.g. "1-Oct-26", "01 Oct 2026", "1st Oct 2026"
+  const mAlpha = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s\-/.]([a-zA-Z]{3,9})[\s\-/.](?:'?)(\d{2,4})$/);
+  if (mAlpha) {
+    const day = mAlpha[1].padStart(2, "0");
+    const monKey = mAlpha[2].toLowerCase();
+    const month = MONTH_MAP[monKey] || (MONTH_NAMES_SHORT.findIndex(mn => monKey.startsWith(mn.toLowerCase())) !== -1
+      ? String(MONTH_NAMES_SHORT.findIndex(mn => monKey.startsWith(mn.toLowerCase())) + 1).padStart(2, "0")
+      : null);
+    let year = mAlpha[3];
+    if (year.length === 2) year = `20${year}`;
+    if (month) {
+      return `${year}-${month}-${day}`;
+    }
+  }
+
+  // 3. Textual MMM DD, YYYY or MMM DD YYYY
+  const mAlphaFirst = s.match(/^([a-zA-Z]{3,9})[\s\-/.](?:'?)(\d{1,2})(?:st|nd|rd|th)?,?[\s\-/.](?:'?)(\d{2,4})$/);
+  if (mAlphaFirst) {
+    const monKey = mAlphaFirst[1].toLowerCase();
+    const month = MONTH_MAP[monKey];
+    const day = mAlphaFirst[2].padStart(2, "0");
+    let year = mAlphaFirst[3];
+    if (year.length === 2) year = `20${year}`;
+    if (month) {
+      return `${year}-${month}-${day}`;
+    }
+  }
+
+  // 4. Numeric UK format: DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  const mDigits = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (mDigits) {
+    const day = mDigits[1].padStart(2, "0");
+    const month = mDigits[2].padStart(2, "0");
+    let year = mDigits[3];
     if (year.length === 2) year = `20${year}`;
     return `${year}-${month}-${day}`;
   }
-  const m2 = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-  if (m2) {
-    const year = m2[1];
-    const month = m2[2].padStart(2, "0");
-    const day = m2[3].padStart(2, "0");
-    return `${year}-${month}-${day}`;
+
+  // 5. Native Date parse fallback
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    const year = parsed.getFullYear();
+    if (year >= 2000 && year <= 2099) {
+      const month = String(parsed.getMonth() + 1).padStart(2, "0");
+      const day = String(parsed.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
   }
+
   return s.slice(0, 10);
+}
+
+export const PAYMENT_PROCESSOR_KEYWORDS = [
+  "gocardless",
+  "stripe",
+  "paypal",
+  "sumup",
+  "worldpay",
+  "izettle",
+  "zettle",
+  "amex",
+  "american express",
+  "bacs",
+  "direct debit",
+  "dd",
+  "standing order",
+  "so",
+  "transferwise",
+  "wise"
+];
+
+export function isPaymentProcessorText(str) {
+  if (!str) return false;
+  const s = String(str).toLowerCase().replace(/[^a-z0-9]/g, "");
+  return PAYMENT_PROCESSOR_KEYWORDS.some(kw => {
+    const cleanKw = kw.replace(/[^a-z0-9]/g, "");
+    return s.includes(cleanKw);
+  });
 }
 
 export function matchAndRemoveFromUnreconPool(tx, unreconPool, options = {}) {
@@ -58,6 +162,7 @@ export function matchAndRemoveFromUnreconPool(tx, unreconPool, options = {}) {
   const txDate = normalizeDateStr(tx.date);
   const cleanStr = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const txTxt = cleanStr(`${tx.payee || ""} ${tx.particulars || ""} ${tx.reference || ""}`);
+  const txIsProcessor = isPaymentProcessorText(txTxt);
 
   let bestIdx = -1;
   let bestScore = 0;
@@ -73,15 +178,21 @@ export function matchAndRemoveFromUnreconPool(tx, unreconPool, options = {}) {
 
     let score = 15;
     const unDate = normalizeDateStr(un.date);
+    let dateMatched = false;
 
     if (txDate && unDate) {
       if (txDate === unDate) {
         score += 35;
+        dateMatched = true;
       } else {
         const diffMs = Math.abs(new Date(txDate).getTime() - new Date(unDate).getTime());
         const diffDays = diffMs / (1000 * 60 * 60 * 24);
         if (diffDays <= 3) {
           score += 25;
+          dateMatched = true;
+        } else if (diffDays <= 5) {
+          score += 15;
+          dateMatched = true;
         } else if (txDate.slice(0, 7) === unDate.slice(0, 7)) {
           score += 10;
         }
@@ -89,8 +200,15 @@ export function matchAndRemoveFromUnreconPool(tx, unreconPool, options = {}) {
     }
 
     const unTxt = cleanStr(`${un.payee || ""} ${un.particulars || ""} ${un.reference || ""}`);
+    const unIsProcessor = isPaymentProcessorText(unTxt);
+    const isProcessorPair = txIsProcessor || unIsProcessor;
+
     if (txTxt && unTxt && (txTxt.includes(unTxt) || unTxt.includes(txTxt))) {
       score += 30;
+    } else if (isProcessorPair && dateMatched) {
+      // Payment processor alias bonus: When one side is a payment processor (GoCardless/Stripe/etc)
+      // and the other is the merchant/vendor name, an amount + date match represents a high-confidence match
+      score += 25;
     }
 
     if (score > bestScore && score >= minScoreThreshold) {
@@ -162,11 +280,36 @@ export function performTransactionsUpdate({
       let score = 10;
       const apiDate = normalizeDateStr(apiTx.date);
       const exDate = normalizeDateStr(ex.date);
-      if (apiDate && exDate && apiDate === exDate) score += 20;
+      let dateMatched = false;
+
+      if (apiDate && exDate) {
+        if (apiDate === exDate) {
+          score += 20;
+          dateMatched = true;
+        } else {
+          const diffMs = Math.abs(new Date(apiDate).getTime() - new Date(exDate).getTime());
+          const diffDays = diffMs / (1000 * 60 * 60 * 24);
+          if (diffDays <= 3) {
+            score += 15;
+            dateMatched = true;
+          } else if (diffDays <= 5) {
+            score += 10;
+            dateMatched = true;
+          }
+        }
+      }
 
       const apiTxt = cleanStr(`${apiTx.payee || ""} ${apiTx.particulars || ""} ${apiTx.reference || ""}`);
       const exTxt = cleanStr(`${ex.payee || ""} ${ex.particulars || ""} ${ex.reference || ""}`);
-      if (apiTxt && exTxt && (apiTxt.includes(exTxt) || exTxt.includes(apiTxt))) score += 30;
+      const isProcessor = isPaymentProcessorText(apiTxt) || isPaymentProcessorText(exTxt);
+
+      if (apiTxt && exTxt && (apiTxt.includes(exTxt) || exTxt.includes(apiTxt))) {
+        score += 30;
+      } else if (isProcessor && dateMatched) {
+        // Payment processor alias bonus: When one side is a payment processor (GoCardless/Stripe/etc)
+        // and the other is the merchant/vendor name, an amount + date match represents a high-confidence match
+        score += 20;
+      }
 
       if (score > bestScore && score >= 20) {
         bestScore = score;
@@ -294,7 +437,19 @@ export function performTransactionsUpdate({
       const exO = parseAmount(ex.outAmount || ex.outAmt);
       const exI = parseAmount(ex.inAmount || ex.inAmt);
       const exAmt = isCredit ? exI : exO;
-      return Math.abs(exAmt - unAmt) < 0.01 && normalizeDateStr(ex.date) === normalizeDateStr(un.date);
+      const amtMatch = Math.abs(exAmt - unAmt) < 0.01;
+      const exNorm = normalizeDateStr(ex.date);
+      const unNorm = normalizeDateStr(un.date);
+      let dateMatch = true;
+      if (exNorm && unNorm) {
+        if (exNorm === unNorm) {
+          dateMatch = true;
+        } else {
+          const diffDays = Math.abs(new Date(exNorm).getTime() - new Date(unNorm).getTime()) / (1000 * 60 * 60 * 24);
+          dateMatch = diffDays <= 4;
+        }
+      }
+      return amtMatch && dateMatch;
     });
 
     const isPendingUnrecon = ex.isReconciled === false || ex.source === "unreconciled_pasted" || isInUnreconList;

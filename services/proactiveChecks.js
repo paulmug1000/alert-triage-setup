@@ -429,6 +429,8 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
       }
 
       if (hasUnsentScheduled) {
+        sentInvoices.sort((a, b) => a.getTime() - b.getTime());
+        const lastRealSent = sentInvoices.length > 0 ? sentInvoices[sentInvoices.length - 1] : null;
         const possibleMatch1 = await findPossibleRetainerInvoice_(masterSheetId, clientSheetId, clientNameRow, unsentSendDate, sharedData, sheets, r);
         let detail1 = `${clientNameRow} - ${jobName}: invoice was scheduled for ${fmtDate(unsentSendDate)} but has no reference number - it may not have been sent yet.`;
         let possibleMatchCase1 = "";
@@ -457,7 +459,9 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
           detail: detail1, jobName, endClientName: clientNameRow, confirmedRow: r + 1,
           stableJobKey: `${clientNameRow}|${jobName}`, revenue: String(revenue || ""),
           startDate: startDate ? fmtDate(startDate) : "",
-          endDate: fmtDate(endDate), lastInvoiceDate: fmtDate(unsentSendDate), expectedByDate: fmtDate(unsentSendDate),
+          endDate: fmtDate(endDate),
+          lastInvoiceDate: lastRealSent ? fmtDate(lastRealSent) : "",
+          expectedByDate: fmtDate(unsentSendDate),
           possibleMatchInvoiceNo: possibleMatch1?.invoiceNo || "", possibleMatchAmount: String(possibleMatch1?.amount || ""),
           possibleMatchSentDate: possibleMatch1?.sentDate || "", possibleMatchVatAmount: String(possibleMatch1?.vatAmount || 0),
           possibleMatchStatus: possibleMatch1?.status || "", possibleMatchConfidence: possibleMatch1?.confidence || "",

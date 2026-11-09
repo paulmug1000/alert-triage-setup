@@ -8459,11 +8459,27 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
             if (foundKey) col = map[foundKey];
         }
 
+        // Direct inv / Dir inv interchangeable alias support
         if (!col) {
- const cleanHeader = String(header).toLowerCase().replace(/[^a-z0-9]/g, '');
- const foundIdx = headers.findIndex(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '') === cleanHeader);
- if (foundIdx !== -1) col = foundIdx + 1;
- }
+            const hLower = String(header).toLowerCase();
+            if (hLower.startsWith('direct inv')) {
+                col = map[hLower.replace(/^direct inv/, 'dir inv')];
+            } else if (hLower.startsWith('dir inv')) {
+                col = map[hLower.replace(/^dir inv/, 'direct inv')];
+            }
+        }
+
+        if (!col) {
+            const cleanHeader = String(header).toLowerCase().replace(/[^a-z0-9]/g, '');
+            const foundIdx = headers.findIndex(h => {
+                const cleanH = String(h).toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (cleanH === cleanHeader) return true;
+                const normH = cleanH.replace(/^directinv/, 'dirinv');
+                const normHeader = cleanHeader.replace(/^directinv/, 'dirinv');
+                return normH === normHeader;
+            });
+            if (foundIdx !== -1) col = foundIdx + 1;
+        }
  
  if (col) {
  const hStr = String(header).toLowerCase();
@@ -8527,8 +8543,8 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
              setVal(newRow, `Direct inv ${i} amt`, pipelineExpenses[k].amt);
              setVal(newRow, `Direct inv ${i} descr.`, pipelineExpenses[k].desc);
              setVal(newRow, `Direct inv ${i} rec date`, pipelineExpenses[k].date);
-             setVal(newRow, `Direct inv ${i} app id`, pipelineExpenses[k].id);
-             setVal(newRow, `Direct inv ${i} status`, pipelineExpenses[k].status);
+             setVal(newRow, `Dir inv ${i} app id`, pipelineExpenses[k].id);
+             setVal(newRow, `Dir inv ${i} status`, pipelineExpenses[k].status);
              setVal(newRow, `Dir inv ${i} VAT?`, pipelineExpenses[k].vat);
              
              // Fix Expense Days
@@ -8652,8 +8668,8 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
                       setVal(childRow, `Direct inv ${ei} amt`, child.expenses[k].amt);
                       setVal(childRow, `Direct inv ${ei} descr.`, child.expenses[k].desc);
                       setVal(childRow, `Direct inv ${ei} rec date`, child.expenses[k].date);
-                      setVal(childRow, `Direct inv ${ei} app id`, child.expenses[k].id);
-                      setVal(childRow, `Direct inv ${ei} status`, child.expenses[k].status);
+                      setVal(childRow, `Dir inv ${ei} app id`, child.expenses[k].id);
+                      setVal(childRow, `Dir inv ${ei} status`, child.expenses[k].status);
                       setVal(childRow, `Dir inv ${ei} VAT?`, child.expenses[k].vat);
                       
                       // Fix Child Expense Days
@@ -13789,10 +13805,16 @@ const COST_CONFIG = {
   }
 };
 
-function isPlaceholderExpenseId_(id) {
-    if (!id) return false;
-    const s = String(id).toUpperCase();
-    return s.includes("PLACE-EXP") || s.includes("MANUAL-ENTRY") || s.includes("UNRECON-GAP") || s.includes("PLACE-GAP") || s.includes("MANUAL-GAP");
+function isPlaceholderExpenseId_(id, desc = "") {
+    if (id) {
+        const s = String(id).toUpperCase();
+        if (s.includes("PLACE-EXP") || s.includes("MANUAL-ENTRY") || s.includes("UNRECON-GAP") || s.includes("PLACE-GAP") || s.includes("MANUAL-GAP") || s.includes("PLACEHOLDER") || s.startsWith("PLACE") || s.startsWith("MANUAL")) return true;
+    }
+    if (desc) {
+        const d = String(desc).toUpperCase();
+        if (d.includes("PLACE-EXP") || d.includes("MANUAL-ENTRY") || d.includes("UNRECON-GAP") || d.includes("PLACE-GAP") || d.includes("MANUAL-GAP") || d.includes("PLACEHOLDER") || d.startsWith("MANUAL") || d.startsWith("PLACE")) return true;
+    }
+    return false;
 }
 
 /**
@@ -15803,7 +15825,8 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
       slots.forEach((s, idx) => {
           const val = parseFloat(row[s.amt]);
           const idVal = String(row[s.id] || "");
-          const isManual = isPlaceholderExpenseId_(idVal);
+          const descVal = String(row[s.desc] || "");
+          const isManual = isPlaceholderExpenseId_(idVal, descVal);
           const hasVal = !isNaN(val) && val > 0;
           if (isManual) manualIndices.push(idx);
           else if (hasVal) realFilled += val;
@@ -16106,7 +16129,7 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
                               dateChanged = true;
                           }
                       }
-                      const isManual = isPlaceholderExpenseId_(rowData[s.id]);
+                      const isManual = isPlaceholderExpenseId_(rowData[s.id], rowData[s.desc]);
                       const isNewCreation = !isManual && currentVal === 0;
 
                       if (Math.abs(currentVal - alloc.amt) > 0.01 || dateChanged || isNewCreation) {
@@ -16134,7 +16157,7 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
                   // Clear other manual slots
                   for (let g = allocations.length; g < groupAvailableSlots.length; g++) {
                       const ge = groupAvailableSlots[g];
-                      if (isPlaceholderExpenseId_(data[ge.dataIdx][slots[ge.slotIdx].id])) {
+                      if (isPlaceholderExpenseId_(data[ge.dataIdx][slots[ge.slotIdx].id], data[ge.dataIdx][slots[ge.slotIdx].desc])) {
                           clearConfirmedSlot_(targetSheet, ge.dataIdx + 1, slots[ge.slotIdx]);
                           totalUpdates++;
                           const client = (colClient !== -1) ? data[ge.dataIdx][colClient] : clientName || "Unknown";
@@ -16202,9 +16225,9 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
 
       if (gapNeeded > 0.05) {
           // Count legitimate Xero expenses
-          const s1_real = (parseMoney(row[slots[0].amt]) > 0) && !isPlaceholderExpenseId_(row[slots[0].id]);
-          const s2_real = (parseMoney(row[slots[1].amt]) > 0) && !isPlaceholderExpenseId_(row[slots[1].id]);
-          const s3_real = (parseMoney(row[slots[2].amt]) > 0) && !isPlaceholderExpenseId_(row[slots[2].id]);
+          const s1_real = (parseMoney(row[slots[0].amt]) > 0) && !isPlaceholderExpenseId_(row[slots[0].id], row[slots[0].desc]);
+          const s2_real = (parseMoney(row[slots[1].amt]) > 0) && !isPlaceholderExpenseId_(row[slots[1].id], row[slots[1].desc]);
+          const s3_real = (parseMoney(row[slots[2].amt]) > 0) && !isPlaceholderExpenseId_(row[slots[2].id], row[slots[2].desc]);
           const xeroCount = (s1_real ? 1 : 0) + (s2_real ? 1 : 0) + (s3_real ? 1 : 0);
 
           const splitRules = calculateProjectSplit_(gapNeeded, expenseLogicMode, startDate, endDate, retainerDayVal, xeroCount);
@@ -16242,7 +16265,7 @@ function runSheetAudit(targetSheet, alertSheet, sheetName) {
                       }
                   }
 
-                  const isManual = isPlaceholderExpenseId_(row[s.id]);
+                  const isManual = isPlaceholderExpenseId_(row[s.id], row[s.desc]);
                   const isNewCreation = !isManual && currentAmt === 0;
 
                   if (Math.abs(currentAmt - rule.amt) > 0.01 || dateChanged || isNewCreation) {

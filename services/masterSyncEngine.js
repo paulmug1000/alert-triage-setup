@@ -653,13 +653,18 @@ export async function runNativeMasterSync({
   const runCrm = typeSet.has("crm") || typeSet.has("all");
   const runExp = typeSet.has("expense") || typeSet.has("all");
 
+  const runStartedIso = new Date().toISOString();
   const activeSeqs = [
     runInv ? "Invoice" : null,
     runCrm ? "CRM" : null,
     runExp ? "Expense" : null,
   ].filter(Boolean);
   const fnLabel = `runAgencyAutomator (${activeSeqs.join(", ") || syncType})`;
-  const isAutomated = !userEmail || userEmail === "System" || userEmail === "system@cron";
+  const isAutomated =
+    !userEmail ||
+    userEmail === "System" ||
+    userEmail === "system@cron" ||
+    String(userEmail).startsWith("System (");
   const triggerLabel = isAutomated ? "Scheduled (30m clock)" : `Manual (${userEmail})`;
 
   const env = await createGasEnvironment({
@@ -708,17 +713,16 @@ export async function runNativeMasterSync({
   const crmDealsPulled = Math.max(0, dfcGrid.length - 1);
 
   const schedulePatch = {};
-  const nowIso = new Date().toISOString();
   if (runInv) {
-    schedulePatch.last_inv_run = nowIso;
+    schedulePatch.last_inv_run = runStartedIso;
     schedulePatch.inv_status = String(dcaGrid[1]?.[28] || `Synced (${invoicesPulled} invoices)`); // AC2
   }
   if (runCrm) {
-    schedulePatch.last_crm_run = nowIso;
+    schedulePatch.last_crm_run = runStartedIso;
     schedulePatch.crm_status = String(dcaGrid[2]?.[28] || `Synced (${crmDealsPulled} deals)`); // AC3
   }
   if (runExp) {
-    schedulePatch.last_exp_run = nowIso;
+    schedulePatch.last_exp_run = runStartedIso;
     schedulePatch.exp_status = String(dcaGrid[3]?.[28] || `Synced (${directCostsPulled} bills)`); // AC4
   }
 

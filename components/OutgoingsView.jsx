@@ -5,6 +5,7 @@ import OutgoingsEditModal from "./OutgoingsEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import OutgoingsEstimateModal from "./OutgoingsEstimateModal";
 import OutgoingsNewVendorModal from "./OutgoingsNewVendorModal";
+import OutgoingsEditVendorModal from "./OutgoingsEditVendorModal";
 import JobDetailModal from "./JobDetailModal";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
@@ -347,6 +348,9 @@ export default function OutgoingsView({
   const [directCostsJobSearch, setDirectCostsJobSearch] = useState("");
   const [selectedJobForDetail, setSelectedJobForDetail] = useState(null);
   const [placeholderChoicePrompt, setPlaceholderChoicePrompt] = useState(null);
+  const [editingContractor, setEditingContractor] = useState(null);
+  const [vendorMismatchPrompt, setVendorMismatchPrompt] = useState(null);
+  const [outgoingsNotice, setOutgoingsNotice] = useState(null);
 
   const filteredContractors = React.useMemo(() => {
     const list = outgoingsData?.contractors || [];
@@ -571,7 +575,10 @@ export default function OutgoingsView({
       executeExpensePlacement(job, toPlace, null, null, true);
       return;
     } else {
-      alert("All direct cost slots for this retainer month are already occupied by actual expenses.");
+      setOutgoingsNotice({
+        title: "No available slots",
+        message: "All direct cost slots for this retainer month are already occupied by actual expenses."
+      });
     }
   };
 
@@ -656,6 +663,53 @@ export default function OutgoingsView({
     } finally {
       setSavingContractorCellKey(prev => (prev === cellKey ? null : prev));
     }
+  };
+
+  const executeContractorCellPlacement = async (contractor, colLetter, toPlace, cell, realBlocks) => {
+    const allBlocks = cell.blocks || [];
+    const placeholderBlocks = allBlocks.filter(b => b.appId && isPlaceholderExpense(b.appId));
+    if (placeholderBlocks.length > 0) {
+      const totalManual = placeholderBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
+      setOutgoingsReplacePrompt({
+        expenses: toPlace,
+        contractor,
+        colLetter,
+        allBlocks,
+        totalManual,
+        blocksWithoutManual: allBlocks.filter(b => !b.appId || !isPlaceholderExpense(b.appId)),
+        placeholderBlocks,
+      });
+      return;
+    }
+    const newBlocks = toPlace.map(item => {
+      const { vendor, description } = parseVendorAndDescription(item);
+      const descToStore = description ? `${vendor} - ${description}` : (vendor || item.accountName || "");
+      return {
+        appId: item.appId,
+        amount: item.amount,
+        status: item.status || "",
+        recDate: item.date || "",
+        payDate: item.datePaid || "",
+        description: descToStore || item.description || item.contactName || item.accountName || ""
+      };
+    });
+    const placedIds = new Set(toPlace.map(e => e.appId));
+    setOutgoingsInbox(prev => {
+      const remaining = prev.filter(e => !placedIds.has(e.appId));
+      if (remaining.length === 0 && outgoingsClient) {
+        markClientCleared(outgoingsClient.clientName);
+      }
+      return remaining;
+    });
+    toPlace.forEach(exp => {
+      addAssignedAppId(exp.appId, outgoingsClient?.clientName);
+    });
+    removeAssignedExpenseAlerts([...placedIds], outgoingsClient?.clientName);
+    decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
+    clearInboxSelection();
+    setOutgoingsPlacing(null);
+    outgoingsPlacingRef.current = null;
+    await updateCell(contractor, colLetter, [...realBlocks, ...newBlocks]);
   };
 
   const handleToggleMakingUpCosZero = async (colLetter, newZeroState) => {
@@ -995,6 +1049,242 @@ export default function OutgoingsView({
             }
           }}
         />
+      )}
+      {editingContractor && (
+        <OutgoingsEditVendorModal
+          contractor={editingContractor}
+          outgoingsClient={resolvedClientForVendor || effectiveClientObj || outgoingsClient}
+          onClose={() => setEditingContractor(null)}
+          onUpdated={async (updatedVendor) => {
+            if (updatedVendor) {
+              setOutgoingsData(prev => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  contractors: (prev.contractors || []).map(c =>
+                    c.sheetRow === updatedVendor.sheetRow
+                      ? {
+                        ...c,
+                        name: updatedVendor.name,
+                        vatFlag: updatedVendor.vatFlag,
+                        invTiming: updatedVendor.invTiming,
+                        payTiming: updatedVendor.payTiming,
+                        deliveryPct: updatedVendor.deliveryPct,
+                      }
+                      : c
+                  )
+                };
+              });
+            }
+            const clientToReload = resolvedClientForVendor || effectiveClientObj || outgoingsClient;
+            if (clientToReload?.clientSheetId && typeof invalidateCachedClientData === "function") {
+              invalidateCachedClientData(clientToReload.clientSheetId, "outgoings");
+            }
+          }}
+        />
+      )}
+      {vendorMismatchPrompt && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.45)",
+            backdropFilter: "blur(2px)",
+            zIndex: 3100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "16px",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setVendorMismatchPrompt(null);
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              padding: "24px",
+              width: "min(94vw, 440px)",
+              boxShadow: "0 20px 50px -10px rgba(0, 0, 0, 0.25)",
+              fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, sans-serif",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "16px" }}>
+              <div
+                style={{
+                  width: "36px",
+                  height: "36px",
+                  borderRadius: "50%",
+                  background: "#fef3c7",
+                  color: "#d97706",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                  fontSize: "18px",
+                  fontWeight: "700",
+                }}
+              >
+                !
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
+                  Vendor mismatch?
+                </h3>
+                <p style={{ margin: 0, fontSize: "13px", color: "#64748b", lineHeight: "1.4" }}>
+                  The expense name doesn&apos;t match this contractor.
+                </p>
+              </div>
+            </div>
+
+            <div
+              style={{
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "8px",
+                padding: "12px 14px",
+                marginBottom: "16px",
+                fontSize: "13px",
+              }}
+            >
+              <div style={{ marginBottom: "6px" }}>
+                <span style={{ color: "#64748b" }}>Contractor: </span>
+                <strong style={{ color: "#1e293b" }}>&ldquo;{vendorMismatchPrompt.contractor?.name}&rdquo;</strong>
+              </div>
+              <div style={{ color: "#64748b", marginBottom: "6px" }}>
+                Placing {vendorMismatchPrompt.toPlace?.length} expense{vendorMismatchPrompt.toPlace?.length > 1 ? "s" : ""}:
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px", maxHeight: "120px", overflowY: "auto" }}>
+                {vendorMismatchPrompt.toPlace?.map((exp, idx) => (
+                  <div
+                    key={exp.appId || idx}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      background: "#ffffff",
+                      padding: "6px 8px",
+                      borderRadius: "4px",
+                      border: "1px solid #e2e8f0",
+                      fontSize: "12px",
+                    }}
+                  >
+                    <span style={{ color: "#334155", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "250px" }}>
+                      {exp.vendor || exp.contactName || exp.description || exp.accountName || "Expense"}
+                    </span>
+                    <span style={{ fontWeight: "600", color: "#0f172a" }}>
+                      {formatCurrency(exp.amount)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#334155", fontWeight: "500" }}>
+              Place anyway?
+            </p>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setVendorMismatchPrompt(null)}
+                style={{
+                  padding: "8px 16px",
+                  background: "#f1f5f9",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  fontWeight: "500",
+                  color: "#475569",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const prompt = vendorMismatchPrompt;
+                  setVendorMismatchPrompt(null);
+                  await executeContractorCellPlacement(
+                    prompt.contractor,
+                    prompt.colLetter,
+                    prompt.toPlace,
+                    prompt.cell,
+                    prompt.realBlocks
+                  );
+                }}
+                style={{
+                  padding: "8px 20px",
+                  background: "#2563eb",
+                  border: "none",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  color: "#ffffff",
+                }}
+              >
+                Place anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {outgoingsNotice && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.45)",
+            backdropFilter: "blur(2px)",
+            zIndex: 3200,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "16px",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setOutgoingsNotice(null);
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              padding: "24px",
+              width: "min(94vw, 440px)",
+              boxShadow: "0 20px 50px -10px rgba(0, 0, 0, 0.25)",
+              fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, sans-serif",
+            }}
+          >
+            <h3 style={{ margin: "0 0 8px", fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
+              {outgoingsNotice.title || "Notice"}
+            </h3>
+            <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#475569", lineHeight: "1.4" }}>
+              {outgoingsNotice.message}
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={() => setOutgoingsNotice(null)}
+                style={{
+                  padding: "8px 18px",
+                  background: "#2563eb",
+                  border: "none",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  color: "#ffffff",
+                }}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {outgoingsReplacePrompt && (() => {
         const { expenses, exp, contractor, colLetter, allBlocks, realBlocks, totalManual, blocksWithoutManual, placeholderBlocks } = outgoingsReplacePrompt;
@@ -1693,10 +1983,31 @@ export default function OutgoingsView({
                   ) : filteredContractors.map((contractor, rowIdx) => (
                     <tr key={contractor.sheetRow} style={{ background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
                       <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", fontSize: "12px", background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd", position: "sticky", left: 0, zIndex: 1, verticalAlign: "top" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                          <div>
-                            <div style={{ fontWeight: "600", color: "#222" }}>{contractor.name}</div>
-                            <div style={{ fontSize: "10px", color: "#aaa", marginTop: "1px" }}>VAT:{contractor.vatFlag} · Inv:{contractor.invTiming} · Pay:{contractor.payTiming} · Del:{contractor.deliveryPct || "100%"}</div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "6px" }}>
+                          <div
+                            onClick={() => setEditingContractor(contractor)}
+                            title="Click to edit contractor information"
+                            style={{
+                              cursor: "pointer",
+                              flex: 1,
+                              minWidth: 0,
+                              padding: "2px 4px",
+                              margin: "-2px -4px",
+                              borderRadius: "4px",
+                              transition: "background-color 0.15s ease",
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.backgroundColor = "#eef2ff"; }}
+                            onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                          >
+                            <div style={{ fontWeight: "600", color: "#1e293b", display: "flex", alignItems: "center", gap: "5px" }}>
+                              <span style={{ textDecoration: "underline", textDecorationStyle: "dotted", textDecorationColor: "#94a3b8", textUnderlineOffset: "3px" }}>
+                                {contractor.name}
+                              </span>
+                              <span style={{ fontSize: "11px", color: "#3b82f6", opacity: 0.8 }} title="Edit contractor">✎</span>
+                            </div>
+                            <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                              VAT:{contractor.vatFlag || "Yes"} · Inv:{contractor.invTiming || "Next"} · Pay:{contractor.payTiming || "Next"} · Del:{contractor.deliveryPct || "100%"}
+                            </div>
                           </div>
                           <button
                             onClick={() => {
@@ -1727,55 +2038,17 @@ export default function OutgoingsView({
                               return !contrWords.some(w => expDesc.includes(w));
                             });
                             if (anyMismatch) {
-                              const ok = window.confirm(
-                                `Vendor mismatch?\n\nContractor: "${contractor.name}"\nPlacing ${toPlace.length} expense${toPlace.length > 1 ? "s" : ""}.\n\nPlace anyway?`
-                              );
-                              if (!ok) return;
-                            }
-                            const allBlocks = cell.blocks || [];
-                            const placeholderBlocks = allBlocks.filter(b => b.appId && isPlaceholderExpense(b.appId));
-                            if (placeholderBlocks.length > 0) {
-                              const totalManual = placeholderBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
-                              setOutgoingsReplacePrompt({
-                                expenses: toPlace,
+                              setVendorMismatchPrompt({
                                 contractor,
                                 colLetter: m.colLetter,
-                                allBlocks,
-                                totalManual,
-                                blocksWithoutManual: allBlocks.filter(b => !b.appId || !isPlaceholderExpense(b.appId)),
-                                placeholderBlocks,
+                                monthLabel: m.label,
+                                toPlace,
+                                cell,
+                                realBlocks,
                               });
                               return;
                             }
-                            const newBlocks = toPlace.map(item => {
-                              const { vendor, description } = parseVendorAndDescription(item);
-                              const descToStore = description ? `${vendor} - ${description}` : (vendor || item.accountName || "");
-                              return {
-                                appId: item.appId,
-                                amount: item.amount,
-                                status: item.status || "",
-                                recDate: item.date || "",
-                                payDate: item.datePaid || "",
-                                description: descToStore || item.description || item.contactName || item.accountName || ""
-                              };
-                            });
-                            const placedIds = new Set(toPlace.map(e => e.appId));
-                            setOutgoingsInbox(prev => {
-                              const remaining = prev.filter(e => !placedIds.has(e.appId));
-                              if (remaining.length === 0 && outgoingsClient) {
-                                markClientCleared(outgoingsClient.clientName);
-                              }
-                              return remaining;
-                            });
-                            toPlace.forEach(exp => {
-                              addAssignedAppId(exp.appId, outgoingsClient?.clientName);
-                            });
-                            removeAssignedExpenseAlerts([...placedIds], outgoingsClient?.clientName);
-                            decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
-                            clearInboxSelection();
-                            setOutgoingsPlacing(null);
-                            outgoingsPlacingRef.current = null;
-                            await updateCell(contractor, m.colLetter, [...realBlocks, ...newBlocks]);
+                            await executeContractorCellPlacement(contractor, m.colLetter, toPlace, cell, realBlocks);
                           } else {
                             setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label, topNote: cell.topNote || "" });
                           }

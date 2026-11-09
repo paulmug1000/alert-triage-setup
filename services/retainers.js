@@ -368,7 +368,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
         rows = sparseRows;
         resolvedParent = candidate;
       }
-    } catch (_) {}
+    } catch (_) { }
 
     if (!resolvedParent) {
       const resp = await sheets.spreadsheets.values.get({
@@ -404,7 +404,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
       requestBody: { valueInputOption: "RAW", data },
     });
 
-    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -1603,7 +1603,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
         requestBody: { valueInputOption: "RAW", data: updateData },
       });
 
-      await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+      await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
       return res.status(200).json({
         success: true,
@@ -1907,7 +1907,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
         : Promise.resolve(),
     ]);
 
-    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -3406,7 +3406,7 @@ export async function handleTidyUpRetainers(req, res, sheets) {
       }
     }
 
-    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -3494,8 +3494,30 @@ export async function handleComputeRetainerAlertResolution(req, res, sheets) {
 
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+    const slotDefs = [
+      { amt: 41, ref: 42, sent: 43, days: 44, status: 45 },
+      { amt: 48, ref: 49, sent: 50, days: 51, status: 52 },
+      { amt: 55, ref: 56, sent: 57, days: 58, status: 59 },
+    ];
+    const realSentDates = [];
+    const allRetRows = [parentRow, ...childRows.map(cr => cr.row)];
+    for (const r of allRetRows) {
+      for (const slot of slotDefs) {
+        const status = String(r[slot.status] || "").trim().toLowerCase();
+        const isSentOrPaid = status === "sent" || status === "paid" || status.includes("paid") || status.includes("sent");
+        const ref = String(r[slot.ref] || "").trim();
+        const sentVal = r[slot.sent];
+        if (isSentOrPaid && ref && !isPlaceholderInvoice(ref) && sentVal) {
+          const d = retParseSheetDate(sentVal);
+          if (d) realSentDates.push(d);
+        }
+      }
+    }
+    realSentDates.sort((a, b) => a.getTime() - b.getTime());
+    const sheetLastSent = realSentDates.length > 0 ? realSentDates[realSentDates.length - 1] : null;
+
     if (resolutionType === "end") {
-      const lastSent = retParseSheetDate(lastInvoiceDate);
+      const lastSent = sheetLastSent || retParseSheetDate(lastInvoiceDate);
       if (!lastSent) {
         return res.status(400).json({ success: false, error: "Could not determine last invoice sent date." });
       }
@@ -3631,8 +3653,6 @@ export async function handleComputeRetainerSplitInvoicePreview(req, res, sheets)
     const standardMonthlyAmount = retParseMoney(parentRow[32]);
     const altAmount = parseFloat(possibleMatchAmount) || 0;
     const altSentDate = retParseSheetDate(possibleMatchSentDate);
-    const lastSent = retParseSheetDate(lastInvoiceDate);
-    if (!altSentDate || !lastSent) return res.status(400).json({ success: false, error: "Could not parse invoice dates." });
 
     const childRows = [];
     let cj = parentRowNum;
@@ -3644,6 +3664,31 @@ export async function handleComputeRetainerSplitInvoicePreview(req, res, sheets)
         cj++;
       } else break;
     }
+
+    const slotDefs = [
+      { amt: 41, ref: 42, sent: 43, days: 44, status: 45 },
+      { amt: 48, ref: 49, sent: 50, days: 51, status: 52 },
+      { amt: 55, ref: 56, sent: 57, days: 58, status: 59 },
+    ];
+    const realSentDates = [];
+    const allRetRows = [parentRow, ...childRows.map(cr => cr.row)];
+    for (const r of allRetRows) {
+      for (const slot of slotDefs) {
+        const status = String(r[slot.status] || "").trim().toLowerCase();
+        const isSentOrPaid = status === "sent" || status === "paid" || status.includes("paid") || status.includes("sent");
+        const ref = String(r[slot.ref] || "").trim();
+        const sentVal = r[slot.sent];
+        if (isSentOrPaid && ref && !isPlaceholderInvoice(ref) && sentVal) {
+          const d = retParseSheetDate(sentVal);
+          if (d) realSentDates.push(d);
+        }
+      }
+    }
+    realSentDates.sort((a, b) => a.getTime() - b.getTime());
+    const sheetLastSent = realSentDates.length > 0 ? realSentDates[realSentDates.length - 1] : null;
+
+    const lastSent = sheetLastSent || retParseSheetDate(lastInvoiceDate);
+    if (!altSentDate || !lastSent) return res.status(400).json({ success: false, error: "Could not parse invoice dates." });
     const missingRow = childRows
       .map(cr => ({ ...cr, invDate: retParseSheetDate(cr.row[43]) }))
       .filter(cr => cr.invDate && cr.invDate.getTime() > lastSent.getTime())
@@ -3766,7 +3811,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
-      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
       return res.status(200).json({ success: true, mode: "converted", extraJobRow: existingConfirmedRow });
     } else {
       const metaResp = await sheets.spreadsheets.get({
@@ -3814,7 +3859,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
         spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
 
-      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
       (async () => {
         let tenantClient = req.body.clientName || "";
@@ -4019,7 +4064,7 @@ export async function handleDeleteRetainer(req, res, sheets) {
       })
     );
 
-    await invalidatePmaClientCache(sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+    await invalidatePmaClientCache(sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     (async () => {
       let tenantClient = req.body.clientName || "";

@@ -26,6 +26,7 @@ export default function OutgoingsDetailModal({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deletedSuccess, setDeletedSuccess] = useState(false);
+  const [operationError, setOperationError] = useState("");
   const [userEdited, setUserEdited] = useState(false);
   const userEditedRef = useRef(false);
 
@@ -90,6 +91,7 @@ export default function OutgoingsDetailModal({
       setConfirmingDelete(false);
       setDeleting(false);
       setDeletedSuccess(false);
+      setOperationError("");
       setUserEdited(false);
       userEditedRef.current = false;
       return;
@@ -110,6 +112,7 @@ export default function OutgoingsDetailModal({
     setConfirmingDelete(false);
     setDeleting(false);
     setDeletedSuccess(false);
+    setOperationError("");
     setUserEdited(false);
     userEditedRef.current = false;
 
@@ -428,9 +431,10 @@ export default function OutgoingsDetailModal({
 
       setExistingBlocks(blocks);
       setSavedSuccess(true);
+      setOperationError("");
       setTimeout(() => setSavedSuccess(false), 3500);
     } catch (err) {
-      alert("Error saving outgoings entry: " + err.message);
+      setOperationError("Error saving outgoings entry: " + err.message);
     } finally {
       setSaving(false);
     }
@@ -482,12 +486,13 @@ export default function OutgoingsDetailModal({
       setExistingBlocks(updatedBlocks);
       setConfirmingDelete(false);
       setDeletedSuccess(true);
+      setOperationError("");
       onDeleted?.({ ...target, sheetRow });
       setTimeout(() => {
         onClose();
       }, 600);
     } catch (err) {
-      alert("Error deleting outgoings entry: " + err.message);
+      setOperationError("Error deleting outgoings entry: " + err.message);
     } finally {
       setDeleting(false);
     }
@@ -776,7 +781,11 @@ export default function OutgoingsDetailModal({
           }}
         >
           <div>
-            {deletedSuccess ? (
+            {operationError ? (
+              <span style={{ fontSize: "12px", color: "#dc2626", fontWeight: "600" }}>
+                {operationError}
+              </span>
+            ) : deletedSuccess ? (
               <span style={{ fontSize: "12px", color: "#16a34a", fontWeight: "700" }}>
                 ✓ Expense deleted
               </span>

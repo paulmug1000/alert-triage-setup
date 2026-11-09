@@ -720,6 +720,90 @@ export async function handleCreateOutgoingsVendor(req, res, sheets) {
   }
 }
 
+export async function handleUpdateOutgoingsVendor(req, res, sheets) {
+  const { clientSheetId, masterSheetId, sheetRow, vendorName, vatFlag, invTiming, payTiming, deliveryPct } = req.body;
+  if (!clientSheetId || !sheetRow) {
+    return res.status(400).json({ success: false, error: "Missing clientSheetId or sheetRow" });
+  }
+
+  const rowNum = parseInt(sheetRow, 10);
+  if (isNaN(rowNum) || rowNum < 13) {
+    return res.status(400).json({ success: false, error: "Invalid sheetRow for Outgoings contractor" });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const cleanVendorName = String(vendorName || "").trim();
+    if (!cleanVendorName) {
+      return res.status(400).json({ success: false, error: "Contractor name cannot be blank" });
+    }
+
+    const pctNum = parseFloat(String(deliveryPct !== undefined && deliveryPct !== "" ? deliveryPct : "100").replace(/%/g, ""));
+    const pctString = `${Number.isFinite(pctNum) ? Math.max(0, Math.min(100, pctNum)) : 100}%`;
+
+    const cleanVat = String(vatFlag || "Yes").trim().toLowerCase().startsWith("n") ? "No" : "Yes";
+    const cleanInvTiming = String(invTiming || "Next").trim().toLowerCase().startsWith("cur") ? "Curr" : "Next";
+    const cleanPayTiming = String(payTiming || "Next").trim().toLowerCase().startsWith("cur") ? "Curr" : "Next";
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetIdClean,
+      range: `Outgoings!A${rowNum}:E${rowNum}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[
+          sanitizeFormulaInput(cleanVendorName),
+          sanitizeFormulaInput(cleanVat),
+          sanitizeFormulaInput(cleanInvTiming),
+          sanitizeFormulaInput(cleanPayTiming),
+          pctString
+        ]]
+      },
+    });
+
+    await applySheetFontFormat(sheets, sheetIdClean, "Outgoings", rowNum - 1, rowNum, 0, 5, "Arial", 9);
+
+    // Invalidate server-side caches immediately across L1/L2
+    const cleanMasterId = masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
+    await invalidatePmaClientCache(sheetIdClean, cleanMasterId, ["outgoings"]).catch(e => console.warn("Cache invalidate failed:", e.message));
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "EXPENSES",
+      action: "Vendor Updated",
+      summary: `Updated contractor '${cleanVendorName}' in Outgoings (Row ${rowNum})`,
+      details: {
+        vendorName: cleanVendorName,
+        vatFlag: cleanVat,
+        invTiming: cleanInvTiming,
+        payTiming: cleanPayTiming,
+        deliveryPct: pctString,
+        row: rowNum,
+        clientName: tenantClient
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    const updatedVendorObj = {
+      sheetRow: rowNum,
+      name: cleanVendorName,
+      vatFlag: cleanVat,
+      invTiming: cleanInvTiming,
+      payTiming: cleanPayTiming,
+      deliveryPct: pctString,
+    };
+
+    return res.status(200).json({ success: true, sheetRow: rowNum, vendor: updatedVendorObj });
+  } catch (err) {
+    console.error("❌ update_outgoings_vendor error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 export async function handleGetOutgoings(req, res, sheets) {
   const { clientSheetId, bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });

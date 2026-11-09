@@ -7,6 +7,7 @@ import { downloadCsv, isPlaceholderExpense } from "../../utils/helpers";
 import AddContractorModal from "./AddContractorModal";
 import AddExpenseModal from "./AddExpenseModal";
 import ContractorExpenseModal from "./ContractorExpenseModal";
+import OutgoingsEditVendorModal from "../OutgoingsEditVendorModal";
 
 function getContractorColLetter(year, mIdx) {
   let colIndex = 6 + mIdx; // Year 1: cols G-R (6 to 17)
@@ -72,12 +73,15 @@ export default function PortalOutgoingsView({
   const [showAddContractorModal, setShowAddContractorModal] = useState(false);
   const [showAddExpenseModal, setShowAddExpenseModal] = useState(false);
   const [localNewItems, setLocalNewItems] = useState([]);
+  const [editingContractor, setEditingContractor] = useState(null);
+  const [localContractorUpdates, setLocalContractorUpdates] = useState({});
 
   // Clear optimistic allocations and local new items when fresh server data arrives
   useEffect(() => {
     setOptimisticAllocs({});
     setOptimisticDeliveryPcts({});
     setLocalNewItems([]);
+    setLocalContractorUpdates({});
   }, [outgoingsData]);
 
   // Keep open popover updated when outgoingsData refreshes
@@ -95,14 +99,14 @@ export default function PortalOutgoingsView({
       setActivePopover((prev) =>
         prev
           ? {
-              ...prev,
-              title: ddData.title,
-              period: ddData.period,
-              total: ddData.total,
-              items: ddData.items || [],
-              sections: null,
-              isLoading: false,
-            }
+            ...prev,
+            title: ddData.title,
+            period: ddData.period,
+            total: ddData.total,
+            items: ddData.items || [],
+            sections: null,
+            isLoading: false,
+          }
           : null
       );
     }
@@ -150,8 +154,22 @@ export default function PortalOutgoingsView({
       return false;
     });
 
-    return [...list, ...relevantLocal];
-  }, [outgoingsData, category, localNewItems]);
+    const combined = [...list, ...relevantLocal];
+    return combined.map((it) => {
+      const update = localContractorUpdates[it.rowNumber];
+      if (update) {
+        return {
+          ...it,
+          name: update.name || it.name,
+          vat: update.vatFlag || update.vat || it.vat,
+          invoiceTiming: update.invTiming || update.invoiceTiming || it.invoiceTiming,
+          paymentTiming: update.payTiming || update.paymentTiming || it.paymentTiming,
+          deliveryPct: update.deliveryPct || it.deliveryPct,
+        };
+      }
+      return it;
+    });
+  }, [outgoingsData, category, localNewItems, localContractorUpdates]);
 
   const deliveryExpenses = useMemo(() => {
     if (category !== "expenses") return [];
@@ -712,7 +730,34 @@ export default function PortalOutgoingsView({
                               {expandedRows.has(item.rowNumber || idx) ? "▼" : "▶"}
                             </button>
                           )}
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</span>
+                          {category === "contractors" ? (
+                            <span
+                              onClick={() =>
+                                setEditingContractor({
+                                  sheetRow: item.rowNumber,
+                                  name: item.name,
+                                  vatFlag: item.vat || "Yes",
+                                  invTiming: item.invoiceTiming || "Next",
+                                  payTiming: item.paymentTiming || "Next",
+                                  deliveryPct: item.deliveryPct || "100%",
+                                })
+                              }
+                              style={{
+                                cursor: "pointer",
+                                textDecoration: "underline",
+                                textDecorationStyle: "dotted",
+                                textDecorationColor: "#94a3b8",
+                                textUnderlineOffset: "3px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                              title="Click to edit contractor details"
+                            >
+                              {item.name}
+                            </span>
+                          ) : (
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</span>
+                          )}
                         </div>
                       </td>
 
@@ -1449,6 +1494,23 @@ export default function PortalOutgoingsView({
                   },
                 };
               });
+            }
+            if (onRefresh) onRefresh();
+          }}
+        />
+      )}
+
+      {editingContractor && (
+        <OutgoingsEditVendorModal
+          contractor={editingContractor}
+          outgoingsClient={{ clientSheetId, clientName }}
+          onClose={() => setEditingContractor(null)}
+          onUpdated={(updated) => {
+            if (updated) {
+              setLocalContractorUpdates((prev) => ({
+                ...prev,
+                [updated.sheetRow]: updated,
+              }));
             }
             if (onRefresh) onRefresh();
           }}

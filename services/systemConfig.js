@@ -419,16 +419,17 @@ export async function handleTriggerAgentRun(req, res, sheets) {
       await redisClient.set("active_agent_run:latest", JSON.stringify(activeRunObj), { EX: 1800 });
 
       const progressKey = `agent_run:${targetClientName}:${runId}`;
+      const liveEntries = [
+        {
+          stage: "init",
+          message: `Starting automation run for [${types.join(", ")}] (${targetClientName})...`,
+          at: new Date().toISOString(),
+        },
+      ];
       await redisClient.set(
         progressKey,
         JSON.stringify({
-          entries: [
-            {
-              stage: "init",
-              message: `Starting native Supabase sync (${types.join(", ")}) for ${targetClientName}...`,
-              at: new Date().toISOString(),
-            },
-          ],
+          entries: liveEntries,
           done: false,
         }),
         { EX: 1800 }
@@ -441,21 +442,27 @@ export async function handleTriggerAgentRun(req, res, sheets) {
             sheets,
             clientName: targetClientName,
             syncType,
+            types,
+            runId,
+            onProgress: async (prog) => {
+              if (!prog || !prog.message) return;
+              liveEntries.push({
+                stage: prog.stage || "info",
+                message: prog.message,
+                at: new Date().toISOString(),
+              });
+              await redisClient
+                .set(progressKey, JSON.stringify({ entries: liveEntries, done: Boolean(prog.done) }), { EX: 1800 })
+                .catch(() => {});
+            },
             userEmail: sessionUser?.email || "System",
           });
-          const entries = [
-            {
-              stage: "init",
-              message: `Starting native Supabase sync (${types.join(", ")}) for ${targetClientName}...`,
-              at: new Date().toISOString(),
-            },
-            {
-              stage: "done",
-              message: `Native Supabase sync complete (${syncRes.comparisons?.invDiscrepancyCount ?? 0} invoice flags, ${syncRes.comparisons?.dirDiscrepancyCount ?? 0} expense flags).`,
-              at: new Date().toISOString(),
-            },
-          ];
-          await redisClient.set(progressKey, JSON.stringify({ entries, done: true }), { EX: 1800 });
+          liveEntries.push({
+            stage: "done",
+            message: `All requested sequences complete (${syncRes.comparisons?.invDiscrepancyCount ?? 0} invoice flags, ${syncRes.comparisons?.dirDiscrepancyCount ?? 0} expense flags).`,
+            at: new Date().toISOString(),
+          });
+          await redisClient.set(progressKey, JSON.stringify({ entries: liveEntries, done: true }), { EX: 1800 });
           await redisClient.set(
             `active_agent_run:${targetClientName}`,
             JSON.stringify({

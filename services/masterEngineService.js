@@ -2,6 +2,24 @@ import fs from "fs";
 import path from "path";
 import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
 import { extractSheetIdFromUrl } from "./sheetsClient.js";
+import {
+  formatCellForDisplay,
+  formatGridForDisplay,
+  normalizeCellForStorage,
+} from "./gasRuntime/sheetValueUtils.js";
+import {
+  evaluateOutgoingsMasterTab,
+  evaluateInvAppList,
+  evaluateInvDashList,
+  evaluateInvComp,
+  evaluateJnlAppList,
+  evaluateDirDashList,
+  evaluateDirComp,
+  evaluateCRMList,
+  evaluateCRMComp,
+  evaluateKeyInfoAndPLComp,
+  compactGrid2D,
+} from "./gasRuntime/masterFormulaEngine.js";
 
 const STAGE2_TABLES = [
   { name: "tenant_key_info", label: "Tenant KeyInfo & settings" },
@@ -31,15 +49,39 @@ const CORE_MASTER_TABS = [
   "DataFromCRM",
   "CRMList",
   "InvAppList",
+  "InvDashList",
+  "JnlAppList",
+  "DirDashList",
+  "PLAdds",
   "OutgNotes",
   "AutoLog",
   "MgmtRep",
   "Year0Data",
+  "Year0PLFromApp",
   "RevComp",
   "RevFromApp",
   "Outgoings",
   "MthlyClient",
   "Welcome",
+  "CRMGoogleBridge",
+  "CRMExcelBridge",
+  "CRMExcelCopy",
+  "StarterInv",
+  "StarterPL",
+  "DataFromTime",
+  "ProjectsFromTime",
+  "ConfCalcs",
+  "PipeCalcs",
+  "Salaries",
+  "Dashboard",
+  "Performance",
+  "Cash",
+  "NBtoFind",
+  "VAT",
+  "Tax",
+  "Calcs",
+  "AppCompare",
+  "DataForReport",
 ];
 
 let _sheetContextCache = {
@@ -95,8 +137,18 @@ export function parseA1Range(a1Str, defaultTab = "KeyInfo") {
       .replace(/^'+|'+$/g, "");
     coordPart = raw.slice(bangIdx + 1).trim();
   } else if (raw) {
-    tabName = raw.replace(/^'+|'+$/g, "");
-    coordPart = "A1:ZZ2000";
+    const unquoted = raw.replace(/^'+|'+$/g, "");
+    const isCoordPattern =
+      /^\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{0,3}\$?\d*)?$/.test(unquoted) ||
+      /^\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}$/.test(unquoted) ||
+      /^\$?\d+:\$?\d+$/.test(unquoted);
+    if (isCoordPattern) {
+      tabName = defaultTab;
+      coordPart = unquoted;
+    } else {
+      tabName = unquoted;
+      coordPart = "A1:ZZ2000";
+    }
   }
 
   if (!coordPart) {
@@ -169,7 +221,12 @@ function sliceGrid2D_(grid, parsed) {
   return out;
 }
 
-function applyWriteToGrid2D_(grid, parsed, incomingValues) {
+function applyWriteToGrid2D_(
+  grid,
+  parsed,
+  incomingValues,
+  { sheetRole = "master", tabName = "", valueInputOption = "USER_ENTERED", notesGrid = null, isFormulaGrid = false } = {}
+) {
   const nextGrid = Array.isArray(grid) ? grid.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
   const rows = Array.isArray(incomingValues) ? incomingValues : [];
   const sRow = parsed.startRow0 ?? 0;
@@ -183,7 +240,20 @@ function applyWriteToGrid2D_(grid, parsed, incomingValues) {
       const targetC = sCol + cOffset;
       while (nextGrid[targetR].length <= targetC) nextGrid[targetR].push("");
       const val = rowVals[cOffset];
-      nextGrid[targetR][targetC] = val === null || val === undefined ? "" : val;
+      if (isFormulaGrid) {
+        nextGrid[targetR][targetC] = val === null || val === undefined ? "" : val;
+      } else {
+        nextGrid[targetR][targetC] = normalizeCellForStorage(
+          sheetRole,
+          tabName || parsed.tabName,
+          targetR,
+          targetC,
+          val,
+          valueInputOption,
+          nextGrid,
+          notesGrid
+        );
+      }
     }
   }
   return nextGrid;
@@ -293,13 +363,15 @@ async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = 
 
   const { data, error } = await supabase
     .from("master_sheet_grids")
-    .select("*")
+    .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
     .eq("client_name", ctx.clientName)
     .eq("sheet_role", sheetRole)
     .eq("tab_name", tabName)
     .maybeSingle();
 
   if (!error && data) {
+    data.values_grid = compactGrid2D(data.values_grid || []);
+    data.formulas_grid = data.values_grid;
     _gridMemoryCache.set(cacheKey, { record: data, expiresAt: Date.now() + GRID_CACHE_TTL_MS });
     return data;
   }
@@ -311,13 +383,13 @@ async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = 
       const [valResp, formResp] = await Promise.all([
         rawSheetsApi.spreadsheets.values.get({
           spreadsheetId: sourceSheetId,
-          range: `'${tabName}'!A1:ZZ1200`,
-          valueRenderOption: "FORMATTED_VALUE",
+          range: `'${tabName}'`,
+          valueRenderOption: "UNFORMATTED_VALUE",
         }),
         rawSheetsApi.spreadsheets.values
           .get({
             spreadsheetId: sourceSheetId,
-            range: `'${tabName}'!A1:ZZ1200`,
+            range: `'${tabName}'`,
             valueRenderOption: "FORMULA",
           })
           .catch(() => ({ data: { values: [] } })),
@@ -367,24 +439,26 @@ async function saveVirtualTabGrid_(ctx, sheetRole, tabName, valuesGrid, formulas
 
   const cacheKey = `${ctx.clientName.toLowerCase()}::${sheetRole}::${tabName}`;
   const existing = _gridMemoryCache.get(cacheKey)?.record || {};
-  const finalFormulas = formulasGrid || existing.formulas_grid || valuesGrid;
+  const compactedValues = compactGrid2D(valuesGrid || []);
   const finalNotes = notesGrid || existing.notes_grid || {};
-  const maxCols = (valuesGrid || []).reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0);
+  const maxCols = compactedValues.reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0);
 
   const payload = {
     client_id: ctx.clientId,
     client_name: ctx.clientName,
     sheet_role: sheetRole,
     tab_name: tabName,
-    values_grid: valuesGrid,
-    formulas_grid: finalFormulas,
+    values_grid: compactedValues,
     notes_grid: finalNotes,
-    row_count: (valuesGrid || []).length,
+    row_count: compactedValues.length,
     col_count: maxCols,
     updated_at: new Date().toISOString(),
   };
 
-  _gridMemoryCache.set(cacheKey, { record: payload, expiresAt: Date.now() + GRID_CACHE_TTL_MS });
+  _gridMemoryCache.set(cacheKey, {
+    record: { ...payload, formulas_grid: formulasGrid || existing.formulas_grid || compactedValues },
+    expiresAt: Date.now() + GRID_CACHE_TTL_MS,
+  });
 
   const { error: upsertErr } = await supabase.from("master_sheet_grids").upsert(payload, {
     onConflict: "client_name,sheet_role,tab_name",
@@ -458,6 +532,88 @@ function hashTabNameToSheetId_(tabName, idx = 0) {
   return h;
 }
 
+async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, rawSheetsApi) {
+  const tabsSet = new Set(updatedTabNames);
+  const needsCrm = tabsSet.has("CRMComp") || tabsSet.has("DataFromCRM");
+  const needsPl =
+    tabsSet.has("PLComp") ||
+    tabsSet.has("PLFromApp") ||
+    tabsSet.has("PLAdds") ||
+    tabsSet.has("KeyInfo") ||
+    tabsSet.has("Outgoings");
+  const needsInv = tabsSet.has("InvFromApp");
+  const needsDir = tabsSet.has("JnlsFromApp");
+
+  if (!needsCrm && !needsPl && !needsInv && !needsDir) return;
+
+  const masterTabsNeeded = new Set(["KeyInfo", "DataChgAlert"]);
+  if (needsCrm) {
+    ["DataFromCRM", "CRMList", "CRMComp", "ConfCalcs", "PipeCalcs"].forEach((t) => masterTabsNeeded.add(t));
+  }
+  if (needsPl) {
+    ["Outgoings", "PLFromApp", "PLAdds", "PLComp", "InvFromApp", "JnlsFromApp"].forEach((t) => masterTabsNeeded.add(t));
+  }
+  if (needsInv) {
+    ["InvFromApp", "InvAppList", "InvDashList", "InvComp", "ConfCalcs"].forEach((t) => masterTabsNeeded.add(t));
+  }
+  if (needsDir) {
+    ["JnlsFromApp", "JnlAppList", "DirDashList", "DirComp", "ConfCalcs"].forEach((t) => masterTabsNeeded.add(t));
+  }
+
+  const grids = {};
+  const recordsByTab = {};
+  for (const t of masterTabsNeeded) {
+    const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, rawSheetsApi);
+    recordsByTab[t] = rec;
+    grids[t] = Array.isArray(rec.values_grid) ? rec.values_grid.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
+  }
+
+  if (needsPl && ctx.reconSheetId) {
+    const reconPlAdds = await getOrLoadVirtualTabGrid_(ctx, "recon", "PLAdds", rawSheetsApi);
+    if (Array.isArray(reconPlAdds.values_grid) && reconPlAdds.values_grid.length > 0) {
+      grids.ReconPLAdds = reconPlAdds.values_grid;
+    }
+  }
+
+  const dirtyOut = new Set();
+  if (needsPl) {
+    if (tabsSet.has("KeyInfo") || tabsSet.has("Outgoings")) {
+      evaluateOutgoingsMasterTab(grids);
+      dirtyOut.add("Outgoings");
+    }
+    evaluateKeyInfoAndPLComp(grids);
+    dirtyOut.add("KeyInfo");
+    dirtyOut.add("PLComp");
+  }
+  if (needsInv) {
+    evaluateInvAppList(grids);
+    evaluateInvDashList(grids);
+    evaluateInvComp(grids);
+    dirtyOut.add("InvAppList");
+    dirtyOut.add("InvDashList");
+    dirtyOut.add("InvComp");
+  }
+  if (needsDir) {
+    evaluateJnlAppList(grids);
+    evaluateDirDashList(grids);
+    evaluateDirComp(grids);
+    dirtyOut.add("JnlAppList");
+    dirtyOut.add("DirDashList");
+    dirtyOut.add("DirComp");
+  }
+  if (needsCrm) {
+    evaluateCRMList(grids);
+    evaluateCRMComp(grids);
+    dirtyOut.add("CRMList");
+    dirtyOut.add("CRMComp");
+  }
+
+  for (const t of dirtyOut) {
+    const origRec = recordsByTab[t] || {};
+    await saveVirtualTabGrid_(ctx, "master", t, grids[t] || [], origRec.formulas_grid, origRec.notes_grid);
+  }
+}
+
 /**
  * Intercepts Google Sheets v4 API calls from sheetsClient.js when a client's
  * master_mode === 'supabase' and the target spreadsheetId is their Master or Recon sheet.
@@ -478,11 +634,23 @@ export async function handleVirtualSheetsCall({
     const rangeStr = params.range || "KeyInfo!A1:Z100";
     const parsed = parseA1Range(rangeStr);
     const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
-    const sourceGrid =
-      params.valueRenderOption === "FORMULA" && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0
-        ? rec.formulas_grid
-        : rec.values_grid || [];
-    const values = sliceGrid2D_(sourceGrid, parsed);
+    const isFormula =
+      params.valueRenderOption === "FORMULA" && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0;
+    const isUnformatted = params.valueRenderOption === "UNFORMATTED_VALUE";
+    const sourceGrid = isFormula ? rec.formulas_grid : rec.values_grid || [];
+    const sliced = sliceGrid2D_(sourceGrid, parsed);
+    const values =
+      isFormula || isUnformatted
+        ? sliced
+        : formatGridForDisplay(
+            sheetRole,
+            parsed.tabName,
+            sliced,
+            parsed.startRow0 ?? 0,
+            parsed.startCol0 ?? 0,
+            rec.values_grid || [],
+            rec.notes_grid || {}
+          );
     return {
       status: 200,
       data: {
@@ -515,6 +683,9 @@ export async function handleVirtualSheetsCall({
       });
     }
 
+    const isFormulaReq = params.valueRenderOption === "FORMULA";
+    const isUnformattedReq = params.valueRenderOption === "UNFORMATTED_VALUE";
+
     const valueRanges = [];
     for (const item of parsedList) {
       let rec = byTab.get(item.parsed.tabName);
@@ -522,14 +693,26 @@ export async function handleVirtualSheetsCall({
         rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, item.parsed.tabName, rawSheetsApi);
         byTab.set(item.parsed.tabName, rec);
       }
-      const sourceGrid =
-        params.valueRenderOption === "FORMULA" && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0
-          ? rec.formulas_grid
-          : rec.values_grid || [];
+      const isFormula =
+        isFormulaReq && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0;
+      const sourceGrid = isFormula ? rec.formulas_grid : rec.values_grid || [];
+      const sliced = sliceGrid2D_(sourceGrid, item.parsed);
+      const values =
+        isFormula || isUnformattedReq
+          ? sliced
+          : formatGridForDisplay(
+              sheetRole,
+              item.parsed.tabName,
+              sliced,
+              item.parsed.startRow0 ?? 0,
+              item.parsed.startCol0 ?? 0,
+              rec.values_grid || [],
+              rec.notes_grid || {}
+            );
       valueRanges.push({
         range: item.raw,
         majorDimension: "ROWS",
-        values: sliceGrid2D_(sourceGrid, item.parsed),
+        values,
       });
     }
 
@@ -546,13 +729,29 @@ export async function handleVirtualSheetsCall({
   if (namespace === "values" && method === "update") {
     const rangeStr = params.range || "KeyInfo!A1";
     const incomingValues = params.requestBody?.values || params.resource?.values || [];
+    const valueInputOption = params.valueInputOption || params.requestBody?.valueInputOption || "USER_ENTERED";
     const parsed = parseA1Range(rangeStr);
     const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
-    const updatedValues = applyWriteToGrid2D_(rec.values_grid || [], parsed, incomingValues);
-    const updatedFormulas = applyWriteToGrid2D_(rec.formulas_grid || rec.values_grid || [], parsed, incomingValues);
+    const updatedValues = applyWriteToGrid2D_(rec.values_grid || [], parsed, incomingValues, {
+      sheetRole,
+      tabName: parsed.tabName,
+      valueInputOption,
+      notesGrid: rec.notes_grid,
+      isFormulaGrid: false,
+    });
+    const updatedFormulas = applyWriteToGrid2D_(rec.formulas_grid || rec.values_grid || [], parsed, incomingValues, {
+      sheetRole,
+      tabName: parsed.tabName,
+      valueInputOption,
+      notesGrid: rec.notes_grid,
+      isFormulaGrid: true,
+    });
     await saveVirtualTabGrid_(ctx, sheetRole, parsed.tabName, updatedValues, updatedFormulas, rec.notes_grid);
 
     if (sheetRole === "master") {
+      await recomputeMasterFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
+        console.warn("[masterEngineService] Formula recompute warning:", e.message)
+      );
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, [{ range: rangeStr, values: incomingValues }]);
     }
 
@@ -569,6 +768,8 @@ export async function handleVirtualSheetsCall({
   // 4. values.batchUpdate
   if (namespace === "values" && method === "batchUpdate") {
     const dataItems = params.requestBody?.data || params.resource?.data || [];
+    const valueInputOption =
+      params.valueInputOption || params.requestBody?.valueInputOption || params.resource?.valueInputOption || "USER_ENTERED";
     const byTabUpdates = new Map();
     for (const d of dataItems) {
       if (!d || !d.range) continue;
@@ -582,13 +783,28 @@ export async function handleVirtualSheetsCall({
       let nextVals = rec.values_grid || [];
       let nextForms = rec.formulas_grid || rec.values_grid || [];
       for (const u of updates) {
-        nextVals = applyWriteToGrid2D_(nextVals, u.parsed, u.values);
-        nextForms = applyWriteToGrid2D_(nextForms, u.parsed, u.values);
+        nextVals = applyWriteToGrid2D_(nextVals, u.parsed, u.values, {
+          sheetRole,
+          tabName,
+          valueInputOption,
+          notesGrid: rec.notes_grid,
+          isFormulaGrid: false,
+        });
+        nextForms = applyWriteToGrid2D_(nextForms, u.parsed, u.values, {
+          sheetRole,
+          tabName,
+          valueInputOption,
+          notesGrid: rec.notes_grid,
+          isFormulaGrid: true,
+        });
       }
       await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid);
     }
 
     if (sheetRole === "master") {
+      await recomputeMasterFormulasAfterVirtualWrite_(ctx, [...byTabUpdates.keys()], rawSheetsApi).catch((e) =>
+        console.warn("[masterEngineService] Formula recompute warning:", e.message)
+      );
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, dataItems);
     }
 
@@ -605,9 +821,25 @@ export async function handleVirtualSheetsCall({
   if (namespace === "values" && method === "append") {
     const rangeStr = params.range || "AutoLog!A:D";
     const incomingValues = params.requestBody?.values || params.resource?.values || [];
+    const valueInputOption = params.valueInputOption || "USER_ENTERED";
     const parsed = parseA1Range(rangeStr);
     const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
-    const nextVals = Array.isArray(rec.values_grid) ? [...rec.values_grid, ...incomingValues] : [...incomingValues];
+    const baseRow0 = Array.isArray(rec.values_grid) ? rec.values_grid.length : 0;
+    const normRows = incomingValues.map((row, rIdx) =>
+      (Array.isArray(row) ? row : [row]).map((v, cIdx) =>
+        normalizeCellForStorage(
+          sheetRole,
+          parsed.tabName,
+          baseRow0 + rIdx,
+          (parsed.startCol0 ?? 0) + cIdx,
+          v,
+          valueInputOption,
+          rec.values_grid,
+          rec.notes_grid
+        )
+      )
+    );
+    const nextVals = Array.isArray(rec.values_grid) ? [...rec.values_grid, ...normRows] : [...normRows];
     const nextForms = Array.isArray(rec.formulas_grid) ? [...rec.formulas_grid, ...incomingValues] : [...incomingValues];
     await saveVirtualTabGrid_(ctx, sheetRole, parsed.tabName, nextVals, nextForms, rec.notes_grid);
 
@@ -879,7 +1111,7 @@ async function syncStructuredKeyInfoFromGrid_(ctx, keyInfoGrid) {
     client_id: ctx.clientId,
     client_name: ctx.clientName,
     normalized_key: ctx.normalizedKey || normalizeClientKey_(ctx.clientName),
-    fy_start_date: cell(2, "B"),
+    fy_start_date: formatCellForDisplay("master", "KeyInfo", 1, 1, keyInfoGrid[1]?.[1], keyInfoGrid),
     revenue_or_income_mode: cell(15, "B") || "Revenue",
     direct_costs_mode: cell(8, "D") || "Contractors",
     accounting_tool: cell(4, "Q") || "None",
@@ -961,7 +1193,7 @@ async function syncReconPeriodAndItemsFromGrid_(ctx, monthKey, grid) {
   const itemsToInsert = [];
   for (let r = 2; r < Math.min(grid.length, 200); r++) {
     const row = grid[r] || [];
-    const txnDate = String(row[1] || row[0] || "").trim();
+    const txnDate = formatCellForDisplay("recon", monthKey, r, 1, row[1] || row[0], grid);
     const accountName = String(row[2] || "").trim();
     const payee = String(row[3] || row[4] || "").trim();
     const particulars = String(row[4] || "").trim();
@@ -993,7 +1225,7 @@ async function syncReconPeriodAndItemsFromGrid_(ctx, monthKey, grid) {
   const colCD = colLetterToIdx0("CD"); // 81
   for (let r = 3; r < Math.min(grid.length, 60); r++) {
     const row = grid[r] || [];
-    const txnDate = String(row[colCD] || "").trim();
+    const txnDate = formatCellForDisplay("recon", monthKey, r, colCD, row[colCD], grid);
     const payee = String(row[colCD + 3] || "").trim(); // CG
     const grossAmt = parseNumericVal_(row[colCD + 4]); // CH
     const netAmt = parseNumericVal_(row[colCD + 5]); // CI
@@ -1075,12 +1307,12 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
 
     for (let i = 0; i < tabsToPull.length; i += 6) {
       const chunk = tabsToPull.slice(i, i + 6);
-      const ranges = chunk.map((t) => `'${t}'!A1:ZZ1200`);
+      const ranges = chunk.map((t) => `'${t}'`);
       const [valBatch, formBatch] = await Promise.all([
         sheets.spreadsheets.values.batchGet({
           spreadsheetId: ctx.masterSheetId,
           ranges,
-          valueRenderOption: "FORMATTED_VALUE",
+          valueRenderOption: "UNFORMATTED_VALUE",
           _bypassSupabaseVirtualSheet: true,
         }),
         sheets.spreadsheets.values
@@ -1133,12 +1365,12 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
 
     for (let i = 0; i < allReconTabs.length; i += 5) {
       const chunk = allReconTabs.slice(i, i + 5);
-      const ranges = chunk.map((t) => `'${t}'!A1:DA220`);
+      const ranges = chunk.map((t) => `'${t}'`);
       const [valBatch, formBatch] = await Promise.all([
         sheets.spreadsheets.values.batchGet({
           spreadsheetId: ctx.reconSheetId,
           ranges,
-          valueRenderOption: "FORMATTED_VALUE",
+          valueRenderOption: "UNFORMATTED_VALUE",
           _bypassSupabaseVirtualSheet: true,
         }),
         sheets.spreadsheets.values

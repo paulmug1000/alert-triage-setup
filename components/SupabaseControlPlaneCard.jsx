@@ -1125,6 +1125,23 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                 </div>
               </div>
 
+              {feedbackMsg && (
+                <div
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: "6px",
+                    marginBottom: "14px",
+                    fontSize: "12px",
+                    fontWeight: "500",
+                    background: feedbackMsg.type === "error" ? "#fef2f2" : "#f0fdf4",
+                    border: `1px solid ${feedbackMsg.type === "error" ? "#fecaca" : "#bbf7d0"}`,
+                    color: feedbackMsg.type === "error" ? "#991b1b" : "#166534",
+                  }}
+                >
+                  {feedbackMsg.text}
+                </div>
+              )}
+
               {/* Multi-client overview table */}
               {s2Ready && allClients.length > 0 && (
                 <div

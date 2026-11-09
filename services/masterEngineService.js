@@ -1348,16 +1348,19 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
           const invFreq = String(vGrid[1]?.[24] || "").trim();
           const crmFreq = String(vGrid[2]?.[24] || "").trim();
           const expFreq = String(vGrid[3]?.[24] || "").trim();
-          await supabase
-            .from("sync_schedules")
-            .update({
-              inv_freq: invFreq || "Not Used",
-              crm_freq: crmFreq || "Not Used",
-              exp_freq: expFreq || "Not Used",
-              updated_at: new Date().toISOString(),
-            })
-            .eq("client_name", ctx.clientName)
-            .catch(() => {});
+          try {
+            await supabase
+              .from("sync_schedules")
+              .update({
+                inv_freq: invFreq || "Not Used",
+                crm_freq: crmFreq || "Not Used",
+                exp_freq: expFreq || "Not Used",
+                updated_at: new Date().toISOString(),
+              })
+              .eq("client_name", ctx.clientName);
+          } catch (_) {
+            // ignore non-critical sync_schedules update warning
+          }
         } else if (tabName === "InvFromApp") {
           summary.invoicesCount = await syncInvoicesTableFromGrid_(ctx, vGrid);
         } else if (tabName === "JnlsFromApp") {

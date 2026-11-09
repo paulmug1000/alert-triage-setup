@@ -298,10 +298,9 @@ export async function handleEomGetClientTasks(req, res, sheets) {
   try {
     await ensureEomTabs_(sheets, automationCommanderSheetId);
     await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
-    const [tasksResp, templatesResp, defaultsResp] = await Promise.all([
+    const [tasksResp, templatesResp] = await Promise.all([
       withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" })),
       withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" })),
-      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" })),
     ]);
     const templateNameById = {};
     const templateLinkedFunctionById = {};
@@ -311,27 +310,10 @@ export async function handleEomGetClientTasks(req, res, sheets) {
     });
 
     const sessionUser = getSessionUser(req);
-    const isSysAdmin = req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || sessionUser.role === "Admin";
-
-    const defaultRows = (defaultsResp.data.values || []).filter(r => r[0] && (r[4] !== "FALSE" && r[4] !== false));
-    const defaultTemplateIds = new Set(defaultRows.filter(r => r[1]).map(r => r[1]));
-    const defaultTaskNames = new Set(defaultRows.map(r => {
-      const tpl = r[1] ? templateNameById[r[1]] : null;
-      return (r[2] || (tpl ? tpl : "")).trim().toLowerCase();
-    }).filter(Boolean));
-
     const rows = (tasksResp.data.values || []).filter(r => r[0]);
     const tasks = rows
       .filter(r => !filterClient || r[1] === filterClient)
       .filter(r => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, r[1]))
-      .filter(r => {
-        if (isSysAdmin) return true;
-        const tplId = r[2] || "";
-        const taskName = (r[2] ? (templateNameById[r[2]] || "") : (r[3] || "")).trim().toLowerCase();
-        if (tplId && defaultTemplateIds.has(tplId)) return true;
-        if (taskName && defaultTaskNames.has(taskName)) return true;
-        return false;
-      })
       .map((r, i) => ({
         taskId: r[0], clientName: r[1], templateId: r[2] || "",
         name: r[2] ? (templateNameById[r[2]] || "(template deleted)") : (r[3] || ""),
@@ -681,10 +663,13 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
   try {
     await ensureEomTabs_(sheets, automationCommanderSheetId);
     const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:N500" });
+    const sessionUser = getSessionUser(req);
+    const isSysAdmin = !sessionUser || sessionUser.isAdmin || sessionUser.role === "Admin";
     const clients = (clientResp.data.values || [])
       .map(r => ({ clientName: String(r[0] || "").trim(), clientSheetUrl: r[11] }))
       .filter(c => c.clientName && c.clientSheetUrl)
-      .filter(c => c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name");
+      .filter(c => c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name")
+      .filter(c => isSysAdmin || isUserAuthorizedForClient(sessionUser, c.clientName));
 
     const loadedAt = new Date().toISOString();
     const newRows = [];
@@ -701,16 +686,22 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
     }
 
     const existingResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2:C50000" });
-    const existingRowCount = (existingResp.data.values || []).length;
+    const existingRows = existingResp.data.values || [];
+    const existingRowCount = existingRows.length;
+
+    const processedNames = new Set(clients.map(c => c.clientName.toLowerCase()));
+    const retainedRows = existingRows.filter(r => r[0] && !processedNames.has(String(r[0]).trim().toLowerCase()));
+    const combinedRows = [...retainedRows, ...newRows];
+
     if (existingRowCount > 0) {
       await sheets.spreadsheets.values.clear({
         spreadsheetId: automationCommanderSheetId, range: `EomBankAccounts!A2:C${existingRowCount + 1}`,
       });
     }
-    if (newRows.length > 0) {
+    if (combinedRows.length > 0) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2", valueInputOption: "RAW",
-        requestBody: { values: newRows },
+        requestBody: { values: combinedRows },
       });
     }
     return res.status(200).json({ success: true, clientsProcessed: clients.length, accountsLoaded: newRows.length, failedClients });
@@ -778,6 +769,10 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
   const { automationCommanderSheetId, clientSheetId: cashClientSheetId, clientName: cashClientName, monthKey: cashTargetMonthKey, amounts } = req.body;
   if (!automationCommanderSheetId || !cashClientSheetId || !cashClientName || !cashTargetMonthKey || !Array.isArray(amounts) || amounts.length === 0) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+  const sessionUser = getSessionUser(req);
+  if (sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, cashClientName)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client." });
   }
   const numericAmounts = amounts.map(a => parseFloat(a)).filter(a => !isNaN(a) && a !== 0);
   if (numericAmounts.length === 0) return res.status(400).json({ success: false, error: "No valid, non-zero amounts provided" });
@@ -2451,6 +2446,10 @@ export async function applyDefaultEomTasksToClient_(sheets, automationCommanderS
 export async function handleEomApplyDefaultTasks(req, res, sheets) {
   const { automationCommanderSheetId, clientName } = req.body;
   if (!automationCommanderSheetId || !clientName) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const sessionUser = getSessionUser(req);
+  if (sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client." });
+  }
   try {
     const result = await applyDefaultEomTasksToClient_(sheets, automationCommanderSheetId, clientName);
     return res.status(200).json(result);

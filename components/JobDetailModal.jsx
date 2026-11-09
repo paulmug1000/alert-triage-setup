@@ -35,6 +35,109 @@ import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
 
+function matchTargetJob(jobs, target) {
+  if (!Array.isArray(jobs) || !target) return null;
+  const rawCode = String(target?.projectCode || "").trim().toLowerCase();
+  const targetProjectCode = ["-", "n/a", "none"].includes(rawCode) ? "" : rawCode;
+  const targetJobName = String(target?.jobName || "").trim().toLowerCase();
+  const targetEndClient = String(target?.endClientName || (target?.client && typeof target.client === "string" ? target.client : "")).trim().toLowerCase();
+  const targetRow = target?.rowNum ? Number(target.rowNum) : null;
+  const targetTab = String(target?.tabName || "").trim().toLowerCase();
+
+  let found = null;
+  const tabMatches = (j) => !targetTab || String(j.tabName || "").toLowerCase() === targetTab;
+
+  // 1. Match by Project Code (Highest fidelity, unique ID)
+  if (targetProjectCode) {
+    found = jobs.find(
+      (j) => tabMatches(j) && String(j.projectCode || j.rows?.[0]?.projectCode || "").trim().toLowerCase() === targetProjectCode
+    );
+    if (!found) {
+      found = jobs.find(
+        (j) => String(j.projectCode || j.rows?.[0]?.projectCode || "").trim().toLowerCase() === targetProjectCode
+      );
+    }
+  }
+
+  // 2. Match by End Client Name + Job Name (Exact normalized)
+  if (!found && targetJobName && targetEndClient) {
+    const matches = jobs.filter((j) => {
+      if (!tabMatches(j)) return false;
+      const jClient = String(j.client || j.rows?.[0]?.client || "").trim().toLowerCase();
+      const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
+      return jClient === targetEndClient && jJob === targetJobName;
+    });
+
+    if (matches.length === 1) {
+      found = matches[0];
+    } else if (matches.length > 1) {
+      if (targetRow) {
+        found = matches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow)) || matches[0];
+      } else {
+        found = matches[0];
+      }
+    } else {
+      const anyTabMatches = jobs.filter((j) => {
+        const jClient = String(j.client || j.rows?.[0]?.client || "").trim().toLowerCase();
+        const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
+        return jClient === targetEndClient && jJob === targetJobName;
+      });
+      if (anyTabMatches.length === 1) {
+        found = anyTabMatches[0];
+      } else if (anyTabMatches.length > 1 && targetRow) {
+        found = anyTabMatches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow)) || anyTabMatches[0];
+      }
+    }
+  }
+
+  // 3. Match by End Client Name + Job Name (Flexible contains / trimmed)
+  if (!found && targetJobName && targetEndClient) {
+    const flexMatches = jobs.filter((j) => {
+      if (!tabMatches(j)) return false;
+      const jClient = String(j.client || j.rows?.[0]?.client || "").trim().toLowerCase();
+      const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
+      const clientMatch = jClient === targetEndClient || jClient.includes(targetEndClient) || targetEndClient.includes(jClient);
+      const jobMatch = jJob === targetJobName || jJob.includes(targetJobName) || targetJobName.includes(jJob);
+      return clientMatch && jobMatch;
+    });
+    if (flexMatches.length === 1) {
+      found = flexMatches[0];
+    } else if (flexMatches.length > 1 && targetRow) {
+      found = flexMatches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow)) || flexMatches[0];
+    }
+  }
+
+  // 4. Match by Job Name alone (if unique)
+  if (!found && targetJobName) {
+    const jobOnlyMatches = jobs.filter((j) => {
+      if (!tabMatches(j)) return false;
+      const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
+      return jJob === targetJobName || jJob.includes(targetJobName) || targetJobName.includes(jJob);
+    });
+    if (jobOnlyMatches.length === 1) {
+      found = jobOnlyMatches[0];
+    } else if (jobOnlyMatches.length > 1 && targetRow) {
+      found = jobOnlyMatches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow));
+    }
+  }
+
+  // 5. Match by row number as LAST RESORT (Fragile fallback only)
+  if (!found && targetRow) {
+    if (targetTab) {
+      found = jobs.find(
+        (j) =>
+          String(j.tabName || "").toLowerCase() === targetTab &&
+          (j.rows || []).some((r) => Number(r.rowNum) === targetRow)
+      );
+    }
+    if (!found) {
+      found = jobs.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow));
+    }
+  }
+
+  return found;
+}
+
 export default function JobDetailModal({
   isOpen,
   target,
@@ -167,24 +270,30 @@ export default function JobDetailModal({
 
     let isMounted = true;
     let { clientSheetId } = resolvedClientInfo;
+    const initialTargetTab = (target?.tabName === "Confirmed" || target?.tabName === "Pipeline") ? target.tabName : "All";
 
-    const executeFetch = async (sheetId) => {
+    const executeFetch = async (sheetId, queryTab = initialTargetTab) => {
       setLoading(true);
       setError(null);
       setJob(null);
       setDraftEdits({});
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 35000);
+
       try {
         const res = await fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
           body: JSON.stringify({
             action: "get_all_client_jobs",
             clientSheetId: sheetId,
-            tabName: "All",
+            tabName: queryTab,
             bypassCache: reloadTrigger > 0
           })
         });
+        clearTimeout(timeoutId);
         const data = await res.json();
         if (!isMounted) return;
 
@@ -197,108 +306,20 @@ export default function JobDetailModal({
           if (data.crmDrives) setCrmDrives(data.crmDrives);
           if (typeof data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(data.noEndDateRetainerMonths);
 
-          const rawCode = String(target?.projectCode || "").trim().toLowerCase();
-          const targetProjectCode = ["-", "n/a", "none"].includes(rawCode) ? "" : rawCode;
-          const targetJobName = String(target?.jobName || "").trim().toLowerCase();
-          const targetEndClient = String(target?.endClientName || (target?.client && typeof target.client === "string" ? target.client : "")).trim().toLowerCase();
-          const targetRow = target?.rowNum ? Number(target.rowNum) : null;
-          const targetTab = String(target?.tabName || "").trim().toLowerCase();
-
-          let found = null;
-          const tabMatches = (j) => !targetTab || String(j.tabName || "").toLowerCase() === targetTab;
-
-          // 1. Match by Project Code (Highest fidelity, unique ID)
-          if (targetProjectCode) {
-            found = data.jobs.find(
-              (j) => tabMatches(j) && String(j.projectCode || j.rows?.[0]?.projectCode || "").trim().toLowerCase() === targetProjectCode
-            );
-            if (!found) {
-              found = data.jobs.find(
-                (j) => String(j.projectCode || j.rows?.[0]?.projectCode || "").trim().toLowerCase() === targetProjectCode
-              );
-            }
-          }
-
-          // 2. Match by End Client Name + Job Name (Exact normalized)
-          if (!found && targetJobName && targetEndClient) {
-            const matches = data.jobs.filter((j) => {
-              if (!tabMatches(j)) return false;
-              const jClient = String(j.client || j.rows?.[0]?.client || "").trim().toLowerCase();
-              const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
-              return jClient === targetEndClient && jJob === targetJobName;
-            });
-
-            if (matches.length === 1) {
-              found = matches[0];
-            } else if (matches.length > 1) {
-              // Disambiguate by row if available (e.g. multi-month retainer rows)
-              if (targetRow) {
-                found = matches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow)) || matches[0];
-              } else {
-                found = matches[0];
-              }
-            } else {
-              const anyTabMatches = data.jobs.filter((j) => {
-                const jClient = String(j.client || j.rows?.[0]?.client || "").trim().toLowerCase();
-                const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
-                return jClient === targetEndClient && jJob === targetJobName;
-              });
-              if (anyTabMatches.length === 1) {
-                found = anyTabMatches[0];
-              } else if (anyTabMatches.length > 1 && targetRow) {
-                found = anyTabMatches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow)) || anyTabMatches[0];
-              }
-            }
-          }
-
-          // 3. Match by End Client Name + Job Name (Flexible contains / trimmed)
-          if (!found && targetJobName && targetEndClient) {
-            const flexMatches = data.jobs.filter((j) => {
-              if (!tabMatches(j)) return false;
-              const jClient = String(j.client || j.rows?.[0]?.client || "").trim().toLowerCase();
-              const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
-              const clientMatch = jClient === targetEndClient || jClient.includes(targetEndClient) || targetEndClient.includes(jClient);
-              const jobMatch = jJob === targetJobName || jJob.includes(targetJobName) || targetJobName.includes(jJob);
-              return clientMatch && jobMatch;
-            });
-            if (flexMatches.length === 1) {
-              found = flexMatches[0];
-            } else if (flexMatches.length > 1 && targetRow) {
-              found = flexMatches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow)) || flexMatches[0];
-            }
-          }
-
-          // 4. Match by Job Name alone (if unique)
-          if (!found && targetJobName) {
-            const jobOnlyMatches = data.jobs.filter((j) => {
-              if (!tabMatches(j)) return false;
-              const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
-              return jJob === targetJobName || jJob.includes(targetJobName) || targetJobName.includes(jJob);
-            });
-            if (jobOnlyMatches.length === 1) {
-              found = jobOnlyMatches[0];
-            } else if (jobOnlyMatches.length > 1 && targetRow) {
-              found = jobOnlyMatches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow));
-            }
-          }
-
-          // 5. Match by row number as LAST RESORT (Fragile fallback only)
-          if (!found && targetRow) {
-            if (targetTab) {
-              found = data.jobs.find(
-                (j) =>
-                  String(j.tabName || "").toLowerCase() === targetTab &&
-                  (j.rows || []).some((r) => Number(r.rowNum) === targetRow)
-              );
-            }
-            if (!found) {
-              found = data.jobs.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow));
-            }
-          }
+          const found = matchTargetJob(data.jobs, target);
 
           if (found) {
             setJob(found);
+          } else if (queryTab !== "All") {
+            // Fallback: If not found in the specific target tab, query "All" tabs
+            await executeFetch(sheetId, "All");
+            return;
           } else {
+            const rawCode = String(target?.projectCode || "").trim().toLowerCase();
+            const targetProjectCode = ["-", "n/a", "none"].includes(rawCode) ? "" : rawCode;
+            const targetJobName = String(target?.jobName || "").trim().toLowerCase();
+            const targetEndClient = String(target?.endClientName || (target?.client && typeof target.client === "string" ? target.client : "")).trim().toLowerCase();
+            const targetRow = target?.rowNum ? Number(target.rowNum) : null;
             const desc = [
               targetProjectCode ? `[${target.projectCode}]` : null,
               targetEndClient ? targetEndClient : null,
@@ -311,7 +332,17 @@ export default function JobDetailModal({
           setError(data.error || `Failed to load job details from ${isAdmin ? "spreadsheet" : "Pulse"}.`);
         }
       } catch (err) {
-        if (isMounted) setError(err.message || "Failed to fetch job details.");
+        clearTimeout(timeoutId);
+        if (!isMounted) return;
+        if (err.name === "AbortError") {
+          setError(
+            isAdmin
+              ? "Loading timed out. The client spreadsheet is currently undergoing a heavy recalculation in Google Sheets. Please click 'Try again' in a moment."
+              : "Loading timed out. Client data is currently updating in the background. Please click 'Try again' in a moment."
+          );
+        } else {
+          setError(err.message || (isAdmin ? "Failed to fetch job details from spreadsheet." : "Failed to fetch job details."));
+        }
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -386,7 +417,7 @@ export default function JobDetailModal({
     return () => {
       isMounted = false;
     };
-  }, [isOpen, target, resolvedClientInfo, activeClientsMap, reloadTrigger]);
+  }, [isOpen, target, resolvedClientInfo, activeClientsMap, reloadTrigger, isAdmin]);
 
   // Close on Escape key if no sub-modal is open
   useEffect(() => {
@@ -1462,6 +1493,22 @@ export default function JobDetailModal({
                 <div style={{ fontWeight: "700", marginBottom: "6px" }}>Could not load job details</div>
                 <div>{error}</div>
                 <div style={{ marginTop: "16px", display: "flex", gap: "10px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setReloadTrigger(prev => prev + 1)}
+                    style={{
+                      padding: "6px 14px",
+                      background: "#0284c7",
+                      color: "#ffffff",
+                      border: "none",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    Try again
+                  </button>
                   <button
                     type="button"
                     onClick={handleCloseModal}

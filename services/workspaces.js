@@ -1326,11 +1326,22 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     let crmDrives = "NA";
     let noEndDateRetainerMonths = 18;
 
+    const targetConfMaxRow = 2500;
+    const targetPipeMaxRow = 1000;
+
     if (tabName === "All" || !tabName) {
       try {
         const batchResp = await sheets.spreadsheets.values.batchGet({
           spreadsheetId: sheetIdClean,
-          ranges: ["Confirmed!A1:DD5000", "Pipeline!A1:DD5000", "KeyInfo!C23:C26", "KeyInfo!G32:G75", "KeyInfo!Q4", "KeyInfo!Q8:Q9", "KeyInfo!D18"],
+          ranges: [
+            `Confirmed!A1:DD${targetConfMaxRow}`,
+            `Pipeline!A1:DD${targetPipeMaxRow}`,
+            "KeyInfo!C23:C26",
+            "KeyInfo!G32:G75",
+            "KeyInfo!Q4",
+            "KeyInfo!Q8:Q9",
+            "KeyInfo!D18"
+          ],
           valueRenderOption: "FORMATTED_VALUE",
         });
         confRows = batchResp.data.valueRanges?.[0]?.values || [];
@@ -1365,7 +1376,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
         try {
           const cResp = await sheets.spreadsheets.values.get({
             spreadsheetId: sheetIdClean,
-            range: "Confirmed!A1:DD5000",
+            range: `Confirmed!A1:DD${targetConfMaxRow}`,
             valueRenderOption: "FORMATTED_VALUE",
           });
           confRows = cResp.data.values || [];
@@ -1373,16 +1384,17 @@ export async function handleGetAllClientJobs(req, res, sheets) {
         try {
           const pResp = await sheets.spreadsheets.values.get({
             spreadsheetId: sheetIdClean,
-            range: "Pipeline!A1:DD5000",
+            range: `Pipeline!A1:DD${targetPipeMaxRow}`,
             valueRenderOption: "FORMATTED_VALUE",
           });
           pipeRows = pResp.data.values || [];
         } catch (_) { }
       }
     } else {
+      const targetMaxRow = tabName === "Pipeline" ? targetPipeMaxRow : targetConfMaxRow;
       const resp = await sheets.spreadsheets.values.get({
         spreadsheetId: sheetIdClean,
-        range: `${tabName}!A1:DD5000`,
+        range: `${tabName}!A1:DD${targetMaxRow}`,
         valueRenderOption: "FORMATTED_VALUE",
       });
       if (tabName === "Confirmed") {
@@ -1421,6 +1433,25 @@ export async function handleGetAllClientJobs(req, res, sheets) {
               }
             }
           } catch (_) { }
+        }
+      } catch (_) { }
+    }
+
+    // Safety check: if Confirmed has active data reaching targetConfMaxRow, fetch overflow up to row 5000
+    if (
+      (tabName === "All" || !tabName || tabName === "Confirmed") &&
+      confRows.length >= targetConfMaxRow &&
+      Boolean(confRows[targetConfMaxRow - 1]?.[0] || confRows[targetConfMaxRow - 1]?.[1])
+    ) {
+      try {
+        const overflowResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A2501:DD5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const overflowRows = overflowResp.data.values || [];
+        if (overflowRows.length > 0) {
+          confRows = [...confRows, ...overflowRows];
         }
       } catch (_) { }
     }

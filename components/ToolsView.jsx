@@ -1117,7 +1117,6 @@ export default function ToolsView({
         (eomStatusOverrides || []).forEach(s => { overrideByKey[`${s.clientName}|||${s.taskId}`] = s.status; });
         const byClient = {};
         (eomAllTasks || []).filter(t => t.active).forEach(t => {
-          if (!isAdmin && !isTaskInDefaultList(t, eomDefaultTasks)) return;
           if (!byClient[t.clientName]) {
             byClient[t.clientName] = { total: 0, done: 0, pendingAlertChecks: [] };
           }
@@ -1263,7 +1262,6 @@ export default function ToolsView({
               {clientRows.map((c) => {
                 const cTasks = (eomAllTasks || []).filter(t => {
                   if (t.clientName !== c.clientName || !t.active) return false;
-                  if (!isAdmin && !isTaskInDefaultList(t, eomDefaultTasks)) return false;
                   return true;
                 }).sort((a, b) => a.sortOrder - b.sortOrder);
                 if (cTasks.length === 0) return null;
@@ -1974,10 +1972,7 @@ export default function ToolsView({
         const statusByTaskId = {};
         const noteletByTaskId = {};
         (eomStatusOverrides || []).forEach(s => { if (s.clientName === eomDetailClient) { statusByTaskId[s.taskId] = s.status; noteletByTaskId[s.taskId] = s.notelet; } });
-        const visibleTasks = (eomClientTasks || []).filter(t => {
-          if (!isAdmin && !isTaskInDefaultList(t, eomDefaultTasks)) return false;
-          return true;
-        });
+        const visibleTasks = eomClientTasks || [];
         const activeTasks = visibleTasks.filter(t => t.active).sort((a, b) => a.sortOrder - b.sortOrder);
         const inactiveTasks = visibleTasks.filter(t => !t.active);
         const statePill = (taskId, current, noteletText) => {

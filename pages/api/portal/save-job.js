@@ -1097,6 +1097,7 @@ export default async function handler(req, res) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
+        _skipFormulaRecompute: deferredClearRanges.length > 0 || shouldProvisionRetainerSchedule,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: batchUpdateData,
@@ -1109,6 +1110,7 @@ export default async function handler(req, res) {
         await withRetry(() =>
           sheets.spreadsheets.values.batchClear({
             spreadsheetId: clientSheetId,
+            _skipFormulaRecompute: shouldProvisionRetainerSchedule,
             requestBody: { ranges: deferredClearRanges },
           })
         );

@@ -1,4 +1,4 @@
-//Version 1.00 - Stage 4.2: 100% Verbatim Client Sheet Formula & Spill Recalculation Engine
+//Version 1.01 - Stage 4.2: Fast direct-bounds INDEX/SUMIFS/SUMIF/VLOOKUP & early iterative convergence
 // Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -840,7 +840,39 @@ export function recalculateClientGrids(grids, options = {}) {
   //    - Identify all spill-origin formulas (e.g. `={...}`, `=ARRAYFORMULA(...)`, `=FILTER(...)`, `=TRANSPOSE(...)`, `=LET(...)` in spill cells).
   const cellState = {}; // tab -> Uint8Array (0=unvisited, 1=visiting, 2=done)
   const tabDims = {};
+  const rangeCacheByTab = {}; // tab -> Map<string, Array<Array<any>>>
   const blockedSpillOrigins = new Map(); // `${tab}!${r},${c}` -> original "#REF! (Array result was not expanded...)" string
+
+  // Determine which tabs are affected when options.changedTabs is supplied
+  let unaffectedTabs = null;
+  if (Array.isArray(options.changedTabs) && options.changedTabs.length > 0) {
+    const changedSet = new Set(options.changedTabs);
+    if (!changedSet.has("KeyInfo")) {
+      unaffectedTabs = new Set(["KeyInfo"]);
+      if (!changedSet.has("Salaries")) {
+        unaffectedTabs.add("Salaries");
+      }
+      if (!changedSet.has("Confirmed") && !changedSet.has("ConfCalcs") && !changedSet.has("RevenueConf")) {
+        unaffectedTabs.add("Confirmed");
+        unaffectedTabs.add("ConfCalcs");
+        unaffectedTabs.add("RevenueConf");
+      }
+      if (!changedSet.has("Pipeline") && !changedSet.has("PipeCalcs") && !changedSet.has("RevenuePipe")) {
+        unaffectedTabs.add("Pipeline");
+        unaffectedTabs.add("PipeCalcs");
+        unaffectedTabs.add("RevenuePipe");
+      }
+      if (
+        unaffectedTabs.has("ConfCalcs") &&
+        unaffectedTabs.has("PipeCalcs") &&
+        !changedSet.has("Calcs") &&
+        !changedSet.has("ErrorCheck")
+      ) {
+        unaffectedTabs.add("Calcs");
+        unaffectedTabs.add("ErrorCheck");
+      }
+    }
+  }
 
   for (const [tab, t] of Object.entries(grids)) {
     if (!t || typeof t !== "object") continue;
@@ -856,14 +888,49 @@ export function recalculateClientGrids(grids, options = {}) {
     }
     tabDims[tab] = { rows: numRows, cols: numCols };
     cellState[tab] = new Uint8Array(numRows * Math.max(1, numCols));
+    rangeCacheByTab[tab] = new Map();
+    const isTabUnaffected = Boolean(unaffectedTabs && unaffectedTabs.has(tab));
 
+    const maxInitR = activeRowLimitByTab[tab] !== undefined ? activeRowLimitByTab[tab] : numRows - 1;
     for (let r = 0; r < numRows; r++) {
+      if (r > maxInitR && r < numRows - 1) {
+        if (!t.values[r]) t.values[r] = [];
+        continue;
+      }
       if (!t.values[r]) t.values[r] = [];
       const rowV = t.values[r];
       const rowF = t.formulas[r] || [];
       for (let c = 0; c < numCols; c++) {
+        if (isTabUnaffected) {
+          if (rowV[c] === "" || rowV[c] === undefined) {
+            rowV[c] = null;
+          }
+          cellState[tab][r * numCols + c] = 2;
+          continue;
+        }
         const f = rowF[c];
         const hasFormula = typeof f === "string" && f.startsWith("=");
+        // For Calcs (scalar cells only), if PipeCalcs (or ConfCalcs) is unaffected, formulas that ONLY reference
+        // the unaffected job pipeline do not need re-evaluation if they already have an evaluated value
+        if (
+          unaffectedTabs &&
+          tab === "Calcs" &&
+          hasFormula &&
+          rowV[c] !== "" &&
+          rowV[c] !== undefined &&
+          rowV[c] !== null
+        ) {
+          const refsPipe = f.includes("PipeCalcs");
+          const refsConf = f.includes("ConfCalcs");
+          if (refsPipe && !refsConf && unaffectedTabs.has("PipeCalcs")) {
+            cellState[tab][r * numCols + c] = 2;
+            continue;
+          }
+          if (refsConf && !refsPipe && unaffectedTabs.has("ConfCalcs")) {
+            cellState[tab][r * numCols + c] = 2;
+            continue;
+          }
+        }
         if (!hasFormula) {
           if (rowV[c] === "" || rowV[c] === undefined) {
             rowV[c] = null;
@@ -906,6 +973,9 @@ export function recalculateClientGrids(grids, options = {}) {
   }
 
   const tabSpillsInitialized = new Set();
+  if (unaffectedTabs) {
+    for (const ut of unaffectedTabs) tabSpillsInitialized.add(ut);
+  }
 
   function ensureTabSpillsEvaluated(tab) {
     if (tabSpillsInitialized.has(tab)) return;
@@ -959,6 +1029,9 @@ export function recalculateClientGrids(grids, options = {}) {
     if (dims && r < dims.rows && c < dims.cols) {
       cellState[tab][r * dims.cols + c] = 2;
     }
+    if (rangeCacheByTab[tab]?.size > 0) {
+      rangeCacheByTab[tab].clear();
+    }
   }
 
   function getRange2D(tab, r0, r1, c0, c1, clampInactive = true) {
@@ -978,6 +1051,13 @@ export function recalculateClientGrids(grids, options = {}) {
       ensureTabSpillsEvaluated(tab);
     }
 
+    const rCache = rangeCacheByTab[tab];
+    const cacheKey = rCache && (endR - startR > 4 || endC - startC > 4) ? `${startR}:${endR}:${startC}:${endC}` : null;
+    if (cacheKey) {
+      const hit = rCache.get(cacheKey);
+      if (hit) return hit;
+    }
+
     const out = [];
     for (let r = startR; r <= endR; r++) {
       const row = [];
@@ -986,7 +1066,32 @@ export function recalculateClientGrids(grids, options = {}) {
       }
       out.push(row);
     }
-    return out.length > 0 ? out : [[null]];
+    const res = out.length > 0 ? out : [[null]];
+    if (cacheKey) {
+      rCache.set(cacheKey, res);
+    }
+    return res;
+  }
+
+  function getNonZeroColEntries(tab, r0, r1, c0) {
+    const rCache = rangeCacheByTab[tab];
+    const key = `nz:${r0}:${r1}:${c0}`;
+    if (rCache) {
+      const hit = rCache.get(key);
+      if (hit) return hit;
+    }
+    const nz = [];
+    const rows = r1 - r0 + 1;
+    for (let dr = 0; dr < rows; dr++) {
+      const sv = getCell(tab, r0 + dr, c0);
+      if (typeof sv === "number" && Number.isFinite(sv) && sv !== 0) {
+        nz.push({ dr, sv });
+      }
+    }
+    if (rCache) {
+      rCache.set(key, nz);
+    }
+    return nz;
   }
 
   function evalCell(tab, r, c) {
@@ -1344,6 +1449,39 @@ export function recalculateClientGrids(grids, options = {}) {
 
       case "BinaryOp": {
         const op = node.op;
+        const bLeft = node.left.type === "RangeOp" ? resolveRangeBounds(node.left, ctx, true) : null;
+        if (bLeft && !bLeft.isSingle && (bLeft.r1 - bLeft.r0 > 4 || bLeft.c1 - bLeft.c0 > 4)) {
+          const rv = evalAST(node.right, ctx);
+          if (!Array.isArray(rv) && !isSheetError(rv)) {
+            const rCache = rangeCacheByTab[bLeft.tab];
+            const binKey = rCache
+              ? `bin:${bLeft.r0}:${bLeft.r1}:${bLeft.c0}:${bLeft.c1}:${op}:${typeof rv}:${String(rv)}`
+              : null;
+            if (binKey) {
+              const hit = rCache.get(binKey);
+              if (hit) return hit;
+            }
+            const lv = getRange2D(bLeft.tab, bLeft.r0, bLeft.r1, bLeft.c0, bLeft.c1, true);
+            const res = broadcastBinaryOp(op, lv, rv, (a, b) => {
+              if (isSheetError(a)) throw toErrorObject(a);
+              if (isSheetError(b)) throw toErrorObject(b);
+              if (op === "&") return toStringVal(a) + toStringVal(b);
+              if (op === "+") return toNumberOrZero(a) + toNumberOrZero(b);
+              if (op === "-") return toNumberOrZero(a) - toNumberOrZero(b);
+              if (op === "*") return toNumberOrZero(a) * toNumberOrZero(b);
+              if (op === "/") {
+                const num = toNumberOrZero(a);
+                const den = toNumberOrZero(b);
+                if (Math.abs(den) <= 1e-15) throw new SheetError("#DIV/0!", "Evaluation caused divide by zero error.");
+                return num / den;
+              }
+              if (op === "^") return Math.pow(toNumberOrZero(a), toNumberOrZero(b));
+              return compareSheetValues(a, b, op);
+            });
+            if (binKey) rCache.set(binKey, res);
+            return res;
+          }
+        }
         const lv = evalAST(node.left, ctx);
         const rv = evalAST(node.right, ctx);
 
@@ -1805,17 +1943,44 @@ export function recalculateClientGrids(grids, options = {}) {
       }
 
       case "SUMIF": {
-        const critRange = evalTo2D(args[0], ctx, true);
         const matcher = buildCriterionMatcher(evalScalar(args[1], ctx));
+        const bCrit = resolveRangeBounds(args[0], ctx, true);
+        const bSum = args.length >= 3 ? resolveRangeBounds(args[2], ctx, true) : bCrit;
+        if (bCrit && bSum) {
+          const rows = Math.min(bCrit.r1 - bCrit.r0 + 1, bSum.r1 - bSum.r0 + 1);
+          const cols = Math.min(bCrit.c1 - bCrit.c0 + 1, bSum.c1 - bSum.c0 + 1);
+          if (cols === 1 && rows > 4) {
+            const nz = getNonZeroColEntries(bSum.tab, bSum.r0, bSum.r0 + rows - 1, bSum.c0);
+            let sum = 0;
+            for (let i = 0; i < nz.length; i++) {
+              const { dr, sv } = nz[i];
+              const cv = getCell(bCrit.tab, bCrit.r0 + dr, bCrit.c0);
+              if (matcher(cv)) sum += sv;
+            }
+            return sum;
+          }
+          let sum = 0;
+          for (let dr = 0; dr < rows; dr++) {
+            for (let dc = 0; dc < cols; dc++) {
+              const sv = getCell(bSum.tab, bSum.r0 + dr, bSum.c0 + dc);
+              if (typeof sv !== "number" || !Number.isFinite(sv) || sv === 0) continue;
+              const cv = getCell(bCrit.tab, bCrit.r0 + dr, bCrit.c0 + dc);
+              if (matcher(cv)) sum += sv;
+            }
+          }
+          return sum;
+        }
+        const critRange = evalTo2D(args[0], ctx, true);
         const sumRange = args.length >= 3 ? evalTo2D(args[2], ctx, true) : critRange;
         let sum = 0;
         const rows = Math.min(critRange.length, sumRange.length);
         for (let r = 0; r < rows; r++) {
           const cols = Math.min(critRange[r].length, sumRange[r].length);
           for (let c = 0; c < cols; c++) {
+            const sv = sumRange[r][c];
+            if (typeof sv !== "number" || !Number.isFinite(sv) || sv === 0) continue;
             if (matcher(critRange[r][c])) {
-              const sv = sumRange[r][c];
-              if (typeof sv === "number" && Number.isFinite(sv)) sum += sv;
+              sum += sv;
             }
           }
         }
@@ -1823,14 +1988,63 @@ export function recalculateClientGrids(grids, options = {}) {
       }
 
       case "SUMIFS": {
-        const sumRange = evalTo2D(args[0], ctx, true);
-        const pairs = [];
+        const bSum = resolveRangeBounds(args[0], ctx, true);
+        const fastPairs = [];
+        let allDirectRanges = Boolean(bSum);
         for (let i = 1; i + 1 < args.length; i += 2) {
-          pairs.push({
-            range: evalTo2D(args[i], ctx, true),
+          const bCrit = allDirectRanges ? resolveRangeBounds(args[i], ctx, true) : null;
+          if (!bCrit) allDirectRanges = false;
+          fastPairs.push({
+            bounds: bCrit,
+            node: args[i],
             matcher: buildCriterionMatcher(evalScalar(args[i + 1], ctx)),
           });
         }
+        if (allDirectRanges && bSum) {
+          const rows = bSum.r1 - bSum.r0 + 1;
+          const cols = bSum.c1 - bSum.c0 + 1;
+          if (cols === 1 && rows > 4) {
+            const nz = getNonZeroColEntries(bSum.tab, bSum.r0, bSum.r1, bSum.c0);
+            let sum = 0;
+            for (let i = 0; i < nz.length; i++) {
+              const { dr, sv } = nz[i];
+              let ok = true;
+              for (let p = 0; p < fastPairs.length; p++) {
+                const b = fastPairs[p].bounds;
+                const cv = getCell(b.tab, b.r0 + dr, b.c0);
+                if (!fastPairs[p].matcher(cv)) {
+                  ok = false;
+                  break;
+                }
+              }
+              if (ok) sum += sv;
+            }
+            return sum;
+          }
+          let sum = 0;
+          for (let dr = 0; dr < rows; dr++) {
+            for (let dc = 0; dc < cols; dc++) {
+              const sv = getCell(bSum.tab, bSum.r0 + dr, bSum.c0 + dc);
+              if (typeof sv !== "number" || !Number.isFinite(sv) || sv === 0) continue;
+              let ok = true;
+              for (let p = 0; p < fastPairs.length; p++) {
+                const b = fastPairs[p].bounds;
+                const cv = getCell(b.tab, b.r0 + dr, b.c0 + dc);
+                if (!fastPairs[p].matcher(cv)) {
+                  ok = false;
+                  break;
+                }
+              }
+              if (ok) sum += sv;
+            }
+          }
+          return sum;
+        }
+        const sumRange = evalTo2D(args[0], ctx, true);
+        const pairs = fastPairs.map((fp) => ({
+          range: evalTo2D(fp.node, ctx, true),
+          matcher: fp.matcher,
+        }));
         let sum = 0;
         const rows = sumRange.length;
         for (let r = 0; r < rows; r++) {
@@ -1899,9 +2113,31 @@ export function recalculateClientGrids(grids, options = {}) {
       }
 
       case "INDEX": {
-        const arr = evalTo2D(args[0], ctx, true);
         const rArg = args.length >= 2 && args[1].type !== "EmptyArg" ? Math.trunc(toNumberStrict(evalScalar(args[1], ctx))) : 0;
         const cArg = args.length >= 3 && args[2].type !== "EmptyArg" ? Math.trunc(toNumberStrict(evalScalar(args[2], ctx))) : 0;
+        const b = resolveRangeBounds(args[0], ctx, true);
+        if (b) {
+          const numR = b.r1 - b.r0 + 1;
+          const numC = b.c1 - b.c0 + 1;
+          if (rArg > 0 && cArg > 0) {
+            if (rArg > numR || cArg > numC) throw new SheetError("#REF!", "INDEX out of range");
+            return getCell(b.tab, b.r0 + rArg - 1, b.c0 + cArg - 1);
+          }
+          if (rArg > 0 && cArg === 0) {
+            if (numR === 1 && numC > 1) {
+              if (rArg > numC) throw new SheetError("#REF!", "INDEX out of range");
+              return getCell(b.tab, b.r0, b.c0 + rArg - 1);
+            }
+            if (rArg > numR) throw new SheetError("#REF!", "INDEX row out of range");
+            if (numC === 1) return getCell(b.tab, b.r0 + rArg - 1, b.c0);
+            return getRange2D(b.tab, b.r0 + rArg - 1, b.r0 + rArg - 1, b.c0, b.c1, true);
+          }
+          if (rArg === 0 && cArg > 0) {
+            if (cArg > numC) throw new SheetError("#REF!", "INDEX col out of range");
+            return getRange2D(b.tab, b.r0, b.r1, b.c0 + cArg - 1, b.c0 + cArg - 1, true);
+          }
+        }
+        const arr = evalTo2D(args[0], ctx, true);
         if (rArg === 0 && cArg === 0) return arr;
         if (rArg === 0) {
           const ci = cArg - 1;
@@ -2678,8 +2914,8 @@ export function recalculateClientGrids(grids, options = {}) {
     "PipeCalcs",
     "Calcs",
     "Salaries",
-    "Outgoings",
     "OutgNotes",
+    "Outgoings",
     "Monthly",
     "Budget",
     "NBtoFind",
@@ -2705,12 +2941,14 @@ export function recalculateClientGrids(grids, options = {}) {
   }
 
   function evaluateTabFormulasPass(tab, resetStates = false) {
+    if (!resetStates && unaffectedTabs && unaffectedTabs.has(tab)) return;
     const t = grids[tab];
     if (!t || !Array.isArray(t.formulas)) return;
     const dims = tabDims[tab];
     if (resetStates && dims) {
       cellState[tab].fill(0);
       tabSpillsInitialized.delete(tab);
+      rangeCacheByTab[tab]?.clear();
     }
     ensureTabSpillsEvaluated(tab);
 
@@ -2759,11 +2997,12 @@ export function recalculateClientGrids(grids, options = {}) {
           ? grids.Pipeline?.values?.length || t.values.length
           : tab === "ConfCalcs"
           ? grids.Confirmed?.values?.length || t.values.length
-          : 0;
+          : t.values.length;
+      const sharedInactiveRow = [...templateRow];
       for (let r = maxR + 1; r < t.values.length; r++) {
-        if (!t.values[r]) t.values[r] = [];
-        const rowF = t.formulas[r] || [];
         if ((tab === "ConfCalcs" || tab === "PipeCalcs") && r >= srcSpillLen) {
+          if (!t.values[r] || t.values[r] === sharedInactiveRow) t.values[r] = [];
+          const rowF = t.formulas[r] || [];
           // Row is beyond the source Confirmed/Pipeline spill range (e.g. PipeCalcs row 1001): evaluate its own formulas directly
           for (let c = 0; c < rowF.length; c++) {
             const f = rowF[c];
@@ -2775,49 +3014,101 @@ export function recalculateClientGrids(grids, options = {}) {
           }
           continue;
         }
-        for (let c = 0; c < templateRow.length; c++) {
-          if ((tab === "ConfCalcs" || tab === "PipeCalcs") && c < 108) {
-            if (r < srcSpillLen) {
-              t.values[r][c] = templateRow[c];
-            }
-          } else if ((tab === "ConfCalcs" || tab === "PipeCalcs") && c >= 253) {
-            t.values[r][c] = templateRow[c];
-          } else if (typeof rowF[c] === "string" && rowF[c].startsWith("=")) {
-            t.values[r][c] = templateRow[c];
-          }
-        }
+        t.values[r] = sharedInactiveRow;
       }
+      rangeCacheByTab[tab]?.clear();
     }
   }
 
+  function hasTabValuesChanged_(tab, prevSnapshot) {
+    const cur = grids[tab]?.values || [];
+    if (cur.length !== prevSnapshot.length) return true;
+    for (let r = 0; r < cur.length; r++) {
+      const rCur = cur[r] || [];
+      const rPrev = prevSnapshot[r] || [];
+      const len = Math.max(rCur.length, rPrev.length);
+      for (let c = 0; c < len; c++) {
+        const a = rCur[c];
+        const b = rPrev[c];
+        if (a === b) continue;
+        if (typeof a === "number" && typeof b === "number" && Math.abs(a - b) <= 1e-9) continue;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function snapshotTabValues_(tab) {
+    const cur = grids[tab]?.values || [];
+    return cur.map((r) => (Array.isArray(r) ? [...r] : []));
+  }
+
   for (const tab of tabOrder) {
+    const tStart = options._profile ? Date.now() : 0;
     evaluateTabFormulasPass(tab, false);
     if (tab === "Budget") {
       // Budget has an iterative feedback loop between Row 142 (CoS top-up) and Rows 257-260 (Profit share bonus)
       for (let iter = 0; iter < 12; iter++) {
+        const snap = snapshotTabValues_("Budget");
         evaluateTabFormulasPass("Budget", true);
+        if (!hasTabValuesChanged_("Budget", snap)) break;
       }
     }
     if (tab === "Dashboard") {
       // Outgoings <-> Performance <-> Dashboard form an iterative feedback loop (Outgoings Row 111 CoS top-up & Row 235 Bonus)
+      let anyOutgoingsChange = false;
       for (let iter = 0; iter < 10; iter++) {
+        const snapOut = snapshotTabValues_("Outgoings");
         evaluateTabFormulasPass("Outgoings", true);
+        if (!hasTabValuesChanged_("Outgoings", snapOut)) {
+          break;
+        }
+        anyOutgoingsChange = true;
         evaluateTabFormulasPass("Performance", true);
         evaluateTabFormulasPass("Dashboard", true);
       }
-      // Re-evaluate downstream tabs that depend on Outgoings / Performance / Dashboard
-      for (const downstreamTab of ["OutgNotes", "Monthly", "ErrorCheck", "VAT", "Cash"]) {
-        evaluateTabFormulasPass(downstreamTab, true);
+      if (anyOutgoingsChange) {
+        // Re-evaluate downstream cells that depend on Outgoings / Performance / Dashboard:
+        // In Monthly, only columns 132..140 (EC..EK) depend on Outgoings!
+        const mTab = grids.Monthly;
+        const mDims = tabDims.Monthly;
+        if (mTab && mDims) {
+          rangeCacheByTab.Monthly?.clear();
+          for (let r = 0; r < mDims.rows; r++) {
+            for (let c = 132; c <= Math.min(140, mDims.cols - 1); c++) {
+              cellState.Monthly[r * mDims.cols + c] = 0;
+            }
+          }
+          for (let r = 0; r < mTab.formulas.length; r++) {
+            const rowF = mTab.formulas[r];
+            if (!rowF) continue;
+            for (let c = 132; c <= Math.min(140, rowF.length - 1); c++) {
+              const f = rowF[c];
+              if (typeof f === "string" && f.startsWith("=")) {
+                evalCell("Monthly", r, c);
+              }
+            }
+          }
+        }
+        for (const downstreamTab of ["VAT", "Cash"]) {
+          evaluateTabFormulasPass(downstreamTab, true);
+        }
       }
+    }
+    if (options._profile) {
+      const elapsed = Date.now() - tStart;
+      if (elapsed > 10) console.log(`[profile] ${tab.padEnd(18)} ${elapsed} ms`);
     }
   }
 
   // 6. Normalize `null` (BLANK) back to `""` across all values_grid cells for JSON storage parity
-  for (const t of Object.values(grids)) {
+  for (const [tab, t] of Object.entries(grids)) {
     if (!t || !Array.isArray(t.values)) continue;
+    if (unaffectedTabs && unaffectedTabs.has(tab)) continue;
     for (let r = 0; r < t.values.length; r++) {
       const row = t.values[r];
       if (!Array.isArray(row)) continue;
+      if (r > 0 && row === t.values[r - 1]) continue;
       for (let c = 0; c < row.length; c++) {
         if (row[c] === null || row[c] === undefined) {
           row[c] = "";

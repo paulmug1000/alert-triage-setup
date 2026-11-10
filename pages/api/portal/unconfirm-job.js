@@ -462,27 +462,26 @@ export default async function handler(req, res) {
       );
     }
 
-    await Promise.all([
-      withRetry(() =>
-        sheets.spreadsheets.values.batchUpdate({
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: clientSheetId,
+        _skipFormulaRecompute: batchClearRanges.length > 0,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: pipelineBatchData,
+        },
+      })
+    );
+    if (batchClearRanges.length > 0) {
+      await withRetry(() =>
+        sheets.spreadsheets.values.batchClear({
           spreadsheetId: clientSheetId,
           requestBody: {
-            valueInputOption: "USER_ENTERED",
-            data: pipelineBatchData,
+            ranges: batchClearRanges,
           },
         })
-      ),
-      batchClearRanges.length > 0
-        ? withRetry(() =>
-            sheets.spreadsheets.values.batchClear({
-              spreadsheetId: clientSheetId,
-              requestBody: {
-                ranges: batchClearRanges,
-              },
-            })
-          )
-        : Promise.resolve(),
-    ]);
+      );
+    }
 
     // 8. Invalidate In-Memory and Redis caches across both Portal and PMA
     try {

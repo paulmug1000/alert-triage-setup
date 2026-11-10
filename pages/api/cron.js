@@ -12,6 +12,7 @@ import { safeCompareSecret } from "../../services/authService";
 import { getSupabaseAdmin } from "../../services/supabaseClient";
 import { redisClient } from "../../services/redisClient";
 import { getCanonicalAcSheetId } from "../../services/userPermissions";
+import { runDailyAutoBackupSweep } from "../../services/supabaseBackupService";
 
 export const config = {
   maxDuration: 300,
@@ -165,6 +166,21 @@ export default async function handler(req, res) {
         } catch (tabErr) {
           console.warn("⚠️ CRON: Non-fatal error in auto_provision_recon_tabs:", tabErr.message);
         }
+      }
+
+      // Run automated daily Supabase workbook snapshot sweep (once per UK calendar day)
+      try {
+        const backupRes = await runDailyAutoBackupSweep({
+          force: false,
+          triggeredBy: `System (${triggerSource})`,
+        });
+        if (!backupRes?.skipped) {
+          console.log(
+            `📦 CRON: Completed daily Supabase backup sweep (${backupRes.snapshotsCreated} created, ${backupRes.expiredSnapshotsPruned} expired pruned)`
+          );
+        }
+      } catch (bkErr) {
+        console.warn("⚠️ CRON: Non-fatal error in daily Supabase backup sweep:", bkErr.message);
       }
 
       console.log(`✅ CRON: Pipeline complete`);

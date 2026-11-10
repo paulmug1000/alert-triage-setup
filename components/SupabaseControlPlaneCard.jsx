@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
 import AdminWorkbookInspectorModal from "./AdminWorkbookInspectorModal";
+import SupabaseBackupManagerPanel from "./SupabaseBackupManagerPanel";
 
 export default function SupabaseControlPlaneCard({ automationCommanderSheetId }) {
   const [feedbackMsg, setFeedbackMsg] = useState(null);
+  const [showBackupPanel, setShowBackupPanel] = useState(true);
 
   // Alert memory inspector & synchronized delete
   const [showAlertMemoryTool, setShowAlertMemoryTool] = useState(false);
@@ -572,6 +574,23 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
             }}
           >
             {showAlertMemoryTool ? "Hide alert memory manager" : "Manage alert memory"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowBackupPanel((prev) => !prev)}
+            style={{
+              padding: "7px 12px",
+              fontSize: "12px",
+              fontWeight: "600",
+              color: showBackupPanel ? "#1e40af" : "#374151",
+              background: showBackupPanel ? "#eff6ff" : "#f9fafb",
+              border: `1px solid ${showBackupPanel ? "#93c5fd" : "#d1d5db"}`,
+              borderRadius: "6px",
+              cursor: "pointer",
+            }}
+          >
+            {showBackupPanel ? "Hide backups & restore" : "Backups & restore"}
           </button>
 
           <button
@@ -1670,6 +1689,18 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
           </div>
         </div>
       </div>
+
+      {showBackupPanel && s2Ready && (
+        <SupabaseBackupManagerPanel
+          activeClientName={activeClientName}
+          automationCommanderSheetId={automationCommanderSheetId}
+          availableTabs={stage2Data?.availableTabs || { master: [], recon: [], client: [] }}
+          onFeedback={setFeedbackMsg}
+          onAfterRestore={(newStatus) => {
+            if (newStatus) setStage2Data(newStatus);
+          }}
+        />
+      )}
 
       {inspectorOpen && (
         <AdminWorkbookInspectorModal

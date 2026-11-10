@@ -22,6 +22,16 @@ import {
   ensureFreshMasterComparisons,
   recomputeClientComparisonsInSupabase,
 } from "../../../services/masterSyncEngine.js";
+import {
+  listClientSnapshots,
+  createClientSnapshot,
+  restoreClientSnapshot,
+  getSnapshotCompressedBase64ById,
+  importLocalSnapshotToCloud,
+  deleteClientSnapshot,
+  updateBackupPolicy,
+  runDailyAutoBackupSweep,
+} from "../../../services/supabaseBackupService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -44,6 +54,11 @@ async function refreshPrecomputedAlerts_(sheets, acId) {
 
 export const config = {
   maxDuration: 180,
+  api: {
+    bodyParser: {
+      sizeLimit: "4mb",
+    },
+  },
 };
 
 export default async function handler(req, res) {
@@ -290,6 +305,161 @@ export default async function handler(req, res) {
       const triggerResult = await triggerSupabaseClockNow(sessionUser.email || "Admin");
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, triggerResult, status });
+    }
+
+    if (action === "list_backups") {
+      const allClients = Boolean(req.body?.allClients);
+      const data = await listClientSnapshots({ clientName: allClients ? null : cleanClient });
+      return res.status(200).json({ success: true, ...data });
+    }
+
+    if (action === "create_backup") {
+      const label = String(req.body?.label || "").trim();
+      const snapshot = await createClientSnapshot({
+        clientName: cleanClient,
+        triggerType: "manual",
+        label,
+        createdBy: sessionUser.email || "Admin",
+      });
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "SUPABASE_SNAPSHOT_CREATED",
+        summary: `Created Supabase workbook snapshot for ${cleanClient}${label ? ` ("${label}")` : ""}`,
+        details: snapshot,
+        userEmail: sessionUser.email || "Admin",
+      }).catch(() => { });
+      const backupList = await listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient });
+      return res.status(200).json({ success: true, snapshot, ...backupList });
+    }
+
+    if (action === "download_backup") {
+      const snapshotId = String(req.body?.snapshotId || "").trim();
+      if (!snapshotId) {
+        return res.status(400).json({ success: false, error: "snapshotId is required." });
+      }
+      const { entry, compressedBase64 } = await getSnapshotCompressedBase64ById(snapshotId);
+      return res.status(200).json({ success: true, entry, compressedBase64 });
+    }
+
+    if (action === "restore_backup") {
+      const snapshotId = String(req.body?.snapshotId || "").trim();
+      const scope = String(req.body?.scope || "all").trim();
+      const targetRole = req.body?.targetRole ? String(req.body.targetRole).trim() : null;
+      const targetTabName = req.body?.targetTabName ? String(req.body.targetTabName).trim() : null;
+      const createPreRestoreBackup = req.body?.createPreRestoreBackup !== false;
+
+      const restoreResult = await restoreClientSnapshot({
+        snapshotId,
+        scope,
+        targetRole,
+        targetTabName,
+        createPreRestoreBackup,
+        restoredBy: sessionUser.email || "Admin",
+      });
+      const sheets = await getSheetsClient();
+      await refreshPrecomputedAlerts_(sheets, acId);
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: restoreResult.clientName || cleanClient,
+        category: "SYSTEM",
+        action: "SUPABASE_SNAPSHOT_RESTORED",
+        summary: `Restored ${restoreResult.restoredTabsCount} tab(s) (${scope === "single_tab" ? `${targetRole}:${targetTabName}` : scope}) for ${restoreResult.clientName || cleanClient} from snapshot ${snapshotId}`,
+        details: restoreResult,
+        userEmail: sessionUser.email || "Admin",
+      }).catch(() => { });
+      const [status, backupList] = await Promise.all([
+        getStage2Status(cleanClient),
+        listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient }),
+      ]);
+      return res.status(200).json({ success: true, restoreResult, status, ...backupList });
+    }
+
+    if (action === "import_backup") {
+      const uploadedCompressedBase64 = String(req.body?.uploadedCompressedBase64 || "").trim();
+      if (!uploadedCompressedBase64) {
+        return res.status(400).json({ success: false, error: "uploadedCompressedBase64 is required." });
+      }
+      const label = String(req.body?.label || "").trim();
+      const restoreImmediately = Boolean(req.body?.restoreImmediately);
+      const scope = String(req.body?.scope || "all").trim();
+      const targetRole = req.body?.targetRole ? String(req.body.targetRole).trim() : null;
+      const targetTabName = req.body?.targetTabName ? String(req.body.targetTabName).trim() : null;
+      const createPreRestoreBackup = req.body?.createPreRestoreBackup !== false;
+
+      const importedEntry = await importLocalSnapshotToCloud({
+        uploadedCompressedBase64,
+        clientNameOverride: req.body?.useSelectedClient ? cleanClient : null,
+        labelOverride: label,
+        importedBy: sessionUser.email || "Admin",
+      });
+
+      let restoreResult = null;
+      if (restoreImmediately) {
+        restoreResult = await restoreClientSnapshot({
+          snapshotId: importedEntry.id,
+          scope,
+          targetRole,
+          targetTabName,
+          createPreRestoreBackup,
+          restoredBy: sessionUser.email || "Admin",
+        });
+      }
+
+      const sheets = await getSheetsClient();
+      if (restoreImmediately) {
+        await refreshPrecomputedAlerts_(sheets, acId);
+      }
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: importedEntry.clientName || cleanClient,
+        category: "SYSTEM",
+        action: restoreImmediately ? "SUPABASE_SNAPSHOT_IMPORTED_AND_RESTORED" : "SUPABASE_SNAPSHOT_IMPORTED",
+        summary: restoreImmediately
+          ? `Imported & restored ${restoreResult?.restoredTabsCount || 0} tab(s) for ${importedEntry.clientName}`
+          : `Imported local snapshot file for ${importedEntry.clientName} into cloud backup catalogue`,
+        details: { importedEntry, restoreResult },
+        userEmail: sessionUser.email || "Admin",
+      }).catch(() => { });
+
+      const [status, backupList] = await Promise.all([
+        getStage2Status(cleanClient),
+        listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient }),
+      ]);
+      return res.status(200).json({ success: true, importedEntry, restoreResult, status, ...backupList });
+    }
+
+    if (action === "delete_backup") {
+      const snapshotId = String(req.body?.snapshotId || "").trim();
+      const deleted = await deleteClientSnapshot({
+        snapshotId,
+        deletedBy: sessionUser.email || "Admin",
+      });
+      const backupList = await listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient });
+      return res.status(200).json({ success: true, ...deleted, ...backupList });
+    }
+
+    if (action === "update_backup_policy") {
+      const policy = await updateBackupPolicy(
+        {
+          autoDailyEnabled: req.body?.autoDailyEnabled,
+          retentionDays: req.body?.retentionDays,
+        },
+        sessionUser.email || "Admin"
+      );
+      const backupList = await listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient });
+      return res.status(200).json({ success: true, ...backupList, policy });
+    }
+
+    if (action === "run_daily_backup_sweep") {
+      const sweepResult = await runDailyAutoBackupSweep({
+        force: true,
+        triggeredBy: sessionUser.email || "Admin",
+      });
+      const backupList = await listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient });
+      return res.status(200).json({ success: true, sweepResult, ...backupList });
     }
 
     return res.status(400).json({ success: false, error: `Unknown action: ${action}` });

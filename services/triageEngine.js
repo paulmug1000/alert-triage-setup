@@ -3719,7 +3719,6 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
       range: `Outgoings!A${sheetRow}:F${sheetRow}`,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [[sanitizeFormulaInput(String(categoryName || "")), sanitizeFormulaInput(String(vatCharged || "No")), "Next", "Next", "100%", "100%"]] },
-      _skipFormulaRecompute: true,
     });
     await applySheetFontFormat(sheets, sheetIdClean, "Outgoings", sheetRow - 1, sheetRow, 0, 50, "Arial", 9);
     console.log(`  ✅ New vendor row written: ${categoryName}`);
@@ -3831,7 +3830,6 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
     range: cellA1,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [[newValue]] },
-    _skipFormulaRecompute: true,
   });
   console.log(`  ✅ Value written: ${existingValue} → ${newValue} (${placementMode})`);
 
@@ -4404,7 +4402,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                   if (!sheetNorm) continue;
 
                   if (cleanNorm.includes(sheetNorm) || sheetNorm.includes(cleanNorm) ||
-                    rawNorm.includes(sheetNorm) || sheetNorm.includes(rawNorm)) {
+                      rawNorm.includes(sheetNorm) || sheetNorm.includes(rawNorm)) {
                     outgoingsVendorRow = i + 13;
                     resolvedVendorName = sheetVendor;
                     break;
@@ -8542,15 +8540,11 @@ export async function handleAcceptOption(req, res, sheets) {
         valueInputOption: "USER_ENTERED",
       };
 
-      const willAdjustPlaceholders = Boolean(
-        liveResolvedSlotInfo && (writeTab === "Confirmed" || writeTab === "Pipeline")
-      );
       console.log(`  Writing ${safeCellUpdates.length} cells to ${writeTab} tab of Client Sheet...`);
       console.log(`  Cell updates: ${safeCellUpdates.map(u => `${u.cell}=${JSON.stringify(u.value)}`).join(", ")}`);
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: alert.clientId,
         requestBody: batchRequest,
-        _skipFormulaRecompute: willAdjustPlaceholders,
       });
       console.log(`  ✅ Cells written successfully`);
 
@@ -8575,598 +8569,525 @@ export async function handleAcceptOption(req, res, sheets) {
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId: alert.clientId,
           requestBody: { requests: formatReqs },
-          _skipFormulaRecompute: true,
         });
         console.log(`  ✅ Formatting applied (bold+italic) to ${formatReqs.length} cells`);
       }
 
       // Adjust automatic placeholders (PLACE-INV / PLACE-EXP) on the job after Triage placement
       if (liveResolvedSlotInfo && (writeTab === "Confirmed" || writeTab === "Pipeline")) {
-        if (willAdjustPlaceholders) {
-          let adjWrote = false;
-          try {
-            if (liveResolvedSlotInfo.type === "invoice") {
-              await adjustJobInvoicePlaceholders_(
-            const adjRes = await adjustJobInvoicePlaceholders_(
-                sheets,
-                alert.clientId,
-                writeTab,
-                liveResolvedSlotInfo.allRowNums,
-                undefined,
-                alert.masterSheetId
-              );
-              adjWrote = Boolean(adjRes?.batchData?.length);
-            } else if (liveResolvedSlotInfo.type === "expense") {
-              await adjustJobExpensePlaceholders_(
-            const adjRes = await adjustJobExpensePlaceholders_(
-                sheets,
-                alert.clientId,
-                writeTab,
-                liveResolvedSlotInfo.allRowNums,
-                undefined,
-                alert.masterSheetId
-              );
-              adjWrote = Boolean(adjRes?.batchData?.length);
-            }
-          } catch (adjErr) {
-            console.warn("handleAcceptOption placeholder adjustment skipped:", adjErr.message);
-          }
-          if (!adjWrote) {
-            await sheets.spreadsheets.batchUpdate({
-              spreadsheetId: alert.clientId,
-              requestBody: { requests: [] },
-              _flushPendingRecompute: true,
-            }).catch(() => { });
-          }
-        }
-
-        if (writeTab === "Outgoings" && alert.masterSheetId) {
-          handleFireOutgoingsPull({
-            body: {
-              clientSheetId: alert.clientId,
-              masterSheetId: alert.masterSheetId,
-              clientName: alert.clientName,
-            }
-          }, { status: () => ({ json: () => { } }) }, sheets).catch(() => { });
-        }
-      }
-
-      // Record decision to TriageLog
-      const timestamp = new Date().toISOString();
-      const alertAmount = alert.summary?.amount || alert.data?.amount || alert.data?.revenue || "";
-
-      const logRow = [
-        timestamp,
-        sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
-        sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
-        sanitizeFormulaInput(String(alert.clientName || "")),
-        sanitizeFormulaInput(String(alertAmount)),
-        sanitizeFormulaInput(JSON.stringify({
-          matchAnalysis: option.matchAnalysis,
-          allocationBreakdown: option.allocationBreakdown,
-        })),
-        "ACCEPTED",
-        sanitizeFormulaInput(`Option: ${option.title}`),
-      ];
-
-      console.log(`  Writing to TriageLog...`);
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: automationCommanderSheetId,
-        range: "TriageLog!A:H",
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [logRow],
-        },
-      });
-      console.log(`  ✅ Decision logged to TriageLog`);
-
-      // Update AlertMemory to "accepted" so runFullSweep doesn't re-raise this flag
-      try {
-        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-        const memoryRowsFinal = await readAlertMemory(sheets, automationCommanderSheetId);
-        const fpHash = alert.fingerprintHash || buildAlertFingerprint(alert);
-        const memRowFinal = findMemoryRow(memoryRowsFinal, fpHash);
-        const alertSummaryFinal = alert.summary?.summary || `${alert.type || alert.flagType} ${fpHash}`;
-        if (memRowFinal && (!memRowFinal.clientName || !alert.clientName || matchesClientName(alert.clientName, memRowFinal.clientName))) {
-          await updateAlertMemoryRow(sheets, automationCommanderSheetId, memRowFinal.rowIndex, {
-            ...memRowFinal, status: "accepted",
-          });
-        } else {
-          await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-            fingerprintHash: fpHash,
-            alertType: alert.type || alert.flagType || "unknown",
-            clientName: alert.clientName || "",
-            alertSummary: alertSummaryFinal,
-            cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
-          });
-        }
-        console.log(`  ✅ AlertMemory updated to accepted`);
-      } catch (memErr) {
-        console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
-      }
-
-      const alertCat = (() => {
-        const t = String(alert.type || alert.alertType || alert.flagType || "").toLowerCase();
-        if (t.includes("inv")) return "INVOICES";
-        if (t.includes("exp") || t.includes("dir") || t.includes("cost") || t.includes("vendor")) return "EXPENSES";
-        if (t.includes("crm")) return "CRM";
-        if (t.includes("ret")) return "RETAINER";
-        return "TRIAGE";
-      })();
-
-      logPmaActivity(sheets, {
-        automationCommanderSheetId,
-        clientName: alert.clientName || "",
-        category: alertCat,
-        action: "Alert Option Accepted",
-        summary: `Accepted option for ${alert.clientName || "Client"} (${alert.type || alert.flagType || "alert"}): "${option.title || option.label || "Option"}"`,
-        details: {
-          alertType: alert.type || alert.alertType || alert.flagType,
-          optionTitle: option.title || option.label,
-          matchType: option.matchType,
-          clientName: alert.clientName,
-          cellsWritten: cellUpdates.length
-        }
-      }).catch(e => console.error("PMA log failed:", e));
-
-      return res.status(200).json({
-        success: true,
-        message: "Option accepted and written to sheet",
-        cellsWritten: cellUpdates.length,
-      });
-    } catch (err) {
-      console.error(`❌ Error accepting option:`, err);
-      return res.status(500).json({
-        success: false,
-        error: `Failed to write to sheet: ${err.message}`,
-        details: err.toString(),
-      });
-    }
-  }
-
-export async function handleDeleteJob(req, res, sheets) {
-    // Blank out all cells for a job (parent + child rows) in the Confirmed or Pipeline tab.
-    // NEVER deletes rows - only clears cell content.
-    // Child rows: same client (col A) + same job name (col B) + no revenue (AG=32) + no direct costs (AH=33) + no start date (AL=37)
-    // Blanked columns: A:G (0-6), AG:AM (32-38), AP:BH (41-59), BX:CR (75-94)
-    const { alert, option, automationCommanderSheetId } = req.body;
-    if (!alert || !option || !automationCommanderSheetId) {
-      return res.status(400).json({ success: false, error: "Missing alert, option, or automationCommanderSheetId" });
-    }
-
-    try {
-      console.log(`\n🗑️ DELETE_JOB for ${alert.clientName}: ${option.jobName}`);
-      const sheets = await getSheetsClient();
-
-      const tabName = (alert.alertType || alert.flagType || "") === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
-      const clientSheetId = alert.clientId;
-
-      if (!clientSheetId) {
-        console.error("  ❌ clientSheetId missing from alert");
-        return res.status(400).json({ success: false, error: "Cannot delete: clientSheetId missing from alert - please re-analyse this alert and try again." });
-      }
-
-      // Only read cols A:B (client, job) and AG (revenue - to identify parent vs child)
-      // This is much faster than reading A1:CR2000
-      const tabResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${tabName}!A1:AG2000`,
-        valueRenderOption: "UNFORMATTED_VALUE",
-      });
-      const tabRows = tabResp.data.values || [];
-      console.log(`  Tab read complete, ${tabRows.length} rows`);
-
-      const targetClient = (option.clientName || option.matchingDetails?.unmatchedJobSummary?.clientName || "").trim().toLowerCase();
-      const targetJob = (option.jobName || "").trim().toLowerCase();
-      const targetCode = (option.matchingDetails?.unmatchedJobSummary?.projectCode || "").trim().toLowerCase();
-
-      // Pipeline / Confirmed tab: check option.jobRow first
-      const minJobRow = 2;
-      const optJobRow = parseInt(option.jobRow, 10);
-      let parentRowIdx = -1;
-      if (!isNaN(optJobRow) && optJobRow >= minJobRow && tabRows[optJobRow - 1]) {
-        parentRowIdx = optJobRow - 1;
-        console.log(`  Found parent directly from option.jobRow: ${optJobRow}`);
-      } else {
-        let lastSeenClient = "";
-        for (let i = minJobRow - 1; i < tabRows.length; i++) {
-          const r = tabRows[i] || [];
-          const rClientRaw = String(r[0] || "").trim();
-          const rJob = String(r[1] || "").trim().toLowerCase();
-          const rCode = String(r[2] || "").trim().toLowerCase();
-          if (rClientRaw) lastSeenClient = rClientRaw.toLowerCase();
-          const effectiveClient = rClientRaw ? rClientRaw.toLowerCase() : lastSeenClient;
-          const clientMatch = effectiveClient === targetClient;
-          const jobMatch = rJob === targetJob;
-          const codeMatch = targetCode && rCode === targetCode;
-          if ((codeMatch || (clientMatch && jobMatch))) {
-            parentRowIdx = i;
-            break;
-          }
-        }
-      }
-
-      if (parentRowIdx === -1) {
-        const sample = tabRows.slice(1, 4).map(r => `"${r[0] || ""}/${r[1] || ""}"`).join(", ");
-        return res.status(404).json({
-          success: false,
-          error: `Job "${option.jobName}" not found in ${tabName} tab - client name or job name may not match exactly. Nearby rows: ${sample}`,
-        });
-      }
-
-      const parentSheetRow = parentRowIdx + 1;
-      console.log(`  Found parent at row ${parentSheetRow}`);
-
-      // Collect child rows: same client + job, no revenue (32) + no direct costs (33) + no start date (37)
-      const rowsToBlank = [parentRowIdx];
-      let ci = parentRowIdx + 1;
-      while (ci < tabRows.length) {
-        const next = tabRows[ci] || [];
-        const nc = String(next[0] || "").trim().toLowerCase();
-        const nj = String(next[1] || "").trim().toLowerCase();
-        const hasContent = next.some(c => String(c || "").trim() !== "");
-        const isChild = (!nc && !nj && hasContent) || (targetClient && nc === targetClient && nj === targetJob);
-        if (isChild && !next[32] && !next[33] && !next[37]) {
-          rowsToBlank.push(ci);
-          ci++;
-        } else { break; }
-      }
-      console.log(`  Rows to blank: ${rowsToBlank.map(r => r + 1).join(", ")} (${rowsToBlank.length} rows)`);
-
-      // Build column ranges to blank: A:G (1-7), AE (31), AG:AM (33-39), AN (40), AP:BH (42-60), BX:CR (76-96), DD (108)
-      // AN = likelihood (40), DD = "Copied to Confirmed?" (108) - Pipeline-specific fields
-      // In A1 notation: colNum is 1-indexed
-      const colRanges = [
-        [1, 7],    // A:G
-        [31, 31],  // AE (Uneven revenue splits)
-        [33, 39],  // AG:AM
-        [40, 40],  // AN (likelihood)
-        [42, 60],  // AP:BH
-        [76, 96],  // BX:CR
-        [108, 108], // DD (Copied to Confirmed?)
-      ];
-
-      const clearRanges = [];
-      for (const rowIdx of rowsToBlank) {
-        const sheetRow = rowIdx + 1;
-        for (const [startCol, endCol] of colRanges) {
-          const startColLetter = colIndexToLetter(startCol);
-          const endColLetter = colIndexToLetter(endCol);
-          clearRanges.push(`${tabName}!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`);
-        }
-      }
-
-      // Use batchClear (not batchUpdate with "") - batchClear truly empties cells,
-      // preserving formatting and not leaving empty-string values that would
-      // trigger conditional formatting rules checking <>0 or <>"".
-      await sheets.spreadsheets.values.batchClear({
-        spreadsheetId: clientSheetId,
-        requestBody: { ranges: clearRanges },
-      });
-      console.log(`  ✅ Cleared ${rowsToBlank.length} rows (${clearRanges.length} ranges)`);
-
-      // Log to TriageLog
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: automationCommanderSheetId,
-        range: "TriageLog!A:H",
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[
-            new Date().toISOString(),
-            sanitizeFormulaInput(String(alert.alertType || alert.type || "crm")),
-            sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
-            sanitizeFormulaInput(String(alert.clientName || "")),
-            "",
-            sanitizeFormulaInput(JSON.stringify({ deletedJob: option.jobName, tabName, rowsBlank: rowsToBlank.map(r => r + 1) })),
-            "ACCEPTED",
-            sanitizeFormulaInput(`Deleted job: ${option.jobName} from ${tabName} tab`),
-          ]],
-        },
-      });
-
-      // Update AlertMemory so runFullSweep doesn't re-raise this flag
-      try {
-        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-        const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
-        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
-        if (memoryRow && (!memoryRow.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow.clientName))) {
-          await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
-            ...memoryRow, status: "accepted",
-          });
-        } else {
-          await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-            fingerprintHash,
-            alertType: alert.alertType || alert.type || "crm",
-            clientName: alert.clientName || "",
-            alertSummary: `Deleted: ${option.jobName}`,
-            cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
-          });
-        }
-      } catch (memErr) {
-        console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
-      }
-
-      logPmaActivity(sheets, {
-        automationCommanderSheetId,
-        clientName: alert.clientName || "",
-        category: "JOB",
-        action: "Job Deleted via Triage",
-        summary: `Deleted job '${option.jobName || "Job"}' for ${alert.clientName || "Client"} from ${tabName}`,
-        details: {
-          jobName: option.jobName,
-          tabName,
-          clientName: alert.clientName,
-          rowsBlanked: rowsToBlank.length
-        }
-      }).catch(e => console.error("PMA log failed:", e));
-
-      return res.status(200).json({
-        success: true,
-        message: `Job "${option.jobName}" blanked across ${rowsToBlank.length} row(s) in ${tabName} tab`,
-        rowsBlank: rowsToBlank.map(r => r + 1),
-      });
-    } catch (err) {
-      console.error(`❌ Error in delete_job:`, err);
-      return res.status(500).json({ success: false, error: `Failed to delete job: ${err.message}` });
-    }
-  }
-
-  export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
-    // Analyze a non-actionable flag by reading the client's AutoLog tab (master sheet)
-    // to identify exactly which jobs were affected, then verify them.
-    // Supported flagTypes: crmCopiedConfChecked, crmCopiedConfUnchecked, retainerInvoicesCreated
-    //
-    // targetLine (26 Aug 2026, Paul's direction - proposal 2): when provided
-    // (the exact AutoLog line text, already stored as the AlertMemory row's
-    // alertSummary since that's how detection fingerprinted it), restricts
-    // analysis to that one specific instance instead of scanning the whole
-    // window for every possibly-relevant entry. Every one of the 6 rich
-    // types' parsing/verification logic below is completely unchanged -
-    // each already naturally produces a single-job result when only one
-    // line is present to match, so narrowing the input alone is sufficient
-    // and carries none of the risk a rewrite of that logic would.
-    let { clientSheetId, masterSheetId, flagType, clientName, targetLine } = req.body;
-    const acId = getCanonicalAcSheetId();
-
-    if (!flagType) {
-      flagType = req.body.alertType;
-    }
-    if (!targetLine) {
-      targetLine = req.body.flagDetail || req.body.detail || req.body.alertSummary;
-    }
-
-    try {
-      const sheets = initialSheets || await getSheetsClient();
-      let masterSheetIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
-      let clientSheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-      const acIdClean = extractSheetIdFromUrl(acId) || acId;
-
-      // Auto-resolve missing sheet IDs using clientName from Automation Commander
-      if ((!masterSheetIdClean || !clientSheetIdClean) && (clientName || acIdClean)) {
         try {
-          const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdClean);
-          let matchedClient = null;
-          if (clientName) {
-            matchedClient = clientRows.find(c => c.clientName?.toLowerCase().trim() === clientName.toLowerCase().trim());
-          }
-          if (!matchedClient && masterSheetIdClean) {
-            matchedClient = clientRows.find(c => c.masterSheetId === masterSheetIdClean);
-          }
-          if (!matchedClient && clientSheetIdClean) {
-            matchedClient = clientRows.find(c => c.clientSheetId === clientSheetIdClean);
-          }
-          if (matchedClient) {
-            if (!clientSheetIdClean) clientSheetIdClean = matchedClient.clientSheetId;
-            if (!masterSheetIdClean) masterSheetIdClean = matchedClient.masterSheetId;
-            if (!clientName) clientName = matchedClient.clientName;
-          }
-        } catch (lookupErr) {
-          console.warn("⚠️ Failed to lookup client sheet IDs in handleAnalyzeNoActionFlag:", lookupErr.message);
-        }
-      }
-
-      const sessionUser = getSessionUser(req);
-      if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
-        let boundClient = clientName || "";
-        for (const sid of [clientSheetIdClean, masterSheetIdClean].filter(Boolean)) {
-          const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
-          if (!auth.authorized) {
-            return res.status(auth.status || 403).json({ success: false, error: auth.error || "Forbidden" });
-          }
-          boundClient = auth.clientName || boundClient;
-        }
-        if (boundClient) clientName = boundClient;
-      }
-
-      if (!clientSheetIdClean || !masterSheetIdClean || !acIdClean || !flagType) {
-        const missing = [
-          !clientSheetIdClean && "clientSheetId",
-          !masterSheetIdClean && "masterSheetId",
-          !acIdClean && "automationCommanderSheetId",
-          !flagType && "flagType"
-        ].filter(Boolean);
-        return res.status(400).json({ success: false, error: `Missing required fields: ${missing.join(", ")}` });
-      }
-
-      console.log(`\n🔍 Analyzing non-actionable flag: ${flagType} for ${clientName}${targetLine ? " (targeted instance)" : ""}`);
-
-      // ── Step 1: Find when this flag type was last resolved for this client ────
-      // Skipped entirely when targetLine is provided - a lookback window is
-      // meaningless once we're targeting one already-known, specific line;
-      // it either exists in AutoLog or it doesn't. Saves the extra
-      // AlertMemory read too.
-      let windowStart = new Date(0); // epoch - no-op filter, overridden below when not targeted
-
-      if (!targetLine) {
-        windowStart = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // default: 90 days ago
-        let foundClear = false;
-
-        try {
-          const memoryRows = await readAlertMemory(sheets, acIdClean);
-          const resolvedRows = memoryRows
-            .filter(r => r.clientName === clientName && r.alertType === flagType && r.status !== "cached")
-            .sort((a, b) => new Date(b.lastSeen || 0).getTime() - new Date(a.lastSeen || 0).getTime());
-          if (resolvedRows.length > 0) {
-            const resolvedAt = new Date(resolvedRows[0].lastSeen || resolvedRows[0].firstSeen);
-            if (!isNaN(resolvedAt.getTime())) {
-              windowStart = resolvedAt;
-              foundClear = true;
-              console.log(`  ✓ ${flagType} last resolved for ${clientName} at ${resolvedAt.toISOString()} (AlertMemory)`);
-            }
-          }
-        } catch (e) {
-          console.log(`  ⚠ Could not read AlertMemory for last-resolved timestamp: ${e.message}`);
-        }
-
-        if (!foundClear) {
-          console.log(`  ℹ No prior resolution found in AlertMemory - using 90-day window from ${windowStart.toISOString()}`);
-        }
-      }
-
-      // ── Step 2: Read AutoLog and filter to entries after windowStart ──────────
-      // AutoLog col A=Timestamp, B=Category, C=Summary, D=Details
-      console.log(`  📖 Reading AutoLog from master sheet...`);
-      const autoLogResp = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetIdClean,
-        range: "AutoLog!A2:D5000",
-        valueRenderOption: "UNFORMATTED_VALUE",
-      }));
-      const allAutoLogRows = autoLogResp.data.values || [];
-      // Convert serial numbers to JS Dates (same approach as log tab reading)
-      const autoLogSerialToDate = (val) => {
-        if (!val) return null;
-        if (typeof val === "number") return new Date((val - 25569) * 86400 * 1000);
-        // Fallback: try direct parse for string timestamps
-        const d = new Date(val);
-        return isNaN(d.getTime()) ? null : d;
-      };
-      // Filter to entries after windowStart
-      let autoLogRows = allAutoLogRows.filter(row => {
-        const ts = autoLogSerialToDate(row[0]);
-        return ts && ts > windowStart;
-      });
-      console.log(`  ✓ ${autoLogRows.length} AutoLog entries after window start (${allAutoLogRows.length} total)`);
-
-      // Narrow to the one specific instance (26 Aug 2026, proposal 2) - every
-      // branch below still scans/matches within autoLogRows exactly as
-      // before, but now only one row (at most) is ever present to match,
-      // since only rows whose Details genuinely contain this exact line
-      // survive this filter. This is the entire mechanism that turns a
-      // whole-window scan into a single-instance check, without touching
-      // any of that per-type logic itself.
-      if (targetLine) {
-        autoLogRows = allAutoLogRows
-          .filter(row => String(row[3] || "").includes(targetLine));
-        console.log(`  ✓ Narrowed to ${autoLogRows.length} AutoLog row(s) containing the target line`);
-      }
-
-      const results = [];
-
-      if (flagType === "crmCopiedConfChecked" || flagType === "crmCopiedConfUnchecked") {
-        const expectCopied = flagType === "crmCopiedConfChecked";
-
-        // Read all CRM AutoLog entries - the Details field contains the full structured log
-        // The flag is raised when Pipeline col DD changes to 'Yes'.
-        // The GAS code writes this at line 293: "Copied Status: 'X' -> 'Yes'"
-        // as part of an "Updated Pipeline: Row N, Client | Job - ... Copied Status: ..." entry.
-        // "Copied Pipeline Project to Confirmed:" is only written if B82="yes" (auto-copy enabled).
-        // "Created New Confirmed Job:" is a direct Confirmed creation, unrelated to this flag.
-        const allCRMEntries = autoLogRows.filter(row => {
-          const cat = String(row[1] || "").toLowerCase();
-          return cat.includes("crm") || cat.includes("pipeline") || cat.includes("confirmed");
-        });
-        console.log(`  ✓ ${allCRMEntries.length} CRM AutoLog entries total`);
-
-        const relevantEntries = allCRMEntries.filter(row => {
-          const details = String(row[3] || "");
-          if (expectCopied) {
-            // Pipeline DD changed to Yes, or job copied/converted from Pipeline to Confirmed
-            return (details.includes("Copied Status:") && (
-              details.includes("-> 'Yes'") || details.includes("-> \"Yes\"")
-            )) || details.includes("Copied Pipeline Project") || details.includes("Converted Pipeline Job to Confirmed Retainer");
-          } else {
-            // Pipeline DD changed away from Yes
-            return details.includes("Copied Status:") && (
-              details.includes("-> 'No'") || details.includes("-> \"No\"") ||
-              details.includes("Removed Confirmed Job:") || details.includes("Deleted Confirmed Job:")
+          if (liveResolvedSlotInfo.type === "invoice") {
+            await adjustJobInvoicePlaceholders_(
+              sheets,
+              alert.clientId,
+              writeTab,
+              liveResolvedSlotInfo.allRowNums,
+              undefined,
+              alert.masterSheetId
+            );
+          } else if (liveResolvedSlotInfo.type === "expense") {
+            await adjustJobExpensePlaceholders_(
+              sheets,
+              alert.clientId,
+              writeTab,
+              liveResolvedSlotInfo.allRowNums,
+              undefined,
+              alert.masterSheetId
             );
           }
+        } catch (adjErr) {
+          console.warn("handleAcceptOption placeholder adjustment skipped:", adjErr.message);
+        }
+      }
+
+      if (writeTab === "Outgoings" && alert.masterSheetId) {
+        handleFireOutgoingsPull({
+          body: {
+            clientSheetId: alert.clientId,
+            masterSheetId: alert.masterSheetId,
+            clientName: alert.clientName,
+          }
+        }, { status: () => ({ json: () => { } }) }, sheets).catch(() => { });
+      }
+    }
+
+    // Record decision to TriageLog
+    const timestamp = new Date().toISOString();
+    const alertAmount = alert.summary?.amount || alert.data?.amount || alert.data?.revenue || "";
+
+    const logRow = [
+      timestamp,
+      sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+      sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+      sanitizeFormulaInput(String(alert.clientName || "")),
+      sanitizeFormulaInput(String(alertAmount)),
+      sanitizeFormulaInput(JSON.stringify({
+        matchAnalysis: option.matchAnalysis,
+        allocationBreakdown: option.allocationBreakdown,
+      })),
+      "ACCEPTED",
+      sanitizeFormulaInput(`Option: ${option.title}`),
+    ];
+
+    console.log(`  Writing to TriageLog...`);
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: "TriageLog!A:H",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [logRow],
+      },
+    });
+    console.log(`  ✅ Decision logged to TriageLog`);
+
+    // Update AlertMemory to "accepted" so runFullSweep doesn't re-raise this flag
+    try {
+      await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+      const memoryRowsFinal = await readAlertMemory(sheets, automationCommanderSheetId);
+      const fpHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+      const memRowFinal = findMemoryRow(memoryRowsFinal, fpHash);
+      const alertSummaryFinal = alert.summary?.summary || `${alert.type || alert.flagType} ${fpHash}`;
+      if (memRowFinal && (!memRowFinal.clientName || !alert.clientName || matchesClientName(alert.clientName, memRowFinal.clientName))) {
+        await updateAlertMemoryRow(sheets, automationCommanderSheetId, memRowFinal.rowIndex, {
+          ...memRowFinal, status: "accepted",
         });
-        console.log(`  ✓ Found ${relevantEntries.length} relevant entries for ${flagType}`);
+      } else {
+        await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+          fingerprintHash: fpHash,
+          alertType: alert.type || alert.flagType || "unknown",
+          clientName: alert.clientName || "",
+          alertSummary: alertSummaryFinal,
+          cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
+        });
+      }
+      console.log(`  ✅ AlertMemory updated to accepted`);
+    } catch (memErr) {
+      console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
+    }
 
-        const affectedJobs = [];
+    const alertCat = (() => {
+      const t = String(alert.type || alert.alertType || alert.flagType || "").toLowerCase();
+      if (t.includes("inv")) return "INVOICES";
+      if (t.includes("exp") || t.includes("dir") || t.includes("cost") || t.includes("vendor")) return "EXPENSES";
+      if (t.includes("crm")) return "CRM";
+      if (t.includes("ret")) return "RETAINER";
+      return "TRIAGE";
+    })();
 
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: alert.clientName || "",
+      category: alertCat,
+      action: "Alert Option Accepted",
+      summary: `Accepted option for ${alert.clientName || "Client"} (${alert.type || alert.flagType || "alert"}): "${option.title || option.label || "Option"}"`,
+      details: {
+        alertType: alert.type || alert.alertType || alert.flagType,
+        optionTitle: option.title || option.label,
+        matchType: option.matchType,
+        clientName: alert.clientName,
+        cellsWritten: cellUpdates.length
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({
+      success: true,
+      message: "Option accepted and written to sheet",
+      cellsWritten: cellUpdates.length,
+    });
+  } catch (err) {
+    console.error(`❌ Error accepting option:`, err);
+    return res.status(500).json({
+      success: false,
+      error: `Failed to write to sheet: ${err.message}`,
+      details: err.toString(),
+    });
+  }
+}
+
+export async function handleDeleteJob(req, res, sheets) {
+  // Blank out all cells for a job (parent + child rows) in the Confirmed or Pipeline tab.
+  // NEVER deletes rows - only clears cell content.
+  // Child rows: same client (col A) + same job name (col B) + no revenue (AG=32) + no direct costs (AH=33) + no start date (AL=37)
+  // Blanked columns: A:G (0-6), AG:AM (32-38), AP:BH (41-59), BX:CR (75-94)
+  const { alert, option, automationCommanderSheetId } = req.body;
+  if (!alert || !option || !automationCommanderSheetId) {
+    return res.status(400).json({ success: false, error: "Missing alert, option, or automationCommanderSheetId" });
+  }
+
+  try {
+    console.log(`\n🗑️ DELETE_JOB for ${alert.clientName}: ${option.jobName}`);
+    const sheets = await getSheetsClient();
+
+    const tabName = (alert.alertType || alert.flagType || "") === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
+    const clientSheetId = alert.clientId;
+
+    if (!clientSheetId) {
+      console.error("  ❌ clientSheetId missing from alert");
+      return res.status(400).json({ success: false, error: "Cannot delete: clientSheetId missing from alert - please re-analyse this alert and try again." });
+    }
+
+    // Only read cols A:B (client, job) and AG (revenue - to identify parent vs child)
+    // This is much faster than reading A1:CR2000
+    const tabResp = await sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: `${tabName}!A1:AG2000`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const tabRows = tabResp.data.values || [];
+    console.log(`  Tab read complete, ${tabRows.length} rows`);
+
+    const targetClient = (option.clientName || option.matchingDetails?.unmatchedJobSummary?.clientName || "").trim().toLowerCase();
+    const targetJob = (option.jobName || "").trim().toLowerCase();
+    const targetCode = (option.matchingDetails?.unmatchedJobSummary?.projectCode || "").trim().toLowerCase();
+
+    // Pipeline / Confirmed tab: check option.jobRow first
+    const minJobRow = 2;
+    const optJobRow = parseInt(option.jobRow, 10);
+    let parentRowIdx = -1;
+    if (!isNaN(optJobRow) && optJobRow >= minJobRow && tabRows[optJobRow - 1]) {
+      parentRowIdx = optJobRow - 1;
+      console.log(`  Found parent directly from option.jobRow: ${optJobRow}`);
+    } else {
+      let lastSeenClient = "";
+      for (let i = minJobRow - 1; i < tabRows.length; i++) {
+        const r = tabRows[i] || [];
+        const rClientRaw = String(r[0] || "").trim();
+        const rJob = String(r[1] || "").trim().toLowerCase();
+        const rCode = String(r[2] || "").trim().toLowerCase();
+        if (rClientRaw) lastSeenClient = rClientRaw.toLowerCase();
+        const effectiveClient = rClientRaw ? rClientRaw.toLowerCase() : lastSeenClient;
+        const clientMatch = effectiveClient === targetClient;
+        const jobMatch = rJob === targetJob;
+        const codeMatch = targetCode && rCode === targetCode;
+        if ((codeMatch || (clientMatch && jobMatch))) {
+          parentRowIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (parentRowIdx === -1) {
+      const sample = tabRows.slice(1, 4).map(r => `"${r[0] || ""}/${r[1] || ""}"`).join(", ");
+      return res.status(404).json({
+        success: false,
+        error: `Job "${option.jobName}" not found in ${tabName} tab - client name or job name may not match exactly. Nearby rows: ${sample}`,
+      });
+    }
+
+    const parentSheetRow = parentRowIdx + 1;
+    console.log(`  Found parent at row ${parentSheetRow}`);
+
+    // Collect child rows: same client + job, no revenue (32) + no direct costs (33) + no start date (37)
+    const rowsToBlank = [parentRowIdx];
+    let ci = parentRowIdx + 1;
+    while (ci < tabRows.length) {
+      const next = tabRows[ci] || [];
+      const nc = String(next[0] || "").trim().toLowerCase();
+      const nj = String(next[1] || "").trim().toLowerCase();
+      const hasContent = next.some(c => String(c || "").trim() !== "");
+      const isChild = (!nc && !nj && hasContent) || (targetClient && nc === targetClient && nj === targetJob);
+      if (isChild && !next[32] && !next[33] && !next[37]) {
+        rowsToBlank.push(ci);
+        ci++;
+      } else { break; }
+    }
+    console.log(`  Rows to blank: ${rowsToBlank.map(r => r + 1).join(", ")} (${rowsToBlank.length} rows)`);
+
+    // Build column ranges to blank: A:G (1-7), AE (31), AG:AM (33-39), AN (40), AP:BH (42-60), BX:CR (76-96), DD (108)
+    // AN = likelihood (40), DD = "Copied to Confirmed?" (108) - Pipeline-specific fields
+    // In A1 notation: colNum is 1-indexed
+    const colRanges = [
+      [1, 7],    // A:G
+      [31, 31],  // AE (Uneven revenue splits)
+      [33, 39],  // AG:AM
+      [40, 40],  // AN (likelihood)
+      [42, 60],  // AP:BH
+      [76, 96],  // BX:CR
+      [108, 108], // DD (Copied to Confirmed?)
+    ];
+
+    const clearRanges = [];
+    for (const rowIdx of rowsToBlank) {
+      const sheetRow = rowIdx + 1;
+      for (const [startCol, endCol] of colRanges) {
+        const startColLetter = colIndexToLetter(startCol);
+        const endColLetter = colIndexToLetter(endCol);
+        clearRanges.push(`${tabName}!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`);
+      }
+    }
+
+    // Use batchClear (not batchUpdate with "") - batchClear truly empties cells,
+    // preserving formatting and not leaving empty-string values that would
+    // trigger conditional formatting rules checking <>0 or <>"".
+    await sheets.spreadsheets.values.batchClear({
+      spreadsheetId: clientSheetId,
+      requestBody: { ranges: clearRanges },
+    });
+    console.log(`  ✅ Cleared ${rowsToBlank.length} rows (${clearRanges.length} ranges)`);
+
+    // Log to TriageLog
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: "TriageLog!A:H",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[
+          new Date().toISOString(),
+          sanitizeFormulaInput(String(alert.alertType || alert.type || "crm")),
+          sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+          sanitizeFormulaInput(String(alert.clientName || "")),
+          "",
+          sanitizeFormulaInput(JSON.stringify({ deletedJob: option.jobName, tabName, rowsBlank: rowsToBlank.map(r => r + 1) })),
+          "ACCEPTED",
+          sanitizeFormulaInput(`Deleted job: ${option.jobName} from ${tabName} tab`),
+        ]],
+      },
+    });
+
+    // Update AlertMemory so runFullSweep doesn't re-raise this flag
+    try {
+      await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+      const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+      const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+      const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+      if (memoryRow && (!memoryRow.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow.clientName))) {
+        await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+          ...memoryRow, status: "accepted",
+        });
+      } else {
+        await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+          fingerprintHash,
+          alertType: alert.alertType || alert.type || "crm",
+          clientName: alert.clientName || "",
+          alertSummary: `Deleted: ${option.jobName}`,
+          cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
+        });
+      }
+    } catch (memErr) {
+      console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: alert.clientName || "",
+      category: "JOB",
+      action: "Job Deleted via Triage",
+      summary: `Deleted job '${option.jobName || "Job"}' for ${alert.clientName || "Client"} from ${tabName}`,
+      details: {
+        jobName: option.jobName,
+        tabName,
+        clientName: alert.clientName,
+        rowsBlanked: rowsToBlank.length
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({
+      success: true,
+      message: `Job "${option.jobName}" blanked across ${rowsToBlank.length} row(s) in ${tabName} tab`,
+      rowsBlank: rowsToBlank.map(r => r + 1),
+    });
+  } catch (err) {
+    console.error(`❌ Error in delete_job:`, err);
+    return res.status(500).json({ success: false, error: `Failed to delete job: ${err.message}` });
+  }
+}
+
+export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
+  // Analyze a non-actionable flag by reading the client's AutoLog tab (master sheet)
+  // to identify exactly which jobs were affected, then verify them.
+  // Supported flagTypes: crmCopiedConfChecked, crmCopiedConfUnchecked, retainerInvoicesCreated
+  //
+  // targetLine (26 Aug 2026, Paul's direction - proposal 2): when provided
+  // (the exact AutoLog line text, already stored as the AlertMemory row's
+  // alertSummary since that's how detection fingerprinted it), restricts
+  // analysis to that one specific instance instead of scanning the whole
+  // window for every possibly-relevant entry. Every one of the 6 rich
+  // types' parsing/verification logic below is completely unchanged -
+  // each already naturally produces a single-job result when only one
+  // line is present to match, so narrowing the input alone is sufficient
+  // and carries none of the risk a rewrite of that logic would.
+  let { clientSheetId, masterSheetId, flagType, clientName, targetLine } = req.body;
+  const acId = getCanonicalAcSheetId();
+
+  if (!flagType) {
+    flagType = req.body.alertType;
+  }
+  if (!targetLine) {
+    targetLine = req.body.flagDetail || req.body.detail || req.body.alertSummary;
+  }
+
+  try {
+    const sheets = initialSheets || await getSheetsClient();
+    let masterSheetIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+    let clientSheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const acIdClean = extractSheetIdFromUrl(acId) || acId;
+
+    // Auto-resolve missing sheet IDs using clientName from Automation Commander
+    if ((!masterSheetIdClean || !clientSheetIdClean) && (clientName || acIdClean)) {
+      try {
+        const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdClean);
+        let matchedClient = null;
+        if (clientName) {
+          matchedClient = clientRows.find(c => c.clientName?.toLowerCase().trim() === clientName.toLowerCase().trim());
+        }
+        if (!matchedClient && masterSheetIdClean) {
+          matchedClient = clientRows.find(c => c.masterSheetId === masterSheetIdClean);
+        }
+        if (!matchedClient && clientSheetIdClean) {
+          matchedClient = clientRows.find(c => c.clientSheetId === clientSheetIdClean);
+        }
+        if (matchedClient) {
+          if (!clientSheetIdClean) clientSheetIdClean = matchedClient.clientSheetId;
+          if (!masterSheetIdClean) masterSheetIdClean = matchedClient.masterSheetId;
+          if (!clientName) clientName = matchedClient.clientName;
+        }
+      } catch (lookupErr) {
+        console.warn("⚠️ Failed to lookup client sheet IDs in handleAnalyzeNoActionFlag:", lookupErr.message);
+      }
+    }
+
+    const sessionUser = getSessionUser(req);
+    if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+      let boundClient = clientName || "";
+      for (const sid of [clientSheetIdClean, masterSheetIdClean].filter(Boolean)) {
+        const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
+        if (!auth.authorized) {
+          return res.status(auth.status || 403).json({ success: false, error: auth.error || "Forbidden" });
+        }
+        boundClient = auth.clientName || boundClient;
+      }
+      if (boundClient) clientName = boundClient;
+    }
+
+    if (!clientSheetIdClean || !masterSheetIdClean || !acIdClean || !flagType) {
+      const missing = [
+        !clientSheetIdClean && "clientSheetId",
+        !masterSheetIdClean && "masterSheetId",
+        !acIdClean && "automationCommanderSheetId",
+        !flagType && "flagType"
+      ].filter(Boolean);
+      return res.status(400).json({ success: false, error: `Missing required fields: ${missing.join(", ")}` });
+    }
+
+    console.log(`\n🔍 Analyzing non-actionable flag: ${flagType} for ${clientName}${targetLine ? " (targeted instance)" : ""}`);
+
+    // ── Step 1: Find when this flag type was last resolved for this client ────
+    // Skipped entirely when targetLine is provided - a lookback window is
+    // meaningless once we're targeting one already-known, specific line;
+    // it either exists in AutoLog or it doesn't. Saves the extra
+    // AlertMemory read too.
+    let windowStart = new Date(0); // epoch - no-op filter, overridden below when not targeted
+
+    if (!targetLine) {
+      windowStart = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // default: 90 days ago
+      let foundClear = false;
+
+      try {
+        const memoryRows = await readAlertMemory(sheets, acIdClean);
+        const resolvedRows = memoryRows
+          .filter(r => r.clientName === clientName && r.alertType === flagType && r.status !== "cached")
+          .sort((a, b) => new Date(b.lastSeen || 0).getTime() - new Date(a.lastSeen || 0).getTime());
+        if (resolvedRows.length > 0) {
+          const resolvedAt = new Date(resolvedRows[0].lastSeen || resolvedRows[0].firstSeen);
+          if (!isNaN(resolvedAt.getTime())) {
+            windowStart = resolvedAt;
+            foundClear = true;
+            console.log(`  ✓ ${flagType} last resolved for ${clientName} at ${resolvedAt.toISOString()} (AlertMemory)`);
+          }
+        }
+      } catch (e) {
+        console.log(`  ⚠ Could not read AlertMemory for last-resolved timestamp: ${e.message}`);
+      }
+
+      if (!foundClear) {
+        console.log(`  ℹ No prior resolution found in AlertMemory - using 90-day window from ${windowStart.toISOString()}`);
+      }
+    }
+
+    // ── Step 2: Read AutoLog and filter to entries after windowStart ──────────
+    // AutoLog col A=Timestamp, B=Category, C=Summary, D=Details
+    console.log(`  📖 Reading AutoLog from master sheet...`);
+    const autoLogResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetIdClean,
+      range: "AutoLog!A2:D5000",
+      valueRenderOption: "UNFORMATTED_VALUE",
+    }));
+    const allAutoLogRows = autoLogResp.data.values || [];
+    // Convert serial numbers to JS Dates (same approach as log tab reading)
+    const autoLogSerialToDate = (val) => {
+      if (!val) return null;
+      if (typeof val === "number") return new Date((val - 25569) * 86400 * 1000);
+      // Fallback: try direct parse for string timestamps
+      const d = new Date(val);
+      return isNaN(d.getTime()) ? null : d;
+    };
+    // Filter to entries after windowStart
+    let autoLogRows = allAutoLogRows.filter(row => {
+      const ts = autoLogSerialToDate(row[0]);
+      return ts && ts > windowStart;
+    });
+    console.log(`  ✓ ${autoLogRows.length} AutoLog entries after window start (${allAutoLogRows.length} total)`);
+
+    // Narrow to the one specific instance (26 Aug 2026, proposal 2) - every
+    // branch below still scans/matches within autoLogRows exactly as
+    // before, but now only one row (at most) is ever present to match,
+    // since only rows whose Details genuinely contain this exact line
+    // survive this filter. This is the entire mechanism that turns a
+    // whole-window scan into a single-instance check, without touching
+    // any of that per-type logic itself.
+    if (targetLine) {
+      autoLogRows = allAutoLogRows
+        .filter(row => String(row[3] || "").includes(targetLine));
+      console.log(`  ✓ Narrowed to ${autoLogRows.length} AutoLog row(s) containing the target line`);
+    }
+
+    const results = [];
+
+    if (flagType === "crmCopiedConfChecked" || flagType === "crmCopiedConfUnchecked") {
+      const expectCopied = flagType === "crmCopiedConfChecked";
+
+      // Read all CRM AutoLog entries - the Details field contains the full structured log
+      // The flag is raised when Pipeline col DD changes to 'Yes'.
+      // The GAS code writes this at line 293: "Copied Status: 'X' -> 'Yes'"
+      // as part of an "Updated Pipeline: Row N, Client | Job - ... Copied Status: ..." entry.
+      // "Copied Pipeline Project to Confirmed:" is only written if B82="yes" (auto-copy enabled).
+      // "Created New Confirmed Job:" is a direct Confirmed creation, unrelated to this flag.
+      const allCRMEntries = autoLogRows.filter(row => {
+        const cat = String(row[1] || "").toLowerCase();
+        return cat.includes("crm") || cat.includes("pipeline") || cat.includes("confirmed");
+      });
+      console.log(`  ✓ ${allCRMEntries.length} CRM AutoLog entries total`);
+
+      const relevantEntries = allCRMEntries.filter(row => {
+        const details = String(row[3] || "");
         if (expectCopied) {
-          for (const entry of relevantEntries) {
-            const details = String(entry[3] || "");
-            // Format: "Updated Pipeline: Row N, ClientName | JobName - ... Copied Status: 'X' -> 'Yes'"
-            // Or direct copy line: "Copied Pipeline Project to Confirmed: ClientName | JobName"
-            const lines = details.split('\n');
-            for (const line of lines) {
-              if (line.includes("Skipped Copy: Job with Project Code") || line.includes("already exists in Confirmed")) {
-                continue;
-              }
-              if (line.includes("Copied Status:") && (line.includes("-> 'Yes'") || line.includes("-> \"Yes\""))) {
-                const pipeIdx = line.indexOf("|");
-                if (pipeIdx !== -1) {
-                  const rowMatch = line.match(/Row\s*(\d+),\s*([^|]*)/);
-                  const pipelineRowFromLog = rowMatch ? parseInt(rowMatch[1], 10) : null;
-                  const clientParsed = rowMatch ? rowMatch[2].trim() : "";
-                  const afterPipe = line.slice(pipeIdx + 1).trim();
-                  const knownFields = ["Start date:", "End date:", "Job name:", "Date originally",
-                    "Direct costs:", "Prod. line:", "% likel.", "Copied Status:", "Revenue:", "Type:", "VAT"];
-                  let firstFieldPos = afterPipe.length;
-                  for (const field of knownFields) {
-                    const idx = afterPipe.indexOf(field);
-                    if (idx !== -1 && idx < firstFieldPos) firstFieldPos = idx;
-                  }
-                  const chunk = afterPipe.slice(0, firstFieldPos);
-                  const lastSep = chunk.lastIndexOf(" - ");
-                  const jobName = (lastSep !== -1 ? chunk.slice(0, lastSep) : chunk).trim();
-                  if (jobName) affectedJobs.push({ jobName, clientParsed, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
-                }
-                continue;
-              }
-              const copyMatch = line.match(/(?:Copied Pipeline Project (?:to Confirmed|\(with[^)]*\))|Converted Pipeline Job to Confirmed Retainer):\s*([^|]+)\|\s*([^[\n(]+)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\s*->\s*Confirmed\s+row\s+(\d+)\))?/i);
-              if (copyMatch) {
-                const clientParsed = copyMatch[1] ? copyMatch[1].trim() : "";
-                const jobName = copyMatch[2] ? copyMatch[2].trim() : "";
-                const projectCodeFromLog = copyMatch[3] ? copyMatch[3].trim() : undefined;
-                const pipelineRowFromLog = copyMatch[4] ? parseInt(copyMatch[4], 10) : null;
-                if (jobName) {
-                  affectedJobs.push({ jobName, clientParsed, projectCodeFromLog, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
-                }
-              }
-            }
-          }
-          // Deduplicate by clientParsed + jobName (preferring entries with pipelineRowFromLog / projectCodeFromLog)
-          const byKey = new Map();
-          for (const j of affectedJobs) {
-            const key = `${(j.clientParsed || "").toLowerCase()}|||${(j.jobName || "").toLowerCase()}`;
-            if (!byKey.has(key)) {
-              byKey.set(key, j);
-            } else {
-              const existing = byKey.get(key);
-              if (!existing.pipelineRowFromLog && j.pipelineRowFromLog) existing.pipelineRowFromLog = j.pipelineRowFromLog;
-              if (!existing.projectCodeFromLog && j.projectCodeFromLog) existing.projectCodeFromLog = j.projectCodeFromLog;
-            }
-          }
-          affectedJobs.length = 0;
-          affectedJobs.push(...byKey.values());
-          console.log(`  ✓ Parsed ${affectedJobs.length} affected jobs: ${JSON.stringify(affectedJobs)}`);
+          // Pipeline DD changed to Yes, or job copied/converted from Pipeline to Confirmed
+          return (details.includes("Copied Status:") && (
+            details.includes("-> 'Yes'") || details.includes("-> \"Yes\"")
+          )) || details.includes("Copied Pipeline Project") || details.includes("Converted Pipeline Job to Confirmed Retainer");
         } else {
-          // UNchecked: parse all relevant entries, same line-by-line approach as checked branch.
-          // Only match lines that are genuine Pipeline field update entries:
-          // Format: "Updated Pipeline: Row N, ClientName | JobName - ... Copied Status: 'Yes' -> 'No'"
-          for (const entry of relevantEntries) {
-            const details = String(entry[3] || "");
-            const lines = details.split('\n');
-            for (const line of lines) {
-              // Must be a Pipeline update line
-              if (!line.includes("Updated Pipeline:")) continue;
-              if (!line.includes("Copied Status:")) continue;
-              if (!line.includes("-> 'No'") && !line.includes("-> \"No\"")) continue;
+          // Pipeline DD changed away from Yes
+          return details.includes("Copied Status:") && (
+            details.includes("-> 'No'") || details.includes("-> \"No\"") ||
+            details.includes("Removed Confirmed Job:") || details.includes("Deleted Confirmed Job:")
+          );
+        }
+      });
+      console.log(`  ✓ Found ${relevantEntries.length} relevant entries for ${flagType}`);
+
+      const affectedJobs = [];
+
+      if (expectCopied) {
+        for (const entry of relevantEntries) {
+          const details = String(entry[3] || "");
+          // Format: "Updated Pipeline: Row N, ClientName | JobName - ... Copied Status: 'X' -> 'Yes'"
+          // Or direct copy line: "Copied Pipeline Project to Confirmed: ClientName | JobName"
+          const lines = details.split('\n');
+          for (const line of lines) {
+            if (line.includes("Skipped Copy: Job with Project Code") || line.includes("already exists in Confirmed")) {
+              continue;
+            }
+            if (line.includes("Copied Status:") && (line.includes("-> 'Yes'") || line.includes("-> \"Yes\""))) {
               const pipeIdx = line.indexOf("|");
               if (pipeIdx !== -1) {
                 const rowMatch = line.match(/Row\s*(\d+),\s*([^|]*)/);
@@ -9183,192 +9104,236 @@ export async function handleDeleteJob(req, res, sheets) {
                 const chunk = afterPipe.slice(0, firstFieldPos);
                 const lastSep = chunk.lastIndexOf(" - ");
                 const jobName = (lastSep !== -1 ? chunk.slice(0, lastSep) : chunk).trim();
-                affectedJobs.push({ jobName: jobName || "-", clientParsed, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
+                if (jobName) affectedJobs.push({ jobName, clientParsed, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
+              }
+              continue;
+            }
+            const copyMatch = line.match(/(?:Copied Pipeline Project (?:to Confirmed|\(with[^)]*\))|Converted Pipeline Job to Confirmed Retainer):\s*([^|]+)\|\s*([^[\n(]+)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\s*->\s*Confirmed\s+row\s+(\d+)\))?/i);
+            if (copyMatch) {
+              const clientParsed = copyMatch[1] ? copyMatch[1].trim() : "";
+              const jobName = copyMatch[2] ? copyMatch[2].trim() : "";
+              const projectCodeFromLog = copyMatch[3] ? copyMatch[3].trim() : undefined;
+              const pipelineRowFromLog = copyMatch[4] ? parseInt(copyMatch[4], 10) : null;
+              if (jobName) {
+                affectedJobs.push({ jobName, clientParsed, projectCodeFromLog, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
               }
             }
           }
-          // Deduplicate by clientParsed + jobName
-          const seenU = new Set();
-          const dedupedU = affectedJobs.filter(j => {
-            const k = `${j.clientParsed}|||${j.jobName}`;
-            if (seenU.has(k)) return false;
-            seenU.add(k); return true;
-          });
-          affectedJobs.length = 0;
-          affectedJobs.push(...dedupedU);
         }
-
+        // Deduplicate by clientParsed + jobName (preferring entries with pipelineRowFromLog / projectCodeFromLog)
+        const byKey = new Map();
+        for (const j of affectedJobs) {
+          const key = `${(j.clientParsed || "").toLowerCase()}|||${(j.jobName || "").toLowerCase()}`;
+          if (!byKey.has(key)) {
+            byKey.set(key, j);
+          } else {
+            const existing = byKey.get(key);
+            if (!existing.pipelineRowFromLog && j.pipelineRowFromLog) existing.pipelineRowFromLog = j.pipelineRowFromLog;
+            if (!existing.projectCodeFromLog && j.projectCodeFromLog) existing.projectCodeFromLog = j.projectCodeFromLog;
+          }
+        }
+        affectedJobs.length = 0;
+        affectedJobs.push(...byKey.values());
         console.log(`  ✓ Parsed ${affectedJobs.length} affected jobs: ${JSON.stringify(affectedJobs)}`);
+      } else {
+        // UNchecked: parse all relevant entries, same line-by-line approach as checked branch.
+        // Only match lines that are genuine Pipeline field update entries:
+        // Format: "Updated Pipeline: Row N, ClientName | JobName - ... Copied Status: 'Yes' -> 'No'"
+        for (const entry of relevantEntries) {
+          const details = String(entry[3] || "");
+          const lines = details.split('\n');
+          for (const line of lines) {
+            // Must be a Pipeline update line
+            if (!line.includes("Updated Pipeline:")) continue;
+            if (!line.includes("Copied Status:")) continue;
+            if (!line.includes("-> 'No'") && !line.includes("-> \"No\"")) continue;
+            const pipeIdx = line.indexOf("|");
+            if (pipeIdx !== -1) {
+              const rowMatch = line.match(/Row\s*(\d+),\s*([^|]*)/);
+              const pipelineRowFromLog = rowMatch ? parseInt(rowMatch[1], 10) : null;
+              const clientParsed = rowMatch ? rowMatch[2].trim() : "";
+              const afterPipe = line.slice(pipeIdx + 1).trim();
+              const knownFields = ["Start date:", "End date:", "Job name:", "Date originally",
+                "Direct costs:", "Prod. line:", "% likel.", "Copied Status:", "Revenue:", "Type:", "VAT"];
+              let firstFieldPos = afterPipe.length;
+              for (const field of knownFields) {
+                const idx = afterPipe.indexOf(field);
+                if (idx !== -1 && idx < firstFieldPos) firstFieldPos = idx;
+              }
+              const chunk = afterPipe.slice(0, firstFieldPos);
+              const lastSep = chunk.lastIndexOf(" - ");
+              const jobName = (lastSep !== -1 ? chunk.slice(0, lastSep) : chunk).trim();
+              affectedJobs.push({ jobName: jobName || "-", clientParsed, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
+            }
+          }
+        }
+        // Deduplicate by clientParsed + jobName
+        const seenU = new Set();
+        const dedupedU = affectedJobs.filter(j => {
+          const k = `${j.clientParsed}|||${j.jobName}`;
+          if (seenU.has(k)) return false;
+          seenU.add(k); return true;
+        });
+        affectedJobs.length = 0;
+        affectedJobs.push(...dedupedU);
+      }
 
-        if (affectedJobs.length === 0) {
-          const recentDetails = allCRMEntries.slice(0, 3).map(r => `[${r[0]}] ${String(r[3] || "").slice(0, 200)}`).join("\n");
-          results.push({
-            status: "info",
-            message: `No specific jobs identified in AutoLog for this flag. ${relevantEntries.length} potentially relevant CRM entries found.`,
-            detail: recentDetails || "No CRM entries in AutoLog.",
-          });
-        } else {
-          // Read Pipeline and Confirmed tabs to verify
-          const pipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
-            spreadsheetId: clientSheetIdClean,
-            range: "Pipeline!A1:DE5000",
-          }));
-          const pipelineRows = pipelineResp.data.values || [];
+      console.log(`  ✓ Parsed ${affectedJobs.length} affected jobs: ${JSON.stringify(affectedJobs)}`);
 
-          const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
-            spreadsheetId: clientSheetIdClean,
-            range: "Confirmed!A1:AN5000",
-          }));
-          const confirmedRows = confirmedResp.data.values || [];
+      if (affectedJobs.length === 0) {
+        const recentDetails = allCRMEntries.slice(0, 3).map(r => `[${r[0]}] ${String(r[3] || "").slice(0, 200)}`).join("\n");
+        results.push({
+          status: "info",
+          message: `No specific jobs identified in AutoLog for this flag. ${relevantEntries.length} potentially relevant CRM entries found.`,
+          detail: recentDetails || "No CRM entries in AutoLog.",
+        });
+      } else {
+        // Read Pipeline and Confirmed tabs to verify
+        const pipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetIdClean,
+          range: "Pipeline!A1:DE5000",
+        }));
+        const pipelineRows = pipelineResp.data.values || [];
 
-          const extractJobExtras = (row) => {
-            if (!row) return {};
-            return {
-              rawRevenue: String(row[32] ?? "").trim(),
-              rawDirectCosts: String(row[33] ?? "").trim(),
-              jobType: String(row[35] ?? "").trim(),
-              startDate: row[37] ? toSheetDateFormat(String(row[37]).trim()) : "",
-              endDate: row[38] ? toSheetDateFormat(String(row[38]).trim()) : "",
-            };
+        const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetIdClean,
+          range: "Confirmed!A1:AN5000",
+        }));
+        const confirmedRows = confirmedResp.data.values || [];
+
+        const extractJobExtras = (row) => {
+          if (!row) return {};
+          return {
+            rawRevenue: String(row[32] ?? "").trim(),
+            rawDirectCosts: String(row[33] ?? "").trim(),
+            jobType: String(row[35] ?? "").trim(),
+            startDate: row[37] ? toSheetDateFormat(String(row[37]).trim()) : "",
+            endDate: row[38] ? toSheetDateFormat(String(row[38]).trim()) : "",
           };
+        };
 
-          const formatJobCurrency = (val, defaultToZero = false) => {
-            const s = String(val ?? "").trim();
-            if (!s || s === "-") return defaultToZero ? "£0" : "";
-            const symMatch = s.match(/^([£$€])/);
-            const sym = symMatch ? symMatch[1] : "£";
-            const num = parseFloat(s.replace(/[£$€,\s]/g, ""));
-            if (isNaN(num)) return s;
-            const isInt = Math.abs(num - Math.round(num)) < 0.005;
-            return `${num < 0 ? "-" : ""}${sym}${Math.abs(num).toLocaleString("en-GB", {
-              minimumFractionDigits: isInt ? 0 : 2,
-              maximumFractionDigits: isInt ? 0 : 2,
-            })}`;
-          };
+        const formatJobCurrency = (val, defaultToZero = false) => {
+          const s = String(val ?? "").trim();
+          if (!s || s === "-") return defaultToZero ? "£0" : "";
+          const symMatch = s.match(/^([£$€])/);
+          const sym = symMatch ? symMatch[1] : "£";
+          const num = parseFloat(s.replace(/[£$€,\s]/g, ""));
+          if (isNaN(num)) return s;
+          const isInt = Math.abs(num - Math.round(num)) < 0.005;
+          return `${num < 0 ? "-" : ""}${sym}${Math.abs(num).toLocaleString("en-GB", {
+            minimumFractionDigits: isInt ? 0 : 2,
+            maximumFractionDigits: isInt ? 0 : 2,
+          })}`;
+        };
 
-          for (const job of affectedJobs) {
-            const checks = [];
-            let allOk = true;
-            let pipelineJob = null;    // hoisted so accessible at results.push
-            let confirmedMatch = null; // hoisted so accessible at results.push
+        for (const job of affectedJobs) {
+          const checks = [];
+          let allOk = true;
+          let pipelineJob = null;    // hoisted so accessible at results.push
+          let confirmedMatch = null; // hoisted so accessible at results.push
 
-            if (expectCopied) {
-              // CRITICAL CHECK: Pipeline col DD must be "Yes"
-              // Pipeline data: col A(0)=Client, B(1)=JobName, C(2)=ProjectCode, DD(107)=CopiedToConf?
-              // Pipeline rows start at row 2 in the sheet; our slice starts at A1 so index 1 = row 2
-              const jobNameLower = job.jobName.toLowerCase();
-              const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
+          if (expectCopied) {
+            // CRITICAL CHECK: Pipeline col DD must be "Yes"
+            // Pipeline data: col A(0)=Client, B(1)=JobName, C(2)=ProjectCode, DD(107)=CopiedToConf?
+            // Pipeline rows start at row 2 in the sheet; our slice starts at A1 so index 1 = row 2
+            const jobNameLower = job.jobName.toLowerCase();
+            const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
 
-              // Primary: use the row number from the AutoLog (most reliable)
-              if (job.pipelineRowFromLog) {
-                const prIdx = job.pipelineRowFromLog - 1; // Pipeline slice starts at row 1, index 0 = row 1
-                const pr = prIdx >= 1 ? pipelineRows[prIdx] : null;
-                if (pr) {
-                  const prJobName = String(pr[1] || "").trim();
-                  const prClientName = String(pr[0] || "").trim();
-                  // When job name is blank or a placeholder "-", skip name validation and trust the row number
-                  const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
-                  const jobNameMatches = jobNameIsBlank || prJobName.toLowerCase() === jobNameLower;
-                  const clientNameMatches = !clientParsedLower || !prClientName ||
-                    prClientName.toLowerCase().includes(clientParsedLower) ||
-                    clientParsedLower.includes(prClientName.toLowerCase());
-                  if (jobNameMatches && clientNameMatches) {
-                    pipelineJob = {
-                      clientName: prClientName,
-                      jobName: prJobName,
-                      projectCode: String(pr[2] || "").trim(),
-                      copiedToConf: String(pr[107] || "").trim(),
-                      rowNumber: job.pipelineRowFromLog,
-                      ...extractJobExtras(pr),
-                    };
-                  } else {
-                    console.log(`  ⚠️ Pipeline row ${job.pipelineRowFromLog} has "${prJobName}" / "${prClientName}" - expected "${job.jobName}" / "${job.clientParsed}". Row may have shifted - falling back to name search.`);
-                  }
+            // Primary: use the row number from the AutoLog (most reliable)
+            if (job.pipelineRowFromLog) {
+              const prIdx = job.pipelineRowFromLog - 1; // Pipeline slice starts at row 1, index 0 = row 1
+              const pr = prIdx >= 1 ? pipelineRows[prIdx] : null;
+              if (pr) {
+                const prJobName = String(pr[1] || "").trim();
+                const prClientName = String(pr[0] || "").trim();
+                // When job name is blank or a placeholder "-", skip name validation and trust the row number
+                const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
+                const jobNameMatches = jobNameIsBlank || prJobName.toLowerCase() === jobNameLower;
+                const clientNameMatches = !clientParsedLower || !prClientName ||
+                  prClientName.toLowerCase().includes(clientParsedLower) ||
+                  clientParsedLower.includes(prClientName.toLowerCase());
+                if (jobNameMatches && clientNameMatches) {
+                  pipelineJob = {
+                    clientName: prClientName,
+                    jobName: prJobName,
+                    projectCode: String(pr[2] || "").trim(),
+                    copiedToConf: String(pr[107] || "").trim(),
+                    rowNumber: job.pipelineRowFromLog,
+                    ...extractJobExtras(pr),
+                  };
+                } else {
+                  console.log(`  ⚠️ Pipeline row ${job.pipelineRowFromLog} has "${prJobName}" / "${prClientName}" - expected "${job.jobName}" / "${job.clientParsed}". Row may have shifted - falling back to name search.`);
                 }
               }
+            }
 
-              // Fallback: search by job name + client name (skipped when job name is blank/placeholder)
-              if (!pipelineJob) {
-                const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
-                for (let pri = 1; pri < pipelineRows.length; pri++) {
-                  const pr = pipelineRows[pri];
-                  const pJobName = String(pr[1] || "").trim();
-                  const pClientName = String(pr[0] || "").trim();
-                  const pProjectCode = String(pr[2] || "").trim();
+            // Fallback: search by job name + client name (skipped when job name is blank/placeholder)
+            if (!pipelineJob) {
+              const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
+              for (let pri = 1; pri < pipelineRows.length; pri++) {
+                const pr = pipelineRows[pri];
+                const pJobName = String(pr[1] || "").trim();
+                const pClientName = String(pr[0] || "").trim();
+                const pProjectCode = String(pr[2] || "").trim();
 
-                  if (job.projectCodeFromLog && pProjectCode.toLowerCase() === job.projectCodeFromLog.toLowerCase()) {
-                    pipelineJob = {
-                      clientName: pClientName,
-                      jobName: pJobName,
-                      projectCode: pProjectCode,
-                      copiedToConf: String(pr[107] || "").trim(),
-                      rowNumber: pri + 1,
-                      ...extractJobExtras(pr),
-                    };
-                    break;
-                  }
-                  if (job.projectCodeFromLog) continue; // If looking strictly by code, don't fallback to name check for this iteration
-
-                  // If job name is blank/placeholder, match on client name only (less reliable - only use as last resort)
-                  if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
-                  if (jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
-                  if (!jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+                if (job.projectCodeFromLog && pProjectCode.toLowerCase() === job.projectCodeFromLog.toLowerCase()) {
                   pipelineJob = {
                     clientName: pClientName,
                     jobName: pJobName,
-                    projectCode: String(pr[2] || "").trim(),
+                    projectCode: pProjectCode,
                     copiedToConf: String(pr[107] || "").trim(),
                     rowNumber: pri + 1,
                     ...extractJobExtras(pr),
                   };
                   break;
                 }
-              }
+                if (job.projectCodeFromLog) continue; // If looking strictly by code, don't fallback to name check for this iteration
 
-              if (!pipelineJob) {
-                checks.push({ ok: false, message: `✗ CRITICAL: Job "${job.jobName}" not found in Pipeline - cannot verify DD was set to Yes` });
-                allOk = false;
-              } else {
-                const ddVal = pipelineJob.copiedToConf.toLowerCase();
-                const ddOk = ddVal === "yes" || ddVal === "true";
-                const pRowStr = pipelineJob.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
-                const cliStr = pipelineJob.clientName ? ` - ${pipelineJob.clientName}` : "";
-                checks.push({
-                  ok: ddOk,
-                  message: ddOk
-                    ? `✓ Pipeline col DD ("Copied to confirmed?"): Yes${pRowStr}${cliStr}`
-                    : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" - expected Yes${pRowStr}${cliStr}. The copy may not have registered correctly.`,
-                });
-                if (!ddOk) allOk = false;
+                // If job name is blank/placeholder, match on client name only (less reliable - only use as last resort)
+                if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
+                if (jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+                if (!jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+                pipelineJob = {
+                  clientName: pClientName,
+                  jobName: pJobName,
+                  projectCode: String(pr[2] || "").trim(),
+                  copiedToConf: String(pr[107] || "").trim(),
+                  rowNumber: pri + 1,
+                  ...extractJobExtras(pr),
+                };
+                break;
               }
+            }
 
-              // Secondary check: job exists in Confirmed - search by project code first, then job+client name
-              // Row numbers are unreliable (rows can shift), so we match on col C (project code) or cols A+B
-              const pipelineProjectCode = pipelineJob?.projectCode || job.projectCodeFromLog || "";
-              // Use the resolved client name from pipelineJob (more reliable than AutoLog-parsed clientParsed)
-              const resolvedClientLower = (pipelineJob?.clientName || "").toLowerCase() || clientParsedLower;
-              for (let cri = 0; cri < confirmedRows.length; cri++) {
-                const cr = confirmedRows[cri];
-                const crJobName = String(cr[1] || "").trim();
-                const crClientName = String(cr[0] || "").trim();
-                const crProjectCode = String(cr[2] || "").trim();
-                // Primary match: project code (most reliable, unique per job)
-                if (pipelineProjectCode && crProjectCode && crProjectCode.toLowerCase() === pipelineProjectCode.toLowerCase()) {
-                  confirmedMatch = {
-                    jobName: crJobName,
-                    projectCode: crProjectCode,
-                    clientName: crClientName,
-                    rowNumber: cri + 1,
-                    ...extractJobExtras(cr),
-                  };
-                  break;
-                }
-                // Fallback: job name + client name (skip if job name is blank/placeholder)
-                const jobNameIsBlankConf = !jobNameLower || jobNameLower === "-";
-                if (jobNameIsBlankConf) continue; // can't match on blank name - project code is the only key
-                if (crJobName.toLowerCase() !== jobNameLower) continue;
-                // Use resolvedClientLower (from pipelineJob) for a more accurate client match
-                if (resolvedClientLower && crClientName && !crClientName.toLowerCase().includes(resolvedClientLower) && !resolvedClientLower.includes(crClientName.toLowerCase())) continue;
+            if (!pipelineJob) {
+              checks.push({ ok: false, message: `✗ CRITICAL: Job "${job.jobName}" not found in Pipeline - cannot verify DD was set to Yes` });
+              allOk = false;
+            } else {
+              const ddVal = pipelineJob.copiedToConf.toLowerCase();
+              const ddOk = ddVal === "yes" || ddVal === "true";
+              const pRowStr = pipelineJob.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
+              const cliStr = pipelineJob.clientName ? ` - ${pipelineJob.clientName}` : "";
+              checks.push({
+                ok: ddOk,
+                message: ddOk
+                  ? `✓ Pipeline col DD ("Copied to confirmed?"): Yes${pRowStr}${cliStr}`
+                  : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" - expected Yes${pRowStr}${cliStr}. The copy may not have registered correctly.`,
+              });
+              if (!ddOk) allOk = false;
+            }
+
+            // Secondary check: job exists in Confirmed - search by project code first, then job+client name
+            // Row numbers are unreliable (rows can shift), so we match on col C (project code) or cols A+B
+            const pipelineProjectCode = pipelineJob?.projectCode || job.projectCodeFromLog || "";
+            // Use the resolved client name from pipelineJob (more reliable than AutoLog-parsed clientParsed)
+            const resolvedClientLower = (pipelineJob?.clientName || "").toLowerCase() || clientParsedLower;
+            for (let cri = 0; cri < confirmedRows.length; cri++) {
+              const cr = confirmedRows[cri];
+              const crJobName = String(cr[1] || "").trim();
+              const crClientName = String(cr[0] || "").trim();
+              const crProjectCode = String(cr[2] || "").trim();
+              // Primary match: project code (most reliable, unique per job)
+              if (pipelineProjectCode && crProjectCode && crProjectCode.toLowerCase() === pipelineProjectCode.toLowerCase()) {
                 confirmedMatch = {
                   jobName: crJobName,
                   projectCode: crProjectCode,
@@ -9378,99 +9343,128 @@ export async function handleDeleteJob(req, res, sheets) {
                 };
                 break;
               }
-              const confExists = confirmedMatch !== null;
+              // Fallback: job name + client name (skip if job name is blank/placeholder)
+              const jobNameIsBlankConf = !jobNameLower || jobNameLower === "-";
+              if (jobNameIsBlankConf) continue; // can't match on blank name - project code is the only key
+              if (crJobName.toLowerCase() !== jobNameLower) continue;
+              // Use resolvedClientLower (from pipelineJob) for a more accurate client match
+              if (resolvedClientLower && crClientName && !crClientName.toLowerCase().includes(resolvedClientLower) && !resolvedClientLower.includes(crClientName.toLowerCase())) continue;
+              confirmedMatch = {
+                jobName: crJobName,
+                projectCode: crProjectCode,
+                clientName: crClientName,
+                rowNumber: cri + 1,
+                ...extractJobExtras(cr),
+              };
+              break;
+            }
+            const confExists = confirmedMatch !== null;
 
-              // Include client name and row numbers in check messages
-              const pipelineRowStr = pipelineJob?.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
-              const confirmedRowStr = confirmedMatch?.rowNumber ? ` (Confirmed row ${confirmedMatch.rowNumber})` : "";
-              const clientStr = pipelineJob?.clientName ? ` - ${pipelineJob.clientName}` : "";
+            // Include client name and row numbers in check messages
+            const pipelineRowStr = pipelineJob?.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
+            const confirmedRowStr = confirmedMatch?.rowNumber ? ` (Confirmed row ${confirmedMatch.rowNumber})` : "";
+            const clientStr = pipelineJob?.clientName ? ` - ${pipelineJob.clientName}` : "";
 
-              checks.push({
-                ok: confExists,
-                message: confExists
-                  ? `✓ Confirmed tab: "${confirmedMatch.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confirmedRowStr}${pipelineRowStr}${clientStr} found`
-                  : pipelineProjectCode
-                    ? `✗ Confirmed tab: job "${job.jobName}" not found by project code (${pipelineProjectCode}) or name - Confirmed col C may be blank for this job, or copy may have failed`
-                    : `✗ Confirmed tab: job "${job.jobName}" not found - copy may have failed`,
-              });
-              if (!confExists) allOk = false;
+            checks.push({
+              ok: confExists,
+              message: confExists
+                ? `✓ Confirmed tab: "${confirmedMatch.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confirmedRowStr}${pipelineRowStr}${clientStr} found`
+                : pipelineProjectCode
+                  ? `✗ Confirmed tab: job "${job.jobName}" not found by project code (${pipelineProjectCode}) or name - Confirmed col C may be blank for this job, or copy may have failed`
+                  : `✗ Confirmed tab: job "${job.jobName}" not found - copy may have failed`,
+            });
+            if (!confExists) allOk = false;
 
-            } else {
-              // UNchecked: Pipeline DD should be No/blank, job should NOT be in Confirmed
-              const jobNameLower = job.jobName ? job.jobName.toLowerCase() : "";
-              const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
-              const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
+          } else {
+            // UNchecked: Pipeline DD should be No/blank, job should NOT be in Confirmed
+            const jobNameLower = job.jobName ? job.jobName.toLowerCase() : "";
+            const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
+            const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
 
-              // Look up Pipeline row - use log row number first, then name search
-              if (job.pipelineRowFromLog) {
-                const prIdx = job.pipelineRowFromLog - 1;
-                const pr = prIdx >= 1 ? pipelineRows[prIdx] : null;
-                if (pr) {
-                  const prJobName = String(pr[1] || "").trim();
-                  const prClientName = String(pr[0] || "").trim();
-                  const nameOk = jobNameIsBlank || prJobName.toLowerCase() === jobNameLower;
-                  const clientOk = !clientParsedLower || !prClientName ||
-                    prClientName.toLowerCase().includes(clientParsedLower) ||
-                    clientParsedLower.includes(prClientName.toLowerCase());
-                  if (nameOk && clientOk) {
-                    pipelineJob = {
-                      copiedToConf: String(pr[107] || "").trim(),
-                      rowNumber: job.pipelineRowFromLog,
-                      clientName: prClientName,
-                      jobName: prJobName,
-                      projectCode: String(pr[2] || "").trim(),
-                      ...extractJobExtras(pr),
-                    };
-                  }
-                }
-              }
-              if (!pipelineJob) {
-                for (let pri = 1; pri < pipelineRows.length; pri++) {
-                  const pr = pipelineRows[pri];
-                  const pJobName = String(pr[1] || "").trim();
-                  const pClientName = String(pr[0] || "").trim();
-                  if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
-                  if (clientParsedLower && pClientName &&
-                    !pClientName.toLowerCase().includes(clientParsedLower) &&
-                    !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+            // Look up Pipeline row - use log row number first, then name search
+            if (job.pipelineRowFromLog) {
+              const prIdx = job.pipelineRowFromLog - 1;
+              const pr = prIdx >= 1 ? pipelineRows[prIdx] : null;
+              if (pr) {
+                const prJobName = String(pr[1] || "").trim();
+                const prClientName = String(pr[0] || "").trim();
+                const nameOk = jobNameIsBlank || prJobName.toLowerCase() === jobNameLower;
+                const clientOk = !clientParsedLower || !prClientName ||
+                  prClientName.toLowerCase().includes(clientParsedLower) ||
+                  clientParsedLower.includes(prClientName.toLowerCase());
+                if (nameOk && clientOk) {
                   pipelineJob = {
                     copiedToConf: String(pr[107] || "").trim(),
-                    rowNumber: pri + 1,
-                    clientName: pClientName,
-                    jobName: pJobName,
+                    rowNumber: job.pipelineRowFromLog,
+                    clientName: prClientName,
+                    jobName: prJobName,
                     projectCode: String(pr[2] || "").trim(),
                     ...extractJobExtras(pr),
                   };
-                  break;
                 }
               }
-
-              if (pipelineJob) {
-                const ddVal = pipelineJob.copiedToConf.toLowerCase();
-                const ddOk = ddVal === "no" || ddVal === "" || ddVal === "false";
-                const pRowStr = pipelineJob.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
-                const cliStr = pipelineJob.clientName ? ` - ${pipelineJob.clientName}` : "";
-                checks.push({
-                  ok: ddOk,
-                  message: ddOk
-                    ? `✓ Pipeline col DD: "${pipelineJob.copiedToConf || "blank"}" - No/blank (correct)${pRowStr}${cliStr}`
-                    : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" - expected No or blank${pRowStr}${cliStr}`,
-                });
-                if (!ddOk) allOk = false;
-              } else {
-                checks.push({ ok: false, message: `✗ Job "${job.jobName}" not found in Pipeline tab` });
-                allOk = false;
+            }
+            if (!pipelineJob) {
+              for (let pri = 1; pri < pipelineRows.length; pri++) {
+                const pr = pipelineRows[pri];
+                const pJobName = String(pr[1] || "").trim();
+                const pClientName = String(pr[0] || "").trim();
+                if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
+                if (clientParsedLower && pClientName &&
+                  !pClientName.toLowerCase().includes(clientParsedLower) &&
+                  !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+                pipelineJob = {
+                  copiedToConf: String(pr[107] || "").trim(),
+                  rowNumber: pri + 1,
+                  clientName: pClientName,
+                  jobName: pJobName,
+                  projectCode: String(pr[2] || "").trim(),
+                  ...extractJobExtras(pr),
+                };
+                break;
               }
+            }
 
-              // Check Confirmed - search by project code first, then job+client name
-              const uncheckedProjectCode = pipelineJob?.projectCode || "";
-              for (let cri = 0; cri < confirmedRows.length; cri++) {
-                const cr = confirmedRows[cri];
-                const crJobName = String(cr[1] || "").trim();
-                const crClientName = String(cr[0] || "").trim();
-                const crProjectCode = String(cr[2] || "").trim();
-                if (uncheckedProjectCode && crProjectCode &&
-                  crProjectCode.toLowerCase() === uncheckedProjectCode.toLowerCase()) {
+            if (pipelineJob) {
+              const ddVal = pipelineJob.copiedToConf.toLowerCase();
+              const ddOk = ddVal === "no" || ddVal === "" || ddVal === "false";
+              const pRowStr = pipelineJob.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
+              const cliStr = pipelineJob.clientName ? ` - ${pipelineJob.clientName}` : "";
+              checks.push({
+                ok: ddOk,
+                message: ddOk
+                  ? `✓ Pipeline col DD: "${pipelineJob.copiedToConf || "blank"}" - No/blank (correct)${pRowStr}${cliStr}`
+                  : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" - expected No or blank${pRowStr}${cliStr}`,
+              });
+              if (!ddOk) allOk = false;
+            } else {
+              checks.push({ ok: false, message: `✗ Job "${job.jobName}" not found in Pipeline tab` });
+              allOk = false;
+            }
+
+            // Check Confirmed - search by project code first, then job+client name
+            const uncheckedProjectCode = pipelineJob?.projectCode || "";
+            for (let cri = 0; cri < confirmedRows.length; cri++) {
+              const cr = confirmedRows[cri];
+              const crJobName = String(cr[1] || "").trim();
+              const crClientName = String(cr[0] || "").trim();
+              const crProjectCode = String(cr[2] || "").trim();
+              if (uncheckedProjectCode && crProjectCode &&
+                crProjectCode.toLowerCase() === uncheckedProjectCode.toLowerCase()) {
+                confirmedMatch = {
+                  jobName: crJobName,
+                  projectCode: crProjectCode,
+                  clientName: crClientName,
+                  rowNumber: cri + 1,
+                  ...extractJobExtras(cr),
+                };
+                break;
+              }
+              if (!jobNameIsBlank && crJobName.toLowerCase() === jobNameLower) {
+                const clientOk = !clientParsedLower || !crClientName ||
+                  crClientName.toLowerCase().includes(clientParsedLower) ||
+                  clientParsedLower.includes(crClientName.toLowerCase());
+                if (clientOk) {
                   confirmedMatch = {
                     jobName: crJobName,
                     projectCode: crProjectCode,
@@ -9480,1863 +9474,1846 @@ export async function handleDeleteJob(req, res, sheets) {
                   };
                   break;
                 }
-                if (!jobNameIsBlank && crJobName.toLowerCase() === jobNameLower) {
-                  const clientOk = !clientParsedLower || !crClientName ||
-                    crClientName.toLowerCase().includes(clientParsedLower) ||
-                    clientParsedLower.includes(crClientName.toLowerCase());
-                  if (clientOk) {
-                    confirmedMatch = {
-                      jobName: crJobName,
-                      projectCode: crProjectCode,
-                      clientName: crClientName,
-                      rowNumber: cri + 1,
-                      ...extractJobExtras(cr),
-                    };
-                    break;
-                  }
-                }
               }
-              const inConfirmed = confirmedMatch !== null;
-              const confRowStr = confirmedMatch?.rowNumber ? ` (Confirmed row ${confirmedMatch.rowNumber})` : "";
-              const confCliStr = confirmedMatch?.clientName ? ` - ${confirmedMatch.clientName}` : "";
-              checks.push({
-                ok: !inConfirmed,
-                message: !inConfirmed
-                  ? `✓ Confirmed tab: job not present (correct)`
-                  : `✗ "${confirmedMatch.jobName || job.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confRowStr}${confCliStr} still exists in Confirmed - should have been removed`,
-              });
-              if (inConfirmed) allOk = false;
             }
-
-            const hasJobRow = Boolean(confirmedMatch || pipelineJob);
-            const rawRev = confirmedMatch?.rawRevenue || pipelineJob?.rawRevenue || "";
-            const rawDC = confirmedMatch?.rawDirectCosts || pipelineJob?.rawDirectCosts || "";
-
-            results.push({
-              jobName: (job.jobName && job.jobName !== "-") ? job.jobName
-                : pipelineJob?.jobName || confirmedMatch?.jobName || "-",
-              projectCode: pipelineJob?.projectCode || confirmedMatch?.projectCode || "",
-              clientName: job.clientParsed || pipelineJob?.clientName || confirmedMatch?.clientName || "",
-              pipelineRow: pipelineJob?.rowNumber || null,
-              confirmedRow: confirmedMatch?.rowNumber || null,
-              revenue: formatJobCurrency(rawRev, hasJobRow),
-              directCosts: formatJobCurrency(rawDC, hasJobRow),
-              jobType: confirmedMatch?.jobType || pipelineJob?.jobType || "",
-              startDate: confirmedMatch?.startDate || pipelineJob?.startDate || "",
-              endDate: confirmedMatch?.endDate || pipelineJob?.endDate || "",
-              clientParsed: job.clientParsed,
-              logTimestamp: job.logTimestamp,
-              status: allOk ? "ok" : "issue",
-              checks,
+            const inConfirmed = confirmedMatch !== null;
+            const confRowStr = confirmedMatch?.rowNumber ? ` (Confirmed row ${confirmedMatch.rowNumber})` : "";
+            const confCliStr = confirmedMatch?.clientName ? ` - ${confirmedMatch.clientName}` : "";
+            checks.push({
+              ok: !inConfirmed,
+              message: !inConfirmed
+                ? `✓ Confirmed tab: job not present (correct)`
+                : `✗ "${confirmedMatch.jobName || job.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confRowStr}${confCliStr} still exists in Confirmed - should have been removed`,
             });
+            if (inConfirmed) allOk = false;
           }
-        }
 
-      } else if (flagType === "retainerInvoicesCreated") {
-        // All retainer creation entries in the window since the flag was last cleared
-        const retainerLogEntries = autoLogRows.filter(row => {
+          const hasJobRow = Boolean(confirmedMatch || pipelineJob);
+          const rawRev = confirmedMatch?.rawRevenue || pipelineJob?.rawRevenue || "";
+          const rawDC = confirmedMatch?.rawDirectCosts || pipelineJob?.rawDirectCosts || "";
+
+          results.push({
+            jobName: (job.jobName && job.jobName !== "-") ? job.jobName
+              : pipelineJob?.jobName || confirmedMatch?.jobName || "-",
+            projectCode: pipelineJob?.projectCode || confirmedMatch?.projectCode || "",
+            clientName: job.clientParsed || pipelineJob?.clientName || confirmedMatch?.clientName || "",
+            pipelineRow: pipelineJob?.rowNumber || null,
+            confirmedRow: confirmedMatch?.rowNumber || null,
+            revenue: formatJobCurrency(rawRev, hasJobRow),
+            directCosts: formatJobCurrency(rawDC, hasJobRow),
+            jobType: confirmedMatch?.jobType || pipelineJob?.jobType || "",
+            startDate: confirmedMatch?.startDate || pipelineJob?.startDate || "",
+            endDate: confirmedMatch?.endDate || pipelineJob?.endDate || "",
+            clientParsed: job.clientParsed,
+            logTimestamp: job.logTimestamp,
+            status: allOk ? "ok" : "issue",
+            checks,
+          });
+        }
+      }
+
+    } else if (flagType === "retainerInvoicesCreated") {
+      // All retainer creation entries in the window since the flag was last cleared
+      const retainerLogEntries = autoLogRows.filter(row => {
+        const details = String(row[3] || "");
+        return details.includes("Retainer") && details.includes("Added") &&
+          (details.includes("child row") || details.includes("invoice rows"));
+      });
+      console.log(`  ✓ Found ${retainerLogEntries.length} retainer creation entries in window`);
+
+      // If nothing found in window, fall back to full AutoLog (last 90 days)
+      // This handles timing edge cases where the automation ran just before the window start
+      const retainerLogEntriesToUse = retainerLogEntries.length > 0 ? retainerLogEntries :
+        allAutoLogRows.filter(row => {
           const details = String(row[3] || "");
           return details.includes("Retainer") && details.includes("Added") &&
             (details.includes("child row") || details.includes("invoice rows"));
         });
-        console.log(`  ✓ Found ${retainerLogEntries.length} retainer creation entries in window`);
+      if (retainerLogEntries.length === 0 && retainerLogEntriesToUse.length > 0) {
+        console.log(`  ↩ Fell back to full AutoLog - found ${retainerLogEntriesToUse.length} entries`);
+      }
+      for (const entry of retainerLogEntriesToUse) {
+        console.log(`    [${entry[0]}] Details="${String(entry[3] || "").slice(0, 400)}"`);
+      }
 
-        // If nothing found in window, fall back to full AutoLog (last 90 days)
-        // This handles timing edge cases where the automation ran just before the window start
-        const retainerLogEntriesToUse = retainerLogEntries.length > 0 ? retainerLogEntries :
-          allAutoLogRows.filter(row => {
-            const details = String(row[3] || "");
-            return details.includes("Retainer") && details.includes("Added") &&
-              (details.includes("child row") || details.includes("invoice rows"));
-          });
-        if (retainerLogEntries.length === 0 && retainerLogEntriesToUse.length > 0) {
-          console.log(`  ↩ Fell back to full AutoLog - found ${retainerLogEntriesToUse.length} entries`);
-        }
-        for (const entry of retainerLogEntriesToUse) {
-          console.log(`    [${entry[0]}] Details="${String(entry[3] || "").slice(0, 400)}"`);
-        }
-
-        if (retainerLogEntriesToUse.length === 0) {
-          results.push({
-            status: "info",
-            message: `No retainer invoice creation entries found in AutoLog since flag was last cleared. If invoices were recently created, click Re-run to refresh.`,
-          });
-        } else {
-          // Parse all entries in the window
-          const affectedRetainerJobs = [];
-          for (const entry of retainerLogEntriesToUse) {
-            const details = String(entry[3] || "");
-
-            // Format A (new): "[Retainers - Confirmed] Added N child row(s) (Parent Row: N) for CLIENT | JOB"
-            //                 "[Retainers - Pipeline] Added N child row(s) (Parent Row: N) for CLIENT | JOB"
-            const newPattern = /\[Retainers\s*-\s*(Confirmed|Pipeline)\]\s*Added\s+(\d+)\s+child\s+rows?\(s?\)\s*\(Parent\s+Row:\s*(\d+)\)\s+for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
-            let m;
-            while ((m = newPattern.exec(details)) !== null) {
-              if (targetLine) {
-                const normMatch = m[0].replace(/\s+/g, " ").trim().toLowerCase();
-                const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
-                const clientLower = m[4].trim().toLowerCase();
-                const jobLower = m[5].trim().toLowerCase();
-                const isMatch = normMatch.includes(normTarget) || normTarget.includes(normMatch) ||
-                  (normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower));
-                if (!isMatch) continue;
-              }
-              affectedRetainerJobs.push({
-                tab: m[1].trim(),   // "Confirmed" or "Pipeline"
-                childRowsCreated: parseInt(m[2], 10),
-                logSheetRow: parseInt(m[3], 10),
-                clientNameFromLog: m[4].trim(),
-                jobName: m[5].trim(),
-                logTimestamp: String(entry[0] || "")
-              });
-            }
-
-            // Format B (old): "Row N, ClientName, JobName: Added N invoice rows"
-            if (affectedRetainerJobs.length === 0) {
-              const oldPattern = /Row\s+(\d+),\s+([^,]+),\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
-              while ((m = oldPattern.exec(details)) !== null) {
-                if (targetLine) {
-                  const normMatch = m[0].replace(/\s+/g, " ").trim().toLowerCase();
-                  const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
-                  const clientLower = m[2].trim().toLowerCase();
-                  const jobLower = m[3].trim().toLowerCase();
-                  const isMatch = normMatch.includes(normTarget) || normTarget.includes(normMatch) ||
-                    (normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower));
-                  if (!isMatch) continue;
-                }
-                affectedRetainerJobs.push({
-                  logSheetRow: parseInt(m[1], 10),
-                  clientNameFromLog: m[2].trim(),
-                  jobName: m[3].trim(),
-                  logTimestamp: String(entry[0] || "")
-                });
-              }
-            }
-          }
-
-          if (affectedRetainerJobs.length === 0 && targetLine) {
-            const targetNewPattern = /\[Retainers\s*-\s*(Confirmed|Pipeline)\]\s*Added\s+(\d+)\s+child\s+rows?\(s?\)\s*(?:\(Parent\s+Row:\s*(\d+)\)\s*)?for\s+([^|]+)\s*\|\s*([^\[\n]+)/i;
-            const tm = targetNewPattern.exec(targetLine);
-            if (tm) {
-              affectedRetainerJobs.push({
-                tab: tm[1].trim(),
-                childRowsCreated: parseInt(tm[2], 10),
-                logSheetRow: tm[3] ? parseInt(tm[3], 10) : null,
-                clientNameFromLog: tm[4].trim(),
-                jobName: tm[5].trim(),
-                logTimestamp: "",
-              });
-            } else {
-              const targetOldPattern = /Row\s+(\d+),\s+([^,]+),\s+([^:]+):\s+Added\s+(\d+)\s+invoice rows/i;
-              const om = targetOldPattern.exec(targetLine);
-              if (om) {
-                affectedRetainerJobs.push({
-                  logSheetRow: parseInt(om[1], 10),
-                  clientNameFromLog: om[2].trim(),
-                  jobName: om[3].trim(),
-                  logTimestamp: "",
-                });
-              }
-            }
-          }
-
-          // Deduplicate by jobName (row numbers are unreliable after row shifts)
-          const seenJobs = new Set();
-          let dedupedJobs = affectedRetainerJobs.filter(j => {
-            const key = `${j.clientNameFromLog}___${j.jobName}`;
-            if (seenJobs.has(key)) return false;
-            seenJobs.add(key);
-            return true;
-          });
-
-          if (targetLine && dedupedJobs.length > 1) {
-            const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
-            const matched = dedupedJobs.filter(j => {
-              const jobLower = (j.jobName || "").trim().toLowerCase();
-              const clientLower = (j.clientNameFromLog || "").trim().toLowerCase();
-              return normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower);
-            });
-            if (matched.length > 0) dedupedJobs = matched;
-          }
-          console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
-
-          // Read Confirmed tab
-          const retConfirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
-            spreadsheetId: clientSheetIdClean,
-            range: "Confirmed!A1:BH5000",
-          }));
-          const retConfirmedRows = retConfirmedResp.data.values || [];
-
-          const retPipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
-            spreadsheetId: clientSheetIdClean,
-            range: "Pipeline!A1:BH5000",
-          }));
-          const retPipelineRows = retPipelineResp.data.values || [];
-
-          const retainerChecks = [];
-
-          for (const job of dedupedJobs) {
-            const targetTab = job.tab || "Confirmed"; // default to Confirmed for old-format entries
-            const tabRows = targetTab === "Pipeline" ? retPipelineRows : retConfirmedRows;
-            const tabStartRow = 1;
-
-            // Find the parent row by matching client name AND job name.
-            // If the AutoLog has a row number, try that first (most reliable).
-            // If multiple rows match the same client+job name, warn rather than
-            // silently picking the wrong one.
-            const jobNameLower = job.jobName.toLowerCase();
-            const clientLower = job.clientNameFromLog.toLowerCase();
-            let parentRowIdx = -1;
-            const allMatchingIdxs = [];
-
-            // First try: use row number from AutoLog if available
-            if (job.logSheetRow) {
-              const logIdx = job.logSheetRow - tabStartRow;
-              if (logIdx >= 0 && logIdx < tabRows.length) {
-                const r = tabRows[logIdx];
-                const rClient = String(r[0] || "").trim().toLowerCase();
-                const rJob = String(r[1] || "").trim().toLowerCase();
-                if (rClient === clientLower && rJob === jobNameLower) {
-                  parentRowIdx = logIdx;
-                  console.log(`  ✓ Matched by row number: ${job.logSheetRow}`);
-                } else {
-                  console.log(`  ⚠ Row ${job.logSheetRow} has "${r[1]}"/"${r[0]}" - expected "${job.jobName}"/"${job.clientNameFromLog}" - row may have shifted, falling back to name search`);
-                }
-              }
-            }
-
-            // Second: name search - collect ALL matches to detect duplicates
-            if (parentRowIdx === -1) {
-              for (let ri = 0; ri < tabRows.length; ri++) {
-                const r = tabRows[ri];
-                const rClient = String(r[0] || "").trim().toLowerCase();
-                const rJob = String(r[1] || "").trim().toLowerCase();
-                const hasRevenue = !!(r[32]);
-                if (rClient === clientLower && rJob === jobNameLower && hasRevenue) {
-                  allMatchingIdxs.push(ri);
-                }
-              }
-              if (allMatchingIdxs.length === 1) {
-                parentRowIdx = allMatchingIdxs[0];
-              } else if (allMatchingIdxs.length > 1) {
-                retainerChecks.push({
-                  jobName: job.jobName,
-                  clientName: job.clientNameFromLog,
-                  status: "issue",
-                  checks: [{
-                    ok: false,
-                    message: `✗ Found ${allMatchingIdxs.length} rows matching "${job.clientNameFromLog} | ${job.jobName}" in ${targetTab} (rows ${allMatchingIdxs.map(i => i + tabStartRow).join(", ")}) - cannot reliably identify which row the automation acted on. Ensure jobs have unique names within the same client.`,
-                  }],
-                });
-                continue;
-              }
-            }
-
-            if (parentRowIdx === -1) {
-              // Not found in target tab - check the other tab as fallback
-              const fallbackTab = targetTab === "Pipeline" ? "Confirmed" : "Pipeline";
-              const fallbackRows = targetTab === "Pipeline" ? retConfirmedRows : retPipelineRows;
-              let fallbackIdx = -1;
-              for (let ri = 0; ri < fallbackRows.length; ri++) {
-                const r = fallbackRows[ri];
-                const rClient = String(r[0] || "").trim().toLowerCase();
-                const rJob = String(r[1] || "").trim().toLowerCase();
-                if (rClient === clientLower && rJob === jobNameLower) {
-                  fallbackIdx = ri;
-                  break;
-                }
-              }
-              if (fallbackIdx !== -1) {
-                const fallbackStartRow = 1;
-                retainerChecks.push({
-                  jobName: job.jobName,
-                  clientName: job.clientNameFromLog,
-                  status: "info",
-                  checks: [{ ok: true, message: `✓ Job "${job.jobName}" (${job.clientNameFromLog}) moved to ${fallbackTab} tab (row ${fallbackIdx + fallbackStartRow}) - originally created in ${targetTab}` }],
-                });
-              } else {
-                retainerChecks.push({
-                  jobName: job.jobName,
-                  clientName: job.clientNameFromLog,
-                  status: "issue",
-                  checks: [{ ok: false, message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in ${targetTab} or ${targetTab === "Pipeline" ? "Confirmed" : "Pipeline"} tabs` }],
-                });
-              }
-              continue;
-            }
-
-            const parentRow = tabRows[parentRowIdx];
-            const clientN = String(parentRow[0] || "").trim();
-            const jobName = String(parentRow[1] || "").trim();
-            const projectCode = String(parentRow[2] || "").trim();
-            const revenue = parentRow[32];
-            const startRaw = parentRow[37];
-            const endRaw = parentRow[38];
-            const confirmedSheetRow = parentRowIdx + tabStartRow;
-            console.log(`  Found "${jobName}" (${clientN}) at ${targetTab} row ${confirmedSheetRow}: start="${startRaw}", end="${endRaw}"`);
-
-            // Collect child rows - same tab, immediately after parent
-            // Child row: same client+job, no revenue, no start date
-            const childRows = [];
-            let ci = parentRowIdx + 1;
-            while (ci < tabRows.length) {
-              const next = tabRows[ci] || [];
-              const nClient = String(next[0] || "").trim().toLowerCase();
-              const nJob = String(next[1] || "").trim().toLowerCase();
-              if (nClient !== clientLower || nJob !== jobNameLower) break;
-              if (next[32] || next[37] || next[38]) break; // has revenue/start/end = another parent
-              childRows.push({ row: next, sheetRow: ci + tabStartRow });
-              ci++;
-            }
-
-            const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
-            const parseDate = (v) => {
-              if (!v) return null;
-              if (v instanceof Date) {
-                if (isNaN(v.getTime())) return null;
-                // JS Date treats 2-digit years as 1900s - correct to 2000s for years < 100
-                if (v.getFullYear() < 100) v.setFullYear(v.getFullYear() + 2000);
-                return v;
-              }
-              // Handle DD-Mon-YY or DD-Mon-YYYY strings e.g. "31-Jul-50", "1-May-2026"
-              const monMap = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
-              const monMatch = String(v).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-              if (monMatch) {
-                const yr = monMatch[3].length === 2 ? 2000 + parseInt(monMatch[3], 10) : parseInt(monMatch[3], 10);
-                return new Date(yr, monMap[monMatch[2]], parseInt(monMatch[1], 10));
-              }
-              const d = new Date(v);
-              if (!isNaN(d.getTime())) {
-                if (d.getFullYear() < 100) d.setFullYear(d.getFullYear() + 2000);
-                return d;
-              }
-              const serial = parseFloat(v);
-              if (!isNaN(serial)) return new Date((serial - 25569) * 86400 * 1000);
-              return null;
-            };
-            const startDate = parseDate(startRaw);
-            const endDate = parseDate(endRaw);
-            const checks = [];
-
-            if (!startDate || !endDate) {
-              retainerChecks.push({
-                jobName, clientName: clientN, projectCode, status: "info",
-                message: `No start/end dates set on this retainer - cannot verify invoice coverage`,
-                checks: [],
-              });
-              continue;
-            }
-
-            let periodMonths = 1;
-            let periodLabel = "monthly";
-            if (childRows.length > 0 && monthlyRevenue > 0) {
-              const firstInv = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
-              if (firstInv > 0) {
-                const ratio = Math.round(firstInv / monthlyRevenue);
-                if (ratio >= 2) {
-                  periodMonths = ratio;
-                  if (ratio === 3) periodLabel = "quarterly";
-                  else if (ratio === 6) periodLabel = "6-monthly";
-                  else if (ratio === 12) periodLabel = "annual";
-                  else periodLabel = `every ${ratio} months`;
-                }
-              }
-            }
-
-            // ── Single-row retainer check ────────────────────────────────────
-            let isSingleMonth = false;
-            if (startDate && endDate) {
-              const diffTime = endDate.getTime() - startDate.getTime();
-              const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-              const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
-              isSingleMonth = (monthsDiff === 1);
-            }
-
-            const parentInvAmt = parseFloat(String(parentRow[41] || "").replace(/[£$€,\s]/g, "")) || 0;
-            const parentInvRef = String(parentRow[42] || "").trim();
-
-            if (childRows.length === 0 && (parentInvAmt > 0 || parentInvRef)) {
-              if (isSingleMonth) {
-                const hasInvoice = parentInvAmt > 0;
-                const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
-                checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (1 month total, single invoice)` });
-                checks.push({ ok: true, message: `Single-row retainer (1-month exception) - invoice sits on parent row, no child rows expected` });
-                if (hasInvoice) {
-                  checks.push({ ok: true, message: `✓ Parent row slot 1 has invoice amount £${parentInvAmt.toFixed(2)}${parentInvRef ? ` (ref: ${parentInvRef})` : ""}` });
-                } else {
-                  checks.push({ ok: false, message: `✗ Parent row slot 1 has no invoice amount - invoice not yet created` });
-                }
-                retainerChecks.push({
-                  jobName, clientName: clientN, projectCode,
-                  parentSheetRow: confirmedSheetRow,
-                  tab: targetTab,
-                  status: hasInvoice ? "ok" : "issue",
-                  periodLabel: "single invoice", checks,
-                });
-                continue;
-              } else {
-                checks.push({ ok: false, message: `✗ Parent row has an invoice (amount/ref) but no child rows exist - single-row retainers are not allowed for multi-month jobs` });
-              }
-            }
-
-            // Count child rows whose scheduled invoice date (Inv1 sent-date slot) falls
-            // in or before the current calendar month - these are "past + current" rows.
-            // Expected = that count + 18 future rows (adjusted for period frequency).
-            const parseConfirmedDate = (val) => {
-              if (!val) return null;
-              if (val instanceof Date) return val;
-              const s = String(val).trim();
-              // Handle DD-Mon-YY format e.g. "1-Apr-26"
-              const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
-              if (m) {
-                const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
-                const yr = 2000 + parseInt(m[3], 10);
-                return new Date(yr, months[m[2]], parseInt(m[1], 10));
-              }
-              const d = new Date(val);
-              return isNaN(d.getTime()) ? null : d;
-            };
-
-            const today = new Date();
-            const endOfCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-            endOfCurrentMonth.setHours(23, 59, 59, 999);
-
-            const pastAndCurrentRows = childRows.filter(({ row: cr }) => {
-              const sentDate = parseConfirmedDate(cr[43]); // AR = Inv1 sent date
-              return sentDate && sentDate <= endOfCurrentMonth;
-            }).length;
-
-            const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
-            const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-            const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
-
-            const totalPeriods = Math.ceil(monthsDiff / periodMonths);
-            const futurePeriodsInContract = Math.max(0, totalPeriods - pastAndCurrentRows);
-            const futureRows = Math.min(18 / periodMonths, futurePeriodsInContract);
-            const expectedChildRows = pastAndCurrentRows + futureRows;
-
-            const actualChildRows = childRows.length;
-            const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
-            const durationOk = actualChildRows >= expectedChildRows;
-            const isNoEnd = isNoEndDateSentinel(parentRow[38]) || isNoEndDateSentinel(endDate);
-            checks.push({
-              ok: true,
-              message: isNoEnd
-                ? `Duration: ${fmt(startDate)} → No end date (ongoing, ${periodLabel})`
-                : `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})`
-            });
-            checks.push({
-              ok: durationOk,
-              message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) - ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),
-            });
-
-            let allHaveInvoice = true;
-            for (const { row: cr, sheetRow: sr } of childRows) {
-              if (!cr[41]) {
-                checks.push({ ok: false, message: `✗ Row ${sr}: invoice slot 1 is empty` });
-                allHaveInvoice = false;
-              }
-            }
-            if (allHaveInvoice && childRows.length > 0) {
-              checks.push({ ok: true, message: `✓ All ${childRows.length} child rows have invoice amounts` });
-            }
-
-            retainerChecks.push({
-              jobName, clientName: clientN, projectCode,
-              parentSheetRow: confirmedSheetRow,
-              tab: targetTab,
-              status: durationOk && allHaveInvoice ? "ok" : "issue",
-              periodLabel, checks,
-            });
-          }
-
-          results.push(...retainerChecks);
-        }
-
-      } else if (flagType === "retainerInvoicesDeleted") {
-
-        // Find AutoLog entries where retainer child rows were trimmed
-        const deletedLogEntries = autoLogRows.filter(row => {
-          const details = String(row[3] || "");
-          return details.includes("Retainer") && details.includes("Trimmed") &&
-            (details.includes("child row") || details.includes("excess"));
+      if (retainerLogEntriesToUse.length === 0) {
+        results.push({
+          status: "info",
+          message: `No retainer invoice creation entries found in AutoLog since flag was last cleared. If invoices were recently created, click Re-run to refresh.`,
         });
-        console.log(`  ✓ Found ${deletedLogEntries.length} retainer deletion entries in window`);
+      } else {
+        // Parse all entries in the window
+        const affectedRetainerJobs = [];
+        for (const entry of retainerLogEntriesToUse) {
+          const details = String(entry[3] || "");
 
-        // Fall back to full AutoLog if nothing found in window
-        const deletedLogEntriesToUse = deletedLogEntries.length > 0 ? deletedLogEntries :
-          allAutoLogRows.filter(row => {
-            const details = String(row[3] || "");
-            return details.includes("Retainer") && details.includes("Trimmed") &&
-              (details.includes("child row") || details.includes("excess"));
-          });
-        if (deletedLogEntries.length === 0 && deletedLogEntriesToUse.length > 0) {
-          console.log(`  ↩ Fell back to full AutoLog - found ${deletedLogEntriesToUse.length} entries`);
-        }
-        for (const entry of deletedLogEntriesToUse) {
-          console.log(`    [${entry[0]}] Details="${String(entry[3] || "").slice(0, 400)}"`);
-        }
+          // Format A (new): "[Retainers - Confirmed] Added N child row(s) (Parent Row: N) for CLIENT | JOB"
+          //                 "[Retainers - Pipeline] Added N child row(s) (Parent Row: N) for CLIENT | JOB"
+          const newPattern = /\[Retainers\s*-\s*(Confirmed|Pipeline)\]\s*Added\s+(\d+)\s+child\s+rows?\(s?\)\s*\(Parent\s+Row:\s*(\d+)\)\s+for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
+          let m;
+          while ((m = newPattern.exec(details)) !== null) {
+            if (targetLine) {
+              const normMatch = m[0].replace(/\s+/g, " ").trim().toLowerCase();
+              const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
+              const clientLower = m[4].trim().toLowerCase();
+              const jobLower = m[5].trim().toLowerCase();
+              const isMatch = normMatch.includes(normTarget) || normTarget.includes(normMatch) ||
+                (normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower));
+              if (!isMatch) continue;
+            }
+            affectedRetainerJobs.push({
+              tab: m[1].trim(),   // "Confirmed" or "Pipeline"
+              childRowsCreated: parseInt(m[2], 10),
+              logSheetRow: parseInt(m[3], 10),
+              clientNameFromLog: m[4].trim(),
+              jobName: m[5].trim(),
+              logTimestamp: String(entry[0] || "")
+            });
+          }
 
-        if (deletedLogEntriesToUse.length === 0) {
-          results.push({
-            status: "info",
-            message: `No retainer invoice deletion entries found in AutoLog since flag was last cleared. If invoices were recently deleted, click Re-run to refresh.`,
-          });
-        } else {
-          const affectedRetainerJobs = [];
-          for (const entry of deletedLogEntriesToUse) {
-            const details = String(entry[3] || "");
-            // Format: "[Retainers] Trimmed N excess child row(s) (Parent Row: N) for CLIENT | JOB"
-            const pattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\(s?\)(?:\s*\(Parent\s+Row:\s*\d+\))?\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
-            let m;
-            while ((m = pattern.exec(details)) !== null) {
+          // Format B (old): "Row N, ClientName, JobName: Added N invoice rows"
+          if (affectedRetainerJobs.length === 0) {
+            const oldPattern = /Row\s+(\d+),\s+([^,]+),\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
+            while ((m = oldPattern.exec(details)) !== null) {
               if (targetLine) {
                 const normMatch = m[0].replace(/\s+/g, " ").trim().toLowerCase();
                 const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
-                const clientLower = m[1].trim().toLowerCase();
-                const jobLower = m[2].trim().toLowerCase();
+                const clientLower = m[2].trim().toLowerCase();
+                const jobLower = m[3].trim().toLowerCase();
                 const isMatch = normMatch.includes(normTarget) || normTarget.includes(normMatch) ||
                   (normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower));
                 if (!isMatch) continue;
               }
               affectedRetainerJobs.push({
-                clientNameFromLog: m[1].trim(),
-                jobName: m[2].trim(),
+                logSheetRow: parseInt(m[1], 10),
+                clientNameFromLog: m[2].trim(),
+                jobName: m[3].trim(),
                 logTimestamp: String(entry[0] || "")
               });
             }
           }
+        }
 
-          if (affectedRetainerJobs.length === 0 && targetLine) {
-            const targetPattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\(s?\)(?:\s*\(Parent\s+Row:\s*\d+\))?\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/i;
-            const tm = targetPattern.exec(targetLine);
-            if (tm) {
+        if (affectedRetainerJobs.length === 0 && targetLine) {
+          const targetNewPattern = /\[Retainers\s*-\s*(Confirmed|Pipeline)\]\s*Added\s+(\d+)\s+child\s+rows?\(s?\)\s*(?:\(Parent\s+Row:\s*(\d+)\)\s*)?for\s+([^|]+)\s*\|\s*([^\[\n]+)/i;
+          const tm = targetNewPattern.exec(targetLine);
+          if (tm) {
+            affectedRetainerJobs.push({
+              tab: tm[1].trim(),
+              childRowsCreated: parseInt(tm[2], 10),
+              logSheetRow: tm[3] ? parseInt(tm[3], 10) : null,
+              clientNameFromLog: tm[4].trim(),
+              jobName: tm[5].trim(),
+              logTimestamp: "",
+            });
+          } else {
+            const targetOldPattern = /Row\s+(\d+),\s+([^,]+),\s+([^:]+):\s+Added\s+(\d+)\s+invoice rows/i;
+            const om = targetOldPattern.exec(targetLine);
+            if (om) {
               affectedRetainerJobs.push({
-                clientNameFromLog: tm[1].trim(),
-                jobName: tm[2].trim(),
+                logSheetRow: parseInt(om[1], 10),
+                clientNameFromLog: om[2].trim(),
+                jobName: om[3].trim(),
                 logTimestamp: "",
               });
             }
           }
+        }
 
-          // Deduplicate by client + job
-          const seenJobs = new Set();
-          let dedupedJobs = affectedRetainerJobs.filter(j => {
-            const key = `${j.clientNameFromLog}|||${j.jobName}`;
-            if (seenJobs.has(key)) return false;
-            seenJobs.add(key);
-            return true;
+        // Deduplicate by jobName (row numbers are unreliable after row shifts)
+        const seenJobs = new Set();
+        let dedupedJobs = affectedRetainerJobs.filter(j => {
+          const key = `${j.clientNameFromLog}___${j.jobName}`;
+          if (seenJobs.has(key)) return false;
+          seenJobs.add(key);
+          return true;
+        });
+
+        if (targetLine && dedupedJobs.length > 1) {
+          const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
+          const matched = dedupedJobs.filter(j => {
+            const jobLower = (j.jobName || "").trim().toLowerCase();
+            const clientLower = (j.clientNameFromLog || "").trim().toLowerCase();
+            return normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower);
           });
+          if (matched.length > 0) dedupedJobs = matched;
+        }
+        console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
 
-          if (targetLine && dedupedJobs.length > 1) {
-            const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
-            const matched = dedupedJobs.filter(j => {
-              const jobLower = (j.jobName || "").trim().toLowerCase();
-              const clientLower = (j.clientNameFromLog || "").trim().toLowerCase();
-              return normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower);
-            });
-            if (matched.length > 0) dedupedJobs = matched;
-          }
-          console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
+        // Read Confirmed tab
+        const retConfirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetIdClean,
+          range: "Confirmed!A1:BH5000",
+        }));
+        const retConfirmedRows = retConfirmedResp.data.values || [];
 
-          // Read Confirmed tab
-          const delConfirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
-            spreadsheetId: clientSheetIdClean,
-            range: "Confirmed!A1:BH5000",
-          }));
-          const delConfirmedRows = delConfirmedResp.data.values || [];
-          const retainerChecks = [];
+        const retPipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetIdClean,
+          range: "Pipeline!A1:BH5000",
+        }));
+        const retPipelineRows = retPipelineResp.data.values || [];
 
-          for (const job of dedupedJobs) {
-            const jobNameLower = job.jobName.toLowerCase();
-            const clientLower = job.clientNameFromLog.toLowerCase();
+        const retainerChecks = [];
 
-            // Find parent row by client + job name
-            let parentRowIdx = -1;
-            for (let ri = 0; ri < delConfirmedRows.length; ri++) {
-              const r = delConfirmedRows[ri];
+        for (const job of dedupedJobs) {
+          const targetTab = job.tab || "Confirmed"; // default to Confirmed for old-format entries
+          const tabRows = targetTab === "Pipeline" ? retPipelineRows : retConfirmedRows;
+          const tabStartRow = 1;
+
+          // Find the parent row by matching client name AND job name.
+          // If the AutoLog has a row number, try that first (most reliable).
+          // If multiple rows match the same client+job name, warn rather than
+          // silently picking the wrong one.
+          const jobNameLower = job.jobName.toLowerCase();
+          const clientLower = job.clientNameFromLog.toLowerCase();
+          let parentRowIdx = -1;
+          const allMatchingIdxs = [];
+
+          // First try: use row number from AutoLog if available
+          if (job.logSheetRow) {
+            const logIdx = job.logSheetRow - tabStartRow;
+            if (logIdx >= 0 && logIdx < tabRows.length) {
+              const r = tabRows[logIdx];
               const rClient = String(r[0] || "").trim().toLowerCase();
               const rJob = String(r[1] || "").trim().toLowerCase();
               if (rClient === clientLower && rJob === jobNameLower) {
-                parentRowIdx = ri;
-                break;
+                parentRowIdx = logIdx;
+                console.log(`  ✓ Matched by row number: ${job.logSheetRow}`);
+              } else {
+                console.log(`  ⚠ Row ${job.logSheetRow} has "${r[1]}"/"${r[0]}" - expected "${job.jobName}"/"${job.clientNameFromLog}" - row may have shifted, falling back to name search`);
               }
             }
+          }
 
-            if (parentRowIdx === -1) {
+          // Second: name search - collect ALL matches to detect duplicates
+          if (parentRowIdx === -1) {
+            for (let ri = 0; ri < tabRows.length; ri++) {
+              const r = tabRows[ri];
+              const rClient = String(r[0] || "").trim().toLowerCase();
+              const rJob = String(r[1] || "").trim().toLowerCase();
+              const hasRevenue = !!(r[32]);
+              if (rClient === clientLower && rJob === jobNameLower && hasRevenue) {
+                allMatchingIdxs.push(ri);
+              }
+            }
+            if (allMatchingIdxs.length === 1) {
+              parentRowIdx = allMatchingIdxs[0];
+            } else if (allMatchingIdxs.length > 1) {
               retainerChecks.push({
                 jobName: job.jobName,
                 clientName: job.clientNameFromLog,
                 status: "issue",
-                message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in Confirmed tab`,
-                checks: [],
+                checks: [{
+                  ok: false,
+                  message: `✗ Found ${allMatchingIdxs.length} rows matching "${job.clientNameFromLog} | ${job.jobName}" in ${targetTab} (rows ${allMatchingIdxs.map(i => i + tabStartRow).join(", ")}) - cannot reliably identify which row the automation acted on. Ensure jobs have unique names within the same client.`,
+                }],
               });
               continue;
             }
+          }
 
-            const parentRow = delConfirmedRows[parentRowIdx];
-            const parentSheetRow = parentRowIdx + 1;
-            const jobClient = String(parentRow[0] || "").trim();
-            const jobName2 = String(parentRow[1] || "").trim();
-            const projectCode = String(parentRow[2] || "").trim();
-            const monthlyRevenue = parseFloat(String(parentRow[32] || "0").replace(/[£$€,\s]/g, "")) || 0;
-            const jobStart = String(parentRow[37] || "").trim();
-            const jobEnd = String(parentRow[38] || "").trim();
-
-            console.log(`  Found "${job.jobName}" (${job.clientNameFromLog}) at Confirmed row ${parentSheetRow}: start="${jobStart}", end="${jobEnd}"`);
-
-            // Collect child rows (same client + job, no revenue/start/end)
-            const childRows = [];
-            for (let ri = parentRowIdx + 1; ri < delConfirmedRows.length; ri++) {
-              const r = delConfirmedRows[ri];
+          if (parentRowIdx === -1) {
+            // Not found in target tab - check the other tab as fallback
+            const fallbackTab = targetTab === "Pipeline" ? "Confirmed" : "Pipeline";
+            const fallbackRows = targetTab === "Pipeline" ? retConfirmedRows : retPipelineRows;
+            let fallbackIdx = -1;
+            for (let ri = 0; ri < fallbackRows.length; ri++) {
+              const r = fallbackRows[ri];
               const rClient = String(r[0] || "").trim().toLowerCase();
               const rJob = String(r[1] || "").trim().toLowerCase();
-              if (rClient !== clientLower || rJob !== jobNameLower) break;
-              if (r[32] || r[37] || r[38]) break; // has revenue/start/end = another parent
-              childRows.push({ row: r, sheetRow: ri + 1 });
+              if (rClient === clientLower && rJob === jobNameLower) {
+                fallbackIdx = ri;
+                break;
+              }
             }
-
-            const checks = [];
-
-            // Parse dates
-            const parseDate = (s) => {
-              if (!s) return null;
-              const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
-              const m2 = String(s).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-              if (m2) {
-                const yr = m2[3].length === 2 ? 2000 + parseInt(m2[3], 10) : parseInt(m2[3], 10);
-                return new Date(yr, months[m2[2]], parseInt(m2[1], 10));
-              }
-              if (s instanceof Date) {
-                if (isNaN(s.getTime())) return null;
-                if (s.getFullYear() < 100) s.setFullYear(s.getFullYear() + 2000);
-                return s;
-              }
-              const d = new Date(s);
-              if (!isNaN(d.getTime())) {
-                if (d.getFullYear() < 100) d.setFullYear(d.getFullYear() + 2000);
-                return d;
-              }
-              return null;
-            };
-
-            const startDate = parseDate(jobStart);
-            const endDate = parseDate(jobEnd);
-
-            if (!startDate || !endDate) {
+            if (fallbackIdx !== -1) {
+              const fallbackStartRow = 1;
               retainerChecks.push({
-                jobName: jobName2, clientName: jobClient, projectCode,
-                parentSheetRow, status: "info",
-                message: `No start/end dates set on this retainer - cannot verify row coverage`,
-                checks: [],
-              });
-              continue;
-            }
-
-            // Determine period (monthly by default, infer from child row amounts)
-            let periodMonths = 1;
-            let periodLabel = "monthly";
-            if (childRows.length > 0 && monthlyRevenue > 0) {
-              const firstInv = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
-              if (firstInv > 0) {
-                const ratio = Math.round(firstInv / monthlyRevenue);
-                if (ratio >= 2) {
-                  periodMonths = ratio;
-                  if (ratio === 3) periodLabel = "quarterly";
-                  else if (ratio === 6) periodLabel = "6-monthly";
-                  else if (ratio === 12) periodLabel = "annual";
-                  else periodLabel = `every ${ratio} months`;
-                }
-              }
-            }
-
-            const parentInvAmt2 = parseFloat(String(parentRow[41] || "").replace(/[£$€,\s]/g, "")) || 0;
-
-            // Rolling 18-month runway: count rows with scheduled date ≤ end of current month
-            const parseConfDate = (val) => {
-              if (!val) return null;
-              if (val instanceof Date) return val;
-              const s2 = String(val).trim();
-              const months2 = {
-                Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov
-...[truncated for diff preview]
-                const months2 = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
-                const m3 = s2.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
-                if(m3) return new Date(2000 + parseInt(m3[3], 10), months2[m3[2]], parseInt(m3[1], 10));
-                const d = new Date(val); return isNaN(d.getTime()) ? null : d;
-              };
-              const today2 = new Date();
-              const endOfCurrentMonth = new Date(today2.getFullYear(), today2.getMonth() + 1, 0);
-              endOfCurrentMonth.setHours(23, 59, 59, 999);
-              const pastAndCurrentRows = childRows.filter(({ row: cr }) => {
-                const sentDate = parseConfDate(cr[43]);
-                return sentDate && sentDate <= endOfCurrentMonth;
-              }).length;
-              const diffTime2 = Math.abs(endDate.getTime() - startDate.getTime());
-              const diffDays2 = Math.round(diffTime2 / (1000 * 60 * 60 * 24));
-              const monthsDiff = Math.max(1, Math.round(diffDays2 / 30.4375));
-
-              const totalPeriods = Math.ceil(monthsDiff / periodMonths);
-              const futurePeriodsInContract = Math.max(0, totalPeriods - pastAndCurrentRows);
-              const futureRows = Math.min(18 / periodMonths, futurePeriodsInContract);
-              const expectedChildRows = pastAndCurrentRows + futureRows;
-
-              const actualChildRows = childRows.length;
-              const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
-
-              const durationOk = actualChildRows === expectedChildRows;
-              checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
-              checks.push({
-                ok: durationOk,
-                message: durationOk
-                  ? `✓ Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) - correct count`
-                  : `${actualChildRows > expectedChildRows ? "✗ Too many" : "✗ Too few"} child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward)`,
-              });
-
-              retainerChecks.push({
-                jobName: jobName2, clientName: jobClient, projectCode,
-                parentSheetRow, status: durationOk ? "ok" : "issue",
-                periodLabel, checks,
-              });
-            }
-
-            results.push(...retainerChecks);
-          }
-
-        } // end retainerInvoicesDeleted
-
-        // ── invoiceStaleUnsentChanges ──────────────────────────────────────
-        // Parse AutoLog entries where GAS moved stale unsent invoice dates.
-        // Format: "[Confirmed] Stale Invoice - Row N, CLIENT | JOB, Slot N: Date moved X -> Y"
-        // Returns one result per stale invoice entry found in the window.
-        if (flagType === "invoiceStaleUnsentChanges") {
-
-          const staleLogEntries = autoLogRows.filter(row => {
-            const details = String(row[3] || "");
-            return details.includes("Stale Invoice");
-          });
-          console.log(`  ✓ Found ${staleLogEntries.length} stale invoice entries in window`);
-
-          // Fall back to full AutoLog if nothing found in window
-          const staleEntriesToUse = staleLogEntries.length > 0 ? staleLogEntries :
-            allAutoLogRows.filter(row => String(row[3] || "").includes("Stale Invoice"));
-          if (staleLogEntries.length === 0 && staleEntriesToUse.length > 0) {
-            console.log(`  ↩ Fell back to full AutoLog - found ${staleEntriesToUse.length} stale entries`);
-          }
-
-          if (staleEntriesToUse.length === 0) {
-            results.push({
-              status: "info",
-              message: "No stale invoice entries found in AutoLog since flag was last cleared.",
-            });
-          } else {
-            // Read Confirmed tab for live sheet verification
-            const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
-              spreadsheetId: clientSheetIdClean,
-              range: "Confirmed!A1:CR5000",
-            }));
-            const confirmedRows = confirmedResp.data.values || [];
-
-            // Each AutoLog row may contain multiple stale invoice lines in col D (details)
-            // Parse each line of the form:
-            // "[Confirmed] Stale Invoice - Row N, CLIENT | JOB, Slot N: Date moved DD-Mon-YY -> DD-Mon-YY"
-            const stalePattern = /\[([^\]]+)\]\s*Stale Invoice\s*[-–]\s*Row\s*(\d+),\s*([^|]+)\|\s*(.+?),\s*Slot\s*(\d+):\s*Date moved\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
-
-            for (const entry of staleEntriesToUse) {
-              const details = String(entry[3] || "");
-              const timestamp = String(entry[0] || "");
-              let match;
-              while ((match = stalePattern.exec(details)) !== null) {
-                if (targetLine) {
-                  const normMatch = match[0].replace(/\s+/g, " ").trim();
-                  const normTarget = targetLine.replace(/\s+/g, " ").trim();
-                  if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
-                }
-
-                const tab = match[1].trim();   // "Confirmed"
-                const rowNum = parseInt(match[2].trim(), 10);
-                const jobClient = match[3].trim();
-                const jobName = match[4].trim();
-                const slotNum = parseInt(match[5].trim(), 10);
-                const oldDate = match[6].trim();
-                const newDate = match[7].trim();
-
-                let isResolved = false;
-                let resolutionMsg = "Slot is empty or contains a placeholder.";
-                const checks = [];
-                let targetSheetRow = null;
-                let actualRowNum = rowNum;
-
-                const targetClient = jobClient.trim().toLowerCase();
-                const targetJob = jobName.trim().toLowerCase();
-
-                // 1. Try original row
-                if (tab === "Confirmed" && rowNum > 0 && rowNum <= confirmedRows.length) {
-                  const r = confirmedRows[rowNum - 1] || [];
-                  const rClient = String(r[0] || "").trim().toLowerCase();
-                  const rJob = String(r[1] || "").trim().toLowerCase();
-                  if (rClient === targetClient && (rJob === targetJob || rJob.includes(targetJob))) {
-                    targetSheetRow = r;
-                  }
-                }
-
-                // 2. Fallback search (job moved)
-                if (!targetSheetRow && tab === "Confirmed") {
-                  const matchingRows = [];
-                  for (let i = 0; i < confirmedRows.length; i++) {
-                    const r = confirmedRows[i] || [];
-                    const rClient = String(r[0] || "").trim().toLowerCase();
-                    const rJob = String(r[1] || "").trim().toLowerCase();
-                    if (rClient === targetClient && (rJob === targetJob || rJob.includes(targetJob))) {
-                      matchingRows.push({ row: r, index: i + 1 });
-                    }
-                  }
-
-                  if (matchingRows.length === 1) {
-                    targetSheetRow = matchingRows[0].row;
-                    actualRowNum = matchingRows[0].index;
-                  } else if (matchingRows.length > 1) {
-                    // For multi-row retainers, find the specific child row by checking the date
-                    const slotCols = { 1: { sent: 43 }, 2: { sent: 50 }, 3: { sent: 57 } }[slotNum];
-                    let found = false;
-                    if (slotCols) {
-                      const dateMatch = matchingRows.find(m => {
-                        const d = String(m.row[slotCols.sent] || "").trim();
-                        return d === oldDate || d === newDate;
-                      });
-                      if (dateMatch) {
-                        targetSheetRow = dateMatch.row;
-                        actualRowNum = dateMatch.index;
-                        found = true;
-                      }
-                    }
-                    if (!found) {
-                      targetSheetRow = matchingRows[0].row;
-                      actualRowNum = matchingRows[0].index;
-                    }
-                  }
-                }
-
-                let resolvedJobType = "";
-                let resolvedInvoiceAmount = "";
-                let resolvedProjectCode = "";
-
-                if (targetSheetRow) {
-                  // Determine whether job is Project or Retainer (check parent row col 35 or multi-row group)
-                  let parentRowForType = targetSheetRow;
-                  if (!targetSheetRow[32] && !targetSheetRow[35] && !targetSheetRow[37]) {
-                    for (let pi = actualRowNum - 2; pi >= 1; pi--) {
-                      const pr = confirmedRows[pi] || [];
-                      const prClient = String(pr[0] || "").trim().toLowerCase();
-                      const prJob = String(pr[1] || "").trim().toLowerCase();
-                      if (prClient === targetClient && (prJob === targetJob || prJob.includes(targetJob)) && (pr[32] || pr[35] || pr[37])) {
-                        parentRowForType = pr;
-                        break;
-                      }
-                    }
-                  }
-                  const rawTypeStr = String(parentRowForType[35] || targetSheetRow[35] || "").trim().toLowerCase();
-                  const isMultiRowRetainer = parentRowForType !== targetSheetRow || (actualRowNum < confirmedRows.length && (() => {
-                    const nextRow = confirmedRows[actualRowNum] || [];
-                    return String(nextRow[0] || "").trim().toLowerCase() === targetClient &&
-                      String(nextRow[1] || "").trim().toLowerCase() === targetJob &&
-                      !nextRow[32] && !nextRow[37];
-                  })());
-                  resolvedJobType = (rawTypeStr.includes("retainer") || isMultiRowRetainer) ? "Retainer" : "Project";
-                  resolvedProjectCode = String(parentRowForType[2] || targetSheetRow[2] || "").trim();
-
-                  const slotCols = {
-                    1: { ref: 42, sent: 43, status: 45, amt: 41 },
-                    2: { ref: 49, sent: 50, status: 52, amt: 48 },
-                    3: { ref: 56, sent: 57, status: 59, amt: 55 },
-                  }[slotNum];
-
-                  if (slotCols) {
-                    const currentRef = String(targetSheetRow[slotCols.ref] || "").trim();
-                    const currentSent = String(targetSheetRow[slotCols.sent] || "").trim();
-                    const currentStatus = String(targetSheetRow[slotCols.status] || "").trim();
-                    const currentAmt = String(targetSheetRow[slotCols.amt] || "").trim();
-                    if (currentAmt) {
-                      const amtNum = parseFloat(currentAmt.replace(/[£$€,\s]/g, ""));
-                      resolvedInvoiceAmount = !isNaN(amtNum)
-                        ? `£${amtNum.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        : currentAmt;
-                    }
-
-                    if (currentRef && !isPlaceholderInvoice(currentRef)) {
-                      isResolved = true;
-                      resolutionMsg = `Slot ${slotNum} now contains a real invoice: #${currentRef} (Sent: ${currentSent || "unknown"}, Status: ${currentStatus || "unknown"}).`;
-                      checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
-                    } else if (!currentRef && !currentAmt) {
-                      isResolved = true;
-                      resolutionMsg = `Slot ${slotNum} is now completely empty (stale placeholder was removed).`;
-                      checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
-
-                      const otherInvoices = [];
-                      [{ s: 1, ref: 42 }, { s: 2, ref: 49 }, { s: 3, ref: 56 }].forEach(idx => {
-                        if (idx.s !== slotNum) {
-                          const r = String(targetSheetRow[idx.ref] || "").trim();
-                          if (r && !isPlaceholderInvoice(r)) {
-                            otherInvoices.push(`Slot ${idx.s} (#${r})`);
-                          }
-                        }
-                      });
-                      if (otherInvoices.length > 0) {
-                        checks.push({ ok: true, message: `ℹ️ Note: Real invoice(s) found in ${otherInvoices.join(" and ")}.` });
-                      }
-                    } else {
-                      checks.push({ ok: false, message: `✗ Slot ${slotNum} still contains a placeholder (Ref: ${currentRef || "(blank)"}, Amount: ${currentAmt || "(blank)"}).` });
-                    }
-                  } else {
-                    checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
-                  }
-
-                  if (actualRowNum !== rowNum) {
-                    checks.push({ ok: true, message: `ℹ️ Job safely located at row ${actualRowNum} (moved from original row ${rowNum})` });
-                  }
-                } else {
-                  checks.push({ ok: false, message: `✗ Could not locate job "${jobClient} | ${jobName}" anywhere in the Confirmed tab.` });
-                }
-
-                results.push({
-                  status: isResolved ? "ok" : "issue",
-                  stale: true,
-                  tab,
-                  rowNum: actualRowNum,
-                  jobClient,
-                  clientName: jobClient,
-                  jobName,
-                  projectCode: resolvedProjectCode,
-                  jobType: resolvedJobType,
-                  invoiceAmount: resolvedInvoiceAmount,
-                  slotNum: slotNum,
-                  oldDate,
-                  newDate,
-                  logTimestamp: timestamp,
-                  checks,
-                  message: isResolved
-                    ? `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
-                    : `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: date moved ${oldDate} → ${newDate}.`,
-                });
-              }
-            }
-
-            if (results.length === 0) {
-              results.push({
+                jobName: job.jobName,
+                clientName: job.clientNameFromLog,
                 status: "info",
-                message: "Stale invoice entries found in AutoLog but could not be parsed. Check the AutoLog tab manually.",
+                checks: [{ ok: true, message: `✓ Job "${job.jobName}" (${job.clientNameFromLog}) moved to ${fallbackTab} tab (row ${fallbackIdx + fallbackStartRow}) - originally created in ${targetTab}` }],
               });
             } else {
-              console.log(`  ✓ Parsed ${results.length} stale invoice entries`);
+              retainerChecks.push({
+                jobName: job.jobName,
+                clientName: job.clientNameFromLog,
+                status: "issue",
+                checks: [{ ok: false, message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in ${targetTab} or ${targetTab === "Pipeline" ? "Confirmed" : "Pipeline"} tabs` }],
+              });
             }
+            continue;
           }
 
-        } // end invoiceStaleUnsentChanges
+          const parentRow = tabRows[parentRowIdx];
+          const clientN = String(parentRow[0] || "").trim();
+          const jobName = String(parentRow[1] || "").trim();
+          const projectCode = String(parentRow[2] || "").trim();
+          const revenue = parentRow[32];
+          const startRaw = parentRow[37];
+          const endRaw = parentRow[38];
+          const confirmedSheetRow = parentRowIdx + tabStartRow;
+          console.log(`  Found "${jobName}" (${clientN}) at ${targetTab} row ${confirmedSheetRow}: start="${startRaw}", end="${endRaw}"`);
 
-        // ── expenseAdded ───────────────────────────────────────────────────
-        else if (flagType === "expenseAdded") {
-          const addedLogEntries = autoLogRows.filter(row => String(row[3] || "").includes("Created New Row:"));
-          const entriesToUse = addedLogEntries.length > 0 ? addedLogEntries : allAutoLogRows.filter(row => String(row[3] || "").includes("Created New Row:"));
+          // Collect child rows - same tab, immediately after parent
+          // Child row: same client+job, no revenue, no start date
+          const childRows = [];
+          let ci = parentRowIdx + 1;
+          while (ci < tabRows.length) {
+            const next = tabRows[ci] || [];
+            const nClient = String(next[0] || "").trim().toLowerCase();
+            const nJob = String(next[1] || "").trim().toLowerCase();
+            if (nClient !== clientLower || nJob !== jobNameLower) break;
+            if (next[32] || next[37] || next[38]) break; // has revenue/start/end = another parent
+            childRows.push({ row: next, sheetRow: ci + tabStartRow });
+            ci++;
+          }
 
-          if (entriesToUse.length === 0) {
-            results.push({ status: "info", message: "No expense added entries found in AutoLog." });
-          } else {
-            const outgoingsResp = await withRetry(() => sheets.spreadsheets.values.get({
-              spreadsheetId: clientSheetIdClean,
-              range: "Outgoings!A13:A110",
-            }));
-            const outgoingsVendors = (outgoingsResp.data.values || []).map(r => String(r[0] || "").trim().toLowerCase());
+          const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+          const parseDate = (v) => {
+            if (!v) return null;
+            if (v instanceof Date) {
+              if (isNaN(v.getTime())) return null;
+              // JS Date treats 2-digit years as 1900s - correct to 2000s for years < 100
+              if (v.getFullYear() < 100) v.setFullYear(v.getFullYear() + 2000);
+              return v;
+            }
+            // Handle DD-Mon-YY or DD-Mon-YYYY strings e.g. "31-Jul-50", "1-May-2026"
+            const monMap = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+            const monMatch = String(v).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+            if (monMatch) {
+              const yr = monMatch[3].length === 2 ? 2000 + parseInt(monMatch[3], 10) : parseInt(monMatch[3], 10);
+              return new Date(yr, monMap[monMatch[2]], parseInt(monMatch[1], 10));
+            }
+            const d = new Date(v);
+            if (!isNaN(d.getTime())) {
+              if (d.getFullYear() < 100) d.setFullYear(d.getFullYear() + 2000);
+              return d;
+            }
+            const serial = parseFloat(v);
+            if (!isNaN(serial)) return new Date((serial - 25569) * 86400 * 1000);
+            return null;
+          };
+          const startDate = parseDate(startRaw);
+          const endDate = parseDate(endRaw);
+          const checks = [];
 
-            // Regex matches: [Outgoings] Created New Row: {Vendor Name} (£{Amount})
-            const pattern = /\[Outgoings\] Created New Row:\s+(.+?)\s+\(£([0-9.,]+)\)/gi;
+          if (!startDate || !endDate) {
+            retainerChecks.push({
+              jobName, clientName: clientN, projectCode, status: "info",
+              message: `No start/end dates set on this retainer - cannot verify invoice coverage`,
+              checks: [],
+            });
+            continue;
+          }
 
-            for (const entry of entriesToUse) {
-              const details = String(entry[3] || "");
-              const timestamp = String(entry[0] || "");
-              let match;
-              while ((match = pattern.exec(details)) !== null) {
-                if (targetLine) {
-                  const normMatch = match[0].replace(/\s+/g, " ").trim();
-                  const normTarget = targetLine.replace(/\s+/g, " ").trim();
-                  if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
-                }
-
-                const desc = match[1].trim();
-                const amt = match[2].trim();
-                const descLower = desc.toLowerCase();
-
-                const isStillPresent = outgoingsVendors.includes(descLower);
-                const isResolved = !isStillPresent;
-
-                results.push({
-                  status: isResolved ? "ok" : "issue",
-                  logTimestamp: timestamp,
-                  checks: [
-                    {
-                      ok: isResolved,
-                      message: isResolved
-                        ? `✓ Resolved: The vendor "${desc}" is no longer present in the Outgoings tab (Rows 13-110).`
-                        : `✗ Issue: The vendor "${desc}" is still present in the Outgoings tab.`
-                    }
-                  ],
-                  message: isResolved
-                    ? `Vendor "${desc}" no longer exists in Outgoings.`
-                    : `Vendor "${desc}" remains in Outgoings.`
-                });
+          let periodMonths = 1;
+          let periodLabel = "monthly";
+          if (childRows.length > 0 && monthlyRevenue > 0) {
+            const firstInv = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+            if (firstInv > 0) {
+              const ratio = Math.round(firstInv / monthlyRevenue);
+              if (ratio >= 2) {
+                periodMonths = ratio;
+                if (ratio === 3) periodLabel = "quarterly";
+                else if (ratio === 6) periodLabel = "6-monthly";
+                else if (ratio === 12) periodLabel = "annual";
+                else periodLabel = `every ${ratio} months`;
               }
             }
           }
 
-        } // end expenseAdded
+          // ── Single-row retainer check ────────────────────────────────────
+          let isSingleMonth = false;
+          if (startDate && endDate) {
+            const diffTime = endDate.getTime() - startDate.getTime();
+            const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+            const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
+            isSingleMonth = (monthsDiff === 1);
+          }
 
-        // ── expenseUnreconGaps ─────────────────────────────────────────────
-        // "Stale unreceived expense received date changed"
-        // Equivalent to invoiceStaleUnsentChanges, but for expenses.
-        // Alerted when stale unreceived expense dates are moved forward by automation.
-        // Handles both:
-        //   1. Confirmed tab direct expenses:
-        //      "[Confirmed] (Stale Expense - )?Row N, CLIENT | JOB, Slot N: Rec Date updated DD-Mon-YY -> DD-Mon-YY"
-        //   2. Outgoings tab expenses:
-        //      "[Outgoings] (Stale Expense - )?Row N, CONTRACTOR: Updated stale Placeholder/Gap date (Rec: X->Y, Pay: A->B)"
-        else if (flagType === "expenseUnreconGaps") {
-          const staleLogEntries = autoLogRows.filter(row => {
-            const d = String(row[3] || "");
-            return d.includes("Rec Date updated") || d.includes("Updated stale Placeholder/Gap date") || d.includes("Stale Expense");
+          const parentInvAmt = parseFloat(String(parentRow[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+          const parentInvRef = String(parentRow[42] || "").trim();
+
+          if (childRows.length === 0 && (parentInvAmt > 0 || parentInvRef)) {
+            if (isSingleMonth) {
+              const hasInvoice = parentInvAmt > 0;
+              const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+              checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (1 month total, single invoice)` });
+              checks.push({ ok: true, message: `Single-row retainer (1-month exception) - invoice sits on parent row, no child rows expected` });
+              if (hasInvoice) {
+                checks.push({ ok: true, message: `✓ Parent row slot 1 has invoice amount £${parentInvAmt.toFixed(2)}${parentInvRef ? ` (ref: ${parentInvRef})` : ""}` });
+              } else {
+                checks.push({ ok: false, message: `✗ Parent row slot 1 has no invoice amount - invoice not yet created` });
+              }
+              retainerChecks.push({
+                jobName, clientName: clientN, projectCode,
+                parentSheetRow: confirmedSheetRow,
+                tab: targetTab,
+                status: hasInvoice ? "ok" : "issue",
+                periodLabel: "single invoice", checks,
+              });
+              continue;
+            } else {
+              checks.push({ ok: false, message: `✗ Parent row has an invoice (amount/ref) but no child rows exist - single-row retainers are not allowed for multi-month jobs` });
+            }
+          }
+
+          // Count child rows whose scheduled invoice date (Inv1 sent-date slot) falls
+          // in or before the current calendar month - these are "past + current" rows.
+          // Expected = that count + 18 future rows (adjusted for period frequency).
+          const parseConfirmedDate = (val) => {
+            if (!val) return null;
+            if (val instanceof Date) return val;
+            const s = String(val).trim();
+            // Handle DD-Mon-YY format e.g. "1-Apr-26"
+            const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+            if (m) {
+              const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+              const yr = 2000 + parseInt(m[3], 10);
+              return new Date(yr, months[m[2]], parseInt(m[1], 10));
+            }
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? null : d;
+          };
+
+          const today = new Date();
+          const endOfCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+          endOfCurrentMonth.setHours(23, 59, 59, 999);
+
+          const pastAndCurrentRows = childRows.filter(({ row: cr }) => {
+            const sentDate = parseConfirmedDate(cr[43]); // AR = Inv1 sent date
+            return sentDate && sentDate <= endOfCurrentMonth;
+          }).length;
+
+          const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+          const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+          const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
+
+          const totalPeriods = Math.ceil(monthsDiff / periodMonths);
+          const futurePeriodsInContract = Math.max(0, totalPeriods - pastAndCurrentRows);
+          const futureRows = Math.min(18 / periodMonths, futurePeriodsInContract);
+          const expectedChildRows = pastAndCurrentRows + futureRows;
+
+          const actualChildRows = childRows.length;
+          const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+          const durationOk = actualChildRows >= expectedChildRows;
+          const isNoEnd = isNoEndDateSentinel(parentRow[38]) || isNoEndDateSentinel(endDate);
+          checks.push({
+            ok: true,
+            message: isNoEnd
+              ? `Duration: ${fmt(startDate)} → No end date (ongoing, ${periodLabel})`
+              : `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})`
+          });
+          checks.push({
+            ok: durationOk,
+            message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) - ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),
           });
 
-          const entriesToUse = staleLogEntries.length > 0 ? staleLogEntries : allAutoLogRows.filter(row => {
-            const d = String(row[3] || "");
-            return d.includes("Rec Date updated") || d.includes("Updated stale Placeholder/Gap date") || d.includes("Stale Expense");
-          });
+          let allHaveInvoice = true;
+          for (const { row: cr, sheetRow: sr } of childRows) {
+            if (!cr[41]) {
+              checks.push({ ok: false, message: `✗ Row ${sr}: invoice slot 1 is empty` });
+              allHaveInvoice = false;
+            }
+          }
+          if (allHaveInvoice && childRows.length > 0) {
+            checks.push({ ok: true, message: `✓ All ${childRows.length} child rows have invoice amounts` });
+          }
 
-          if (entriesToUse.length === 0) {
-            results.push({
-              status: "info",
-              message: "No stale unreceived expense date change entries found in AutoLog.",
+          retainerChecks.push({
+            jobName, clientName: clientN, projectCode,
+            parentSheetRow: confirmedSheetRow,
+            tab: targetTab,
+            status: durationOk && allHaveInvoice ? "ok" : "issue",
+            periodLabel, checks,
+          });
+        }
+
+        results.push(...retainerChecks);
+      }
+
+    } else if (flagType === "retainerInvoicesDeleted") {
+
+      // Find AutoLog entries where retainer child rows were trimmed
+      const deletedLogEntries = autoLogRows.filter(row => {
+        const details = String(row[3] || "");
+        return details.includes("Retainer") && details.includes("Trimmed") &&
+          (details.includes("child row") || details.includes("excess"));
+      });
+      console.log(`  ✓ Found ${deletedLogEntries.length} retainer deletion entries in window`);
+
+      // Fall back to full AutoLog if nothing found in window
+      const deletedLogEntriesToUse = deletedLogEntries.length > 0 ? deletedLogEntries :
+        allAutoLogRows.filter(row => {
+          const details = String(row[3] || "");
+          return details.includes("Retainer") && details.includes("Trimmed") &&
+            (details.includes("child row") || details.includes("excess"));
+        });
+      if (deletedLogEntries.length === 0 && deletedLogEntriesToUse.length > 0) {
+        console.log(`  ↩ Fell back to full AutoLog - found ${deletedLogEntriesToUse.length} entries`);
+      }
+      for (const entry of deletedLogEntriesToUse) {
+        console.log(`    [${entry[0]}] Details="${String(entry[3] || "").slice(0, 400)}"`);
+      }
+
+      if (deletedLogEntriesToUse.length === 0) {
+        results.push({
+          status: "info",
+          message: `No retainer invoice deletion entries found in AutoLog since flag was last cleared. If invoices were recently deleted, click Re-run to refresh.`,
+        });
+      } else {
+        const affectedRetainerJobs = [];
+        for (const entry of deletedLogEntriesToUse) {
+          const details = String(entry[3] || "");
+          // Format: "[Retainers] Trimmed N excess child row(s) (Parent Row: N) for CLIENT | JOB"
+          const pattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\(s?\)(?:\s*\(Parent\s+Row:\s*\d+\))?\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
+          let m;
+          while ((m = pattern.exec(details)) !== null) {
+            if (targetLine) {
+              const normMatch = m[0].replace(/\s+/g, " ").trim().toLowerCase();
+              const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
+              const clientLower = m[1].trim().toLowerCase();
+              const jobLower = m[2].trim().toLowerCase();
+              const isMatch = normMatch.includes(normTarget) || normTarget.includes(normMatch) ||
+                (normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower));
+              if (!isMatch) continue;
+            }
+            affectedRetainerJobs.push({
+              clientNameFromLog: m[1].trim(),
+              jobName: m[2].trim(),
+              logTimestamp: String(entry[0] || "")
             });
-          } else {
-            let confirmedRows = null;
-            let outgoingsRows = null;
+          }
+        }
 
-            // Pattern for Confirmed direct expenses:
-            // "[Confirmed] Row 15, Client | Job, Slot 1: Rec Date updated 05-Jan-26 -> 05-Feb-26"
-            // or "[Confirmed] Stale Expense - Row 15, Client | Job, Slot 1: Rec Date updated 05-Jan-26 -> 05-Feb-26"
-            const confirmedPattern = /\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,\n]+),\s*Slot\s*(\d+):\s*(?:£[0-9.,]+\s*[-–]\s*)?Rec Date updated\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
+        if (affectedRetainerJobs.length === 0 && targetLine) {
+          const targetPattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\(s?\)(?:\s*\(Parent\s+Row:\s*\d+\))?\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/i;
+          const tm = targetPattern.exec(targetLine);
+          if (tm) {
+            affectedRetainerJobs.push({
+              clientNameFromLog: tm[1].trim(),
+              jobName: tm[2].trim(),
+              logTimestamp: "",
+            });
+          }
+        }
 
-            // Pattern for Outgoings tab expenses:
-            const outgoingsPattern = /\[Outgoings\]\s*(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)?([^:(]+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*(?:£[0-9.,]+\s*[-–]\s*)?Updated stale placeholder date(?:\s*[-–]\s*(.+))?|(?:Stale Expense\s*[-–]\s*)?Row\s*(\d+),\s*([^:]+):\s*Updated stale Placeholder\/Gap date\s*\(Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+),\s*Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)\))/gi;
+        // Deduplicate by client + job
+        const seenJobs = new Set();
+        let dedupedJobs = affectedRetainerJobs.filter(j => {
+          const key = `${j.clientNameFromLog}|||${j.jobName}`;
+          if (seenJobs.has(key)) return false;
+          seenJobs.add(key);
+          return true;
+        });
 
-            for (const entry of entriesToUse) {
-              const details = String(entry[3] || "");
-              const timestamp = String(entry[0] || "");
+        if (targetLine && dedupedJobs.length > 1) {
+          const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
+          const matched = dedupedJobs.filter(j => {
+            const jobLower = (j.jobName || "").trim().toLowerCase();
+            const clientLower = (j.clientNameFromLog || "").trim().toLowerCase();
+            return normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower);
+          });
+          if (matched.length > 0) dedupedJobs = matched;
+        }
+        console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
 
-              // Check Confirmed matches
-              let cMatch;
-              while ((cMatch = confirmedPattern.exec(details)) !== null) {
-                if (targetLine) {
-                  const normMatch = cMatch[0].replace(/\s+/g, " ").trim();
-                  const normTarget = targetLine.replace(/\s+/g, " ").trim();
-                  if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
+        // Read Confirmed tab
+        const delConfirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetIdClean,
+          range: "Confirmed!A1:BH5000",
+        }));
+        const delConfirmedRows = delConfirmedResp.data.values || [];
+        const retainerChecks = [];
+
+        for (const job of dedupedJobs) {
+          const jobNameLower = job.jobName.toLowerCase();
+          const clientLower = job.clientNameFromLog.toLowerCase();
+
+          // Find parent row by client + job name
+          let parentRowIdx = -1;
+          for (let ri = 0; ri < delConfirmedRows.length; ri++) {
+            const r = delConfirmedRows[ri];
+            const rClient = String(r[0] || "").trim().toLowerCase();
+            const rJob = String(r[1] || "").trim().toLowerCase();
+            if (rClient === clientLower && rJob === jobNameLower) {
+              parentRowIdx = ri;
+              break;
+            }
+          }
+
+          if (parentRowIdx === -1) {
+            retainerChecks.push({
+              jobName: job.jobName,
+              clientName: job.clientNameFromLog,
+              status: "issue",
+              message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in Confirmed tab`,
+              checks: [],
+            });
+            continue;
+          }
+
+          const parentRow = delConfirmedRows[parentRowIdx];
+          const parentSheetRow = parentRowIdx + 1;
+          const jobClient = String(parentRow[0] || "").trim();
+          const jobName2 = String(parentRow[1] || "").trim();
+          const projectCode = String(parentRow[2] || "").trim();
+          const monthlyRevenue = parseFloat(String(parentRow[32] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          const jobStart = String(parentRow[37] || "").trim();
+          const jobEnd = String(parentRow[38] || "").trim();
+
+          console.log(`  Found "${job.jobName}" (${job.clientNameFromLog}) at Confirmed row ${parentSheetRow}: start="${jobStart}", end="${jobEnd}"`);
+
+          // Collect child rows (same client + job, no revenue/start/end)
+          const childRows = [];
+          for (let ri = parentRowIdx + 1; ri < delConfirmedRows.length; ri++) {
+            const r = delConfirmedRows[ri];
+            const rClient = String(r[0] || "").trim().toLowerCase();
+            const rJob = String(r[1] || "").trim().toLowerCase();
+            if (rClient !== clientLower || rJob !== jobNameLower) break;
+            if (r[32] || r[37] || r[38]) break; // has revenue/start/end = another parent
+            childRows.push({ row: r, sheetRow: ri + 1 });
+          }
+
+          const checks = [];
+
+          // Parse dates
+          const parseDate = (s) => {
+            if (!s) return null;
+            const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+            const m2 = String(s).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+            if (m2) {
+              const yr = m2[3].length === 2 ? 2000 + parseInt(m2[3], 10) : parseInt(m2[3], 10);
+              return new Date(yr, months[m2[2]], parseInt(m2[1], 10));
+            }
+            if (s instanceof Date) {
+              if (isNaN(s.getTime())) return null;
+              if (s.getFullYear() < 100) s.setFullYear(s.getFullYear() + 2000);
+              return s;
+            }
+            const d = new Date(s);
+            if (!isNaN(d.getTime())) {
+              if (d.getFullYear() < 100) d.setFullYear(d.getFullYear() + 2000);
+              return d;
+            }
+            return null;
+          };
+
+          const startDate = parseDate(jobStart);
+          const endDate = parseDate(jobEnd);
+
+          if (!startDate || !endDate) {
+            retainerChecks.push({
+              jobName: jobName2, clientName: jobClient, projectCode,
+              parentSheetRow, status: "info",
+              message: `No start/end dates set on this retainer - cannot verify row coverage`,
+              checks: [],
+            });
+            continue;
+          }
+
+          // Determine period (monthly by default, infer from child row amounts)
+          let periodMonths = 1;
+          let periodLabel = "monthly";
+          if (childRows.length > 0 && monthlyRevenue > 0) {
+            const firstInv = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+            if (firstInv > 0) {
+              const ratio = Math.round(firstInv / monthlyRevenue);
+              if (ratio >= 2) {
+                periodMonths = ratio;
+                if (ratio === 3) periodLabel = "quarterly";
+                else if (ratio === 6) periodLabel = "6-monthly";
+                else if (ratio === 12) periodLabel = "annual";
+                else periodLabel = `every ${ratio} months`;
+              }
+            }
+          }
+
+          const parentInvAmt2 = parseFloat(String(parentRow[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+
+          // Rolling 18-month runway: count rows with scheduled date ≤ end of current month
+          const parseConfDate = (val) => {
+            if (!val) return null;
+            if (val instanceof Date) return val;
+            const s2 = String(val).trim();
+            const months2 = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+            const m3 = s2.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+            if (m3) return new Date(2000 + parseInt(m3[3], 10), months2[m3[2]], parseInt(m3[1], 10));
+            const d = new Date(val); return isNaN(d.getTime()) ? null : d;
+          };
+          const today2 = new Date();
+          const endOfCurrentMonth = new Date(today2.getFullYear(), today2.getMonth() + 1, 0);
+          endOfCurrentMonth.setHours(23, 59, 59, 999);
+          const pastAndCurrentRows = childRows.filter(({ row: cr }) => {
+            const sentDate = parseConfDate(cr[43]);
+            return sentDate && sentDate <= endOfCurrentMonth;
+          }).length;
+          const diffTime2 = Math.abs(endDate.getTime() - startDate.getTime());
+          const diffDays2 = Math.round(diffTime2 / (1000 * 60 * 60 * 24));
+          const monthsDiff = Math.max(1, Math.round(diffDays2 / 30.4375));
+
+          const totalPeriods = Math.ceil(monthsDiff / periodMonths);
+          const futurePeriodsInContract = Math.max(0, totalPeriods - pastAndCurrentRows);
+          const futureRows = Math.min(18 / periodMonths, futurePeriodsInContract);
+          const expectedChildRows = pastAndCurrentRows + futureRows;
+
+          const actualChildRows = childRows.length;
+          const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+
+          const durationOk = actualChildRows === expectedChildRows;
+          checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
+          checks.push({
+            ok: durationOk,
+            message: durationOk
+              ? `✓ Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) - correct count`
+              : `${actualChildRows > expectedChildRows ? "✗ Too many" : "✗ Too few"} child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward)`,
+          });
+
+          retainerChecks.push({
+            jobName: jobName2, clientName: jobClient, projectCode,
+            parentSheetRow, status: durationOk ? "ok" : "issue",
+            periodLabel, checks,
+          });
+        }
+
+        results.push(...retainerChecks);
+      }
+
+    } // end retainerInvoicesDeleted
+
+    // ── invoiceStaleUnsentChanges ──────────────────────────────────────
+    // Parse AutoLog entries where GAS moved stale unsent invoice dates.
+    // Format: "[Confirmed] Stale Invoice - Row N, CLIENT | JOB, Slot N: Date moved X -> Y"
+    // Returns one result per stale invoice entry found in the window.
+    if (flagType === "invoiceStaleUnsentChanges") {
+
+      const staleLogEntries = autoLogRows.filter(row => {
+        const details = String(row[3] || "");
+        return details.includes("Stale Invoice");
+      });
+      console.log(`  ✓ Found ${staleLogEntries.length} stale invoice entries in window`);
+
+      // Fall back to full AutoLog if nothing found in window
+      const staleEntriesToUse = staleLogEntries.length > 0 ? staleLogEntries :
+        allAutoLogRows.filter(row => String(row[3] || "").includes("Stale Invoice"));
+      if (staleLogEntries.length === 0 && staleEntriesToUse.length > 0) {
+        console.log(`  ↩ Fell back to full AutoLog - found ${staleEntriesToUse.length} stale entries`);
+      }
+
+      if (staleEntriesToUse.length === 0) {
+        results.push({
+          status: "info",
+          message: "No stale invoice entries found in AutoLog since flag was last cleared.",
+        });
+      } else {
+        // Read Confirmed tab for live sheet verification
+        const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetIdClean,
+          range: "Confirmed!A1:CR5000",
+        }));
+        const confirmedRows = confirmedResp.data.values || [];
+
+        // Each AutoLog row may contain multiple stale invoice lines in col D (details)
+        // Parse each line of the form:
+        // "[Confirmed] Stale Invoice - Row N, CLIENT | JOB, Slot N: Date moved DD-Mon-YY -> DD-Mon-YY"
+        const stalePattern = /\[([^\]]+)\]\s*Stale Invoice\s*[-–]\s*Row\s*(\d+),\s*([^|]+)\|\s*(.+?),\s*Slot\s*(\d+):\s*Date moved\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
+
+        for (const entry of staleEntriesToUse) {
+          const details = String(entry[3] || "");
+          const timestamp = String(entry[0] || "");
+          let match;
+          while ((match = stalePattern.exec(details)) !== null) {
+            if (targetLine) {
+              const normMatch = match[0].replace(/\s+/g, " ").trim();
+              const normTarget = targetLine.replace(/\s+/g, " ").trim();
+              if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
+            }
+
+            const tab = match[1].trim();   // "Confirmed"
+            const rowNum = parseInt(match[2].trim(), 10);
+            const jobClient = match[3].trim();
+            const jobName = match[4].trim();
+            const slotNum = parseInt(match[5].trim(), 10);
+            const oldDate = match[6].trim();
+            const newDate = match[7].trim();
+
+            let isResolved = false;
+            let resolutionMsg = "Slot is empty or contains a placeholder.";
+            const checks = [];
+            let targetSheetRow = null;
+            let actualRowNum = rowNum;
+
+            const targetClient = jobClient.trim().toLowerCase();
+            const targetJob = jobName.trim().toLowerCase();
+
+            // 1. Try original row
+            if (tab === "Confirmed" && rowNum > 0 && rowNum <= confirmedRows.length) {
+              const r = confirmedRows[rowNum - 1] || [];
+              const rClient = String(r[0] || "").trim().toLowerCase();
+              const rJob = String(r[1] || "").trim().toLowerCase();
+              if (rClient === targetClient && (rJob === targetJob || rJob.includes(targetJob))) {
+                targetSheetRow = r;
+              }
+            }
+
+            // 2. Fallback search (job moved)
+            if (!targetSheetRow && tab === "Confirmed") {
+              const matchingRows = [];
+              for (let i = 0; i < confirmedRows.length; i++) {
+                const r = confirmedRows[i] || [];
+                const rClient = String(r[0] || "").trim().toLowerCase();
+                const rJob = String(r[1] || "").trim().toLowerCase();
+                if (rClient === targetClient && (rJob === targetJob || rJob.includes(targetJob))) {
+                  matchingRows.push({ row: r, index: i + 1 });
                 }
+              }
 
-                const tab = "Confirmed";
-                const rowNum = parseInt(cMatch[1].trim(), 10);
-                const jobClient = cMatch[2].trim();
-                const jobName = cMatch[3].trim();
-                const slotNum = parseInt(cMatch[4].trim(), 10);
-                const oldDate = cMatch[5].trim();
-                const newDate = cMatch[6].trim();
-
-                if (!confirmedRows) {
-                  const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
-                    spreadsheetId: clientSheetIdClean,
-                    range: "Confirmed!A1:CR5000",
-                  }));
-                  confirmedRows = confirmedResp.data.values || [];
-                }
-
-                let isResolved = false;
-                let resolutionMsg = "Slot is empty or contains an unreceived placeholder.";
-                const checks = [];
-                let targetSheetRow = null;
-                let actualRowNum = rowNum;
-
-                // 1. Try original row
-                if (rowNum > 0 && rowNum <= confirmedRows.length) {
-                  const r = confirmedRows[rowNum - 1] || [];
-                  if (String(r[0] || "").trim().toLowerCase() === jobClient.toLowerCase() &&
-                    String(r[1] || "").trim().toLowerCase() === jobName.toLowerCase()) {
-                    targetSheetRow = r;
+              if (matchingRows.length === 1) {
+                targetSheetRow = matchingRows[0].row;
+                actualRowNum = matchingRows[0].index;
+              } else if (matchingRows.length > 1) {
+                // For multi-row retainers, find the specific child row by checking the date
+                const slotCols = { 1: { sent: 43 }, 2: { sent: 50 }, 3: { sent: 57 } }[slotNum];
+                let found = false;
+                if (slotCols) {
+                  const dateMatch = matchingRows.find(m => {
+                    const d = String(m.row[slotCols.sent] || "").trim();
+                    return d === oldDate || d === newDate;
+                  });
+                  if (dateMatch) {
+                    targetSheetRow = dateMatch.row;
+                    actualRowNum = dateMatch.index;
+                    found = true;
                   }
                 }
+                if (!found) {
+                  targetSheetRow = matchingRows[0].row;
+                  actualRowNum = matchingRows[0].index;
+                }
+              }
+            }
 
-                // 2. Fallback search (job moved)
-                if (!targetSheetRow) {
-                  const matchingRows = [];
-                  for (let i = 0; i < confirmedRows.length; i++) {
-                    const r = confirmedRows[i] || [];
-                    if (String(r[0] || "").trim().toLowerCase() === jobClient.toLowerCase() &&
-                      String(r[1] || "").trim().toLowerCase() === jobName.toLowerCase()) {
-                      matchingRows.push({ row: r, index: i + 1 });
+            let resolvedJobType = "";
+            let resolvedInvoiceAmount = "";
+            let resolvedProjectCode = "";
+
+            if (targetSheetRow) {
+              // Determine whether job is Project or Retainer (check parent row col 35 or multi-row group)
+              let parentRowForType = targetSheetRow;
+              if (!targetSheetRow[32] && !targetSheetRow[35] && !targetSheetRow[37]) {
+                for (let pi = actualRowNum - 2; pi >= 1; pi--) {
+                  const pr = confirmedRows[pi] || [];
+                  const prClient = String(pr[0] || "").trim().toLowerCase();
+                  const prJob = String(pr[1] || "").trim().toLowerCase();
+                  if (prClient === targetClient && (prJob === targetJob || prJob.includes(targetJob)) && (pr[32] || pr[35] || pr[37])) {
+                    parentRowForType = pr;
+                    break;
+                  }
+                }
+              }
+              const rawTypeStr = String(parentRowForType[35] || targetSheetRow[35] || "").trim().toLowerCase();
+              const isMultiRowRetainer = parentRowForType !== targetSheetRow || (actualRowNum < confirmedRows.length && (() => {
+                const nextRow = confirmedRows[actualRowNum] || [];
+                return String(nextRow[0] || "").trim().toLowerCase() === targetClient &&
+                  String(nextRow[1] || "").trim().toLowerCase() === targetJob &&
+                  !nextRow[32] && !nextRow[37];
+              })());
+              resolvedJobType = (rawTypeStr.includes("retainer") || isMultiRowRetainer) ? "Retainer" : "Project";
+              resolvedProjectCode = String(parentRowForType[2] || targetSheetRow[2] || "").trim();
+
+              const slotCols = {
+                1: { ref: 42, sent: 43, status: 45, amt: 41 },
+                2: { ref: 49, sent: 50, status: 52, amt: 48 },
+                3: { ref: 56, sent: 57, status: 59, amt: 55 },
+              }[slotNum];
+
+              if (slotCols) {
+                const currentRef = String(targetSheetRow[slotCols.ref] || "").trim();
+                const currentSent = String(targetSheetRow[slotCols.sent] || "").trim();
+                const currentStatus = String(targetSheetRow[slotCols.status] || "").trim();
+                const currentAmt = String(targetSheetRow[slotCols.amt] || "").trim();
+                if (currentAmt) {
+                  const amtNum = parseFloat(currentAmt.replace(/[£$€,\s]/g, ""));
+                  resolvedInvoiceAmount = !isNaN(amtNum)
+                    ? `£${amtNum.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : currentAmt;
+                }
+
+                if (currentRef && !isPlaceholderInvoice(currentRef)) {
+                  isResolved = true;
+                  resolutionMsg = `Slot ${slotNum} now contains a real invoice: #${currentRef} (Sent: ${currentSent || "unknown"}, Status: ${currentStatus || "unknown"}).`;
+                  checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+                } else if (!currentRef && !currentAmt) {
+                  isResolved = true;
+                  resolutionMsg = `Slot ${slotNum} is now completely empty (stale placeholder was removed).`;
+                  checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+
+                  const otherInvoices = [];
+                  [{ s: 1, ref: 42 }, { s: 2, ref: 49 }, { s: 3, ref: 56 }].forEach(idx => {
+                    if (idx.s !== slotNum) {
+                      const r = String(targetSheetRow[idx.ref] || "").trim();
+                      if (r && !isPlaceholderInvoice(r)) {
+                        otherInvoices.push(`Slot ${idx.s} (#${r})`);
+                      }
                     }
-                  }
-                  if (matchingRows.length === 1) {
-                    targetSheetRow = matchingRows[0].row;
-                    actualRowNum = matchingRows[0].index;
-                  } else if (matchingRows.length > 1) {
-                    targetSheetRow = matchingRows[0].row;
-                    actualRowNum = matchingRows[0].index;
-                  }
-                }
-
-                if (targetSheetRow) {
-                  const headers = (confirmedRows[0] || []).map(h => String(h || "").toLowerCase().trim());
-                  const findHeaderIdx = (patterns) => {
-                    for (const pat of patterns) {
-                      const idx = headers.indexOf(pat.toLowerCase().trim());
-                      if (idx !== -1) return idx;
-                    }
-                    return -1;
-                  };
-
-                  const colAppId = findHeaderIdx([`dir inv ${slotNum} app id`, `dir inv. ${slotNum} app id`, `direct inv ${slotNum} app id`]);
-                  const colAmt = findHeaderIdx([`direct inv ${slotNum} amt`, `direct inv ${slotNum} amount`, `dir inv ${slotNum} amt`]);
-                  const colRec = findHeaderIdx([`direct inv ${slotNum} rec date`, `dir inv. ${slotNum} rec date`, `dir inv ${slotNum} rec date`]);
-                  const colStat = findHeaderIdx([`dir inv ${slotNum} status`, `direct inv ${slotNum} status`]);
-
-                  const currentId = colAppId !== -1 ? String(targetSheetRow[colAppId] || "").trim() : "";
-                  const currentAmt = colAmt !== -1 ? String(targetSheetRow[colAmt] || "").trim() : "";
-                  const currentRec = colRec !== -1 ? String(targetSheetRow[colRec] || "").trim() : "";
-                  const currentStatus = colStat !== -1 ? String(targetSheetRow[colStat] || "").trim() : "";
-
-                  if (currentId && !isPlaceholderExpense(currentId)) {
-                    isResolved = true;
-                    resolutionMsg = `Slot ${slotNum} now contains a real expense reference (App ID: ${currentId}${currentStatus ? `, Status: ${currentStatus}` : ""}).`;
-                    checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
-                  } else if (currentStatus.toLowerCase() === "received" || currentStatus.toLowerCase() === "paid") {
-                    isResolved = true;
-                    resolutionMsg = `Slot ${slotNum} is now marked as ${currentStatus}.`;
-                    checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
-                  } else if (!currentId && !currentAmt) {
-                    isResolved = true;
-                    resolutionMsg = `Slot ${slotNum} is now completely empty (stale placeholder was removed).`;
-                    checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
-                  } else {
-                    checks.push({
-                      ok: false,
-                      message: `✗ Slot ${slotNum} still contains an unreceived expense placeholder (Amount: £${currentAmt || "0"}, Rec Date: ${currentRec || newDate}${currentStatus ? `, Status: ${currentStatus}` : ""}).`
-                    });
-                  }
-
-                  if (actualRowNum !== rowNum) {
-                    checks.push({ ok: true, message: `ℹ️ Job safely located at row ${actualRowNum} (moved from original row ${rowNum})` });
+                  });
+                  if (otherInvoices.length > 0) {
+                    checks.push({ ok: true, message: `ℹ️ Note: Real invoice(s) found in ${otherInvoices.join(" and ")}.` });
                   }
                 } else {
-                  checks.push({ ok: false, message: `✗ Could not locate job "${jobClient} | ${jobName}" in the Confirmed tab.` });
+                  checks.push({ ok: false, message: `✗ Slot ${slotNum} still contains a placeholder (Ref: ${currentRef || "(blank)"}, Amount: ${currentAmt || "(blank)"}).` });
                 }
+              } else {
+                checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
+              }
 
-                results.push({
-                  status: isResolved ? "ok" : "issue",
-                  stale: true,
-                  tab,
-                  rowNum: actualRowNum,
-                  jobClient,
-                  jobName,
-                  slotNum,
-                  oldDate,
-                  newDate,
-                  logTimestamp: timestamp,
-                  checks,
+              if (actualRowNum !== rowNum) {
+                checks.push({ ok: true, message: `ℹ️ Job safely located at row ${actualRowNum} (moved from original row ${rowNum})` });
+              }
+            } else {
+              checks.push({ ok: false, message: `✗ Could not locate job "${jobClient} | ${jobName}" anywhere in the Confirmed tab.` });
+            }
+
+            results.push({
+              status: isResolved ? "ok" : "issue",
+              stale: true,
+              tab,
+              rowNum: actualRowNum,
+              jobClient,
+              clientName: jobClient,
+              jobName,
+              projectCode: resolvedProjectCode,
+              jobType: resolvedJobType,
+              invoiceAmount: resolvedInvoiceAmount,
+              slotNum: slotNum,
+              oldDate,
+              newDate,
+              logTimestamp: timestamp,
+              checks,
+              message: isResolved
+                ? `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
+                : `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: date moved ${oldDate} → ${newDate}.`,
+            });
+          }
+        }
+
+        if (results.length === 0) {
+          results.push({
+            status: "info",
+            message: "Stale invoice entries found in AutoLog but could not be parsed. Check the AutoLog tab manually.",
+          });
+        } else {
+          console.log(`  ✓ Parsed ${results.length} stale invoice entries`);
+        }
+      }
+
+    } // end invoiceStaleUnsentChanges
+
+    // ── expenseAdded ───────────────────────────────────────────────────
+    else if (flagType === "expenseAdded") {
+      const addedLogEntries = autoLogRows.filter(row => String(row[3] || "").includes("Created New Row:"));
+      const entriesToUse = addedLogEntries.length > 0 ? addedLogEntries : allAutoLogRows.filter(row => String(row[3] || "").includes("Created New Row:"));
+
+      if (entriesToUse.length === 0) {
+        results.push({ status: "info", message: "No expense added entries found in AutoLog." });
+      } else {
+        const outgoingsResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetIdClean,
+          range: "Outgoings!A13:A110",
+        }));
+        const outgoingsVendors = (outgoingsResp.data.values || []).map(r => String(r[0] || "").trim().toLowerCase());
+
+        // Regex matches: [Outgoings] Created New Row: {Vendor Name} (£{Amount})
+        const pattern = /\[Outgoings\] Created New Row:\s+(.+?)\s+\(£([0-9.,]+)\)/gi;
+
+        for (const entry of entriesToUse) {
+          const details = String(entry[3] || "");
+          const timestamp = String(entry[0] || "");
+          let match;
+          while ((match = pattern.exec(details)) !== null) {
+            if (targetLine) {
+              const normMatch = match[0].replace(/\s+/g, " ").trim();
+              const normTarget = targetLine.replace(/\s+/g, " ").trim();
+              if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
+            }
+
+            const desc = match[1].trim();
+            const amt = match[2].trim();
+            const descLower = desc.toLowerCase();
+
+            const isStillPresent = outgoingsVendors.includes(descLower);
+            const isResolved = !isStillPresent;
+
+            results.push({
+              status: isResolved ? "ok" : "issue",
+              logTimestamp: timestamp,
+              checks: [
+                {
+                  ok: isResolved,
                   message: isResolved
-                    ? `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
-                    : `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: receive date moved ${oldDate} → ${newDate}.`
+                    ? `✓ Resolved: The vendor "${desc}" is no longer present in the Outgoings tab (Rows 13-110).`
+                    : `✗ Issue: The vendor "${desc}" is still present in the Outgoings tab.`
+                }
+              ],
+              message: isResolved
+                ? `Vendor "${desc}" no longer exists in Outgoings.`
+                : `Vendor "${desc}" remains in Outgoings.`
+            });
+          }
+        }
+      }
+
+    } // end expenseAdded
+
+    // ── expenseUnreconGaps ─────────────────────────────────────────────
+    // "Stale unreceived expense received date changed"
+    // Equivalent to invoiceStaleUnsentChanges, but for expenses.
+    // Alerted when stale unreceived expense dates are moved forward by automation.
+    // Handles both:
+    //   1. Confirmed tab direct expenses:
+    //      "[Confirmed] (Stale Expense - )?Row N, CLIENT | JOB, Slot N: Rec Date updated DD-Mon-YY -> DD-Mon-YY"
+    //   2. Outgoings tab expenses:
+    //      "[Outgoings] (Stale Expense - )?Row N, CONTRACTOR: Updated stale Placeholder/Gap date (Rec: X->Y, Pay: A->B)"
+    else if (flagType === "expenseUnreconGaps") {
+      const staleLogEntries = autoLogRows.filter(row => {
+        const d = String(row[3] || "");
+        return d.includes("Rec Date updated") || d.includes("Updated stale Placeholder/Gap date") || d.includes("Stale Expense");
+      });
+
+      const entriesToUse = staleLogEntries.length > 0 ? staleLogEntries : allAutoLogRows.filter(row => {
+        const d = String(row[3] || "");
+        return d.includes("Rec Date updated") || d.includes("Updated stale Placeholder/Gap date") || d.includes("Stale Expense");
+      });
+
+      if (entriesToUse.length === 0) {
+        results.push({
+          status: "info",
+          message: "No stale unreceived expense date change entries found in AutoLog.",
+        });
+      } else {
+        let confirmedRows = null;
+        let outgoingsRows = null;
+
+        // Pattern for Confirmed direct expenses:
+        // "[Confirmed] Row 15, Client | Job, Slot 1: Rec Date updated 05-Jan-26 -> 05-Feb-26"
+        // or "[Confirmed] Stale Expense - Row 15, Client | Job, Slot 1: Rec Date updated 05-Jan-26 -> 05-Feb-26"
+        const confirmedPattern = /\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,\n]+),\s*Slot\s*(\d+):\s*(?:£[0-9.,]+\s*[-–]\s*)?Rec Date updated\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
+
+        // Pattern for Outgoings tab expenses:
+        const outgoingsPattern = /\[Outgoings\]\s*(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)?([^:(]+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*(?:£[0-9.,]+\s*[-–]\s*)?Updated stale placeholder date(?:\s*[-–]\s*(.+))?|(?:Stale Expense\s*[-–]\s*)?Row\s*(\d+),\s*([^:]+):\s*Updated stale Placeholder\/Gap date\s*\(Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+),\s*Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)\))/gi;
+
+        for (const entry of entriesToUse) {
+          const details = String(entry[3] || "");
+          const timestamp = String(entry[0] || "");
+
+          // Check Confirmed matches
+          let cMatch;
+          while ((cMatch = confirmedPattern.exec(details)) !== null) {
+            if (targetLine) {
+              const normMatch = cMatch[0].replace(/\s+/g, " ").trim();
+              const normTarget = targetLine.replace(/\s+/g, " ").trim();
+              if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
+            }
+
+            const tab = "Confirmed";
+            const rowNum = parseInt(cMatch[1].trim(), 10);
+            const jobClient = cMatch[2].trim();
+            const jobName = cMatch[3].trim();
+            const slotNum = parseInt(cMatch[4].trim(), 10);
+            const oldDate = cMatch[5].trim();
+            const newDate = cMatch[6].trim();
+
+            if (!confirmedRows) {
+              const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
+                spreadsheetId: clientSheetIdClean,
+                range: "Confirmed!A1:CR5000",
+              }));
+              confirmedRows = confirmedResp.data.values || [];
+            }
+
+            let isResolved = false;
+            let resolutionMsg = "Slot is empty or contains an unreceived placeholder.";
+            const checks = [];
+            let targetSheetRow = null;
+            let actualRowNum = rowNum;
+
+            // 1. Try original row
+            if (rowNum > 0 && rowNum <= confirmedRows.length) {
+              const r = confirmedRows[rowNum - 1] || [];
+              if (String(r[0] || "").trim().toLowerCase() === jobClient.toLowerCase() &&
+                String(r[1] || "").trim().toLowerCase() === jobName.toLowerCase()) {
+                targetSheetRow = r;
+              }
+            }
+
+            // 2. Fallback search (job moved)
+            if (!targetSheetRow) {
+              const matchingRows = [];
+              for (let i = 0; i < confirmedRows.length; i++) {
+                const r = confirmedRows[i] || [];
+                if (String(r[0] || "").trim().toLowerCase() === jobClient.toLowerCase() &&
+                  String(r[1] || "").trim().toLowerCase() === jobName.toLowerCase()) {
+                  matchingRows.push({ row: r, index: i + 1 });
+                }
+              }
+              if (matchingRows.length === 1) {
+                targetSheetRow = matchingRows[0].row;
+                actualRowNum = matchingRows[0].index;
+              } else if (matchingRows.length > 1) {
+                targetSheetRow = matchingRows[0].row;
+                actualRowNum = matchingRows[0].index;
+              }
+            }
+
+            if (targetSheetRow) {
+              const headers = (confirmedRows[0] || []).map(h => String(h || "").toLowerCase().trim());
+              const findHeaderIdx = (patterns) => {
+                for (const pat of patterns) {
+                  const idx = headers.indexOf(pat.toLowerCase().trim());
+                  if (idx !== -1) return idx;
+                }
+                return -1;
+              };
+
+              const colAppId = findHeaderIdx([`dir inv ${slotNum} app id`, `dir inv. ${slotNum} app id`, `direct inv ${slotNum} app id`]);
+              const colAmt = findHeaderIdx([`direct inv ${slotNum} amt`, `direct inv ${slotNum} amount`, `dir inv ${slotNum} amt`]);
+              const colRec = findHeaderIdx([`direct inv ${slotNum} rec date`, `dir inv. ${slotNum} rec date`, `dir inv ${slotNum} rec date`]);
+              const colStat = findHeaderIdx([`dir inv ${slotNum} status`, `direct inv ${slotNum} status`]);
+
+              const currentId = colAppId !== -1 ? String(targetSheetRow[colAppId] || "").trim() : "";
+              const currentAmt = colAmt !== -1 ? String(targetSheetRow[colAmt] || "").trim() : "";
+              const currentRec = colRec !== -1 ? String(targetSheetRow[colRec] || "").trim() : "";
+              const currentStatus = colStat !== -1 ? String(targetSheetRow[colStat] || "").trim() : "";
+
+              if (currentId && !isPlaceholderExpense(currentId)) {
+                isResolved = true;
+                resolutionMsg = `Slot ${slotNum} now contains a real expense reference (App ID: ${currentId}${currentStatus ? `, Status: ${currentStatus}` : ""}).`;
+                checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+              } else if (currentStatus.toLowerCase() === "received" || currentStatus.toLowerCase() === "paid") {
+                isResolved = true;
+                resolutionMsg = `Slot ${slotNum} is now marked as ${currentStatus}.`;
+                checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+              } else if (!currentId && !currentAmt) {
+                isResolved = true;
+                resolutionMsg = `Slot ${slotNum} is now completely empty (stale placeholder was removed).`;
+                checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+              } else {
+                checks.push({
+                  ok: false,
+                  message: `✗ Slot ${slotNum} still contains an unreceived expense placeholder (Amount: £${currentAmt || "0"}, Rec Date: ${currentRec || newDate}${currentStatus ? `, Status: ${currentStatus}` : ""}).`
                 });
               }
 
-              // Check Outgoings matches
-              let oMatch;
-              while ((oMatch = outgoingsPattern.exec(details)) !== null) {
-                if (targetLine) {
-                  const normMatch = oMatch[0].replace(/\s+/g, " ").trim();
-                  const normTarget = targetLine.replace(/\s+/g, " ").trim();
-                  if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
-                }
+              if (actualRowNum !== rowNum) {
+                checks.push({ ok: true, message: `ℹ️ Job safely located at row ${actualRowNum} (moved from original row ${rowNum})` });
+              }
+            } else {
+              checks.push({ ok: false, message: `✗ Could not locate job "${jobClient} | ${jobName}" in the Confirmed tab.` });
+            }
 
-                const tab = "Outgoings";
-                const parsed = parseStaleExpenseDetail(oMatch[0]);
-                const contractor = parsed?.contractor || oMatch[2]?.trim() || "";
-                const rowNum = parsed?.rowNum || (oMatch[1] ? parseInt(oMatch[1], 10) : 0);
-                let oldRec = "";
-                let newRec = "";
-                let oldPay = "";
-                let newPay = "";
-                const changeText = parsed?.changeText || "";
-                const recM = changeText.match(/Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
-                if (recM) {
-                  oldRec = recM[1].trim();
-                  newRec = recM[2].trim();
-                }
-                const payM = changeText.match(/Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
-                if (payM) {
-                  oldPay = payM[1].trim();
-                  newPay = payM[2].trim();
-                }
+            results.push({
+              status: isResolved ? "ok" : "issue",
+              stale: true,
+              tab,
+              rowNum: actualRowNum,
+              jobClient,
+              jobName,
+              slotNum,
+              oldDate,
+              newDate,
+              logTimestamp: timestamp,
+              checks,
+              message: isResolved
+                ? `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
+                : `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: receive date moved ${oldDate} → ${newDate}.`
+            });
+          }
 
-                if (!outgoingsRows) {
-                  const outgoingsResp = await withRetry(() => sheets.spreadsheets.values.get({
-                    spreadsheetId: clientSheetIdClean,
-                    range: "Outgoings!A1:AZ300",
-                  }));
-                  outgoingsRows = outgoingsResp.data.values || [];
+          // Check Outgoings matches
+          let oMatch;
+          while ((oMatch = outgoingsPattern.exec(details)) !== null) {
+            if (targetLine) {
+              const normMatch = oMatch[0].replace(/\s+/g, " ").trim();
+              const normTarget = targetLine.replace(/\s+/g, " ").trim();
+              if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
+            }
+
+            const tab = "Outgoings";
+            const parsed = parseStaleExpenseDetail(oMatch[0]);
+            const contractor = parsed?.contractor || oMatch[2]?.trim() || "";
+            const rowNum = parsed?.rowNum || (oMatch[1] ? parseInt(oMatch[1], 10) : 0);
+            let oldRec = "";
+            let newRec = "";
+            let oldPay = "";
+            let newPay = "";
+            const changeText = parsed?.changeText || "";
+            const recM = changeText.match(/Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
+            if (recM) {
+              oldRec = recM[1].trim();
+              newRec = recM[2].trim();
+            }
+            const payM = changeText.match(/Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
+            if (payM) {
+              oldPay = payM[1].trim();
+              newPay = payM[2].trim();
+            }
+
+            if (!outgoingsRows) {
+              const outgoingsResp = await withRetry(() => sheets.spreadsheets.values.get({
+                spreadsheetId: clientSheetIdClean,
+                range: "Outgoings!A1:AZ300",
+              }));
+              outgoingsRows = outgoingsResp.data.values || [];
+            }
+
+            let isResolved = false;
+            const checks = [];
+            let actualRowNum = rowNum;
+            let targetRow = null;
+
+            // 1. Try original row
+            if (rowNum > 0 && rowNum <= outgoingsRows.length) {
+              const r = outgoingsRows[rowNum - 1] || [];
+              if (String(r[0] || "").trim().toLowerCase() === contractor.toLowerCase()) {
+                targetRow = r;
+              }
+            }
+
+            // 2. Fallback search (contractor moved)
+            if (!targetRow) {
+              for (let i = 0; i < outgoingsRows.length; i++) {
+                const r = outgoingsRows[i] || [];
+                if (String(r[0] || "").trim().toLowerCase() === contractor.toLowerCase()) {
+                  targetRow = r;
+                  actualRowNum = i + 1;
+                  break;
                 }
+              }
+            }
 
-                let isResolved = false;
-                const checks = [];
-                let actualRowNum = rowNum;
-                let targetRow = null;
+            if (targetRow) {
+              // Inspect cell notes in that row (scoped to the alert's month column when present) to check if placeholder is still active
+              try {
+                const isBlankDateBackfill = (!oldRec && !oldPay) && (/Rec:\s*->/i.test(changeText) || /Pay:\s*->/i.test(changeText));
+                const noteResp = await withRetry(() => sheets.spreadsheets.get({
+                  spreadsheetId: clientSheetIdClean,
+                  ranges: [`Outgoings!A${actualRowNum}:AZ${actualRowNum}`],
+                  fields: "sheets(data(rowData(values(note,formattedValue))))",
+                }));
+                const rowData = noteResp?.data?.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
+                const headerRow = outgoingsRows[0] || [];
+                const normMonthKey = (mStr) => {
+                  const m = String(mStr || "").trim().match(/^([A-Za-z]{3})[\s\-]*(\d{2,4})$/);
+                  if (!m) return String(mStr || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+                  return `${m[1].toLowerCase()}${m[2].slice(-2)}`;
+                };
 
-                // 1. Try original row
-                if (rowNum > 0 && rowNum <= outgoingsRows.length) {
-                  const r = outgoingsRows[rowNum - 1] || [];
-                  if (String(r[0] || "").trim().toLowerCase() === contractor.toLowerCase()) {
-                    targetRow = r;
-                  }
-                }
-
-                // 2. Fallback search (contractor moved)
-                if (!targetRow) {
-                  for (let i = 0; i < outgoingsRows.length; i++) {
-                    const r = outgoingsRows[i] || [];
-                    if (String(r[0] || "").trim().toLowerCase() === contractor.toLowerCase()) {
-                      targetRow = r;
-                      actualRowNum = i + 1;
+                let targetColIdx = -1;
+                if (parsed?.month) {
+                  const targetKey = normMonthKey(parsed.month);
+                  for (let c = 0; c < headerRow.length; c++) {
+                    const hVal = String(headerRow[c] || "").trim();
+                    if (hVal && normMonthKey(hVal) === targetKey) {
+                      targetColIdx = c;
                       break;
                     }
                   }
                 }
 
-                if (targetRow) {
-                  // Inspect cell notes in that row (scoped to the alert's month column when present) to check if placeholder is still active
-                  try {
-                    const isBlankDateBackfill = (!oldRec && !oldPay) && (/Rec:\s*->/i.test(changeText) || /Pay:\s*->/i.test(changeText));
-                    const noteResp = await withRetry(() => sheets.spreadsheets.get({
-                      spreadsheetId: clientSheetIdClean,
-                      ranges: [`Outgoings!A${actualRowNum}:AZ${actualRowNum}`],
-                      fields: "sheets(data(rowData(values(note,formattedValue))))",
-                    }));
-                    const rowData = noteResp?.data?.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
-                    const headerRow = outgoingsRows[0] || [];
-                    const normMonthKey = (mStr) => {
-                      const m = String(mStr || "").trim().match(/^([A-Za-z]{3})[\s\-]*(\d{2,4})$/);
-                      if (!m) return String(mStr || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-                      return `${m[1].toLowerCase()}${m[2].slice(-2)}`;
-                    };
+                const cellsToInspect = targetColIdx !== -1 ? [rowData[targetColIdx] || {}] : rowData;
+                let hasUnresolvedPlaceholder = false;
+                let foundPlaceholderCount = 0;
 
-                    let targetColIdx = -1;
-                    if (parsed?.month) {
-                      const targetKey = normMonthKey(parsed.month);
-                      for (let c = 0; c < headerRow.length; c++) {
-                        const hVal = String(headerRow[c] || "").trim();
-                        if (hVal && normMonthKey(hVal) === targetKey) {
-                          targetColIdx = c;
-                          break;
+                for (const cell of cellsToInspect) {
+                  const valNum = parseFloat(String(cell?.formattedValue || "").replace(/[^0-9.-]/g, ""));
+                  if (isNaN(valNum) || Math.abs(valNum) < 0.001) continue;
+                  const note = String(cell?.note || "");
+                  if (note.includes("PLACE-EXP") || note.includes("MANUAL-ENTRY") || note.includes("UNRECON-GAP") || note.includes("PLACE-GAP") || note.includes("MANUAL-GAP")) {
+                    const rawBlocks = note.split(/(?=\{App ID:)/i);
+                    for (const blk of rawBlocks) {
+                      if (blk.includes("PLACE-EXP") || blk.includes("MANUAL-ENTRY") || blk.includes("UNRECON-GAP") || blk.includes("PLACE-GAP") || blk.includes("MANUAL-GAP")) {
+                        foundPlaceholderCount++;
+                        const statusMatch = blk.match(/\{Status:\s*(.*?)\}/i);
+                        const status = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
+                        if (status !== "paid" && status !== "complete") {
+                          hasUnresolvedPlaceholder = true;
                         }
                       }
                     }
-
-                    const cellsToInspect = targetColIdx !== -1 ? [rowData[targetColIdx] || {}] : rowData;
-                    let hasUnresolvedPlaceholder = false;
-                    let foundPlaceholderCount = 0;
-
-                    for (const cell of cellsToInspect) {
-                      const valNum = parseFloat(String(cell?.formattedValue || "").replace(/[^0-9.-]/g, ""));
-                      if (isNaN(valNum) || Math.abs(valNum) < 0.001) continue;
-                      const note = String(cell?.note || "");
-                      if (note.includes("PLACE-EXP") || note.includes("MANUAL-ENTRY") || note.includes("UNRECON-GAP") || note.includes("PLACE-GAP") || note.includes("MANUAL-GAP")) {
-                        const rawBlocks = note.split(/(?=\{App ID:)/i);
-                        for (const blk of rawBlocks) {
-                          if (blk.includes("PLACE-EXP") || blk.includes("MANUAL-ENTRY") || blk.includes("UNRECON-GAP") || blk.includes("PLACE-GAP") || blk.includes("MANUAL-GAP")) {
-                            foundPlaceholderCount++;
-                            const statusMatch = blk.match(/\{Status:\s*(.*?)\}/i);
-                            const status = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
-                            if (status !== "paid" && status !== "complete") {
-                              hasUnresolvedPlaceholder = true;
-                            }
-                          }
-                        }
-                      }
-                    }
-
-                    if (isBlankDateBackfill) {
-                      isResolved = true;
-                      checks.push({ ok: true, message: `✓ Resolved: Initial placeholder dates populated.` });
-                    } else if (foundPlaceholderCount === 0) {
-                      isResolved = true;
-                      checks.push({ ok: true, message: `✓ Resolved: Placeholder${parsed?.month ? ` in ${parsed.month}` : ""} was replaced with a real expense or removed.` });
-                    } else if (!hasUnresolvedPlaceholder) {
-                      isResolved = true;
-                      checks.push({ ok: true, message: `✓ Resolved: All expense entries for ${contractor}${parsed?.month ? ` in ${parsed.month}` : ""} are marked as Paid/Complete.` });
-                    } else {
-                      checks.push({
-                        ok: false,
-                        message: `✗ Row ${actualRowNum} (${contractor}${parsed?.month ? ` - ${parsed.month}` : ""}) still contains unreceived placeholder expense(s) (Rec date moved to ${newRec}, Pay date to ${newPay}).`
-                      });
-                    }
-                  } catch (e) {
-                    // Fallback if cell notes call failed
-                    checks.push({
-                      ok: false,
-                      message: `ℹ️ Stale date moved: Rec date ${oldRec} → ${newRec}, Pay date ${oldPay} → ${newPay}.`
-                    });
-                  }
-
-                  if (actualRowNum !== rowNum) {
-                    checks.push({ ok: true, message: `ℹ️ Contractor located at row ${actualRowNum} (moved from original row ${rowNum})` });
-                  }
-                } else {
-                  checks.push({ ok: false, message: `✗ Could not locate contractor "${contractor}" in the Outgoings tab.` });
-                }
-
-                let msgDates = "";
-                if (oldRec && newRec && oldPay && newPay) {
-                  msgDates = `dates moved (Rec: ${oldRec} → ${newRec}, Pay: ${oldPay} → ${newPay})`;
-                } else if (oldRec && newRec) {
-                  msgDates = `receive date moved ${oldRec} → ${newRec}`;
-                } else if (oldPay && newPay) {
-                  msgDates = `pay date moved ${oldPay} → ${newPay}`;
-                } else {
-                  msgDates = `dates updated`;
-                }
-
-                results.push({
-                  status: isResolved ? "ok" : "issue",
-                  stale: true,
-                  tab,
-                  rowNum: actualRowNum,
-                  contractor,
-                  oldRec,
-                  newRec,
-                  oldPay,
-                  newPay,
-                  logTimestamp: timestamp,
-                  checks,
-                  message: isResolved
-                    ? `[${tab}] Row ${actualRowNum} - ${contractor}: Alert resolved.`
-                    : `[${tab}] Row ${actualRowNum} - ${contractor}: ${msgDates}.`
-                });
-              }
-            }
-
-            if (results.length === 0) {
-              results.push({
-                status: "info",
-                message: "Stale expense date change entries found in AutoLog but could not be parsed.",
-              });
-            } else {
-              console.log(`  ✓ Parsed ${results.length} stale expense entries`);
-            }
-          }
-
-        } // end expenseUnreconGaps
-
-        // ── crmCopiedConfDelete ────────────────────────────────────────────────
-        // Parse AutoLog entries where jobs were deleted from Confirmed via the
-        // "copied to conf box DELETE" action. Then verify:
-        //   1. Job is no longer present in Confirmed tab (by project code)
-        //   2. Job status in Pipeline tab (% likelihood, copied-to-conf column)
-        if (flagType === "crmCopiedConfDelete") {
-
-          // Find AutoLog entries containing deletion records
-          const deleteLogEntries = autoLogRows.filter(row => {
-            const details = String(row[3] || "");
-            return details.includes("Deleted Job:") && details.includes("[Confirmed]");
-          });
-          console.log(`  ✓ Found ${deleteLogEntries.length} delete log entries in window`);
-
-          // Fall back to full AutoLog if nothing in window
-          const deleteEntriesToUse = deleteLogEntries.length > 0 ? deleteLogEntries :
-            allAutoLogRows.filter(row => {
-              const details = String(row[3] || "");
-              return details.includes("Deleted Job:") && details.includes("[Confirmed]");
-            });
-          if (deleteLogEntries.length === 0 && deleteEntriesToUse.length > 0) {
-            console.log(`  ↩ Fell back to full AutoLog - found ${deleteEntriesToUse.length} entries`);
-          }
-
-          if (deleteEntriesToUse.length === 0) {
-            results.push({
-              status: "info",
-              message: "No deletion entries found in AutoLog since flag was last cleared.",
-            });
-          } else {
-            // Parse each deletion entry
-            // Format: "[Confirmed] Deleted Job: Row N, CLIENT | JOB (ID: CRM-XXXX)"
-            const deletedJobs = [];
-            const deletePattern = /\[Confirmed\]\s*Deleted Job:\s*Row\s*(\d+),\s*([^|]+)\|\s*([^(\n]+)\(ID:\s*([^)]+)\)/gi;
-
-            for (const entry of deleteEntriesToUse) {
-              const details = String(entry[3] || "");
-              const timestamp = String(entry[0] || "");
-              let match;
-              while ((match = deletePattern.exec(details)) !== null) {
-                const rowNum = match[1].trim();
-                const clientName = match[2].trim();
-                const jobName = match[3].trim();
-                const projectCode = match[4].trim(); // e.g. "CRM-1576"
-                // Deduplicate by project code
-                if (!deletedJobs.find(j => j.projectCode === projectCode)) {
-                  deletedJobs.push({ rowNum, clientName, jobName, projectCode, logTimestamp: timestamp });
-                }
-              }
-            }
-
-            if (deletedJobs.length === 0) {
-              results.push({
-                status: "info",
-                message: "Deletion entries found in AutoLog but could not be parsed. Check the AutoLog tab manually.",
-              });
-            } else {
-              console.log(`  ✓ Parsed ${deletedJobs.length} deleted job(s): ${JSON.stringify(deletedJobs.map(j => j.projectCode))}`);
-
-              // Read Confirmed tab (cols A:C = client, job, project code)
-              const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
-                spreadsheetId: clientSheetIdClean,
-                range: "Confirmed!A1:C5000",
-              }));
-              const confirmedRows = confirmedResp.data.values || [];
-
-              // Read Pipeline tab (cols A:C for lookup, AN for % likelihood, DD for copied status)
-              // DD = col 110 (0-indexed), AN = col 39 (0-indexed)
-              const pipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
-                spreadsheetId: clientSheetIdClean,
-                range: "Pipeline!A1:DD5000",
-              }));
-              const pipelineRows = pipelineResp.data.values || [];
-
-              for (const job of deletedJobs) {
-                const checks = [];
-                const jobClientLower = job.clientName.toLowerCase();
-                const jobNameLower = job.jobName.toLowerCase();
-                const projectCodeLower = job.projectCode.toLowerCase();
-
-                // ── Check 1: Confirmed tab ──────────────────────────────────
-                // Search by project code (col C = index 2), fallback client+job (cols A+B)
-                let confirmedRowIdx = -1;
-                for (let ri = 1; ri < confirmedRows.length; ri++) {
-                  const r = confirmedRows[ri] || [];
-                  const pc = String(r[2] || "").trim().toLowerCase();
-                  if (pc === projectCodeLower) { confirmedRowIdx = ri; break; }
-                }
-                // Fallback: client + job name
-                if (confirmedRowIdx === -1) {
-                  for (let ri = 1; ri < confirmedRows.length; ri++) {
-                    const r = confirmedRows[ri] || [];
-                    const rc = String(r[0] || "").trim().toLowerCase();
-                    const rj = String(r[1] || "").trim().toLowerCase();
-                    if (rc === jobClientLower && rj === jobNameLower) { confirmedRowIdx = ri; break; }
                   }
                 }
 
-                if (confirmedRowIdx === -1) {
-                  checks.push({ ok: true, message: `✓ Not found in Confirmed tab - job successfully removed` });
+                if (isBlankDateBackfill) {
+                  isResolved = true;
+                  checks.push({ ok: true, message: `✓ Resolved: Initial placeholder dates populated.` });
+                } else if (foundPlaceholderCount === 0) {
+                  isResolved = true;
+                  checks.push({ ok: true, message: `✓ Resolved: Placeholder${parsed?.month ? ` in ${parsed.month}` : ""} was replaced with a real expense or removed.` });
+                } else if (!hasUnresolvedPlaceholder) {
+                  isResolved = true;
+                  checks.push({ ok: true, message: `✓ Resolved: All expense entries for ${contractor}${parsed?.month ? ` in ${parsed.month}` : ""} are marked as Paid/Complete.` });
                 } else {
-                  checks.push({ ok: false, message: `✗ Job still exists in Confirmed tab at row ${confirmedRowIdx + 1} - deletion may have failed` });
-                }
-
-                // ── Check 2: Pipeline tab ───────────────────────────────────
-                // Search by project code (col C = index 2), fallback client+job
-                let pipelineRowIdx = -1;
-                for (let ri = 1; ri < pipelineRows.length; ri++) {
-                  const r = pipelineRows[ri] || [];
-                  const pc = String(r[2] || "").trim().toLowerCase();
-                  if (pc === projectCodeLower) { pipelineRowIdx = ri; break; }
-                }
-                if (pipelineRowIdx === -1) {
-                  for (let ri = 1; ri < pipelineRows.length; ri++) {
-                    const r = pipelineRows[ri] || [];
-                    const rc = String(r[0] || "").trim().toLowerCase();
-                    const rj = String(r[1] || "").trim().toLowerCase();
-                    if (rc === jobClientLower && rj === jobNameLower) { pipelineRowIdx = ri; break; }
-                  }
-                }
-
-                if (pipelineRowIdx === -1) {
-                  checks.push({ ok: false, message: `⚠ Job not found in Pipeline tab - notable, as deleted Confirmed jobs are usually still in Pipeline` });
-                } else {
-                  const pipeRow = pipelineRows[pipelineRowIdx];
-                  // AN = col 39 (0-indexed), DD = col 109 (0-indexed)
-                  // DD is col 110 in 1-indexed: D=4, D=4 → 4*26+4=108? Let me recalculate:
-                  // A=1...Z=26, AA=27...AZ=52, BA=53...DD=?
-                  // D=4, D=4: (4-1)*26 + 4 = 82? No: col letter to number:
-                  // DD: first D=4, second D=4 → (4)*26 + 4 = 108 (1-indexed) → index 107
-                  // AN: A=1, N=14 → 1*26+14 = 40 (1-indexed) → index 39
-                  const likelihood = String(pipeRow[39] || "").trim();   // AN
-                  const copiedStatus = String(pipeRow[107] || "").trim(); // DD
                   checks.push({
-                    ok: true,
-                    message: `Job found in Pipeline tab at row ${pipelineRowIdx + 1}` +
-                      ` - likelihood: ${likelihood || "(blank)"}` +
-                      `, "Copied to conf?" = ${copiedStatus || "(blank)"}`,
+                    ok: false,
+                    message: `✗ Row ${actualRowNum} (${contractor}${parsed?.month ? ` - ${parsed.month}` : ""}) still contains unreceived placeholder expense(s) (Rec date moved to ${newRec}, Pay date to ${newPay}).`
                   });
                 }
-
-                results.push({
-                  status: checks.every(c => c.ok) ? "ok" : "issue",
-                  jobName: job.jobName,
-                  clientName: job.clientName,
-                  projectCode: job.projectCode,
-                  confirmedRow: parseInt(job.rowNum, 10),
-                  logTimestamp: job.logTimestamp,
-                  checks,
-                  message: `${job.clientName} | ${job.jobName} (${job.projectCode}) - deleted from Confirmed row ${job.rowNum}`,
+              } catch (e) {
+                // Fallback if cell notes call failed
+                checks.push({
+                  ok: false,
+                  message: `ℹ️ Stale date moved: Rec date ${oldRec} → ${newRec}, Pay date ${oldPay} → ${newPay}.`
                 });
               }
-            }
-          }
 
-        } // end crmCopiedConfDelete
-
-        const overallOk = results.every(r => r.status === "ok" || r.status === "info");
-        console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);
-        const responsePayload = { success: true, flagType, results, overallOk };
-
-        if (targetLine && acIdClean && clientName && !req.body.secret) {
-          try {
-            const memoryRows = await readAlertMemory(sheets, acIdClean);
-            const matchRow = memoryRows.find(r =>
-              r.clientName === clientName &&
-              r.alertType === flagType &&
-              r.status === "cached" &&
-              String(r.alertSummary || "").trim() === String(targetLine).trim()
-            );
-            if (matchRow) {
-              await updateAlertMemoryRow(sheets, acIdClean, matchRow.rowIndex, {
-                ...matchRow,
-                cachedOptionsJSON: JSON.stringify(responsePayload),
-              });
-            }
-            if (!redisClient?.isOpen) await redisClient.connect();
-            const rawPrecomputed = await redisClient.get(PRECOMPUTED_KEY);
-            const precomputed = rawPrecomputed ? JSON.parse(rawPrecomputed) : null;
-            if (precomputed && Array.isArray(precomputed.noActionAlerts)) {
-              let updatedCache = false;
-              precomputed.noActionAlerts = precomputed.noActionAlerts.map(na => {
-                if (na.clientName === clientName && na.flagType === flagType && String(na.flagDetail || "").trim() === String(targetLine).trim()) {
-                  updatedCache = true;
-                  return { ...na, analysisResult: responsePayload };
-                }
-                return na;
-              });
-              if (updatedCache) {
-                if (matchRow?.fingerprintHash && precomputed.noActionAnalysisResults) {
-                  precomputed.noActionAnalysisResults[`${clientName}___${matchRow.fingerprintHash}`] = responsePayload;
-                }
-                const serializedPrecomputed = JSON.stringify(precomputed);
-                await redisClient.set(PRECOMPUTED_KEY, serializedPrecomputed, { EX: 86400 * 7 });
-                _precomputedMemoryCache = serializedPrecomputed;
-                _precomputedCachedAt = Date.now();
+              if (actualRowNum !== rowNum) {
+                checks.push({ ok: true, message: `ℹ️ Contractor located at row ${actualRowNum} (moved from original row ${rowNum})` });
               }
+            } else {
+              checks.push({ ok: false, message: `✗ Could not locate contractor "${contractor}" in the Outgoings tab.` });
             }
-          } catch (cacheUpdateErr) {
-            console.warn(`  ⚠ Could not persist updated no-action analysis to cache: ${cacheUpdateErr.message}`);
+
+            let msgDates = "";
+            if (oldRec && newRec && oldPay && newPay) {
+              msgDates = `dates moved (Rec: ${oldRec} → ${newRec}, Pay: ${oldPay} → ${newPay})`;
+            } else if (oldRec && newRec) {
+              msgDates = `receive date moved ${oldRec} → ${newRec}`;
+            } else if (oldPay && newPay) {
+              msgDates = `pay date moved ${oldPay} → ${newPay}`;
+            } else {
+              msgDates = `dates updated`;
+            }
+
+            results.push({
+              status: isResolved ? "ok" : "issue",
+              stale: true,
+              tab,
+              rowNum: actualRowNum,
+              contractor,
+              oldRec,
+              newRec,
+              oldPay,
+              newPay,
+              logTimestamp: timestamp,
+              checks,
+              message: isResolved
+                ? `[${tab}] Row ${actualRowNum} - ${contractor}: Alert resolved.`
+                : `[${tab}] Row ${actualRowNum} - ${contractor}: ${msgDates}.`
+            });
           }
         }
 
-        return res.status(200).json(responsePayload);
+        if (results.length === 0) {
+          results.push({
+            status: "info",
+            message: "Stale expense date change entries found in AutoLog but could not be parsed.",
+          });
+        } else {
+          console.log(`  ✓ Parsed ${results.length} stale expense entries`);
+        }
+      }
 
-      } catch (err) {
-        console.error(`❌ Error analyzing non-actionable flag:`, err);
-        return res.status(500).json({ success: false, error: `Analysis failed: ${err.message}` });
+    } // end expenseUnreconGaps
+
+    // ── crmCopiedConfDelete ────────────────────────────────────────────────
+    // Parse AutoLog entries where jobs were deleted from Confirmed via the
+    // "copied to conf box DELETE" action. Then verify:
+    //   1. Job is no longer present in Confirmed tab (by project code)
+    //   2. Job status in Pipeline tab (% likelihood, copied-to-conf column)
+    if (flagType === "crmCopiedConfDelete") {
+
+      // Find AutoLog entries containing deletion records
+      const deleteLogEntries = autoLogRows.filter(row => {
+        const details = String(row[3] || "");
+        return details.includes("Deleted Job:") && details.includes("[Confirmed]");
+      });
+      console.log(`  ✓ Found ${deleteLogEntries.length} delete log entries in window`);
+
+      // Fall back to full AutoLog if nothing in window
+      const deleteEntriesToUse = deleteLogEntries.length > 0 ? deleteLogEntries :
+        allAutoLogRows.filter(row => {
+          const details = String(row[3] || "");
+          return details.includes("Deleted Job:") && details.includes("[Confirmed]");
+        });
+      if (deleteLogEntries.length === 0 && deleteEntriesToUse.length > 0) {
+        console.log(`  ↩ Fell back to full AutoLog - found ${deleteEntriesToUse.length} entries`);
+      }
+
+      if (deleteEntriesToUse.length === 0) {
+        results.push({
+          status: "info",
+          message: "No deletion entries found in AutoLog since flag was last cleared.",
+        });
+      } else {
+        // Parse each deletion entry
+        // Format: "[Confirmed] Deleted Job: Row N, CLIENT | JOB (ID: CRM-XXXX)"
+        const deletedJobs = [];
+        const deletePattern = /\[Confirmed\]\s*Deleted Job:\s*Row\s*(\d+),\s*([^|]+)\|\s*([^(\n]+)\(ID:\s*([^)]+)\)/gi;
+
+        for (const entry of deleteEntriesToUse) {
+          const details = String(entry[3] || "");
+          const timestamp = String(entry[0] || "");
+          let match;
+          while ((match = deletePattern.exec(details)) !== null) {
+            const rowNum = match[1].trim();
+            const clientName = match[2].trim();
+            const jobName = match[3].trim();
+            const projectCode = match[4].trim(); // e.g. "CRM-1576"
+            // Deduplicate by project code
+            if (!deletedJobs.find(j => j.projectCode === projectCode)) {
+              deletedJobs.push({ rowNum, clientName, jobName, projectCode, logTimestamp: timestamp });
+            }
+          }
+        }
+
+        if (deletedJobs.length === 0) {
+          results.push({
+            status: "info",
+            message: "Deletion entries found in AutoLog but could not be parsed. Check the AutoLog tab manually.",
+          });
+        } else {
+          console.log(`  ✓ Parsed ${deletedJobs.length} deleted job(s): ${JSON.stringify(deletedJobs.map(j => j.projectCode))}`);
+
+          // Read Confirmed tab (cols A:C = client, job, project code)
+          const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId: clientSheetIdClean,
+            range: "Confirmed!A1:C5000",
+          }));
+          const confirmedRows = confirmedResp.data.values || [];
+
+          // Read Pipeline tab (cols A:C for lookup, AN for % likelihood, DD for copied status)
+          // DD = col 110 (0-indexed), AN = col 39 (0-indexed)
+          const pipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId: clientSheetIdClean,
+            range: "Pipeline!A1:DD5000",
+          }));
+          const pipelineRows = pipelineResp.data.values || [];
+
+          for (const job of deletedJobs) {
+            const checks = [];
+            const jobClientLower = job.clientName.toLowerCase();
+            const jobNameLower = job.jobName.toLowerCase();
+            const projectCodeLower = job.projectCode.toLowerCase();
+
+            // ── Check 1: Confirmed tab ──────────────────────────────────
+            // Search by project code (col C = index 2), fallback client+job (cols A+B)
+            let confirmedRowIdx = -1;
+            for (let ri = 1; ri < confirmedRows.length; ri++) {
+              const r = confirmedRows[ri] || [];
+              const pc = String(r[2] || "").trim().toLowerCase();
+              if (pc === projectCodeLower) { confirmedRowIdx = ri; break; }
+            }
+            // Fallback: client + job name
+            if (confirmedRowIdx === -1) {
+              for (let ri = 1; ri < confirmedRows.length; ri++) {
+                const r = confirmedRows[ri] || [];
+                const rc = String(r[0] || "").trim().toLowerCase();
+                const rj = String(r[1] || "").trim().toLowerCase();
+                if (rc === jobClientLower && rj === jobNameLower) { confirmedRowIdx = ri; break; }
+              }
+            }
+
+            if (confirmedRowIdx === -1) {
+              checks.push({ ok: true, message: `✓ Not found in Confirmed tab - job successfully removed` });
+            } else {
+              checks.push({ ok: false, message: `✗ Job still exists in Confirmed tab at row ${confirmedRowIdx + 1} - deletion may have failed` });
+            }
+
+            // ── Check 2: Pipeline tab ───────────────────────────────────
+            // Search by project code (col C = index 2), fallback client+job
+            let pipelineRowIdx = -1;
+            for (let ri = 1; ri < pipelineRows.length; ri++) {
+              const r = pipelineRows[ri] || [];
+              const pc = String(r[2] || "").trim().toLowerCase();
+              if (pc === projectCodeLower) { pipelineRowIdx = ri; break; }
+            }
+            if (pipelineRowIdx === -1) {
+              for (let ri = 1; ri < pipelineRows.length; ri++) {
+                const r = pipelineRows[ri] || [];
+                const rc = String(r[0] || "").trim().toLowerCase();
+                const rj = String(r[1] || "").trim().toLowerCase();
+                if (rc === jobClientLower && rj === jobNameLower) { pipelineRowIdx = ri; break; }
+              }
+            }
+
+            if (pipelineRowIdx === -1) {
+              checks.push({ ok: false, message: `⚠ Job not found in Pipeline tab - notable, as deleted Confirmed jobs are usually still in Pipeline` });
+            } else {
+              const pipeRow = pipelineRows[pipelineRowIdx];
+              // AN = col 39 (0-indexed), DD = col 109 (0-indexed)
+              // DD is col 110 in 1-indexed: D=4, D=4 → 4*26+4=108? Let me recalculate:
+              // A=1...Z=26, AA=27...AZ=52, BA=53...DD=?
+              // D=4, D=4: (4-1)*26 + 4 = 82? No: col letter to number:
+              // DD: first D=4, second D=4 → (4)*26 + 4 = 108 (1-indexed) → index 107
+              // AN: A=1, N=14 → 1*26+14 = 40 (1-indexed) → index 39
+              const likelihood = String(pipeRow[39] || "").trim();   // AN
+              const copiedStatus = String(pipeRow[107] || "").trim(); // DD
+              checks.push({
+                ok: true,
+                message: `Job found in Pipeline tab at row ${pipelineRowIdx + 1}` +
+                  ` - likelihood: ${likelihood || "(blank)"}` +
+                  `, "Copied to conf?" = ${copiedStatus || "(blank)"}`,
+              });
+            }
+
+            results.push({
+              status: checks.every(c => c.ok) ? "ok" : "issue",
+              jobName: job.jobName,
+              clientName: job.clientName,
+              projectCode: job.projectCode,
+              confirmedRow: parseInt(job.rowNum, 10),
+              logTimestamp: job.logTimestamp,
+              checks,
+              message: `${job.clientName} | ${job.jobName} (${job.projectCode}) - deleted from Confirmed row ${job.rowNum}`,
+            });
+          }
+        }
+      }
+
+    } // end crmCopiedConfDelete
+
+    const overallOk = results.every(r => r.status === "ok" || r.status === "info");
+    console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);
+    const responsePayload = { success: true, flagType, results, overallOk };
+
+    if (targetLine && acIdClean && clientName && !req.body.secret) {
+      try {
+        const memoryRows = await readAlertMemory(sheets, acIdClean);
+        const matchRow = memoryRows.find(r =>
+          r.clientName === clientName &&
+          r.alertType === flagType &&
+          r.status === "cached" &&
+          String(r.alertSummary || "").trim() === String(targetLine).trim()
+        );
+        if (matchRow) {
+          await updateAlertMemoryRow(sheets, acIdClean, matchRow.rowIndex, {
+            ...matchRow,
+            cachedOptionsJSON: JSON.stringify(responsePayload),
+          });
+        }
+        if (!redisClient?.isOpen) await redisClient.connect();
+        const rawPrecomputed = await redisClient.get(PRECOMPUTED_KEY);
+        const precomputed = rawPrecomputed ? JSON.parse(rawPrecomputed) : null;
+        if (precomputed && Array.isArray(precomputed.noActionAlerts)) {
+          let updatedCache = false;
+          precomputed.noActionAlerts = precomputed.noActionAlerts.map(na => {
+            if (na.clientName === clientName && na.flagType === flagType && String(na.flagDetail || "").trim() === String(targetLine).trim()) {
+              updatedCache = true;
+              return { ...na, analysisResult: responsePayload };
+            }
+            return na;
+          });
+          if (updatedCache) {
+            if (matchRow?.fingerprintHash && precomputed.noActionAnalysisResults) {
+              precomputed.noActionAnalysisResults[`${clientName}___${matchRow.fingerprintHash}`] = responsePayload;
+            }
+            const serializedPrecomputed = JSON.stringify(precomputed);
+            await redisClient.set(PRECOMPUTED_KEY, serializedPrecomputed, { EX: 86400 * 7 });
+            _precomputedMemoryCache = serializedPrecomputed;
+            _precomputedCachedAt = Date.now();
+          }
+        }
+      } catch (cacheUpdateErr) {
+        console.warn(`  ⚠ Could not persist updated no-action analysis to cache: ${cacheUpdateErr.message}`);
       }
     }
+
+    return res.status(200).json(responsePayload);
+
+  } catch (err) {
+    console.error(`❌ Error analyzing non-actionable flag:`, err);
+    return res.status(500).json({ success: false, error: `Analysis failed: ${err.message}` });
+  }
+}
 
 // ============================================================================
 // LOCAL HELPER FUNCTIONS
 // ============================================================================
 
 export function fuzzyClientMatch_(nameA, nameB) {
-      if (!nameA || !nameB) return false;
-      const clean = s => String(s).toLowerCase().replace(/['"\-.,()/#]/g, " ").replace(/\s+/g, " ").trim();
-      const a = clean(nameA);
-      const b = clean(nameB);
-      if (a === b) return true;
-      if (a.includes(b) || b.includes(a)) return true;
+  if (!nameA || !nameB) return false;
+  const clean = s => String(s).toLowerCase().replace(/['"\-.,()/#]/g, " ").replace(/\s+/g, " ").trim();
+  const a = clean(nameA);
+  const b = clean(nameB);
+  if (a === b) return true;
+  if (a.includes(b) || b.includes(a)) return true;
 
-      const NOISE = new Set(["ltd", "limited", "plc", "inc", "llc", "llp", "the", "and", "&", "group", "co", "corp", "corporation"]);
-      const wordsA = a.split(" ").filter(w => w.length > 1 && !NOISE.has(w));
-      const wordsB = b.split(" ").filter(w => w.length > 1 && !NOISE.has(w));
+  const NOISE = new Set(["ltd", "limited", "plc", "inc", "llc", "llp", "the", "and", "&", "group", "co", "corp", "corporation"]);
+  const wordsA = a.split(" ").filter(w => w.length > 1 && !NOISE.has(w));
+  const wordsB = b.split(" ").filter(w => w.length > 1 && !NOISE.has(w));
 
-      if (wordsA.length === 0 || wordsB.length === 0) return false;
-      return wordsA.some(w => wordsB.includes(w)) || wordsB.some(w => wordsA.includes(w));
+  if (wordsA.length === 0 || wordsB.length === 0) return false;
+  return wordsA.some(w => wordsB.includes(w)) || wordsB.some(w => wordsA.includes(w));
+}
+
+export function parseSheetOrJsDate_(val) {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  const s = String(val).trim();
+
+  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if (m) {
+    const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+    const mIdx = months[m[2].toLowerCase()];
+    if (mIdx === undefined) return null;
+    const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+    return new Date(yr, mIdx, parseInt(m[1], 10));
+  }
+
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+export function monthsWithinTolerance_(date1, date2, toleranceMonths) {
+  if (!date1 || !date2) return false;
+  const m1 = date1.getFullYear() * 12 + date1.getMonth();
+  const m2 = date2.getFullYear() * 12 + date2.getMonth();
+  return Math.abs(m1 - m2) <= Math.max(0, toleranceMonths);
+}
+
+// ============================================================================
+// SWEEP & LOGGING HELPER FUNCTIONS
+// ============================================================================
+
+const SWEEP_SCHEDULE_TAB = "SweepSchedule";
+const SWEEP_SCHEDULE_DEFAULTS = { actionable: 30, info: 60, proactive: 1440 };
+
+async function ensureSweepScheduleTab(sheets, automationCommanderSheetId) {
+  return;
+}
+
+// Returns { actionable: { rowIndex, frequencyMinutes, lastCheckedAt }, info: {...}, proactive: {...} }
+// Missing categories (e.g. a row deleted by hand) fall back to defaults with
+// no rowIndex - isCategoryDue_ below treats that as "always due" rather than
+// throwing, and the caller can decide whether to also re-create the row.
+async function readSweepSchedule_(sheets, automationCommanderSheetId) {
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: automationCommanderSheetId,
+    range: `${SWEEP_SCHEDULE_TAB}!A2:C10`,
+  });
+  const rows = resp.data.values || [];
+  const schedule = {};
+  rows.forEach((row, i) => {
+    const category = String(row[0] || "").trim().toLowerCase();
+    if (!category) return;
+    schedule[category] = {
+      rowIndex: i + 2,
+      frequencyMinutes: parseInt(row[1], 10) || SWEEP_SCHEDULE_DEFAULTS[category] || 30,
+      lastCheckedAt: row[2] || "",
+    };
+  });
+  for (const category of Object.keys(SWEEP_SCHEDULE_DEFAULTS)) {
+    if (!schedule[category]) {
+      schedule[category] = { rowIndex: null, frequencyMinutes: SWEEP_SCHEDULE_DEFAULTS[category], lastCheckedAt: "" };
+    }
+  }
+  return schedule;
+}
+
+// True if this category's configured interval has elapsed since it was last
+// checked (or has never been checked at all). A missing/unparseable
+// lastCheckedAt is treated as "always due" - safer than silently never
+// running a category because of a malformed timestamp.
+function isCategoryDue_(categoryEntry) {
+  if (!categoryEntry.lastCheckedAt) return true;
+  const last = new Date(categoryEntry.lastCheckedAt);
+  if (isNaN(last.getTime())) return true;
+  const elapsedMinutes = (Date.now() - last.getTime()) / 60000;
+  return elapsedMinutes >= categoryEntry.frequencyMinutes;
+}
+
+// Updates lastCheckedAt for one category - creates the row if it doesn't
+// exist yet (e.g. schedule tab was just created, or a row was deleted by
+// hand), rather than silently failing to persist the timestamp.
+async function markCategoryChecked_(sheets, automationCommanderSheetId, category, schedule) {
+  const nowISO = new Date().toISOString();
+  const entry = schedule[category];
+  if (entry && entry.rowIndex) {
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${SWEEP_SCHEDULE_TAB}!C${entry.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[nowISO]] },
+    }));
+  } else {
+    await withRetry(() => sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${SWEEP_SCHEDULE_TAB}!A:C`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[category, (entry && entry.frequencyMinutes) || SWEEP_SCHEDULE_DEFAULTS[category] || 30, nowISO]] },
+    }));
+  }
+}
+
+async function ensureClaudeUsageTab_(sheets, automationCommanderSheetId) {
+  return; // Safe stub to prevent crashes if this was also orphaned
+}
+
+// Log a Claude API call directly to ClaudeUsage tab
+export async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens, source) {
+  if (!automationCommanderSheetId) return;
+  const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
+  await ensureClaudeUsageTab_(sheets, acIdClean);
+  const costUsd = ((inputTokens || 0) / 1000000 * 3) + ((outputTokens || 0) / 1000000 * 15);
+  await withRetry(() => sheets.spreadsheets.values.append({
+    spreadsheetId: acIdClean,
+    range: "ClaudeUsage!A:F",
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        new Date().toISOString(),
+        sanitizeFormulaInput(String(source || "precompute")),
+        sanitizeFormulaInput(String(clientName || "")),
+        sanitizeFormulaInput(String(alertType || "")),
+        (inputTokens || 0) + (outputTokens || 0),
+        costUsd.toFixed(6),
+      ]],
+    },
+  }));
+  console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} - ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
+}
+
+export async function handleCheckOutgoingsCell(req, res, sheets) {
+  const { clientSheetId, categoryName, expenseMonth, expenseDate, amount } = req.body;
+  if (!clientSheetId || !categoryName) {
+    return res.status(400).json({ success: false, error: "Missing clientSheetId or categoryName" });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const ym = parseYearMonth(expenseMonth || expenseDate);
+    if (!ym) {
+      return res.status(400).json({ success: false, error: `Could not parse expense month: "${expenseMonth || expenseDate}"` });
     }
 
-    export function parseSheetOrJsDate_(val) {
-      if (!val) return null;
-      if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
-      const s = String(val).trim();
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetIdClean,
+      range: "Outgoings!A1:AX115",
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const rows = resp.data.values || [];
+    if (rows.length === 0) return res.status(200).json({ success: false, error: "Outgoings tab is empty" });
 
-      const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-      if (m) {
-        const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-        const mIdx = months[m[2].toLowerCase()];
-        if (mIdx === undefined) return null;
-        const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
-        return new Date(yr, mIdx, parseInt(m[1], 10));
-      }
-
-      const d = new Date(s);
-      return isNaN(d.getTime()) ? null : d;
-    }
-
-    export function monthsWithinTolerance_(date1, date2, toleranceMonths) {
-      if (!date1 || !date2) return false;
-      const m1 = date1.getFullYear() * 12 + date1.getMonth();
-      const m2 = date2.getFullYear() * 12 + date2.getMonth();
-      return Math.abs(m1 - m2) <= Math.max(0, toleranceMonths);
-    }
-
-    // ============================================================================
-    // SWEEP & LOGGING HELPER FUNCTIONS
-    // ============================================================================
-
-    const SWEEP_SCHEDULE_TAB = "SweepSchedule";
-    const SWEEP_SCHEDULE_DEFAULTS = { actionable: 30, info: 60, proactive: 1440 };
-
-    async function ensureSweepScheduleTab(sheets, automationCommanderSheetId) {
-      return;
-    }
-
-    // Returns { actionable: { rowIndex, frequencyMinutes, lastCheckedAt }, info: {...}, proactive: {...} }
-    // Missing categories (e.g. a row deleted by hand) fall back to defaults with
-    // no rowIndex - isCategoryDue_ below treats that as "always due" rather than
-    // throwing, and the caller can decide whether to also re-create the row.
-    async function readSweepSchedule_(sheets, automationCommanderSheetId) {
-      const resp = await sheets.spreadsheets.values.get({
-        spreadsheetId: automationCommanderSheetId,
-        range: `${SWEEP_SCHEDULE_TAB}!A2:C10`,
-      });
-      const rows = resp.data.values || [];
-      const schedule = {};
-      rows.forEach((row, i) => {
-        const category = String(row[0] || "").trim().toLowerCase();
-        if (!category) return;
-        schedule[category] = {
-          rowIndex: i + 2,
-          frequencyMinutes: parseInt(row[1], 10) || SWEEP_SCHEDULE_DEFAULTS[category] || 30,
-          lastCheckedAt: row[2] || "",
-        };
-      });
-      for (const category of Object.keys(SWEEP_SCHEDULE_DEFAULTS)) {
-        if (!schedule[category]) {
-          schedule[category] = { rowIndex: null, frequencyMinutes: SWEEP_SCHEDULE_DEFAULTS[category], lastCheckedAt: "" };
+    const headerRow = rows[0] || [];
+    let targetColIndex = -1;
+    for (let c = 0; c < headerRow.length; c++) {
+      const headerVal = headerRow[c];
+      if (headerVal === null || headerVal === undefined || headerVal === "") continue;
+      let parsedYM = null;
+      if (typeof headerVal === "number") {
+        const d = new Date((headerVal - 25569) * 86400 * 1000);
+        if (!isNaN(d.getTime())) {
+          parsedYM = { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 };
         }
-      }
-      return schedule;
-    }
-
-    // True if this category's configured interval has elapsed since it was last
-    // checked (or has never been checked at all). A missing/unparseable
-    // lastCheckedAt is treated as "always due" - safer than silently never
-    // running a category because of a malformed timestamp.
-    function isCategoryDue_(categoryEntry) {
-      if (!categoryEntry.lastCheckedAt) return true;
-      const last = new Date(categoryEntry.lastCheckedAt);
-      if (isNaN(last.getTime())) return true;
-      const elapsedMinutes = (Date.now() - last.getTime()) / 60000;
-      return elapsedMinutes >= categoryEntry.frequencyMinutes;
-    }
-
-    // Updates lastCheckedAt for one category - creates the row if it doesn't
-    // exist yet (e.g. schedule tab was just created, or a row was deleted by
-    // hand), rather than silently failing to persist the timestamp.
-    async function markCategoryChecked_(sheets, automationCommanderSheetId, category, schedule) {
-      const nowISO = new Date().toISOString();
-      const entry = schedule[category];
-      if (entry && entry.rowIndex) {
-        await withRetry(() => sheets.spreadsheets.values.update({
-          spreadsheetId: automationCommanderSheetId,
-          range: `${SWEEP_SCHEDULE_TAB}!C${entry.rowIndex}`,
-          valueInputOption: "RAW",
-          requestBody: { values: [[nowISO]] },
-        }));
       } else {
-        await withRetry(() => sheets.spreadsheets.values.append({
-          spreadsheetId: automationCommanderSheetId,
-          range: `${SWEEP_SCHEDULE_TAB}!A:C`,
-          valueInputOption: "RAW",
-          requestBody: { values: [[category, (entry && entry.frequencyMinutes) || SWEEP_SCHEDULE_DEFAULTS[category] || 30, nowISO]] },
-        }));
+        parsedYM = parseYearMonth(headerVal);
+      }
+      if (parsedYM && parsedYM.year === ym.year && parsedYM.month === ym.month) {
+        targetColIndex = c;
+        break;
       }
     }
 
-    async function ensureClaudeUsageTab_(sheets, automationCommanderSheetId) {
-      return; // Safe stub to prevent crashes if this was also orphaned
+    if (targetColIndex === -1) {
+      return res.status(200).json({ success: true, found: false, error: `Month column not found for ${ym.year}-${String(ym.month).padStart(2, "0")}` });
     }
 
-    // Log a Claude API call directly to ClaudeUsage tab
-    export async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens, source) {
-      if (!automationCommanderSheetId) return;
-      const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
-      await ensureClaudeUsageTab_(sheets, acIdClean);
-      const costUsd = ((inputTokens || 0) / 1000000 * 3) + ((outputTokens || 0) / 1000000 * 15);
-      await withRetry(() => sheets.spreadsheets.values.append({
-        spreadsheetId: acIdClean,
-        range: "ClaudeUsage!A:F",
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[
-            new Date().toISOString(),
-            sanitizeFormulaInput(String(source || "precompute")),
-            sanitizeFormulaInput(String(clientName || "")),
-            sanitizeFormulaInput(String(alertType || "")),
-            (inputTokens || 0) + (outputTokens || 0),
-            costUsd.toFixed(6),
-          ]],
-        },
-      }));
-      console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} - ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
-    }
-
-    export async function handleCheckOutgoingsCell(req, res, sheets) {
-      const { clientSheetId, categoryName, expenseMonth, expenseDate, amount } = req.body;
-      if (!clientSheetId || !categoryName) {
-        return res.status(400).json({ success: false, error: "Missing clientSheetId or categoryName" });
-      }
-
-      try {
-        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-        const ym = parseYearMonth(expenseMonth || expenseDate);
-        if (!ym) {
-          return res.status(400).json({ success: false, error: `Could not parse expense month: "${expenseMonth || expenseDate}"` });
-        }
-
-        const resp = await sheets.spreadsheets.values.get({
-          spreadsheetId: sheetIdClean,
-          range: "Outgoings!A1:AX115",
-          valueRenderOption: "UNFORMATTED_VALUE",
-        });
-        const rows = resp.data.values || [];
-        if (rows.length === 0) return res.status(200).json({ success: false, error: "Outgoings tab is empty" });
-
-        const headerRow = rows[0] || [];
-        let targetColIndex = -1;
-        for (let c = 0; c < headerRow.length; c++) {
-          const headerVal = headerRow[c];
-          if (headerVal === null || headerVal === undefined || headerVal === "") continue;
-          let parsedYM = null;
-          if (typeof headerVal === "number") {
-            const d = new Date((headerVal - 25569) * 86400 * 1000);
-            if (!isNaN(d.getTime())) {
-              parsedYM = { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 };
-            }
-          } else {
-            parsedYM = parseYearMonth(headerVal);
-          }
-          if (parsedYM && parsedYM.year === ym.year && parsedYM.month === ym.month) {
-            targetColIndex = c;
-            break;
-          }
-        }
-
-        if (targetColIndex === -1) {
-          return res.status(200).json({ success: true, found: false, error: `Month column not found for ${ym.year}-${String(ym.month).padStart(2, "0")}` });
-        }
-
-        const categoryLower = categoryName.toLowerCase().trim();
-        let targetRowIndex = -1;
-        for (let r = 12; r <= Math.min(109, rows.length - 1); r++) {
-          const rowVendorName = String(rows[r][0] || "").toLowerCase().trim();
-          if (rowVendorName === categoryLower) {
-            targetRowIndex = r;
-            break;
-          }
-        }
-
-        if (targetRowIndex === -1) {
-          return res.status(200).json({ success: true, found: false, isNewVendor: true });
-        }
-
-        const sheetRow = targetRowIndex + 1;
-        const sheetCol = targetColIndex + 1;
-        const colLetter = (() => {
-          let col = sheetCol;
-          let letter = "";
-          while (col > 0) {
-            const r = (col - 1) % 26;
-            letter = String.fromCharCode(65 + r) + letter;
-            col = Math.floor((col - 1) / 26);
-          }
-          return letter;
-        })();
-
-        const cellA1 = `Outgoings!${colLetter}${sheetRow}`;
-        const cellResp = await sheets.spreadsheets.get({
-          spreadsheetId: sheetIdClean,
-          ranges: [cellA1],
-          fields: "sheets(data(rowData(values(userEnteredValue,note))))",
-        });
-
-        const cellData = cellResp.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0];
-        const existingValueRaw = cellData?.userEnteredValue?.numberValue
-          ?? cellData?.userEnteredValue?.stringValue
-          ?? 0;
-        const existingNote = cellData?.note || "";
-        const existingValue = parseFloat(existingValueRaw) || 0;
-
-        const parseNoteParts = (note) => {
-          if (!note) return { topNote: "", blocks: [] };
-          const firstBlockIdx = note.indexOf("{App ID:");
-          let topNote = "";
-          let blockText = "";
-          if (firstBlockIdx !== -1) {
-            topNote = note.substring(0, firstBlockIdx).trim();
-            blockText = note.substring(firstBlockIdx);
-          } else if (note.includes("{") && note.includes("}")) {
-            blockText = note;
-          } else {
-            topNote = note.trim();
-          }
-
-          const blocks = [];
-          const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
-          let match;
-          while ((match = blockRegex.exec(blockText)) !== null) {
-            blocks.push({
-              appId: match[1]?.trim() || "",
-              amount: parseFloat(String(match[2] || "").replace(/[£$€,\s]/g, "")) || 0,
-              status: match[3]?.trim() || "",
-              recDate: match[4]?.trim() || "",
-              payDate: match[5]?.trim() || "",
-              description: match[6]?.trim() || "",
-            });
-          }
-          return { topNote, blocks };
-        };
-
-        const { topNote, blocks } = parseNoteParts(existingNote);
-        const placeholderBlocks = blocks.filter(b => isPlaceholderExpense(b.appId, b.description, b.status));
-        const totalManual = placeholderBlocks.reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
-        const expenseAmt = parseFloat(amount) || 0;
-        const canUseUp = totalManual > 0 && expenseAmt <= totalManual + 0.001;
-
-        const monthDateObj = new Date(ym.year, ym.month - 1, 1);
-        const monthLabel = monthDateObj.toLocaleString("en-GB", { month: "short", year: "2-digit" });
-
-        return res.status(200).json({
-          success: true,
-          found: true,
-          sheetRow,
-          colLetter,
-          monthLabel,
-          existingValue,
-          topNote,
-          allBlocks: blocks,
-          placeholderBlocks,
-          totalManual,
-          canUseUp
-        });
-      } catch (err) {
-        console.error("❌ check_outgoings_cell error:", err);
-        return res.status(500).json({ success: false, error: err.message });
+    const categoryLower = categoryName.toLowerCase().trim();
+    let targetRowIndex = -1;
+    for (let r = 12; r <= Math.min(109, rows.length - 1); r++) {
+      const rowVendorName = String(rows[r][0] || "").toLowerCase().trim();
+      if (rowVendorName === categoryLower) {
+        targetRowIndex = r;
+        break;
       }
     }
+
+    if (targetRowIndex === -1) {
+      return res.status(200).json({ success: true, found: false, isNewVendor: true });
+    }
+
+    const sheetRow = targetRowIndex + 1;
+    const sheetCol = targetColIndex + 1;
+    const colLetter = (() => {
+      let col = sheetCol;
+      let letter = "";
+      while (col > 0) {
+        const r = (col - 1) % 26;
+        letter = String.fromCharCode(65 + r) + letter;
+        col = Math.floor((col - 1) / 26);
+      }
+      return letter;
+    })();
+
+    const cellA1 = `Outgoings!${colLetter}${sheetRow}`;
+    const cellResp = await sheets.spreadsheets.get({
+      spreadsheetId: sheetIdClean,
+      ranges: [cellA1],
+      fields: "sheets(data(rowData(values(userEnteredValue,note))))",
+    });
+
+    const cellData = cellResp.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0];
+    const existingValueRaw = cellData?.userEnteredValue?.numberValue
+      ?? cellData?.userEnteredValue?.stringValue
+      ?? 0;
+    const existingNote = cellData?.note || "";
+    const existingValue = parseFloat(existingValueRaw) || 0;
+
+    const parseNoteParts = (note) => {
+      if (!note) return { topNote: "", blocks: [] };
+      const firstBlockIdx = note.indexOf("{App ID:");
+      let topNote = "";
+      let blockText = "";
+      if (firstBlockIdx !== -1) {
+        topNote = note.substring(0, firstBlockIdx).trim();
+        blockText = note.substring(firstBlockIdx);
+      } else if (note.includes("{") && note.includes("}")) {
+        blockText = note;
+      } else {
+        topNote = note.trim();
+      }
+
+      const blocks = [];
+      const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
+      let match;
+      while ((match = blockRegex.exec(blockText)) !== null) {
+        blocks.push({
+          appId: match[1]?.trim() || "",
+          amount: parseFloat(String(match[2] || "").replace(/[£$€,\s]/g, "")) || 0,
+          status: match[3]?.trim() || "",
+          recDate: match[4]?.trim() || "",
+          payDate: match[5]?.trim() || "",
+          description: match[6]?.trim() || "",
+        });
+      }
+      return { topNote, blocks };
+    };
+
+    const { topNote, blocks } = parseNoteParts(existingNote);
+    const placeholderBlocks = blocks.filter(b => isPlaceholderExpense(b.appId, b.description, b.status));
+    const totalManual = placeholderBlocks.reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
+    const expenseAmt = parseFloat(amount) || 0;
+    const canUseUp = totalManual > 0 && expenseAmt <= totalManual + 0.001;
+
+    const monthDateObj = new Date(ym.year, ym.month - 1, 1);
+    const monthLabel = monthDateObj.toLocaleString("en-GB", { month: "short", year: "2-digit" });
+
+    return res.status(200).json({
+      success: true,
+      found: true,
+      sheetRow,
+      colLetter,
+      monthLabel,
+      existingValue,
+      topNote,
+      allBlocks: blocks,
+      placeholderBlocks,
+      totalManual,
+      canUseUp
+    });
+  } catch (err) {
+    console.error("❌ check_outgoings_cell error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}

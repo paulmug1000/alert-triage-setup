@@ -2726,7 +2726,7 @@ async function syncStructuredClientTablesFromGrids_(ctx, grids, changedTabs = nu
   const nowIso = new Date().toISOString();
 
   // 1. client_jobs (Confirmed & Pipeline)
-  for (const [tabName, jobStatus] of [
+  for (const [tabName, tabType] of [
     ["Confirmed", "confirmed"],
     ["Pipeline", "pipeline"],
   ]) {
@@ -2743,27 +2743,26 @@ async function syncStructuredClientTablesFromGrids_(ctx, grids, changedTabs = nu
       jobRows.push({
         client_id: ctx.clientId,
         client_name: ctx.clientName,
-        job_status: jobStatus,
+        tab_type: tabType,
         row_index: r + 1,
-        end_client_name: cName,
+        sort_order: r,
+        customer_name: cName,
         job_name: jName,
-        job_code: String(row[2] ?? "").trim(),
+        project_code: String(row[2] ?? "").trim(),
         date_confirmed: formatCellForDisplay("client", tabName, r, 3, row[3], vGrid),
         lead_source: String(row[5] ?? "").trim(),
-        service_line: String(row[6] ?? "").trim(),
-        total_value: totalVal,
-        passthrough_cost: parseNumericVal_(row[33]),
-        vat_applies: String(row[34] ?? "Yes").trim(),
         job_type: String(row[35] ?? "Project").trim(),
+        product_line: String(row[6] ?? "").trim(),
         start_date: formatCellForDisplay("client", tabName, r, 37, row[37], vGrid),
         end_date: formatCellForDisplay("client", tabName, r, 38, row[38], vGrid),
-        probability: parseNumericVal_(row[39]),
-        is_lost_or_archived: String(row[107] ?? "").trim().toLowerCase() === "yes",
+        likelihood_pct: parseNumericVal_(row[39] ?? 1),
+        total_revenue: totalVal,
+        total_direct_costs: parseNumericVal_(row[33]),
         raw_row: row.slice(0, 108),
         updated_at: nowIso,
       });
     }
-    await supabase.from("client_jobs").delete().eq("client_name", ctx.clientName).eq("job_status", jobStatus);
+    await supabase.from("client_jobs").delete().eq("client_name", ctx.clientName).eq("tab_type", tabType);
     for (let i = 0; i < jobRows.length; i += 200) {
       await supabase.from("client_jobs").insert(jobRows.slice(i, i + 200));
     }
@@ -2791,14 +2790,17 @@ async function syncStructuredClientTablesFromGrids_(ctx, grids, changedTabs = nu
       outRows.push({
         client_id: ctx.clientId,
         client_name: ctx.clientName,
+        section: r < 110 ? "contractor" : r < 120 ? "cos_topup" : "expense",
         row_index: r + 1,
-        section: r < 110 ? "direct_and_shared" : "overheads",
-        category_name: catName,
-        vat_applies: String(row[1] ?? "No").trim(),
-        payment_timing: String(row[2] ?? "Curr").trim(),
-        direct_cost_pct: parseNumericVal_(row[4]),
-        monthly_amounts: monthlyAmounts,
-        monthly_notes: monthlyNotes,
+        label: catName,
+        vat_applicable: String(row[1] ?? "No").trim(),
+        invoice_status: String(row[2] ?? "").trim(),
+        pay_status: String(row[3] ?? "").trim(),
+        delivery_pct: parseNumericVal_(row[4]),
+        likelihood_pct: parseNumericVal_(row[5] ?? 1),
+        monthly_values: monthlyAmounts,
+        cell_notes: monthlyNotes,
+        raw_row: row.slice(0, 50),
         updated_at: nowIso,
       });
     }
@@ -2822,12 +2824,17 @@ async function syncStructuredClientTablesFromGrids_(ctx, grids, changedTabs = nu
         client_id: ctx.clientId,
         client_name: ctx.clientName,
         row_index: r + 1,
-        staff_name: sName,
+        sort_order: r,
+        employee_name: sName,
         role_title: sRole,
+        fte_salary: annual,
+        fte_fraction: parseNumericVal_(row[3] ?? 1),
         start_date: formatCellForDisplay("client", "Salaries", r, 4, row[4], salGrid),
         end_date: formatCellForDisplay("client", "Salaries", r, 5, row[5], salGrid),
-        direct_pct: parseNumericVal_(row[6]),
-        base_annual_salary: annual,
+        delivery_pct: parseNumericVal_(row[6]),
+        student_loan_plan: String(row[7] ?? "None").trim(),
+        pension_opt_in: String(row[8] ?? "Yes").trim(),
+        likelihood_pct: parseNumericVal_(row[9] ?? 1),
         raw_row: row.slice(0, 60),
         updated_at: nowIso,
       });
@@ -2838,7 +2845,36 @@ async function syncStructuredClientTablesFromGrids_(ctx, grids, changedTabs = nu
     }
   }
 
-  // 4. client_cash_balances (Cash)
+  // 4. client_budgets_and_targets (Budget & NBtoFind)
+  for (const [tabName, modelType] of [
+    ["Budget", "budget"],
+    ["NBtoFind", "nb_to_find"],
+  ]) {
+    if (tabSet && !tabSet.has(tabName)) continue;
+    const bGrid = grids[tabName]?.values || [];
+    const bRows = [];
+    for (let r = 1; r < Math.min(bGrid.length, 100); r++) {
+      const row = bGrid[r] || [];
+      const lbl = String(row[0] ?? "").trim();
+      if (!lbl) continue;
+      bRows.push({
+        client_id: ctx.clientId,
+        client_name: ctx.clientName,
+        model_type: modelType,
+        row_index: r + 1,
+        line_key: `R${r + 1}`,
+        label: lbl,
+        raw_row: row.slice(0, 60),
+        updated_at: nowIso,
+      });
+    }
+    await supabase.from("client_budgets_and_targets").delete().eq("client_name", ctx.clientName).eq("model_type", modelType);
+    if (bRows.length > 0) {
+      await supabase.from("client_budgets_and_targets").insert(bRows);
+    }
+  }
+
+  // 5. client_cash_balances (Cash)
   if (!tabSet || tabSet.has("Cash") || tabSet.has("Outgoings") || tabSet.has("Confirmed")) {
     const cashGrid = grids.Cash?.values || [];
     const cashRow0 = cashGrid[0] || [];
@@ -2851,10 +2887,13 @@ async function syncStructuredClientTablesFromGrids_(ctx, grids, changedTabs = nu
         client_name: ctx.clientName,
         month_date: mDate,
         col_index: c + 1,
-        opening_balance: parseNumericVal_(cashGrid[3]?.[c]),
-        forecast_closing_balance: parseNumericVal_(cashGrid[33]?.[c]),
-        actual_closing_balance:
-          cashGrid[35]?.[c] !== "" && cashGrid[35]?.[c] !== undefined ? parseNumericVal_(cashGrid[35]?.[c]) : null,
+        account_balances: {
+          opening_balance: parseNumericVal_(cashGrid[3]?.[c]),
+          forecast_closing_balance: parseNumericVal_(cashGrid[33]?.[c]),
+          actual_closing_balance:
+            cashGrid[35]?.[c] !== "" && cashGrid[35]?.[c] !== undefined ? parseNumericVal_(cashGrid[35]?.[c]) : null,
+        },
+        adjustments: {},
         updated_at: nowIso,
       });
     }

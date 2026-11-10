@@ -8,6 +8,8 @@ import { provisionRetainerChildRows_ } from "../../../services/retainers.js";
 import {
   canonicalizeInvoiceStatus,
   canonicalizeExpenseStatus,
+  formatInvoiceRefForSheet,
+  toSheetDateFormat,
   hasActiveCrmIntegration,
   isCrmDrivenTab,
   getCrmDisplayName,
@@ -36,6 +38,8 @@ const parseMoney = (val) => {
 
 const formatDate = (val) => {
   if (!val) return "";
+  const formatted = toSheetDateFormat(val);
+  if (formatted) return formatted;
   const str = String(val).trim();
   if (!str) return "";
   return sanitizeFormulaInput(str);
@@ -246,7 +250,7 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
     const inv = invoiceSlots?.[s];
     if (inv) {
       if (invMap.amount !== -1) rowArray[invMap.amount] = parseMoney(inv.amount);
-      if (invMap.ref !== -1) rowArray[invMap.ref] = parseText(inv.ref);
+      if (invMap.ref !== -1) rowArray[invMap.ref] = formatInvoiceRefForSheet(inv.ref);
       if (invMap.sendDate !== -1) rowArray[invMap.sendDate] = formatDate(inv.sendDate);
       if (invMap.days !== -1) rowArray[invMap.days] = parseNumber(inv.days, 30);
       if (invMap.status !== -1) rowArray[invMap.status] = parseInvoiceStatus(inv.status);
@@ -314,7 +318,7 @@ function applyChildRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
     const inv = invoiceSlots?.[s];
     if (inv) {
       if (invMap.amount !== -1) rowArray[invMap.amount] = parseMoney(inv.amount);
-      if (invMap.ref !== -1) rowArray[invMap.ref] = parseText(inv.ref);
+      if (invMap.ref !== -1) rowArray[invMap.ref] = formatInvoiceRefForSheet(inv.ref);
       if (invMap.sendDate !== -1) rowArray[invMap.sendDate] = formatDate(inv.sendDate);
       if (invMap.days !== -1) rowArray[invMap.days] = parseNumber(inv.days, 30);
       if (invMap.status !== -1) rowArray[invMap.status] = parseInvoiceStatus(inv.status);

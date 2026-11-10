@@ -298,7 +298,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
       const payData = await payRes.json();
       (payData?.QueryResponse?.Payment || []).forEach(p => {
         if (p.DepositToAccountRef?.value !== String(accountId)) return;
-        const total = Math.abs(parseFloat(p.TotalAmt) || 0);
+        const total = Math.abs(parseFloat(p.HomeTotalAmt != null && p.HomeTotalAmt !== "" ? p.HomeTotalAmt : p.TotalAmt) || 0);
         const payee = p.CustomerRef?.name || "";
         const memo = p.PrivateNote || `Payment from ${payee}`;
 
@@ -331,7 +331,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
       const srData = await srRes.json();
       (srData?.QueryResponse?.SalesReceipt || []).forEach(sr => {
         if (sr.DepositToAccountRef?.value !== String(accountId)) return;
-        const total = Math.abs(parseFloat(sr.TotalAmt) || 0);
+        const total = Math.abs(parseFloat(sr.HomeTotalAmt != null && sr.HomeTotalAmt !== "" ? sr.HomeTotalAmt : sr.TotalAmt) || 0);
         const payee = sr.CustomerRef?.name || "";
         const memo = sr.PrivateNote || sr.Line?.[0]?.Description || `Sales receipt from ${payee}`;
 
@@ -364,7 +364,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
       const depData = await depRes.json();
       (depData?.QueryResponse?.Deposit || []).forEach(dep => {
         if (dep.DepositToAccountRef?.value !== String(accountId)) return;
-        const total = Math.abs(parseFloat(dep.TotalAmt) || 0);
+        const total = Math.abs(parseFloat(dep.HomeTotalAmt != null && dep.HomeTotalAmt !== "" ? dep.HomeTotalAmt : dep.TotalAmt) || 0);
         const payee = dep.Line?.[0]?.DepositLineDetail?.Entity?.DisplayName || "";
         const memo = dep.PrivateNote || dep.Line?.[0]?.Description || payee;
 
@@ -468,7 +468,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
       const purData = await purRes.json();
       (purData?.QueryResponse?.Purchase || []).forEach(pur => {
         if (pur.AccountRef?.value !== String(accountId)) return;
-        const total = Math.abs(parseFloat(pur.TotalAmt) || 0);
+        const total = Math.abs(parseFloat(pur.HomeTotalAmt != null && pur.HomeTotalAmt !== "" ? pur.HomeTotalAmt : pur.TotalAmt) || 0);
         const payee = pur.EntityRef?.name || "";
         const memo = pur.PrivateNote || pur.Line?.[0]?.Description || payee;
 
@@ -500,7 +500,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
       (bpData?.QueryResponse?.BillPayment || []).forEach(bp => {
         const bankRef = bp.CheckPayment?.BankAccountRef?.value || bp.CreditCardPayment?.CCAccountRef?.value;
         if (bankRef !== String(accountId)) return;
-        const total = Math.abs(parseFloat(bp.TotalAmt) || 0);
+        const total = Math.abs(parseFloat(bp.HomeTotalAmt != null && bp.HomeTotalAmt !== "" ? bp.HomeTotalAmt : bp.TotalAmt) || 0);
         const payee = bp.VendorRef?.name || "";
 
         results.push({

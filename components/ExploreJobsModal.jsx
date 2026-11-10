@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
 import JobMatchCard from "./JobMatchCard";
-import { isPlaceholderInvoice, toSheetDateFormat, getStatusPill } from "../utils/helpers";
+import { isPlaceholderInvoice, isDraftInvoice, toSheetDateFormat, getStatusPill } from "../utils/helpers";
 
 export default function ExploreJobsModal({
   isOpen,
@@ -96,7 +96,7 @@ export default function ExploreJobsModal({
       for (const jr of (j.rows || [])) {
         for (const slot of (jr.invoiceSlots || [])) {
           const ref = String(slot.ref || "").trim();
-          const isReal = ref && !isPlaceholderInvoice(ref, slot.status);
+          const isReal = ref && !isPlaceholderInvoice(ref, slot.status) && !isDraftInvoice(ref, slot.status);
           if (isReal) {
             realInvoicedTotal += parseFloat(String(slot.amount || "").replace(/[£$€,\s]/g, "")) || 0;
           } else if (slot.slotNum === 1 || (slot.amount && parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) > 0)) {

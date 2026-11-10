@@ -89,12 +89,32 @@ export async function fetchClientReconciledBankTransactions({
   reconSheetId,
   monthKey // "YYYY-MM"
 }) {
-  if (!clientName || !masterSheetId) {
+  if (!clientName && !masterSheetId) {
     throw new Error("Missing clientName or masterSheetId");
   }
 
   const sheets = await getSheetsClient();
   const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+
+  // Defensive fallback: resolve clientName from KeyInfo!B1 if missing
+  let resolvedClient = clientName ? String(clientName).trim() : "";
+  if (!resolvedClient && cleanMasterId) {
+    try {
+      const b1Resp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: cleanMasterId,
+        range: "KeyInfo!B1"
+      }));
+      const b1Val = b1Resp.data.values?.[0]?.[0];
+      if (b1Val) resolvedClient = String(b1Val).trim();
+    } catch (e) {
+      console.warn("⚠️ Could not read KeyInfo!B1 in fetchClientReconciledBankTransactions:", e.message);
+    }
+  }
+
+  if (!resolvedClient) {
+    throw new Error("Missing clientName or masterSheetId");
+  }
+
   const { startDate, endDate } = getMonthDateRange(monthKey);
 
   // 1. Read tracked bank accounts from KeyInfo!H12:H21 (Cash) and KeyInfo!H23:I28 (Non-Cash)
@@ -134,7 +154,7 @@ export async function fetchClientReconciledBankTransactions({
   let activeTokens = null;
 
   for (const candidateTool of ["xero", "quickbooks"]) {
-    const record = await getIntegrationTokens({ clientKey: clientName, masterSheetId: cleanMasterId, tool: candidateTool });
+    const record = await getIntegrationTokens({ clientKey: resolvedClient, masterSheetId: cleanMasterId, tool: candidateTool });
     if (record && record.tokens?.accessToken) {
       activeTool = candidateTool;
       activeTokens = record;
@@ -147,7 +167,7 @@ export async function fetchClientReconciledBankTransactions({
       success: true,
       hasTrackedAccounts: true,
       hasIntegration: false,
-      message: `No connected accounting tool found for ${clientName}. Please connect Xero or QuickBooks in PMA > Integrations.`,
+      message: `No connected accounting tool found for ${resolvedClient}. Please connect Xero or QuickBooks in PMA > Integrations.`,
       trackedAccountNames,
       transactions: []
     };
@@ -165,14 +185,14 @@ export async function fetchClientReconciledBankTransactions({
     const doRefreshXero = async () => {
       const refreshToken = activeTokens.tokens?.refreshToken;
       if (!refreshToken) throw new Error("No refresh token available to refresh Xero connection.");
-      console.log(`🔄 Bank Recon: Refreshing Xero access token for ${clientName}...`);
+      console.log(`🔄 Bank Recon: Refreshing Xero access token for ${resolvedClient}...`);
       const refreshed = await refreshXeroTokens(refreshToken);
       accessToken = refreshed.accessToken;
       activeTokens.tokens = refreshed;
       if (isShared) {
         await updateSharedXeroGrantTokens(refreshed);
       } else {
-        await updateRefreshedTokens({ clientKey: clientName, masterSheetId: cleanMasterId, tool: "xero", tokens: refreshed });
+        await updateRefreshedTokens({ clientKey: resolvedClient, masterSheetId: cleanMasterId, tool: "xero", tokens: refreshed });
       }
       return refreshed.accessToken;
     };
@@ -235,6 +255,7 @@ export async function fetchClientReconciledBankTransactions({
         accessToken: tok,
         tenantId,
         accountId: acc.id,
+        accountCurrency: acc.currency,
         startDate,
         endDate
       }));
@@ -257,6 +278,7 @@ export async function fetchClientReconciledBankTransactions({
         accessToken: tok,
         tenantId,
         accountId: acc.id,
+        accountCurrency: acc.currency,
         startDate,
         endDate
       }));
@@ -282,11 +304,11 @@ export async function fetchClientReconciledBankTransactions({
     const doRefreshQB = async () => {
       const refreshToken = activeTokens.tokens?.refreshToken;
       if (!refreshToken) throw new Error("No refresh token available to refresh QuickBooks connection.");
-      console.log(`🔄 Bank Recon: Refreshing QuickBooks access token for ${clientName}...`);
+      console.log(`🔄 Bank Recon: Refreshing QuickBooks access token for ${resolvedClient}...`);
       const refreshed = await refreshQBTokens(refreshToken);
       accessToken = refreshed.accessToken;
       activeTokens.tokens = refreshed;
-      await updateRefreshedTokens({ clientKey: clientName, masterSheetId: cleanMasterId, tool: "quickbooks", tokens: refreshed });
+      await updateRefreshedTokens({ clientKey: resolvedClient, masterSheetId: cleanMasterId, tool: "quickbooks", tokens: refreshed });
       return refreshed.accessToken;
     };
 
@@ -1694,10 +1716,24 @@ export async function autoReconcileClientBankTransactions({
   const sheets = await getSheetsClient();
   let cleanMasterId = masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
   let cleanReconId = reconSheetId ? (extractSheetIdFromUrl(reconSheetId) || reconSheetId) : null;
-  let resolvedClient = clientName || "";
+  let resolvedClient = clientName ? String(clientName).trim() : "";
 
-  // 1. Resolve missing clientName, masterSheetId, or reconSheetId
-  if ((!cleanMasterId || !cleanReconId) && (resolvedClient || cleanMasterId)) {
+  // 1. Resolve missing clientName from Master Sheet KeyInfo!B1
+  if (!resolvedClient && cleanMasterId) {
+    try {
+      const b1Resp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: cleanMasterId,
+        range: "KeyInfo!B1"
+      }));
+      const b1Val = b1Resp.data.values?.[0]?.[0];
+      if (b1Val) resolvedClient = String(b1Val).trim();
+    } catch (e) {
+      console.warn("⚠️ Could not read KeyInfo!B1 from master sheet:", e.message);
+    }
+  }
+
+  // 2. Resolve missing clientName, masterSheetId, or reconSheetId from AutoUpdates
+  if ((!resolvedClient || !cleanMasterId || !cleanReconId) && (resolvedClient || cleanMasterId)) {
     try {
       const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
       const resp = await withRetry(() => sheets.spreadsheets.values.get({

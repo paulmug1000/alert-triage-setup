@@ -1,4 +1,4 @@
-//Version 1.01 - Stage 4.2: Fast direct-bounds INDEX/SUMIFS/SUMIF/VLOOKUP & early iterative convergence
+//Version 1.02 - Stage 4.2: Sparse trailing blank preservation & safe lookbehind in shiftRowFormulaFromRow2_
 // Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -902,7 +902,7 @@ export function recalculateClientGrids(grids, options = {}) {
       const rowF = t.formulas[r] || [];
       for (let c = 0; c < numCols; c++) {
         if (isTabUnaffected) {
-          if (rowV[c] === "" || rowV[c] === undefined) {
+          if (c < rowV.length && rowV[c] === "") {
             rowV[c] = null;
           }
           cellState[tab][r * numCols + c] = 2;
@@ -932,7 +932,7 @@ export function recalculateClientGrids(grids, options = {}) {
           }
         }
         if (!hasFormula) {
-          if (rowV[c] === "" || rowV[c] === undefined) {
+          if (c < rowV.length && rowV[c] === "") {
             rowV[c] = null;
           }
           cellState[tab][r * numCols + c] = 2; // non-formula cell is ready unless overwritten by a spill
@@ -2996,8 +2996,8 @@ export function recalculateClientGrids(grids, options = {}) {
         tab === "PipeCalcs"
           ? grids.Pipeline?.values?.length || t.values.length
           : tab === "ConfCalcs"
-          ? grids.Confirmed?.values?.length || t.values.length
-          : t.values.length;
+            ? grids.Confirmed?.values?.length || t.values.length
+            : t.values.length;
       const sharedInactiveRow = [...templateRow];
       for (let r = maxR + 1; r < t.values.length; r++) {
         if ((tab === "ConfCalcs" || tab === "PipeCalcs") && r >= srcSpillLen) {
@@ -3028,8 +3028,8 @@ export function recalculateClientGrids(grids, options = {}) {
       const rPrev = prevSnapshot[r] || [];
       const len = Math.max(rCur.length, rPrev.length);
       for (let c = 0; c < len; c++) {
-        const a = rCur[c];
-        const b = rPrev[c];
+        const a = rCur[c] ?? null;
+        const b = rPrev[c] ?? null;
         if (a === b) continue;
         if (typeof a === "number" && typeof b === "number" && Math.abs(a - b) <= 1e-9) continue;
         return true;
@@ -3102,9 +3102,8 @@ export function recalculateClientGrids(grids, options = {}) {
   }
 
   // 6. Normalize `null` (BLANK) back to `""` across all values_grid cells for JSON storage parity
-  for (const [tab, t] of Object.entries(grids)) {
+  for (const [, t] of Object.entries(grids)) {
     if (!t || !Array.isArray(t.values)) continue;
-    if (unaffectedTabs && unaffectedTabs.has(tab)) continue;
     for (let r = 0; r < t.values.length; r++) {
       const row = t.values[r];
       if (!Array.isArray(row)) continue;
@@ -3182,7 +3181,7 @@ function shiftRowFormulaFromRow2_(formulaRow2, targetRow1) {
   const delta = targetRow1 - 2;
   if (delta === 0) return formulaRow2;
   // Replace relative row numbers (not preceded by $) in cell refs
-  return formulaRow2.replace(/(\$?[A-Za-z]{1,3})(\$?)(\d+)(?![0-9(])/g, (match, colPart, dollarRow, rowStr) => {
+  return formulaRow2.replace(/(?<![A-Za-z0-9_])(\$?[A-Za-z]{1,3})(\$?)(\d+)(?![0-9(])/g, (match, colPart, dollarRow, rowStr) => {
     if (dollarRow === "$") return match;
     // Do not shift PL1, PL2, PL3, PL4
     if (/^PL$/i.test(colPart)) return match;

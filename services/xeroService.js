@@ -314,7 +314,7 @@ export function parseXeroDate(val, dateString) {
  * @param {string} params.endDate YYYY-MM-DD
  * @returns {Promise<Array<Object>>} Normalized bank transaction objects
  */
-export async function fetchXeroAccountTransactions({ accessToken, tenantId, accountId, startDate, endDate }) {
+export async function fetchXeroAccountTransactions({ accessToken, tenantId, accountId, accountCurrency = "GBP", startDate, endDate }) {
   if (!accessToken || !tenantId || !accountId) {
     throw new Error("Missing accessToken, tenantId, or accountId for fetchXeroAccountTransactions");
   }
@@ -344,7 +344,11 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
 
         const rawDate = parseXeroDate(tx.Date, tx.DateString);
         const isSpend = String(tx.Type || "").toUpperCase().startsWith("SPEND");
-        const total = Math.abs(parseFloat(tx.Total) || 0);
+        let total = Math.abs(parseFloat(tx.Total) || 0);
+        const fxRate = parseFloat(tx.CurrencyRate);
+        if (fxRate && !isNaN(fxRate) && fxRate > 0 && fxRate !== 1) {
+          total = Math.round((total / fxRate) * 100) / 100;
+        }
         const contactName = tx.Contact?.Name || "";
         const lineDesc = (tx.LineItems || []).map(li => li.Description).filter(Boolean).join("; ") || tx.Reference || "";
         const accountCode = tx.LineItems?.[0]?.AccountCode || "";
@@ -377,11 +381,35 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
       (payData?.Payments || []).forEach(p => {
         if (p.Status === "DELETED") return;
         const rawDate = parseXeroDate(p.Date, p.DateString);
-        const total = Math.abs(parseFloat(p.Amount) || 0);
         const isReceive = p.PaymentType === "ACCRECPAYMENT"; // Customer paid invoice
         const contactName = p.Invoice?.Contact?.Name || "";
         const invoiceNum = p.Invoice?.InvoiceNumber || p.Reference || "";
         const particulars = p.Invoice ? `${p.Invoice.Type === "ACCREC" ? "Invoice" : "Bill"} ${invoiceNum} payment` : (p.Reference || "Payment");
+
+        // Convert multi-currency payments to correct equivalent GBP amount:
+        // 1. In Xero, p.BankAmount is the actual monetary impact in the bank account's currency (read-only).
+        //    p.Amount is in the currency of the invoice being paid.
+        // 2. If the bank account is GBP (base currency), p.BankAmount is the exact GBP cash received/paid.
+        // 3. If the bank account itself is foreign, convert using p.CurrencyRate (Foreign / Rate = Base).
+        const isBaseAccount = !accountCurrency || String(accountCurrency).toUpperCase() === "GBP";
+        const rawBankAmt = p.BankAmount != null && p.BankAmount !== "" ? parseFloat(p.BankAmount) : null;
+        const rawInvAmt = parseFloat(p.Amount) || 0;
+        const fxRate = parseFloat(p.CurrencyRate);
+        let total = 0;
+
+        if (rawBankAmt != null && !isNaN(rawBankAmt)) {
+          if (isBaseAccount) {
+            total = Math.abs(rawBankAmt);
+          } else if (fxRate && !isNaN(fxRate) && fxRate > 0 && fxRate !== 1) {
+            total = Math.round((Math.abs(rawBankAmt) / fxRate) * 100) / 100;
+          } else {
+            total = Math.abs(rawBankAmt);
+          }
+        } else if (fxRate && !isNaN(fxRate) && fxRate > 0 && fxRate !== 1) {
+          total = Math.round((Math.abs(rawInvAmt) / fxRate) * 100) / 100;
+        } else {
+          total = Math.abs(rawInvAmt);
+        }
 
         results.push({
           sourceId: p.PaymentID,
@@ -447,7 +475,12 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
         }
 
         const rawDate = parseXeroDate(xf.Date, xf.DateString);
-        const total = Math.abs(parseFloat(xf.Amount) || 0);
+        let total = Math.abs(parseFloat(xf.Amount) || 0);
+        const fxRate = parseFloat(xf.CurrencyRate);
+        if (isTo && fxRate && !isNaN(fxRate) && fxRate > 0 && fxRate !== 1) {
+          // In Xero BankTransfers, Amount is in FromBankAccount currency, and CurrencyRate is From -> To conversion rate
+          total = Math.round((total * fxRate) * 100) / 100;
+        }
         const otherAccountName = isFrom ? (xf.ToBankAccount?.Name || "Other Account") : (xf.FromBankAccount?.Name || "Other Account");
 
         results.push({

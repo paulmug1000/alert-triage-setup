@@ -222,6 +222,45 @@ export function matchAndRemoveFromUnreconPool(tx, unreconPool, options = {}) {
     unreconPool.splice(bestIdx, 1);
     return matched;
   }
+
+  // Pass 2: Multi-item split match: check if txTotal matches the sum of 2 items in unreconPool
+  if (unreconPool.length >= 2 && txTotal > 0) {
+    for (let a = 0; a < unreconPool.length; a++) {
+      const unA = unreconPool[a];
+      const unOA = parseAmount(unA.outAmount || unA.outAmt || unA.amount);
+      const unIA = parseAmount(unA.inAmount || unA.inAmt);
+      const totalA = unOA > 0 ? unOA : unIA;
+      const creditA = unIA > 0;
+      if (creditA !== isCredit) continue;
+
+      for (let b = a + 1; b < unreconPool.length; b++) {
+        const unB = unreconPool[b];
+        const unOB = parseAmount(unB.outAmount || unB.outAmt || unB.amount);
+        const unIB = parseAmount(unB.inAmount || unB.inAmt);
+        const totalB = unOB > 0 ? unOB : unIB;
+        const creditB = unIB > 0;
+        if (creditB !== isCredit) continue;
+
+        if (Math.abs(txTotal - (totalA + totalB)) <= 0.02) {
+          const dateA = normalizeDateStr(unA.date);
+          const dateB = normalizeDateStr(unB.date);
+          const isDateClose = (d) => {
+            if (!txDate || !d) return true;
+            const diffDays = Math.abs(new Date(txDate).getTime() - new Date(d).getTime()) / (1000 * 60 * 60 * 24);
+            return diffDays <= 7;
+          };
+          if (isDateClose(dateA) || isDateClose(dateB)) {
+            // Matched 2-to-1 split! Remove both (higher index first)
+            const matchedItems = [unreconPool[b], unreconPool[a]];
+            unreconPool.splice(b, 1);
+            unreconPool.splice(a, 1);
+            return matchedItems[0];
+          }
+        }
+      }
+    }
+  }
+
   return null;
 }
 
@@ -241,6 +280,7 @@ export function performTransactionsUpdate({
   let unreconPool = [...currentUnreconItems];
   const matchedIncomingIndices = new Set();
   const matchedExistingIndices = new Set();
+  const apiToExistingMap = new Map();
   const nextBankTxns = [];
   const fallbackAddedTxns = [];
 
@@ -259,6 +299,7 @@ export function performTransactionsUpdate({
     if (existIdx !== -1) {
       matchedIncomingIndices.add(apiIdx);
       matchedExistingIndices.add(existIdx);
+      apiToExistingMap.set(apiIdx, existIdx);
     }
   });
 
@@ -320,13 +361,87 @@ export function performTransactionsUpdate({
     if (bestIdx !== -1) {
       matchedIncomingIndices.add(apiIdx);
       matchedExistingIndices.add(bestIdx);
+      apiToExistingMap.set(apiIdx, bestIdx);
+    }
+  });
+
+  // Pass 2b: Match by reference / particulars / payee when amount has changed (e.g. multi-currency conversion update)
+  incomingApiTxns.forEach((apiTx, apiIdx) => {
+    if (matchedIncomingIndices.has(apiIdx)) return;
+    const apiA = getAmt(apiTx);
+    const apiRef = cleanStr(apiTx.reference || apiTx.invoiceNumber || "");
+    const apiParticulars = cleanStr(apiTx.particulars || "");
+    const apiPayee = cleanStr(apiTx.payee || "");
+    const apiDate = normalizeDateStr(apiTx.date);
+
+    let bestIdx = -1;
+    let bestScore = 0;
+
+    currentBankTxns.forEach((ex, exIdx) => {
+      if (matchedExistingIndices.has(exIdx)) return;
+      const exA = getAmt(ex);
+
+      // Must be same direction (both inflow or both outflow)
+      if (apiA.isCredit !== exA.isCredit) return;
+
+      const exRef = cleanStr(ex.reference || "");
+      const exParticulars = cleanStr(ex.particulars || "");
+      const exPayee = cleanStr(ex.payee || "");
+      const exDate = normalizeDateStr(ex.date);
+
+      let score = 0;
+
+      // 1. Reference match (e.g. invoice RV-1206)
+      if (apiRef && exRef && (apiRef === exRef || apiRef.includes(exRef) || exRef.includes(apiRef))) {
+        score += 40;
+      }
+
+      // 2. Particulars match (e.g. "Invoice RV-1206 payment")
+      if (apiParticulars && exParticulars && (apiParticulars === exParticulars || apiParticulars.includes(exParticulars) || exParticulars.includes(apiParticulars))) {
+        score += 35;
+      }
+
+      // 3. Payee match
+      if (apiPayee && exPayee && (apiPayee === exPayee || apiPayee.includes(exPayee) || exPayee.includes(apiPayee))) {
+        score += 25;
+      }
+
+      // 4. Date match
+      if (apiDate && exDate) {
+        if (apiDate === exDate) {
+          score += 25;
+        } else {
+          const diffMs = Math.abs(new Date(apiDate).getTime() - new Date(exDate).getTime());
+          const diffDays = diffMs / (1000 * 60 * 60 * 24);
+          if (diffDays <= 3) {
+            score += 15;
+          } else if (diffDays <= 7) {
+            score += 10;
+          }
+        }
+      }
+
+      // High confidence threshold for amount-mismatched updates (must have matching ref or particulars + close date/payee)
+      if (score > bestScore && score >= 55) {
+        bestScore = score;
+        bestIdx = exIdx;
+      }
+    });
+
+    if (bestIdx !== -1) {
+      matchedIncomingIndices.add(apiIdx);
+      matchedExistingIndices.add(bestIdx);
+      apiToExistingMap.set(apiIdx, bestIdx);
     }
   });
 
   // Step 1: Process matched pairs (Update fields, STRICTLY keep existing Column Q category)
   matchedIncomingIndices.forEach(apiIdx => {
     const apiTx = incomingApiTxns[apiIdx];
-    let matchedExIdx = currentBankTxns.findIndex((ex, idx) => matchedExistingIndices.has(idx) && ex.sourceId === apiTx.sourceId);
+    let matchedExIdx = apiToExistingMap.has(apiIdx) ? apiToExistingMap.get(apiIdx) : -1;
+    if (matchedExIdx === -1) {
+      matchedExIdx = currentBankTxns.findIndex((ex, idx) => matchedExistingIndices.has(idx) && ex.sourceId === apiTx.sourceId);
+    }
     if (matchedExIdx === -1) {
       matchedExIdx = currentBankTxns.findIndex((ex, idx) => {
         if (!matchedExistingIndices.has(idx)) return false;

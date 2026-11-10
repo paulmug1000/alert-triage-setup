@@ -128,10 +128,11 @@ let _sheetContextCache = {
   bySheetId: new Map(),
   byClientName: new Map(),
   expiresAt: 0,
+  inFlight: null,
 };
 
 const _gridMemoryCache = new Map();
-const GRID_CACHE_TTL_MS = 4000;
+const GRID_CACHE_TTL_MS = 30000;
 
 function normalizeClientKey_(name) {
   return String(name || "")
@@ -339,43 +340,51 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
   if (now >= _sheetContextCache.expiresAt || _sheetContextCache.byClientName.size === 0) {
     const supabase = getSupabaseAdmin();
     if (!supabase) return null;
-    try {
-      const { data, error } = await supabase
-        .from("clients")
-        .select("id, client_name, normalized_key, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id");
-      if (!error && Array.isArray(data)) {
-        const bySheetId = new Map();
-        const byClientName = new Map();
-        for (const row of data) {
-          const cId = extractSheetIdFromUrl(row.client_sheet_id) || String(row.client_sheet_id || "").trim();
-          const mId = extractSheetIdFromUrl(row.master_sheet_id) || String(row.master_sheet_id || "").trim();
-          const rId = extractSheetIdFromUrl(row.recon_sheet_id) || String(row.recon_sheet_id || "").trim();
-          const entry = {
-            clientId: row.id,
-            clientName: row.client_name,
-            normalizedKey: row.normalized_key,
-            masterMode: row.master_mode || "sheet",
-            clientMode: row.client_mode || "sheet",
-            clientSheetId: cId,
-            masterSheetId: mId,
-            reconSheetId: rId,
-          };
-          byClientName.set(String(row.client_name || "").trim().toLowerCase(), entry);
-          if (row.normalized_key) byClientName.set(String(row.normalized_key).trim().toLowerCase(), entry);
-          if (mId) bySheetId.set(mId, { ...entry, sheetRole: "master" });
-          if (rId) bySheetId.set(rId, { ...entry, sheetRole: "recon" });
-          if (cId) bySheetId.set(cId, { ...entry, sheetRole: "client" });
+    if (!_sheetContextCache.inFlight) {
+      _sheetContextCache.inFlight = (async () => {
+        try {
+          const { data, error } = await supabase
+            .from("clients")
+            .select("id, client_name, normalized_key, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id");
+          if (!error && Array.isArray(data)) {
+            const bySheetId = new Map();
+            const byClientName = new Map();
+            for (const row of data) {
+              const cId = extractSheetIdFromUrl(row.client_sheet_id) || String(row.client_sheet_id || "").trim();
+              const mId = extractSheetIdFromUrl(row.master_sheet_id) || String(row.master_sheet_id || "").trim();
+              const rId = extractSheetIdFromUrl(row.recon_sheet_id) || String(row.recon_sheet_id || "").trim();
+              const entry = {
+                clientId: row.id,
+                clientName: row.client_name,
+                normalizedKey: row.normalized_key,
+                masterMode: row.master_mode || "sheet",
+                clientMode: row.client_mode || "sheet",
+                clientSheetId: cId,
+                masterSheetId: mId,
+                reconSheetId: rId,
+              };
+              byClientName.set(String(row.client_name || "").trim().toLowerCase(), entry);
+              if (row.normalized_key) byClientName.set(String(row.normalized_key).trim().toLowerCase(), entry);
+              if (mId) bySheetId.set(mId, { ...entry, sheetRole: "master" });
+              if (rId) bySheetId.set(rId, { ...entry, sheetRole: "recon" });
+              if (cId) bySheetId.set(cId, { ...entry, sheetRole: "client" });
+            }
+            _sheetContextCache = {
+              bySheetId,
+              byClientName,
+              expiresAt: Date.now() + 30000,
+              inFlight: null,
+            };
+          } else {
+            _sheetContextCache.inFlight = null;
+          }
+        } catch (err) {
+          _sheetContextCache.inFlight = null;
+          console.warn("[masterEngineService] Context lookup warning:", err.message);
         }
-        _sheetContextCache = {
-          bySheetId,
-          byClientName,
-          expiresAt: now + 5000,
-        };
-      }
-    } catch (err) {
-      console.warn("[masterEngineService] Context lookup warning:", err.message);
-      return null;
+      })();
     }
+    await _sheetContextCache.inFlight;
   }
 
   if (spreadsheetId) {
@@ -412,7 +421,106 @@ function findLastActiveClientJobRow_(values, minDefault = 50) {
   return Math.max(last, minDefault);
 }
 
-function compactClientTabForStorage_(tabName, valuesGrid, formulasGrid, notesGrid) {
+function shiftFormulaRowByDelta_(formula, delta) {
+  if (!formula || typeof formula !== "string" || !formula.startsWith("=") || delta === 0) return formula;
+  return formula.replace(/(?<![A-Za-z0-9_])(\$?[A-Za-z]{1,3})(\$?)(\d+)(?![0-9(])/g, (match, colPart, dollarRow, rowStr) => {
+    if (dollarRow === "$") return match;
+    if (/^PL$/i.test(colPart)) return match;
+    const rNum = parseInt(rowStr, 10);
+    return `${colPart}${rNum + delta}`;
+  });
+}
+
+function trimTrailingEmptyCells_(row) {
+  if (!Array.isArray(row) || row.length === 0) return [];
+  let end = row.length;
+  while (end > 0) {
+    const v = row[end - 1];
+    if (v !== "" && v !== null && v !== undefined) break;
+    end--;
+  }
+  const out = new Array(end);
+  for (let i = 0; i < end; i++) {
+    const v = row[i];
+    out[i] = v === null || v === undefined ? "" : v;
+  }
+  return out;
+}
+
+function compactFormulasGrid2D_(fGrid, { hasSkippedMiddleRows = false } = {}) {
+  if (!Array.isArray(fGrid) || fGrid.length === 0) return [];
+  const fullOnlyFormulas = [];
+  const out = [];
+  for (let r = 0; r < fGrid.length; r++) {
+    const row = Array.isArray(fGrid[r]) ? fGrid[r] : [];
+    const fullRow = [];
+    const compactRow = [];
+    const isTailAfterSkip = hasSkippedMiddleRows && r === fGrid.length - 1;
+    const prevFullRow = r > 0 && !isTailAfterSkip ? fullOnlyFormulas[r - 1] : null;
+    const prevBlockRow = r >= 77 && !isTailAfterSkip ? fullOnlyFormulas[r - 77] : null;
+    for (let c = 0; c < row.length; c++) {
+      const cell = row[c];
+      if (typeof cell === "string" && cell.startsWith("=")) {
+        fullRow[c] = cell;
+        if (prevFullRow && typeof prevFullRow[c] === "string" && prevFullRow[c].startsWith("=")) {
+          if (shiftFormulaRowByDelta_(prevFullRow[c], 1) === cell) {
+            compactRow[c] = "^";
+            continue;
+          }
+        }
+        if (prevBlockRow && typeof prevBlockRow[c] === "string" && prevBlockRow[c].startsWith("=")) {
+          if (shiftFormulaRowByDelta_(prevBlockRow[c], 77) === cell) {
+            compactRow[c] = "^77";
+            continue;
+          }
+        }
+        compactRow[c] = cell;
+      } else {
+        fullRow[c] = "";
+        compactRow[c] = "";
+      }
+    }
+    fullOnlyFormulas.push(fullRow);
+    out.push(trimTrailingEmptyCells_(compactRow));
+  }
+  return out;
+}
+
+function expandFormulasGrid2D_(storedForms, storedVals, minCols = 0) {
+  const rowCount = Math.max(
+    Array.isArray(storedForms) ? storedForms.length : 0,
+    Array.isArray(storedVals) ? storedVals.length : 0
+  );
+  const fullOnlyFormulas = [];
+  const out = [];
+  for (let r = 0; r < rowCount; r++) {
+    const fRow = Array.isArray(storedForms?.[r]) ? storedForms[r] : [];
+    const vRow = Array.isArray(storedVals?.[r]) ? storedVals[r] : [];
+    const colCount = Math.max(fRow.length, vRow.length, r === 0 ? minCols : 0);
+    const fullRow = new Array(colCount);
+    const outRow = new Array(colCount);
+    const prevFullRow = r > 0 ? fullOnlyFormulas[r - 1] : null;
+    const prevBlockRow = r >= 77 ? fullOnlyFormulas[r - 77] : null;
+    for (let c = 0; c < colCount; c++) {
+      const token = fRow[c];
+      let resolvedFormula = "";
+      if (token === "^" && prevFullRow && prevFullRow[c]) {
+        resolvedFormula = shiftFormulaRowByDelta_(prevFullRow[c], 1);
+      } else if (token === "^77" && prevBlockRow && prevBlockRow[c]) {
+        resolvedFormula = shiftFormulaRowByDelta_(prevBlockRow[c], 77);
+      } else if (typeof token === "string" && token.startsWith("=")) {
+        resolvedFormula = token;
+      }
+      fullRow[c] = resolvedFormula;
+      outRow[c] = resolvedFormula || (vRow[c] ?? "");
+    }
+    fullOnlyFormulas.push(fullRow);
+    out.push(outRow);
+  }
+  return out;
+}
+
+export function compactClientTabForStorage_(tabName, valuesGrid, formulasGrid, notesGrid) {
   const cleanNotes = { ...(notesGrid || {}) };
   delete cleanNotes.__formulas_grid;
   delete cleanNotes.__compact_meta;
@@ -428,8 +536,11 @@ function compactClientTabForStorage_(tabName, valuesGrid, formulasGrid, notesGri
     const activeRow = findLastActiveClientJobRow_(vGrid, minDef);
     const templateRowIdx = Math.min(vGrid.length - 2, activeRow + 2);
     if (vGrid.length > templateRowIdx + 3) {
-      const compactVals = [...vGrid.slice(0, templateRowIdx + 1), vGrid[vGrid.length - 1] || []];
-      const compactForms = [...fGrid.slice(0, templateRowIdx + 1), fGrid[fGrid.length - 1] || []];
+      const compactVals = [...vGrid.slice(0, templateRowIdx + 1), vGrid[vGrid.length - 1] || []].map((r) =>
+        trimTrailingEmptyCells_(r)
+      );
+      const rawCompactForms = [...fGrid.slice(0, templateRowIdx + 1), fGrid[fGrid.length - 1] || []];
+      const compactForms = compactFormulasGrid2D_(rawCompactForms, { hasSkippedMiddleRows: true });
       cleanNotes.__compact_meta = {
         totalRows: vGrid.length,
         templateRowIdx,
@@ -439,14 +550,16 @@ function compactClientTabForStorage_(tabName, valuesGrid, formulasGrid, notesGri
     }
   }
 
-  cleanNotes.__formulas_grid = fGrid;
-  return { storedValues: vGrid, storedNotes: cleanNotes, totalRows: vGrid.length };
+  const compactVals = vGrid.map((r) => trimTrailingEmptyCells_(r));
+  cleanNotes.__formulas_grid = compactFormulasGrid2D_(fGrid);
+  return { storedValues: compactVals, storedNotes: cleanNotes, totalRows: vGrid.length };
 }
 
-function expandClientTabFromStorage_(data, tabName) {
+export function expandClientTabFromStorage_(data, tabName) {
   const hadNotesGridFromDb = Boolean(data.notes_grid && typeof data.notes_grid === "object");
   const rawNotes = hadNotesGridFromDb ? { ...data.notes_grid } : {};
   const storedVals = Array.isArray(data.values_grid) ? data.values_grid : [];
+  const minCols = Number(data.col_count) || 0;
   let meta = rawNotes.__compact_meta;
   if (
     !meta &&
@@ -459,24 +572,29 @@ function expandClientTabFromStorage_(data, tabName) {
   const storedForms = Array.isArray(rawNotes.__formulas_grid)
     ? rawNotes.__formulas_grid
     : Array.isArray(data.formulas_grid) && data.formulas_grid.length > 0
-    ? data.formulas_grid
-    : storedVals;
+      ? data.formulas_grid
+      : storedVals;
 
   delete rawNotes.__formulas_grid;
   delete rawNotes.__compact_meta;
 
   if (meta && meta.totalRows > storedVals.length && storedVals.length >= 2) {
     const { totalRows, templateRowIdx } = meta;
+    const uncompactedForms = expandFormulasGrid2D_(storedForms, storedVals, minCols);
     const expandedVals = [];
     const expandedForms = [];
     const tplValRow = storedVals[templateRowIdx] || [];
-    const tplFormRow = storedForms[templateRowIdx] || [];
+    const tplFormRow = uncompactedForms[templateRowIdx] || [];
     const tailValRow = storedVals[storedVals.length - 1] || [];
-    const tailFormRow = storedForms[storedForms.length - 1] || [];
+    const tailFormRow = uncompactedForms[uncompactedForms.length - 1] || [];
 
     for (let r = 0; r <= templateRowIdx; r++) {
-      expandedVals.push(Array.isArray(storedVals[r]) ? [...storedVals[r]] : []);
-      expandedForms.push(Array.isArray(storedForms[r]) ? [...storedForms[r]] : []);
+      const rowCopy = Array.isArray(storedVals[r]) ? [...storedVals[r]] : [];
+      if (r === 0 && minCols > rowCopy.length) {
+        while (rowCopy.length < minCols) rowCopy.push("");
+      }
+      expandedVals.push(rowCopy);
+      expandedForms.push(Array.isArray(uncompactedForms[r]) ? [...uncompactedForms[r]] : []);
     }
     const sharedInactiveValRow = [...tplValRow];
     for (let r = templateRowIdx + 1; r < totalRows - 1; r++) {
@@ -499,13 +617,22 @@ function expandClientTabFromStorage_(data, tabName) {
     return data;
   }
 
-  data.values_grid = storedVals;
-  data.formulas_grid = storedForms;
+  const expandedVals = storedVals.map((r, rIdx) => {
+    const copy = Array.isArray(r) ? [...r] : [];
+    if (rIdx === 0 && minCols > copy.length) {
+      while (copy.length < minCols) copy.push("");
+    }
+    return copy;
+  });
+  const expandedForms = expandFormulasGrid2D_(storedForms, expandedVals, minCols);
+
+  data.values_grid = expandedVals;
+  data.formulas_grid = expandedForms;
   data.notes_grid = rawNotes;
   data.tab_name = tabName;
   data.sheet_role = "client";
   if (hadNotesGridFromDb) {
-    const { storedNotes: initNotes } = compactClientTabForStorage_(tabName, storedVals, storedForms, rawNotes);
+    const { storedNotes: initNotes } = compactClientTabForStorage_(tabName, expandedVals, expandedForms, rawNotes);
     data._dbNotesJson = JSON.stringify(initNotes);
   }
   return data;
@@ -633,7 +760,11 @@ async function saveVirtualTabGrid_(
     const fullFormulas =
       Array.isArray(formulasGrid) && formulasGrid.length > 0 ? formulasGrid : existing.formulas_grid || fullValues;
     const baseNotes = notesGrid || existing.notes_grid || {};
-    const maxCols = fullValues.reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0);
+    const maxCols = Math.max(
+      Number(existing.col_count) || 0,
+      fullValues.reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0),
+      fullFormulas.reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0)
+    );
 
     const { storedValues, storedNotes, totalRows } = compactClientTabForStorage_(
       tabName,
@@ -1052,6 +1183,7 @@ const _pendingClientTabsByClient = new Map();
 
 function snapshotClientValuesForDiff_(tabName, vals) {
   if (!Array.isArray(vals)) return "[]";
+  let targetRows = vals;
   if (
     (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
     vals.length > 350
@@ -1059,9 +1191,9 @@ function snapshotClientValuesForDiff_(tabName, vals) {
     const minDef = tabName === "Confirmed" || tabName === "ConfCalcs" ? 295 : 105;
     const activeRow = findLastActiveClientJobRow_(vals, minDef);
     const tplIdx = Math.min(vals.length - 2, activeRow + 2);
-    return JSON.stringify([...vals.slice(0, tplIdx + 1), vals[vals.length - 1] || []]);
+    targetRows = [...vals.slice(0, tplIdx + 1), vals[vals.length - 1] || []];
   }
-  return JSON.stringify(vals);
+  return JSON.stringify(targetRows.map((r) => trimTrailingEmptyCells_(r)));
 }
 
 function queuePendingClientTabs_(clientName, tabNames) {
@@ -1252,7 +1384,7 @@ async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     // so recalculateClientGrids computes fresh values across all dependent tabs
     const maxWipeR =
       (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
-      fGrid.length > 350
+        fGrid.length > 350
         ? Math.min(fGrid.length, findLastActiveClientJobRow_(vGrid, tabName.startsWith("Conf") ? 295 : 105) + 4)
         : fGrid.length;
     for (let r = 0; r < maxWipeR; r++) {
@@ -1307,6 +1439,16 @@ async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
       )
     )
   );
+
+  // Refresh memory cache TTL for all loaded tabs of this client so consecutive operations stay warm
+  const refreshedExpiry = Date.now() + GRID_CACHE_TTL_MS;
+  for (const tabName of CORE_CLIENT_TABS) {
+    const cacheKey = `${clientKey}::client::${tabName}`;
+    const entry = _gridMemoryCache.get(cacheKey);
+    if (entry) {
+      entry.expiresAt = refreshedExpiry;
+    }
+  }
 
   // Sync Stage 4 relational tables non-blockingly in the background once master_sheet_grids is saved
   const changedTabList = [...new Set([...allUpdatedTabs, ...dirtyTabs])];

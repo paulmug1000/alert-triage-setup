@@ -640,6 +640,24 @@ export function sanitizeFormulaInput(val) {
 }
 
 /**
+ * Formats an invoice reference / code for spreadsheet entry.
+ * Prevents Google Sheets from stripping leading zeroes or parsing refs as numbers/dates
+ * when written with valueInputOption: "USER_ENTERED".
+ */
+export function formatInvoiceRefForSheet(ref) {
+  if (ref === null || ref === undefined) return "";
+  const s = String(ref).trim();
+  if (!s) return "";
+  if (s.startsWith("'")) return s;
+  const sanitized = sanitizeFormulaInput(s);
+  if (typeof sanitized === "string" && sanitized.startsWith("'")) return sanitized;
+  if (/^\d+$/.test(String(sanitized))) {
+    return `'${sanitized}`;
+  }
+  return sanitized;
+}
+
+/**
  * Return an object that can check whether a client has at least one active ClientManager assigned.
  */
 export async function getClientManagerClientMap(sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID) {

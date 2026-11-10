@@ -12,7 +12,7 @@ import { useInvoices } from "../hooks/useInvoices";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import { useAuth } from "../hooks/useAuth";
-import { isPlaceholderInvoice, groupSlotItemsForDisplay, getRetainerRowMonthLabel, getRetainerDurationMonths } from "../utils/helpers";
+import { isPlaceholderInvoice, isDraftInvoice, groupSlotItemsForDisplay, getRetainerRowMonthLabel, getRetainerDurationMonths } from "../utils/helpers";
 
 const formatCurrency = (val) => {
   const s = String(val || "").trim();
@@ -378,7 +378,7 @@ export default function InvoicesView({
 
     const currentRealInvoiced = (job.rows || []).reduce((sum, r) => {
       return sum + (r.invoiceSlots || []).reduce((sSum, sl) => {
-        if (sl.ref && !isPlaceholderInvoice(sl.ref, sl.status)) {
+        if (sl.ref && !isPlaceholderInvoice(sl.ref, sl.status) && !isDraftInvoice(sl.ref, sl.status)) {
           const val = parseFloat(String(sl.amount).replace(/[£$€,\s]/g, "")) || 0;
           return sSum + val;
         }
@@ -1099,7 +1099,7 @@ export default function InvoicesView({
                   for (const jr of nextRows) {
                     for (const slot of (jr.invoiceSlots || [])) {
                       const ref = String(slot.ref || "").trim();
-                      if (ref && !isPlaceholderInvoice(ref)) {
+                      if (ref && !isPlaceholderInvoice(ref, slot.status) && !isDraftInvoice(ref, slot.status)) {
                         realInvoicedTotal += parseFloat(String(slot.amount || "").replace(/[£$€,\s]/g, "")) || 0;
                       }
                     }
@@ -1719,7 +1719,7 @@ export default function InvoicesView({
                                   : [job.rows[0]];
 
                                 const jobTotalInvoiced = job.rows.reduce((sum, r) => sum + r.invoiceSlots.reduce((s, slot) => {
-                                  const isReal = slot.ref && !isPlaceholderInvoice(slot.ref, slot.status);
+                                  const isReal = slot.ref && !isPlaceholderInvoice(slot.ref, slot.status) && !isDraftInvoice(slot.ref, slot.status);
                                   return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
                                 }, 0), 0);
                                 const jobRevenue = parseFloat(String(job.rows[0]?.revenue || "").replace(/[£$€,\s]/g, "")) || 0;
@@ -2196,7 +2196,7 @@ export default function InvoicesView({
                             ) : (
                               filteredInvoicesJobs.flatMap((job, jobIdx) => {
                                 const jobTotalInvoiced = job.rows.reduce((sum, r) => sum + r.invoiceSlots.reduce((s, slot) => {
-                                  const isReal = slot.ref && !isPlaceholderInvoice(slot.ref);
+                                  const isReal = slot.ref && !isPlaceholderInvoice(slot.ref, slot.status) && !isDraftInvoice(slot.ref, slot.status);
                                   return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
                                 }, 0), 0);
                                 const jobRevenue = parseFloat(String(job.rows[0].revenue).replace(/[£$€,\s]/g, "")) || 0;

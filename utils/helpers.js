@@ -50,6 +50,30 @@ export function isPlaceholderExpense(appId, description, status) {
   );
 }
 
+export function isDraftInvoice(ref, status) {
+  let st = "";
+  if (typeof ref === "object" && ref !== null) {
+    st = String(ref.status || "").trim().toLowerCase();
+  } else if (status !== undefined) {
+    st = String(status || "").trim().toLowerCase();
+  } else {
+    st = String(ref || "").trim().toLowerCase();
+  }
+  return st === "draft" || st.includes("draft") || st.includes("awaiting") || st.includes("submitted");
+}
+
+export function isDraftExpense(item, status) {
+  let st = "";
+  if (typeof item === "object" && item !== null) {
+    st = String(item.status || "").trim().toLowerCase();
+  } else if (status !== undefined) {
+    st = String(status || "").trim().toLowerCase();
+  } else {
+    st = String(item || "").trim().toLowerCase();
+  }
+  return st === "draft" || st.includes("draft");
+}
+
 export const INVOICE_STATUS_OPTIONS = [
   "Draft",
   "Sent",
@@ -872,6 +896,26 @@ export function sanitizeFormulaInput(val) {
     return `'${val.replace(/^[\s'’]+/, "")}`;
   }
   return val;
+}
+
+/**
+ * Formats an invoice reference / code for spreadsheet entry.
+ * Prevents Google Sheets from stripping leading zeroes or parsing refs as numbers/dates
+ * when written with valueInputOption: "USER_ENTERED".
+ */
+export function formatInvoiceRefForSheet(ref) {
+  if (ref === null || ref === undefined) return "";
+  const s = String(ref).trim();
+  if (!s) return "";
+  if (s.startsWith("'")) return s;
+  const sanitized = sanitizeFormulaInput(s);
+  if (typeof sanitized === "string" && sanitized.startsWith("'")) return sanitized;
+  // If reference consists purely of digits (e.g. "0008", "8", "0123"), force Google Sheets
+  // to treat it as a text string literal by prefixing with a single quote.
+  if (/^\d+$/.test(String(sanitized))) {
+    return `'${sanitized}`;
+  }
+  return sanitized;
 }
 
 /**

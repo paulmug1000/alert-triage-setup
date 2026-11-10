@@ -15,7 +15,9 @@ import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import {
   isPlaceholderInvoice,
+  isDraftInvoice,
   isPlaceholderExpense,
+  isDraftExpense,
   getRetainerRowMonthLabel,
   hasActiveCrmIntegration,
   isCrmDrivenTab,
@@ -627,11 +629,13 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
       revenue: 0,
       realInvoiced: 0,
       placeholderInvoiced: 0,
+      draftInvoiced: 0,
       leftToInvoice: 0,
       priorMonthsUninvoicedCount: 0,
       directCosts: 0,
       realCostsReceived: 0,
       placeholderCosts: 0,
+      draftCosts: 0,
       costsLeftToReceive: 0,
       priorMonthsUnreceivedCount: 0,
       isRetainer: false,
@@ -648,6 +652,7 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
 
   let realInvoiced = 0;
   let placeholderInvoiced = 0;
+  let draftInvoiced = 0;
   job.rows.forEach((r) => {
     (r.invoiceSlots || []).forEach((slot) => {
       const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
@@ -655,6 +660,8 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
         const ref = String(slot.ref || "").trim();
         if (isPlaceholderInvoice(ref, slot.status) || !ref) {
           placeholderInvoiced += amt;
+        } else if (isDraftInvoice(ref, slot.status)) {
+          draftInvoiced += amt;
         } else {
           realInvoiced += amt;
         }
@@ -664,12 +671,15 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
 
   let realCostsReceived = 0;
   let placeholderCosts = 0;
+  let draftCosts = 0;
   job.rows.forEach((r) => {
     (r.expenseSlots || []).forEach((slot) => {
       const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
       if (amt > 0) {
         if (isPlaceholderExpense(slot)) {
           placeholderCosts += amt;
+        } else if (isDraftExpense(slot)) {
+          draftCosts += amt;
         } else {
           realCostsReceived += amt;
         }
@@ -801,11 +811,13 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
     revenue: totalRevenue,
     realInvoiced,
     placeholderInvoiced,
+    draftInvoiced,
     leftToInvoice,
     priorMonthsUninvoicedCount,
     directCosts: totalDirectCosts,
     realCostsReceived,
     placeholderCosts,
+    draftCosts,
     costsLeftToReceive,
     priorMonthsUnreceivedCount,
     isRetainer,
@@ -2054,9 +2066,11 @@ export default function JobsView({
         body: JSON.stringify({
           action: "update_job_fields",
           clientSheetId: jobsClient.clientSheetId,
+          masterSheetId: jobsClient.masterSheetId || "",
           clientName: jobsClient.clientName || jobsClient.name || "",
           tabName,
           rowNum: parentRowNum,
+          isRetainer: String(parentRow.type || job.type || "").trim().toLowerCase() === "retainer",
           endClientName: currentDraft.client || parentRow.client || job.client,
           jobName: currentDraft.jobName || parentRow.jobName || job.jobName,
           updates
@@ -3892,8 +3906,8 @@ export default function JobsView({
                                           }}
                                           title={
                                             isRetainer
-                                              ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real Invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
-                                              : `Total Revenue: ${formatCurrency(metrics.revenue)} · Real Invoiced: ${formatCurrency(metrics.realInvoiced)} · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders`
+                                              ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
+                                              : `Total revenue: ${formatCurrency(metrics.revenue)} · Real invoiced: ${formatCurrency(metrics.realInvoiced)} · Left to invoice: ${formatCurrency(metrics.leftToInvoice)}${metrics.draftInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.draftInvoiced)} in draft invoices` : ""}${metrics.placeholderInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders` : ""}`
                                           }
                                         >
                                           Left to inv: {formatCurrency(metrics.leftToInvoice)}
@@ -3914,7 +3928,7 @@ export default function JobsView({
                                               display: "inline-block",
                                               whiteSpace: "nowrap"
                                             }}
-                                            title={`Total Revenue: ${formatCurrency(metrics.revenue)} · Real Invoiced: ${formatCurrency(metrics.realInvoiced)}`}
+                                            title={`Total revenue: ${formatCurrency(metrics.revenue)} · Real invoiced: ${formatCurrency(metrics.realInvoiced)}`}
                                           >
                                             ✓ Invoiced
                                           </span>
@@ -3970,8 +3984,8 @@ export default function JobsView({
                                           }}
                                           title={
                                             isRetainer
-                                              ? `Prior month unreceived costs: ${formatCurrency(metrics.costsLeftToReceive)} (${metrics.priorMonthsUnreceivedCount} prior month${metrics.priorMonthsUnreceivedCount === 1 ? "" : "s"} unreceived) · Real Costs to date: ${formatCurrency(metrics.realCostsReceived)}`
-                                              : `Budget: ${formatCurrency(metrics.directCosts)} · Real Received: ${formatCurrency(metrics.realCostsReceived)} · Excludes ${formatCurrency(metrics.placeholderCosts)} in gap placeholders`
+                                              ? `Prior month unreceived costs: ${formatCurrency(metrics.costsLeftToReceive)} (${metrics.priorMonthsUnreceivedCount} prior month${metrics.priorMonthsUnreceivedCount === 1 ? "" : "s"} unreceived) · Real costs to date: ${formatCurrency(metrics.realCostsReceived)}`
+                                              : `Costs budget: ${formatCurrency(metrics.directCosts)} · Real received: ${formatCurrency(metrics.realCostsReceived)} · Left to receive: ${formatCurrency(metrics.costsLeftToReceive)}${metrics.draftCosts > 0 ? ` · Excludes ${formatCurrency(metrics.draftCosts)} in draft costs` : ""}${metrics.placeholderCosts > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderCosts)} in gap placeholders` : ""}`
                                           }
                                         >
                                           Left to rec: {formatCurrency(metrics.costsLeftToReceive)}
@@ -3992,7 +4006,7 @@ export default function JobsView({
                                               display: "inline-block",
                                               whiteSpace: "nowrap"
                                             }}
-                                            title={`Budget: ${formatCurrency(metrics.directCosts)} · 100% Received`}
+                                            title={`Costs budget: ${formatCurrency(metrics.directCosts)} · 100% received (${formatCurrency(metrics.realCostsReceived)})`}
                                           >
                                             ✓ Received
                                           </span>
@@ -4503,8 +4517,8 @@ export default function JobsView({
                                                       }}
                                                       title={
                                                         isRetainer
-                                                          ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real Invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
-                                                          : `Total Revenue: ${formatCurrency(metrics.revenue)} · Real Invoiced: ${formatCurrency(metrics.realInvoiced)} · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders`
+                                                          ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
+                                                          : `Total revenue: ${formatCurrency(metrics.revenue)} · Real invoiced: ${formatCurrency(metrics.realInvoiced)} · Left to invoice: ${formatCurrency(metrics.leftToInvoice)}${metrics.draftInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.draftInvoiced)} in draft invoices` : ""}${metrics.placeholderInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders` : ""}`
                                                       }
                                                     >
                                                       <span>⚠️</span> Left to invoice: {formatCurrency(metrics.leftToInvoice)}
@@ -4524,7 +4538,7 @@ export default function JobsView({
                                                           alignItems: "center",
                                                           gap: "4px"
                                                         }}
-                                                        title={`Total Revenue: ${formatCurrency(metrics.revenue)} · 100% Invoiced (${formatCurrency(metrics.realInvoiced)})`}
+                                                        title={`Total revenue: ${formatCurrency(metrics.revenue)} · 100% invoiced (${formatCurrency(metrics.realInvoiced)})`}
                                                       >
                                                         <span>✓</span> Fully invoiced
                                                       </span>
@@ -4858,8 +4872,8 @@ export default function JobsView({
                                                       }}
                                                       title={
                                                         isRetainer
-                                                          ? `Prior month unreceived costs: ${formatCurrency(metrics.costsLeftToReceive)} (${metrics.priorMonthsUnreceivedCount} prior month${metrics.priorMonthsUnreceivedCount === 1 ? "" : "s"} unreceived) · Real Costs to date: ${formatCurrency(metrics.realCostsReceived)}`
-                                                          : `Costs Budget: ${formatCurrency(metrics.directCosts)} · Real Received: ${formatCurrency(metrics.realCostsReceived)} · Excludes ${formatCurrency(metrics.placeholderCosts)} in gap placeholders`
+                                                          ? `Prior month unreceived costs: ${formatCurrency(metrics.costsLeftToReceive)} (${metrics.priorMonthsUnreceivedCount} prior month${metrics.priorMonthsUnreceivedCount === 1 ? "" : "s"} unreceived) · Real costs to date: ${formatCurrency(metrics.realCostsReceived)}`
+                                                          : `Costs budget: ${formatCurrency(metrics.directCosts)} · Real received: ${formatCurrency(metrics.realCostsReceived)} · Left to receive: ${formatCurrency(metrics.costsLeftToReceive)}${metrics.draftCosts > 0 ? ` · Excludes ${formatCurrency(metrics.draftCosts)} in draft costs` : ""}${metrics.placeholderCosts > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderCosts)} in gap placeholders` : ""}`
                                                       }
                                                     >
                                                       <span>⚠️</span> Left to receive: {formatCurrency(metrics.costsLeftToReceive)}
@@ -4879,7 +4893,7 @@ export default function JobsView({
                                                           alignItems: "center",
                                                           gap: "4px"
                                                         }}
-                                                        title={`Costs Budget: ${formatCurrency(metrics.directCosts)} · 100% Received (${formatCurrency(metrics.realCostsReceived)})`}
+                                                        title={`Costs budget: ${formatCurrency(metrics.directCosts)} · 100% received (${formatCurrency(metrics.realCostsReceived)})`}
                                                       >
                                                         <span>✓</span> Fully received
                                                       </span>

@@ -3,7 +3,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter, sa
 import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { resolveClientNameBySheetId, getAllClients, resolveMasterSheetIdForClient_ } from "./workspaces.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, formatInvoiceRefForSheet, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { get2TierCache, set2TierCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
@@ -1866,7 +1866,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
     }
 
     if (sourceInvoiceRef || sourceInvoiceSentDate) {
-      allWriteData.push({ range: `Confirmed!AQ${relabelStartRow}`, values: [[sanitizeFormulaInput(String(sourceInvoiceRef || ""))]] });
+      allWriteData.push({ range: `Confirmed!AQ${relabelStartRow}`, values: [[formatInvoiceRefForSheet(String(sourceInvoiceRef || ""))]] });
       const parsedDaysToPay = parseInt(String(sourceInvoiceDaysToPay || "").replace(/[^\d.-]/g, ""), 10);
       allWriteData.push({ range: `Confirmed!AS${relabelStartRow}`, values: [[!isNaN(parsedDaysToPay) && parsedDaysToPay > 0 ? parsedDaysToPay : 30]] });
       allWriteData.push({ range: `Confirmed!AT${relabelStartRow}`, values: [[sanitizeFormulaInput(String(sourceInvoiceStatus || ""))]] });
@@ -2376,7 +2376,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
         if (matchedReal) {
           invBlock.push([
             matchedReal.amount || perInvoiceAmount,
-            sanitizeFormulaInput(matchedReal.ref),
+            formatInvoiceRefForSheet(matchedReal.ref),
             matchedReal.sentDateFormatted || retFmtDate(newRowDates[m]),
             matchedReal.daysToPay,
             sanitizeFormulaInput(matchedReal.status),
@@ -2665,7 +2665,7 @@ export function buildRetainerChildRowsWritePlan({
 
     const matchedReal = matchedRealInvoicesByChildIdx.get(m);
     const rowAmt = matchedReal ? (matchedReal.amount || perInvoiceAmount) : perInvoiceAmount;
-    const rowRef = matchedReal ? sanitizeFormulaInput(matchedReal.ref) : "";
+    const rowRef = matchedReal ? formatInvoiceRefForSheet(matchedReal.ref) : "";
     const rowSent = matchedReal
       ? (matchedReal.sentDateFormatted || retFmtDate(newRowDates[m]))
       : retFmtDate(newRowDates[m]);
@@ -3801,7 +3801,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
 
     const writeData = [
       { range: `Confirmed!AP${missingRowNum}`, values: [[standardMonthlyAmount]] },
-      { range: `Confirmed!AQ${missingRowNum}`, values: [[sanitizeFormulaInput(altInvoiceNo || "")]] },
+      { range: `Confirmed!AQ${missingRowNum}`, values: [[formatInvoiceRefForSheet(altInvoiceNo || "")]] },
       { range: `Confirmed!AS${missingRowNum}`, values: [[defaultDaysToPay]] },
       { range: `Confirmed!AT${missingRowNum}`, values: [[sanitizeFormulaInput(altStatus || "")]] },
     ];
@@ -3864,7 +3864,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
         { range: `Confirmed!AL${newRowNum}`, values: [[retFmtDate(monthStart)]] },
         { range: `Confirmed!AM${newRowNum}`, values: [[retFmtDate(monthEnd)]] },
         { range: `Confirmed!AP${newRowNum}`, values: [[difference]] },
-        { range: `Confirmed!AQ${newRowNum}`, values: [[sanitizeFormulaInput(altInvoiceNo || "")]] },
+        { range: `Confirmed!AQ${newRowNum}`, values: [[formatInvoiceRefForSheet(altInvoiceNo || "")]] },
         { range: `Confirmed!AS${newRowNum}`, values: [[defaultDaysToPay]] },
         { range: `Confirmed!AT${newRowNum}`, values: [[sanitizeFormulaInput(altStatus || "")]] },
       );

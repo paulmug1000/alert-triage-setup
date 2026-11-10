@@ -31,7 +31,7 @@ import { redisClient } from "./redisClient.js";
 import { anthropic } from "./claudeClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId } from "./userPermissions.js";
 import { getSupabaseAdmin } from "./supabaseClient.js";
@@ -6723,7 +6723,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const isAuto = isAutoInvoicePlaceholderRef_(ref);
             const isManualPlaceholder = !ref && amt > 0;
             const isManual = isPlaceholderInvoice(ref);
-            const isReal = !!(ref && !isManual && !isAuto);
+            const isDraft = isDraftInvoice(ref, jr[sd.amtIdx + 4]);
+            const isReal = !!(ref && !isManual && !isAuto && !isDraft);
             const isEmpty = !ref && amt === 0;
 
             if (isReal) {

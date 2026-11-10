@@ -9096,6 +9096,7 @@ async function processInstantConfirmedJobs_(ss) {
  * ----------------------------------------------------------------
  * 5_AGENT_RECEIVER
  * 
+ * v3.28 (Enforce d-mmm-yy number format on date placeholder cells in writeInvoiceManualEntry_)
  * v3.27 (Add run_revenue_comparison action dispatcher in doPost for on-demand Revenue Check runs)
  * v3.26 (Add healStaleAutomatorLocks_ to detect hard GAS execution timeouts, log timeout errors to AutoLog and rolling history, reset stuck DataChgAlert lock flags, and prevent checkForAgentSignal from consuming pending signals while another sequence is active)
  * v3.25 (Enforce KeyInfo!Q9 CRM stage scope in processCRMWorkflow, re-verify CRMComp!B2 before checkbox evaluation and writes, and pass stageName explicitly to updateCheckedRows/updateCheckedRowsRight)
@@ -12045,7 +12046,11 @@ function writeInvoiceManualEntry_(sheet, row, slot, amount, dateObj, descType, d
                 }
             }
             const cell = sheet.getRange(row, colIdx + 1);
-            if (isText) cell.setNumberFormat("@");
+            if (isText) {
+                cell.setNumberFormat("@");
+            } else if (value instanceof Date) {
+                cell.setNumberFormat("d-mmm-yy");
+            }
             cell.setValue(sanitizeSheetCell_(value));
             // Push A1 Notation cleanly to the array for the batched formatting sweep
             if (rangesToFormatArray) rangesToFormatArray.push(`${getColLetter(colIdx)}${row}`);
@@ -13724,6 +13729,7 @@ async function getBrokerExcelAccessToken_() {
 /**
  * ----------------------------------------------------------------
  * 7_COST_SYNC
+ * v3.47 (Read client name from KeyInfo!B1 in autoReconcileBankFeedsBeforeBreakdown_ with B3 fallback, and add defense-in-depth deduplication matching unreconciled items against actual expenseRows to prevent double-counting)
  * v3.46 (Protect paid/settled expense slots and blank-ID locked historical entries in runSheetAudit from being treated as automatic PLACE-EXP placeholders)
  * v3.45 (In analyseExpenseSlots_, recognize placeholder expenses by description as well as App ID so missing or blank App IDs do not prevent automated gap rebalancing)
  * v3.44 (Mirror Outgoings cell notes A1:AV111 to Client Sheet OutgNotes tab in pullOutgoingsNotes without clearing parser columns CH:HG)
@@ -18294,10 +18300,95 @@ async function syncExpenseTransactionBreakdownToClientSheet_(isHeadless = false,
         }
       });
 
-      // 2. Append unreconciled items for this month
+      // 2. Append unreconciled items for this month (with intelligent actuals deduplication guard)
       const unrecForMonth = unreconciledMap.get(monthKey) || [];
       const unrecSumByCatNorm = new Map();
+      const matchedBillIndices = new Set();
+
       unrecForMonth.forEach(u => {
+        // Defense-in-depth: check if this unreconciled item is ALREADY represented in reconciled monthTxns
+        const uGross = Math.round((u.g || 0) * 100) / 100;
+        const uNet = Math.round((u.n || 0) * 100) / 100;
+        const uDate = parseDateSafe_(u.d);
+        const uDescClean = String(u.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const isProcessor = (uDescClean.includes("gocardless") || uDescClean.includes("stripe") || uDescClean.includes("paypal") || uDescClean.includes("worldpay"));
+
+        let isAlreadyReconciledInActuals = false;
+
+        // 1-to-1 check against reconciled bill items in monthTxns
+        for (let bIdx = 0; bIdx < monthTxns.length; bIdx++) {
+          if (matchedBillIndices.has(bIdx)) continue;
+          const bill = monthTxns[bIdx];
+          const bGross = Math.round((bill.g || 0) * 100) / 100;
+          const bNet = Math.round((bill.n || 0) * 100) / 100;
+          const bDescClean = String(bill.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+          // Match on gross amount or net amount (within 2p tolerance)
+          const amountMatches = Math.abs(uGross - bGross) <= 0.02 ||
+                                Math.abs(uNet - bNet) <= 0.02 ||
+                                Math.abs(uGross - bNet) <= 0.02 ||
+                                Math.abs(uNet - bGross) <= 0.02;
+
+          if (!amountMatches) continue;
+
+          // Date proximity check (within 5 days or same month)
+          const bDate = parseDateSafe_(bill.d);
+          let dateMatches = false;
+          if (uDate && bDate) {
+            const diffDays = Math.abs(uDate.getTime() - bDate.getTime()) / (1000 * 60 * 60 * 24);
+            dateMatches = (diffDays <= 5);
+          } else {
+            dateMatches = true;
+          }
+
+          if (!dateMatches) continue;
+
+          // Text / payee check
+          const textMatches = (uDescClean && bDescClean && (uDescClean.includes(bDescClean) || bDescClean.includes(uDescClean))) ||
+                              isProcessor ||
+                              (Math.abs(uGross - bGross) <= 0.01 && dateMatches);
+
+          if (textMatches) {
+            isAlreadyReconciledInActuals = true;
+            matchedBillIndices.add(bIdx);
+            console.log(`[Expense Breakdown] Deduplicated unreconciled item "${u.s}" (£${uGross}) for ${monthKey}: matched reconciled actual "${bill.s}" in category "${bill.c}".`);
+            break;
+          }
+        }
+
+        // Multi-line split check: check if uGross matches the sum of 2 or more reconciled bill items from same date/vendor
+        if (!isAlreadyReconciledInActuals && uGross > 0) {
+          const candidateBills = [];
+          for (let bIdx = 0; bIdx < monthTxns.length; bIdx++) {
+            if (matchedBillIndices.has(bIdx)) continue;
+            const b = monthTxns[bIdx];
+            const bDate = parseDateSafe_(b.d);
+            const diffDays = (uDate && bDate) ? Math.abs(uDate.getTime() - bDate.getTime()) / (1000 * 60 * 60 * 24) : 0;
+            if (diffDays <= 5) {
+              candidateBills.push({ bIdx, gross: Math.round((b.g || 0) * 100) / 100, net: Math.round((b.n || 0) * 100) / 100 });
+            }
+          }
+          for (let i = 0; i < candidateBills.length; i++) {
+            for (let j = i + 1; j < candidateBills.length; j++) {
+              const sumGross = Math.round((candidateBills[i].gross + candidateBills[j].gross) * 100) / 100;
+              const sumNet = Math.round((candidateBills[i].net + candidateBills[j].net) * 100) / 100;
+              if (Math.abs(uGross - sumGross) <= 0.02 || Math.abs(uNet - sumNet) <= 0.02) {
+                isAlreadyReconciledInActuals = true;
+                matchedBillIndices.add(candidateBills[i].bIdx);
+                matchedBillIndices.add(candidateBills[j].bIdx);
+                console.log(`[Expense Breakdown] Deduplicated split unreconciled item "${u.s}" (£${uGross}) for ${monthKey}: matched split reconciled actuals sum £${sumGross}.`);
+                break;
+              }
+            }
+            if (isAlreadyReconciledInActuals) break;
+          }
+        }
+
+        if (isAlreadyReconciledInActuals) {
+          // Skip adding this item as unreconciled - it is already accounted for in reconciled actuals / P&L!
+          return;
+        }
+
         monthTxns.push(u);
         accrualVat += (u.v || 0);
         cashVat += (u.v || 0);
@@ -19502,7 +19593,13 @@ async function autoReconcileBankFeedsBeforeBreakdown_(rawReconUrl) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const spreadsheetId = ss.getId();
     const keyInfoSheet = ss.getSheetByName('KeyInfo');
-    const clientName = keyInfoSheet ? String(keyInfoSheet.getRange('B3').getValue() || '').trim() : '';
+    let clientName = '';
+    if (keyInfoSheet) {
+      clientName = String(keyInfoSheet.getRange('B1').getValue() || '').trim();
+      if (!clientName) {
+        clientName = String(keyInfoSheet.getRange('B3').getValue() || '').trim();
+      }
+    }
 
     const baseUrl = (typeof getPulseBrokerBaseUrl_ === 'function')
       ? getPulseBrokerBaseUrl_()

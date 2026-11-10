@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
-import { stripCurrency, isPlaceholderInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus, calculatePaymentDate } from "../utils/helpers";
+import { stripCurrency, isPlaceholderInvoice, isDraftInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus, calculatePaymentDate } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import DateInput from "./DateInput";
@@ -196,7 +196,7 @@ export default function InvoicesEditModal({
     let sum = 0;
     job.rows.forEach(r => {
       (r.invoiceSlots || []).forEach(sl => {
-        if (sl.ref && !isPlaceholderInvoice(sl.ref, sl.status)) {
+        if (sl.ref && !isPlaceholderInvoice(sl.ref, sl.status) && !isDraftInvoice(sl.ref, sl.status)) {
           sum += parseFloat(String(sl.amount).replace(/[£$€,\s]/g, "")) || 0;
         }
       });
@@ -367,7 +367,7 @@ export default function InvoicesEditModal({
     let targetInvoicedTotal = 0;
     (targetJob.rows || []).forEach(r => {
       (r.invoiceSlots || []).forEach(sl => {
-        if (sl.ref && !isPlaceholderInvoice(sl.ref, sl.status)) {
+        if (sl.ref && !isPlaceholderInvoice(sl.ref, sl.status) && !isDraftInvoice(sl.ref, sl.status)) {
           targetInvoicedTotal += parseFloat(String(sl.amount).replace(/[£$€,\s]/g, "")) || 0;
         }
       });

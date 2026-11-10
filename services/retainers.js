@@ -634,10 +634,14 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         });
       }
       if (requests.length > 0) {
-        await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests } });
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests },
+          _skipFormulaRecompute: true,
+        });
       }
 
-      // 2. Clear the trimmed rows (at their post-move positions) and update parent end date in parallel
+      // 2. Clear the trimmed rows (at their post-move positions) and update parent end date
       const clearRowNums = movedToEnd
         ? Array.from({ length: trimLen }, (_, i) => trueLastRow + 1 + i)
         : trimRowNums;
@@ -645,15 +649,17 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       for (const rn of clearRowNums) {
         clearRanges.push(`Confirmed!A${rn}:AM${rn}`, `Confirmed!AP${rn}:BH${rn}`, `Confirmed!BX${rn}:CR${rn}`);
       }
-      await Promise.all([
-        sheets.spreadsheets.values.batchClear({
-          spreadsheetId: sheetIdClean, requestBody: { ranges: clearRanges },
-        }),
-        sheets.spreadsheets.values.update({
-          spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
-          valueInputOption: "USER_ENTERED", requestBody: { values: [[sanitizeFormulaInput(formattedNewEndDate)]] },
-        }),
-      ]);
+      await sheets.spreadsheets.values.batchClear({
+        spreadsheetId: sheetIdClean,
+        requestBody: { ranges: clearRanges },
+        _skipFormulaRecompute: true,
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetIdClean,
+        range: `Confirmed!AM${parentRowNum}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[sanitizeFormulaInput(formattedNewEndDate)]] },
+      });
 
       let tenantClient = clientName || "";
       if (!tenantClient) {
@@ -763,6 +769,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId: sheetIdClean,
           requestBody: { requests: structuralRequests },
+          _skipFormulaRecompute: true,
         });
       }
 
@@ -1123,7 +1130,9 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
         clearRanges.push(`Confirmed!A${rn}:AM${rn}`, `Confirmed!AP${rn}:BH${rn}`, `Confirmed!BX${rn}:CR${rn}`);
       }
       await sheets.spreadsheets.values.batchClear({
-        spreadsheetId: sheetIdClean, requestBody: { ranges: clearRanges },
+        spreadsheetId: sheetIdClean,
+        requestBody: { ranges: clearRanges },
+        _skipFormulaRecompute: true,
       });
 
       // Compute trueLastRow in memory skipping trimmed rows
@@ -1150,6 +1159,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
               },
             }]
           },
+          _skipFormulaRecompute: true,
         });
       }
 
@@ -1200,6 +1210,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId: sheetIdClean,
         requestBody: { requests: structuralRequests },
+        _skipFormulaRecompute: true,
       });
 
       // Update row grouping using rowGroups from the initial parallel fetch BEFORE writing cell data
@@ -1811,6 +1822,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: sheetIdClean,
       requestBody: { requests: structuralRequests },
+      _skipFormulaRecompute: true,
     });
 
     // 2. Consolidate ALL cell value updates into a SINGLE batchUpdate call
@@ -1895,18 +1907,17 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       }
     }
 
-    await Promise.all([
-      sheets.spreadsheets.values.batchUpdate({
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetIdClean,
+      requestBody: { valueInputOption: "USER_ENTERED", data: allWriteData },
+      _skipFormulaRecompute: clearRanges.length > 0,
+    });
+    if (clearRanges.length > 0) {
+      await sheets.spreadsheets.values.batchClear({
         spreadsheetId: sheetIdClean,
-        requestBody: { valueInputOption: "USER_ENTERED", data: allWriteData },
-      }),
-      clearRanges.length > 0
-        ? sheets.spreadsheets.values.batchClear({
-          spreadsheetId: sheetIdClean,
-          requestBody: { ranges: clearRanges },
-        })
-        : Promise.resolve(),
-    ]);
+        requestBody: { ranges: clearRanges },
+      });
+    }
 
     await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
@@ -2299,6 +2310,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
           sheets.spreadsheets.batchUpdate({
             spreadsheetId: sheetIdClean,
             requestBody: { requests: structuralRequests },
+            _skipFormulaRecompute: true,
           })
         );
       }
@@ -3402,7 +3414,8 @@ export async function handleTidyUpRetainers(req, res, sheets) {
         console.log(`    📦 batchUpdate chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(moveRequests.length / CHUNK_SIZE)} (${chunk.length} moves)...`);
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId: sheetIdClean,
-          requestBody: { requests: chunk }
+          requestBody: { requests: chunk },
+          _skipFormulaRecompute: i + CHUNK_SIZE < moveRequests.length,
         });
       }
     }
@@ -3834,6 +3847,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
               insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + 5 }, inheritFromBefore: true },
             }]
           },
+          _skipFormulaRecompute: true,
         });
       }
 

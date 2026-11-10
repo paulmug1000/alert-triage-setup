@@ -347,6 +347,7 @@ export async function saveExpenseMetadata({
   vat,
   deliveryPct,
   userEmail,
+  _skipFormulaRecompute = false,
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
   const rowNum = parseInt(sheetRow, 10);
@@ -378,6 +379,7 @@ export async function saveExpenseMetadata({
           },
         ],
       },
+      _skipFormulaRecompute,
     });
   });
 
@@ -601,6 +603,8 @@ export async function addExpenseCategory({
     throw new Error("No available empty rows in Outgoings expense range (rows 126-225).");
   }
 
+  const hasMonthlyAmounts = Boolean(monthlyAmounts && Object.keys(monthlyAmounts).length > 0);
+
   // Save metadata
   await saveExpenseMetadata({
     clientName,
@@ -610,10 +614,11 @@ export async function addExpenseCategory({
     vat,
     deliveryPct,
     userEmail,
+    _skipFormulaRecompute: hasMonthlyAmounts,
   });
 
   // If monthly amounts provided, save them too
-  if (Object.keys(monthlyAmounts).length > 0) {
+  if (hasMonthlyAmounts) {
     await saveExpenseAmount({
       clientName,
       clientSheetId,

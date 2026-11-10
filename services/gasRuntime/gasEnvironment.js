@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * PULSE GAS RUNTIME ENVIRONMENT (services/gasRuntime/gasEnvironment.js)
- * Version: 1.01 — Sync Client Sheet OutgNotes into Master runtime when present
+ * Version: 1.02 — Coalesce multi-phase Client Sheet flushes & preserve note row indices on row insert/delete/move
  * ============================================================================
  * Provides a 100% faithful Google Apps Script execution environment for the
  * verbatim compiled Master GAS scripts (`compiledMasterGas.js`), backed by:
@@ -1028,6 +1028,27 @@ class VirtualSheet {
     return this.clear();
   }
 
+  _remapNotesRows(mapRowFn) {
+    if (!this.notesGrid || typeof this.notesGrid !== "object") return;
+    const next = {};
+    for (const [k, v] of Object.entries(this.notesGrid)) {
+      if (k.startsWith("__")) {
+        next[k] = v;
+        continue;
+      }
+      const colonIdx = k.indexOf(":");
+      if (colonIdx < 0) continue;
+      const oldR0 = Number(k.slice(0, colonIdx));
+      const cPart = k.slice(colonIdx + 1);
+      if (!Number.isInteger(oldR0)) continue;
+      const newR0 = mapRowFn(oldR0);
+      if (newR0 >= 0) {
+        next[`${newR0}:${cPart}`] = v;
+      }
+    }
+    this.notesGrid = next;
+  }
+
   insertRowAfter(afterPosition) {
     return this.insertRowsAfter(afterPosition, 1);
   }
@@ -1040,6 +1061,7 @@ class VirtualSheet {
     const blankRows = Array.from({ length: count }, () => []);
     this.valuesGrid.splice(idx0, 0, ...blankRows.map((r) => [...r]));
     this.formulasGrid.splice(idx0, 0, ...blankRows.map((r) => [...r]));
+    this._remapNotesRows((oldR0) => (oldR0 >= idx0 ? oldR0 + count : oldR0));
     this.maxRows += count;
     this.dirty = true;
 
@@ -1096,6 +1118,11 @@ class VirtualSheet {
     const count = Math.max(1, Number(howMany) || 1);
     this.valuesGrid.splice(start0, count);
     this.formulasGrid.splice(start0, count);
+    this._remapNotesRows((oldR0) => {
+      if (oldR0 >= start0 && oldR0 < start0 + count) return -1;
+      if (oldR0 >= start0 + count) return oldR0 - count;
+      return oldR0;
+    });
     this.dirty = true;
 
     if (this.spreadsheet.isRemoteGoogleSheet) {
@@ -1127,11 +1154,29 @@ class VirtualSheet {
     while (this.valuesGrid.length < srcStart0 + numRows) this.valuesGrid.push([]);
     while (this.formulasGrid.length < srcStart0 + numRows) this.formulasGrid.push([]);
 
+    const wrappedForms = this.formulasGrid.map((r, r0) => ({
+      oldR1: r0 + 1,
+      cells: Array.isArray(r) ? [...r] : [],
+    }));
     const movedVals = this.valuesGrid.splice(srcStart0, numRows);
-    const movedForms = this.formulasGrid.splice(srcStart0, numRows);
+    const movedForms = wrappedForms.splice(srcStart0, numRows);
     const insertAt0 = srcStart0 < dest0 ? Math.max(0, dest0 - numRows) : dest0;
     this.valuesGrid.splice(insertAt0, 0, ...movedVals);
-    this.formulasGrid.splice(insertAt0, 0, ...movedForms);
+    wrappedForms.splice(insertAt0, 0, ...movedForms);
+    this.formulasGrid = wrappedForms.map((fObj, newR0) => {
+      const newR1 = newR0 + 1;
+      if (fObj.oldR1 === newR1) return fObj.cells;
+      const re = new RegExp(`(?<![A-Z0-9_$])(\\$?[A-Z]{1,3})${fObj.oldR1}(?!\\d)`, "g");
+      return fObj.cells.map((cell) =>
+        typeof cell === "string" && cell.startsWith("=") ? cell.replace(re, `$1${newR1}`) : cell
+      );
+    });
+    this._remapNotesRows((oldR0) => {
+      if (oldR0 >= srcStart0 && oldR0 < srcStart0 + numRows) return insertAt0 + (oldR0 - srcStart0);
+      if (srcStart0 < insertAt0 && oldR0 >= srcStart0 + numRows && oldR0 < insertAt0 + numRows) return oldR0 - numRows;
+      if (insertAt0 < srcStart0 && oldR0 >= insertAt0 && oldR0 < srcStart0) return oldR0 + numRows;
+      return oldR0;
+    });
     this.dirty = true;
 
     if (this.spreadsheet.isRemoteGoogleSheet) {
@@ -1721,12 +1766,15 @@ export async function createGasEnvironment({
       const bypassVirtual = isClientSheet ? ctx.clientMode !== "supabase" : true;
 
       const phases = remoteSS.remoteMutationPhases.splice(0, remoteSS.remoteMutationPhases.length);
-      for (const phase of phases) {
+      for (let pIdx = 0; pIdx < phases.length; pIdx++) {
+        const phase = phases[pIdx];
+        const skipRecompute = isClientSheet && !bypassVirtual && pIdx < phases.length - 1;
         if (phase.type === "clear" && phase.ranges.length > 0) {
           await sheets.spreadsheets.values.batchClear({
             spreadsheetId: remoteId,
             requestBody: { ranges: phase.ranges },
             _bypassSupabaseVirtualSheet: bypassVirtual,
+            _skipFormulaRecompute: skipRecompute,
           });
         } else if (phase.type === "values" && phase.data.length > 0) {
           await sheets.spreadsheets.values.batchUpdate({
@@ -1736,12 +1784,14 @@ export async function createGasEnvironment({
               data: phase.data,
             },
             _bypassSupabaseVirtualSheet: bypassVirtual,
+            _skipFormulaRecompute: skipRecompute,
           });
         } else if (phase.type === "structural" && phase.requests.length > 0) {
           await sheets.spreadsheets.batchUpdate({
             spreadsheetId: remoteId,
             requestBody: { requests: phase.requests },
             _bypassSupabaseVirtualSheet: bypassVirtual,
+            _skipFormulaRecompute: skipRecompute,
           });
         }
       }

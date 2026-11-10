@@ -15,6 +15,7 @@ import { getSupabaseAdmin } from "./supabaseClient.js";
 import {
   resolveSupabaseSheetContext,
   invalidateMasterEngineCache,
+  getLastClientEditTimestamp,
 } from "./masterEngineService.js";
 import { getIntegrationTokens } from "./vaultService.js";
 import { logPmaActivity } from "./pmaLogger.js";
@@ -130,7 +131,8 @@ export async function ensureFreshMasterComparisons(
 
   const key = String(ctx.clientName || "").trim().toLowerCase();
   const lastAt = _lastComparisonRecomputeMap.get(key) || 0;
-  if (maxAgeMs > 0 && Date.now() - lastAt < maxAgeMs) {
+  const lastClientEditAt = getLastClientEditTimestamp(key);
+  if (maxAgeMs > 0 && lastAt > lastClientEditAt && Date.now() - lastAt < maxAgeMs) {
     return null;
   }
 

@@ -198,6 +198,7 @@ async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, in
           },
         ],
       },
+      _skipFormulaRecompute: true,
     })
   );
 

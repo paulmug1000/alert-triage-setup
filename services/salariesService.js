@@ -533,64 +533,57 @@ export async function saveEmployeeData({
     sanitizeFormulaInput(employeeData.pension || ""),
   ];
 
-  const writePromises = [
-    withRetry(() =>
-      sheets.spreadsheets.values.update({
-        spreadsheetId: targetSheetId,
-        range: `Salaries!A${sheetRow}:I${sheetRow}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [vals] },
-      })
-    ),
-  ];
-
   // Update single employee note attached to the Name cell (column A) and clear legacy field notes (columns B-I)
   if (employeeData.notes && typeof employeeData.notes === "object" && employeeData.notes.name !== undefined) {
-    writePromises.push(
-      (async () => {
-        const gid = await getSheetGid(sheets, targetSheetId, "Salaries");
-        const nameNote = String(employeeData.notes.name ?? "");
-        await withRetry(() =>
-          sheets.spreadsheets.batchUpdate({
-            spreadsheetId: targetSheetId,
-            requestBody: {
-              requests: [
-                {
-                  updateCells: {
-                    range: {
-                      sheetId: gid,
-                      startRowIndex: sheetRow - 1,
-                      endRowIndex: sheetRow,
-                      startColumnIndex: 0,
-                      endColumnIndex: 9,
-                    },
-                    rows: [
-                      {
-                        values: [
-                          { note: nameNote },
-                          { note: "" },
-                          { note: "" },
-                          { note: "" },
-                          { note: "" },
-                          { note: "" },
-                          { note: "" },
-                          { note: "" },
-                          { note: "" },
-                        ],
-                      },
-                    ],
-                    fields: "note",
-                  },
+    const gid = await getSheetGid(sheets, targetSheetId, "Salaries");
+    const nameNote = String(employeeData.notes.name ?? "");
+    await withRetry(() =>
+      sheets.spreadsheets.batchUpdate({
+        spreadsheetId: targetSheetId,
+        requestBody: {
+          requests: [
+            {
+              updateCells: {
+                range: {
+                  sheetId: gid,
+                  startRowIndex: sheetRow - 1,
+                  endRowIndex: sheetRow,
+                  startColumnIndex: 0,
+                  endColumnIndex: 9,
                 },
-              ],
+                rows: [
+                  {
+                    values: [
+                      { note: nameNote },
+                      { note: "" },
+                      { note: "" },
+                      { note: "" },
+                      { note: "" },
+                      { note: "" },
+                      { note: "" },
+                      { note: "" },
+                      { note: "" },
+                    ],
+                  },
+                ],
+                fields: "note",
+              },
             },
-          })
-        );
-      })()
+          ],
+        },
+        _skipFormulaRecompute: true,
+      })
     );
   }
 
-  await Promise.all(writePromises);
+  await withRetry(() =>
+    sheets.spreadsheets.values.update({
+      spreadsheetId: targetSheetId,
+      range: `Salaries!A${sheetRow}:I${sheetRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [vals] },
+    })
+  );
 
   await invalidateSalariesCache(masterSheetId, clientSheetId);
 

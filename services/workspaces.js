@@ -2225,12 +2225,14 @@ async function insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobClient, j
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: sheetIdClean,
       requestBody: { requests: [...baseStructuralRequests, ...groupRequests] },
+      _skipFormulaRecompute: true,
     });
   } catch (combinedErr) {
     console.log(`  ⚠ Combined move+group failed (${combinedErr.message}), falling back to moveDimension only`);
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: sheetIdClean,
       requestBody: { requests: baseStructuralRequests },
+      _skipFormulaRecompute: true,
     });
   }
 
@@ -4123,6 +4125,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId: sheetIdClean,
         requestBody: { requests: structuralRequests },
+        _skipFormulaRecompute: true,
       });
 
       allWriteData.push(

@@ -1,5 +1,6 @@
 /**
  * Master Sheet Formula Engine (100% Verbatim 1:1 Implementation)
+ * Version: 1.02 — Full PLComp 4-block/2-block & Ignore block parity, InvComp Pay date/Status alignment
  *
  * Evaluates the exact Google Sheets formulas on the Master Sheet tabs:
  *   1. Outgoings (Row 1 dates from KeyInfo!B2 + IMPORTRANGEs A4:AX8, A12:AX114)
@@ -2106,12 +2107,14 @@ export function evaluateKeyInfoAndPLComp(grids) {
     setCell(keyInfo, 28, 8, evalMissingCrmMapping(31, 74, 8, 37)); // I29: I32:I75 vs CRMList!AL4:AL5004
   }
 
-  // KeyInfo!O6 = COUNTA(G5:G104)
-  let gCount = 0;
-  for (let r = 4; r <= 103 && r < keyInfo.length; r++) {
-    if (!isBlankCell(getCell(keyInfo, r, 6))) gCount++;
+  // KeyInfo!O6 = COUNTA(G5:G104) (only if O6 is used on this KeyInfo grid)
+  if (!isBlankCell(getCell(keyInfo, 5, 14))) {
+    let gCount = 0;
+    for (let r = 4; r <= 103 && r < keyInfo.length; r++) {
+      if (!isBlankCell(getCell(keyInfo, r, 6))) gCount++;
+    }
+    setCell(keyInfo, 5, 14, gCount); // O6
   }
-  setCell(keyInfo, 5, 14, gCount); // O6
 
   // KeyInfo!BE2 = UNIQUE(FILTER({Year0PLFromApp!A:A; PLFromApp!A:A}, <> "", <> 0, <> "0"))
   const seenCats = new Set();
@@ -2154,24 +2157,47 @@ export function evaluateKeyInfoAndPLComp(grids) {
     return "";
   };
 
-  // Map B column in PLComp from KeyInfo!BA...
-  const bKeyInfoMap = [
-    { plStart: 2, plEnd: 11, kiStart: 19 },   // B2:B11 = KeyInfo!BA19:BA28
-    { plStart: 13, plEnd: 20, kiStart: 35 },  // B13:B20 = KeyInfo!BA35:BA42
-    { plStart: 22, plEnd: 24, kiStart: 50 },  // B22:B24 = KeyInfo!BA50:BA52
-    { plStart: 26, plEnd: 28, kiStart: 54 },  // B26:B28 = KeyInfo!BA54:BA56
-    { plStart: 30, plEnd: 47, kiStart: 59 },  // B30:B47 = KeyInfo!BA59:BA76
-    { plStart: 52, plEnd: 63, kiStart: 81 },  // B52:B63 = KeyInfo!BA81:BA92
-    { plStart: 65, plEnd: 74, kiStart: 101 }, // B65:B74 = KeyInfo!BA101:BA110
-    { plStart: 81, plEnd: 95, kiStart: 2 },   // B81:B95 = KeyInfo!BA2:BA16
-  ];
-  for (const blk of bKeyInfoMap) {
-    for (let r1 = blk.plStart; r1 <= blk.plEnd; r1++) {
-      const kiR1 = blk.kiStart + (r1 - blk.plStart);
-      const val = getCell(keyInfo, kiR1 - 1, 52); // BA is col 52
-      setCell(plComp, r1 - 1, 1, val); // B
-      if (r1 <= 74 && r1 !== 62 && r1 !== 63) {
-        setCell(plComp, r1 - 1, 4, val); // E = B
+  // Detect whether PLComp uses 4-block staff layout (Salaries 2..4 sum 5, NICs 6..8 sum 9, Pension 10..12 sum 13, Contractors 14..20 sum 21)
+  // vs 2-block layout (CoS staff costs 2..11 sum 12, Non-CoS staff costs 13..20 sum 21)
+  const isFourBlockStaff =
+    gsEq(getCell(plComp, 5, 0), "NICs") ||
+    gsEq(getCell(plComp, 4, 4), "Salaries total");
+  const staffTotalRows1 = isFourBlockStaff ? new Set([5, 9, 13, 21]) : new Set([12, 21]);
+
+  // Detect whether PLComp!B is mapped from KeyInfo!BA (modern layout: A81="Sales"/"Revenue" and/or A98="Ignore")
+  // vs legacy static PLComp!B (where A81="Ignore")
+  const usesKeyInfoBAMapping =
+    !gsEq(getCell(plComp, 80, 0), "Ignore") ||
+    gsEq(getCell(plComp, 97, 0), "Ignore");
+
+  if (usesKeyInfoBAMapping) {
+    const bKeyInfoMap = [
+      { plStart: 2, plEnd: 11, kiStart: 19 },    // B2:B11 = KeyInfo!BA19:BA28
+      { plStart: 13, plEnd: 20, kiStart: 35 },   // B13:B20 = KeyInfo!BA35:BA42
+      { plStart: 22, plEnd: 24, kiStart: 50 },   // B22:B24 = KeyInfo!BA50:BA52
+      { plStart: 26, plEnd: 28, kiStart: 54 },   // B26:B28 = KeyInfo!BA54:BA56
+      { plStart: 30, plEnd: 47, kiStart: 59 },   // B30:B47 = KeyInfo!BA59:BA76
+      { plStart: 52, plEnd: 63, kiStart: 81 },   // B52:B63 = KeyInfo!BA81:BA92
+      { plStart: 65, plEnd: 74, kiStart: 101 },  // B65:B74 = KeyInfo!BA101:BA110
+      { plStart: 81, plEnd: 96, kiStart: 2 },    // B81:B96 = KeyInfo!BA2:BA17
+      { plStart: 98, plEnd: 179, kiStart: 128 }, // B98:B179 = KeyInfo!BA128:BA209
+    ];
+    for (const blk of bKeyInfoMap) {
+      for (let r1 = blk.plStart; r1 <= blk.plEnd; r1++) {
+        const kiR1 = blk.kiStart + (r1 - blk.plStart);
+        const val = getCell(keyInfo, kiR1 - 1, 52); // BA is col 52
+        setCell(plComp, r1 - 1, 1, val); // B
+        if (r1 <= 74 && r1 !== 62 && r1 !== 63 && !staffTotalRows1.has(r1)) {
+          setCell(plComp, r1 - 1, 4, val); // E = B
+        }
+      }
+    }
+  } else {
+    // Legacy static PLComp!B: sync E = B on category rows 2..74
+    const skipERows1 = new Set([5, 9, 12, 13, 21, 25, 29, 50, 51, 62, 63, 64, 75]);
+    for (let r1 = 2; r1 <= 74; r1++) {
+      if (!skipERows1.has(r1) && !staffTotalRows1.has(r1)) {
+        setCell(plComp, r1 - 1, 4, getCell(plComp, r1 - 1, 1));
       }
     }
   }
@@ -2194,14 +2220,24 @@ export function evaluateKeyInfoAndPLComp(grids) {
     setCell(plComp, r0, 4, unmappedCats[r0 - 88] ?? "");
   }
 
-  // Evaluate standardPLFromApp lookup rows (2..11, 13..20, 22..24, 52..61, 65..74)
-  const simpleBlocks = [
-    [2, 11, 12],
-    [13, 20, 21],
-    [22, 24, 25],
-    [52, 61, 62],
-    [65, 74, 75],
-  ];
+  // Evaluate standard PLFromApp lookup rows
+  const simpleBlocks = isFourBlockStaff
+    ? [
+        [2, 4, 5],
+        [6, 8, 9],
+        [10, 12, 13],
+        [14, 20, 21],
+        [22, 24, 25],
+        [52, 61, 62],
+        [65, 74, 75],
+      ]
+    : [
+        [2, 11, 12],
+        [13, 20, 21],
+        [22, 24, 25],
+        [52, 61, 62],
+        [65, 74, 75],
+      ];
   for (const [s1, e1, sum1] of simpleBlocks) {
     const sums = [0, 0, 0, 0, 0, 0];
     for (let r1 = s1; r1 <= e1; r1++) {
@@ -2257,7 +2293,7 @@ export function evaluateKeyInfoAndPLComp(grids) {
     }
   }
 
-  const maxUnmappedR1 = Math.max(89 + unmappedCats.length - 1, 95);
+  const maxUnmappedR1 = Math.max(89 + unmappedCats.length - 1, plComp.length, 180);
   for (let r1 = 89; r1 <= maxUnmappedR1; r1++) {
     evaluateDualRow(r1 - 1, 4); // Lookup by E
   }
@@ -2278,7 +2314,6 @@ export function evaluateKeyInfoAndPLComp(grids) {
     setCell(plComp, 83, 19 + m, toNumOrZero(getCell(plComp, 82, 19 + m)) + toNumOrZero(getCell(plComp, 28, 19 + m)));
     setCell(plComp, 84, 12 + m, toNumOrZero(totAdds) - toNumOrZero(getCell(plComp, 82, 12 + m)));
   }
-  if (plComp.length > maxUnmappedR1) plComp.length = maxUnmappedR1;
   compactGridInPlace(keyInfo);
   compactGridInPlace(plComp);
 }

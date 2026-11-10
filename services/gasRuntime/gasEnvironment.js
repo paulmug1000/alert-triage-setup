@@ -1,6 +1,7 @@
 /**
  * ============================================================================
  * PULSE GAS RUNTIME ENVIRONMENT (services/gasRuntime/gasEnvironment.js)
+ * Version: 1.01 — Sync Client Sheet OutgNotes into Master runtime when present
  * ============================================================================
  * Provides a 100% faithful Google Apps Script execution environment for the
  * verbatim compiled Master GAS scripts (`compiledMasterGas.js`), backed by:
@@ -1498,16 +1499,26 @@ export async function createGasEnvironment({
     }
   }
 
-  // Helper to sync live ConfCalcs (A1:JG5001), PipeCalcs (A1:JG1000), and Outgoings (A1:AX295) from Client Sheet into Master grids
+  // Helper to sync live ConfCalcs (A1:JG5001), PipeCalcs (A1:JG1000), Outgoings (A1:AX295), and OutgNotes (A1:AV112) from Client Sheet into Master grids
   async function syncClientLinkedMasterTabsFromLiveSheet() {
     if (!sheets || !ctx.clientSheetId) return;
     try {
-      const resp = await sheets.spreadsheets.values.batchGet({
-        spreadsheetId: ctx.clientSheetId,
-        ranges: ["ConfCalcs!A1:JG5001", "PipeCalcs!A1:JG1000", "Outgoings!A1:AX295"],
-        valueRenderOption: "UNFORMATTED_VALUE",
-        _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
-      });
+      const [resp, outgNotesResp] = await Promise.all([
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: ctx.clientSheetId,
+          ranges: ["ConfCalcs!A1:JG5001", "PipeCalcs!A1:JG1000", "Outgoings!A1:AX295"],
+          valueRenderOption: "UNFORMATTED_VALUE",
+          _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
+        }),
+        sheets.spreadsheets.values
+          .get({
+            spreadsheetId: ctx.clientSheetId,
+            range: "OutgNotes!A1:AV112",
+            valueRenderOption: "UNFORMATTED_VALUE",
+            _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
+          })
+          .catch(() => null),
+      ]);
       const vRanges = resp?.data?.valueRanges || [];
       if (vRanges[0]?.values) {
         const ccSheet = masterSS.getSheetByName("ConfCalcs") || masterSS.insertSheet("ConfCalcs");
@@ -1523,6 +1534,15 @@ export async function createGasEnvironment({
         const outSheet = masterSS.getSheetByName("Outgoings") || masterSS.insertSheet("Outgoings");
         outSheet.valuesGrid = compactGrid2D(vRanges[2].values);
         outSheet.dirty = true;
+      }
+      const clientOutgNotes = outgNotesResp?.data?.values;
+      if (
+        Array.isArray(clientOutgNotes) &&
+        clientOutgNotes.some((r) => Array.isArray(r) && r.some((cell) => cell !== "" && cell !== null && cell !== undefined))
+      ) {
+        const onSheet = masterSS.getSheetByName("OutgNotes") || masterSS.insertSheet("OutgNotes");
+        onSheet.valuesGrid = compactGrid2D(clientOutgNotes);
+        onSheet.dirty = true;
       }
       envState.masterFormulasDirty = true;
     } catch (err) {

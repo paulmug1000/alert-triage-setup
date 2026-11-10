@@ -846,15 +846,34 @@ function getCashEffectiveFormat_(r0, c0) {
 
 async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, rawSheetsApi) {
   const tabsSet = new Set(updatedTabNames);
-  const needsCrm = tabsSet.has("CRMComp") || tabsSet.has("DataFromCRM") || tabsSet.has("CRMList") || tabsSet.has("KeyInfo");
+  const needsCrm =
+    tabsSet.has("CRMComp") ||
+    tabsSet.has("DataFromCRM") ||
+    tabsSet.has("CRMList") ||
+    tabsSet.has("KeyInfo") ||
+    tabsSet.has("ConfCalcs") ||
+    tabsSet.has("PipeCalcs");
   const needsPl =
     tabsSet.has("PLComp") ||
     tabsSet.has("PLFromApp") ||
+    tabsSet.has("Year0PLFromApp") ||
     tabsSet.has("PLAdds") ||
     tabsSet.has("KeyInfo") ||
     tabsSet.has("Outgoings");
-  const needsInv = tabsSet.has("InvFromApp");
-  const needsDir = tabsSet.has("JnlsFromApp");
+  const needsInv =
+    tabsSet.has("InvFromApp") ||
+    tabsSet.has("InvAppList") ||
+    tabsSet.has("InvDashList") ||
+    tabsSet.has("InvComp") ||
+    tabsSet.has("ConfCalcs");
+  const needsDir =
+    tabsSet.has("JnlsFromApp") ||
+    tabsSet.has("JnlAppList") ||
+    tabsSet.has("DirDashList") ||
+    tabsSet.has("DirComp") ||
+    tabsSet.has("ConfCalcs") ||
+    tabsSet.has("Outgoings") ||
+    tabsSet.has("OutgNotes");
 
   if (!needsCrm && !needsPl && !needsInv && !needsDir) return;
 
@@ -863,7 +882,7 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     ["DataFromCRM", "CRMList", "CRMComp", "ConfCalcs", "PipeCalcs"].forEach((t) => masterTabsNeeded.add(t));
   }
   if (needsPl) {
-    ["Outgoings", "PLFromApp", "PLAdds", "PLComp", "InvFromApp", "JnlsFromApp", "CRMList"].forEach((t) =>
+    ["Outgoings", "PLFromApp", "Year0PLFromApp", "PLAdds", "PLComp", "InvFromApp", "JnlsFromApp", "CRMList"].forEach((t) =>
       masterTabsNeeded.add(t)
     );
   }
@@ -871,7 +890,9 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     ["InvFromApp", "InvAppList", "InvDashList", "InvComp", "ConfCalcs"].forEach((t) => masterTabsNeeded.add(t));
   }
   if (needsDir) {
-    ["JnlsFromApp", "JnlAppList", "DirDashList", "DirComp", "ConfCalcs"].forEach((t) => masterTabsNeeded.add(t));
+    ["JnlsFromApp", "JnlAppList", "DirDashList", "DirComp", "ConfCalcs", "Outgoings", "OutgNotes"].forEach((t) =>
+      masterTabsNeeded.add(t)
+    );
   }
 
   const grids = {};
@@ -1731,7 +1752,7 @@ async function syncStructuredKeyInfoFromGrid_(ctx, keyInfoGrid) {
   }
 
   const overheadMappings = [];
-  for (let r = 1; r < Math.min(keyInfoGrid.length, 180); r++) {
+  for (let r = 1; r < Math.min(keyInfoGrid.length, 210); r++) {
     const plCat = String(keyInfoGrid[r]?.[colLetterToIdx0("AZ")] ?? "").trim();
     const outCat = String(keyInfoGrid[r]?.[colLetterToIdx0("BA")] ?? "").trim();
     if (plCat || outCat) {

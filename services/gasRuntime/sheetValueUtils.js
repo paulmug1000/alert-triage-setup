@@ -1,5 +1,6 @@
 /**
  * Sheet Value & Date/Display Conversion Utilities
+ * Version: 1.01 — Exhaustive date & percentage column coordinate alignment across all Master & Client tabs
  *
  * Bridges Google Sheets' internal UNFORMATTED_VALUE representation (used by
  * master_sheet_grids.values_grid and masterFormulaEngine.js) with:
@@ -91,24 +92,26 @@ const DATE_HEADER_PATTERNS = new Set([
 ]);
 
 const INV_DASH_DATE_COLS = new Set([6, 7, 21, 22, 36, 37, 53, 54, 66, 67, 82, 83, 97, 98]);
-const INV_APP_DATE_COLS = new Set([6, 7, 78, 79]);
+const INV_APP_DATE_COLS = new Set([6, 7, 8, 14, 78, 79, 80]);
 const INV_COMP_DATE_COLS = new Set([6, 7, 8, 15, 16, 51, 52, 63, 64]);
 
-const JNL_APP_DATE_COLS = new Set([0, 7, 12]);
-const DIR_DASH_DATE_COLS = new Set([0, 6, 7, 8, 15, 23, 30, 31, 38, 47, 55, 62, 70, 79, 85, 87, 94, 102, 122, 123, 155, 156]);
-const DIR_COMP_DATE_COLS = new Set([0, 7, 10, 23, 31, 110, 116, 117, 118]);
+const JNL_APP_DATE_COLS = new Set([0, 7, 27, 34, 78, 85]);
+const DIR_DASH_DATE_COLS = new Set([6, 7, 30, 31, 54, 55, 85, 102, 103, 110, 111, 122, 123, 138, 139, 155, 156, 210, 211]);
+const DIR_COMP_DATE_COLS = new Set([0, 7, 30, 31, 116, 117, 146, 152]);
 
-const CRM_LIST_DATE_COLS = new Set([5, 6, 11, 32, 33, 38, 83, 84, 89, 129, 130, 135]);
+const CRM_LIST_DATE_COLS = new Set([5, 6, 11, 32, 33, 38, 83, 84, 89, 108, 109, 114, 129, 130, 135]);
 const CRM_COMP_DATE_COLS = new Set([
-  5, 6, 11, 28, 29, 34, 44, 45, 46, 49, 64, 65, 69, 98, 99,
-  121, 122, 125, 140, 141, 144, 145, 155, 156, 157, 161, 173,
+  5, 6, 11, 28, 29, 34, 45, 46, 64, 98, 99,
+  121, 122, 125, 140, 141, 144, 155, 156, 173, 207, 208,
 ]);
 
-const CRM_COMP_PCT_COLS = new Set([7, 30, 47, 66, 123, 142, 158]);
-const CRM_LIST_PCT_COLS = new Set([7, 34, 85, 131]);
+const CRM_COMP_PCT_COLS = new Set([7, 30, 47, 100, 123, 142, 157, 209]);
+const CRM_LIST_PCT_COLS = new Set([7, 34, 85, 110, 131]);
 
 const CONF_PIPE_CALCS_DATE_COLS = new Set([
-  3, 37, 38, 43, 50, 57, 78, 85, 92, 146, 147, 156, 164, 165, 174, 175, 176, 178, 179, 180,
+  3, 37, 38, 43, 50, 57, 78, 85, 92, 146, 147, 156, 158, 160, 164, 165, 174, 175, 176, 178, 179, 180,
+  182, 183, 184, 187, 188, 190, 191, 193, 194, 198, 199, 200, 201, 202, 205, 206, 207, 208, 209,
+  212, 213, 214, 215, 216, 218, 219,
 ]);
 
 const MONTH_ROW0_TABS = new Set([
@@ -200,23 +203,33 @@ export function isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid = 
     return false;
   }
 
-  if (tabName === "InvAppList" && row0 >= 1 && INV_APP_DATE_COLS.has(col0) && isPlausibleSerial) return true;
-  if (tabName === "InvDashList" && row0 >= 2 && INV_DASH_DATE_COLS.has(col0) && isPlausibleSerial) return true;
+  if (tabName === "InvAppList") {
+    return Boolean(row0 >= 1 && INV_APP_DATE_COLS.has(col0) && isPlausibleSerial);
+  }
+  if (tabName === "InvDashList") {
+    return Boolean(row0 >= 2 && INV_DASH_DATE_COLS.has(col0) && isPlausibleSerial);
+  }
   if (tabName === "InvComp") {
     if (row0 === 1 && (col0 === 3 || col0 === 45) && isPlausibleSerial) return true;
     if (row0 >= 5 && INV_COMP_DATE_COLS.has(col0) && isPlausibleSerial) return true;
     return false;
   }
 
-  if (tabName === "JnlAppList" && row0 >= 1 && JNL_APP_DATE_COLS.has(col0) && isPlausibleSerial) return true;
-  if (tabName === "DirDashList" && row0 >= 2 && DIR_DASH_DATE_COLS.has(col0) && isPlausibleSerial) return true;
+  if (tabName === "JnlAppList") {
+    return Boolean(row0 >= 1 && JNL_APP_DATE_COLS.has(col0) && isPlausibleSerial);
+  }
+  if (tabName === "DirDashList") {
+    return Boolean(row0 >= 2 && DIR_DASH_DATE_COLS.has(col0) && isPlausibleSerial);
+  }
   if (tabName === "DirComp") {
-    if (row0 === 1 && col0 === 3 && isPlausibleSerial) return true;
+    if (row0 === 1 && (col0 === 3 || col0 === 10) && isPlausibleSerial) return true;
     if (row0 >= 5 && DIR_COMP_DATE_COLS.has(col0) && isPlausibleSerial) return true;
     return false;
   }
 
-  if (tabName === "CRMList" && row0 >= 1 && CRM_LIST_DATE_COLS.has(col0) && isPlausibleSerial) return true;
+  if (tabName === "CRMList") {
+    return Boolean(row0 >= 1 && CRM_LIST_DATE_COLS.has(col0) && isPlausibleSerial);
+  }
   if (tabName === "CRMComp") {
     if (row0 === 1 && (col0 === 2 || col0 === 9) && isPlausibleSerial) return true;
     if (row0 >= 5 && CRM_COMP_DATE_COLS.has(col0) && isPlausibleSerial) return true;

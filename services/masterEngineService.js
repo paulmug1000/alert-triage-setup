@@ -1180,6 +1180,7 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
 }
 
 const _pendingClientTabsByClient = new Map();
+const _pendingClientCtxByClient = new Map();
 
 function snapshotClientValuesForDiff_(tabName, vals) {
   if (!Array.isArray(vals)) return "[]";
@@ -1196,9 +1197,13 @@ function snapshotClientValuesForDiff_(tabName, vals) {
   return JSON.stringify(targetRows.map((r) => trimTrailingEmptyCells_(r)));
 }
 
-function queuePendingClientTabs_(clientName, tabNames) {
+function queuePendingClientTabs_(clientNameOrCtx, tabNames) {
+  const clientName = typeof clientNameOrCtx === "object" ? clientNameOrCtx?.clientName : clientNameOrCtx;
   const key = String(clientName || "").toLowerCase();
   if (!key) return;
+  if (typeof clientNameOrCtx === "object" && clientNameOrCtx) {
+    _pendingClientCtxByClient.set(key, clientNameOrCtx);
+  }
   let set = _pendingClientTabsByClient.get(key);
   if (!set) {
     set = new Set();
@@ -1207,6 +1212,48 @@ function queuePendingClientTabs_(clientName, tabNames) {
   for (const t of tabNames) {
     if (t) set.add(t);
   }
+}
+
+export async function flushPendingClientRecomputes(rawSheetsApi = null, clientName = null) {
+  const keys = clientName
+    ? [String(clientName).toLowerCase()]
+    : [..._pendingClientTabsByClient.keys()];
+  for (const key of keys) {
+    const pendingSet = _pendingClientTabsByClient.get(key);
+    const ctx = _pendingClientCtxByClient.get(key);
+    if (pendingSet && pendingSet.size > 0 && ctx) {
+      await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
+        console.warn("[masterEngineService] Deferred client formula recompute warning:", e.message)
+      );
+    }
+  }
+}
+
+const DIRECT_INPUT_CLIENT_TABS = new Set([
+  "Confirmed",
+  "Pipeline",
+  "KeyInfo",
+  "Sessions",
+  "AppLog",
+  "Welcome",
+]);
+
+function doesClientRangeNeedFormulaFlush_(parsed) {
+  if (!parsed || !parsed.tabName) return false;
+  if (DIRECT_INPUT_CLIENT_TABS.has(parsed.tabName)) return false;
+  if (parsed.tabName === "Outgoings") {
+    const sR = parsed.startRow0 ?? 0;
+    const eR = parsed.endRow0 ?? 999;
+    // Outgoings rows 1..110 (0-indexed 0..109) are direct inputs; row 111+ (0-indexed >= 110) includes Making up CoS & summaries
+    return eR >= 110 || sR >= 110;
+  }
+  if (parsed.tabName === "Salaries") {
+    const sR = parsed.startRow0 ?? 0;
+    const eR = parsed.endRow0 ?? 999;
+    // Salaries rows 4..53 (0-indexed 3..52) are direct inputs; row 55+ (0-indexed >= 54) are totals
+    return eR >= 54 || sR >= 54;
+  }
+  return true;
 }
 
 function remapNotesGridRows_(notesGrid, mapRowFn) {
@@ -1240,12 +1287,12 @@ export function getLastClientEditTimestamp(clientName) {
 async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, rawSheetsApi) {
   const clientKey = String(ctx.clientName || "").toLowerCase();
   _lastClientEditTimestampMap.set(clientKey, Date.now());
-  queuePendingClientTabs_(ctx.clientName, updatedTabNames);
+  queuePendingClientTabs_(ctx, updatedTabNames);
   const pendingSet = _pendingClientTabsByClient.get(clientKey);
   const allUpdatedTabs = pendingSet ? [...pendingSet] : [...updatedTabNames];
   if (pendingSet) pendingSet.clear();
 
-  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome", "OutgNotes"]);
+  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
   const hasCalcRelevantChange = allUpdatedTabs.some((t) => !nonFormulaTabs.has(t));
   if (!hasCalcRelevantChange) {
     return;
@@ -1257,6 +1304,9 @@ async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     unaffectedTabs.add("KeyInfo");
     if (!changedSet.has("Salaries")) {
       unaffectedTabs.add("Salaries");
+    }
+    if (!changedSet.has("Outgoings") && !changedSet.has("OutgNotes")) {
+      unaffectedTabs.add("OutgNotes");
     }
     if (!changedSet.has("Confirmed") && !changedSet.has("ConfCalcs") && !changedSet.has("RevenueConf")) {
       unaffectedTabs.add("Confirmed");
@@ -1476,6 +1526,18 @@ export async function handleVirtualSheetsCall({
   if (namespace === "values" && method === "get") {
     const rangeStr = params.range || "KeyInfo!A1:Z100";
     const parsed = parseA1Range(rangeStr);
+    if (
+      sheetRole === "client" &&
+      params.valueRenderOption !== "FORMULA" &&
+      doesClientRangeNeedFormulaFlush_(parsed)
+    ) {
+      const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
+      if (pendingSet && pendingSet.size > 0) {
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Read-barrier formula recompute warning:", e.message)
+        );
+      }
+    }
     const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
     const isFormula =
       params.valueRenderOption === "FORMULA" && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0;
@@ -1508,6 +1570,18 @@ export async function handleVirtualSheetsCall({
   if (namespace === "values" && method === "batchGet") {
     const ranges = Array.isArray(params.ranges) ? params.ranges : [params.ranges].filter(Boolean);
     const parsedList = ranges.map((r) => ({ raw: r, parsed: parseA1Range(r) }));
+    if (
+      sheetRole === "client" &&
+      params.valueRenderOption !== "FORMULA" &&
+      parsedList.some((p) => doesClientRangeNeedFormulaFlush_(p.parsed))
+    ) {
+      const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
+      if (pendingSet && pendingSet.size > 0) {
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Read-barrier formula recompute warning:", e.message)
+        );
+      }
+    }
     const uniqueTabs = [...new Set(parsedList.map((p) => p.parsed.tabName))];
 
     const byTab = new Map();
@@ -1587,6 +1661,12 @@ export async function handleVirtualSheetsCall({
     const valueInputOption = params.valueInputOption || params.requestBody?.valueInputOption || "USER_ENTERED";
     const parsed = parseA1Range(rangeStr);
     const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
+    const prevValSnap =
+      sheetRole === "client" ? snapshotClientValuesForDiff_(parsed.tabName, rec.values_grid) : null;
+    const prevFormSnap =
+      sheetRole === "client"
+        ? snapshotClientValuesForDiff_(parsed.tabName, rec.formulas_grid || rec.values_grid)
+        : null;
     const updatedValues = applyWriteToGrid2D_(rec.values_grid || [], parsed, incomingValues, {
       sheetRole,
       tabName: parsed.tabName,
@@ -1601,8 +1681,30 @@ export async function handleVirtualSheetsCall({
       notesGrid: rec.notes_grid,
       isFormulaGrid: true,
     });
+    if (
+      prevValSnap !== null &&
+      snapshotClientValuesForDiff_(parsed.tabName, updatedValues) === prevValSnap &&
+      snapshotClientValuesForDiff_(parsed.tabName, updatedFormulas) === prevFormSnap
+    ) {
+      if (sheetRole === "client" && !params._skipFormulaRecompute) {
+        const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
+        if (pendingSet && pendingSet.size > 0) {
+          await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
+            console.warn("[masterEngineService] Client formula recompute warning:", e.message)
+          );
+        }
+      }
+      return {
+        status: 200,
+        data: {
+          spreadsheetId,
+          updatedRange: rangeStr,
+          updatedRows: incomingValues.length,
+        },
+      };
+    }
     const isDeferredClientSave =
-      sheetRole === "client" && !["Sessions", "AppLog", "Welcome", "OutgNotes"].includes(parsed.tabName);
+      sheetRole === "client" && !["Sessions", "AppLog", "Welcome"].includes(parsed.tabName);
     await saveVirtualTabGrid_(ctx, sheetRole, parsed.tabName, updatedValues, updatedFormulas, rec.notes_grid, {
       memoryOnly: isDeferredClientSave,
     });
@@ -1614,7 +1716,7 @@ export async function handleVirtualSheetsCall({
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, [{ range: rangeStr, values: incomingValues }]);
     } else if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
-        queuePendingClientTabs_(ctx.clientName, [parsed.tabName]);
+        queuePendingClientTabs_(ctx, [parsed.tabName]);
       } else {
         await recomputeClientFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
           console.warn("[masterEngineService] Client formula recompute warning:", e.message)
@@ -1645,8 +1747,13 @@ export async function handleVirtualSheetsCall({
       byTabUpdates.get(parsed.tabName).push({ parsed, values: d.values || [], rawRange: d.range });
     }
 
+    const actuallyChangedTabs = [];
     for (const [tabName, updates] of byTabUpdates.entries()) {
       const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi);
+      const prevOutgSnap =
+        sheetRole === "client" && tabName === "OutgNotes"
+          ? snapshotClientValuesForDiff_("OutgNotes", rec.values_grid)
+          : null;
       let nextVals = rec.values_grid || [];
       let nextForms = rec.formulas_grid || rec.values_grid || [];
       for (const u of updates) {
@@ -1665,25 +1772,37 @@ export async function handleVirtualSheetsCall({
           isFormulaGrid: true,
         });
       }
+      if (
+        prevOutgSnap !== null &&
+        snapshotClientValuesForDiff_("OutgNotes", nextVals) === prevOutgSnap
+      ) {
+        continue;
+      }
+      actuallyChangedTabs.push(tabName);
       const isDeferredClientSave =
-        sheetRole === "client" && !["Sessions", "AppLog", "Welcome", "OutgNotes"].includes(tabName);
+        sheetRole === "client" && !["Sessions", "AppLog", "Welcome"].includes(tabName);
       await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid, {
         memoryOnly: isDeferredClientSave,
       });
     }
 
-    if (sheetRole === "master") {
-      await recomputeMasterFormulasAfterVirtualWrite_(ctx, [...byTabUpdates.keys()], rawSheetsApi).catch((e) =>
+    if (sheetRole === "master" && actuallyChangedTabs.length > 0) {
+      await recomputeMasterFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
         console.warn("[masterEngineService] Formula recompute warning:", e.message)
       );
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, dataItems);
     } else if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
-        queuePendingClientTabs_(ctx.clientName, [...byTabUpdates.keys()]);
+        if (actuallyChangedTabs.length > 0) {
+          queuePendingClientTabs_(ctx, actuallyChangedTabs);
+        }
       } else {
-        await recomputeClientFormulasAfterVirtualWrite_(ctx, [...byTabUpdates.keys()], rawSheetsApi).catch((e) =>
-          console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-        );
+        const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
+        if (actuallyChangedTabs.length > 0 || (pendingSet && pendingSet.size > 0)) {
+          await recomputeClientFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
+            console.warn("[masterEngineService] Client formula recompute warning:", e.message)
+          );
+        }
       }
     }
 
@@ -1759,7 +1878,8 @@ export async function handleVirtualSheetsCall({
         nextForms = clearRangeInGrid2D_(nextForms, c);
       }
       const isDeferredClientSave =
-        sheetRole === "client" && !["Sessions", "AppLog", "Welcome", "OutgNotes"].includes(tabName);
+        Boolean(params._skipFormulaRecompute) ||
+        (sheetRole === "client" && !["Sessions", "AppLog", "Welcome"].includes(tabName));
       await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid, {
         memoryOnly: isDeferredClientSave,
       });
@@ -1767,7 +1887,7 @@ export async function handleVirtualSheetsCall({
 
     if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
-        queuePendingClientTabs_(ctx.clientName, [...byTabClears.keys()]);
+        queuePendingClientTabs_(ctx, [...byTabClears.keys()]);
       } else {
         await recomputeClientFormulasAfterVirtualWrite_(ctx, [...byTabClears.keys()], rawSheetsApi).catch((e) =>
           console.warn("[masterEngineService] Client formula recompute warning:", e.message)
@@ -1785,6 +1905,18 @@ export async function handleVirtualSheetsCall({
   if (namespace === "spreadsheets" && method === "get") {
     const requestedRanges = Array.isArray(params.ranges) ? params.ranges : params.ranges ? [params.ranges] : [];
     const includeGridData = Boolean(params.includeGridData || requestedRanges.length > 0);
+    if (
+      sheetRole === "client" &&
+      includeGridData &&
+      (requestedRanges.length === 0 || requestedRanges.some((r) => doesClientRangeNeedFormulaFlush_(parseA1Range(r))))
+    ) {
+      const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
+      if (pendingSet && pendingSet.size > 0) {
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Read-barrier formula recompute warning:", e.message)
+        );
+      }
+    }
     const targetTabNames =
       requestedRanges.length > 0 ? new Set(requestedRanges.map((r) => parseA1Range(r).tabName)) : null;
 
@@ -1965,7 +2097,9 @@ export async function handleVirtualSheetsCall({
     );
     if (!hasDataOrSheetUpdates) {
       // Visual-only operations (row grouping, hiddenByUser, repeatCell formatting) require zero DB queries
-      if (sheetRole === "client" && !params._skipFormulaRecompute) {
+      // and must NOT prematurely flush pending formula recomputes in the middle of a multi-step operation
+      // unless explicitly requested via _flushPendingRecompute.
+      if (sheetRole === "client" && params._flushPendingRecompute) {
         const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
         if (pendingSet && pendingSet.size > 0) {
           await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
@@ -2058,7 +2192,13 @@ export async function handleVirtualSheetsCall({
           if (isNoteOnly) {
             target.notes_grid = nextNotes;
             dirtyTargets.set(target.tab_name, target);
-            if (sheetRole === "client") noteOnlyClientTabs.add(target.tab_name);
+            if (sheetRole === "client") {
+              if (target.tab_name === "Outgoings") {
+                valueChangedClientTabs.add(target.tab_name);
+              } else {
+                noteOnlyClientTabs.add(target.tab_name);
+              }
+            }
           } else {
             const incoming = req.updateCells.rows.map((r) =>
               (r.values || []).map((v) => {
@@ -2222,7 +2362,7 @@ export async function handleVirtualSheetsCall({
     for (const [tabName, target] of dirtyTargets.entries()) {
       const isDeferredClientSave =
         sheetRole === "client" &&
-        !["Sessions", "AppLog", "Welcome", "OutgNotes"].includes(tabName) &&
+        !["Sessions", "AppLog", "Welcome"].includes(tabName) &&
         (params._skipFormulaRecompute || willRunClientFormulaRecompute) &&
         valueChangedClientTabs.has(tabName);
       await saveVirtualTabGrid_(
@@ -2239,7 +2379,7 @@ export async function handleVirtualSheetsCall({
     if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
         if (valueChangedClientTabs.size > 0) {
-          queuePendingClientTabs_(ctx.clientName, [...valueChangedClientTabs]);
+          queuePendingClientTabs_(ctx, [...valueChangedClientTabs]);
         }
       } else if (willRunClientFormulaRecompute) {
         await recomputeClientFormulasAfterVirtualWrite_(ctx, [...valueChangedClientTabs], rawSheetsApi).catch((e) =>

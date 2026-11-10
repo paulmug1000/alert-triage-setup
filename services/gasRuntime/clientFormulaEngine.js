@@ -1,4 +1,4 @@
-//Version 1.02 - Stage 4.2: Sparse trailing blank preservation & safe lookbehind in shiftRowFormulaFromRow2_
+//Version 1.03 - Stage 4.2: OutgNotes unaffectedTab optimization & Outgoings note clearing sync
 // Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -792,12 +792,13 @@ export function recalculateClientGrids(grids, options = {}) {
       ? options.todaySerial
       : Math.floor(Date.now() / MS_PER_DAY) + EPOCH_OFFSET_DAYS;
 
-  // 1. Sync Outgoings notes into OutgNotes.values (rows 13..111, cols G..AV) if Outgoings.notes is present
+  // 1. Sync Outgoings notes into OutgNotes.values (rows 12..111, cols G..AV) if Outgoings.notes is present
   if (grids.Outgoings?.notes && grids.OutgNotes?.values) {
     const outNotes = grids.Outgoings.notes;
     const onVals = grids.OutgNotes.values;
+    const onForms = grids.OutgNotes.formulas || [];
     if (Array.isArray(outNotes)) {
-      for (let r = 12; r <= 110 && r < outNotes.length; r++) {
+      for (let r = 11; r <= 110 && r < outNotes.length; r++) {
         const noteRow = outNotes[r];
         if (!Array.isArray(noteRow)) continue;
         if (!onVals[r]) onVals[r] = [];
@@ -808,12 +809,16 @@ export function recalculateClientGrids(grids, options = {}) {
         }
       }
     } else if (typeof outNotes === "object") {
-      for (let r = 12; r <= 110; r++) {
+      for (let r = 11; r <= 110; r++) {
         if (!onVals[r]) onVals[r] = [];
+        const fRow = onForms[r] || [];
         for (let c = 6; c <= 47; c++) {
+          if (typeof fRow[c] === "string" && fRow[c].startsWith("=")) continue;
           const noteKey = `${r}:${c}`;
           if (outNotes[noteKey] !== undefined) {
             onVals[r][c] = String(outNotes[noteKey] || "");
+          } else if (onVals[r][c]) {
+            onVals[r][c] = "";
           }
         }
       }
@@ -851,6 +856,9 @@ export function recalculateClientGrids(grids, options = {}) {
       unaffectedTabs = new Set(["KeyInfo"]);
       if (!changedSet.has("Salaries")) {
         unaffectedTabs.add("Salaries");
+      }
+      if (!changedSet.has("Outgoings") && !changedSet.has("OutgNotes")) {
+        unaffectedTabs.add("OutgNotes");
       }
       if (!changedSet.has("Confirmed") && !changedSet.has("ConfCalcs") && !changedSet.has("RevenueConf")) {
         unaffectedTabs.add("Confirmed");

@@ -3719,6 +3719,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
       range: `Outgoings!A${sheetRow}:F${sheetRow}`,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [[sanitizeFormulaInput(String(categoryName || "")), sanitizeFormulaInput(String(vatCharged || "No")), "Next", "Next", "100%", "100%"]] },
+      _skipFormulaRecompute: true,
     });
     await applySheetFontFormat(sheets, sheetIdClean, "Outgoings", sheetRow - 1, sheetRow, 0, 50, "Arial", 9);
     console.log(`  ✅ New vendor row written: ${categoryName}`);
@@ -3830,6 +3831,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
     range: cellA1,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [[newValue]] },
+    _skipFormulaRecompute: true,
   });
   console.log(`  ✅ Value written: ${existingValue} → ${newValue} (${placementMode})`);
 
@@ -8540,11 +8542,15 @@ export async function handleAcceptOption(req, res, sheets) {
         valueInputOption: "USER_ENTERED",
       };
 
+      const willAdjustPlaceholders = Boolean(
+        liveResolvedSlotInfo && (writeTab === "Confirmed" || writeTab === "Pipeline")
+      );
       console.log(`  Writing ${safeCellUpdates.length} cells to ${writeTab} tab of Client Sheet...`);
       console.log(`  Cell updates: ${safeCellUpdates.map(u => `${u.cell}=${JSON.stringify(u.value)}`).join(", ")}`);
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: alert.clientId,
         requestBody: batchRequest,
+        _skipFormulaRecompute: willAdjustPlaceholders,
       });
       console.log(`  ✅ Cells written successfully`);
 
@@ -8569,15 +8575,17 @@ export async function handleAcceptOption(req, res, sheets) {
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId: alert.clientId,
           requestBody: { requests: formatReqs },
+          _skipFormulaRecompute: true,
         });
         console.log(`  ✅ Formatting applied (bold+italic) to ${formatReqs.length} cells`);
       }
 
       // Adjust automatic placeholders (PLACE-INV / PLACE-EXP) on the job after Triage placement
-      if (liveResolvedSlotInfo && (writeTab === "Confirmed" || writeTab === "Pipeline")) {
+      if (willAdjustPlaceholders) {
+        let adjWrote = false;
         try {
           if (liveResolvedSlotInfo.type === "invoice") {
-            await adjustJobInvoicePlaceholders_(
+            const adjRes = await adjustJobInvoicePlaceholders_(
               sheets,
               alert.clientId,
               writeTab,
@@ -8585,8 +8593,9 @@ export async function handleAcceptOption(req, res, sheets) {
               undefined,
               alert.masterSheetId
             );
+            adjWrote = Boolean(adjRes?.batchData?.length);
           } else if (liveResolvedSlotInfo.type === "expense") {
-            await adjustJobExpensePlaceholders_(
+            const adjRes = await adjustJobExpensePlaceholders_(
               sheets,
               alert.clientId,
               writeTab,
@@ -8594,9 +8603,17 @@ export async function handleAcceptOption(req, res, sheets) {
               undefined,
               alert.masterSheetId
             );
+            adjWrote = Boolean(adjRes?.batchData?.length);
           }
         } catch (adjErr) {
           console.warn("handleAcceptOption placeholder adjustment skipped:", adjErr.message);
+        }
+        if (!adjWrote) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: alert.clientId,
+            requestBody: { requests: [] },
+            _flushPendingRecompute: true,
+          }).catch(() => {});
         }
       }
 

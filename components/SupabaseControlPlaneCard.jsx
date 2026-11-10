@@ -268,7 +268,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         const comp = data.syncResult?.comparisons || {};
         setFeedbackMsg({
           type: "success",
-          text: `Completed native Supabase sync (${syncType}) on ${targetClient}: ${comp.invDiscrepancyCount ?? 0} invoice flags, ${comp.dirDiscrepancyCount ?? 0} direct cost flags.`,
+          text: `Completed native Supabase sync (${syncType}) on ${targetClient}: ${comp.invDiscrepancyCount ?? 0} invoice flags, ${comp.dirDiscrepancyCount ?? 0} direct cost flags, ${comp.crmDiscrepancyCount ?? 0} CRM flags.`,
         });
       } else {
         setFeedbackMsg({ type: "error", text: data.error || "Native sync failed." });

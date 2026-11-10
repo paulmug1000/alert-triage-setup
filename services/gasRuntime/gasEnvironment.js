@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * PULSE GAS RUNTIME ENVIRONMENT (services/gasRuntime/gasEnvironment.js)
- * Version: 1.02 — Coalesce multi-phase Client Sheet flushes & preserve note row indices on row insert/delete/move
+ * Version: 1.03 — Single-tab Supabase upserts to prevent statement timeouts on large Master tabs
  * ============================================================================
  * Provides a 100% faithful Google Apps Script execution environment for the
  * verbatim compiled Master GAS scripts (`compiledMasterGas.js`), backed by:
@@ -1842,14 +1842,21 @@ export async function createGasEnvironment({
         sObj.dirty = false;
       }
 
-      for (let i = 0; i < upserts.length; i += 4) {
-        const chunk = upserts.slice(i, i + 4);
-        const { error: uErr } = await supabase
-          .from("master_sheet_grids")
-          .upsert(chunk, { onConflict: "client_name,sheet_role,tab_name" });
-        if (uErr) {
-          console.warn(`[gasEnvironment] Supabase upsert warning for ${ctx.clientName}:`, uErr.message);
-        }
+      for (let i = 0; i < upserts.length; i += 3) {
+        const batch = upserts.slice(i, i + 3);
+        await Promise.all(
+          batch.map(async (item) => {
+            const { error: uErr } = await supabase
+              .from("master_sheet_grids")
+              .upsert([item], { onConflict: "client_name,sheet_role,tab_name" });
+            if (uErr) {
+              console.warn(
+                `[gasEnvironment] Supabase upsert warning for ${ctx.clientName} (${item.tab_name}):`,
+                uErr.message
+              );
+            }
+          })
+        );
       }
 
       if (upserts.length > 0) {
@@ -1874,7 +1881,7 @@ export async function createGasEnvironment({
               },
               _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
             });
-          } catch (_) {}
+          } catch (_) { }
         }
       }
     }

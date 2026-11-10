@@ -80,23 +80,41 @@ function summarizeComparisonsFromMasterSS_(masterSS, clientName) {
   const dirDash = masterSS.getSheetByName("DirDashList")?.valuesGrid || [];
   const invComp = masterSS.getSheetByName("InvComp")?.valuesGrid || [];
   const dirComp = masterSS.getSheetByName("DirComp")?.valuesGrid || [];
+  const crmComp = masterSS.getSheetByName("CRMComp")?.valuesGrid || [];
 
   const confirmedInvoicesScanned = Math.max(0, invDash.length - 2);
   const confirmedDirectCostsScanned = Math.max(0, dirDash.length - 2);
 
+  // Match processInvoices (compiledMasterGas.js): only count left-side App-vs-Dashboard discrepancies (AD..AF / S..Y),
+  // not right-side (BW..BY) which lists all future planned Dashboard invoice slots >= D2.
   let invDiscrepancyCount = 0;
   for (let r = 5; r < invComp.length; r++) {
     const row = invComp[r] || [];
     if (row[29] || row[30] || row[31]) invDiscrepancyCount++;
-    if (row[74] || row[75] || row[76]) invDiscrepancyCount++;
   }
 
+  // Match calculateFinalExpenseDiscrepancies (compiledMasterGas.js): only count left-side "Dashboard compare" flags (AO..AV),
+  // not right-side (FI..FP) future planned Dashboard direct cost slots.
   let dirDiscrepancyCount = 0;
   for (let r = 5; r < dirComp.length; r++) {
     const row = dirComp[r] || [];
     if (row.slice(40, 48).some((v) => v === 1 || v === "1")) dirDiscrepancyCount++;
-    if (row.slice(165, 173).some((v) => v === 1 || v === "1")) dirDiscrepancyCount++;
   }
+
+  // Match processCRMWorkflow (compiledMasterGas.js): count left-side "Dashboard compare" flags (cols 50..53, 55..57)
+  // and right-side "CRM compare" mismatch flags (cols 161..163, 165..167).
+  let crmDashDiscrepancyCount = 0;
+  let crmAppDiscrepancyCount = 0;
+  for (let r = 5; r < crmComp.length; r++) {
+    const row = crmComp[r] || [];
+    if ([50, 51, 52, 53, 55, 56, 57].some((c) => row[c] === 1 || row[c] === "1")) {
+      crmDashDiscrepancyCount++;
+    }
+    if ([161, 162, 163, 165, 166, 167].some((c) => row[c] === 1 || row[c] === "1")) {
+      crmAppDiscrepancyCount++;
+    }
+  }
+  const crmDiscrepancyCount = crmDashDiscrepancyCount + crmAppDiscrepancyCount;
 
   return {
     success: true,
@@ -105,6 +123,9 @@ function summarizeComparisonsFromMasterSS_(masterSS, clientName) {
     confirmedDirectCostsScanned,
     invDiscrepancyCount,
     dirDiscrepancyCount,
+    crmDiscrepancyCount,
+    crmDashDiscrepancyCount,
+    crmAppDiscrepancyCount,
   };
 }
 
@@ -201,8 +222,9 @@ export async function recomputeCrmComparisonInSupabase(sheets, clientName, reque
 
   const crmCompGrid = crmCompSheet?.valuesGrid || [];
   const mode = String(crmCompGrid[1]?.[1] || requestedMode || "Pipeline").trim();
-  const dashDiscrCount = toNumber(crmCompGrid[1]?.[40]); // AO2
-  const appDiscrCount = toNumber(crmCompGrid[1]?.[150]); // EU2
+  const summary = summarizeComparisonsFromMasterSS_(env.masterSS, ctx.clientName);
+  const dashDiscrCount = summary.crmDashDiscrepancyCount;
+  const appDiscrCount = summary.crmAppDiscrepancyCount;
   const dfcGrid = env.masterSS.getSheetByName("DataFromCRM")?.valuesGrid || [];
 
   return {

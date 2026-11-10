@@ -118,7 +118,11 @@ import {
   checkClientBankReconciliationStatus
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
-import { resolveSupabaseSheetContext, getSupabaseClockStatusAndSyncConfig } from "../../services/masterEngineService";
+import {
+  resolveSupabaseSheetContext,
+  getSupabaseClockStatusAndSyncConfig,
+  flushPendingClientRecomputes,
+} from "../../services/masterEngineService";
 import { getSupabaseAdmin } from "../../services/supabaseClient";
 import { syncExpenseBreakdownToClientSheetNative } from "../../services/masterSyncEngine";
 import { getSessionUser, safeCompareSecret, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
@@ -1587,6 +1591,8 @@ export default async function handler(req, res) {
       success: false,
       error: safeMsg,
     });
+  } finally {
+    await flushPendingClientRecomputes().catch(() => { });
   }
 }
 

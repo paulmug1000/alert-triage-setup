@@ -1379,50 +1379,51 @@ export async function syncReconBankTransactions({
     spreadsheetId: cleanId,
     requestBody: {
       ranges: [`'${tabName}'!A3:J200`, `'${tabName}'!Q3:Q200`]
-    }
+  },
+    _skipFormulaRecompute: transactions.length > 0,
   }));
 
-  if (transactions.length === 0) {
-    return { success: true, count: 0 };
+if (transactions.length === 0) {
+  return { success: true, count: 0 };
+}
+
+const rowsAJ = [];
+const rowsQ = [];
+
+transactions.forEach(tx => {
+  const date = tx.date || "";
+  const payee = tx.payee || "";
+  const particulars = tx.particulars || "";
+  const ref = tx.reference || "";
+  const outAmt = tx.outAmount ? String(tx.outAmount) : "";
+  const inAmt = tx.inAmount ? String(tx.inAmount) : "";
+  const inNum = parseFloat(String(inAmt).replace(/[£,\s]/g, "")) || 0;
+  const cat = tx.category || tx.suggestedCategory || (inNum > 0 ? "Revenue" : "Outgoings");
+  const accountName = tx.accountName || "";
+
+  // Columns: [A: Date, B: Date, C: Account Name, D: Payee, E: Particulars, F: Ref, G: '', H: '', I: Out, J: In]
+  rowsAJ.push([sanitizeFormulaInput(date), sanitizeFormulaInput(date), sanitizeFormulaInput(accountName), sanitizeFormulaInput(payee), sanitizeFormulaInput(particulars), sanitizeFormulaInput(ref), "", "", sanitizeFormulaInput(outAmt), sanitizeFormulaInput(inAmt)]);
+  rowsQ.push([sanitizeFormulaInput(cat)]);
+});
+
+await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+  spreadsheetId: cleanId,
+  requestBody: {
+    valueInputOption: "USER_ENTERED",
+    data: [
+      {
+        range: `'${tabName}'!A3:J${2 + rowsAJ.length}`,
+        values: rowsAJ
+      },
+      {
+        range: `'${tabName}'!Q3:Q${2 + rowsQ.length}`,
+        values: rowsQ
+      }
+    ]
   }
+}));
 
-  const rowsAJ = [];
-  const rowsQ = [];
-
-  transactions.forEach(tx => {
-    const date = tx.date || "";
-    const payee = tx.payee || "";
-    const particulars = tx.particulars || "";
-    const ref = tx.reference || "";
-    const outAmt = tx.outAmount ? String(tx.outAmount) : "";
-    const inAmt = tx.inAmount ? String(tx.inAmount) : "";
-    const inNum = parseFloat(String(inAmt).replace(/[£,\s]/g, "")) || 0;
-    const cat = tx.category || tx.suggestedCategory || (inNum > 0 ? "Revenue" : "Outgoings");
-    const accountName = tx.accountName || "";
-
-    // Columns: [A: Date, B: Date, C: Account Name, D: Payee, E: Particulars, F: Ref, G: '', H: '', I: Out, J: In]
-    rowsAJ.push([sanitizeFormulaInput(date), sanitizeFormulaInput(date), sanitizeFormulaInput(accountName), sanitizeFormulaInput(payee), sanitizeFormulaInput(particulars), sanitizeFormulaInput(ref), "", "", sanitizeFormulaInput(outAmt), sanitizeFormulaInput(inAmt)]);
-    rowsQ.push([sanitizeFormulaInput(cat)]);
-  });
-
-  await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: cleanId,
-    requestBody: {
-      valueInputOption: "USER_ENTERED",
-      data: [
-        {
-          range: `'${tabName}'!A3:J${2 + rowsAJ.length}`,
-          values: rowsAJ
-        },
-        {
-          range: `'${tabName}'!Q3:Q${2 + rowsQ.length}`,
-          values: rowsQ
-        }
-      ]
-    }
-  }));
-
-  return { success: true, count: transactions.length };
+return { success: true, count: transactions.length };
 }
 
 /**
@@ -1465,60 +1466,61 @@ export async function syncReconUnreconciledItems({
     spreadsheetId: cleanId,
     requestBody: {
       ranges: [`'${tabName}'!CD4:CI100`, `'${tabName}'!CM4:CN100`]
-    }
+  },
+    _skipFormulaRecompute: unreconciledItems.length > 0,
   }));
 
-  if (unreconciledItems.length === 0) {
-    return { success: true, count: 0 };
+if (unreconciledItems.length === 0) {
+  return { success: true, count: 0 };
+}
+
+const rowsCD = [];
+const rowsCM = [];
+
+unreconciledItems.forEach(u => {
+  const date = u.date || "";
+  const payee = u.payee || "";
+  const particulars = u.particulars || "";
+  const rawNum = Math.abs(parseNumeric(u.amount || u.outAmount || u.inAmount));
+  const isOutflow = u.isNegative !== undefined
+    ? Boolean(u.isNegative)
+    : (parseNumeric(u.outAmount) > 0 || parseNumeric(u.amount) < 0);
+  let amt = "";
+  if (rawNum > 0) {
+    if (isQbDa1) {
+      amt = isOutflow ? String(rawNum) : `-${rawNum}`;
+    } else {
+      amt = isOutflow ? `-${rawNum}` : String(rawNum);
+    }
   }
+  const rawPlCat = u.plCategory !== undefined ? u.plCategory : (u.category || "");
+  const cat = (rawPlCat && rawPlCat !== "Outgoings" && rawPlCat !== "Revenue") ? rawPlCat : "";
+  const vat = u.vatApplies || "No";
 
-  const rowsCD = [];
-  const rowsCM = [];
+  // CD:CI: [CD: '', CE: '', CF: Date, CG: Payee, CH: Particulars, CI: Amount]
+  rowsCD.push(["", "", sanitizeFormulaInput(date), sanitizeFormulaInput(payee), sanitizeFormulaInput(particulars), sanitizeFormulaInput(amt)]);
+  // CM:CN: [CM: Category, CN: VAT?]
+  rowsCM.push([sanitizeFormulaInput(cat), sanitizeFormulaInput(vat)]);
+});
 
-  unreconciledItems.forEach(u => {
-    const date = u.date || "";
-    const payee = u.payee || "";
-    const particulars = u.particulars || "";
-    const rawNum = Math.abs(parseNumeric(u.amount || u.outAmount || u.inAmount));
-    const isOutflow = u.isNegative !== undefined
-      ? Boolean(u.isNegative)
-      : (parseNumeric(u.outAmount) > 0 || parseNumeric(u.amount) < 0);
-    let amt = "";
-    if (rawNum > 0) {
-      if (isQbDa1) {
-        amt = isOutflow ? String(rawNum) : `-${rawNum}`;
-      } else {
-        amt = isOutflow ? `-${rawNum}` : String(rawNum);
+await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+  spreadsheetId: cleanId,
+  requestBody: {
+    valueInputOption: "USER_ENTERED",
+    data: [
+      {
+        range: `'${tabName}'!CD4:CI${3 + rowsCD.length}`,
+        values: rowsCD
+      },
+      {
+        range: `'${tabName}'!CM4:CN${3 + rowsCM.length}`,
+        values: rowsCM
       }
-    }
-    const rawPlCat = u.plCategory !== undefined ? u.plCategory : (u.category || "");
-    const cat = (rawPlCat && rawPlCat !== "Outgoings" && rawPlCat !== "Revenue") ? rawPlCat : "";
-    const vat = u.vatApplies || "No";
+    ]
+  }
+}));
 
-    // CD:CI: [CD: '', CE: '', CF: Date, CG: Payee, CH: Particulars, CI: Amount]
-    rowsCD.push(["", "", sanitizeFormulaInput(date), sanitizeFormulaInput(payee), sanitizeFormulaInput(particulars), sanitizeFormulaInput(amt)]);
-    // CM:CN: [CM: Category, CN: VAT?]
-    rowsCM.push([sanitizeFormulaInput(cat), sanitizeFormulaInput(vat)]);
-  });
-
-  await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: cleanId,
-    requestBody: {
-      valueInputOption: "USER_ENTERED",
-      data: [
-        {
-          range: `'${tabName}'!CD4:CI${3 + rowsCD.length}`,
-          values: rowsCD
-        },
-        {
-          range: `'${tabName}'!CM4:CN${3 + rowsCM.length}`,
-          values: rowsCM
-        }
-      ]
-    }
-  }));
-
-  return { success: true, count: unreconciledItems.length };
+return { success: true, count: unreconciledItems.length };
 }
 
 
@@ -1831,7 +1833,8 @@ export async function applyCashFutureOffset({
   if (noteRequests.length > 0) {
     await withRetry(() => sheets.spreadsheets.batchUpdate({
       spreadsheetId: cleanClientSheetId,
-      requestBody: { requests: noteRequests }
+      requestBody: { requests: noteRequests },
+      _skipFormulaRecompute: true,
     }));
   }
 

@@ -2488,6 +2488,7 @@ async function insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobClient, j
       valueInputOption: "RAW",
       data: rowValueUpdates,
     },
+    _skipFormulaRecompute: true,
   });
 
   return targetRowNum;
@@ -6079,6 +6080,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
             range: `Outgoings!${colLetter}112`,
             valueInputOption: "USER_ENTERED",
             requestBody: { values: [["ZERO"]] },
+            _skipFormulaRecompute: true,
           });
         }
       } else {
@@ -6087,6 +6089,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
           range: cellRef,
           valueInputOption: "USER_ENTERED",
           requestBody: { values: [[cellTotal || ""]] },
+          _skipFormulaRecompute: true,
         });
       }
     }
@@ -6739,6 +6742,7 @@ export async function handleDeleteDirectJob(req, res, sheets) {
               sheets.spreadsheets.batchUpdate({
                 spreadsheetId: sheetIdClean,
                 requestBody: { requests: cleanupRequests },
+                _skipFormulaRecompute: true,
               })
             );
           }

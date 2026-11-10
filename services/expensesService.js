@@ -509,11 +509,21 @@ export async function saveExpenseAmount({
   }
 
   const sheets = await getSheetsClient();
+  const hasNoteUpdates = Boolean(
+    cellNotes &&
+      typeof cellNotes === "object" &&
+      Object.keys(cellNotes).some((k) => {
+        const cleanLetter = String(k).toUpperCase().trim();
+        if (!/^[A-Z]{1,2}$/.test(cleanLetter)) return false;
+        return isOutgoingsMonthlyCol(colLetterToNum(cleanLetter) - 1);
+      })
+  );
 
   if (dataUpdates.length > 0) {
     await withRetry(async () => {
       return await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
+        _skipFormulaRecompute: hasNoteUpdates,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: dataUpdates,

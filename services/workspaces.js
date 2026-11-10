@@ -6186,6 +6186,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
 
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: sheetIdClean,
+      _skipFormulaRecompute: true,
       requestBody: { requests: noteRequests },
     });
 

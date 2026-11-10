@@ -416,11 +416,21 @@ export async function saveNBToFindMonthlyValues({
   }
 
   const sheets = await getSheetsClient();
+  const hasNoteUpdates = Boolean(
+    cellNotes &&
+      typeof cellNotes === "object" &&
+      Object.keys(cellNotes).some((k) => {
+        const cleanLetter = String(k).toUpperCase().trim();
+        if (!/^[A-Z]{1,2}$/.test(cleanLetter)) return false;
+        return isNbMonthlyCol(colLetterToNum(cleanLetter) - 1);
+      })
+  );
 
   if (updates.length > 0) {
     await withRetry(async () => {
       return await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
+        _skipFormulaRecompute: hasNoteUpdates,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: updates,

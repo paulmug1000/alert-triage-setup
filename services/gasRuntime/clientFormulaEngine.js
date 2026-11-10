@@ -1,4 +1,4 @@
-//Version 1.04 - Dependency pruning (Budget, Year0Data, Monthly unaffected cols, onlyTabs fast-path)
+//Version 1.05 - Universal immediate tab evaluation support, exact Monthly column pruning, and downstream dependency pruning
 // Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -873,7 +873,9 @@ export function recalculateClientGrids(grids, options = {}) {
         unaffectedTabs.add("RevenueConf");
         if (!changedSet.has("CashIncomingConf")) unaffectedTabs.add("CashIncomingConf");
         if (!changedSet.has("InvoicesSent")) unaffectedTabs.add("InvoicesSent");
-        if (!changedSet.has("ContrPayments")) unaffectedTabs.add("ContrPayments");
+        if (!changedSet.has("ContrPayments") && !changedSet.has("Outgoings") && !changedSet.has("OutgNotes")) {
+          unaffectedTabs.add("ContrPayments");
+        }
       }
       if (!changedSet.has("Pipeline") && !changedSet.has("PipeCalcs") && !changedSet.has("RevenuePipe")) {
         unaffectedTabs.add("Pipeline");
@@ -889,6 +891,29 @@ export function recalculateClientGrids(grids, options = {}) {
       ) {
         unaffectedTabs.add("Calcs");
         unaffectedTabs.add("ErrorCheck");
+        if (
+          unaffectedTabs.has("Budget") &&
+          !changedSet.has("NBtoFind") &&
+          !changedSet.has("Dashboard")
+        ) {
+          unaffectedTabs.add("NBtoFind");
+        }
+        if (
+          unaffectedTabs.has("Salaries") &&
+          unaffectedTabs.has("OutgNotes") &&
+          unaffectedTabs.has("NBtoFind") &&
+          !changedSet.has("Outgoings") &&
+          !changedSet.has("Monthly") &&
+          !changedSet.has("Performance") &&
+          !changedSet.has("Dashboard")
+        ) {
+          unaffectedTabs.add("Outgoings");
+          unaffectedTabs.add("Monthly");
+          unaffectedTabs.add("Performance");
+          unaffectedTabs.add("Dashboard");
+          if (!changedSet.has("VAT")) unaffectedTabs.add("VAT");
+          if (!changedSet.has("GPbyPL")) unaffectedTabs.add("GPbyPL");
+        }
       }
     }
   }
@@ -901,12 +926,28 @@ export function recalculateClientGrids(grids, options = {}) {
   function isMonthlyColUnaffected_(c) {
     if (!unaffectedTabs || !unaffectedTabs.has("KeyInfo")) return false;
     if (c >= 175 && c <= 185 && unaffectedTabs.has("OutgNotes")) return true;
-    if ((c === 10 || (c >= 41 && c <= 100)) && unaffectedTabs.has("PipeCalcs")) return true;
+    if ((c === 10 || (c >= 41 && c <= 57) || (c >= 83 && c <= 105)) && unaffectedTabs.has("PipeCalcs")) return true;
     if (
-      (c === 2 || (c >= 17 && c <= 39) || (c >= 102 && c <= 130) || (c >= 142 && c <= 167)) &&
+      (c === 2 ||
+        (c >= 17 && c <= 39) ||
+        (c >= 59 && c <= 81) ||
+        (c >= 107 && c <= 130) ||
+        (c >= 142 && c <= 167)) &&
       unaffectedTabs.has("ConfCalcs")
     ) {
       return true;
+    }
+    return false;
+  }
+
+  function formulaRefsMissingSheet_(f, currentTab) {
+    if (!onlyTabs || typeof f !== "string" || !f.includes("!")) return false;
+    const matches = f.matchAll(/([A-Za-z0-9_]+)\!/g);
+    for (const m of matches) {
+      const refTab = m[1];
+      if (refTab !== currentTab && refTab !== "REF" && !grids[refTab]) {
+        return true;
+      }
     }
     return false;
   }
@@ -947,6 +988,13 @@ export function recalculateClientGrids(grids, options = {}) {
         }
         const f = rowF[c];
         const hasFormula = typeof f === "string" && f.startsWith("=");
+        if (hasFormula && onlyTabs && formulaRefsMissingSheet_(f, tab)) {
+          if (c < rowV.length && rowV[c] === "") {
+            rowV[c] = null;
+          }
+          cellState[tab][r * numCols + c] = 2;
+          continue;
+        }
         // For Calcs (scalar cells only), if PipeCalcs (or ConfCalcs) is unaffected, formulas that ONLY reference
         // the unaffected job pipeline do not need re-evaluation if they already have an evaluated value
         if (
@@ -3093,7 +3141,7 @@ export function recalculateClientGrids(grids, options = {}) {
         if (!hasTabValuesChanged_("Budget", snap)) break;
       }
     }
-    if (tab === "Dashboard") {
+    if (tab === "Dashboard" && !(unaffectedTabs && unaffectedTabs.has("Dashboard"))) {
       // Outgoings <-> Performance <-> Dashboard form an iterative feedback loop (Outgoings Row 111 CoS top-up & Row 235 Bonus)
       let anyOutgoingsChange = false;
       for (let iter = 0; iter < 10; iter++) {

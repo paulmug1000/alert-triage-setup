@@ -336,6 +336,7 @@ export async function saveCashBatch({
       await withRetry(async () => {
         return await sheets.spreadsheets.batchUpdate({
           spreadsheetId: cleanId,
+          _skipFormulaRecompute: validValueUpdates.length > 0,
           requestBody: {
             requests: validNoteRequests,
           },

@@ -205,6 +205,7 @@ export default function AlertSelectionView({
       body: JSON.stringify({
         action: "acknowledge_proactive_alert",
         alertKey,
+        rowIndex,
         clientName: alertData?.clientName || selectedClient?.clientName,
         sessionId,
         automationCommanderSheetId,

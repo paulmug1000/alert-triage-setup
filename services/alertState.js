@@ -971,7 +971,7 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
 }
 
 export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
-  const { alertKey, clientName, sessionId, automationCommanderSheetId: acId, alertData } = req.body;
+  const { alertKey, clientName, sessionId, automationCommanderSheetId: acId, alertData, rowIndex } = req.body;
   if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
   const sessionUser = getSessionUser(req);
   if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
@@ -986,6 +986,7 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
     const candidateMatches = memoryRows.filter(r => {
       if (clientName && r.clientName !== clientName) return false;
       if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, r.clientName)) return false;
+      if (rowIndex != null && r.rowIndex === Number(rowIndex)) return true;
       if (r.fingerprintHash === fingerprintHash) return true;
       try {
         const s = JSON.parse(r.dataSnapshot || "{}");
@@ -999,10 +1000,39 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
     });
 
     if (candidateMatches.length > 0) {
+      const statusPriority = (s) => {
+        if (s === "cached" || s === "pending_automation" || s === "task") return 4;
+        if (s === "accepted" || s === "ignored") return 3;
+        if (s === "auto_resolved") return 2;
+        return 1; // superseded
+      };
+      candidateMatches.sort((a, b) => {
+        if (rowIndex != null) {
+          const aMatch = a.rowIndex === Number(rowIndex) ? 1 : 0;
+          const bMatch = b.rowIndex === Number(rowIndex) ? 1 : 0;
+          if (aMatch !== bMatch) return bMatch - aMatch;
+        }
+        const aHashMatch = a.fingerprintHash === fingerprintHash ? 1 : 0;
+        const bHashMatch = b.fingerprintHash === fingerprintHash ? 1 : 0;
+        if (aHashMatch !== bHashMatch) return bHashMatch - aHashMatch;
+        const sp = statusPriority(b.status) - statusPriority(a.status);
+        if (sp !== 0) return sp;
+        return (b.rowIndex || 0) - (a.rowIndex || 0);
+      });
+
       const primaryRow = candidateMatches[0];
       let snap = {};
       try { snap = JSON.parse(primaryRow.dataSnapshot || "{}"); } catch (e) { }
       if (alertData) snap = { ...snap, ...alertData };
+
+      // Supersede duplicates first so primaryRow remains authoritative in Supabase and cache
+      for (const dup of candidateMatches.slice(1)) {
+        await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
+          ...dup,
+          status: "superseded"
+        });
+      }
+
       await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, {
         ...primaryRow,
         fingerprintHash,
@@ -1010,12 +1040,6 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
         clientName: clientName || primaryRow.clientName || "",
         dataSnapshot: JSON.stringify(snap)
       });
-      for (const dup of candidateMatches.slice(1)) {
-        await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
-          ...dup,
-          status: "superseded"
-        });
-      }
     } else {
       const snapStr = alertData ? JSON.stringify(alertData) : "";
       await appendAlertMemoryRow(sheets, acId, {
@@ -1182,16 +1206,23 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
       });
 
       if (candidateMatches.length > 0) {
-        const primaryRow = candidateMatches[0];
-        updateBatchItems.push({
-          rowIndex: primaryRow.rowIndex,
-          updates: {
-            ...primaryRow,
-            fingerprintHash,
-            status: "accepted",
-            clientName: clientName || primaryRow.clientName || ""
-          }
+        const statusPriority = (s) => {
+          if (s === "cached" || s === "pending_automation" || s === "task") return 4;
+          if (s === "accepted" || s === "ignored") return 3;
+          if (s === "auto_resolved") return 2;
+          return 1; // superseded
+        };
+        candidateMatches.sort((a, b) => {
+          const aHashMatch = a.fingerprintHash === fingerprintHash ? 1 : 0;
+          const bHashMatch = b.fingerprintHash === fingerprintHash ? 1 : 0;
+          if (aHashMatch !== bHashMatch) return bHashMatch - aHashMatch;
+          const sp = statusPriority(b.status) - statusPriority(a.status);
+          if (sp !== 0) return sp;
+          return (b.rowIndex || 0) - (a.rowIndex || 0);
         });
+
+        const primaryRow = candidateMatches[0];
+        // Supersede duplicates first so primaryRow remains authoritative
         for (const dup of candidateMatches.slice(1)) {
           updateBatchItems.push({
             rowIndex: dup.rowIndex,
@@ -1201,6 +1232,15 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
             }
           });
         }
+        updateBatchItems.push({
+          rowIndex: primaryRow.rowIndex,
+          updates: {
+            ...primaryRow,
+            fingerprintHash,
+            status: "accepted",
+            clientName: clientName || primaryRow.clientName || ""
+          }
+        });
       } else {
         appendItems.push({
           fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",

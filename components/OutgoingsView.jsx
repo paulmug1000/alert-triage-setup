@@ -73,7 +73,14 @@ function parseVendorAndDescription(exp) {
       if (!vendor) vendor = dMatch[1].trim();
       if (!description || description === rawDesc) description = dMatch[2].trim();
     } else if (!description) {
-      if (!vendor || rawDesc.toLowerCase() !== vendor.toLowerCase()) {
+      // Also match "Vendor Name - Item Description" if brackets are not used
+      const dashMatch = rawDesc.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+      if (dashMatch) {
+        if (!vendor || vendor === rawDesc) {
+          vendor = dashMatch[1].trim();
+        }
+        description = dashMatch[2].trim();
+      } else if (!vendor || rawDesc.toLowerCase() !== vendor.toLowerCase()) {
         description = rawDesc;
       }
     }
@@ -89,6 +96,14 @@ function parseVendorAndDescription(exp) {
   }
 
   return { vendor, description };
+}
+
+function formatContractorExpenseDescription(exp) {
+  const { vendor, description } = parseVendorAndDescription(exp);
+  if (vendor && description) {
+    return `${vendor} (${description})`;
+  }
+  return vendor || description || exp?.description || exp?.contactName || exp?.accountName || "";
 }
 
 export default function OutgoingsView({
@@ -625,6 +640,7 @@ export default function OutgoingsView({
   const updateCell = async (contractor, colLetter, newBlocks, newTopNote) => {
     const existingTopNote = contractor.cells[colLetter]?.topNote || "";
     const topNoteToSave = newTopNote !== undefined ? newTopNote : existingTopNote;
+    const prevContractors = outgoingsData?.contractors;
     setOutgoingsData(prev => {
       if (!prev) return prev;
       return {
@@ -639,7 +655,7 @@ export default function OutgoingsView({
     const cellKey = `${contractor.sheetRow}-${colLetter}`;
     setSavingContractorCellKey(cellKey);
     try {
-      await fetch("/api/triage", {
+      const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_outgoing_note",
@@ -655,11 +671,19 @@ export default function OutgoingsView({
           topNote: topNoteToSave,
         }),
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || `Failed to update cell (HTTP ${res.status})`);
+      }
       if (outgoingsClient?.masterSheetId) {
         outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
       }
     } catch (e) {
       console.error("updateCell error:", e);
+      if (prevContractors) {
+        setOutgoingsData(prev => prev ? { ...prev, contractors: prevContractors } : prev);
+      }
+      alert(e.message || "Failed to update cell");
     } finally {
       setSavingContractorCellKey(prev => (prev === cellKey ? null : prev));
     }
@@ -682,8 +706,7 @@ export default function OutgoingsView({
       return;
     }
     const newBlocks = toPlace.map(item => {
-      const { vendor, description } = parseVendorAndDescription(item);
-      const descToStore = description ? `${vendor} - ${description}` : (vendor || item.accountName || "");
+      const descToStore = formatContractorExpenseDescription(item);
       return {
         appId: item.appId,
         amount: item.amount,
@@ -1300,8 +1323,7 @@ export default function OutgoingsView({
           try {
             const base = keepManual ? currentAllBlocks : currentBlocksWithoutManual;
             const newBlocks = expenseList.map(item => {
-              const { vendor, description } = parseVendorAndDescription(item);
-              const descToStore = description ? `${vendor} - ${description}` : (vendor || item.accountName || "");
+              const descToStore = formatContractorExpenseDescription(item);
               return {
                 appId: item.appId,
                 amount: item.amount,
@@ -1349,8 +1371,7 @@ export default function OutgoingsView({
               }
             }
             const newBlocks = expenseList.map(item => {
-              const { vendor, description } = parseVendorAndDescription(item);
-              const descToStore = description ? `${vendor} - ${description}` : (vendor || item.accountName || "");
+              const descToStore = formatContractorExpenseDescription(item);
               return {
                 appId: item.appId,
                 amount: item.amount,

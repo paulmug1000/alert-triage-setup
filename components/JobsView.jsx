@@ -2085,11 +2085,17 @@ export default function JobsView({
       // Optimistically update local jobsData
       const invUpdatesMap = new Map();
       (data.invoiceSlotUpdates || []).forEach((u) => {
-        invUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, u);
+        invUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, {
+          ...u,
+          amount: u.amount !== "" && u.amount !== undefined && u.amount !== null ? formatCurrency(u.amount) : ""
+        });
       });
       const expUpdatesMap = new Map();
       (data.expenseSlotUpdates || []).forEach((u) => {
-        expUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, u);
+        expUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, {
+          ...u,
+          amount: u.amount !== "" && u.amount !== undefined && u.amount !== null ? formatCurrency(u.amount) : ""
+        });
       });
 
       setJobsData((prevJobs) => {
@@ -2101,6 +2107,9 @@ export default function JobsView({
             Object.keys(currentDraft).forEach((f) => {
               let nextVal = currentDraft[f];
               if (FIELD_MAP[f]?.isDate && nextVal) nextVal = toSheetDateFormat(nextVal);
+              if ((f === "revenue" || f === "directCosts") && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
+                nextVal = formatCurrency(nextVal);
+              }
               if (rIdx === 0 || f === "client" || f === "jobName") {
                 nextRow[f] = nextVal;
               }
@@ -2430,8 +2439,8 @@ export default function JobsView({
           if (colLetter === "A") updated.client = newValue;
           if (colLetter === "B") updated.jobName = newValue;
           if (colLetter === "C") updated.projectCode = newValue;
-          if (colLetter === "AG") updated.revenue = newValue;
-          if (colLetter === "AH") updated.directCosts = newValue;
+          if (colLetter === "AG") updated.revenue = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
+          if (colLetter === "AH") updated.directCosts = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
           if (colLetter === "AI") updated.vat = newValue;
           if (colLetter === "AJ") updated.projectRetainer = newValue;
           if (colLetter === "AL") updated.startDate = newValue;

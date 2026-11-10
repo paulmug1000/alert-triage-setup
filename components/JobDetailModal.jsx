@@ -928,11 +928,17 @@ export default function JobDetailModal({
       // Update local state
       const invUpdatesMap = new Map();
       (data.invoiceSlotUpdates || []).forEach((u) => {
-        invUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, u);
+        invUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, {
+          ...u,
+          amount: u.amount !== "" && u.amount !== undefined && u.amount !== null ? formatCurrency(u.amount) : ""
+        });
       });
       const expUpdatesMap = new Map();
       (data.expenseSlotUpdates || []).forEach((u) => {
-        expUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, u);
+        expUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, {
+          ...u,
+          amount: u.amount !== "" && u.amount !== undefined && u.amount !== null ? formatCurrency(u.amount) : ""
+        });
       });
 
       setJob((prev) => {
@@ -942,6 +948,9 @@ export default function JobDetailModal({
           Object.keys(draftEdits).forEach((f) => {
             let nextVal = draftEdits[f];
             if (FIELD_MAP[f]?.isDate && nextVal) nextVal = toSheetDateFormat(nextVal);
+            if ((f === "revenue" || f === "directCosts") && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
+              nextVal = formatCurrency(nextVal);
+            }
             if (rIdx === 0 || f === "client" || f === "jobName") nextRow[f] = nextVal;
           });
           if (invUpdatesMap.size > 0 && Array.isArray(nextRow.invoiceSlots)) {

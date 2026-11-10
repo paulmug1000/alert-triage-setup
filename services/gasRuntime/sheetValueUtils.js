@@ -1,6 +1,6 @@
 /**
  * Sheet Value & Date/Display Conversion Utilities
- * Version: 1.01 — Exhaustive date & percentage column coordinate alignment across all Master & Client tabs
+ * Version: 1.02 — Parse USER_ENTERED currency/comma-formatted numbers in normalizeCellForStorage & format string currency cells in formatCellForDisplay
  *
  * Bridges Google Sheets' internal UNFORMATTED_VALUE representation (used by
  * master_sheet_grids.values_grid and masterFormulaEngine.js) with:
@@ -402,6 +402,21 @@ export function formatCellForDisplay(sheetRole, tabName, row0, col0, val, fullGr
     }
     return "";
   }
+  if (
+    typeof val === "string" &&
+    (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
+    row0 >= 1 &&
+    CONF_PIPE_CURRENCY_COLS.has(col0)
+  ) {
+    const trimmed = val.trim();
+    if (/^-?[£$€]?\s*-?\d[\d,]*(\.\d+)?$/.test(trimmed)) {
+      const isNeg = trimmed.includes("-");
+      const parsedNum = Number(trimmed.replace(/[£$€,\s-]/g, ""));
+      if (Number.isFinite(parsedNum)) {
+        val = isNeg ? -parsedNum : parsedNum;
+      }
+    }
+  }
   if (typeof val === "number" && Number.isFinite(val)) {
     if (isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid, notesGrid)) {
       return formatSerialForCell_(sheetRole, tabName, row0, col0, val);
@@ -600,6 +615,15 @@ export function normalizeCellForStorage(
     if (/^-?(0|[1-9]\d*)(\.\d+)?$/.test(trimmed)) {
       const n = Number(trimmed);
       if (Number.isFinite(n)) return n;
+    }
+    // Check if it's a currency-prefixed or comma-grouped number (e.g. "£20080", "£20,080.00", "-£1,200", "20,080")
+    if (
+      /^-?[£$€]\s*-?(0|[1-9]\d*)(,\d{3})*(\.\d+)?$/.test(trimmed) ||
+      /^-?(0|[1-9]\d{0,2})(,\d{3})+(\.\d+)?$/.test(trimmed)
+    ) {
+      const isNeg = trimmed.includes("-");
+      const n = Number(trimmed.replace(/[£$€,\s-]/g, ""));
+      if (Number.isFinite(n)) return isNeg ? -n : n;
     }
     // Check if it's a percentage in a percentage column
     if (/^-?\d+(\.\d+)?%$/.test(trimmed)) {

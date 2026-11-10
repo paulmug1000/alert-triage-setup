@@ -25,7 +25,7 @@ import { getSessionUser } from "./authService.js";
 import { getSettingsRedisKey } from "./clientSettingsService.js";
 import { redisClient } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
-import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, flushPendingClientRecomputes } from "./masterEngineService.js";
 import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
 import { memoryCache, get2TierCache, set2TierCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
@@ -1804,6 +1804,7 @@ export async function handleUpdateJobField(req, res, sheets) {
           valueInputOption: "USER_ENTERED",
           data: combinedBatchData,
         },
+        _deferDownstreamRecompute: true,
       });
     } else {
       await sheets.spreadsheets.values.update({
@@ -1811,6 +1812,7 @@ export async function handleUpdateJobField(req, res, sheets) {
         range: `${tabName}!${cellRef}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [[safeValue]] },
+        _deferDownstreamRecompute: true,
       });
     }
 
@@ -1879,22 +1881,30 @@ export async function handleUpdateJobField(req, res, sheets) {
     const valStr = displayLogVal !== "" && displayLogVal !== null && displayLogVal !== undefined ? ` to "${displayLogVal}"` : " (cleared)";
     const summary = `Updated ${resolvedFieldName} for ${jobIdentifier}${valStr}`;
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
-      clientName: resolvedClient,
-      category: "JOB",
-      action: `Job ${resolvedFieldName} Updated`,
-      summary,
-      details: {
-        tabName,
-        cellRef,
-        field: resolvedFieldName,
-        endClient: resolvedEndClient,
-        jobName: resolvedJobName,
-        newValue: value,
-        clientName: resolvedClient
-      }
-    }).catch(e => console.error("PMA log failed:", e));
+    waitUntil(
+      Promise.all([
+        flushPendingClientRecomputes(sheets, resolvedClient).catch(e =>
+          console.warn("Deferred client formula recompute failed in update_job_field:", e.message)
+        ),
+        invalidatePmaClientCache(sheetIdClean, req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(() => {}),
+        logPmaActivity(sheets, {
+          automationCommanderSheetId: req.body.automationCommanderSheetId,
+          clientName: resolvedClient,
+          category: "JOB",
+          action: `Job ${resolvedFieldName} Updated`,
+          summary,
+          details: {
+            tabName,
+            cellRef,
+            field: resolvedFieldName,
+            endClient: resolvedEndClient,
+            jobName: resolvedJobName,
+            newValue: value,
+            clientName: resolvedClient
+          }
+        }).catch(e => console.error("PMA log failed:", e))
+      ])
+    );
 
     return res.status(200).json({ success: true, backgroundProvisioning, invoiceSlotUpdates, expenseSlotUpdates });
   } catch (err) {
@@ -2142,7 +2152,8 @@ export async function handleUpdateJobFields(req, res, sheets) {
           requestBody: {
             valueInputOption: "USER_ENTERED",
             data: combinedBatchData
-          }
+          },
+          _deferDownstreamRecompute: true
         });
       }
     }
@@ -2154,6 +2165,9 @@ export async function handleUpdateJobFields(req, res, sheets) {
 
     waitUntil(
       Promise.all([
+        flushPendingClientRecomputes(sheets, resolvedClient).catch(e =>
+          console.warn("Deferred client formula recompute failed in update_job_fields:", e.message)
+        ),
         invalidatePmaClientCache(sheetIdClean, resolvedMasterSheetId || req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(e =>
           console.warn("Cache invalidate failed in update_job_fields:", e.message)
         ),
@@ -3681,7 +3695,7 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
         description = "";
       }
 
-      if (vendor && description) return `${vendor} - ${description}`;
+      if (vendor && description) return `${vendor} (${description})`;
       return vendor || description || exp?.accountName || "";
     };
 
@@ -6214,24 +6228,31 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       outgNotesData.push({ range: `OutgNotes!${colLetter}111`, values: [[safeCosVal]] });
     }
 
-    // Write to Client Sheet's local OutgNotes tab if present
-    sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetIdClean,
-      requestBody: {
-        valueInputOption: "RAW",
-        data: outgNotesData
-      }
-    }).catch(() => {});
-
-    if (targetMasterId) {
+    // Write to Client Sheet's local OutgNotes tab and Master Sheet's OutgNotes tab
+    const outgNotesUpdates = [
       sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: targetMasterId,
+        spreadsheetId: sheetIdClean,
         requestBody: {
           valueInputOption: "RAW",
           data: outgNotesData
         }
-      }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message));
+      }).catch(() => {})
+    ];
 
+    if (targetMasterId) {
+      outgNotesUpdates.push(
+        sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: targetMasterId,
+          requestBody: {
+            valueInputOption: "RAW",
+            data: outgNotesData
+          }
+        }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message))
+      );
+    }
+    await Promise.allSettled(outgNotesUpdates);
+
+    if (targetMasterId) {
       // Trigger GAS refreshOutgoings or native Supabase comparison recompute asynchronously without blocking response
       resolveSupabaseSheetContext({ clientName: tenantClient, spreadsheetId: targetMasterId })
         .then((supaCtx) => {

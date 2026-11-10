@@ -303,8 +303,29 @@ function createPooledSheetsClient_(poolType = "interactive") {
           ? entry.rawSheets.spreadsheets.sheets
           : entry.rawSheets.spreadsheets;
       const fn = targetObj[method].bind(targetObj);
+
+      // Strip internal underscore options (e.g. _skipFormulaRecompute, _bypassVirtualSheet) before
+      // invoking the real Google Sheets API client, which rejects unknown parameters with HTTP 400.
+      let apiParams = resolvedParams;
+      if (apiParams && typeof apiParams === "object" && !Array.isArray(apiParams)) {
+        let hasInternalKey = false;
+        for (const k of Object.keys(apiParams)) {
+          if (k.startsWith("_")) {
+            hasInternalKey = true;
+            break;
+          }
+        }
+        if (hasInternalKey) {
+          const stripped = {};
+          for (const [k, v] of Object.entries(apiParams)) {
+            if (!k.startsWith("_")) stripped[k] = v;
+          }
+          apiParams = stripped;
+        }
+      }
+
       try {
-        return await fn(resolvedParams, ...rest);
+        return await fn(apiParams, ...rest);
       } catch (err) {
         if (isQuotaError_(err)) {
           entry.cooldownUntil = Date.now() + COOLDOWN_DURATION_MS;

@@ -1,4 +1,4 @@
-//Version 1.03 - Stage 4.2: OutgNotes unaffectedTab optimization & Outgoings note clearing sync
+//Version 1.04 - Dependency pruning (Budget, Year0Data, Monthly unaffected cols, onlyTabs fast-path)
 // Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -849,13 +849,20 @@ export function recalculateClientGrids(grids, options = {}) {
   const blockedSpillOrigins = new Map(); // `${tab}!${r},${c}` -> original "#REF! (Array result was not expanded...)" string
 
   // Determine which tabs are affected when options.changedTabs is supplied
-  let unaffectedTabs = null;
-  if (Array.isArray(options.changedTabs) && options.changedTabs.length > 0) {
+  const onlyTabs = options.onlyTabs instanceof Set ? options.onlyTabs : null;
+  let unaffectedTabs = options.unaffectedTabs instanceof Set ? new Set(options.unaffectedTabs) : null;
+  if (!unaffectedTabs && Array.isArray(options.changedTabs) && options.changedTabs.length > 0) {
     const changedSet = new Set(options.changedTabs);
     if (!changedSet.has("KeyInfo")) {
       unaffectedTabs = new Set(["KeyInfo"]);
+      if (!changedSet.has("Year0Data")) {
+        unaffectedTabs.add("Year0Data");
+      }
       if (!changedSet.has("Salaries")) {
         unaffectedTabs.add("Salaries");
+        if (!changedSet.has("Budget")) {
+          unaffectedTabs.add("Budget");
+        }
       }
       if (!changedSet.has("Outgoings") && !changedSet.has("OutgNotes")) {
         unaffectedTabs.add("OutgNotes");
@@ -864,11 +871,15 @@ export function recalculateClientGrids(grids, options = {}) {
         unaffectedTabs.add("Confirmed");
         unaffectedTabs.add("ConfCalcs");
         unaffectedTabs.add("RevenueConf");
+        if (!changedSet.has("CashIncomingConf")) unaffectedTabs.add("CashIncomingConf");
+        if (!changedSet.has("InvoicesSent")) unaffectedTabs.add("InvoicesSent");
+        if (!changedSet.has("ContrPayments")) unaffectedTabs.add("ContrPayments");
       }
       if (!changedSet.has("Pipeline") && !changedSet.has("PipeCalcs") && !changedSet.has("RevenuePipe")) {
         unaffectedTabs.add("Pipeline");
         unaffectedTabs.add("PipeCalcs");
         unaffectedTabs.add("RevenuePipe");
+        if (!changedSet.has("CashIncomingPipe")) unaffectedTabs.add("CashIncomingPipe");
       }
       if (
         unaffectedTabs.has("ConfCalcs") &&
@@ -880,6 +891,24 @@ export function recalculateClientGrids(grids, options = {}) {
         unaffectedTabs.add("ErrorCheck");
       }
     }
+  }
+  if (options.alreadyEvaluatedTabs instanceof Set && unaffectedTabs) {
+    for (const t of options.alreadyEvaluatedTabs) {
+      unaffectedTabs.add(t);
+    }
+  }
+
+  function isMonthlyColUnaffected_(c) {
+    if (!unaffectedTabs || !unaffectedTabs.has("KeyInfo")) return false;
+    if (c >= 175 && c <= 185 && unaffectedTabs.has("OutgNotes")) return true;
+    if ((c === 10 || (c >= 41 && c <= 100)) && unaffectedTabs.has("PipeCalcs")) return true;
+    if (
+      (c === 2 || (c >= 17 && c <= 39) || (c >= 102 && c <= 130) || (c >= 142 && c <= 167)) &&
+      unaffectedTabs.has("ConfCalcs")
+    ) {
+      return true;
+    }
+    return false;
   }
 
   for (const [tab, t] of Object.entries(grids)) {
@@ -909,7 +938,7 @@ export function recalculateClientGrids(grids, options = {}) {
       const rowV = t.values[r];
       const rowF = t.formulas[r] || [];
       for (let c = 0; c < numCols; c++) {
-        if (isTabUnaffected) {
+        if (isTabUnaffected || (tab === "Monthly" && isMonthlyColUnaffected_(c))) {
           if (c < rowV.length && rowV[c] === "") {
             rowV[c] = null;
           }
@@ -964,6 +993,7 @@ export function recalculateClientGrids(grids, options = {}) {
       const rowF = t.formulas[r];
       if (!rowF) continue;
       for (let c = 0; c < rowF.length; c++) {
+        if (tab === "Monthly" && isMonthlyColUnaffected_(c)) continue;
         const f = rowF[c];
         if (typeof f === "string" && f.startsWith("=")) {
           if (isPotentialSpillFormula_(f)) {
@@ -3052,9 +3082,10 @@ export function recalculateClientGrids(grids, options = {}) {
   }
 
   for (const tab of tabOrder) {
+    if (onlyTabs && !onlyTabs.has(tab)) continue;
     const tStart = options._profile ? Date.now() : 0;
     evaluateTabFormulasPass(tab, false);
-    if (tab === "Budget") {
+    if (tab === "Budget" && !(unaffectedTabs && unaffectedTabs.has("Budget"))) {
       // Budget has an iterative feedback loop between Row 142 (CoS top-up) and Rows 257-260 (Profit share bonus)
       for (let iter = 0; iter < 12; iter++) {
         const snap = snapshotTabValues_("Budget");

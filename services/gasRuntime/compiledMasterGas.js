@@ -32,6 +32,7 @@ export function createMasterGasInstance(env) {
 /**
  * PART 1: CORE, HELPERS, AND XERO-SPECIFIC FUNCTIONS
  * 
+ * v2.79 (Default normalizeDateToYmd_ and formatLogDate_ to active spreadsheet timezone or Europe/London instead of GMT to prevent BST date shifts)
  * v2.78 (Strip leading formula-escape apostrophe when comparing existing vs sanitized invoice fields in getInvoiceFieldChanges_ to prevent false-positive description updates)
  * v2.77 (Harden sanitizeSheetCell_ against leading-apostrophe/whitespace formula bypasses while preserving pure numeric arithmetic formulas, and sanitize writeToAutoLog inputs)
  * v2.76 (Escape formula-leading strings in writeToGoogleSheet and writePLToGoogleSheet via sanitizeSheetCell_ / sanitizeSheetMatrix_)
@@ -787,10 +788,23 @@ function getInvoiceFieldChanges_(oldRow, newRow, headersMap, timeZone) {
 
 function normalizeDateToYmd_(val, timeZone) {
   if (val === null || val === undefined || val === "") return "";
+  let tz = timeZone;
+  if (!tz) {
+    try {
+      if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp.getActiveSpreadsheet) {
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        if (ss && ss.getSpreadsheetTimeZone) {
+          tz = ss.getSpreadsheetTimeZone();
+        }
+      }
+    } catch (e) {}
+  }
+  if (!tz) tz = "Europe/London";
+
   if (val instanceof Date) {
     if (isNaN(val.getTime())) return "";
     if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
-      return Utilities.formatDate(val, timeZone || "GMT", "yyyy-MM-dd");
+      return Utilities.formatDate(val, tz, "yyyy-MM-dd");
     }
     const y = val.getFullYear();
     const m = String(val.getMonth() + 1).padStart(2, '0');
@@ -801,7 +815,7 @@ function normalizeDateToYmd_(val, timeZone) {
     const epoch = new Date(1899, 11, 30);
     const d = new Date(epoch.getTime() + Math.round(val * 86400000));
     if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
-      return Utilities.formatDate(d, timeZone || "GMT", "yyyy-MM-dd");
+      return Utilities.formatDate(d, tz, "yyyy-MM-dd");
     }
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -817,7 +831,7 @@ function normalizeDateToYmd_(val, timeZone) {
       const d = new Date(parseInt(xeroMatch[1], 10));
       if (!isNaN(d.getTime())) {
         if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
-          return Utilities.formatDate(d, timeZone || "GMT", "yyyy-MM-dd");
+          return Utilities.formatDate(d, tz, "yyyy-MM-dd");
         }
         const y = d.getFullYear();
         const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -852,7 +866,7 @@ function normalizeDateToYmd_(val, timeZone) {
     const d = new Date(s);
     if (!isNaN(d.getTime())) {
       if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
-        return Utilities.formatDate(d, timeZone || "GMT", "yyyy-MM-dd");
+        return Utilities.formatDate(d, tz, "yyyy-MM-dd");
       }
       const y = d.getFullYear();
       const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -7207,6 +7221,7 @@ async function logMyQuickBooksTaxCodesWithIDs() {
  * ==      CRM TASKS (CRMComp) LOGIC      ==
  * =========================================
  *
+ * v3.11 (Use active spreadsheet timezone or Europe/London in valuesAreDifferent to ensure BST dates match serial dates)
  * v3.10 (Prevent reverting Pipeline copied status to No when job already exists on Confirmed tab)
  * v3.09 (Support JobCosting headers in DataChgAlert exclusion mapping, datesChanged detection, and Pipeline row clearing)
  * v3.08 (Support JobCosting setup style in row deletion, creation, Confirmed promotion, and instant confirmed job injection)
@@ -7361,12 +7376,23 @@ function valuesAreDifferent(val1, val2) {
   // STRICT DATE GUARD: Normalize dates to YYYY-MM-DD
   const toSafeYmd = (v) => {
     if (v === null || v === undefined || v === "") return null;
+    let tz = "Europe/London";
+    try {
+      if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp.getActiveSpreadsheet) {
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        if (ss && ss.getSpreadsheetTimeZone) tz = ss.getSpreadsheetTimeZone();
+      }
+    } catch (e) {}
+
     if (typeof normalizeDateToYmd_ === 'function') {
-      const res = normalizeDateToYmd_(v);
+      const res = normalizeDateToYmd_(v, tz);
       if (res) return res;
     }
     if (v instanceof Date) {
       if (isNaN(v.getTime())) return null;
+      if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
+        return Utilities.formatDate(v, tz, "yyyy-MM-dd");
+      }
       const y = v.getFullYear();
       const m = String(v.getMonth() + 1).padStart(2, '0');
       const d = String(v.getDate()).padStart(2, '0');
@@ -7375,6 +7401,9 @@ function valuesAreDifferent(val1, val2) {
     if (typeof v === 'number' && v > 20000 && v < 70000) {
       const epoch = new Date(1899, 11, 30);
       const d = new Date(epoch.getTime() + Math.round(v * 86400000));
+      if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
+        return Utilities.formatDate(d, tz, "yyyy-MM-dd");
+      }
       const y = d.getFullYear();
       const m = String(d.getMonth() + 1).padStart(2, '0');
       const day = String(d.getDate()).padStart(2, '0');
@@ -7396,6 +7425,9 @@ function valuesAreDifferent(val1, val2) {
       if (/^\d/.test(s)) {
         const d = new Date(s);
         if (!isNaN(d.getTime())) {
+          if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
+            return Utilities.formatDate(d, tz, "yyyy-MM-dd");
+          }
           const y = d.getFullYear();
           const m = String(d.getMonth() + 1).padStart(2, '0');
           const day = String(d.getDate()).padStart(2, '0');

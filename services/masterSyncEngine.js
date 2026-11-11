@@ -744,14 +744,17 @@ export async function dispatchDueNativeMasterSyncs({
     const effectiveCrmFreq = dcaGrid ? String(dcaGrid[2]?.[24] ?? "").trim() : String(sched.crm_freq ?? "").trim();
     const effectiveExpFreq = dcaGrid ? String(dcaGrid[3]?.[24] ?? "").trim() : String(sched.exp_freq ?? "").trim();
 
-    if (isSeqDue(effectiveInvFreq, sched.last_inv_run)) {
-      queue.push({ clientName, syncType: "invoice" });
-    }
-    if (isSeqDue(effectiveCrmFreq, sched.last_crm_run)) {
-      queue.push({ clientName, syncType: "crm" });
-    }
-    if (isSeqDue(effectiveExpFreq, sched.last_exp_run)) {
-      queue.push({ clientName, syncType: "expense" });
+    const dueTypes = [];
+    if (isSeqDue(effectiveInvFreq, sched.last_inv_run)) dueTypes.push("invoice");
+    if (isSeqDue(effectiveCrmFreq, sched.last_crm_run)) dueTypes.push("crm");
+    if (isSeqDue(effectiveExpFreq, sched.last_exp_run)) dueTypes.push("expense");
+
+    if (dueTypes.length > 0) {
+      queue.push({
+        clientName,
+        types: dueTypes,
+        syncType: dueTypes.length === 3 ? "all" : (dueTypes.length === 1 ? dueTypes[0] : "all"),
+      });
     }
   }
 
@@ -761,9 +764,7 @@ export async function dispatchDueNativeMasterSyncs({
   }
 
   console.log(
-    `dispatchDueNativeMasterSyncs: Found ${queue.length} sync(s) due across ${
-      new Set(queue.map((q) => q.clientName)).size
-    } client(s). Dispatching with concurrency ${maxConcurrency}...`
+    `dispatchDueNativeMasterSyncs: Found ${queue.length} client job(s) due across ${queue.length} client(s). Dispatching with concurrency ${maxConcurrency}...`
   );
 
   const results = [];
@@ -781,9 +782,11 @@ export async function dispatchDueNativeMasterSyncs({
           method: "POST",
           headers,
           body: JSON.stringify({
-            action: "run_native_master_sync",
+            action: "run_native_sync",
             clientName: item.clientName,
             syncType: item.syncType,
+            types: item.types,
+            skipAlertsRefresh: true,
             secret: cronSecret,
           }),
         });
@@ -801,6 +804,7 @@ export async function dispatchDueNativeMasterSyncs({
           sheets,
           clientName: item.clientName,
           syncType: item.syncType,
+          types: item.types,
           userEmail,
         });
         results.push({

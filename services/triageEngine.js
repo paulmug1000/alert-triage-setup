@@ -148,7 +148,7 @@ export async function runBackgroundTriageRefresh({
     let sweepHasMore = true;
     let sweepIdx = 0;
     while (sweepHasMore) {
-      const batchNum = Math.floor(sweepIdx / 3) + 1;
+      const batchNum = Math.floor(sweepIdx / 4) + 1;
       await setTriageRefreshStatus({
         status: "running",
         step: "sweep",
@@ -2273,7 +2273,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
     categoriesRunStr = [actionableDue ? "act" : "", infoDue ? "info" : "", proactiveDue ? "pro" : ""].filter(Boolean).join(",");
     console.log(`run_flag_sweep: actionableDue=${actionableDue}, infoDue=${infoDue}, proactiveDue=${proactiveDue}`);
 
-    const CHUNK_SIZE = Math.max(clientRows.length, 15);
+    const CHUNK_SIZE = Number(req.body.chunkSize) || 4;
     const clientChunk = clientRows.slice(startIdx, startIdx + CHUNK_SIZE);
     const hasMore = startIdx + CHUNK_SIZE < clientRows.length;
     const nextIdx = startIdx + CHUNK_SIZE;
@@ -2375,12 +2375,13 @@ export async function handleRunFlagSweep(req, res, sheets) {
               expDue ? "expense" : null,
             ].filter(Boolean);
 
-            for (const seqType of dueTypes) {
-              console.log(`  ⚡ Running native Supabase ${seqType} sync for ${client.clientName}...`);
+            if (dueTypes.length > 0) {
+              console.log(`  ⚡ Running native Supabase sync (${dueTypes.join(", ")}) for ${client.clientName}...`);
               await runNativeMasterSync({
                 sheets,
                 clientName: client.clientName,
-                syncType: seqType,
+                syncType: dueTypes.length === 3 ? "all" : (dueTypes.length === 1 ? dueTypes[0] : "all"),
+                types: dueTypes,
                 userEmail: "System (Scheduled Sweep)",
               });
             }

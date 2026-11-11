@@ -69,10 +69,10 @@ export default async function handler(req, res) {
   const providedSecret = String(req.body?.secret || req.query?.secret || headerSecret || authHeader || "").trim();
   const isCronAuth = Boolean(
     cronSecret &&
-      providedSecret &&
-      (safeCompareSecret(providedSecret, cronSecret) ||
-        safeCompareSecret(providedSecret, expectedBearer) ||
-        (headerSecret && safeCompareSecret(headerSecret, cronSecret)))
+    providedSecret &&
+    (safeCompareSecret(providedSecret, cronSecret) ||
+      safeCompareSecret(providedSecret, expectedBearer) ||
+      (headerSecret && safeCompareSecret(headerSecret, cronSecret)))
   );
 
   const sessionUser = getSessionUser(req);
@@ -222,11 +222,15 @@ export default async function handler(req, res) {
       return res.status(200).json({ ...result, status });
     }
 
-    if (action === "run_native_sync") {
+    if (action === "run_native_sync" || action === "run_native_master_sync") {
       const sheets = await getSheetsClient();
       if (syncType === "recompute") {
         const comparisons = await recomputeClientComparisonsInSupabase(sheets, cleanClient);
-        await refreshPrecomputedAlerts_(sheets, acId);
+        if (!req.body?.skipAlertsRefresh && !isCronAuth) {
+          await refreshPrecomputedAlerts_(sheets, acId);
+        } else {
+          invalidatePrecomputedMemoryCache();
+        }
         const status = await getStage2Status(cleanClient);
         return res.status(200).json({
           success: true,
@@ -238,9 +242,14 @@ export default async function handler(req, res) {
         sheets,
         clientName: cleanClient,
         syncType,
+        types: req.body?.types || null,
         userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       });
-      await refreshPrecomputedAlerts_(sheets, acId);
+      if (!req.body?.skipAlertsRefresh && !isCronAuth) {
+        await refreshPrecomputedAlerts_(sheets, acId);
+      } else {
+        invalidatePrecomputedMemoryCache();
+      }
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, syncResult, status });
     }

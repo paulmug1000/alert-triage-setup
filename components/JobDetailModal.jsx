@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Spinner from "./Spinner";
 import Skeleton from "./Skeleton";
 import UnevenSplitModal from "./UnevenSplitModal";
@@ -151,11 +151,11 @@ export default function JobDetailModal({
   onSaved
 }) {
   const hasSavedChangesRef = useRef(false);
-  const handleCloseModal = () => {
+  const handleCloseModal = useCallback(() => {
     if (typeof onClose === "function") {
       onClose(hasSavedChangesRef.current);
     }
-  };
+  }, [onClose]);
   const { allClientsMap } = useAppGlobals();
   const [internalClientsMap, setInternalClientsMap] = useState(null);
 
@@ -191,6 +191,8 @@ export default function JobDetailModal({
   const [jobsEditSplit, setJobsEditSplit] = useState(null);
   const [cellNoteModalConfig, setCellNoteModalConfig] = useState(null);
   const [retainerChangeSendDates, setRetainerChangeSendDates] = useState(null);
+  const [draftInvoices, setDraftInvoices] = useState([]);
+  const [invoicesModified, setInvoicesModified] = useState(false);
 
   // Combine global map and fallback loaded map
   const activeClientsMap = useMemo(() => {
@@ -431,47 +433,7 @@ export default function JobDetailModal({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, invoicesEditSlot, directCostsEditSlot, jobsEditSplit, onClose]);
-
-  // Job helpers
-  const parentRow = job?.rows?.[0] || {};
-  const tabName = job?.tabName || parentRow.tabName || target?.tabName || "Confirmed";
-  const isConfirmed = tabName.toLowerCase() === "confirmed";
-
-  const effectiveCrmTool = crmTool || resolvedClientInfo?.client?.crmTool || user?.crmTool || null;
-  const effectiveCrmDrives = crmDrives || resolvedClientInfo?.client?.crmDrives || user?.crmDrives || null;
-  const crmDisplayName = useMemo(() => getCrmDisplayName(effectiveCrmTool), [effectiveCrmTool]);
-
-  const isJobFromCrm = useMemo(() => {
-    if (!job) return false;
-    if (isCrmDeal(job, effectiveCrmTool, effectiveCrmDrives)) return true;
-    if (hasActiveCrmIntegration(effectiveCrmTool) && isCrmDrivenTab(tabName, effectiveCrmDrives)) {
-      const code = String(job?.projectCode || job?.rows?.[0]?.projectCode || "").trim();
-      if (code && !["-", "n/a", "none"].includes(code.toLowerCase())) return true;
-      if (String(effectiveCrmDrives || "").trim().toLowerCase() === "pipeandconf") return true;
-    }
-    return false;
-  }, [job, effectiveCrmTool, effectiveCrmDrives, tabName]);
-
-  const isReadOnly = Boolean(target?.isReadOnly);
-  const isJobLocked = Boolean(isReadOnly || isJobFromCrm);
-  const lockTooltip = isJobLocked
-    ? (isReadOnly ? "Read only view" : `Locked - syncing with ${crmDisplayName}`)
-    : undefined;
-
-  const lockedInputStyle = isJobLocked
-    ? { backgroundColor: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" }
-    : {};
-
-  if (!isOpen) return null;
-
-  const getJobFieldValue = (fieldKey) => {
-    if (draftEdits[fieldKey] !== undefined) return draftEdits[fieldKey];
-    return parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
-  };
-
-  const [draftInvoices, setDraftInvoices] = useState([]);
-  const [invoicesModified, setInvoicesModified] = useState(false);
+  }, [isOpen, invoicesEditSlot, directCostsEditSlot, jobsEditSplit, handleCloseModal]);
 
   // Initialize draft invoices from job.rows whenever job loads
   useEffect(() => {
@@ -512,6 +474,43 @@ export default function JobDetailModal({
     setDraftInvoices(items);
     setInvoicesModified(false);
   }, [job]);
+
+  // Job helpers
+  const parentRow = job?.rows?.[0] || {};
+  const tabName = job?.tabName || parentRow.tabName || target?.tabName || "Confirmed";
+  const isConfirmed = tabName.toLowerCase() === "confirmed";
+
+  const effectiveCrmTool = crmTool || resolvedClientInfo?.client?.crmTool || user?.crmTool || null;
+  const effectiveCrmDrives = crmDrives || resolvedClientInfo?.client?.crmDrives || user?.crmDrives || null;
+  const crmDisplayName = useMemo(() => getCrmDisplayName(effectiveCrmTool), [effectiveCrmTool]);
+
+  const isJobFromCrm = useMemo(() => {
+    if (!job) return false;
+    if (isCrmDeal(job, effectiveCrmTool, effectiveCrmDrives)) return true;
+    if (hasActiveCrmIntegration(effectiveCrmTool) && isCrmDrivenTab(tabName, effectiveCrmDrives)) {
+      const code = String(job?.projectCode || job?.rows?.[0]?.projectCode || "").trim();
+      if (code && !["-", "n/a", "none"].includes(code.toLowerCase())) return true;
+      if (String(effectiveCrmDrives || "").trim().toLowerCase() === "pipeandconf") return true;
+    }
+    return false;
+  }, [job, effectiveCrmTool, effectiveCrmDrives, tabName]);
+
+  const isReadOnly = Boolean(target?.isReadOnly);
+  const isJobLocked = Boolean(isReadOnly || isJobFromCrm);
+  const lockTooltip = isJobLocked
+    ? (isReadOnly ? "Read only view" : `Locked - syncing with ${crmDisplayName}`)
+    : undefined;
+
+  const lockedInputStyle = isJobLocked
+    ? { backgroundColor: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" }
+    : {};
+
+  if (!isOpen) return null;
+
+  const getJobFieldValue = (fieldKey) => {
+    if (draftEdits[fieldKey] !== undefined) return draftEdits[fieldKey];
+    return parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
+  };
 
   const handleDraftFieldChange = (fieldKey, val) => {
     if (isJobLocked) return;

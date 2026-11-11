@@ -4,7 +4,16 @@ import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession }
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
-import { hasActiveCrmIntegration, isCrmDrivenTab, getCrmDisplayName, isPlaceholderInvoice, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel } from "../../../utils/helpers.js";
+import {
+  hasActiveCrmIntegration,
+  isCrmDrivenTab,
+  getCrmDisplayName,
+  isPlaceholderInvoice,
+  NO_END_DATE_SHEET_VALUE,
+  isNoEndDateSentinel,
+  isJobCostingStyle,
+  rewriteRowFormulasToTargetRow
+} from "../../../utils/helpers.js";
 import { buildRetainerChildRowsWritePlan } from "../../../services/retainers.js";
 import { getToleranceValues } from "../../../services/sharedHelpers.js";
 import { resolveMasterSheetIdForClient_ } from "../../../services/workspaces.js";
@@ -172,6 +181,7 @@ export default async function handler(req, res) {
 
     // 4. Find last job row in Confirmed sheet
     const allConfRows = confDataResp.data?.values || [];
+    const isJobCosting = isJobCostingStyle({ headers: allConfRows[0] });
     let lastJobRow = 1;
     for (let r = allConfRows.length - 1; r >= 0; r--) {
       const rowData = allConfRows[r] || [];
@@ -195,15 +205,29 @@ export default async function handler(req, res) {
     const confirmedBatchData = [];
 
     // Parent row A:AM (cols 1-39, index 0-38)
-    const parentA_AM = parentData.slice(0, 39);
+    let parentA_AM = parentData.slice(0, 39);
     while (parentA_AM.length < 39) parentA_AM.push("");
+    parentA_AM = rewriteRowFormulasToTargetRow(
+      parentA_AM,
+      pRow,
+      targetParentRow,
+      confirmedSheetName,
+      isJobCosting,
+      true
+    ).slice(0, 39);
     // Set Date Confirmed (Column 4, index 3) to today's date formatted d-MMM-yy (e.g. 7-Aug-26)
     const now = new Date();
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const todayStr = `${now.getDate()}-${months[now.getMonth()]}-${String(now.getFullYear()).slice(-2)}`;
     parentA_AM[3] = todayStr;
-    if (isRetainer && (!String(parentA_AM[38] || "").trim() || isNoEndDateSentinel(parentA_AM[38]))) {
-      parentA_AM[38] = NO_END_DATE_SHEET_VALUE;
+    if (isRetainer) {
+      if (isJobCosting && String(parentA_AM[38] || "").startsWith("=")) {
+        if (!String(parentA_AM[6] || "").trim() || isNoEndDateSentinel(parentA_AM[6])) {
+          parentA_AM[6] = NO_END_DATE_SHEET_VALUE;
+        }
+      } else if (!String(parentA_AM[38] || "").trim() || isNoEndDateSentinel(parentA_AM[38])) {
+        parentA_AM[38] = NO_END_DATE_SHEET_VALUE;
+      }
     }
 
     confirmedBatchData.push({
@@ -257,14 +281,28 @@ export default async function handler(req, res) {
       const targetChildRow = targetParentRow + 1 + i;
       const childData = childRowsData[i];
 
-      const childA_AM = childData.slice(0, 39);
+      let childA_AM = childData.slice(0, 39);
       while (childA_AM.length < 39) childA_AM.push("");
       // Child row inheritance
       childA_AM[0] = parentClient;
       childA_AM[1] = parentJobName;
       childA_AM[3] = "";
-      childA_AM[32] = ""; // Blank revenue
-      childA_AM[33] = ""; // Blank direct costs
+      if (isJobCosting) {
+        for (const c of [5, 6, 7, 8, 9, 11, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29, 31]) {
+          childA_AM[c] = "";
+        }
+        childA_AM = rewriteRowFormulasToTargetRow(
+          childA_AM,
+          pRow + 1 + i,
+          targetChildRow,
+          confirmedSheetName,
+          isJobCosting,
+          false
+        ).slice(0, 39);
+      } else {
+        childA_AM[32] = ""; // Blank revenue
+        childA_AM[33] = ""; // Blank direct costs
+      }
 
       confirmedBatchData.push({
         range: `${confirmedSheetName}!A${targetChildRow}:AM${targetChildRow}`,
@@ -308,10 +346,10 @@ export default async function handler(req, res) {
         parentRowNum: targetParentRow,
         client: parentClient,
         jobName: parentJobName,
-        monthlyRevenue: parentData[32],
+        monthlyRevenue: isJobCosting && String(parentData[32] || "").startsWith("=") ? parentData[8] : parentData[32],
         vat: parentData[34] || "No",
-        startDate: parentData[37],
-        endDate: parentA_AM[38] || NO_END_DATE_SHEET_VALUE,
+        startDate: isJobCosting && String(parentData[37] || "").startsWith("=") ? parentData[5] : parentData[37],
+        endDate: (isJobCosting && String(parentA_AM[38] || "").startsWith("=") ? parentA_AM[6] : parentA_AM[38]) || NO_END_DATE_SHEET_VALUE,
         b51TargetDay: tolerance?.retainerInvoiceDay || 28,
         defaultDaysToPay: tolerance?.defaultDaysToPay || 30,
         initialInvoices: initialRetainerInvoices,

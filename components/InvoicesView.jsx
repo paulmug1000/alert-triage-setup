@@ -631,7 +631,7 @@ export default function InvoicesView({
               revenue: 0,
               directCosts: 0,
               invoiceSlots: [
-                { slotNum: 1, amount: inv.amount || 0, ref: inv.invoiceNo || "", sentDate: inv.sentDate || "", status: inv.status || "Sent" },
+                { slotNum: 1, amount: inv.amount || 0, ref: inv.invoiceNo || "", sentDate: inv.sentDate || "", status: inv.status || "" },
                 { slotNum: 2, amount: "", ref: "", sentDate: "", status: "" },
                 { slotNum: 3, amount: "", ref: "", sentDate: "", status: "" }
               ],
@@ -660,7 +660,7 @@ export default function InvoicesView({
                       amount: inv.amount || 0,
                       ref: inv.invoiceNo || "",
                       sentDate: inv.sentDate || "",
-                      status: inv.status || "Sent",
+                      status: inv.status || "",
                     }
                 ),
               };
@@ -1177,7 +1177,7 @@ export default function InvoicesView({
                       ref: inv.invoiceNo || "",
                       sentDate: inv.sentDate || "",
                       daysToPay: createdJobSummary.daysToPay ?? 30,
-                      status: inv.status || "Sent",
+                      status: inv.status || "",
                       hasData: true,
                     },
                     { slotNum: 2, amount: 0, ref: "", sentDate: "", daysToPay: "", status: "", hasData: false },

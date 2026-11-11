@@ -15,7 +15,10 @@ import {
   getCrmDisplayName,
   assertTrustedOrigin,
   NO_END_DATE_SHEET_VALUE,
-  isNoEndDateSentinel
+  isNoEndDateSentinel,
+  isJobCostingStyle,
+  getJobCostingRowFormulasMap,
+  buildJobRowClearAndRestorePlan
 } from "../../../utils/helpers.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
@@ -218,7 +221,9 @@ async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, in
 /**
  * Writes parent row values into rowArray preserving formulas in unmapped columns.
  */
-function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
+function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, options = {}) {
+  const { isJobCosting = false, sheetName = "Confirmed", rowNum = 2 } = options;
+
   // Basic Info
   if (cols.client !== -1 && job.client !== undefined) rowArray[cols.client] = parseText(job.client);
   if (cols.jobName !== -1 && job.jobName !== undefined) rowArray[cols.jobName] = parseText(job.jobName);
@@ -227,21 +232,107 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
   if (cols.dateConfirmed !== -1 && job.dateConfirmed !== undefined) rowArray[cols.dateConfirmed] = formatDate(job.dateConfirmed);
   if (cols.leadSource !== -1 && job.leadSource !== undefined) rowArray[cols.leadSource] = parseText(job.leadSource);
   if (cols.splitStr !== -1 && job.splitStr !== undefined) rowArray[cols.splitStr] = parseText(job.splitStr);
-  if (cols.revenue !== -1 && job.revenue !== undefined) rowArray[cols.revenue] = parseMoney(job.revenue);
-  if (cols.directCosts !== -1 && job.directCosts !== undefined) rowArray[cols.directCosts] = parseMoney(job.directCosts);
   if (cols.vat !== -1 && job.vat !== undefined) rowArray[cols.vat] = parseText(job.vat);
   if (cols.projectRetainer !== -1 && job.projectRetainer !== undefined) rowArray[cols.projectRetainer] = parseText(job.projectRetainer);
   if (cols.productLine !== -1 && job.productLine !== undefined) rowArray[cols.productLine] = parseText(job.productLine);
-  if (cols.startDate !== -1 && job.startDate !== undefined) rowArray[cols.startDate] = formatDate(job.startDate);
-  if (cols.endDate !== -1) {
-    const isRet = String(job.projectRetainer || "").trim().toLowerCase() === "retainer";
-    if (job.noEndDate || isNoEndDateSentinel(job.endDate) || (isRet && !String(job.endDate || "").trim())) {
-      rowArray[cols.endDate] = NO_END_DATE_SHEET_VALUE;
-    } else if (job.endDate !== undefined) {
-      rowArray[cols.endDate] = formatDate(job.endDate);
+
+  const isRet = String(job.projectRetainer || "").trim().toLowerCase() === "retainer";
+  const resolvedEndDate =
+    job.noEndDate || isNoEndDateSentinel(job.endDate) || (isRet && !String(job.endDate || "").trim())
+      ? NO_END_DATE_SHEET_VALUE
+      : job.endDate !== undefined
+        ? formatDate(job.endDate)
+        : undefined;
+
+  if (isJobCosting) {
+    // Check if this is an older legacy static row (has static values in AG/AL and empty F/G/I and no formula in AG/AL)
+    const hasExistingFGI =
+      (rowArray[5] !== "" && rowArray[5] !== undefined) ||
+      (rowArray[6] !== "" && rowArray[6] !== undefined) ||
+      (rowArray[8] !== "" && rowArray[8] !== undefined);
+    const hasFormulasInAgAl =
+      (typeof rowArray[32] === "string" && rowArray[32].startsWith("=")) ||
+      (typeof rowArray[37] === "string" && rowArray[37].startsWith("="));
+    const isLegacyStaticRow =
+      !hasExistingFGI &&
+      !hasFormulasInAgAl &&
+      ((rowArray[32] !== "" && rowArray[32] !== undefined) || (rowArray[37] !== "" && rowArray[37] !== undefined)) &&
+      job.jobRevenue === undefined &&
+      job.contractorCosts === undefined &&
+      job.rechargedExpenses === undefined;
+
+    if (isLegacyStaticRow) {
+      if (cols.revenue !== -1 && job.revenue !== undefined) rowArray[cols.revenue] = parseMoney(job.revenue);
+      if (cols.directCosts !== -1 && job.directCosts !== undefined) rowArray[cols.directCosts] = parseMoney(job.directCosts);
+      if (cols.startDate !== -1 && job.startDate !== undefined) rowArray[cols.startDate] = formatDate(job.startDate);
+      if (cols.endDate !== -1 && resolvedEndDate !== undefined) rowArray[cols.endDate] = resolvedEndDate;
+    } else {
+      // Standard JobCosting row: write inputs to Cols F..AB and preserve/populate formulas in M, N, O, U, AG, AH, AL, AM
+      if (cols.jobStartDate !== -1 && job.startDate !== undefined) {
+        rowArray[cols.jobStartDate] = formatDate(job.startDate);
+      }
+      if (cols.jobEndDate !== -1 && resolvedEndDate !== undefined) {
+        rowArray[cols.jobEndDate] = resolvedEndDate;
+      }
+      if (cols.fixedVariable !== -1 && job.fixedVariable !== undefined) {
+        rowArray[cols.fixedVariable] = parseText(job.fixedVariable);
+      }
+      const baseJobRev = job.jobRevenue !== undefined ? job.jobRevenue : job.revenue;
+      if (cols.jobRevenue !== -1 && baseJobRev !== undefined) {
+        rowArray[cols.jobRevenue] = parseMoney(baseJobRev);
+      }
+      if (cols.contractorCosts !== -1 && job.contractorCosts !== undefined) {
+        const rawCc = String(job.contractorCosts ?? "").trim();
+        if (rawCc === "") {
+          rowArray[cols.contractorCosts] = sheetName === "Confirmed" ? `=M${rowNum}*KeyInfo!$D$13` : "";
+        } else if (rawCc.startsWith("=")) {
+          rowArray[cols.contractorCosts] = rawCc;
+        } else {
+          rowArray[cols.contractorCosts] = parseMoney(rawCc);
+        }
+      }
+      if (cols.externalCosts !== -1 && job.externalCosts !== undefined) {
+        rowArray[cols.externalCosts] = parseMoney(job.externalCosts);
+      }
+      if (cols.rechargedExpenses !== -1 && job.rechargedExpenses !== undefined) {
+        rowArray[cols.rechargedExpenses] = parseMoney(job.rechargedExpenses);
+      }
+      if (cols.propSuccFeePct !== -1 && job.propSuccFeePct !== undefined) {
+        const rawPct = String(job.propSuccFeePct ?? "").replace(/[%\s]/g, "");
+        if (rawPct === "") {
+          rowArray[cols.propSuccFeePct] = "";
+        } else {
+          const n = parseFloat(rawPct);
+          rowArray[cols.propSuccFeePct] = isNaN(n) ? "" : n > 1 ? n / 100 : n;
+        }
+      }
+      if (cols.propSuccFeeRec !== -1 && job.propSuccFeeRec !== undefined) {
+        rowArray[cols.propSuccFeeRec] = parseText(job.propSuccFeeRec);
+      }
+      if (cols.invNo !== -1 && job.invNo !== undefined) {
+        rowArray[cols.invNo] = parseText(job.invNo);
+      }
+
+      const fMap = getJobCostingRowFormulasMap(sheetName, rowNum);
+      for (const [colStr, formula] of Object.entries(fMap)) {
+        const c = Number(colStr);
+        // Preserve custom contractorCosts value or formula in K (col 10) if one was set
+        if (c === 10 && rowArray[10] !== "" && rowArray[10] !== undefined) continue;
+        rowArray[c] = formula;
+      }
+    }
+  } else {
+    if (cols.revenue !== -1 && job.revenue !== undefined) rowArray[cols.revenue] = parseMoney(job.revenue);
+    if (cols.directCosts !== -1 && job.directCosts !== undefined) rowArray[cols.directCosts] = parseMoney(job.directCosts);
+    if (cols.startDate !== -1 && job.startDate !== undefined) rowArray[cols.startDate] = formatDate(job.startDate);
+    if (cols.endDate !== -1 && resolvedEndDate !== undefined) rowArray[cols.endDate] = resolvedEndDate;
+  }
+
+  if (cols.likelihood !== -1 && job.likelihood !== undefined) {
+    if (!(typeof rowArray[cols.likelihood] === "string" && rowArray[cols.likelihood].startsWith("="))) {
+      rowArray[cols.likelihood] = parseText(job.likelihood);
     }
   }
-  if (cols.likelihood !== -1 && job.likelihood !== undefined) rowArray[cols.likelihood] = parseText(job.likelihood);
   if (cols.prodTime !== -1 && job.prodTime !== undefined) rowArray[cols.prodTime] = parseNumber(job.prodTime);
 
   // Invoices (slots 1-3)
@@ -294,23 +385,36 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
  * Child rows inherit Client, Job Name, and VAT? from parent.
  * Revenue, Direct Costs, Dates, etc. are cleared.
  */
-function applyChildRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
+function applyChildRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, options = {}) {
+  const { isJobCosting = false, sheetName = "Confirmed", rowNum = 3 } = options;
+
   // Inherit Client, Job name, and VAT status from parent (critical for VAT & calculation formulas)
   if (cols.client !== -1 && job.client !== undefined) rowArray[cols.client] = parseText(job.client);
   if (cols.jobName !== -1 && job.jobName !== undefined) rowArray[cols.jobName] = parseText(job.jobName);
   if (cols.vat !== -1 && job.vat !== undefined) rowArray[cols.vat] = parseText(job.vat);
 
   // Clear non-inherited fields so child rows never have duplicate revenue, costs, dates, etc.
-  if (cols.revenue !== -1) rowArray[cols.revenue] = "";
-  if (cols.directCosts !== -1) rowArray[cols.directCosts] = "";
-  if (cols.startDate !== -1) rowArray[cols.startDate] = "";
-  if (cols.endDate !== -1) rowArray[cols.endDate] = "";
   if (cols.dateConfirmed !== -1) rowArray[cols.dateConfirmed] = "";
   if (cols.projectCode !== -1) rowArray[cols.projectCode] = "";
   if (cols.productLine !== -1) rowArray[cols.productLine] = "";
   if (cols.leadSource !== -1) rowArray[cols.leadSource] = "";
   if (cols.splitStr !== -1) rowArray[cols.splitStr] = "";
   if (cols.likelihood !== -1) rowArray[cols.likelihood] = "";
+
+  if (isJobCosting) {
+    for (const c of [5, 6, 7, 8, 9, 11, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29, 31]) {
+      rowArray[c] = "";
+    }
+    const fMap = getJobCostingRowFormulasMap(sheetName, rowNum);
+    for (const [colStr, formula] of Object.entries(fMap)) {
+      rowArray[Number(colStr)] = formula;
+    }
+  } else {
+    if (cols.revenue !== -1) rowArray[cols.revenue] = "";
+    if (cols.directCosts !== -1) rowArray[cols.directCosts] = "";
+    if (cols.startDate !== -1) rowArray[cols.startDate] = "";
+    if (cols.endDate !== -1) rowArray[cols.endDate] = "";
+  }
 
   // Invoices (slots 1-3)
   for (let s = 1; s <= 3; s++) {
@@ -460,6 +564,16 @@ export default async function handler(req, res) {
       lead: getColIdx(["lead"], -1),
       dateConfirmed: getColIdx(["date conf", "date originally added to pipeline", "date confirmed", "date added"], 3),
       leadSource: getColIdx(["lead src", "lead source"], 4),
+      jobStartDate: getColIdx(["date job will start"], -1),
+      jobEndDate: getColIdx(["date job will end"], -1),
+      fixedVariable: getColIdx(["fixed / variable"], -1),
+      jobRevenue: getColIdx(["job revenue"], -1),
+      contractorCosts: getColIdx(["contractor costs"], -1),
+      externalCosts: getColIdx(["external costs"], -1),
+      rechargedExpenses: getColIdx(["rechgd exp", "recharged expenses"], -1),
+      propSuccFeePct: getColIdx(["% prop succ fee"], -1),
+      propSuccFeeRec: getColIdx(["prop succ. fee rec", "prop succ fee rec"], -1),
+      invNo: getColIdx(["inv no"], -1),
       splitStr: getColIdx(["revunevensplit", "rev uneven split", "rev_uneven_split", "uneven split"], 30),
       revenue: getColIdx(["revenue (proj total / ongoing pm) - excl vat", "revenue"], 32),
       directCosts: getColIdx(["direct costs (proj total / ongoing pm) - excl vat", "direct costs"], 33),
@@ -605,7 +719,9 @@ export default async function handler(req, res) {
     };
     let existingChildRows = sanitizeContiguousChildren(parentRow, job.childRowNumbers);
 
+    const isJobCosting = isJobCostingStyle({ headers });
     const deferredClearRanges = [];
+    const deferredRestoreData = [];
     if (isSheetChange) {
       // Defer clearing old rows on the previous sheet until after all structural operations complete
       const oldSheetName = wasPipeline ? "Pipeline" : "Confirmed";
@@ -633,15 +749,14 @@ export default async function handler(req, res) {
           } catch (_) { }
         }
         const rowsToClear = [oldRow, ...verifiedOldChildren].filter((r) => r >= minOldRow);
-        for (const r of rowsToClear) {
-          deferredClearRanges.push(
-            `${oldSheetName}!A${r}:AM${r}`,
-            `${oldSheetName}!AN${r}`,
-            `${oldSheetName}!AP${r}:BH${r}`,
-            `${oldSheetName}!BX${r}:CR${r}`,
-            `${oldSheetName}!DD${r}`
-          );
-        }
+        const clearPlan = buildJobRowClearAndRestorePlan({
+          sheetName: oldSheetName,
+          rowNums: rowsToClear,
+          isJobCosting,
+          includeCopiedCol: true,
+        });
+        deferredClearRanges.push(...clearPlan.clearRanges);
+        deferredRestoreData.push(...clearPlan.restoreData);
       }
       // Target sheet will place this as a new job at first blank row
       existingChildRows = [];
@@ -693,7 +808,12 @@ export default async function handler(req, res) {
           const isAutoMatchedChild =
             rClient.toLowerCase() === String(job.client || "").toLowerCase() &&
             rJobName.toLowerCase() === String(job.jobName || "").toLowerCase();
-          if ((isExplicitChild || isAutoMatchedChild) && rRev === "" && rDc === "") {
+          const isChildEmptyRevDc =
+            isJobCosting && rRev.startsWith("=")
+              ? String(r[cols.jobRevenue] ?? "").trim() === "" &&
+                String(r[cols.jobStartDate] ?? "").trim() === ""
+              : rRev === "" && rDc === "";
+          if ((isExplicitChild || isAutoMatchedChild) && isChildEmptyRevDc) {
             verifiedChildren.push(parentRow + 1 + i);
           } else {
             break;
@@ -816,15 +936,15 @@ export default async function handler(req, res) {
 
     // Defer clearing any excess child rows that are no longer needed until after all structural operations complete
     if (existingChildRows.length > totalChildRowsNeeded) {
-      for (let i = totalChildRowsNeeded; i < existingChildRows.length; i++) {
-        const rowToClear = existingChildRows[i];
-        deferredClearRanges.push(
-          `${sheetName}!A${rowToClear}:AM${rowToClear}`,
-          `${sheetName}!AN${rowToClear}`,
-          `${sheetName}!AP${rowToClear}:BH${rowToClear}`,
-          `${sheetName}!BX${rowToClear}:CR${rowToClear}`
-        );
-      }
+      const excessChildRowNums = existingChildRows.slice(totalChildRowsNeeded);
+      const excessPlan = buildJobRowClearAndRestorePlan({
+        sheetName,
+        rowNums: excessChildRowNums,
+        isJobCosting,
+        includeCopiedCol: false,
+      });
+      deferredClearRanges.push(...excessPlan.clearRanges);
+      deferredRestoreData.push(...excessPlan.restoreData);
     }
 
     // 6. PREPARE PARENT ROW (segmented into safe bands: A:AM, AN, AP:BH, BX:CR)
@@ -836,7 +956,11 @@ export default async function handler(req, res) {
       }
     }
 
-    applyParentRowValues(updatedParentRow, job, cols, parentInvoices, parentExpenses);
+    applyParentRowValues(updatedParentRow, job, cols, parentInvoices, parentExpenses, {
+      isJobCosting,
+      sheetName,
+      rowNum: parentRow,
+    });
 
     const batchUpdateData = [
       {
@@ -894,7 +1018,12 @@ export default async function handler(req, res) {
         job,
         cols,
         childInvoices[k] || {},
-        childExpenses[k] || {}
+        childExpenses[k] || {},
+        {
+          isJobCosting,
+          sheetName,
+          rowNum: childRowNum,
+        }
       );
 
       batchUpdateData.push(
@@ -1115,10 +1244,22 @@ export default async function handler(req, res) {
         await withRetry(() =>
           sheets.spreadsheets.values.batchClear({
             spreadsheetId: clientSheetId,
-            _skipFormulaRecompute: shouldProvisionRetainerSchedule,
+            _skipFormulaRecompute: deferredRestoreData.length > 0 || shouldProvisionRetainerSchedule,
             requestBody: { ranges: deferredClearRanges },
           })
         );
+        if (deferredRestoreData.length > 0) {
+          await withRetry(() =>
+            sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: clientSheetId,
+              _skipFormulaRecompute: shouldProvisionRetainerSchedule,
+              requestBody: {
+                valueInputOption: "USER_ENTERED",
+                data: deferredRestoreData,
+              },
+            })
+          );
+        }
       } catch (clearErr) {
         console.warn("Warning clearing unused/old rows:", clearErr.message);
       }

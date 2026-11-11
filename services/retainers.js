@@ -3,7 +3,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter, sa
 import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { resolveClientNameBySheetId, getAllClients, resolveMasterSheetIdForClient_ } from "./workspaces.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, formatInvoiceRefForSheet, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, formatInvoiceRefForSheet, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { get2TierCache, set2TierCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
@@ -500,6 +500,8 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
     const invoiceTimingOffset = retDetectInvoiceTimingOffset_(childDates, startDate, intervalMonthsForOffset);
     const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
 
+    const isJobCosting = isJobCostingStyle({ headers: rows[0] || [] });
+    const endDateCol = isJobCosting ? "G" : "AM";
     const isGrowing = !oldEndDate || newEnd > oldEndDate;
 
     if (!isGrowing) {
@@ -526,7 +528,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
 
       if (toTrim.length === 0) {
         await sheets.spreadsheets.values.update({
-          spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
+          spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", requestBody: { values: [[sanitizeFormulaInput(formattedNewEndDate)]] },
         });
         await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
@@ -645,20 +647,27 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       const clearRowNums = movedToEnd
         ? Array.from({ length: trimLen }, (_, i) => trueLastRow + 1 + i)
         : trimRowNums;
-      const clearRanges = [];
-      for (const rn of clearRowNums) {
-        clearRanges.push(`Confirmed!A${rn}:AM${rn}`, `Confirmed!AP${rn}:BH${rn}`, `Confirmed!BX${rn}:CR${rn}`);
-      }
+      const { clearRanges, restoreData } = buildJobRowClearAndRestorePlan({
+        sheetName: "Confirmed",
+        rowNums: clearRowNums,
+        isJobCosting,
+        includeCopiedCol: false,
+      });
       await sheets.spreadsheets.values.batchClear({
         spreadsheetId: sheetIdClean,
         requestBody: { ranges: clearRanges },
         _skipFormulaRecompute: true,
       });
-      await sheets.spreadsheets.values.update({
+      const parentUpdateData = [
+        {
+          range: `Confirmed!${endDateCol}${parentRowNum}`,
+          values: [[sanitizeFormulaInput(formattedNewEndDate)]],
+        },
+        ...restoreData,
+      ];
+      await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
-        range: `Confirmed!AM${parentRowNum}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[sanitizeFormulaInput(formattedNewEndDate)]] },
+        requestBody: { valueInputOption: "USER_ENTERED", data: parentUpdateData },
       });
 
       let tenantClient = clientName || "";
@@ -689,7 +698,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
 
       if (childRows.length >= targetCount) {
         await sheets.spreadsheets.values.update({
-          spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
+          spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", requestBody: { values: [[formattedNewEndDate]] },
         });
         await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
@@ -735,7 +744,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
 
       if (newRowDates.length === 0) {
         await sheets.spreadsheets.values.update({
-          spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
+          spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", requestBody: { values: [[formattedNewEndDate]] },
         });
         await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
@@ -755,7 +764,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         currentMaxRows += toAdd;
       }
 
-      if (newRowDates.length > 0) {
+      if (newRowDates.length > 0 && trueLastRow > insertAfterRowNum) {
         structuralRequests.push({
           moveDimension: {
             source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + newRowDates.length },
@@ -878,7 +887,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         );
       }
       allWrites.push({
-        range: `Confirmed!AM${parentRowNum}`,
+        range: `Confirmed!${endDateCol}${parentRowNum}`,
         values: [[sanitizeFormulaInput(formattedNewEndDate)]],
       });
 
@@ -1006,6 +1015,10 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       };
     }
 
+    const isJobCosting = isJobCostingStyle({ headers: rows[0] || [] });
+    const startDateCol = isJobCosting ? "F" : "AL";
+    const endDateCol = isJobCosting ? "G" : "AM";
+    const revCol = isJobCosting ? "I" : "AG";
     const oldStartDate = retParseSheetDate(parentRow[37]);
     const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
     const intervalMonths = retDetectIntervalMonths(childDates) || 1;
@@ -1125,15 +1138,24 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
         await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests } });
       }
 
-      const clearRanges = [];
-      for (const rn of trimRowNums) {
-        clearRanges.push(`Confirmed!A${rn}:AM${rn}`, `Confirmed!AP${rn}:BH${rn}`, `Confirmed!BX${rn}:CR${rn}`);
-      }
+      const { clearRanges, restoreData } = buildJobRowClearAndRestorePlan({
+        sheetName: "Confirmed",
+        rowNums: trimRowNums,
+        isJobCosting,
+        includeCopiedCol: false,
+      });
       await sheets.spreadsheets.values.batchClear({
         spreadsheetId: sheetIdClean,
         requestBody: { ranges: clearRanges },
         _skipFormulaRecompute: true,
       });
+      if (restoreData.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { valueInputOption: "USER_ENTERED", data: restoreData },
+          _skipFormulaRecompute: true,
+        });
+      }
 
       // Compute trueLastRow in memory skipping trimmed rows
       const trimSet = new Set(trimRowNums);
@@ -1172,12 +1194,12 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
           { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] }
         );
       }
-      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
+      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
       if (newEndDate || !currentEndDate) {
-        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
+        allUpdates.push({ range: `Confirmed!${endDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
       }
       if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
-        allUpdates.push({ range: `Confirmed!AG${parentRowNum}`, values: [[revenue]] });
+        allUpdates.push({ range: `Confirmed!${revCol}${parentRowNum}`, values: [[revenue]] });
       }
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
@@ -1200,18 +1222,22 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
         currentMaxRows += toAdd;
       }
 
-      structuralRequests.push({
-        moveDimension: {
-          source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + rowsNeeded },
-          destinationIndex: insertAfterRowNum,
-        },
-      });
+      if (trueLastRow > insertAfterRowNum) {
+        structuralRequests.push({
+          moveDimension: {
+            source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + rowsNeeded },
+            destinationIndex: insertAfterRowNum,
+          },
+        });
+      }
 
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: sheetIdClean,
-        requestBody: { requests: structuralRequests },
-        _skipFormulaRecompute: true,
-      });
+      if (structuralRequests.length > 0) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: structuralRequests },
+          _skipFormulaRecompute: true,
+        });
+      }
 
       // Update row grouping using rowGroups from the initial parallel fetch BEFORE writing cell data
       try {
@@ -1310,12 +1336,12 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
           { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[dateIdx])]] }
         );
       }
-      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
+      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
       if (newEndDate || !currentEndDate) {
-        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
+        allUpdates.push({ range: `Confirmed!${endDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
       }
       if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
-        allUpdates.push({ range: `Confirmed!AG${parentRowNum}`, values: [[revenue]] });
+        allUpdates.push({ range: `Confirmed!${revCol}${parentRowNum}`, values: [[revenue]] });
       }
 
       await sheets.spreadsheets.values.batchUpdate({
@@ -1333,12 +1359,12 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
           { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] }
         );
       }
-      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
+      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
       if (newEndDate || !currentEndDate) {
-        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
+        allUpdates.push({ range: `Confirmed!${endDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
       }
       if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
-        allUpdates.push({ range: `Confirmed!AG${parentRowNum}`, values: [[revenue]] });
+        allUpdates.push({ range: `Confirmed!${revCol}${parentRowNum}`, values: [[revenue]] });
       }
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
@@ -1585,6 +1611,10 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       } else break;
     }
 
+    const isJobCosting = isJobCostingStyle({ headers: rows[0] || [] });
+    const startDateCol = isJobCosting ? "F" : "AL";
+    const endDateCol = isJobCosting ? "G" : "AM";
+    const revCol = isJobCosting ? "I" : "AG";
     const isWholeRetainerUpdate = !!changeWholeRetainer || (changeMonthVal !== null && startMonthVal !== null && changeMonthVal <= startMonthVal);
 
     if (isWholeRetainerUpdate) {
@@ -1603,7 +1633,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       const perInvoiceAmount = parsedAmount * intervalMonths;
 
       const updateData = [
-        { range: `Confirmed!AG${parentRowNum}`, values: [[parsedAmount]] },
+        { range: `Confirmed!${revCol}${parentRowNum}`, values: [[parsedAmount]] },
         ...childRows.map(cr => ({
           range: `Confirmed!AP${cr.rowNum}`,
           values: [[perInvoiceAmount]],
@@ -1811,19 +1841,23 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       },
     });
 
-    structuralRequests.push({
-      moveDimension: {
-        source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + 1 },
-        destinationIndex: newParentDestIdx0,
-      },
-    });
+    if (trueLastRow > newParentDestIdx0) {
+      structuralRequests.push({
+        moveDimension: {
+          source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + 1 },
+          destinationIndex: newParentDestIdx0,
+        },
+      });
+    }
     structuralRequests.push(...addRequestsAfterMove);
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: sheetIdClean,
-      requestBody: { requests: structuralRequests },
-      _skipFormulaRecompute: true,
-    });
+    if (structuralRequests.length > 0) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: { requests: structuralRequests },
+        _skipFormulaRecompute: true,
+      });
+    }
 
     // 2. Consolidate ALL cell value updates into a SINGLE batchUpdate call
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -1839,7 +1873,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
     const copiedAGtoAM = parentRow.slice(32, 39);
 
     const allWriteData = [
-      { range: `Confirmed!AM${parentRowNum}`, values: [[retFmtDate(oldJobNewEndDate)]] },
+      { range: `Confirmed!${endDateCol}${parentRowNum}`, values: [[retFmtDate(oldJobNewEndDate)]] },
     ];
 
     for (let i = 0; i < copiedAE.length; i++) {
@@ -1848,15 +1882,35 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       allWriteData.push({ range: `Confirmed!${colLetter}${newParentRowNum}`, values: [[sanitizeFormulaInput(String(val))]] });
     }
     const agToAmCols = ["AG", "AH", "AI", "AJ", "AK", "AL", "AM"];
-    for (let i = 0; i < agToAmCols.length; i++) {
-      const colLetter = agToAmCols[i];
-      let val = copiedAGtoAM[i] !== undefined ? copiedAGtoAM[i] : "";
-      if (colLetter === "AG") val = newMonthlyAmount;
-      else if (colLetter === "AH") val = retParseMoney(val);
-      else if (colLetter === "AL") val = retFmtDate(newJobStartDate);
-      else if (colLetter === "AM") val = oldEndDate ? retFmtDate(oldEndDate) : sanitizeFormulaInput(String(copiedAGtoAM[i] || ""));
-      else val = sanitizeFormulaInput(String(val));
-      allWriteData.push({ range: `Confirmed!${colLetter}${newParentRowNum}`, values: [[val]] });
+    if (isJobCosting) {
+      const newEndVal = oldEndDate ? retFmtDate(oldEndDate) : sanitizeFormulaInput(String(copiedAGtoAM[6] || ""));
+      const dirCostVal = retParseMoney(copiedAGtoAM[1]);
+      allWriteData.push(
+        { range: `Confirmed!F${newParentRowNum}`, values: [[retFmtDate(newJobStartDate)]] },
+        { range: `Confirmed!G${newParentRowNum}`, values: [[newEndVal]] },
+        { range: `Confirmed!I${newParentRowNum}`, values: [[newMonthlyAmount]] },
+        { range: `Confirmed!AI${newParentRowNum}`, values: [[sanitizeFormulaInput(String(copiedAGtoAM[2] ?? ""))]] },
+        { range: `Confirmed!AJ${newParentRowNum}`, values: [[sanitizeFormulaInput(String(copiedAGtoAM[3] ?? ""))]] },
+        { range: `Confirmed!AK${newParentRowNum}`, values: [[sanitizeFormulaInput(String(copiedAGtoAM[4] ?? ""))]] },
+      );
+      if (dirCostVal > 0) {
+        allWriteData.push({ range: `Confirmed!K${newParentRowNum}`, values: [[dirCostVal]] });
+      }
+      const jcFormulas = getJobCostingRowFormulasMap(newParentRowNum, { hasExplicitContractorCosts: dirCostVal > 0 });
+      for (const [fCol, fStr] of Object.entries(jcFormulas)) {
+        allWriteData.push({ range: `Confirmed!${fCol}${newParentRowNum}`, values: [[fStr]] });
+      }
+    } else {
+      for (let i = 0; i < agToAmCols.length; i++) {
+        const colLetter = agToAmCols[i];
+        let val = copiedAGtoAM[i] !== undefined ? copiedAGtoAM[i] : "";
+        if (colLetter === "AG") val = newMonthlyAmount;
+        else if (colLetter === "AH") val = retParseMoney(val);
+        else if (colLetter === "AL") val = retFmtDate(newJobStartDate);
+        else if (colLetter === "AM") val = oldEndDate ? retFmtDate(oldEndDate) : sanitizeFormulaInput(String(copiedAGtoAM[i] || ""));
+        else val = sanitizeFormulaInput(String(val));
+        allWriteData.push({ range: `Confirmed!${colLetter}${newParentRowNum}`, values: [[val]] });
+      }
     }
 
     const newPerInvoiceAmount = newMonthlyAmount * (intervalMonths || 1);
@@ -1877,6 +1931,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
     }
 
     const clearRanges = [];
+    const restoreAfterClear = [];
     if (sourceConfirmedRow) {
       const srcRowNumOriginal = parseInt(sourceConfirmedRow, 10);
       if (srcRowNumOriginal && srcRowNumOriginal > 0) {
@@ -1893,17 +1948,18 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
             srcChildIdx++;
           } else break;
         }
-        for (const originalRowNum of srcRowsToClearOriginal) {
-          let adjustedRow = originalRowNum;
+        const adjustedRowNums = srcRowsToClearOriginal.map(originalRowNum => {
           const idx0Original = originalRowNum - 1;
-          if (idx0Original >= newParentDestIdx0) adjustedRow += 1;
-          clearRanges.push(
-            `Confirmed!A${adjustedRow}:E${adjustedRow}`,
-            `Confirmed!AG${adjustedRow}:AM${adjustedRow}`,
-            `Confirmed!AP${adjustedRow}:BH${adjustedRow}`,
-            `Confirmed!BX${adjustedRow}:CR${adjustedRow}`
-          );
-        }
+          return idx0Original >= newParentDestIdx0 ? originalRowNum + 1 : originalRowNum;
+        });
+        const plan = buildJobRowClearAndRestorePlan({
+          sheetName: "Confirmed",
+          rowNums: adjustedRowNums,
+          isJobCosting,
+          includeCopiedCol: false,
+        });
+        clearRanges.push(...plan.clearRanges);
+        restoreAfterClear.push(...plan.restoreData);
       }
     }
 
@@ -1917,6 +1973,12 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
         spreadsheetId: sheetIdClean,
         requestBody: { ranges: clearRanges },
       });
+      if (restoreAfterClear.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { valueInputOption: "USER_ENTERED", data: restoreAfterClear },
+        });
+      }
     }
 
     await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
@@ -2291,18 +2353,20 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
           currentMaxRows += toAdd;
         }
         const sourceStartIdx0 = trueLastRow + 1; // 1-based row trueLastRow + 2
-        structuralRequests.push({
-          moveDimension: {
-            source: {
-              sheetId: gridSheetId,
-              dimension: "ROWS",
-              startIndex: sourceStartIdx0,
-              endIndex: sourceStartIdx0 + rowsToCreate,
+        if (sourceStartIdx0 > insertAfterRowNum) {
+          structuralRequests.push({
+            moveDimension: {
+              source: {
+                sheetId: gridSheetId,
+                dimension: "ROWS",
+                startIndex: sourceStartIdx0,
+                endIndex: sourceStartIdx0 + rowsToCreate,
+              },
+              destinationIndex: insertAfterRowNum, // 1-based row insertAfterRowNum + 1
             },
-            destinationIndex: insertAfterRowNum, // 1-based row insertAfterRowNum + 1
-          },
-        });
-        trueLastRow += rowsToCreate;
+          });
+          trueLastRow += rowsToCreate;
+        }
       }
 
       if (structuralRequests.length > 0) {
@@ -4002,16 +4066,14 @@ export async function handleDeleteRetainer(req, res, sheets) {
       }
     }
 
-    // Clear safe data ranges from Confirmed sheet
-    // Safe ranges: A:AM (1-39), AP:BH (42-60), BX:CR (76-96)
-    const clearRanges = [];
-    for (const rNum of rowsToClear) {
-      clearRanges.push(
-        `Confirmed!A${rNum}:AM${rNum}`,
-        `Confirmed!AP${rNum}:BH${rNum}`,
-        `Confirmed!BX${rNum}:CR${rNum}`
-      );
-    }
+    // Clear safe data ranges from Confirmed sheet (and restore JobCosting row formulas when applicable)
+    const isJobCosting = isJobCostingStyle({ headers: allRows[0] || [] });
+    const { clearRanges, restoreData } = buildJobRowClearAndRestorePlan({
+      sheetName: "Confirmed",
+      rowNums: rowsToClear,
+      isJobCosting,
+      includeCopiedCol: false,
+    });
 
     const cleanupRequests = [];
     if (rowsToClear.length > 1) {
@@ -4078,6 +4140,14 @@ export async function handleDeleteRetainer(req, res, sheets) {
         requestBody: { ranges: clearRanges },
       })
     );
+    if (restoreData.length > 0) {
+      await withRetry(() =>
+        sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { valueInputOption: "USER_ENTERED", data: restoreData },
+        })
+      );
+    }
 
     await invalidatePmaClientCache(sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 

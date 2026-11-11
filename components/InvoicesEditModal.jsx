@@ -5,13 +5,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import DateInput from "./DateInput";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
-import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef } from "./PlaceholderPill";
-
-function generateManualPlaceholderInvoiceRef(dateStr) {
-  const d = dateStr ? String(dateStr).replace(/[^a-zA-Z0-9]/g, "").slice(0, 6) : "Entry";
-  const rand = Math.floor(1000 + Math.random() * 9000);
-  return `MANUAL-INV-${d}-${rand}`;
-}
+import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef, generateManualPlaceholderInvoiceRef } from "./PlaceholderPill";
 
 export default function InvoicesEditModal({
   editSlot,
@@ -319,7 +313,7 @@ export default function InvoicesEditModal({
             amount: parseFloat(amount) || 0,
             sentDate,
             daysToPay: parseInt(daysToPay) || 30,
-            status: status || "Sent"
+            status: status || ""
           }
         })
       });
@@ -839,7 +833,7 @@ export default function InvoicesEditModal({
                     color: "#334155",
                     display: "inline-block"
                   }} title={fieldLockTitle}>
-                    {status || "None"}
+                    {status || ""}
                   </div>
                 ) : (
                   <select
@@ -847,7 +841,7 @@ export default function InvoicesEditModal({
                     value={canonicalizeInvoiceStatus(status)}
                     onChange={(e) => setStatus(e.target.value)}
                   >
-                    <option value="">Select...</option>
+                    <option value=""></option>
                     {INVOICE_STATUS_OPTIONS.map((st) => (
                       <option key={st} value={st}>{st}</option>
                     ))}

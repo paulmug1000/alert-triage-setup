@@ -9,7 +9,7 @@ import EditClientSelector from "./EditClientSelector";
 import CellNoteModal from "./CellNoteModal";
 import NoteIndicatorButton from "./NoteIndicatorButton";
 import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
-import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef } from "./PlaceholderPill";
+import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef, generateManualPlaceholderInvoiceRef } from "./PlaceholderPill";
 import { useJobs } from "../hooks/useJobs";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -1153,7 +1153,7 @@ export default function JobsView({
     }
 
     const defaultAmt = metrics.leftToInvoice > 0 ? String(metrics.leftToInvoice) : "";
-    const defaultRef = generatePlaceholderInvoiceRef(new Date().toISOString().slice(0, 10));
+    const defaultRef = "";
 
     setInvoicesEditSlot({
       rowNum: targetRowNum,
@@ -1861,7 +1861,7 @@ export default function JobsView({
               amount: parseFloat(stripCurrency(inv.amount)) || 0,
               sentDate: inv.sentDate || "",
               daysToPay: parseInt(inv.daysToPay, 10) || 30,
-              status: inv.status || "Sent"
+              status: inv.status || ""
             }
           })
         });
@@ -2737,7 +2737,7 @@ export default function JobsView({
                   <ul style={{ margin: "0 0 10px 0", paddingLeft: "18px", fontSize: "12px", color: "#78350f" }}>
                     {deletingJobRealInvoices.map((inv, idx) => (
                       <li key={idx}>
-                        <strong>{inv.ref}</strong> — {inv.amount ? formatCurrency(inv.amount) : "£0.00"} ({inv.status || "Sent"})
+                        <strong>{inv.ref}</strong> — {inv.amount ? formatCurrency(inv.amount) : "£0.00"}{inv.status ? ` (${inv.status})` : ""}
                       </li>
                     ))}
                   </ul>

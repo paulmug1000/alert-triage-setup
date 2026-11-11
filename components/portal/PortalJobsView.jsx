@@ -442,6 +442,77 @@ export default function PortalJobsView({
     return formatMoney(num, 0, currencySymbol, thousandsSeparator);
   };
 
+  const isClientJobCosting = Boolean(data?.isJobCosting);
+  const standardChargeOutRate = Number(data?.standardChargeOutRate) || 2750;
+  const contractorDayRate = Number(data?.contractorDayRate) || 2000;
+
+  const resolveInitialContractorCostsOverride = (job) => {
+    const raw = String(job?.contractorCosts ?? "").trim();
+    if (!raw || raw === "—" || raw === "-") return "";
+    const kNum = parseMoney(raw, thousandsSeparator);
+    const iNum = parseMoney(job?.jobRevenue || job?.revenue, thousandsSeparator);
+    if (iNum > 0 && standardChargeOutRate > 0) {
+      const autoVal = (iNum / standardChargeOutRate) * contractorDayRate;
+      if (Math.abs(kNum - autoVal) <= 0.05) {
+        return "";
+      }
+    }
+    return normalizeAmount(raw);
+  };
+
+  const computeJobCostingTotals = (jobState) => {
+    const jobRevNum = parseMoney(jobState?.jobRevenue, thousandsSeparator) || 0;
+    const rechExpNum = parseMoney(jobState?.rechargedExpenses, thousandsSeparator) || 0;
+    const totalRevNum = jobRevNum + rechExpNum;
+
+    const rawContractor = String(jobState?.contractorCosts ?? "").trim();
+    const hasManualContractor = rawContractor !== "";
+    const manualContractorNum = hasManualContractor ? (parseMoney(rawContractor, thousandsSeparator) || 0) : 0;
+
+    const equivDays = hasManualContractor
+      ? (contractorDayRate > 0 ? manualContractorNum / contractorDayRate : 0)
+      : (standardChargeOutRate > 0 ? jobRevNum / standardChargeOutRate : 0);
+    const equivContractorCosts = equivDays * contractorDayRate;
+
+    const extCostsNum = parseMoney(jobState?.externalCosts, thousandsSeparator) || 0;
+    const succPctRaw = parseFloat(String(jobState?.propSuccFeePct ?? "").replace(/[%,\s]/g, ""));
+    const succPct = !isNaN(succPctRaw) ? (succPctRaw > 1 ? succPctRaw / 100 : succPctRaw) : 0;
+    const succRecRaw = parseFloat(String(jobState?.propSuccFeeRec ?? "").replace(/[%,\s]/g, ""));
+    const succRec = !isNaN(succRecRaw) ? (succRecRaw > 1 ? succRecRaw / 100 : succRecRaw) : 0;
+    const propSuccFeeAmt = succPct * jobRevNum * succRec;
+
+    const totalDcNum = equivContractorCosts + extCostsNum + propSuccFeeAmt;
+
+    return {
+      jobRevNum,
+      rechExpNum,
+      totalRevNum,
+      hasManualContractor,
+      equivDays,
+      equivContractorCosts,
+      extCostsNum,
+      propSuccFeeAmt,
+      totalDcNum,
+      totalRevFormatted: formatMoney(Math.round(totalRevNum), 0, currencySymbol, thousandsSeparator),
+      equivContractorFormatted: formatMoney(Math.round(equivContractorCosts), 0, currencySymbol, thousandsSeparator),
+      propSuccFeeAmtFormatted: formatMoney(Math.round(propSuccFeeAmt), 0, currencySymbol, thousandsSeparator),
+      totalDcFormatted: formatMoney(Math.round(totalDcNum), 0, currencySymbol, thousandsSeparator),
+    };
+  };
+
+  const updateJobCostingField = (patch) => {
+    setEditingJob((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      const totals = computeJobCostingTotals(next);
+      return {
+        ...next,
+        revenue: totals.totalRevFormatted,
+        directCosts: totals.totalDcFormatted,
+      };
+    });
+  };
+
   const handleOpenAddJob = () => {
     if (isReadOnly) return;
     setSaveError(null);
@@ -452,13 +523,22 @@ export default function PortalJobsView({
     setEditingJob({
       id: "new",
       rowNumber: null,
-      type: "Pipeline",
+      type: "",
       client: "",
       jobName: "",
       projectRetainer: "Project",
-      likelihood: "50%",
+      likelihood: "",
       revenue: `${currencySymbol}0`,
       directCosts: `${currencySymbol}0`,
+      isJobCosting: isClientJobCosting,
+      jobRevenue: `${currencySymbol}0`,
+      rechargedExpenses: "",
+      fixedVariable: "Fixed",
+      contractorCosts: "",
+      externalCosts: "",
+      propSuccFeePct: "",
+      propSuccFeeRec: "",
+      invNo: "",
       startDate: new Date().toISOString().split("T")[0],
       endDate: "",
       noEndDate: false,
@@ -492,8 +572,18 @@ export default function PortalJobsView({
     }
 
     const hasNoEndDate = isNoEndDateSentinel(job?.endDate);
+    const jobIsJobCosting = Boolean(job?.isJobCosting || isClientJobCosting);
     setEditingJob({
       ...job,
+      isJobCosting: jobIsJobCosting,
+      jobRevenue: normalizeAmount(job?.jobRevenue || job?.revenue),
+      rechargedExpenses: normalizeAmount(job?.rechargedExpenses),
+      fixedVariable: job?.fixedVariable || "Fixed",
+      contractorCosts: resolveInitialContractorCostsOverride(job),
+      externalCosts: normalizeAmount(job?.externalCosts),
+      propSuccFeePct: job?.propSuccFeePct || "",
+      propSuccFeeRec: job?.propSuccFeeRec || "",
+      invNo: job?.invNo || "",
       endDate: hasNoEndDate ? "" : (job?.endDate || ""),
       noEndDate: hasNoEndDate,
       revenue: normalizeAmount(job?.revenue),
@@ -543,6 +633,7 @@ export default function PortalJobsView({
 
     const newJobName = generateDuplicateJobName(job.jobName);
     const hasNoEndDate = Boolean(job.noEndDate || isNoEndDateSentinel(job.endDate));
+    const jobIsJobCosting = Boolean(job?.isJobCosting || isClientJobCosting);
 
     setCustomModalHeading("Add new job (duplicated)");
     setEditingJob({
@@ -550,13 +641,22 @@ export default function PortalJobsView({
       rowNumber: null,
       parentId: undefined,
       childRowNumbers: [],
-      type: "Confirmed",
-      likelihood: "100%",
+      type: "",
+      likelihood: "",
       client: job.client || "",
       jobName: newJobName,
       projectRetainer: job.projectRetainer || "Project",
       revenue: normalizeAmount(job.revenue),
       directCosts: normalizeAmount(job.directCosts),
+      isJobCosting: jobIsJobCosting,
+      jobRevenue: normalizeAmount(job.jobRevenue || job.revenue),
+      rechargedExpenses: normalizeAmount(job.rechargedExpenses),
+      fixedVariable: job.fixedVariable || "Fixed",
+      contractorCosts: resolveInitialContractorCostsOverride(job),
+      externalCosts: normalizeAmount(job.externalCosts),
+      propSuccFeePct: job.propSuccFeePct || "",
+      propSuccFeeRec: job.propSuccFeeRec || "",
+      invNo: "",
       startDate: toInputDateFormat(job.startDate),
       endDate: hasNoEndDate ? "" : toInputDateFormat(job.endDate),
       noEndDate: hasNoEndDate,
@@ -584,6 +684,7 @@ export default function PortalJobsView({
     }
 
     const renewalJobName = generateRenewalJobName(job.jobName, dates.renewalStartDate);
+    const jobIsJobCosting = Boolean(job?.isJobCosting || isClientJobCosting);
 
     setCustomModalHeading("Add renewal in pipeline");
     setEditingJob({
@@ -598,6 +699,15 @@ export default function PortalJobsView({
       projectRetainer: "Retainer",
       revenue: normalizeAmount(job.revenue),
       directCosts: normalizeAmount(job.directCosts),
+      isJobCosting: jobIsJobCosting,
+      jobRevenue: normalizeAmount(job.jobRevenue || job.revenue),
+      rechargedExpenses: normalizeAmount(job.rechargedExpenses),
+      fixedVariable: job.fixedVariable || "Fixed",
+      contractorCosts: resolveInitialContractorCostsOverride(job),
+      externalCosts: normalizeAmount(job.externalCosts),
+      propSuccFeePct: job.propSuccFeePct || "",
+      propSuccFeeRec: job.propSuccFeeRec || "",
+      invNo: "",
       startDate: dates.startDateISO,
       endDate: dates.endDateISO,
       noEndDate: false,
@@ -831,6 +941,11 @@ export default function PortalJobsView({
     if (isReadOnly) return;
     if (!editingJob.client?.trim() || !editingJob.jobName?.trim()) {
       setSaveError("Client name and job name are required.");
+      return;
+    }
+
+    if (!editingJob.type) {
+      setSaveError("Please select a status.");
       return;
     }
 
@@ -1718,7 +1833,7 @@ export default function PortalJobsView({
                     <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Status *</label>
                       <select
-                        value={editingJob.type || "Confirmed"}
+                        value={editingJob.type || ""}
                         disabled={isReadOnly || isEditingCrmDeal || isEditingCrmPipelineDeal}
                         title={crmLockedTooltip || (isEditingCrmPipelineDeal ? `Status must be updated directly in ${crmDisplayName}` : undefined)}
                         onChange={(e) => {
@@ -1726,11 +1841,17 @@ export default function PortalJobsView({
                           const newType = e.target.value;
                           if (newType === "Confirmed") {
                             setEditingJob({ ...editingJob, type: "Confirmed", likelihood: "100%" });
-                          } else {
+                          } else if (newType === "Pipeline") {
                             setEditingJob({
                               ...editingJob,
                               type: "Pipeline",
                               likelihood: (editingJob.likelihood === "100%" || !editingJob.likelihood) ? "50%" : editingJob.likelihood,
+                            });
+                          } else {
+                            setEditingJob({
+                              ...editingJob,
+                              type: "",
+                              likelihood: "",
                             });
                           }
                         }}
@@ -1741,6 +1862,7 @@ export default function PortalJobsView({
                           opacity: (isEditingCrmDeal || isEditingCrmPipelineDeal) ? 0.85 : 1,
                         }}
                       >
+                        <option value=""></option>
                         <option value="Confirmed">Confirmed</option>
                         <option value="Pipeline">Pipeline</option>
                       </select>
@@ -1788,6 +1910,155 @@ export default function PortalJobsView({
                   </div>
 
                   {/* Row 3: Revenue | Direct Costs | VAT | Date Confirmed */}
+                  {Boolean(editingJob.isJobCosting || isClientJobCosting) ? (() => {
+                    const jcTotals = computeJobCostingTotals(editingJob);
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "0.85rem" }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
+                          <div title={crmLockedTooltip}>
+                            <label style={formLabelStyle}>Job revenue (excl. VAT) *</label>
+                            <input
+                              type="text"
+                              required
+                              disabled={isReadOnly || isEditingCrmDeal}
+                              title={crmLockedTooltip}
+                              value={editingJob.jobRevenue ?? editingJob.revenue ?? ""}
+                              onChange={(e) => updateJobCostingField({ jobRevenue: e.target.value })}
+                              style={getCrmInputStyle(false)}
+                            />
+                            <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+                              For retainers, enter the monthly amount
+                            </div>
+                          </div>
+                          <div title={crmLockedTooltip}>
+                            <label style={formLabelStyle}>Recharged expenses</label>
+                            <input
+                              type="text"
+                              disabled={isReadOnly || isEditingCrmDeal}
+                              title={crmLockedTooltip}
+                              value={editingJob.rechargedExpenses || ""}
+                              placeholder={`${currencySymbol}0`}
+                              onChange={(e) => updateJobCostingField({ rechargedExpenses: e.target.value })}
+                              style={getCrmInputStyle(false)}
+                            />
+                          </div>
+                          <div>
+                            <label style={formLabelStyle}>Total revenue (excl. VAT)</label>
+                            <input
+                              type="text"
+                              readOnly
+                              disabled
+                              value={jcTotals.totalRevFormatted}
+                              style={{ ...formInputStyle, background: "#f1f5f9", color: "#334155", fontWeight: 600, cursor: "not-allowed" }}
+                            />
+                          </div>
+                          <div title={crmLockedTooltip}>
+                            <label style={formLabelStyle}>VAT? *</label>
+                            <select
+                              value={editingJob.vat || "Yes"}
+                              disabled={isReadOnly || isEditingCrmDeal}
+                              title={crmLockedTooltip}
+                              onChange={(e) => setEditingJob({ ...editingJob, vat: e.target.value })}
+                              style={getCrmInputStyle(true)}
+                            >
+                              <option value="Yes">Yes</option>
+                              <option value="No">No</option>
+                            </select>
+                          </div>
+                          <div title={crmLockedTooltip}>
+                            <label style={formLabelStyle}>
+                              {editingJob.type === "Pipeline" ? "Date added" : "Date confirmed"}
+                            </label>
+                            <input
+                              type="date"
+                              disabled={isReadOnly || isEditingCrmDeal}
+                              title={crmLockedTooltip}
+                              value={editingJob.dateConfirmed || ""}
+                              onChange={(e) => setEditingJob({ ...editingJob, dateConfirmed: e.target.value })}
+                              style={getCrmInputStyle(false)}
+                            />
+                          </div>
+                        </div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 2fr 2fr 1.4fr 1.4fr 2fr", gap: "0.75rem" }}>
+                          <div>
+                            <label style={formLabelStyle}>Fixed or variable</label>
+                            <select
+                              value={editingJob.fixedVariable || "Fixed"}
+                              disabled={isReadOnly}
+                              onChange={(e) => updateJobCostingField({ fixedVariable: e.target.value })}
+                              style={formSelectStyle}
+                            >
+                              <option value="Fixed">Fixed</option>
+                              <option value="Variable">Variable</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label style={formLabelStyle}>Contractor costs (override)</label>
+                            <input
+                              type="text"
+                              disabled={isReadOnly}
+                              value={editingJob.contractorCosts || ""}
+                              placeholder={`Auto: ${jcTotals.equivContractorFormatted} (${jcTotals.equivDays.toFixed(1)}d)`}
+                              onChange={(e) => updateJobCostingField({ contractorCosts: e.target.value })}
+                              style={formInputStyle}
+                            />
+                            <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+                              Leave blank to calculate from day rates ({jcTotals.equivContractorFormatted})
+                            </div>
+                          </div>
+                          <div>
+                            <label style={formLabelStyle}>External costs</label>
+                            <input
+                              type="text"
+                              disabled={isReadOnly}
+                              value={editingJob.externalCosts || ""}
+                              placeholder={`${currencySymbol}0`}
+                              onChange={(e) => updateJobCostingField({ externalCosts: e.target.value })}
+                              style={formInputStyle}
+                            />
+                          </div>
+                          <div>
+                            <label style={formLabelStyle}>% prop. success fee</label>
+                            <input
+                              type="text"
+                              disabled={isReadOnly}
+                              value={editingJob.propSuccFeePct || ""}
+                              placeholder="0%"
+                              onChange={(e) => updateJobCostingField({ propSuccFeePct: e.target.value })}
+                              style={formInputStyle}
+                            />
+                          </div>
+                          <div>
+                            <label style={formLabelStyle}>Prop. success fee rec.</label>
+                            <input
+                              type="text"
+                              disabled={isReadOnly}
+                              value={editingJob.propSuccFeeRec || ""}
+                              placeholder="0%"
+                              onChange={(e) => updateJobCostingField({ propSuccFeeRec: e.target.value })}
+                              style={formInputStyle}
+                            />
+                            {jcTotals.propSuccFeeAmt > 0 && (
+                              <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+                                Fee: {jcTotals.propSuccFeeAmtFormatted}
+                              </div>
+                            )}
+                          </div>
+                          <div>
+                            <label style={formLabelStyle}>Total direct costs (excl. VAT)</label>
+                            <input
+                              type="text"
+                              readOnly
+                              disabled
+                              value={jcTotals.totalDcFormatted}
+                              style={{ ...formInputStyle, background: "#f1f5f9", color: "#334155", fontWeight: 600, cursor: "not-allowed" }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })() : (
                   <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
                     <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Revenue (excl. VAT) *</label>
@@ -1843,6 +2114,7 @@ export default function PortalJobsView({
                       />
                     </div>
                   </div>
+                  )}
 
                   {/* Row 4: Start Date | End Date | Product Line | Lead Source */}
                   <div className="modal-form-row modal-form-row-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
@@ -2433,11 +2705,11 @@ export default function PortalJobsView({
                                       ...pillStyle
                                     }}
                                   >
-                                    {currentStatus || "Draft"}
+                                    {currentStatus || ""}
                                   </span>
                                 ) : (
                                   <select
-                                    value={currentStatus}
+                                    value={currentStatus || ""}
                                     onChange={(e) => updateInvoice(idx, "status", e.target.value)}
                                     disabled={isReadOnly}
                                     title={fieldLockTitle}
@@ -2452,7 +2724,7 @@ export default function PortalJobsView({
                                       cursor: "pointer"
                                     }}
                                   >
-                                    <option value="">Status...</option>
+                                    <option value=""></option>
                                     {INVOICE_STATUS_OPTIONS.map((st) => (
                                       <option key={st} value={st}>{st}</option>
                                     ))}

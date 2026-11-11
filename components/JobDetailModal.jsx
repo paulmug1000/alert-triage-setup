@@ -7,7 +7,7 @@ import DirectCostsEditModal from "./DirectCostsEditModal";
 import RetainerChangeSendDatesModal from "./RetainerChangeSendDatesModal";
 import CellNoteModal from "./CellNoteModal";
 import NoteIndicatorButton from "./NoteIndicatorButton";
-import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef } from "./PlaceholderPill";
+import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef, generateManualPlaceholderInvoiceRef } from "./PlaceholderPill";
 import {
   JobDateInput,
   parseSheetDate,
@@ -30,7 +30,9 @@ import {
   groupSlotItemsForDisplay,
   NO_END_DATE_SHEET_VALUE,
   isNoEndDateSentinel,
-  stripCurrency
+  stripCurrency,
+  INVOICE_STATUS_OPTIONS,
+  canonicalizeInvoiceStatus
 } from "../utils/helpers";
 import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -468,6 +470,49 @@ export default function JobDetailModal({
     return parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
   };
 
+  const [draftInvoices, setDraftInvoices] = useState([]);
+  const [invoicesModified, setInvoicesModified] = useState(false);
+
+  // Initialize draft invoices from job.rows whenever job loads
+  useEffect(() => {
+    if (!job || !job.rows) {
+      setDraftInvoices([]);
+      setInvoicesModified(false);
+      return;
+    }
+    const items = [];
+    job.rows.forEach((r) => {
+      (r.invoiceSlots || []).forEach((s) => {
+        const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
+        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const hasData = hasRef || hasAmt;
+        if (hasData) {
+          const isAuto = isAutoPlaceholder(s.ref);
+          const isPlace = isPlaceholderInvoice(s.ref, s.status);
+          const isReal = Boolean(hasRef && !isPlace);
+          if (!isAuto) {
+            items.push({
+              id: `inv_${r.rowNum}_${s.slotNum}`,
+              rowNum: r.rowNum,
+              slotNum: s.slotNum,
+              ref: isReal ? String(s.ref).trim() : "",
+              amount: s.amount !== undefined ? String(stripCurrency(s.amount)) : "",
+              sentDate: s.sentDate || "",
+              daysToPay: s.daysToPay || 30,
+              status: s.status || "",
+              isReal,
+              isManual: !isReal,
+              note: s.note || "",
+              isDeleted: false
+            });
+          }
+        }
+      });
+    });
+    setDraftInvoices(items);
+    setInvoicesModified(false);
+  }, [job]);
+
   const handleDraftFieldChange = (fieldKey, val) => {
     if (isJobLocked) return;
     setDraftEdits((prev) => ({ ...prev, [fieldKey]: val }));
@@ -476,9 +521,38 @@ export default function JobDetailModal({
   const handleDiscardChanges = () => {
     if (isJobLocked) return;
     setDraftEdits({});
+    if (job && job.rows) {
+      const items = [];
+      job.rows.forEach((r) => {
+        (r.invoiceSlots || []).forEach((s) => {
+          const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
+          const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+          if ((hasRef || hasAmt) && !isAutoPlaceholder(s.ref)) {
+            const isPlace = isPlaceholderInvoice(s.ref, s.status);
+            const isReal = Boolean(hasRef && !isPlace);
+            items.push({
+              id: `inv_${r.rowNum}_${s.slotNum}`,
+              rowNum: r.rowNum,
+              slotNum: s.slotNum,
+              ref: isReal ? String(s.ref).trim() : "",
+              amount: s.amount !== undefined ? String(stripCurrency(s.amount)) : "",
+              sentDate: s.sentDate || "",
+              daysToPay: s.daysToPay || 30,
+              status: s.status || "",
+              isReal,
+              isManual: !isReal,
+              note: s.note || "",
+              isDeleted: false
+            });
+          }
+        });
+      });
+      setDraftInvoices(items);
+    }
+    setInvoicesModified(false);
   };
 
-  const isDirty = Object.keys(draftEdits).length > 0;
+  const isDirty = Object.keys(draftEdits).length > 0 || invoicesModified;
 
   // Active values
   const clientVal = getJobFieldValue("client");
@@ -511,6 +585,62 @@ export default function JobDetailModal({
     noEndDateRetainerMonths,
     endDateVal
   );
+
+  // Active draft invoices (excluding deleted items)
+  const activeDraftInvoices = (draftInvoices || []).filter((inv) => !inv.isDeleted);
+
+  // Active revenue number
+  const activeRevenueNum = Math.max(0, parseFloat(stripCurrency(revVal)) || 0);
+
+  // Sum of invoiced amounts in draft (for project jobs)
+  const draftInvoicedSum = activeDraftInvoices.reduce((acc, inv) => {
+    return acc + (parseFloat(stripCurrency(inv.amount)) || 0);
+  }, 0);
+
+  // Left to invoice amount based on current draft state
+  const leftToInvoiceAmount = Math.max(0, Math.round((activeRevenueNum - draftInvoicedSum) * 100) / 100);
+
+  const handleAddDraftInvoice = (initialData = {}) => {
+    if (isJobLocked) return;
+    const defaultSent = initialData.sentDate || startDateVal || toSheetDateFormat(new Date().toISOString().slice(0, 10));
+    const newInv = {
+      id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      ref: initialData.ref || "", // Manual invoices leave reference blank
+      amount: initialData.amount !== undefined ? String(initialData.amount) : (leftToInvoiceAmount > 0 ? String(leftToInvoiceAmount) : ""),
+      sentDate: defaultSent,
+      daysToPay: initialData.daysToPay || 30,
+      status: initialData.status || "",
+      isReal: false,
+      isManual: true,
+      note: initialData.note || "",
+      isDeleted: false,
+      isNew: true
+    };
+    setDraftInvoices((prev) => [...prev, newInv]);
+    setInvoicesModified(true);
+  };
+
+  const handleUpdateDraftInvoice = (id, field, val) => {
+    if (isJobLocked) return;
+    setDraftInvoices((prev) =>
+      prev.map((inv) => (inv.id === id ? { ...inv, [field]: val } : inv))
+    );
+    setInvoicesModified(true);
+  };
+
+  const handleRemoveDraftInvoice = (id) => {
+    if (isJobLocked) return;
+    setDraftInvoices((prev) =>
+      prev
+        .map((inv) => {
+          if (inv.id !== id) return inv;
+          if (inv.isNew) return null; // unsaved new draft, remove immediately
+          return { ...inv, isDeleted: true };
+        })
+        .filter(Boolean)
+    );
+    setInvoicesModified(true);
+  };
 
   // Gather invoice slots
   const getJobInvoiceItems = () => {
@@ -664,7 +794,7 @@ export default function JobDetailModal({
     }
 
     const defaultAmt = metrics.leftToInvoice > 0 ? String(metrics.leftToInvoice) : "";
-    const defaultRef = generatePlaceholderInvoiceRef(new Date().toISOString().slice(0, 10));
+    const defaultRef = "";
 
     setInvoicesEditSlot({
       rowNum: targetRowNum,
@@ -901,8 +1031,9 @@ export default function JobDetailModal({
       }
     });
 
-    if (updates.length === 0) return;
+    if (updates.length === 0 && !invoicesModified) return;
 
+    const savedInvoicesModified = invoicesModified;
     setSaving(true);
     try {
       const res = await fetch("/api/triage", {
@@ -918,12 +1049,15 @@ export default function JobDetailModal({
           endClientName: draftEdits.client || parentRow.client || job.client,
           jobName: draftEdits.jobName || parentRow.jobName || job.jobName,
           isRetainer,
-          updates
+          updates,
+          invoices: savedInvoicesModified ? activeDraftInvoices : undefined
         })
       });
 
       const data = await res.json();
       if (!data.success) throw new Error(data.error || "Failed to update job");
+
+      setInvoicesModified(false);
 
       // Update local state
       const invUpdatesMap = new Map();
@@ -996,9 +1130,9 @@ export default function JobDetailModal({
       setDraftEdits({});
       setRecentlySaved(true);
       setTimeout(() => setRecentlySaved(false), 3000);
-      if (data.backgroundProvisioning) {
+      if (data.backgroundProvisioning || savedInvoicesModified) {
+        setTimeout(() => setReloadTrigger((prev) => prev + 1), 1000);
         setTimeout(() => setReloadTrigger((prev) => prev + 1), 4000);
-        setTimeout(() => setReloadTrigger((prev) => prev + 1), 8000);
       } else if (isRetainer && (draftEdits.endDate !== undefined || draftEdits.startDate !== undefined || data.trimmed > 0 || data.grown > 0)) {
         setReloadTrigger((prev) => prev + 1);
       }
@@ -1943,41 +2077,161 @@ export default function JobDetailModal({
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
                       <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
-                        Invoices ({invoiceItems.length})
+                        Invoices ({isRetainer ? invoiceItems.length : activeDraftInvoices.length})
                       </div>
-                      {isConfirmed && metrics.revenue > 0 && (
-                        metrics.leftToInvoice > 0 ? (
-                          <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
-                            Left to inv: {formatCurrency(metrics.leftToInvoice)}
+                      {activeRevenueNum > 0 && (
+                        leftToInvoiceAmount <= 0.01 ? (
+                          <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
+                            ✓ 100% invoiced
                           </span>
                         ) : (
-                          <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
-                            ✓ Invoiced
+                          <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
+                            Remaining to invoice: {formatCurrency(leftToInvoiceAmount)}
                           </span>
                         )
                       )}
                     </div>
 
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
-                      {invoiceItems.length === 0 ? (
-                        <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", padding: "8px 0" }}>
-                          No invoices found.
-                        </div>
-                      ) : (
-                        invoiceItems.map((item) => {
-                          if (item.isComposite) {
+                    {isRetainer ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
+                        {invoiceItems.length === 0 ? (
+                          <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", padding: "8px 0" }}>
+                            No invoices found.
+                          </div>
+                        ) : (
+                          invoiceItems.map((item) => {
+                            if (item.isComposite) {
+                              return (
+                                <div
+                                  key={item.id}
+                                  onClick={() => {
+                                    const targetSlotItem = item.balanceTranche || item.receivedTranches[0] || item;
+                                    setInvoicesEditSlot({
+                                      rowNum: targetSlotItem.rowNum,
+                                      slotNum: targetSlotItem.slotNum,
+                                      slot: targetSlotItem.slot,
+                                      jobClient: targetSlotItem.row?.client || parentRow.client || job.client,
+                                      jobName: targetSlotItem.row?.jobName || parentRow.jobName || job.jobName,
+                                      slotLabel: item.label,
+                                      tabName,
+                                      job
+                                    });
+                                  }}
+                                  style={{
+                                    padding: "9px 12px",
+                                    borderRadius: "7px",
+                                    border: "1px solid #bfdbfe",
+                                    background: "#ffffff",
+                                    cursor: "pointer",
+                                    transition: "all 0.15s ease",
+                                    boxSizing: "border-box",
+                                    maxWidth: "100%",
+                                    overflow: "hidden",
+                                    flexShrink: 0,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: "5px"
+                                  }}
+                                  title="Part-paid invoice. Click to view or edit balance payment terms."
+                                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#bfdbfe"; e.currentTarget.style.background = "#ffffff"; }}
+                                >
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                        #{item.slot.ref}
+                                      </span>
+                                      <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: item.isFullyPaid ? "#dcfce7" : "#eff6ff", color: item.isFullyPaid ? "#166534" : "#1d4ed8", border: item.isFullyPaid ? "1px solid #bbf7d0" : "1px solid #bfdbfe" }}>
+                                        {item.isFullyPaid ? `Paid in full (${item.receivedTranches.length} payments)` : `Part-paid (${item.percentPaid.toFixed(1)}%)`}
+                                      </span>
+                                      {hasAccountingIntegration && item.slot.ref && (
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                        </svg>
+                                      )}
+                                      {isRetainer && item.row && (
+                                        <span style={{ fontSize: "10px", color: "#64748b" }}>
+                                          ({getRetainerRowMonthLabel(item.row, 0, job)})
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                                      Total: {formatCurrency(item.totalAmount)}
+                                    </div>
+                                  </div>
+
+                                  <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                    <div
+                                      style={{
+                                        width: `${Math.min(100, Math.max(0, item.percentPaid))}%`,
+                                        height: "100%",
+                                        background: "#10b981",
+                                        borderRadius: "2px",
+                                      }}
+                                    />
+                                  </div>
+
+                                  {item.isFullyPaid ? (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                      {item.receivedTranches.map((t, tIdx) => (
+                                        <div key={tIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                          <span style={{ color: "#166534", fontWeight: "600" }}>
+                                            ✓ Payment {tIdx + 1}: {formatCurrency(parseFloat(stripCurrency(t.slot?.amount)) || 0)}
+                                          </span>
+                                          <span style={{ color: "#64748b" }}>
+                                            {t.slot?.sentDate ? `Sent: ${t.slot.sentDate}` : ""}
+                                            {t.slot?.daysToPay ? ` · Paid: ${t.slot.daysToPay}d` : ""}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                        <span style={{ color: "#166534", fontWeight: "600" }}>
+                                          ✓ {formatCurrency(item.receivedAmount)} received
+                                        </span>
+                                        <span style={{ color: "#64748b" }}>
+                                          {item.receivedTranches[0]?.slot?.sentDate ? `Sent: ${toSheetDateFormat(item.receivedTranches[0].slot.sentDate)}` : ""}
+                                          {item.receivedTranches[0]?.slot?.daysToPay ? ` · Paid: ${item.receivedTranches[0].slot.daysToPay}d` : ""}
+                                        </span>
+                                      </div>
+                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                        <span style={{ color: "#b45309", fontWeight: "600" }}>
+                                          ⏳ {formatCurrency(item.balanceAmount)} balance
+                                        </span>
+                                        <span style={{ color: "#64748b" }}>
+                                          {item.balanceTranche?.slot?.sentDate && calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30) ? (
+                                            `Due: ${calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30)} (${item.balanceTranche.slot.daysToPay || 30}d)`
+                                          ) : (
+                                            item.balanceTranche ? `${item.balanceTranche.slot?.daysToPay || 30} days` : "Fully paid"
+                                          )}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
+
+                            const slot = item.slot;
+                            const hasData = Boolean((slot.ref && String(slot.ref).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
+                            const isPlaceholder = isPlaceholderInvoice(slot.ref, slot.status);
+                            const pillStyle = getStatusPill(slot.status);
+                            const isPaid = String(slot.status || "").trim().toLowerCase() === "paid";
+
                             return (
                               <div
                                 key={item.id}
                                 onClick={() => {
-                                  const targetSlotItem = item.balanceTranche || item.receivedTranches[0] || item;
                                   setInvoicesEditSlot({
-                                    rowNum: targetSlotItem.rowNum,
-                                    slotNum: targetSlotItem.slotNum,
-                                    slot: targetSlotItem.slot,
-                                    jobClient: targetSlotItem.row?.client || parentRow.client || job.client,
-                                    jobName: targetSlotItem.row?.jobName || parentRow.jobName || job.jobName,
-                                    slotLabel: item.label,
+                                    rowNum: item.rowNum,
+                                    slotNum: item.slotNum,
+                                    slot,
+                                    jobClient: item.row.client || parentRow.client || job.client,
+                                    jobName: item.row.jobName || parentRow.jobName || job.jobName,
+                                    slotLabel: slot.ref ? `#${slot.ref}` : (isPlaceholder ? "Placeholder" : (isAdmin ? `Slot ${item.slotNum}` : `Invoice ${item.slotNum}`)),
                                     tabName,
                                     job
                                   });
@@ -1985,7 +2239,7 @@ export default function JobDetailModal({
                                 style={{
                                   padding: "9px 12px",
                                   borderRadius: "7px",
-                                  border: "1px solid #bfdbfe",
+                                  border: "1px solid #e2e8f0",
                                   background: "#ffffff",
                                   cursor: "pointer",
                                   transition: "all 0.15s ease",
@@ -1995,254 +2249,459 @@ export default function JobDetailModal({
                                   flexShrink: 0,
                                   display: "flex",
                                   flexDirection: "column",
-                                  gap: "5px"
+                                  gap: "5px",
+                                  boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                                 }}
-                                title="Part-paid invoice. Click to view or edit balance payment terms."
+                                title={
+                                  hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
+                                    ? "Synced from accounting software. Click to view or edit days to pay."
+                                    : "Click to edit invoice"
+                                }
                                 onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
-                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#bfdbfe"; e.currentTarget.style.background = "#ffffff"; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = "#ffffff"; }}
                               >
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
-                                      #{item.slot.ref}
-                                    </span>
-                                    <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: item.isFullyPaid ? "#dcfce7" : "#eff6ff", color: item.isFullyPaid ? "#166534" : "#1d4ed8", border: item.isFullyPaid ? "1px solid #bbf7d0" : "1px solid #bfdbfe" }}>
-                                      {item.isFullyPaid ? `Paid in full (${item.receivedTranches.length} payments)` : `Part-paid (${item.percentPaid.toFixed(1)}%)`}
-                                    </span>
-                                    {hasAccountingIntegration && item.slot.ref && (
+                                    {isPlaceholder ? (
+                                      <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
+                                    ) : slot.ref ? (
+                                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                        #{slot.ref}
+                                      </span>
+                                    ) : (
+                                      <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
+                                        Invoice
+                                      </span>
+                                    )}
+
+                                    {hasData && slot.status && (
+                                      <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
+                                        {slot.status}
+                                      </span>
+                                    )}
+
+                                    {hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== "" && (
                                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                                         <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                       </svg>
                                     )}
+
+                                    <NoteIndicatorButton
+                                      size="sm"
+                                      note={slot.note || ""}
+                                      onClick={() => openSlotNoteModal({ item, type: "invoice" })}
+                                      title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice"}
+                                    />
+
                                     {isRetainer && item.row && (
                                       <span style={{ fontSize: "10px", color: "#64748b" }}>
                                         ({getRetainerRowMonthLabel(item.row, 0, job)})
                                       </span>
                                     )}
                                   </div>
-                                  <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
-                                    Total: {formatCurrency(item.totalAmount)}
-                                  </div>
+
+                                  {hasData ? (
+                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                                      {formatCurrency(slot.amount)}
+                                    </span>
+                                  ) : (
+                                    <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                                      Click to add
+                                    </span>
+                                  )}
                                 </div>
 
-                                <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
-                                  <div
-                                    style={{
-                                      width: `${Math.min(100, Math.max(0, item.percentPaid))}%`,
-                                      height: "100%",
-                                      background: "#10b981",
-                                      borderRadius: "2px",
-                                    }}
-                                  />
-                                </div>
-
-                                {item.isFullyPaid ? (
-                                  <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
-                                    {item.receivedTranches.map((t, tIdx) => (
-                                      <div key={tIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                        <span style={{ color: "#166534", fontWeight: "600" }}>
-                                          ✓ Payment {tIdx + 1}: {formatCurrency(parseFloat(stripCurrency(t.slot?.amount)) || 0)}
-                                        </span>
-                                        <span style={{ color: "#64748b" }}>
-                                          {t.slot?.sentDate ? `Sent: ${t.slot.sentDate}` : ""}
-                                          {t.slot?.daysToPay ? ` · Paid: ${t.slot.daysToPay}d` : ""}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
-                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                      <span style={{ color: "#166534", fontWeight: "600" }}>
-                                        ✓ {formatCurrency(item.receivedAmount)} received
-                                      </span>
-                                      <span style={{ color: "#64748b" }}>
-                                        {item.receivedTranches[0]?.slot?.sentDate ? `Sent: ${toSheetDateFormat(item.receivedTranches[0].slot.sentDate)}` : ""}
-                                        {item.receivedTranches[0]?.slot?.daysToPay ? ` · Paid: ${item.receivedTranches[0].slot.daysToPay}d` : ""}
-                                      </span>
-                                    </div>
-                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                      <span style={{ color: "#b45309", fontWeight: "600" }}>
-                                        ⏳ {formatCurrency(item.balanceAmount)} balance
-                                      </span>
-                                      <span style={{ color: "#64748b" }}>
-                                        {item.balanceTranche?.slot?.sentDate && calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30) ? (
-                                          `Due: ${calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30)} (${item.balanceTranche.slot.daysToPay || 30}d)`
-                                        ) : (
-                                          item.balanceTranche ? `${item.balanceTranche.slot?.daysToPay || 30} days` : "Fully paid"
-                                        )}
-                                      </span>
-                                    </div>
+                                {/* Progress bar (100% green if Paid) */}
+                                {isPaid && (
+                                  <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                    <div style={{ width: "100%", height: "100%", background: "#10b981", borderRadius: "2px" }} />
                                   </div>
                                 )}
+
+                                {hasData && (
+                                  isPaid ? (
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                      <span style={{ color: "#166534", fontWeight: 600 }}>
+                                        ✓ {formatCurrency(slot.amount)} paid
+                                      </span>
+                                      <span style={{ color: "#64748b" }}>
+                                        {slot.sentDate ? `Sent: ${toSheetDateFormat(slot.sentDate)}` : ""}
+                                        {slot.daysToPay ? ` · Paid: ${slot.daysToPay}d` : ""}
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                      <span style={{ color: "#b45309", fontWeight: 600 }}>
+                                        {calculatePaymentDate(slot.sentDate, slot.daysToPay || 30) ? (
+                                          `Due: ${calculatePaymentDate(slot.sentDate, slot.daysToPay || 30)}`
+                                        ) : (
+                                          `Expected in ${slot.daysToPay || 30}d`
+                                        )}
+                                      </span>
+                                      <span style={{ color: "#64748b" }}>
+                                        {slot.sentDate ? `Sent: ${toSheetDateFormat(slot.sentDate)} (${slot.daysToPay || 30}d)` : `Terms: ${slot.daysToPay || 30}d`}
+                                      </span>
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                        <button
+                          type="button"
+                          onClick={handleAddNewInvoicePlaceholder}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: "6px",
+                            padding: "8px 12px",
+                            borderRadius: "6px",
+                            border: "1px dashed #cbd5e1",
+                            background: "#f8fafc",
+                            color: "#475569",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            cursor: "pointer",
+                            transition: "all 0.15s ease",
+                            marginTop: "2px"
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#94a3b8"; e.currentTarget.style.background = "#f1f5f9"; e.currentTarget.style.color = "#0f172a"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#cbd5e1"; e.currentTarget.style.background = "#f8fafc"; e.currentTarget.style.color = "#475569"; }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19" />
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                          </svg>
+                          Add new
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "440px", overflowY: "auto", paddingRight: "4px" }}>
+                        {activeDraftInvoices.length === 0 && leftToInvoiceAmount <= 0.01 && (
+                          <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", padding: "8px 0" }}>
+                            No invoices added yet.
+                          </div>
+                        )}
+
+                        {activeDraftInvoices.map((inv, invIdx) => {
+                          if (inv.isReal) {
+                            return (
+                              <div
+                                key={inv.id}
+                                onClick={() => {
+                                  const parentRow = job.rows?.[0] || job;
+                                  const targetRow = (job.rows || []).find((r) => r.rowNum === inv.rowNum) || parentRow;
+                                  const targetSlot = (targetRow.invoiceSlots || []).find((s) => s.slotNum === inv.slotNum) || {
+                                    ref: inv.ref,
+                                    amount: inv.amount,
+                                    sentDate: inv.sentDate,
+                                    daysToPay: inv.daysToPay,
+                                    status: inv.status
+                                  };
+                                  setInvoicesEditSlot({
+                                    rowNum: inv.rowNum,
+                                    slotNum: inv.slotNum,
+                                    slot: targetSlot,
+                                    jobClient: targetRow.client || parentRow.client || job.client,
+                                    jobName: targetRow.jobName || parentRow.jobName || job.jobName,
+                                    slotLabel: `#${inv.ref}`,
+                                    tabName,
+                                    job
+                                  });
+                                }}
+                                style={{
+                                  padding: "10px 12px",
+                                  borderRadius: "7px",
+                                  border: "1px solid #e2e8f0",
+                                  background: "#f8fafc",
+                                  cursor: "pointer",
+                                  transition: "all 0.15s ease",
+                                  boxSizing: "border-box",
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: "5px"
+                                }}
+                                title="Synced from accounting software. Click to view or adjust payment terms."
+                                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = "#f8fafc"; }}
+                              >
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                      #{inv.ref}
+                                    </span>
+                                    {inv.status && (
+                                      <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...getStatusPill(inv.status) }}>
+                                        {inv.status}
+                                      </span>
+                                    )}
+                                    {hasAccountingIntegration && (
+                                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} title="Synced from accounting">
+                                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                      </svg>
+                                    )}
+                                  </div>
+                                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                                    {formatCurrency(inv.amount)}
+                                  </span>
+                                </div>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b" }}>
+                                  <span>{inv.sentDate ? `Sent: ${toSheetDateFormat(inv.sentDate)}` : "No sent date"}</span>
+                                  <span>
+                                    {calculatePaymentDate(inv.sentDate, inv.daysToPay || 30)
+                                      ? `Due: ${calculatePaymentDate(inv.sentDate, inv.daysToPay || 30)} (${inv.daysToPay || 30}d)`
+                                      : `Terms: ${inv.daysToPay || 30}d`}
+                                  </span>
+                                </div>
                               </div>
                             );
                           }
 
-                          const slot = item.slot;
-                          const hasData = Boolean((slot.ref && String(slot.ref).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
-                          const isPlaceholder = isPlaceholderInvoice(slot.ref, slot.status);
-                          const pillStyle = getStatusPill(slot.status);
-                          const isPaid = String(slot.status || "").trim().toLowerCase() === "paid";
-
+                          const expectedDue = calculatePaymentDate(inv.sentDate, inv.daysToPay || 30);
                           return (
                             <div
-                              key={item.id}
-                              onClick={() => {
-                                setInvoicesEditSlot({
-                                  rowNum: item.rowNum,
-                                  slotNum: item.slotNum,
-                                  slot,
-                                  jobClient: item.row.client || parentRow.client || job.client,
-                                  jobName: item.row.jobName || parentRow.jobName || job.jobName,
-                                  slotLabel: slot.ref ? `#${slot.ref}` : (isPlaceholder ? "Placeholder" : (isAdmin ? `Slot ${item.slotNum}` : `Invoice ${item.slotNum}`)),
-                                  tabName,
-                                  job
-                                });
-                              }}
+                              key={inv.id}
                               style={{
-                                padding: "9px 12px",
-                                borderRadius: "7px",
-                                border: "1px solid #e2e8f0",
+                                padding: "12px",
+                                borderRadius: "8px",
+                                border: "1px solid #cbd5e1",
                                 background: "#ffffff",
-                                cursor: "pointer",
-                                transition: "all 0.15s ease",
                                 boxSizing: "border-box",
-                                maxWidth: "100%",
-                                overflow: "hidden",
-                                flexShrink: 0,
                                 display: "flex",
                                 flexDirection: "column",
-                                gap: "5px",
-                                boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                                gap: "8px",
+                                boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
                               }}
-                              title={
-                                hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
-                                  ? "Synced from accounting software. Click to view or edit days to pay."
-                                  : "Click to edit invoice"
-                              }
-                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = "#ffffff"; }}
                             >
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                  {isPlaceholder ? (
-                                    <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
-                                  ) : slot.ref ? (
-                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
-                                      #{slot.ref}
-                                    </span>
-                                  ) : (
-                                    <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
-                                      Invoice
-                                    </span>
-                                  )}
-
-                                  {hasData && slot.status && (
-                                    <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
-                                      {slot.status}
-                                    </span>
-                                  )}
-
-                                  {hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== "" && (
-                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                                    </svg>
-                                  )}
-
-                                  <NoteIndicatorButton
-                                    size="sm"
-                                    note={slot.note || ""}
-                                    onClick={() => openSlotNoteModal({ item, type: "invoice" })}
-                                    title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice"}
-                                  />
-
-                                  {isRetainer && item.row && (
-                                    <span style={{ fontSize: "10px", color: "#64748b" }}>
-                                      ({getRetainerRowMonthLabel(item.row, 0, job)})
+                                  <span style={{ fontSize: "10px", padding: "2px 7px", borderRadius: "6px", fontWeight: "700", background: "#f1f5f9", color: "#475569", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                                    Manual invoice {invIdx + 1}
+                                  </span>
+                                  {inv.ref && (
+                                    <span style={{ fontSize: "11px", fontWeight: "600", color: "#0047AB" }}>
+                                      #{inv.ref}
                                     </span>
                                   )}
                                 </div>
-
-                                {hasData ? (
-                                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
-                                    {formatCurrency(slot.amount)}
-                                  </span>
-                                ) : (
-                                  <span style={{ fontSize: "11px", color: "#94a3b8" }}>
-                                    Click to add
-                                  </span>
-                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveDraftInvoice(inv.id)}
+                                  disabled={isJobLocked}
+                                  style={{
+                                    background: "none",
+                                    border: "none",
+                                    color: "#dc2626",
+                                    fontSize: "11px",
+                                    fontWeight: "600",
+                                    cursor: isJobLocked ? "not-allowed" : "pointer",
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px"
+                                  }}
+                                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#fee2e2"; }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                                  title="Remove this invoice"
+                                >
+                                  ✕ Remove
+                                </button>
                               </div>
 
-                              {/* Progress bar (100% green if Paid) */}
-                              {isPaid && (
-                                <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
-                                  <div style={{ width: "100%", height: "100%", background: "#10b981", borderRadius: "2px" }} />
+                              {/* Amount & Invoice Number */}
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                                <div>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" }}>
+                                    <label style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", margin: 0 }}>
+                                      Amount (£)
+                                    </label>
+                                    {activeRevenueNum > 0 && !inv.amount && leftToInvoiceAmount > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateDraftInvoice(inv.id, "amount", String(leftToInvoiceAmount))}
+                                        style={{
+                                          background: "none",
+                                          border: "none",
+                                          color: "#16a34a",
+                                          fontSize: "10px",
+                                          fontWeight: "500",
+                                          cursor: "pointer",
+                                          padding: 0,
+                                          textDecoration: "underline"
+                                        }}
+                                        title="Fill remaining uninvoiced balance"
+                                      >
+                                        Fill remaining (£{leftToInvoiceAmount.toLocaleString()})
+                                      </button>
+                                    )}
+                                  </div>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    style={{ width: "100%", padding: "6px 8px", borderRadius: "5px", border: "1px solid #cbd5e1", fontSize: "12px", color: "#0f172a", boxSizing: "border-box", outline: "none" }}
+                                    value={inv.amount}
+                                    onChange={(e) => handleUpdateDraftInvoice(inv.id, "amount", e.target.value)}
+                                    placeholder="0.00"
+                                    disabled={isJobLocked}
+                                  />
                                 </div>
-                              )}
+                                <div>
+                                  <label style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", marginBottom: "3px", display: "block" }}>
+                                    Invoice number
+                                  </label>
+                                  <input
+                                    type="text"
+                                    style={{ width: "100%", padding: "6px 8px", borderRadius: "5px", border: "1px solid #cbd5e1", fontSize: "12px", color: "#0f172a", boxSizing: "border-box", outline: "none" }}
+                                    value={inv.ref || ""}
+                                    onChange={(e) => handleUpdateDraftInvoice(inv.id, "ref", e.target.value)}
+                                    placeholder="Leave blank for manual"
+                                    disabled={isJobLocked}
+                                  />
+                                </div>
+                              </div>
 
-                              {hasData && (
-                                isPaid ? (
-                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
-                                    <span style={{ color: "#166534", fontWeight: 600 }}>
-                                      ✓ {formatCurrency(slot.amount)} paid
-                                    </span>
-                                    <span style={{ color: "#64748b" }}>
-                                      {slot.sentDate ? `Sent: ${toSheetDateFormat(slot.sentDate)}` : ""}
-                                      {slot.daysToPay ? ` · Paid: ${slot.daysToPay}d` : ""}
-                                    </span>
-                                  </div>
-                                ) : (
-                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
-                                    <span style={{ color: "#b45309", fontWeight: 600 }}>
-                                      {calculatePaymentDate(slot.sentDate, slot.daysToPay || 30) ? (
-                                        `Due: ${calculatePaymentDate(slot.sentDate, slot.daysToPay || 30)}`
-                                      ) : (
-                                        `Expected in ${slot.daysToPay || 30}d`
-                                      )}
-                                    </span>
-                                    <span style={{ color: "#64748b" }}>
-                                      {slot.sentDate ? `Sent: ${toSheetDateFormat(slot.sentDate)} (${slot.daysToPay || 30}d)` : `Terms: ${slot.daysToPay || 30}d`}
-                                    </span>
-                                  </div>
-                                )
+                              {/* Sent date, Days to pay, Status */}
+                              <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 1.1fr", gap: "8px" }}>
+                                <div>
+                                  <label style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", marginBottom: "3px", display: "block" }}>
+                                    Sent date
+                                  </label>
+                                  <JobDateInput
+                                    value={inv.sentDate}
+                                    onChange={(val) => handleUpdateDraftInvoice(inv.id, "sentDate", val)}
+                                    disabled={isJobLocked}
+                                    readOnly={isJobLocked}
+                                  />
+                                </div>
+                                <div>
+                                  <label style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", marginBottom: "3px", display: "block" }}>
+                                    Days to pay
+                                  </label>
+                                  <input
+                                    type="number"
+                                    style={{ width: "100%", padding: "6px 8px", borderRadius: "5px", border: "1px solid #cbd5e1", fontSize: "12px", color: "#0f172a", boxSizing: "border-box", outline: "none" }}
+                                    value={inv.daysToPay || ""}
+                                    onChange={(e) => handleUpdateDraftInvoice(inv.id, "daysToPay", parseInt(e.target.value, 10) || 0)}
+                                    placeholder="30"
+                                    disabled={isJobLocked}
+                                  />
+                                </div>
+                                <div>
+                                  <label style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", marginBottom: "3px", display: "block" }}>
+                                    Status
+                                  </label>
+                                  <select
+                                    style={{ width: "100%", padding: "6px 8px", borderRadius: "5px", border: "1px solid #cbd5e1", fontSize: "12px", color: "#0f172a", boxSizing: "border-box", outline: "none", background: "#ffffff" }}
+                                    value={canonicalizeInvoiceStatus(inv.status) || ""}
+                                    onChange={(e) => handleUpdateDraftInvoice(inv.id, "status", e.target.value)}
+                                    disabled={isJobLocked}
+                                  >
+                                    <option value="">Select...</option>
+                                    {INVOICE_STATUS_OPTIONS.map((st) => (
+                                      <option key={st} value={st}>{st}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+
+                              {expectedDue && (
+                                <div style={{ fontSize: "10px", color: "#64748b" }}>
+                                  Expected payment: <strong style={{ color: "#0f172a" }}>{expectedDue}</strong>
+                                </div>
                               )}
                             </div>
                           );
-                        })
-                      )}
-                      <button
-                        type="button"
-                        onClick={handleAddNewInvoicePlaceholder}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: "6px",
-                          padding: "8px 12px",
-                          borderRadius: "6px",
-                          border: "1px dashed #cbd5e1",
-                          background: "#f8fafc",
-                          color: "#475569",
-                          fontSize: "12px",
-                          fontWeight: "600",
-                          cursor: "pointer",
-                          transition: "all 0.15s ease",
-                          marginTop: "2px"
-                        }}
-                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#94a3b8"; e.currentTarget.style.background = "#f1f5f9"; e.currentTarget.style.color = "#0f172a"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#cbd5e1"; e.currentTarget.style.background = "#f8fafc"; e.currentTarget.style.color = "#475569"; }}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <line x1="12" y1="5" x2="12" y2="19" />
-                          <line x1="5" y1="12" x2="19" y2="12" />
-                        </svg>
-                        Add new
-                      </button>
-                    </div>
+                        })}
+
+                        {/* Automatic placeholder preview card (only if remaining uninvoiced) */}
+                        {leftToInvoiceAmount > 0.01 && activeRevenueNum > 0 && (
+                          <div
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: "7px",
+                              border: "1px dashed #fde68a",
+                              background: "#fffbeb",
+                              boxSizing: "border-box",
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: "10px"
+                            }}
+                          >
+                            <div>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
+                                <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
+                                  Automatic placeholder
+                                </span>
+                                <span style={{ fontSize: "12px", fontWeight: "700", color: "#92400e" }}>
+                                  {formatCurrency(leftToInvoiceAmount)}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: "10px", color: "#78350f" }}>
+                                Created on save to match remaining revenue
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleAddDraftInvoice({ amount: leftToInvoiceAmount })}
+                              disabled={isJobLocked}
+                              style={{
+                                padding: "5px 9px",
+                                borderRadius: "5px",
+                                border: "1px solid #d97706",
+                                background: "#ffffff",
+                                color: "#b45309",
+                                fontSize: "11px",
+                                fontWeight: "600",
+                                cursor: isJobLocked ? "not-allowed" : "pointer",
+                                whiteSpace: "nowrap",
+                                transition: "all 0.15s ease"
+                              }}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = "#fef3c7"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = "#ffffff"; }}
+                              title="Convert this remaining amount to an editable manual invoice"
+                            >
+                              + Convert to manual
+                            </button>
+                          </div>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => handleAddDraftInvoice()}
+                          disabled={isJobLocked}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: "6px",
+                            padding: "8px 12px",
+                            borderRadius: "6px",
+                            border: "1px dashed #cbd5e1",
+                            background: "#f8fafc",
+                            color: "#475569",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            cursor: isJobLocked ? "not-allowed" : "pointer",
+                            transition: "all 0.15s ease",
+                            marginTop: "2px"
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#94a3b8"; e.currentTarget.style.background = "#f1f5f9"; e.currentTarget.style.color = "#0f172a"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#cbd5e1"; e.currentTarget.style.background = "#f8fafc"; e.currentTarget.style.color = "#475569"; }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19" />
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                          </svg>
+                          Add new invoice
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Card 3: Direct Costs */}

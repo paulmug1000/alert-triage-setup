@@ -3,7 +3,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl, getSheetTitles } fro
 import { verifyUserAuthorizedForSheet, resolveMasterSheetIdByClientName } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
-import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense } from "../../../utils/helpers.js";
+import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense, isJobCostingStyle } from "../../../utils/helpers.js";
 import { getClients } from "../../../services/workspaces.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s L1 fresh window
@@ -219,6 +219,7 @@ export default async function handler(req, res) {
     batchRanges.push("KeyInfo!C4:D5");   // Currency and thousands separator
     batchRanges.push("KeyInfo!Q4");      // Accounting tool
     batchRanges.push("KeyInfo!Q8:Q9");   // CRM tool (Q8) & CRM mode (Q9)
+    batchRanges.push("KeyInfo!D11:D13"); // Job table style (D11), standard charge-out rate (D12), contractor day rate (D13)
 
     const batchResp = await withRetry(() =>
       sheets.spreadsheets.values.batchGet({
@@ -249,11 +250,20 @@ export default async function handler(req, res) {
     const currencyRows = valueRanges[rangeIdx++]?.values || [];
     const accountingToolRows = valueRanges[rangeIdx++]?.values || [];
     const crmToolRows = valueRanges[rangeIdx++]?.values || [];
+    const jobCostingRows = valueRanges[rangeIdx++]?.values || [];
 
     const accountingTool = String(accountingToolRows?.[0]?.[0] || "None").trim();
     const crmTool = String(crmToolRows?.[0]?.[0] || "None").trim();
     const crmDrives = String(crmToolRows?.[1]?.[0] || "NA").trim();
     const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some((t) => accountingTool.toLowerCase().includes(t));
+    const jobCostingStyleRaw = String(jobCostingRows?.[0]?.[0] || "").trim();
+    const isJobCosting = isJobCostingStyle({
+      d11Val: jobCostingStyleRaw,
+      headers: confirmedRows?.[0] || pipelineRows?.[0] || []
+    });
+    const jobCostingStyle = isJobCosting ? "JobCosting" : "Standard";
+    const standardChargeOutRate = parseFloat(String(jobCostingRows?.[1]?.[0] || "0").replace(/[£$€,\s]/g, "")) || 0;
+    const contractorDayRate = parseFloat(String(jobCostingRows?.[2]?.[0] || "0").replace(/[£$€,\s]/g, "")) || 0;
 
     const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
     let currencySymbol = rawCurrencySymbol;
@@ -617,12 +627,27 @@ export default async function handler(req, res) {
             id: `${jobType.toLowerCase()}-${rowNum}`,
             rowNumber: rowNum,
             type: jobType,
+            isJobCosting,
             client: client || "General",
             jobName: jobName || `Job #${rowNum}`,
             revenue,
             revNum,
             directCosts,
             dcNum,
+            ...(isJobCosting ? {
+              fixedVariable: row[7] !== undefined ? String(row[7]).trim() : "",
+              jobRevenue: row[8] !== undefined ? String(row[8]).trim() : "",
+              contractorCosts: row[10] !== undefined ? String(row[10]).trim() : "",
+              equivDays: row[12] !== undefined ? String(row[12]).trim() : "",
+              equivContractorCosts: row[13] !== undefined ? String(row[13]).trim() : "",
+              contractorCostsCheck: row[14] !== undefined ? String(row[14]).trim() : "",
+              externalCosts: row[16] !== undefined ? String(row[16]).trim() : "",
+              rechargedExpenses: row[17] !== undefined ? String(row[17]).trim() : "",
+              propSuccFeePct: row[19] !== undefined ? String(row[19]).trim() : "",
+              propSuccFeeAmt: row[20] !== undefined ? String(row[20]).trim() : "",
+              propSuccFeeRec: row[21] !== undefined ? String(row[21]).trim() : "",
+              invNo: row[27] !== undefined ? String(row[27]).trim() : "",
+            } : {}),
             grossProfit: getValueByHeader(row, colMap, ["gross profit"]),
             grossMargin: getValueByHeader(row, colMap, ["margin", "gross profit margin"]),
             productLine: getValueByHeader(row, colMap, ["prod. line", "product line"]),
@@ -1512,11 +1537,19 @@ export default async function handler(req, res) {
       },
       mode,
       directCostsMode,
+      isJobCosting,
+      jobCostingStyle,
+      standardChargeOutRate,
+      contractorDayRate,
       formOptions: {
         leadSources,
         productLines,
         splitEnabled,
         splitMethod,
+        isJobCosting,
+        jobCostingStyle,
+        standardChargeOutRate,
+        contractorDayRate,
       },
       splitEnabled,
       splitMethod,
@@ -1531,6 +1564,10 @@ export default async function handler(req, res) {
         thousandsSeparator,
         accountingTool,
         hasAccountingIntegration,
+        isJobCosting,
+        jobCostingStyle,
+        standardChargeOutRate,
+        contractorDayRate,
       },
     };
 

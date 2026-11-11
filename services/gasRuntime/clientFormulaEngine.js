@@ -1,4 +1,4 @@
-//Version 1.05 - Universal immediate tab evaluation support, exact Monthly column pruning, and downstream dependency pruning
+//Version 1.07 - Preserve row-level formula/static overrides in A..AN on Confirmed and Pipeline during recalculateClientGrids
 // Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -3247,15 +3247,21 @@ function ensureJobRowFormulasPopulated_(grids) {
   for (const tab of ["Confirmed", "Pipeline", "ConfCalcs", "PipeCalcs"]) {
     const t = grids[tab];
     if (!t || !Array.isArray(t.formulas) || !t.formulas[1]) continue;
+    const isJobTab = tab === "Confirmed" || tab === "Pipeline";
+
     const templateRowF = t.formulas[1]; // Row 2 (r=1)
     const srcTab = tab === "ConfCalcs" ? "Confirmed" : tab === "PipeCalcs" ? "Pipeline" : tab;
     const maxR = Math.min(findLastActiveJobRow_(grids[srcTab]?.values) + 1, t.formulas.length - 1);
+    const startCol = isJobTab ? 40 : 0; // On Confirmed/Pipeline, never overwrite or inject A..AN (0..39) on existing rows
     for (let r = 2; r <= maxR; r++) {
       if (!t.formulas[r]) t.formulas[r] = [];
-      for (let c = 0; c < templateRowF.length; c++) {
+      const vRow = t.values?.[r] || [];
+      for (let c = startCol; c < templateRowF.length; c++) {
         const tf = templateRowF[c];
         if (typeof tf === "string" && tf.startsWith("=") && !isPotentialSpillFormula_(tf)) {
           if (!t.formulas[r][c]) {
+            // On Confirmed/Pipeline, do not overwrite populated static cells on historical rows
+            if (isJobTab && vRow[c] !== "" && vRow[c] !== null && vRow[c] !== undefined) continue;
             t.formulas[r][c] = shiftRowFormulaFromRow2_(tf, r + 1);
           }
         }

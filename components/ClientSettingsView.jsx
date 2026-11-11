@@ -3202,6 +3202,62 @@ export default function ClientSettingsView({
                         </select>
                         {renderCellRef("KeyInfo!F13")}
                       </div>
+
+                      <div>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
+                          Job table style
+                        </label>
+                        <select
+                          value={settings.jobs?.jobCostingStyle || "Standard"}
+                          onChange={(e) => updateSettingsField(prev => ({
+                            ...prev,
+                            jobs: { ...prev.jobs, jobCostingStyle: e.target.value }
+                          }))}
+                          style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
+                        >
+                          <option value="Standard">Standard</option>
+                          <option value="JobCosting">Job costing (day rates & success fees)</option>
+                        </select>
+                        {renderCellRef("KeyInfo!D11")}
+                      </div>
+
+                      {settings.jobs?.jobCostingStyle === "JobCosting" && (
+                        <>
+                          <div>
+                            <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
+                              Standard charge-out day rate
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              value={settings.jobs?.standardChargeOutRate ?? "2750"}
+                              onChange={(e) => updateSettingsField(prev => ({
+                                ...prev,
+                                jobs: { ...prev.jobs, standardChargeOutRate: e.target.value }
+                              }))}
+                              style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
+                            />
+                            {renderCellRef("KeyInfo!D12")}
+                          </div>
+
+                          <div>
+                            <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
+                              Contractor day rate
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              value={settings.jobs?.contractorDayRate ?? "2000"}
+                              onChange={(e) => updateSettingsField(prev => ({
+                                ...prev,
+                                jobs: { ...prev.jobs, contractorDayRate: e.target.value }
+                              }))}
+                              style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
+                            />
+                            {renderCellRef("KeyInfo!D13")}
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
 

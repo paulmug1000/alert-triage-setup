@@ -507,8 +507,11 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     // 5. CRM STATUS MAPPING
     crmStatusMapping: crmStatusMappings,
 
-    // 6. JOBS (Date Adjustment, Product Lines, Lead Sources)
+    // 6. JOBS (Date Adjustment, Product Lines, Lead Sources, Job Costing Style)
     jobs: {
+      jobCostingStyle: String(keyA1F20[10]?.[3] || "Standard").trim() || "Standard", // D11
+      standardChargeOutRate: String(keyA1F20[11]?.[3] || "2750").trim(),            // D12
+      contractorDayRate: String(keyA1F20[12]?.[3] || "2000").trim(),                // D13
       dateAdjustment: {
         projectStartDate: String(keyA1F20[14]?.[5] || "").trim(), // F15
         projectEndDate: String(keyA1F20[15]?.[5] || "").trim(),   // F16
@@ -900,8 +903,99 @@ export async function saveClientSettings({
     });
   }
 
-  // 6. JOBS (Date Adjustment, Product Lines, Lead Sources)
+  // 6. JOBS (Date Adjustment, Product Lines, Lead Sources, Job Costing Style)
   if (settings.jobs) {
+    if (
+      settings.jobs.jobCostingStyle !== undefined ||
+      settings.jobs.standardChargeOutRate !== undefined ||
+      settings.jobs.contractorDayRate !== undefined
+    ) {
+      const jcStyle = String(settings.jobs.jobCostingStyle || "Standard").trim() === "JobCosting" ? "JobCosting" : "Standard";
+      const stdRate = String(sanitizeFormulaInput(String(settings.jobs.standardChargeOutRate ?? "2750"))).trim() || "2750";
+      const conRate = String(sanitizeFormulaInput(String(settings.jobs.contractorDayRate ?? "2000"))).trim() || "2000";
+      masterUpdates.push({
+        range: "KeyInfo!C11:D13",
+        values: [
+          ["Job table style", jcStyle],
+          ["Standard charge out rate", stdRate],
+          ["Contractor day rate", conRate],
+        ],
+      });
+
+      if (jcStyle === "JobCosting") {
+        // Ensure CRMComp JobCosting headers & ignore flags are provisioned on Master
+        masterUpdates.push(
+          { range: "CRMComp!BO5:BP5", values: [["=CP6", "=CU6"]] },
+          { range: "CRMComp!BR5", values: [["=CV6"]] },
+          { range: "CRMComp!CP4", values: [["Ignore"]] },
+          { range: "CRMComp!CU4:CV4", values: [["Ignore", "Ignore"]] },
+          { range: "CRMComp!GU4:HB4", values: [["=CP4", "=CQ4", "=CR4", "=CS4", "=CT4", "=CU4", "=CV4", "=CW4"]] },
+          { range: "CRMComp!FT5:FU5", values: [["=GU6", "=GZ6"]] },
+          { range: "CRMComp!FW5", values: [["=HA6"]] },
+          { range: "CRMComp!HB5:HC5", values: [["=CW6", "Total direct costs check"]] }
+        );
+
+        // If Client Sheet has not yet been provisioned with JobCosting headers in F1:AB1, provision headers & Row 2 formulas
+        if (clientSheetId) {
+          try {
+            const hdrCheck = await withRetry(() => sheets.spreadsheets.values.batchGet({
+              spreadsheetId: clientSheetId,
+              ranges: ["Confirmed!F1", "Pipeline!F1"],
+              valueRenderOption: "FORMATTED_VALUE",
+            }));
+            const confF1 = String(hdrCheck.data?.valueRanges?.[0]?.values?.[0]?.[0] || "").trim().toLowerCase();
+            const pipeF1 = String(hdrCheck.data?.valueRanges?.[1]?.values?.[0]?.[0] || "").trim().toLowerCase();
+            const confHeadersFtoV = [[
+              "Date job will start",
+              "Date job will end",
+              "Fixed / variable",
+              "Job revenue",
+              "",
+              "Contractor costs",
+              "",
+              "Equiv no of days in project",
+              "Equiv contr costs",
+              "Cont. costs check",
+              "",
+              "External costs",
+              "Rechgd exp",
+              "",
+              "% prop succ fee",
+              "£ prop succ fee",
+              "Prop succ. fee rec",
+            ]];
+            const pipeHeadersFtoI = [[
+              "Date job will start",
+              "Date job will end",
+              "",
+              "Job revenue",
+            ]];
+            if (confF1 !== "date job will start") {
+              clientUpdates.push(
+                { range: "Confirmed!F1:V1", values: confHeadersFtoV },
+                { range: "Confirmed!K2", values: [["=M2*KeyInfo!$D$13"]] },
+                { range: "Confirmed!M2:O2", values: [["=I2/KeyInfo!$D$12", "=M2*KeyInfo!$D$13", "=N2-K2"]] },
+                { range: "Confirmed!U2", values: [["=(I2-Q2)*T2"]] },
+                { range: "Confirmed!AG2:AH2", values: [['=if(I2+R2=0,"",I2+R2)', '=if(K2+Q2+U2=0,"",K2+Q2+U2)']] },
+                { range: "Confirmed!AL2:AM2", values: [["=F2", "=G2"]] },
+                { range: "Confirmed!AO2", values: [['=if(AL2>AM2,"Err","")']] }
+              );
+            }
+            if (pipeF1 !== "date job will start") {
+              clientUpdates.push(
+                { range: "Pipeline!F1:I1", values: pipeHeadersFtoI },
+                { range: "Pipeline!AG2:AH2", values: [["=I2", '=if(AG2="","",((AG2/KeyInfo!$D$12)*KeyInfo!$D$13)+(AG2*0.1))']] },
+                { range: "Pipeline!AL2:AM2", values: [["=F2", "=G2"]] },
+                { range: "Pipeline!AO2", values: [['=if(AL2>AM2,"Err","")']] }
+              );
+            }
+          } catch (provErr) {
+            console.warn("Could not check/provision JobCosting headers on Client Sheet:", provErr.message);
+          }
+        }
+      }
+    }
+
     if (settings.jobs.dateAdjustment) {
       const da = settings.jobs.dateAdjustment;
       addMasterCell("KeyInfo!F15", da.projectStartDate);

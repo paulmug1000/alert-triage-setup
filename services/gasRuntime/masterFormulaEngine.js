@@ -1,6 +1,6 @@
 /**
  * Master Sheet Formula Engine (100% Verbatim 1:1 Implementation)
- * Version: 1.02 — Full PLComp 4-block/2-block & Ignore block parity, InvComp Pay date/Status alignment
+ * Version: 1.03 — Support Extended JobCosting setup style in CRMComp (BO, BP, BR, FT, FU, FW, GU:HC)
  *
  * Evaluates the exact Google Sheets formulas on the Master Sheet tabs:
  *   1. Outgoings (Row 1 dates from KeyInfo!B2 + IMPORTRANGEs A4:AX8, A12:AX114)
@@ -1803,12 +1803,38 @@ export function evaluateCRMComp(grids) {
   }
   setCell(crmComp, 1, 11, l2Count); // L2
 
+  const keyInfo = grids.KeyInfo;
+  const isJobCosting =
+    gsEq(String(getCell(keyInfo, 10, 3) || "").trim(), "JobCosting") ||
+    !isBlankCell(getCell(crmComp, 4, 66)) ||
+    !isBlankCell(getCell(crmComp, 4, 175));
+
   // Dynamic headers in row 5 that depend on B2
   const dateHeader5 = isConfMode ? "Date conf" : "Date originally added to pipeline";
   setCell(crmComp, 4, 64, dateHeader5);  // BM5
   setCell(crmComp, 4, 125, dateHeader5); // DV5
   setCell(crmComp, 4, 144, isConfMode ? "Date confirmed" : "Date originally added to pipeline"); // EO5
   setCell(crmComp, 4, 173, dateHeader5); // FR5
+
+  if (isJobCosting) {
+    // Ensure JobCosting headers in Row 5 (BO, BP, BR and FT, FU, FW, HB, HC)
+    if (isBlankCell(getCell(crmComp, 4, 66))) setCell(crmComp, 4, 66, "Date job will start"); // BO5
+    if (isBlankCell(getCell(crmComp, 4, 67))) setCell(crmComp, 4, 67, "Date job will end");   // BP5
+    if (isBlankCell(getCell(crmComp, 4, 69))) setCell(crmComp, 4, 69, "Job revenue");         // BR5
+    if (isBlankCell(getCell(crmComp, 4, 175))) setCell(crmComp, 4, 175, "Date job will start"); // FT5
+    if (isBlankCell(getCell(crmComp, 4, 176))) setCell(crmComp, 4, 176, "Date job will end");   // FU5
+    if (isBlankCell(getCell(crmComp, 4, 178))) setCell(crmComp, 4, 178, "Job revenue");         // FW5
+    if (isBlankCell(getCell(crmComp, 4, 209))) setCell(crmComp, 4, 209, "% likel.");            // HB5
+    if (isBlankCell(getCell(crmComp, 4, 210))) setCell(crmComp, 4, 210, "Copied to confirmed tab?"); // HC5
+
+    // Ensure Row 4 Ignore flags on formula columns CP4 (93), CU4 (98), CV4 (99) and mirror CP4:CW4 -> GU4:HB4 (202..209)
+    if (isBlankCell(getCell(crmComp, 3, 93))) setCell(crmComp, 3, 93, "Ignore");
+    if (isBlankCell(getCell(crmComp, 3, 98))) setCell(crmComp, 3, 98, "Ignore");
+    if (isBlankCell(getCell(crmComp, 3, 99))) setCell(crmComp, 3, 99, "Ignore");
+    for (let offset = 0; offset < 8; offset++) {
+      setCell(crmComp, 3, 202 + offset, getCell(crmComp, 3, 93 + offset));
+    }
+  }
 
   const ae4RemBlankEnd = String(getCell(crmComp, 3, 30) || "No").trim(); // AE4
   const ai4RemBlankRev = String(getCell(crmComp, 3, 34) || "No").trim(); // AI4
@@ -1821,7 +1847,7 @@ export function evaluateCRMComp(grids) {
   clearRect(crmComp, 5, maxR, 0, 57);    // A..BF
   clearRect(crmComp, 5, maxR, 61, 101);  // BJ..CX
   clearRect(crmComp, 5, maxR, 116, 167); // DM..FL
-  clearRect(crmComp, 5, maxR, 170, 208); // FO..HA
+  clearRect(crmComp, 5, maxR, 170, 210); // FO..HC
 
   if (isOff) return;
 
@@ -1965,6 +1991,14 @@ export function evaluateCRMComp(grids) {
       const CX = isConfMode ? (BF === 1 ? "DELETE" : "") : (toNumOrZero(AE) === 1 ? "Yes" : "No");
 
       writeRect(crmComp, r0, 61, [[BJ, BK, BL, BM, BN]], 5);
+      if (isJobCosting || !isBlankCell(getCell(crmComp, 4, 66))) {
+        const BO = (isAlertIgnore(63, alertCol0) || colIgnore4(66)) ? "<IGNORE>" : AC;
+        const BP = (isAlertIgnore(64, alertCol0) || colIgnore4(67)) ? "<IGNORE>" : AD;
+        const BR = colIgnore4(69) ? "<IGNORE>" : AA;
+        setCell(crmComp, r0, 66, BO);
+        setCell(crmComp, r0, 67, BP);
+        setCell(crmComp, r0, 69, BR);
+      }
       writeRect(crmComp, r0, 93, [[CP, CQ, CR, CS, CT, CU, CV, CW, CX]], 9);
     } else if (isConfMode && BF === 1) {
       setCell(crmComp, r0, 101, "DELETE");
@@ -2011,6 +2045,7 @@ export function evaluateCRMComp(grids) {
     const FK = FE === 1 ? "" : !gsValEq(EL, FA) ? 1 : "";
 
     let FL = "";
+    let rowIsConf = false;
     if (!isBlankCell(EU)) {
       const fbNum = gsN(toNumOrNull(FB) ?? FB);
       let likeCond = false;
@@ -2021,14 +2056,14 @@ export function evaluateCRMComp(grids) {
       else if (opMatch === "=") likeCond = fbNum === likeTargetVal;
 
       const statCond = flInclRegex ? flInclRegex.test(String(FC ?? "").toLowerCase()) : true;
-      const isConf = logicType === "or" ? (likeCond || statCond) : (likeCond && statCond);
+      rowIsConf = logicType === "or" ? (likeCond || statCond) : (likeCond && statCond);
 
       if (isConfMode) {
-        FL = isConf ? "" : 1;
+        FL = rowIsConf ? "" : 1;
       } else {
         if (FE === 1) FL = "";
-        else if (isConf && !gsEq(EN, "Yes")) FL = 1;
-        else if (!isConf && !gsValEq(EM, FB)) FL = 1;
+        else if (rowIsConf && !gsEq(EN, "Yes")) FL = 1;
+        else if (!rowIsConf && !gsValEq(EM, FB)) FL = 1;
       }
     }
 
@@ -2053,7 +2088,26 @@ export function evaluateCRMComp(grids) {
       const HA = (isAlertIgnore(76, alertCol0) || colIgnore4(208)) ? "<IGNORE>" : FA;
 
       writeRect(crmComp, r0, 170, [[FO, FP, FQ, FR, FS]], 5);
+      if (isJobCosting || !isBlankCell(getCell(crmComp, 4, 175))) {
+        const FT = (isAlertIgnore(76, alertCol0) || colIgnore4(175)) ? "<IGNORE>" : EZ;
+        const FU = (isAlertIgnore(76, alertCol0) || colIgnore4(176)) ? "<IGNORE>" : FA;
+        const fwAlertCol0 = isConfMode ? 4 : 1; // DataChgAlert!E75 in Confirmed, B75 in Pipeline
+        const FW = (isAlertIgnore(74, fwAlertCol0) || colIgnore4(178)) ? "<IGNORE>" : EX;
+        setCell(crmComp, r0, 175, FT);
+        setCell(crmComp, r0, 176, FU);
+        setCell(crmComp, r0, 178, FW);
+      }
       writeRect(crmComp, r0, 202, [[GU, GV, GW, GX, GY, GZ, HA]], 7);
+      if (isJobCosting || !isBlankCell(getCell(crmComp, 4, 209))) {
+        const HB = isConfMode ? "" : (isAlertIgnore(78, 4) || colIgnore4(209)) ? "<IGNORE>" : FB;
+        setCell(crmComp, r0, 209, HB);
+      }
+      if (isJobCosting || !isBlankCell(getCell(crmComp, 4, 210))) {
+        const HC = isConfMode ? (FL === 1 ? "DELETE" : "") : (isBlankCell(FB) ? "" : (FL === 1 ? "Yes" : "No"));
+        setCell(crmComp, r0, 210, HC);
+      }
+    } else if (isConfMode && FL === 1 && (isJobCosting || !isBlankCell(getCell(crmComp, 4, 210)))) {
+      setCell(crmComp, r0, 210, "DELETE");
     }
   }
   const activeCrmRows = Math.max(5, 5 + aRows.length, 5 + xRows.length, 5 + dmRows.length, 5 + efRows.length);
@@ -2223,21 +2277,21 @@ export function evaluateKeyInfoAndPLComp(grids) {
   // Evaluate standard PLFromApp lookup rows
   const simpleBlocks = isFourBlockStaff
     ? [
-        [2, 4, 5],
-        [6, 8, 9],
-        [10, 12, 13],
-        [14, 20, 21],
-        [22, 24, 25],
-        [52, 61, 62],
-        [65, 74, 75],
-      ]
+      [2, 4, 5],
+      [6, 8, 9],
+      [10, 12, 13],
+      [14, 20, 21],
+      [22, 24, 25],
+      [52, 61, 62],
+      [65, 74, 75],
+    ]
     : [
-        [2, 11, 12],
-        [13, 20, 21],
-        [22, 24, 25],
-        [52, 61, 62],
-        [65, 74, 75],
-      ];
+      [2, 11, 12],
+      [13, 20, 21],
+      [22, 24, 25],
+      [52, 61, 62],
+      [65, 74, 75],
+    ];
   for (const [s1, e1, sum1] of simpleBlocks) {
     const sums = [0, 0, 0, 0, 0, 0];
     for (let r1 = s1; r1 <= e1; r1++) {

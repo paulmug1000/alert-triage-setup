@@ -31,7 +31,7 @@ import { redisClient } from "./redisClient.js";
 import { anthropic } from "./claudeClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
-import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId } from "./userPermissions.js";
 import { getSupabaseAdmin } from "./supabaseClient.js";
@@ -7623,11 +7623,13 @@ export async function handleAcceptOption(req, res, sheets) {
       }
 
       console.log(`  → Deleting job row(s) from ${tabName} tab, starting at row ${jobRowNum}`);
-      const tabResp = await sheets.spreadsheets.values.get({
+      const tabResp = await sheets.spreadsheets.values.batchGet({
         spreadsheetId: alert.clientId,
-        range: `${tabName}!A${jobRowNum}:CR${jobRowNum + 50}`,
+        ranges: [`${tabName}!A1:M1`, `${tabName}!A${jobRowNum}:CR${jobRowNum + 50}`],
       });
-      const tabRows = tabResp.data.values || [];
+      const headerRow = tabResp.data.valueRanges?.[0]?.values?.[0] || [];
+      const tabRows = tabResp.data.valueRanges?.[1]?.values || [];
+      const isJobCosting = isJobCostingStyle({ headers: headerRow });
 
       // Collect parent row + contiguous child rows (blank client/job)
       const rowsToClear = [jobRowNum];
@@ -7640,26 +7642,25 @@ export async function handleAcceptOption(req, res, sheets) {
       }
       console.log(`  Clearing ${rowsToClear.length} rows: ${rowsToClear.join(", ")}`);
 
-      // Column ranges to clear per the option description: A:G, AG:AM, AP:BH, BX:CR
-      const CLEAR_RANGES = ["A", "B", "C", "D", "E", "F", "G"];
-      const buildRangeList = (rows) => {
-        const ranges = [];
-        for (const row of rows) {
-          ranges.push(`${tabName}!A${row}:G${row}`);
-          ranges.push(`${tabName}!AG${row}:AM${row}`);
-          ranges.push(`${tabName}!AN${row}`);
-          ranges.push(`${tabName}!AP${row}:BH${row}`);
-          ranges.push(`${tabName}!BX${row}:CR${row}`);
-          ranges.push(`${tabName}!DD${row}`);
-        }
-        return ranges;
-      };
-
-      const clearRanges = buildRangeList(rowsToClear);
+      const { clearRanges, restoreData } = buildJobRowClearAndRestorePlan({
+        sheetName: tabName,
+        rowNums: rowsToClear,
+        isJobCosting,
+        includeCopiedCol: true,
+      });
       await sheets.spreadsheets.values.batchClear({
         spreadsheetId: alert.clientId,
         requestBody: { ranges: clearRanges },
       });
+      if (restoreData.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: alert.clientId,
+          requestBody: {
+            valueInputOption: "USER_ENTERED",
+            data: restoreData,
+          },
+        });
+      }
 
       // Mark alert as accepted in AlertMemory
       await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
@@ -8810,28 +8811,14 @@ export async function handleDeleteJob(req, res, sheets) {
     }
     console.log(`  Rows to blank: ${rowsToBlank.map(r => r + 1).join(", ")} (${rowsToBlank.length} rows)`);
 
-    // Build column ranges to blank: A:G (1-7), AE (31), AG:AM (33-39), AN (40), AP:BH (42-60), BX:CR (76-96), DD (108)
-    // AN = likelihood (40), DD = "Copied to Confirmed?" (108) - Pipeline-specific fields
-    // In A1 notation: colNum is 1-indexed
-    const colRanges = [
-      [1, 7],    // A:G
-      [31, 31],  // AE (Uneven revenue splits)
-      [33, 39],  // AG:AM
-      [40, 40],  // AN (likelihood)
-      [42, 60],  // AP:BH
-      [76, 96],  // BX:CR
-      [108, 108], // DD (Copied to Confirmed?)
-    ];
-
-    const clearRanges = [];
-    for (const rowIdx of rowsToBlank) {
-      const sheetRow = rowIdx + 1;
-      for (const [startCol, endCol] of colRanges) {
-        const startColLetter = colIndexToLetter(startCol);
-        const endColLetter = colIndexToLetter(endCol);
-        clearRanges.push(`${tabName}!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`);
-      }
-    }
+    const isJobCosting = isJobCostingStyle({ headers: tabRows[0] || [] });
+    const rowNumsToClear = rowsToBlank.map(r => r + 1);
+    const { clearRanges, restoreData } = buildJobRowClearAndRestorePlan({
+      sheetName: tabName,
+      rowNums: rowNumsToClear,
+      isJobCosting,
+      includeCopiedCol: true,
+    });
 
     // Use batchClear (not batchUpdate with "") - batchClear truly empties cells,
     // preserving formatting and not leaving empty-string values that would
@@ -8840,6 +8827,15 @@ export async function handleDeleteJob(req, res, sheets) {
       spreadsheetId: clientSheetId,
       requestBody: { ranges: clearRanges },
     });
+    if (restoreData.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: clientSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: restoreData,
+        },
+      });
+    }
     console.log(`  ✅ Cleared ${rowsToBlank.length} rows (${clearRanges.length} ranges)`);
 
     // Log to TriageLog

@@ -11,6 +11,10 @@ import {
   canonicalizeExpenseStatus,
   calculatePaymentDate
 } from "../utils/helpers";
+import {
+  generateManualPlaceholderInvoiceRef,
+  generateManualPlaceholderExpenseId
+} from "./PlaceholderPill";
 
 export default function JobsNewJobModal({
   jobsClient,
@@ -36,8 +40,8 @@ export default function JobsNewJobModal({
   const [jobName, setJobName] = useState(initialJobData?.jobName || "");
   const [projectCode, setProjectCode] = useState(initialJobData?.projectCode || "");
   const [projectRetainer, setProjectRetainer] = useState(initialJobData?.projectRetainer || "Project");
-  const [status, setStatus] = useState(initialJobData?.status || (initialTab === "Pipeline" ? "Pipeline" : "Confirmed"));
-  const [likelihood, setLikelihood] = useState(initialJobData?.likelihood !== undefined ? String(initialJobData.likelihood) : (initialTab === "Pipeline" ? "50" : "100"));
+  const [status, setStatus] = useState(initialJobData?.status || "");
+  const [likelihood, setLikelihood] = useState(initialJobData?.likelihood !== undefined ? String(initialJobData.likelihood) : (initialJobData?.status === "Confirmed" ? "100" : (initialJobData?.status === "Pipeline" ? "50" : "")));
   const [revenue, setRevenue] = useState(initialJobData?.revenue !== undefined ? String(initialJobData.revenue) : "");
   const [directCosts, setDirectCosts] = useState(initialJobData?.directCosts !== undefined ? String(initialJobData.directCosts) : "0");
   const [vat, setVat] = useState(initialJobData?.vat || "Yes");
@@ -50,23 +54,47 @@ export default function JobsNewJobModal({
 
   const [clientDefaultDays, setClientDefaultDays] = useState(30);
 
-  // Invoices (up to 3 slots)
-  const [showInvoicesSection, setShowInvoicesSection] = useState(false);
-  const [activeInvoiceSlot, setActiveInvoiceSlot] = useState(1);
-  const [invoices, setInvoices] = useState([
-    { slotNum: 1, invoiceNo: "", amount: "", sentDate: "", daysToPay: 30, status: "Sent" },
-    { slotNum: 2, invoiceNo: "", amount: "", sentDate: "", daysToPay: 30, status: "Sent" },
-    { slotNum: 3, invoiceNo: "", amount: "", sentDate: "", daysToPay: 30, status: "Sent" },
-  ]);
+  // Invoices (arbitrary count, dynamic list)
+  const [showInvoicesSection, setShowInvoicesSection] = useState(
+    Boolean(initialJobData?.invoices && initialJobData.invoices.length > 0)
+  );
+  const [invoices, setInvoices] = useState(() => {
+    if (Array.isArray(initialJobData?.invoices) && initialJobData.invoices.length > 0) {
+      return initialJobData.invoices.map((inv, idx) => ({
+        id: inv.id || `inv_${Date.now()}_${idx}`,
+        invoiceNo: inv.invoiceNo || inv.ref || "",
+        amount: inv.amount !== undefined ? String(inv.amount) : "",
+        sentDate: inv.sentDate || "",
+        daysToPay: inv.daysToPay !== undefined ? inv.daysToPay : 30,
+        status: inv.status || ""
+      }));
+    }
+    return [
+      { id: `inv_${Date.now()}_0`, invoiceNo: "", amount: "", sentDate: "", daysToPay: 30, status: "" }
+    ];
+  });
 
-  // Expenses (up to 3 slots)
-  const [showExpensesSection, setShowExpensesSection] = useState(false);
-  const [activeExpenseSlot, setActiveExpenseSlot] = useState(1);
-  const [expenses, setExpenses] = useState([
-    { slotNum: 1, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Received", transactionId: "" },
-    { slotNum: 2, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Received", transactionId: "" },
-    { slotNum: 3, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Received", transactionId: "" },
-  ]);
+  // Expenses / Direct costs (arbitrary count, dynamic list)
+  const [showExpensesSection, setShowExpensesSection] = useState(
+    Boolean(initialJobData?.expenses && initialJobData.expenses.length > 0)
+  );
+  const [expenses, setExpenses] = useState(() => {
+    if (Array.isArray(initialJobData?.expenses) && initialJobData.expenses.length > 0) {
+      return initialJobData.expenses.map((exp, idx) => ({
+        id: exp.id || `exp_${Date.now()}_${idx}`,
+        description: exp.description || "",
+        amount: exp.amount !== undefined ? String(exp.amount) : "",
+        vat: exp.vat || "No",
+        date: exp.date || "",
+        daysToPay: exp.daysToPay !== undefined ? exp.daysToPay : 30,
+        status: exp.status || "Received",
+        transactionId: exp.transactionId || ""
+      }));
+    }
+    return [
+      { id: `exp_${Date.now()}_0`, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Received", transactionId: "" }
+    ];
+  });
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -102,20 +130,50 @@ export default function JobsNewJobModal({
     return () => { isMounted = false; };
   }, [jobsClient]);
 
-  const updateInvoice = (slotNum, field, val) => {
-    setInvoices(prev => prev.map(inv => inv.slotNum === slotNum ? { ...inv, [field]: val } : inv));
+  const updateInvoice = (index, field, val) => {
+    setInvoices(prev => prev.map((inv, idx) => idx === index ? { ...inv, [field]: val } : inv));
   };
 
-  const clearInvoice = (slotNum) => {
-    setInvoices(prev => prev.map(inv => inv.slotNum === slotNum ? { slotNum, invoiceNo: "", amount: "", sentDate: "", daysToPay: clientDefaultDays, status: "Sent" } : inv));
+  const handleAddNewInvoice = () => {
+    setInvoices(prev => [
+      ...prev,
+      {
+        id: `inv_${Date.now()}_${prev.length}`,
+        invoiceNo: "",
+        amount: "",
+        sentDate: "",
+        daysToPay: clientDefaultDays || 30,
+        status: ""
+      }
+    ]);
   };
 
-  const updateExpense = (slotNum, field, val) => {
-    setExpenses(prev => prev.map(exp => exp.slotNum === slotNum ? { ...exp, [field]: val } : exp));
+  const handleRemoveInvoice = (index) => {
+    setInvoices(prev => prev.filter((_, idx) => idx !== index));
   };
 
-  const clearExpense = (slotNum) => {
-    setExpenses(prev => prev.map(exp => exp.slotNum === slotNum ? { slotNum, description: "", amount: "", vat: "No", date: "", daysToPay: clientDefaultDays, status: "Received", transactionId: "" } : exp));
+  const updateExpense = (index, field, val) => {
+    setExpenses(prev => prev.map((exp, idx) => idx === index ? { ...exp, [field]: val } : exp));
+  };
+
+  const handleAddNewExpense = () => {
+    setExpenses(prev => [
+      ...prev,
+      {
+        id: `exp_${Date.now()}_${prev.length}`,
+        description: "",
+        amount: "",
+        vat: "No",
+        date: "",
+        daysToPay: clientDefaultDays || 30,
+        status: "Received",
+        transactionId: ""
+      }
+    ]);
+  };
+
+  const handleRemoveExpense = (index) => {
+    setExpenses(prev => prev.filter((_, idx) => idx !== index));
   };
 
   // Compute active counts for badges
@@ -150,12 +208,12 @@ export default function JobsNewJobModal({
 
   const { splitMonths, splitDateError } = useMemo(() => {
     if (!startDate || !endDate) {
-      return { splitMonths: [], splitDateError: "Please enter Start Date and End Date above to split revenue across months." };
+      return { splitMonths: [], splitDateError: "Please enter start date and end date above to split revenue across months." };
     }
     const sDate = parseModalDate(startDate);
     const eDate = parseModalDate(endDate);
     if (!sDate || !eDate) {
-      return { splitMonths: [], splitDateError: "Please enter valid Start and End Dates to split revenue across months." };
+      return { splitMonths: [], splitDateError: "Please enter valid start and end dates to split revenue across months." };
     }
     let currYear = sDate.getFullYear();
     let currMonth = sDate.getMonth();
@@ -163,7 +221,7 @@ export default function JobsNewJobModal({
     const endMonth = eDate.getMonth();
 
     if (new Date(currYear, currMonth, 1) > new Date(endYear, endMonth, 1)) {
-      return { splitMonths: [], splitDateError: "End Date must be after Start Date." };
+      return { splitMonths: [], splitDateError: "End date must be after start date." };
     }
 
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -211,7 +269,7 @@ export default function JobsNewJobModal({
   const { isSplitError, splitErrorText } = useMemo(() => {
     if (!enableSplit) return { isSplitError: false, splitErrorText: "" };
     if (splitDateError) return { isSplitError: true, splitErrorText: splitDateError };
-    if (isNaN(totRev) || totRev <= 0) return { isSplitError: true, splitErrorText: "Please enter a Job Revenue amount above to allocate across months." };
+    if (isNaN(totRev) || totRev <= 0) return { isSplitError: true, splitErrorText: "Please enter a job revenue amount above to allocate across months." };
     if (lockedSum > totRev + 0.05) return { isSplitError: true, splitErrorText: `Allocated revenue exceeds total job revenue (£${lockedSum.toFixed(2)} vs £${totRev.toFixed(2)}).` };
     if (unlockedCount === 0 && Math.abs(remaining) > 0.05) {
       return { isSplitError: true, splitErrorText: `Total allocated revenue does not match total job revenue (£${Math.abs(remaining).toFixed(2)} discrepancy).` };
@@ -223,10 +281,12 @@ export default function JobsNewJobModal({
     setStatus(newStatus);
     if (newStatus === "Confirmed") {
       setLikelihood("100");
-    } else {
+    } else if (newStatus === "Pipeline") {
       if (likelihood === "100" || !likelihood) {
         setLikelihood("50");
       }
+    } else {
+      setLikelihood("");
     }
   };
 
@@ -235,11 +295,15 @@ export default function JobsNewJobModal({
     setError("");
 
     if (!client.trim()) {
-      setError("Please enter a Client Name.");
+      setError("Please enter a client name.");
       return;
     }
     if (!jobName.trim()) {
-      setError("Please enter a Job Name.");
+      setError("Please enter a job name.");
+      return;
+    }
+    if (!status) {
+      setError("Please select a status.");
       return;
     }
     const isRetainerNoEnd = projectRetainer === "Retainer" && noEndDate;
@@ -248,12 +312,12 @@ export default function JobsNewJobModal({
       return;
     }
     if (!isRetainerNoEnd && startDate && endDate && endDate < startDate) {
-      setError("End Date cannot be before Start Date.");
+      setError("End date cannot be before start date.");
       return;
     }
 
     if (enableSplit && isSplitError) {
-      setError(splitErrorText || "Please resolve errors in the Uneven Revenue Split section before saving.");
+      setError(splitErrorText || "Please resolve errors in the uneven revenue split section before saving.");
       return;
     }
 
@@ -282,19 +346,23 @@ export default function JobsNewJobModal({
       (inv.invoiceNo && inv.invoiceNo.trim()) ||
       (inv.amount !== "" && !isNaN(parseFloat(inv.amount)) && parseFloat(inv.amount) > 0) ||
       inv.sentDate
-    ).map(inv => ({
-      slotNum: inv.slotNum,
-      invoiceNo: (inv.invoiceNo || "").trim(),
-      amount: parseFloat(inv.amount) || 0,
-      sentDate: inv.sentDate || "",
-      daysToPay: (() => {
-        const s = String(inv.daysToPay || "").trim();
-        if (/^[0-9]{4}[-/]/.test(s) || /[A-Za-z]{3}/.test(s)) return 30;
-        const p = parseInt(s.replace(/[^\d-]/g, ""), 10);
-        return !isNaN(p) && p >= 0 && p <= 365 ? p : 30;
-      })(),
-      status: (inv.status || "Sent").trim()
-    }));
+    ).map((inv, idx) => {
+      const invNo = (inv.invoiceNo || "").trim();
+      return {
+        slotNum: (idx % 3) + 1,
+        rowOffset: Math.floor(idx / 3),
+        invoiceNo: invNo,
+        amount: parseFloat(inv.amount) || 0,
+        sentDate: inv.sentDate || "",
+        daysToPay: (() => {
+          const s = String(inv.daysToPay || "").trim();
+          if (/^[0-9]{4}[-/]/.test(s) || /[A-Za-z]{3}/.test(s)) return 30;
+          const p = parseInt(s.replace(/[^\d-]/g, ""), 10);
+          return !isNaN(p) && p >= 0 && p <= 365 ? p : (clientDefaultDays || 30);
+        })(),
+        status: (inv.status || "").trim()
+      };
+    });
 
     // Filter active expenses to submit
     const activeExpenses = expenses.filter(exp =>
@@ -302,8 +370,9 @@ export default function JobsNewJobModal({
       (exp.amount !== "" && !isNaN(parseFloat(exp.amount)) && parseFloat(exp.amount) > 0) ||
       exp.date ||
       (exp.transactionId && exp.transactionId.trim())
-    ).map(exp => ({
-      slotNum: exp.slotNum,
+    ).map((exp, idx) => ({
+      slotNum: (idx % 3) + 1,
+      rowOffset: Math.floor(idx / 3),
       description: (exp.description || "").trim(),
       amount: parseFloat(exp.amount) || 0,
       vat: exp.vat || "No",
@@ -312,9 +381,9 @@ export default function JobsNewJobModal({
         const s = String(exp.daysToPay || "").trim();
         if (/^[0-9]{4}[-/]/.test(s) || /[A-Za-z]{3}/.test(s)) return 30;
         const p = parseInt(s.replace(/[^\d-]/g, ""), 10);
-        return !isNaN(p) && p >= 0 && p <= 365 ? p : 30;
+        return !isNaN(p) && p >= 0 && p <= 365 ? p : (clientDefaultDays || 30);
       })(),
-      status: (exp.status || "Pending").trim(),
+      status: (exp.status || "Received").trim(),
       transactionId: (exp.transactionId || "").trim()
     }));
 
@@ -397,9 +466,6 @@ export default function JobsNewJobModal({
     borderRadius: "8px",
     border: "1px solid #e2e8f0"
   };
-
-  const currentInvoice = invoices.find(i => i.slotNum === activeInvoiceSlot) || invoices[0];
-  const currentExpense = expenses.find(e => e.slotNum === activeExpenseSlot) || expenses[0];
 
   return (
     <div
@@ -513,7 +579,7 @@ export default function JobsNewJobModal({
               <div style={{ display: "grid", gridTemplateColumns: "35% 65%", gap: "12px" }}>
                 <div>
                   <label style={labelStyle}>
-                    Client Name <span style={{ color: "#ef4444" }}>*</span>
+                    Client name <span style={{ color: "#ef4444" }}>*</span>
                   </label>
                   <input
                     type="text"
@@ -533,7 +599,7 @@ export default function JobsNewJobModal({
                 </div>
                 <div>
                   <label style={labelStyle}>
-                    Job Name <span style={{ color: "#ef4444" }}>*</span>
+                    Job name <span style={{ color: "#ef4444" }}>*</span>
                   </label>
                   <input
                     type="text"
@@ -575,11 +641,12 @@ export default function JobsNewJobModal({
                   style={{
                     ...inputStyle,
                     fontWeight: "600",
-                    color: status === "Confirmed" ? "#0369a1" : "#b45309"
+                    color: status === "Confirmed" ? "#0369a1" : (status === "Pipeline" ? "#b45309" : "#64748b")
                   }}
                   value={status}
                   onChange={(e) => handleStatusChange(e.target.value)}
                 >
+                  <option value=""></option>
                   <option value="Confirmed">Confirmed</option>
                   <option value="Pipeline">Pipeline</option>
                 </select>
@@ -606,7 +673,7 @@ export default function JobsNewJobModal({
               </div>
 
               <div>
-                <label style={labelStyle}>Project Code</label>
+                <label style={labelStyle}>Project code</label>
                 <input
                   type="text"
                   style={inputStyle}
@@ -639,7 +706,7 @@ export default function JobsNewJobModal({
 
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <label style={labelStyle}>Direct Costs (excl. VAT)</label>
+                  <label style={labelStyle}>Direct costs (excl. VAT)</label>
                   {totalExpenseSum > 0 && parseFloat(directCosts) !== totalExpenseSum && (
                     <button
                       type="button"
@@ -686,7 +753,7 @@ export default function JobsNewJobModal({
 
               <div>
                 <label style={labelStyle}>
-                  {status === "Confirmed" ? "Date Confirmed" : "Date Added"}
+                  {status === "Confirmed" ? "Date confirmed" : "Date added"}
                 </label>
                 <DateInput
                   style={inputStyle}
@@ -709,7 +776,7 @@ export default function JobsNewJobModal({
 
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-                  <label style={{ ...labelStyle, marginBottom: 0 }}>End Date</label>
+                  <label style={{ ...labelStyle, marginBottom: 0 }}>End date</label>
                   {projectRetainer === "Retainer" && (
                     <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: "600", color: "#475569", cursor: "pointer", userSelect: "none" }}>
                       <input
@@ -740,7 +807,7 @@ export default function JobsNewJobModal({
               </div>
 
               <div>
-                <label style={labelStyle}>Product Line</label>
+                <label style={labelStyle}>Product line</label>
                 <select
                   style={inputStyle}
                   value={productLine}
@@ -756,7 +823,7 @@ export default function JobsNewJobModal({
               </div>
 
               <div>
-                <label style={labelStyle}>Lead Source</label>
+                <label style={labelStyle}>Lead source</label>
                 <select
                   style={inputStyle}
                   value={leadSource}
@@ -914,13 +981,21 @@ export default function JobsNewJobModal({
                   cursor: "pointer",
                   userSelect: "none"
                 }}
-                onClick={() => setShowInvoicesSection(prev => !prev)}
+                onClick={() => {
+                  setShowInvoicesSection(prev => {
+                    const next = !prev;
+                    if (next && invoices.length === 0) {
+                      handleAddNewInvoice();
+                    }
+                    return next;
+                  });
+                }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <span style={{ fontSize: "16px" }}>🧾</span>
                   <div>
                     <span style={{ fontSize: "13px", fontWeight: "700", color: "#166534" }}>
-                      Invoices (Optional)
+                      Invoices (optional)
                     </span>
                     <span style={{ fontSize: "11px", color: "#4ade80", marginLeft: "8px" }}>
                       {invoiceActiveCount > 0
@@ -945,151 +1020,179 @@ export default function JobsNewJobModal({
                     </span>
                   )}
                   <span style={{ fontSize: "12px", color: "#166534", fontWeight: "bold" }}>
-                    {showInvoicesSection ? "▲ Hide" : "▼ Add / View"}
+                    {showInvoicesSection ? "▲ Hide" : "▼ Add / view"}
                   </span>
                 </div>
               </div>
 
               {showInvoicesSection && (
-                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px dashed #bbf7d0" }}>
-                  {/* Slot Selector Pills */}
-                  <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
-                    {[1, 2, 3].map(slotNum => {
-                      const inv = invoices.find(i => i.slotNum === slotNum);
-                      const isConfigured = Boolean((inv?.invoiceNo && inv.invoiceNo.trim()) || (inv?.amount !== "" && parseFloat(inv?.amount) > 0) || inv?.sentDate);
-                      const isActive = activeInvoiceSlot === slotNum;
+                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px dashed #bbf7d0", display: "flex", flexDirection: "column", gap: "12px" }}>
+                  {invoices.length === 0 ? (
+                    <div style={{ padding: "12px", textAlign: "center", color: "#64748b", fontSize: "12px" }}>
+                      No invoices added yet. Click below to add an invoice.
+                    </div>
+                  ) : (
+                    invoices.map((inv, index) => {
+                      const paymentDate = calculatePaymentDate(inv.sentDate, inv.daysToPay || clientDefaultDays);
                       return (
-                        <button
-                          key={slotNum}
-                          type="button"
-                          onClick={() => setActiveInvoiceSlot(slotNum)}
+                        <div
+                          key={inv.id || index}
                           style={{
-                            padding: "6px 12px",
-                            borderRadius: "6px",
-                            border: `1px solid ${isActive ? "#16a34a" : isConfigured ? "#86efac" : "#cbd5e1"}`,
-                            background: isActive ? "#16a34a" : isConfigured ? "#dcfce7" : "#ffffff",
-                            color: isActive ? "#ffffff" : isConfigured ? "#166534" : "#475569",
-                            fontSize: "12px",
-                            fontWeight: "600",
-                            cursor: "pointer",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "6px"
+                            background: "#ffffff",
+                            padding: "14px",
+                            borderRadius: "8px",
+                            border: "1px solid #dcfce7",
+                            boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                           }}
                         >
-                          <span>{isAdmin ? `Slot ${slotNum}` : `Invoice ${slotNum}`}</span>
-                          {isConfigured && (
-                            <span style={{ fontSize: "11px", opacity: 0.9 }}>
-                              {inv.amount ? `£${inv.amount}` : "✓"}
+                          {/* Card Header */}
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                            <span style={{ fontSize: "12px", fontWeight: "700", color: "#166534" }}>
+                              Invoice {index + 1}
                             </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Active Invoice Fields */}
-                  <div style={{ background: "#ffffff", padding: "12px", borderRadius: "8px", border: "1px solid #dcfce7" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1.5fr 1fr", gap: "10px", marginBottom: "10px" }}>
-                      <div>
-                        <label style={labelStyle}>Invoice Number</label>
-                        <input
-                          type="text"
-                          style={inputStyle}
-                          value={currentInvoice.invoiceNo}
-                          onChange={e => updateInvoice(activeInvoiceSlot, "invoiceNo", e.target.value)}
-                          placeholder="e.g. INV-1001"
-                        />
-                      </div>
-                      <div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <label style={labelStyle}>Amount (£)</label>
-                          {revenue && activeInvoiceSlot === 1 && !currentInvoice.amount && (
                             <button
                               type="button"
-                              onClick={() => updateInvoice(1, "amount", revenue)}
+                              onClick={() => handleRemoveInvoice(index)}
                               style={{
                                 background: "none",
                                 border: "none",
-                                color: "#16a34a",
-                                fontSize: "10px",
+                                color: "#dc2626",
+                                fontSize: "11px",
+                                fontWeight: "600",
                                 cursor: "pointer",
-                                padding: 0,
-                                marginBottom: "4px",
-                                textDecoration: "underline"
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px"
                               }}
+                              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#fee2e2"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                              title="Remove this invoice"
                             >
-                              Use Rev (£{revenue})
+                              ✕ Remove
                             </button>
-                          )}
-                        </div>
-                        <input
-                          type="number"
-                          step="0.01"
-                          style={inputStyle}
-                          value={currentInvoice.amount}
-                          onChange={e => updateInvoice(activeInvoiceSlot, "amount", e.target.value)}
-                          placeholder="0.00"
-                        />
-                      </div>
-                      <div>
-                        <label style={labelStyle}>Days to pay</label>
-                        <input
-                          type="number"
-                          style={inputStyle}
-                          value={currentInvoice.daysToPay}
-                          onChange={e => updateInvoice(activeInvoiceSlot, "daysToPay", e.target.value)}
-                          placeholder="30"
-                        />
-                        {calculatePaymentDate(currentInvoice.sentDate, currentInvoice.daysToPay) && (
-                          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
-                            Payment date: <strong style={{ color: "#0f172a", fontWeight: "600" }}>{calculatePaymentDate(currentInvoice.sentDate, currentInvoice.daysToPay)}</strong>
                           </div>
-                        )}
-                      </div>
-                    </div>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1.5fr auto", gap: "10px", alignItems: "flex-end" }}>
-                      <div>
-                        <label style={labelStyle}>Sent date</label>
-                        <DateInput
-                          style={inputStyle}
-                          value={currentInvoice.sentDate}
-                          onChange={e => updateInvoice(activeInvoiceSlot, "sentDate", e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label style={labelStyle}>Status</label>
-                        <select
-                          style={inputStyle}
-                          value={canonicalizeInvoiceStatus(currentInvoice.status) || "Draft"}
-                          onChange={e => updateInvoice(activeInvoiceSlot, "status", e.target.value)}
-                        >
-                          {INVOICE_STATUS_OPTIONS.map((st) => (
-                            <option key={st} value={st}>{st}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <button
-                          type="button"
-                          onClick={() => clearInvoice(activeInvoiceSlot)}
-                          style={{
-                            padding: "8px 12px",
-                            border: "1px solid #e2e8f0",
-                            borderRadius: "6px",
-                            background: "#f8fafc",
-                            color: "#64748b",
-                            fontSize: "12px",
-                            cursor: "pointer"
-                          }}
-                          title="Clear this invoice entry"
-                        >
-                          {isAdmin ? "Clear Slot" : "Clear"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+                          {/* Row 1: Invoice number, Amount (£), Days to pay */}
+                          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1.5fr 1fr", gap: "10px", marginBottom: "10px" }}>
+                            <div>
+                              <label style={labelStyle}>Invoice number</label>
+                              <input
+                                type="text"
+                                style={inputStyle}
+                                value={inv.invoiceNo}
+                                onChange={e => updateInvoice(index, "invoiceNo", e.target.value)}
+                                placeholder="Leave blank for manual invoice"
+                              />
+                            </div>
+
+                            <div>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                                <label style={{ ...labelStyle, marginBottom: 0 }}>Amount (£)</label>
+                                {revenue && index === 0 && !inv.amount && (
+                                  <button
+                                    type="button"
+                                    onClick={() => updateInvoice(0, "amount", revenue)}
+                                    style={{
+                                      background: "none",
+                                      border: "none",
+                                      color: "#16a34a",
+                                      fontSize: "10px",
+                                      fontWeight: "500",
+                                      cursor: "pointer",
+                                      padding: 0,
+                                      textDecoration: "underline"
+                                    }}
+                                  >
+                                    Use rev (£{revenue})
+                                  </button>
+                                )}
+                              </div>
+                              <input
+                                type="number"
+                                step="0.01"
+                                style={inputStyle}
+                                value={inv.amount}
+                                onChange={e => updateInvoice(index, "amount", e.target.value)}
+                                placeholder="0.00"
+                              />
+                            </div>
+
+                            <div>
+                              <label style={labelStyle}>Days to pay</label>
+                              <input
+                                type="number"
+                                style={inputStyle}
+                                value={inv.daysToPay}
+                                onChange={e => updateInvoice(index, "daysToPay", e.target.value)}
+                                placeholder={String(clientDefaultDays || 30)}
+                              />
+                              {paymentDate && (
+                                <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                                  Payment date: <strong style={{ color: "#0f172a", fontWeight: "600" }}>{paymentDate}</strong>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Row 2: Sent date, Status */}
+                          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1.5fr", gap: "10px" }}>
+                            <div>
+                              <label style={labelStyle}>Sent date</label>
+                              <DateInput
+                                style={inputStyle}
+                                value={inv.sentDate}
+                                onChange={e => updateInvoice(index, "sentDate", e.target.value)}
+                              />
+                            </div>
+                            <div>
+                              <label style={labelStyle}>Status</label>
+                              <select
+                                style={inputStyle}
+                                value={canonicalizeInvoiceStatus(inv.status) || ""}
+                                onChange={e => updateInvoice(index, "status", e.target.value)}
+                              >
+                                <option value=""></option>
+                                {INVOICE_STATUS_OPTIONS.map((st) => (
+                                  <option key={st} value={st}>{st}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+
+                  {/* Add New Invoice Button */}
+                  <button
+                    type="button"
+                    onClick={handleAddNewInvoice}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "6px",
+                      padding: "9px 14px",
+                      borderRadius: "6px",
+                      border: "1px dashed #86efac",
+                      background: "#ffffff",
+                      color: "#166534",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease"
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#16a34a"; e.currentTarget.style.background = "#f0fdf4"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#86efac"; e.currentTarget.style.background = "#ffffff"; }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    Add new invoice
+                  </button>
                 </div>
               )}
             </div>
@@ -1106,13 +1209,21 @@ export default function JobsNewJobModal({
                   cursor: "pointer",
                   userSelect: "none"
                 }}
-                onClick={() => setShowExpensesSection(prev => !prev)}
+                onClick={() => {
+                  setShowExpensesSection(prev => {
+                    const next = !prev;
+                    if (next && expenses.length === 0) {
+                      handleAddNewExpense();
+                    }
+                    return next;
+                  });
+                }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <span style={{ fontSize: "16px" }}>📦</span>
                   <div>
                     <span style={{ fontSize: "13px", fontWeight: "700", color: "#854d0e" }}>
-                      Direct costs (Optional)
+                      Direct costs (optional)
                     </span>
                     <span style={{ fontSize: "11px", color: "#ca8a04", marginLeft: "8px" }}>
                       {expenseActiveCount > 0
@@ -1133,156 +1244,200 @@ export default function JobsNewJobModal({
                         fontWeight: "600"
                       }}
                     >
-                      {expenseActiveCount} {expenseActiveCount === 1 ? "expense" : "expenses"}
+                      {expenseActiveCount} {expenseActiveCount === 1 ? "cost" : "costs"}
                     </span>
                   )}
                   <span style={{ fontSize: "12px", color: "#854d0e", fontWeight: "bold" }}>
-                    {showExpensesSection ? "▲ Hide" : "▼ Add / View"}
+                    {showExpensesSection ? "▲ Hide" : "▼ Add / view"}
                   </span>
                 </div>
               </div>
 
               {showExpensesSection && (
-                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px dashed #fef08a" }}>
-                  {/* Slot Selector Pills */}
-                  <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
-                    {[1, 2, 3].map(slotNum => {
-                      const exp = expenses.find(e => e.slotNum === slotNum);
-                      const isConfigured = Boolean((exp?.description && exp.description.trim()) || (exp?.amount !== "" && parseFloat(exp?.amount) > 0) || exp?.date);
-                      const isActive = activeExpenseSlot === slotNum;
+                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px dashed #fef08a", display: "flex", flexDirection: "column", gap: "12px" }}>
+                  {expenses.length === 0 ? (
+                    <div style={{ padding: "12px", textAlign: "center", color: "#64748b", fontSize: "12px" }}>
+                      No direct costs added yet. Click below to add a direct cost.
+                    </div>
+                  ) : (
+                    expenses.map((exp, index) => {
+                      const paymentDate = calculatePaymentDate(exp.date, exp.daysToPay || clientDefaultDays);
                       return (
-                        <button
-                          key={slotNum}
-                          type="button"
-                          onClick={() => setActiveExpenseSlot(slotNum)}
+                        <div
+                          key={exp.id || index}
                           style={{
-                            padding: "6px 12px",
-                            borderRadius: "6px",
-                            border: `1px solid ${isActive ? "#ca8a04" : isConfigured ? "#fde047" : "#cbd5e1"}`,
-                            background: isActive ? "#ca8a04" : isConfigured ? "#fef9c3" : "#ffffff",
-                            color: isActive ? "#ffffff" : isConfigured ? "#854d0e" : "#475569",
-                            fontSize: "12px",
-                            fontWeight: "600",
-                            cursor: "pointer",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "6px"
+                            background: "#ffffff",
+                            padding: "14px",
+                            borderRadius: "8px",
+                            border: "1px solid #fef9c3",
+                            boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                           }}
                         >
-                          <span>{isAdmin ? `Slot ${slotNum}` : `Expense ${slotNum}`}</span>
-                          {isConfigured && (
-                            <span style={{ fontSize: "11px", opacity: 0.9 }}>
-                              {exp.amount ? `£${exp.amount}` : "✓"}
+                          {/* Card Header */}
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                            <span style={{ fontSize: "12px", fontWeight: "700", color: "#854d0e" }}>
+                              Direct cost {index + 1}
                             </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Active Expense Fields */}
-                  <div style={{ background: "#ffffff", padding: "12px", borderRadius: "8px", border: "1px solid #fef9c3" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "10px", marginBottom: "10px" }}>
-                      <div>
-                        <label style={labelStyle}>Description / Supplier</label>
-                        <input
-                          type="text"
-                          style={inputStyle}
-                          value={currentExpense.description}
-                          onChange={e => updateExpense(activeExpenseSlot, "description", e.target.value)}
-                          placeholder="e.g. Photography & Studio hire"
-                        />
-                      </div>
-                      <div>
-                        <label style={labelStyle}>Amount (£)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          style={inputStyle}
-                          value={currentExpense.amount}
-                          onChange={e => updateExpense(activeExpenseSlot, "amount", e.target.value)}
-                          placeholder="0.00"
-                        />
-                      </div>
-                      <div>
-                        <label style={labelStyle}>VAT Charged?</label>
-                        <select
-                          style={inputStyle}
-                          value={currentExpense.vat}
-                          onChange={e => updateExpense(activeExpenseSlot, "vat", e.target.value)}
-                        >
-                          <option value="No">No</option>
-                          <option value="Yes">Yes</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 1fr auto", gap: "10px", alignItems: "flex-end" }}>
-                      <div>
-                        <label style={labelStyle}>Date</label>
-                        <DateInput
-                          style={inputStyle}
-                          value={currentExpense.date}
-                          onChange={e => updateExpense(activeExpenseSlot, "date", e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label style={labelStyle}>Days to pay</label>
-                        <input
-                          type="number"
-                          style={inputStyle}
-                          value={currentExpense.daysToPay}
-                          onChange={e => updateExpense(activeExpenseSlot, "daysToPay", e.target.value)}
-                          placeholder="30"
-                        />
-                        {calculatePaymentDate(currentExpense.date, currentExpense.daysToPay) && (
-                          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
-                            Payment date: <strong style={{ color: "#0f172a", fontWeight: "600" }}>{calculatePaymentDate(currentExpense.date, currentExpense.daysToPay)}</strong>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveExpense(index)}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                color: "#dc2626",
+                                fontSize: "11px",
+                                fontWeight: "600",
+                                cursor: "pointer",
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px"
+                              }}
+                              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#fee2e2"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                              title="Remove this direct cost"
+                            >
+                              ✕ Remove
+                            </button>
                           </div>
-                        )}
-                      </div>
-                      <div>
-                        <label style={labelStyle}>Status</label>
-                        <select
-                          style={inputStyle}
-                          value={canonicalizeExpenseStatus(currentExpense.status) || "Received"}
-                          onChange={e => updateExpense(activeExpenseSlot, "status", e.target.value)}
-                        >
-                          {EXPENSE_STATUS_OPTIONS.map((st) => (
-                            <option key={st} value={st}>{st}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label style={labelStyle}>Transaction ID</label>
-                        <input
-                          type="text"
-                          style={inputStyle}
-                          value={currentExpense.transactionId}
-                          onChange={e => updateExpense(activeExpenseSlot, "transactionId", e.target.value)}
-                          placeholder="e.g. TX-492"
-                        />
-                      </div>
-                      <div>
-                        <button
-                          type="button"
-                          onClick={() => clearExpense(activeExpenseSlot)}
-                          style={{
-                            padding: "8px 12px",
-                            border: "1px solid #e2e8f0",
-                            borderRadius: "6px",
-                            background: "#f8fafc",
-                            color: "#64748b",
-                            fontSize: "12px",
-                            cursor: "pointer"
-                          }}
-                          title="Clear this expense entry"
-                        >
-                          {isAdmin ? "Clear Slot" : "Clear"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+
+                          {/* Row 1: Description / supplier, Amount (£), VAT charged? */}
+                          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "10px", marginBottom: "10px" }}>
+                            <div>
+                              <label style={labelStyle}>Description / supplier</label>
+                              <input
+                                type="text"
+                                style={inputStyle}
+                                value={exp.description}
+                                onChange={e => updateExpense(index, "description", e.target.value)}
+                                placeholder="e.g. Photography & studio hire"
+                              />
+                            </div>
+                            <div>
+                              <label style={labelStyle}>Amount (£)</label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                style={inputStyle}
+                                value={exp.amount}
+                                onChange={e => updateExpense(index, "amount", e.target.value)}
+                                placeholder="0.00"
+                              />
+                            </div>
+                            <div>
+                              <label style={labelStyle}>VAT charged?</label>
+                              <select
+                                style={inputStyle}
+                                value={exp.vat}
+                                onChange={e => updateExpense(index, "vat", e.target.value)}
+                              >
+                                <option value="No">No</option>
+                                <option value="Yes">Yes</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          {/* Row 2: Date, Days to pay, Status, Transaction ID */}
+                          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 1fr", gap: "10px" }}>
+                            <div>
+                              <label style={labelStyle}>Date</label>
+                              <DateInput
+                                style={inputStyle}
+                                value={exp.date}
+                                onChange={e => updateExpense(index, "date", e.target.value)}
+                              />
+                            </div>
+                            <div>
+                              <label style={labelStyle}>Days to pay</label>
+                              <input
+                                type="number"
+                                style={inputStyle}
+                                value={exp.daysToPay}
+                                onChange={e => updateExpense(index, "daysToPay", e.target.value)}
+                                placeholder={String(clientDefaultDays || 30)}
+                              />
+                              {paymentDate && (
+                                <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                                  Payment date: <strong style={{ color: "#0f172a", fontWeight: "600" }}>{paymentDate}</strong>
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <label style={labelStyle}>Status</label>
+                              <select
+                                style={inputStyle}
+                                value={canonicalizeExpenseStatus(exp.status) || "Received"}
+                                onChange={e => updateExpense(index, "status", e.target.value)}
+                              >
+                                {EXPENSE_STATUS_OPTIONS.map((st) => (
+                                  <option key={st} value={st}>{st}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                                <label style={{ ...labelStyle, marginBottom: 0 }}>Transaction ID</label>
+                                <button
+                                  type="button"
+                                  onClick={() => updateExpense(index, "transactionId", generateManualPlaceholderExpenseId(exp.date || todayISO))}
+                                  style={{
+                                    background: "none",
+                                    border: "none",
+                                    color: "#854d0e",
+                                    fontSize: "10px",
+                                    fontWeight: "500",
+                                    cursor: "pointer",
+                                    padding: 0,
+                                    textDecoration: "underline"
+                                  }}
+                                  title="Insert manual placeholder transaction ID"
+                                >
+                                  Placeholder
+                                </button>
+                              </div>
+                              <input
+                                type="text"
+                                style={inputStyle}
+                                value={exp.transactionId}
+                                onChange={e => updateExpense(index, "transactionId", e.target.value)}
+                                placeholder="e.g. TX-492"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+
+                  {/* Add New Direct Cost Button */}
+                  <button
+                    type="button"
+                    onClick={handleAddNewExpense}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "6px",
+                      padding: "9px 14px",
+                      borderRadius: "6px",
+                      border: "1px dashed #fde047",
+                      background: "#ffffff",
+                      color: "#854d0e",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease"
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#ca8a04"; e.currentTarget.style.background = "#fefce8"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#fde047"; e.currentTarget.style.background = "#ffffff"; }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    Add new direct cost
+                  </button>
                 </div>
               )}
             </div>

@@ -4,7 +4,13 @@ import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession }
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
-import { isPlaceholderInvoice, isPlaceholderExpense } from "../../../utils/helpers.js";
+import {
+  isPlaceholderInvoice,
+  isPlaceholderExpense,
+  isJobCostingStyle,
+  buildJobRowClearAndRestorePlan,
+  rewriteRowFormulasToTargetRow
+} from "../../../utils/helpers.js";
 
 function colToLetter(colIndex) {
   let temp, letter = "";
@@ -166,6 +172,7 @@ export default async function handler(req, res) {
 
     // 4. Look for existing Pipeline row
     const allPipelineRows = pipelineDataResp.data?.values || [];
+    const isJobCosting = isJobCostingStyle({ headers: allPipelineRows[0] });
 
     let pipelineRow = null;
     let isExistingJob = false;
@@ -238,8 +245,16 @@ export default async function handler(req, res) {
     }
 
     // Parent row A:AM (cols 1-39, index 0-38)
-    const parentA_AM = parentData.slice(0, 39);
+    let parentA_AM = parentData.slice(0, 39);
     while (parentA_AM.length < 39) parentA_AM.push("");
+    parentA_AM = rewriteRowFormulasToTargetRow(
+      parentA_AM,
+      cRow,
+      pipelineRow,
+      pipelineSheetName,
+      isJobCosting,
+      true
+    ).slice(0, 39);
     if (!isExistingJob) {
       const todayStr = new Date().toISOString().split("T")[0];
       parentA_AM[3] = todayStr;
@@ -283,13 +298,27 @@ export default async function handler(req, res) {
       const targetChildRow = pipelineRow + 1 + i;
       const childData = confirmedChildRowsData[i];
 
-      const childA_AM = childData.slice(0, 39);
+      let childA_AM = childData.slice(0, 39);
       while (childA_AM.length < 39) childA_AM.push("");
       childA_AM[0] = parentClient;
       childA_AM[1] = parentJobName;
       childA_AM[3] = "";
-      childA_AM[32] = ""; // Blank revenue
-      childA_AM[33] = ""; // Blank direct costs
+      if (isJobCosting) {
+        for (const c of [5, 6, 7, 8, 9, 11, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29, 31]) {
+          childA_AM[c] = "";
+        }
+        childA_AM = rewriteRowFormulasToTargetRow(
+          childA_AM,
+          cRow + 1 + i,
+          targetChildRow,
+          pipelineSheetName,
+          isJobCosting,
+          false
+        ).slice(0, 39);
+      } else {
+        childA_AM[32] = ""; // Blank revenue
+        childA_AM[33] = ""; // Blank direct costs
+      }
 
       pipelineBatchData.push({
         range: `${pipelineSheetName}!A${targetChildRow}:AM${targetChildRow}`,
@@ -453,14 +482,13 @@ export default async function handler(req, res) {
 
     // 7. Write Pipeline data and clear Confirmed data in a single parallel round-trip
     // Safe ranges: A:AM (1-39), AP:BH (42-60), BX:CR (76-96)
-    const batchClearRanges = [];
-    for (const r of clearRowRanges) {
-      batchClearRanges.push(
-        `${confirmedSheetName}!A${r}:AM${r}`,
-        `${confirmedSheetName}!AP${r}:BH${r}`,
-        `${confirmedSheetName}!BX${r}:CR${r}`
-      );
-    }
+    const { clearRanges: batchClearRanges, restoreData: batchRestoreData } =
+      buildJobRowClearAndRestorePlan({
+        sheetName: confirmedSheetName,
+        rowNums: clearRowRanges,
+        isJobCosting,
+        includeCopiedCol: false,
+      });
 
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
@@ -476,11 +504,23 @@ export default async function handler(req, res) {
       await withRetry(() =>
         sheets.spreadsheets.values.batchClear({
           spreadsheetId: clientSheetId,
+          _skipFormulaRecompute: batchRestoreData.length > 0,
           requestBody: {
             ranges: batchClearRanges,
           },
         })
       );
+      if (batchRestoreData.length > 0) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: clientSheetId,
+            requestBody: {
+              valueInputOption: "USER_ENTERED",
+              data: batchRestoreData,
+            },
+          })
+        );
+      }
     }
 
     // 8. Invalidate In-Memory and Redis caches across both Portal and PMA

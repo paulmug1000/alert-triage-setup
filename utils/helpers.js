@@ -2459,3 +2459,184 @@ export function assertTrustedOrigin(req, res) {
   return true;
 }
 
+/**
+ * Detects whether a Confirmed or Pipeline sheet uses the Extended JobCosting setup style.
+ */
+export function isJobCostingStyle({ headers, keyInfoD11 } = {}) {
+  if (String(keyInfoD11 || "").trim().toLowerCase() === "jobcosting") return true;
+  if (Array.isArray(headers)) {
+    const h5 = String(headers[5] || "").trim().toLowerCase();
+    const h8 = String(headers[8] || "").trim().toLowerCase();
+    if (h5 === "date job will start" || h8 === "job revenue") return true;
+  }
+  return false;
+}
+
+/**
+ * Returns 0-indexed column -> formula map for a JobCosting row on Confirmed or Pipeline.
+ */
+export function getJobCostingRowFormulasMap(sheetName, rowNum) {
+  if (sheetName === "Confirmed") {
+    return {
+      10: `=M${rowNum}*KeyInfo!$D$13`,
+      12: `=I${rowNum}/KeyInfo!$D$12`,
+      13: `=M${rowNum}*KeyInfo!$D$13`,
+      14: `=N${rowNum}-K${rowNum}`,
+      20: `=(I${rowNum}-Q${rowNum})*T${rowNum}`,
+      32: `=if(I${rowNum}+R${rowNum}=0,"",I${rowNum}+R${rowNum})`,
+      33: `=if(K${rowNum}+Q${rowNum}+U${rowNum}=0,"",K${rowNum}+Q${rowNum}+U${rowNum})`,
+      37: `=F${rowNum}`,
+      38: `=G${rowNum}`,
+      40: `=if(AL${rowNum}>AM${rowNum},"Err","")`,
+    };
+  }
+  return {
+    32: `=I${rowNum}`,
+    33: `=if(AG${rowNum}="","",((AG${rowNum}/KeyInfo!$D$12)*KeyInfo!$D$13)+(AG${rowNum}*0.1))`,
+    37: `=F${rowNum}`,
+    38: `=G${rowNum}`,
+    40: `=if(AL${rowNum}>AM${rowNum},"Err","")`,
+  };
+}
+
+/**
+ * Builds a safe clearRanges + restoreData plan for clearing/deleting job rows on Confirmed or Pipeline.
+ * On JobCosting sheets, preserves formula columns (M:O, U, Y, AG:AH, AL:AM, AO) and resets row formulas cleanly.
+ */
+export function buildJobRowClearAndRestorePlan({
+  sheetName,
+  rowNums = [],
+  isJobCosting = false,
+  includeCopiedCol = false,
+}) {
+  const clearRanges = [];
+  const restoreData = [];
+  const shouldClearDD = includeCopiedCol || sheetName === "Pipeline";
+
+  for (const r of rowNums) {
+    if (!r || r < 2) continue;
+    if (!isJobCosting) {
+      clearRanges.push(
+        `${sheetName}!A${r}:AM${r}`,
+        `${sheetName}!AP${r}:BH${r}`,
+        `${sheetName}!BX${r}:CR${r}`
+      );
+      if (shouldClearDD) clearRanges.push(`${sheetName}!DD${r}`);
+    } else {
+      if (sheetName === "Confirmed") {
+        clearRanges.push(
+          `${sheetName}!A${r}:J${r}`,
+          `${sheetName}!L${r}`,
+          `${sheetName}!P${r}:T${r}`,
+          `${sheetName}!V${r}:AF${r}`,
+          `${sheetName}!AI${r}:AK${r}`,
+          `${sheetName}!AN${r}`,
+          `${sheetName}!AP${r}:BH${r}`,
+          `${sheetName}!BX${r}:CR${r}`
+        );
+      } else {
+        clearRanges.push(
+          `${sheetName}!A${r}:AF${r}`,
+          `${sheetName}!AI${r}:AK${r}`,
+          `${sheetName}!AN${r}`,
+          `${sheetName}!AP${r}:BH${r}`,
+          `${sheetName}!BX${r}:CR${r}`
+        );
+      }
+      if (shouldClearDD) clearRanges.push(`${sheetName}!DD${r}`);
+
+      if (sheetName === "Confirmed") {
+        restoreData.push(
+          { range: `${sheetName}!K${r}`, values: [[`=M${r}*KeyInfo!$D$13`]] },
+          {
+            range: `${sheetName}!M${r}:O${r}`,
+            values: [[`=I${r}/KeyInfo!$D$12`, `=M${r}*KeyInfo!$D$13`, `=N${r}-K${r}`]],
+          },
+          { range: `${sheetName}!U${r}`, values: [[`=(I${r}-Q${r})*T${r}`]] },
+          {
+            range: `${sheetName}!AG${r}:AH${r}`,
+            values: [
+              [
+                `=if(I${r}+R${r}=0,"",I${r}+R${r})`,
+                `=if(K${r}+Q${r}+U${r}=0,"",K${r}+Q${r}+U${r})`,
+              ],
+            ],
+          },
+          { range: `${sheetName}!AL${r}:AM${r}`, values: [[`=F${r}`, `=G${r}`]] },
+          { range: `${sheetName}!AO${r}`, values: [[`=if(AL${r}>AM${r},"Err","")`]] }
+        );
+      } else {
+        restoreData.push(
+          {
+            range: `${sheetName}!AG${r}:AH${r}`,
+            values: [
+              [
+                `=I${r}`,
+                `=if(AG${r}="","",((AG${r}/KeyInfo!$D$12)*KeyInfo!$D$13)+(AG${r}*0.1))`,
+              ],
+            ],
+          },
+          { range: `${sheetName}!AL${r}:AM${r}`, values: [[`=F${r}`, `=G${r}`]] },
+          { range: `${sheetName}!AO${r}`, values: [[`=if(AL${r}>AM${r},"Err","")`]] }
+        );
+      }
+    }
+  }
+
+  return { clearRanges, restoreData };
+}
+
+/**
+ * Rewrites relative row references in a 0-indexed row array when moving a row from sourceRowNum to targetRowNum.
+ */
+export function rewriteRowFormulasToTargetRow(
+  rowArr,
+  sourceRowNum,
+  targetRowNum,
+  targetSheetName = null,
+  isJobCosting = false,
+  isParentRow = true
+) {
+  const out = Array.isArray(rowArr) ? [...rowArr] : [];
+  if (sourceRowNum && targetRowNum && sourceRowNum !== targetRowNum) {
+    for (let c = 0; c < out.length; c++) {
+      const val = out[c];
+      if (typeof val === "string" && val.startsWith("=")) {
+        out[c] = val.replace(
+          /(?<![A-Za-z0-9_])(\$?[A-Za-z]{1,3})(\$?)(\d+)(?![0-9(])/g,
+          (match, colPart, dollarRow, rowStr) => {
+            if (dollarRow === "$") return match;
+            const rNum = parseInt(rowStr, 10);
+            if (rNum === sourceRowNum) return `${colPart}${targetRowNum}`;
+            return match;
+          }
+        );
+      }
+    }
+  }
+  if (isJobCosting && targetSheetName) {
+    if (targetSheetName === "Pipeline") {
+      // Clear Confirmed-only columns (H and J..AD) when moving to Pipeline
+      out[7] = "";
+      for (let c = 9; c <= 29; c++) {
+        out[c] = "";
+      }
+    }
+    const hasFGI =
+      (out[5] !== "" && out[5] !== null && out[5] !== undefined) ||
+      (out[6] !== "" && out[6] !== null && out[6] !== undefined) ||
+      (out[8] !== "" && out[8] !== null && out[8] !== undefined);
+    if (hasFGI || !isParentRow) {
+      const fMap = getJobCostingRowFormulasMap(targetSheetName, targetRowNum);
+      for (const [colStr, formula] of Object.entries(fMap)) {
+        const c = Number(colStr);
+        // Keep custom formula in K (col 10) if one was already entered on that row
+        if (c === 10 && typeof out[10] === "string" && out[10].startsWith("=")) continue;
+        out[c] = formula;
+      }
+    }
+  }
+  return out;
+}
+
+

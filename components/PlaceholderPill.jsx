@@ -14,10 +14,22 @@ export function generatePlaceholderInvoiceRef(dateStr) {
   return `PLACE-INV-${d}-${rand}`;
 }
 
+export function generateManualPlaceholderInvoiceRef(dateStr) {
+  const d = dateStr ? String(dateStr).replace(/[^a-zA-Z0-9]/g, "").slice(0, 6) : "Entry";
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `MANUAL-INV-${d}-${rand}`;
+}
+
 export function generatePlaceholderExpenseId(dateStr) {
   const d = dateStr ? String(dateStr).replace(/[^a-zA-Z0-9]/g, "").slice(0, 6) : "Entry";
   const rand = Math.floor(1000 + Math.random() * 9000);
   return `PLACE-EXP-${d}-${rand}`;
+}
+
+export function generateManualPlaceholderExpenseId(dateStr) {
+  const d = dateStr ? String(dateStr).replace(/[^a-zA-Z0-9]/g, "").slice(0, 6) : "Entry";
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `MANUAL-EXP-${d}-${rand}`;
 }
 
 /**

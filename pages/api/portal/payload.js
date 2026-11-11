@@ -88,6 +88,11 @@ export default async function handler(req, res) {
         : rawDirectCostsMode.toLowerCase().includes("pass")
           ? "Pass-through"
           : "Contractors";
+    const jobCostingStyleRaw = String(keyInfoData[10]?.[3] || "").trim();
+    const isJobCosting = jobCostingStyleRaw.toLowerCase().replace(/[\s_-]+/g, "") === "jobcosting";
+    const jobCostingStyle = isJobCosting ? "JobCosting" : "Standard";
+    const standardChargeOutRate = parseFloat(String(keyInfoData[11]?.[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
+    const contractorDayRate = parseFloat(String(keyInfoData[12]?.[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
 
     const version = toggles[0]?.[0] || appDataDisp[39]?.[22] || ""; // W40
     const showExtraRows = String(toggles[2]?.[0] || appDataDisp[41]?.[22] || "").trim().toLowerCase() === "yes"; // W42
@@ -225,6 +230,10 @@ export default async function handler(req, res) {
       hasCash,
       mode,
       directCostsMode,
+      isJobCosting,
+      jobCostingStyle,
+      standardChargeOutRate,
+      contractorDayRate,
       currencySymbol,
       thousandsSeparator,
       clientInfo: {
@@ -237,6 +246,10 @@ export default async function handler(req, res) {
         hasCash,
         mode,
         directCostsMode,
+        isJobCosting,
+        jobCostingStyle,
+        standardChargeOutRate,
+        contractorDayRate,
         splitMethod,
         splitEnabled,
         authMode,

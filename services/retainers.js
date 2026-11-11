@@ -87,13 +87,45 @@ export async function retFindTrueLastRow(sheets, spreadsheetId, allRows) {
   return trueLastRow;
 }
 
-export function retDetectIntervalMonths(childDates) {
-  if (childDates.length < 2) return 1;
-  const d1 = childDates[childDates.length - 2];
-  const d2 = childDates[childDates.length - 1];
-  const diffDays = Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / 86400000);
-  const calc = Math.round(diffDays / 30);
-  return calc > 0 ? calc : 1;
+export function retDetectIntervalMonths(childDates, parentType) {
+  if (parentType) {
+    const pt = String(parentType).toLowerCase();
+    if (pt.includes("quarter")) return 3;
+    if (pt.includes("annual") || pt.includes("year")) return 12;
+    if (pt.includes("bi-month") || pt.includes("bimonth")) return 2;
+    if (pt.includes("month")) return 1;
+  }
+  const dates = (childDates || []).filter(Boolean);
+  if (dates.length < 2) return 1;
+
+  const diffs = [];
+  for (let k = 0; k < dates.length - 1; k++) {
+    const d1 = dates[k];
+    const d2 = dates[k + 1];
+    if (d1 && d2) {
+      const t1 = d1 instanceof Date ? d1.getTime() : new Date(d1).getTime();
+      const t2 = d2 instanceof Date ? d2.getTime() : new Date(d2).getTime();
+      if (!isNaN(t1) && !isNaN(t2)) {
+        const diffDays = Math.ceil(Math.abs(t2 - t1) / 86400000);
+        const calc = Math.round(diffDays / 30);
+        if (calc > 0) diffs.push(calc);
+      }
+    }
+  }
+
+  if (diffs.length === 0) return 1;
+
+  const counts = {};
+  let maxCount = 0;
+  let modeInterval = 1;
+  for (const val of diffs) {
+    counts[val] = (counts[val] || 0) + 1;
+    if (counts[val] > maxCount) {
+      maxCount = counts[val];
+      modeInterval = val;
+    }
+  }
+  return modeInterval;
 }
 
 export function retDetectInvoiceTimingOffset_(allInvoiceDates, jobStartDate, intervalMonths) {

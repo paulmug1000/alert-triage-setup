@@ -712,7 +712,19 @@ class VirtualRange {
     return this;
   }
 
-  setNumberFormats() {
+  setNumberFormats(formatsMatrix) {
+    if (Array.isArray(formatsMatrix)) {
+      for (let r = 0; r < formatsMatrix.length; r++) {
+        const row = formatsMatrix[r];
+        if (Array.isArray(row)) {
+          for (let c = 0; c < row.length; c++) {
+            if (String(row[c] || "").trim() === "@") {
+              this.sheet.textCols.add(this.startCol1 - 1 + c);
+            }
+          }
+        }
+      }
+    }
     return this;
   }
   setBackground() {
@@ -751,7 +763,63 @@ class VirtualRange {
   setDataValidation() {
     return this;
   }
-  shiftRowGroupDepth() {
+  shiftRowGroupDepth(delta) {
+    const d = Number(delta) || 1;
+    if (this.sheet && this.sheet.spreadsheet && this.sheet.spreadsheet.isRemoteGoogleSheet) {
+      const startIndex = this.startRow1 - 1;
+      const endIndex = startIndex + this.numRows;
+      const range = {
+        sheetId: this.sheet.sheetId,
+        dimension: "ROWS",
+        startIndex,
+        endIndex,
+      };
+
+      if (d > 0) {
+        for (let i = 0; i < d; i++) {
+          this.sheet.spreadsheet._onSheetMutated(this.sheet.name, {
+            type: "structural",
+            request: {
+              addDimensionGroup: { range },
+            },
+          });
+        }
+        if (!this.sheet.rowGroups) this.sheet.rowGroups = [];
+        this.sheet.rowGroups.push({
+          range,
+          depth: (this.sheet.getRowGroupDepth(this.startRow1) || 0) + d,
+        });
+      } else if (d < 0) {
+        const hasCoveringGroup = (this.sheet.rowGroups || []).some(
+          (g) =>
+            g.range &&
+            g.range.dimension === "ROWS" &&
+            g.range.startIndex <= startIndex &&
+            g.range.endIndex >= endIndex
+        );
+        if (hasCoveringGroup) {
+          for (let i = 0; i < Math.abs(d); i++) {
+            this.sheet.spreadsheet._onSheetMutated(this.sheet.name, {
+              type: "structural",
+              request: {
+                deleteDimensionGroup: { range },
+              },
+            });
+          }
+          if (this.sheet.rowGroups) {
+            this.sheet.rowGroups = this.sheet.rowGroups.filter(
+              (g) =>
+                !(
+                  g.range &&
+                  g.range.dimension === "ROWS" &&
+                  g.range.startIndex === startIndex &&
+                  g.range.endIndex === endIndex
+                )
+            );
+          }
+        }
+      }
+    }
     return this;
   }
 }
@@ -856,7 +924,7 @@ class VirtualRangeList {
 }
 
 class VirtualSheet {
-  constructor(spreadsheet, name, valuesGrid = [], formulasGrid = [], notesGrid = {}, sheetId = 0, maxRows = 1000, maxCols = 50) {
+  constructor(spreadsheet, name, valuesGrid = [], formulasGrid = [], notesGrid = {}, sheetId = 0, maxRows = 1000, maxCols = 50, rowGroups = []) {
     this.spreadsheet = spreadsheet;
     this.name = name;
     this.valuesGrid = cloneGrid2D(valuesGrid);
@@ -865,6 +933,7 @@ class VirtualSheet {
     this.sheetId = sheetId;
     this.maxRows = Math.max(maxRows, this.valuesGrid.length, 500);
     this.maxCols = Math.max(maxCols, getGridLastCol(this.valuesGrid), 30);
+    this.rowGroups = Array.isArray(rowGroups) ? JSON.parse(JSON.stringify(rowGroups)) : [];
     this.dirty = false;
     this.textCols = new Set();
   }
@@ -1200,8 +1269,17 @@ class VirtualSheet {
     return this;
   }
 
-  getRowGroupDepth() {
-    return 0;
+  getRowGroupDepth(rowPosition) {
+    const row0 = (Number(rowPosition) || 1) - 1;
+    let maxDepth = 0;
+    for (const g of (this.rowGroups || [])) {
+      if (g.range && g.range.dimension === "ROWS") {
+        if (row0 >= g.range.startIndex && row0 < g.range.endIndex) {
+          maxDepth = Math.max(maxDepth, Number(g.depth) || 1);
+        }
+      }
+    }
+    return maxDepth;
   }
 
   getRowGroup() {
@@ -1212,7 +1290,28 @@ class VirtualSheet {
     };
   }
 
-  unhideRow() {
+  unhideRow(rangeSpec) {
+    if (this.spreadsheet && this.spreadsheet.isRemoteGoogleSheet && rangeSpec) {
+      const startRow1 = typeof rangeSpec.getRow === "function" ? rangeSpec.getRow() : Number(rangeSpec) || 1;
+      const numRows = typeof rangeSpec.getNumRows === "function" ? rangeSpec.getNumRows() : 1;
+      this.spreadsheet._onSheetMutated(this.name, {
+        type: "structural",
+        request: {
+          updateDimensionProperties: {
+            range: {
+              sheetId: this.sheetId,
+              dimension: "ROWS",
+              startIndex: startRow1 - 1,
+              endIndex: startRow1 - 1 + numRows,
+            },
+            properties: {
+              hiddenByUser: false,
+            },
+            fields: "hiddenByUser",
+          },
+        },
+      });
+    }
     return this;
   }
   hideSheet() {
@@ -1655,7 +1754,7 @@ export async function createGasEnvironment({
     const bypassVirtual = isClientSheet ? ctx.clientMode !== "supabase" : true;
     const metaResp = await sheets.spreadsheets.get({
       spreadsheetId: cleanId,
-      fields: "properties.title,sheets(properties(sheetId,title,index,gridProperties))",
+      fields: "properties.title,sheets(properties(sheetId,title,index,gridProperties),rowGroups)",
       _bypassSupabaseVirtualSheet: bypassVirtual,
     });
 
@@ -1667,7 +1766,8 @@ export async function createGasEnvironment({
       env: envState,
     });
 
-    const sheetPropsList = (metaResp?.data?.sheets || []).map((s) => s.properties).filter(Boolean);
+    const rawSheets = metaResp?.data?.sheets || [];
+    const sheetPropsList = rawSheets.map((s) => s.properties).filter(Boolean);
     const existingTabNames = new Set(sheetPropsList.map((p) => p.title));
 
     const tabsToLoad = isClientSheet
@@ -1740,14 +1840,16 @@ export async function createGasEnvironment({
       }
     }
 
-    for (const prop of sheetPropsList) {
+    for (const sh of rawSheets) {
+      const prop = sh.properties || {};
       const tName = prop.title;
+      if (!tName) continue;
       const vGrid = valuesByTab.get(tName) || [];
       const fGrid = formulasByTab.get(tName) || vGrid;
       const nGrid = notesByTab.get(tName) || {};
       const maxR = prop.gridProperties?.rowCount || Math.max(1000, vGrid.length);
       const maxC = prop.gridProperties?.columnCount || Math.max(50, getGridLastCol(vGrid));
-      const vs = new VirtualSheet(remoteSS, tName, vGrid, fGrid, nGrid, prop.sheetId || 0, maxR, maxC);
+      const vs = new VirtualSheet(remoteSS, tName, vGrid, fGrid, nGrid, prop.sheetId || 0, maxR, maxC, sh.rowGroups || []);
       remoteSS.sheetsByName.set(tName, vs);
     }
 
@@ -2269,7 +2371,16 @@ export async function createGasEnvironment({
       };
       return tb;
     },
-    getOAuthToken: () => "",
+    getOAuthToken: async () => {
+      try {
+        const authClient = sheets?.context?._options?.auth;
+        if (authClient && typeof authClient.getAccessToken === "function") {
+          const tokenRes = await authClient.getAccessToken();
+          return tokenRes?.token || "";
+        }
+      } catch { }
+      return "";
+    },
   };
 
   const ContentService = {

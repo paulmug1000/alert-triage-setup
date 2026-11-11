@@ -1,6 +1,6 @@
 /**
  * Master Sheet Formula Engine (100% Verbatim 1:1 Implementation)
- * Version: 1.03 — Support Extended JobCosting setup style in CRMComp (BO, BP, BR, FT, FU, FW, GU:HC)
+ * Version: 1.04 — Support Excel CRM sync in evaluateCRMList where Client is in Col B (not Col A)
  *
  * Evaluates the exact Google Sheets formulas on the Master Sheet tabs:
  *   1. Outgoings (Row 1 dates from KeyInfo!B2 + IMPORTRANGEs A4:AX8, A12:AX114)
@@ -1590,7 +1590,7 @@ export function evaluateCRMList(grids) {
   const aoRows = [];
   for (let r = 1; r < dataFromCRM.length && r < 5002; r++) {
     const srcRow = dataFromCRM[r];
-    if (!Array.isArray(srcRow) || isBlankCell(srcRow[0])) continue;
+    if (!Array.isArray(srcRow) || srcRow.every(isBlankCell)) continue;
     const abRow = abColMap.map((idx) => (idx >= 0 ? (srcRow[idx] ?? "") : ""));
     abRows.push(abRow);
 

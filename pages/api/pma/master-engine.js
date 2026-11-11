@@ -90,7 +90,7 @@ export default async function handler(req, res) {
       sheetRole = "master",
       tabName = "KeyInfo",
       maxRows = 300,
-      maxCols = 60,
+      maxCols = 500,
       rowIndex0,
       colIndex0,
       value,
@@ -257,7 +257,7 @@ export default async function handler(req, res) {
         sheetRole,
         tabName,
         maxRows: Number(maxRows) || 300,
-        maxCols: Number(maxCols) || 60,
+        maxCols: Number(maxCols) || 500,
       });
       return res.status(200).json({ success: true, ...gridData });
     }

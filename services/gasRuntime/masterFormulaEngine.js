@@ -1,6 +1,6 @@
 /**
  * Master Sheet Formula Engine (100% Verbatim 1:1 Implementation)
- * Version: 1.04 — Support Excel CRM sync in evaluateCRMList where Client is in Col B (not Col A)
+ * Version: 1.05 — Remove hardcoded column and blank-cell shortcuts in evaluateInvAppList and evaluateJnlAppList
  *
  * Evaluates the exact Google Sheets formulas on the Master Sheet tabs:
  *   1. Outgoings (Row 1 dates from KeyInfo!B2 + IMPORTRANGEs A4:AX8, A12:AX114)
@@ -461,14 +461,12 @@ export function evaluateInvAppList(grids) {
   const idxS2 = matchInRow0(getCell(invAppList, 1, 18), appHeaders); // S2 = SubTotal
   const idxT2 = matchInRow0(getCell(invAppList, 1, 19), appHeaders); // T2 = TotalTax
 
-  // Filter InvFromApp!A2:Z5289 where InvFromApp!K2:K5289 <> "" (col 10)
+  // Filter InvFromApp!A2:Z5289 (skipping completely blank rows or rows missing client/invoice/type)
   const leftRows = [];
   const buSourceRows = [];
   for (let r = 1; r < invFromApp.length && r < 5289; r++) {
     const srcRow = invFromApp[r];
-    if (!Array.isArray(srcRow)) continue;
-    const colKVal = srcRow[10];
-    if (isBlankCell(colKVal)) continue;
+    if (!Array.isArray(srcRow) || srcRow.every(isBlankCell)) continue;
 
     const getVal = (idx) => (idx >= 0 ? (srcRow[idx] ?? "") : "");
     const A = getVal(idxA2); // Client
@@ -479,6 +477,9 @@ export function evaluateInvAppList(grids) {
     const L = getVal(idxL2); // Currency
     const M = getVal(idxM2); // Currency Rate
     const rawN = r < 4588 ? getVal(idxF2) : ""; // Invoice no (N4)
+
+    // Skip rows where client, invoice no, and type are all blank
+    if (isBlankCell(A) && isBlankCell(rawN) && isBlankCell(K)) continue;
     const N = typeof rawN === "number" ? (() => {
       const { year, month1 } = serialToYMD(rawN);
       return `${year}-${month1}`;
@@ -970,7 +971,7 @@ export function evaluateJnlAppList(grids) {
   const aoRows = [];
   for (let r = 1; r < jnlsFromApp.length && r < 5002; r++) {
     const srcRow = jnlsFromApp[r];
-    if (!Array.isArray(srcRow) || isBlankCell(srcRow[0])) continue;
+    if (!Array.isArray(srcRow) || srcRow.every(isBlankCell)) continue;
     const abRow = abColMap.map((idx) => (idx >= 0 ? (srcRow[idx] ?? "") : ""));
     abRows.push(abRow);
 

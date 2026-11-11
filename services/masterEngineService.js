@@ -4617,7 +4617,7 @@ export async function getVirtualTabForInspector({
   sheetRole = "master",
   tabName = "KeyInfo",
   maxRows = 300,
-  maxCols = 60,
+  maxCols = 500,
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");

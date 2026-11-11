@@ -95,7 +95,7 @@ export default function AdminWorkbookInspectorModal({
           sheetRole: effectiveRole,
           tabName: effectiveTab,
           maxRows: isExecRole ? 60 : 350,
-          maxCols: isExecRole ? 10 : effectiveRole === "client" ? 110 : 60,
+          maxCols: isExecRole ? 10 : 500,
         }),
       });
       const data = await res.json();
@@ -190,7 +190,7 @@ export default function AdminWorkbookInspectorModal({
     for (const r of activeGrid) {
       if (Array.isArray(r) && r.length > maxC) maxC = r.length;
     }
-    return Math.min(110, Math.max(12, maxC));
+    return Math.min(500, Math.max(12, maxC));
   }, [activeGrid]);
 
   const handleSelectCell = (r, c) => {

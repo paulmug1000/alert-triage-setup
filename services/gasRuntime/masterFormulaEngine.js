@@ -2104,7 +2104,7 @@ export function evaluateCRMComp(grids) {
         setCell(crmComp, r0, 209, HB);
       }
       if (isJobCosting || !isBlankCell(getCell(crmComp, 4, 210))) {
-        const HC = isConfMode ? (FL === 1 ? "DELETE" : "") : (isBlankCell(FB) ? "" : (FL === 1 ? "Yes" : "No"));
+        const HC = isConfMode ? (FL === 1 ? "DELETE" : "") : (isBlankCell(FB) ? "" : (rowIsConf ? "Yes" : "No"));
         setCell(crmComp, r0, 210, HC);
       }
     } else if (isConfMode && FL === 1 && (isJobCosting || !isBlankCell(getCell(crmComp, 4, 210)))) {

@@ -7432,6 +7432,24 @@ function valuesAreDifferent(val1, val2) {
   return s1 !== s2;
 }
 
+function isJobInConfirmed_(sourceSs, jobId) {
+  if (!sourceSs || !jobId) return false;
+  try {
+    const confSheet = sourceSs.getSheetByName('Confirmed');
+    if (!confSheet) return false;
+    const confHeaders = confSheet.getRange(1, 1, 1, Math.max(1, confSheet.getLastColumn())).getValues()[0];
+    const pCol = confHeaders.findIndex(h => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, '') === 'projectcode') + 1;
+    const idCol = pCol > 0 ? pCol : 3;
+    const lastRow = confSheet.getLastRow();
+    if (lastRow < 2) return false;
+    const ids = confSheet.getRange(2, idCol, lastRow - 1, 1).getValues().flat();
+    const cleanTarget = String(jobId).trim().toUpperCase();
+    return ids.some(id => String(id || "").trim().toUpperCase() === cleanTarget);
+  } catch (e) {
+    return false;
+  }
+}
+
 async function updateCheckedRows(isHeadless, expectedStageName) {
   const ui = isHeadless ? null : SpreadsheetApp.getUi();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -7750,13 +7768,17 @@ async function updateCheckedRows(isHeadless, expectedStageName) {
               const destCell = sourceSheet.getRange(targetRow, copiedStatusColDest);
               const destValue = String(destCell.getValue());
               if (valuesAreDifferent(sourceValue, destValue)) {
-                destCell.setValue(sourceValue).setFontStyle('italic');
-                wasUpdated = true;
-                let changeReason = "";
-                if (destValue === 'Yes' && sourceValue === 'No') changeReason = " (Reverted by Source)";
-                rowChanges.push(`Copied Status: '${destValue}' -> '${sourceValue}'${changeReason}`);
-                if (sourceValue === 'Yes') result.jobsToCheck.push(uniqueIdToFind);
-                if (destValue === 'Yes' && sourceValue === 'No') result.revertedJobs.push(uniqueIdToFind);
+                if (destValue === 'Yes' && sourceValue === 'No' && isJobInConfirmed_(sourceSs, uniqueIdToFind)) {
+                  // Guard: Job is already active on Confirmed tab; retain 'Yes' in Pipeline to prevent false reversions
+                } else {
+                  destCell.setValue(sourceValue).setFontStyle('italic');
+                  wasUpdated = true;
+                  let changeReason = "";
+                  if (destValue === 'Yes' && sourceValue === 'No') changeReason = " (Reverted by Source)";
+                  rowChanges.push(`Copied Status: '${destValue}' -> '${sourceValue}'${changeReason}`);
+                  if (sourceValue === 'Yes') result.jobsToCheck.push(uniqueIdToFind);
+                  if (destValue === 'Yes' && sourceValue === 'No') result.revertedJobs.push(uniqueIdToFind);
+                }
               }
             }
             if (wasUpdated) {
@@ -8235,16 +8257,20 @@ async function updateCheckedRowsRight(isHeadless, expectedStageName) {
               const destCell = sourceSheet.getRange(targetRow, copiedStatusColDest);
               const destValue = String(destCell.getValue());
               if (valuesAreDifferent(sourceValue, destValue)) {
-                destCell.setValue(sourceValue).setFontStyle('italic');
-                wasUpdated = true;
-                
-                // FIX: Reason context
-                let changeReason = "";
-                if (destValue === 'Yes' && sourceValue === 'No') changeReason = " (Reverted by Source)";
+                if (destValue === 'Yes' && sourceValue === 'No' && isJobInConfirmed_(sourceSs, uniqueIdToFind)) {
+                  // Guard: Job is already active on Confirmed tab; retain 'Yes' in Pipeline to prevent false reversions
+                } else {
+                  destCell.setValue(sourceValue).setFontStyle('italic');
+                  wasUpdated = true;
+                  
+                  // FIX: Reason context
+                  let changeReason = "";
+                  if (destValue === 'Yes' && sourceValue === 'No') changeReason = " (Reverted by Source)";
 
-                rowChanges.push(`Copied Status: '${destValue}' -> '${sourceValue}'${changeReason}`);
-                if (sourceValue === 'Yes') result.jobsToCheck.push(uniqueIdToFind);
-                if (destValue === 'Yes' && sourceValue === 'No') result.revertedJobs.push(uniqueIdToFind);
+                  rowChanges.push(`Copied Status: '${destValue}' -> '${sourceValue}'${changeReason}`);
+                  if (sourceValue === 'Yes') result.jobsToCheck.push(uniqueIdToFind);
+                  if (destValue === 'Yes' && sourceValue === 'No') result.revertedJobs.push(uniqueIdToFind);
+                }
               }
             }
 

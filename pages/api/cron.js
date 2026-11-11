@@ -13,6 +13,7 @@ import { getSupabaseAdmin } from "../../services/supabaseClient";
 import { redisClient } from "../../services/redisClient";
 import { getCanonicalAcSheetId } from "../../services/userPermissions";
 import { runDailyAutoBackupSweep } from "../../services/supabaseBackupService";
+import { dispatchDueNativeMasterSyncs } from "../../services/masterSyncEngine";
 
 export const config = {
   maxDuration: 300,
@@ -111,6 +112,19 @@ export default async function handler(req, res) {
           }
         }
       } catch (_) { }
+
+      try {
+        console.log("CRON: Checking and dispatching due native master syncs across all tenants...");
+        const syncDispatchRes = await dispatchDueNativeMasterSyncs({
+          baseUrl,
+          cronSecret,
+          bypassToken,
+          maxConcurrency: 4,
+        });
+        console.log(`CRON: Completed dispatch of ${syncDispatchRes.dispatched} native sync sequence(s).`);
+      } catch (syncErr) {
+        console.warn("⚠️ CRON: Error in dispatchDueNativeMasterSyncs:", syncErr.message);
+      }
 
       await runBackgroundTriageRefresh({
         baseUrl,

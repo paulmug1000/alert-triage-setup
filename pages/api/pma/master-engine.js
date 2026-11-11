@@ -1,4 +1,4 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { getSessionUser, safeCompareSecret } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
@@ -53,7 +53,7 @@ async function refreshPrecomputedAlerts_(sheets, acId) {
 }
 
 export const config = {
-  maxDuration: 180,
+  maxDuration: 300,
   api: {
     bodyParser: {
       sizeLimit: "4mb",
@@ -62,8 +62,21 @@ export const config = {
 };
 
 export default async function handler(req, res) {
+  const cronSecret = process.env.CRON_SECRET?.trim();
+  const authHeader = String(req.headers.authorization || "").trim();
+  const headerSecret = String(req.headers["x-cron-secret"] || "").trim();
+  const expectedBearer = `Bearer ${cronSecret}`;
+  const providedSecret = String(req.body?.secret || req.query?.secret || headerSecret || authHeader || "").trim();
+  const isCronAuth = Boolean(
+    cronSecret &&
+      providedSecret &&
+      (safeCompareSecret(providedSecret, cronSecret) ||
+        safeCompareSecret(providedSecret, expectedBearer) ||
+        (headerSecret && safeCompareSecret(headerSecret, cronSecret)))
+  );
+
   const sessionUser = getSessionUser(req);
-  if (!sessionUser || !sessionUser.isAdmin || sessionUser.isReadOnly) {
+  if (!isCronAuth && (!sessionUser || !sessionUser.isAdmin || sessionUser.isReadOnly)) {
     return res.status(403).json({
       success: false,
       error: "Forbidden: System administrator access is required.",
@@ -115,7 +128,7 @@ export default async function handler(req, res) {
         action: "MASTER_RECON_MIGRATED_TO_SUPABASE",
         summary: `Migrated Master & Recon sheets for ${cleanClient} into Supabase (${summary.masterTabsSynced} master tabs, ${summary.reconTabsSynced} recon tabs)`,
         details: summary,
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, summary, status });
@@ -135,7 +148,7 @@ export default async function handler(req, res) {
         action: "CLIENT_MASTER_MODE_CHANGED",
         summary: `Switched ${cleanClient} master engine mode to "${masterMode}"`,
         details: { clientName: cleanClient, masterMode },
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, updated, status });
@@ -151,7 +164,7 @@ export default async function handler(req, res) {
         action: "CLIENT_SHEET_SEEDED_TO_SUPABASE",
         summary: `Seeded Client Sheet for ${cleanClient} into Supabase (${summary.clientTabsSynced} client tabs, ${summary.outgoingsNotesCount} outgoings notes)`,
         details: summary,
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, summary, status });
@@ -171,7 +184,7 @@ export default async function handler(req, res) {
         action: "CLIENT_PORTAL_MODE_CHANGED",
         summary: `Switched ${cleanClient} client portal engine mode to "${clientMode}"`,
         details: { clientName: cleanClient, clientMode },
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, updated, status });
@@ -187,7 +200,7 @@ export default async function handler(req, res) {
         action: "CLIENT_SHEET_IMPORTRANGE_MATERIALIZED",
         summary: `Materialized ${result.materializedRangesCount} IMPORTRANGE ranges on ${cleanClient} Client Sheet`,
         details: result,
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ ...result, status });
@@ -203,7 +216,7 @@ export default async function handler(req, res) {
         action: "CLIENT_SHEET_IMPORTRANGE_RESTORED",
         summary: `Restored ${result.restoredRangesCount} IMPORTRANGE formulas on ${cleanClient} Client Sheet`,
         details: result,
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ ...result, status });
@@ -225,7 +238,7 @@ export default async function handler(req, res) {
         sheets,
         clientName: cleanClient,
         syncType,
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       });
       await refreshPrecomputedAlerts_(sheets, acId);
       const status = await getStage2Status(cleanClient);
@@ -283,7 +296,7 @@ export default async function handler(req, res) {
         action: "WORKBOOK_INSPECTOR_CELL_UPDATED",
         summary: `Updated ${cleanClient} (${sheetRole}) ${tabName}!${updateRes.cellCoord} to "${value ?? ""}"`,
         details: updateRes,
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
       return res.status(200).json(updateRes);
     }
@@ -329,7 +342,7 @@ export default async function handler(req, res) {
         action: "SUPABASE_SNAPSHOT_CREATED",
         summary: `Created Supabase workbook snapshot for ${cleanClient}${label ? ` ("${label}")` : ""}`,
         details: snapshot,
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
       const backupList = await listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient });
       return res.status(200).json({ success: true, snapshot, ...backupList });
@@ -368,7 +381,7 @@ export default async function handler(req, res) {
         action: "SUPABASE_SNAPSHOT_RESTORED",
         summary: `Restored ${restoreResult.restoredTabsCount} tab(s) (${scope === "single_tab" ? `${targetRole}:${targetTabName}` : scope}) for ${restoreResult.clientName || cleanClient} from snapshot ${snapshotId}`,
         details: restoreResult,
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
       const [status, backupList] = await Promise.all([
         getStage2Status(cleanClient),
@@ -421,7 +434,7 @@ export default async function handler(req, res) {
           ? `Imported & restored ${restoreResult?.restoredTabsCount || 0} tab(s) for ${importedEntry.clientName}`
           : `Imported local snapshot file for ${importedEntry.clientName} into cloud backup catalogue`,
         details: { importedEntry, restoreResult },
-        userEmail: sessionUser.email || "Admin",
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
 
       const [status, backupList] = await Promise.all([

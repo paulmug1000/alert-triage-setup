@@ -2273,7 +2273,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
     categoriesRunStr = [actionableDue ? "act" : "", infoDue ? "info" : "", proactiveDue ? "pro" : ""].filter(Boolean).join(",");
     console.log(`run_flag_sweep: actionableDue=${actionableDue}, infoDue=${infoDue}, proactiveDue=${proactiveDue}`);
 
-    const CHUNK_SIZE = proactiveDue ? 1 : 3;
+    const CHUNK_SIZE = Math.max(clientRows.length, 15);
     const clientChunk = clientRows.slice(startIdx, startIdx + CHUNK_SIZE);
     const hasMore = startIdx + CHUNK_SIZE < clientRows.length;
     const nextIdx = startIdx + CHUNK_SIZE;

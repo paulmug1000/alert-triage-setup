@@ -685,3 +685,144 @@ export async function runNativeMasterSync({
 
   return results;
 }
+
+/**
+ * Dispatches all due native master syncs across every tenant concurrently in isolated executions.
+ * Completely decouples long-running sync execution from the 30-minute flag sweep.
+ */
+export async function dispatchDueNativeMasterSyncs({
+  baseUrl,
+  cronSecret,
+  bypassToken = "",
+  maxConcurrency = 4,
+  userEmail = "System (Scheduled Sweep)",
+} = {}) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return { dispatched: 0, syncs: [] };
+
+  const { data: schedRows } = await supabase.from("sync_schedules").select("*");
+  if (!Array.isArray(schedRows) || schedRows.length === 0) return { dispatched: 0, syncs: [] };
+
+  const { data: dcaRows } = await supabase
+    .from("master_sheet_grids")
+    .select("client_name, values_grid")
+    .eq("sheet_role", "master")
+    .eq("tab_name", "DataChgAlert");
+
+  const dcaMap = new Map();
+  if (Array.isArray(dcaRows)) {
+    for (const r of dcaRows) {
+      if (r.client_name) dcaMap.set(r.client_name, r.values_grid);
+    }
+  }
+
+  const parseFreqMs = (freqStr) => {
+    const s = String(freqStr || "").trim().toLowerCase();
+    const num = parseFloat(s) || 0;
+    if (!num) return 0;
+    if (s.includes("min")) return num * 60 * 1000;
+    if (s.includes("hr")) return num * 3600 * 1000;
+    if (s.includes("day") || s.includes("24")) return 24 * 3600 * 1000;
+    if (s.includes("week")) return 7 * 24 * 3600 * 1000;
+    return 0;
+  };
+
+  const isSeqDue = (freqStr, lastIso) => {
+    const reqMs = parseFreqMs(freqStr);
+    if (!reqMs) return false;
+    if (!lastIso) return true;
+    const lastMs = new Date(lastIso).getTime();
+    const effectiveReqMs = Math.max(0, reqMs - 3 * 60 * 1000); // 3m grace margin
+    return isNaN(lastMs) || Date.now() - lastMs >= effectiveReqMs;
+  };
+
+  const queue = [];
+  for (const sched of schedRows) {
+    const clientName = sched.client_name;
+    const dcaGrid = dcaMap.get(clientName) || null;
+    const effectiveInvFreq = dcaGrid ? String(dcaGrid[1]?.[24] ?? "").trim() : String(sched.inv_freq ?? "").trim();
+    const effectiveCrmFreq = dcaGrid ? String(dcaGrid[2]?.[24] ?? "").trim() : String(sched.crm_freq ?? "").trim();
+    const effectiveExpFreq = dcaGrid ? String(dcaGrid[3]?.[24] ?? "").trim() : String(sched.exp_freq ?? "").trim();
+
+    if (isSeqDue(effectiveInvFreq, sched.last_inv_run)) {
+      queue.push({ clientName, syncType: "invoice" });
+    }
+    if (isSeqDue(effectiveCrmFreq, sched.last_crm_run)) {
+      queue.push({ clientName, syncType: "crm" });
+    }
+    if (isSeqDue(effectiveExpFreq, sched.last_exp_run)) {
+      queue.push({ clientName, syncType: "expense" });
+    }
+  }
+
+  if (queue.length === 0) {
+    console.log("dispatchDueNativeMasterSyncs: No syncs currently due.");
+    return { dispatched: 0, syncs: [] };
+  }
+
+  console.log(
+    `dispatchDueNativeMasterSyncs: Found ${queue.length} sync(s) due across ${
+      new Set(queue.map((q) => q.clientName)).size
+    } client(s). Dispatching with concurrency ${maxConcurrency}...`
+  );
+
+  const results = [];
+  const headers = {
+    "Content-Type": "application/json",
+    ...(cronSecret ? { "x-cron-secret": cronSecret } : {}),
+    ...(bypassToken ? { "x-vercel-protection-bypass": bypassToken } : {}),
+  };
+
+  const executeItem = async (item) => {
+    const itemStart = Date.now();
+    try {
+      if (baseUrl) {
+        const res = await fetch(`${baseUrl}/api/pma/master-engine`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            action: "run_native_master_sync",
+            clientName: item.clientName,
+            syncType: item.syncType,
+            secret: cronSecret,
+          }),
+        });
+        const json = await res.json().catch(() => ({}));
+        results.push({
+          ...item,
+          success: res.ok && json.success,
+          durationMs: Date.now() - itemStart,
+          error: json.error || null,
+        });
+      } else {
+        const { getSheetsClient } = await import("./sheetsClient.js");
+        const sheets = await getSheetsClient("background");
+        await runNativeMasterSync({
+          sheets,
+          clientName: item.clientName,
+          syncType: item.syncType,
+          userEmail,
+        });
+        results.push({
+          ...item,
+          success: true,
+          durationMs: Date.now() - itemStart,
+        });
+      }
+    } catch (err) {
+      results.push({
+        ...item,
+        success: false,
+        durationMs: Date.now() - itemStart,
+        error: err.message,
+      });
+    }
+  };
+
+  for (let i = 0; i < queue.length; i += maxConcurrency) {
+    const chunk = queue.slice(i, i + maxConcurrency);
+    await Promise.allSettled(chunk.map(executeItem));
+  }
+
+  return { dispatched: queue.length, syncs: results };
+}

@@ -491,24 +491,25 @@ export function performTransactionsUpdate({
     });
   });
 
-  // Step 2: Unmatched incoming (Safety Fallback with high bar)
-  // An incoming API transaction not in bank transactions list is ONLY added to nextBankTxns
-  // if it matches an unreconciled item in unreconPool with a high bar (minScore: 40).
+  // Step 2: Unmatched incoming API transactions
+  // Reconciled transactions from the accounting platform (Xero / QuickBooks) are valid bank transactions
   incomingApiTxns.forEach((apiTx, apiIdx) => {
     if (matchedIncomingIndices.has(apiIdx)) return;
 
-    // High bar check: MUST match an item in unreconPool (requires exact amount + direction AND either date within 3 days or matching payee text)
+    // Check if this incoming transaction matches an unreconciled statement item (minScore: 40)
     const matchedUn = matchAndRemoveFromUnreconPool(apiTx, unreconPool, { minScore: 40 });
-    if (!matchedUn) {
-      // High bar prevents extraneous/unmatched transactions from polluting the bank transactions list!
-      return;
+    if (matchedUn) {
+      matchedFromUnreconCount++;
     }
 
     newAddedCount++;
-    matchedFromUnreconCount++;
 
     const isCredit = parseAmount(apiTx.inAmount || apiTx.inAmt) > 0;
-    const assignedCategory = isCredit ? "Revenue" : "Outgoings";
+    const defaultCat = isCredit ? "Revenue" : "Outgoings";
+    // If it matched an unreconciled item that had a cashflow category, inherit it
+    const assignedCategory = (matchedUn && matchedUn.category && matchedUn.category !== "Outgoings")
+      ? matchedUn.category
+      : (apiTx.category || apiTx.suggestedCategory || defaultCat);
 
     const newTx = {
       ...apiTx,
@@ -516,18 +517,20 @@ export function performTransactionsUpdate({
       suggestedCategory: assignedCategory,
       accountName: apiTx.accountName || defaultAccount,
       isReconciled: true,
-      isNew: true, // Shaded green because it was recovered from unreconciled list
+      isNew: Boolean(matchedUn), // Shaded green if it was recovered from unreconciled list
       source: apiTx.source || "quickbooks"
     };
 
     nextBankTxns.push(newTx);
-    fallbackAddedTxns.push({
-      ...newTx,
-      unreconPayee: matchedUn.payee,
-      unreconDate: matchedUn.date,
-      unreconAmount: matchedUn.amount,
-      unreconCategory: matchedUn.category
-    });
+    if (matchedUn) {
+      fallbackAddedTxns.push({
+        ...newTx,
+        unreconPayee: matchedUn.payee,
+        unreconDate: matchedUn.date,
+        unreconAmount: matchedUn.amount,
+        unreconCategory: matchedUn.category
+      });
+    }
   });
 
   // Step 2b: Non-Cash API Transactions matched against unreconciled items

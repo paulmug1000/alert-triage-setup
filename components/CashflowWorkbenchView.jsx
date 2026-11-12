@@ -1828,7 +1828,7 @@ export default function CashflowWorkbenchView({
         setBankTxns(mapped);
         setApiMsg(`✓ Fetched ${mapped.length} reconciled transactions via ${data.tool?.toUpperCase()} API for tracked accounts.`);
         // Automatically save to the Recon Sheet in the background
-        triggerAutoSync(mapped, unreconItems);
+        triggerAutoSync(mapped, unreconItems && unreconItems.length > 0 ? unreconItems : undefined);
         return { success: true, count: mapped.length, tool: data.tool };
       } else {
         setApiMsg(`ℹ️ Connected ${data.tool?.toUpperCase()} returned 0 transactions for the tracked accounts in this month.`);
@@ -1943,7 +1943,7 @@ export default function CashflowWorkbenchView({
         }));
         setBankTxns(mapped);
         setApiMsg(`✓ Loaded ${mapped.length} reconciled transactions via ${data.tool?.toUpperCase()} API.`);
-        triggerAutoSync(mapped, unreconItems);
+        triggerAutoSync(mapped, unreconItems && unreconItems.length > 0 ? unreconItems : undefined);
         return;
       }
 

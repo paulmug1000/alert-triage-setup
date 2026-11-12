@@ -1208,13 +1208,21 @@ export default function CashflowWorkbenchView({
         if (unrecIdx !== -1) {
           unreconMatchedIndices.add(unrecIdx);
           const matchedUn = rawUnreconItems[unrecIdx];
+          const rawCat = String(matchedUn.category || "").trim();
+          const isKnownCashflow = VALID_RECON_CATEGORIES.some(c => c.toLowerCase() === rawCat.toLowerCase() && c.toLowerCase() !== "outgoings");
+          const resolvedCat = isKnownCashflow
+            ? (VALID_RECON_CATEGORIES.find(c => c.toLowerCase() === rawCat.toLowerCase()) || rawCat)
+            : (rawCat.toLowerCase() === "outgoings" ? "Outgoings" : (tx.category || tx.suggestedCategory || (txIn > 0 ? "Revenue" : "Outgoings")));
+          const resolvedPl = isKnownCashflow || rawCat.toLowerCase() === "outgoings" ? "" : rawCat;
+
           return {
             ...tx,
             id: tx.id || (tx.rowNum ? `row_${tx.rowNum}` : (matchedUn.id || `unrec_${matchedUn.rowNum || idx}`)),
             accountName: tx.accountName || matchedUn.accountName || defaultAccount,
-            category: tx.category || tx.suggestedCategory || (txIn > 0 ? "Revenue" : "Outgoings"),
-            suggestedCategory: tx.suggestedCategory || tx.category || (txIn > 0 ? "Revenue" : "Outgoings"),
-            plCategory: matchedUn.category || "",
+            category: resolvedCat,
+            suggestedCategory: resolvedCat,
+            cashflowCategory: resolvedCat,
+            plCategory: resolvedPl,
             vatApplies: matchedUn.vatApplies || "No",
             isReconciled: false,
             isNew: Boolean(tx.isNew)
@@ -1238,6 +1246,13 @@ export default function CashflowWorkbenchView({
           const rawUAmt = parseAmount(u.amount);
           const isNeg = u.isNegative !== undefined ? u.isNegative : (rawUAmt < 0 || String(u.amount || "").includes("-"));
           const absAmt = Math.abs(rawUAmt);
+          const rawCat = String(u.category || "").trim();
+          const isKnownCashflow = VALID_RECON_CATEGORIES.some(c => c.toLowerCase() === rawCat.toLowerCase() && c.toLowerCase() !== "outgoings");
+          const assignedCat = isKnownCashflow
+            ? (VALID_RECON_CATEGORIES.find(c => c.toLowerCase() === rawCat.toLowerCase()) || rawCat)
+            : (rawCat ? "Outgoings" : (isNeg ? "Outgoings" : "Revenue"));
+          const assignedPl = isKnownCashflow || rawCat.toLowerCase() === "outgoings" ? "" : rawCat;
+
           mappedBankTxns.push({
             id: u.id || `unrec_only_${u.rowNum || uIdx}`,
             unreconRowNum: u.rowNum,
@@ -1249,9 +1264,10 @@ export default function CashflowWorkbenchView({
             inAmount: !isNeg ? absAmt : 0,
             amount: absAmt,
             accountName: u.accountName || defaultAccount,
-            plCategory: u.category || "",
-            category: isNeg ? "Outgoings" : "Revenue",
-            suggestedCategory: isNeg ? "Outgoings" : "Revenue",
+            plCategory: assignedPl,
+            category: assignedCat,
+            suggestedCategory: assignedCat,
+            cashflowCategory: assignedCat,
             vatApplies: u.vatApplies || "No",
             isReconciled: false,
             isNew: false,
@@ -1280,7 +1296,8 @@ export default function CashflowWorkbenchView({
     if (!clientInfo?.reconSheetId || !tabName) return;
     setAutoSaveStatus("saving");
     try {
-      // 1. Sync bank transactions
+      // 1. Sync bank transactions (Filter to only reconciled bank transactions)
+      const reconciledOnly = (txnsToSave || []).filter(t => t.isReconciled !== false && !t.unreconRowNum && t.source !== "unreconciled_pasted");
       const txResp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1288,16 +1305,26 @@ export default function CashflowWorkbenchView({
           action: "sync_recon_bank_transactions",
           reconSheetId: clientInfo.reconSheetId,
           tabName,
-          transactions: txnsToSave,
+          transactions: reconciledOnly,
           clientName: selectedClient
         })
       });
       const txData = await txResp.json();
       if (!txData.success) throw new Error(txData.error || "Failed to auto-sync transactions");
 
-      // Assign rowNum (idx + 3) in memory so subsequent single-row category edits have valid sheet coordinates
-      if (Array.isArray(txnsToSave) && txnsToSave.length > 0) {
-        setBankTxns(prev => prev.map((t, idx) => ({ ...t, rowNum: idx + 3 })));
+      // Assign rowNum (idx + 3) in memory ONLY for reconciled bank transactions
+      if (Array.isArray(reconciledOnly) && reconciledOnly.length > 0) {
+        setBankTxns(prev => {
+          let reconIdx = 0;
+          return prev.map((t) => {
+            if (t.isReconciled !== false && !t.unreconRowNum && t.source !== "unreconciled_pasted") {
+              const assigned = { ...t, rowNum: reconIdx + 3 };
+              reconIdx++;
+              return assigned;
+            }
+            return t;
+          });
+        });
       }
 
       // 2. Sync unreconciled items if present (including empty array when all items are cleared)
@@ -1990,6 +2017,7 @@ export default function CashflowWorkbenchView({
 
   // 3. Category Change Handler (Guaranteed single-row isolation — never match by shared sourceId across bank transfer legs)
   const handleCategoryChange = async (tx, newCategory) => {
+    const isOutgoings = newCategory === "Outgoings";
     const updated = bankTxns.map((t) => {
       const isMatch = (t === tx) ||
         (tx.id && t.id && t.id === tx.id) ||
@@ -2000,7 +2028,8 @@ export default function CashflowWorkbenchView({
           category: newCategory,
           suggestedCategory: newCategory,
           isCategorySuggested: false,
-          plCategory: newCategory === "Outgoings" ? (t.plCategory || "") : ""
+          cashflowCategory: newCategory,
+          plCategory: isOutgoings ? (t.plCategory || "") : ""
         };
       }
       return t;
@@ -2011,12 +2040,13 @@ export default function CashflowWorkbenchView({
     if (tx.isReconciled === false) {
       updatedUnrecon = unreconItems.map(u => {
         if (isSameUnreconEntry(u, tx)) {
-          const nextPl = newCategory === "Outgoings" ? (u.plCategory || (u.category !== "Outgoings" && u.category !== "Revenue" ? u.category : "")) : "";
+          const nextPl = isOutgoings ? (u.plCategory || (u.category !== "Outgoings" && u.category !== "Revenue" ? u.category : "")) : "";
+          const finalCat = isOutgoings ? nextPl : newCategory;
           return {
             ...u,
             cashflowCategory: newCategory,
             plCategory: nextPl,
-            category: nextPl,
+            category: finalCat,
             isCategorySuggested: false
           };
         }
@@ -2057,13 +2087,25 @@ export default function CashflowWorkbenchView({
     const updatedBank = bankTxns.map(t => {
       const isMatch = (t === tx) || (tx.id && t.id && t.id === tx.id) || (!tx.id && tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum);
       if (isMatch) {
-        return { ...t, plCategory: newPlCategory, isPlSuggested: false };
+        return {
+          ...t,
+          category: "Outgoings",
+          cashflowCategory: "Outgoings",
+          plCategory: newPlCategory,
+          isPlSuggested: false
+        };
       }
       return t;
     });
     const updatedUnrecon = unreconItems.map(u => {
       if (isSameUnreconEntry(u, tx)) {
-        return { ...u, category: newPlCategory, plCategory: newPlCategory, isPlSuggested: false };
+        return {
+          ...u,
+          category: newPlCategory,
+          cashflowCategory: "Outgoings",
+          plCategory: newPlCategory,
+          isPlSuggested: false
+        };
       }
       return u;
     });

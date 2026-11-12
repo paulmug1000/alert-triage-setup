@@ -1381,22 +1381,24 @@ export async function syncReconBankTransactions({
   }
 
   // 2. Clear existing A3:J200 and Q3:Q200, then write transaction values SECOND
+  const bankOnlyTxns = (transactions || []).filter(tx => tx.isReconciled !== false && !tx.unreconRowNum && tx.source !== "unreconciled_pasted");
+
   await withRetry(() => sheets.spreadsheets.values.batchClear({
     spreadsheetId: cleanId,
     requestBody: {
       ranges: [`'${tabName}'!A3:J200`, `'${tabName}'!Q3:Q200`]
     },
-    _skipFormulaRecompute: transactions.length > 0,
+    _skipFormulaRecompute: bankOnlyTxns.length > 0,
   }));
 
-  if (transactions.length === 0) {
+  if (bankOnlyTxns.length === 0) {
     return { success: true, count: 0 };
   }
 
   const rowsAJ = [];
   const rowsQ = [];
 
-  transactions.forEach(tx => {
+  bankOnlyTxns.forEach(tx => {
     const date = tx.date || "";
     const payee = tx.payee || "";
     const particulars = tx.particulars || "";
@@ -1499,8 +1501,13 @@ export async function syncReconUnreconciledItems({
         amt = isOutflow ? `-${rawNum}` : String(rawNum);
       }
     }
-    const rawPlCat = u.plCategory !== undefined ? u.plCategory : (u.category || "");
-    const cat = (rawPlCat && rawPlCat !== "Outgoings" && rawPlCat !== "Revenue") ? rawPlCat : "";
+    // Sourced category: prefer plCategory if set and non-empty, otherwise category / cashflowCategory
+    const rawPl = String(u.plCategory || "").trim();
+    const rawCat = String(u.category || u.cashflowCategory || "").trim();
+    let cat = rawPl || rawCat || "";
+    if (cat === "Outgoings" || cat === "Revenue") {
+      cat = rawPl && rawPl !== "Outgoings" && rawPl !== "Revenue" ? rawPl : "";
+    }
     const vat = u.vatApplies || "No";
 
     // CD:CI: [CD: '', CE: '', CF: Date, CG: Payee, CH: Particulars, CI: Amount]

@@ -740,6 +740,92 @@ async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = 
   return emptyRecord;
 }
 
+export function recomputeReconTabFormulasSync_(grid) {
+  if (!Array.isArray(grid) || grid.length < 3) return;
+
+  // 1. Recompute U3:X17 from bank transactions A3:Q200
+  // Col I (index 8): OutAmount, Col J (index 9): InAmount, Col Q (index 16): Category
+  const categoryTotals = new Map();
+  const maxTxRow = Math.min(grid.length, 200);
+  for (let r = 2; r < maxTxRow; r++) {
+    const row = grid[r] || [];
+    const cat = String(row[16] || "").trim().toLowerCase();
+    if (!cat) continue;
+    const outVal = parseFloat(String(row[8] || "0").replace(/[£,\s]/g, "")) || 0;
+    const inVal = parseFloat(String(row[9] || "0").replace(/[£,\s]/g, "")) || 0;
+    if (!categoryTotals.has(cat)) {
+      categoryTotals.set(cat, { out: 0, in: 0 });
+    }
+    const entry = categoryTotals.get(cat);
+    entry.out += outVal;
+    entry.in += inVal;
+  }
+
+  let totalOut = 0;
+  let totalIn = 0;
+  let totalNet = 0;
+
+  for (let r = 2; r <= 15; r++) {
+    const row = grid[r] || [];
+    const catName = String(row[20] || "").trim();
+    if (!catName || catName.toLowerCase() === "total") continue;
+    const catKey = catName.toLowerCase();
+    const entry = categoryTotals.get(catKey) || { out: 0, in: 0 };
+    const outVal = Math.round(entry.out * 100) / 100;
+    const inVal = Math.round(entry.in * 100) / 100;
+    const netVal = Math.round((inVal - outVal) * 100) / 100;
+
+    while (row.length < 24) row.push("");
+    row[21] = outVal;
+    row[22] = inVal;
+    row[23] = netVal;
+    grid[r] = row;
+
+    totalOut += outVal;
+    totalIn += inVal;
+    totalNet += netVal;
+  }
+
+  // Row 17 (index 16): Total
+  if (grid.length > 16) {
+    const row17 = grid[16] || [];
+    while (row17.length < 24) row17.push("");
+    row17[20] = "Total";
+    row17[21] = Math.round(totalOut * 100) / 100;
+    row17[22] = Math.round(totalIn * 100) / 100;
+    row17[23] = Math.round(totalNet * 100) / 100;
+    grid[16] = row17;
+  }
+
+  // 2. Recompute CZ3:DA60 from unreconciled items CD4:CN60
+  const da1Val = String(grid[0]?.[104] || "").trim().toLowerCase();
+  const isQb = da1Val.includes("quick");
+  const mult = isQb ? -1 : 1;
+
+  const plCategorySums = new Map();
+  const maxUnrecRow = Math.min(grid.length, 60);
+  for (let r = 3; r < maxUnrecRow; r++) {
+    const row = grid[r] || [];
+    const cat = String(row[90] || "").trim().toLowerCase();
+    if (!cat) continue;
+    const rawAmt = parseFloat(String(row[86] || "0").replace(/[£,\s]/g, "")) || 0;
+    const vatApplies = String(row[91] || "").trim().toLowerCase() === "yes";
+    const cpVal = -(vatApplies ? rawAmt / 1.2 : rawAmt);
+    plCategorySums.set(cat, (plCategorySums.get(cat) || 0) + cpVal);
+  }
+
+  for (let r = 2; r < Math.min(grid.length, 60); r++) {
+    const row = grid[r] || [];
+    const czCat = String(row[103] || "").trim();
+    if (!czCat) continue;
+    const sumCp = plCategorySums.get(czCat.toLowerCase()) || 0;
+    const daVal = Math.round(sumCp * mult * 100) / 100;
+    while (row.length < 105) row.push("");
+    row[104] = daVal;
+    grid[r] = row;
+  }
+}
+
 export async function saveVirtualTabGrid_(
   ctx,
   sheetRole,
@@ -941,6 +1027,10 @@ export async function saveVirtualTabGrid_(
       throw new Error(`Supabase master_sheet_grids client upsert failed (${tabName}): ${upsertErr.message}`);
     }
     return;
+  }
+
+  if (sheetRole === "recon" && /^\d{4}$/.test(String(tabName || "").trim())) {
+    recomputeReconTabFormulasSync_(valuesGrid);
   }
 
   const compactedValues = compactGrid2D(valuesGrid || []);

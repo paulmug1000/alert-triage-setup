@@ -413,6 +413,22 @@ async function resolveBrokerTokenInProcess(ctx, toolRaw) {
   };
 }
 
+function hexToGoogleRgb_(hex) {
+  if (!hex || typeof hex !== "string") return null;
+  let clean = hex.replace("#", "").trim();
+  if (clean.length === 3) {
+    clean = clean.split("").map((c) => c + c).join("");
+  }
+  if (clean.length !== 6) return null;
+  const num = parseInt(clean, 16);
+  if (isNaN(num)) return null;
+  return {
+    red: ((num >> 16) & 255) / 255,
+    green: ((num >> 8) & 255) / 255,
+    blue: (num & 255) / 255,
+  };
+}
+
 class VirtualRange {
   constructor(sheet, startRow1, startCol1, numRows = 1, numCols = 1) {
     this.sheet = sheet;
@@ -727,10 +743,62 @@ class VirtualRange {
     }
     return this;
   }
-  setBackground() {
+  setBackground(color) {
+    if (this.sheet && this.sheet.spreadsheet && this.sheet.spreadsheet.isRemoteGoogleSheet) {
+      const rgb = hexToGoogleRgb_(color);
+      const cellObj = rgb
+        ? { userEnteredFormat: { backgroundColor: rgb } }
+        : { userEnteredFormat: {} };
+      this.sheet.spreadsheet._onSheetMutated(this.sheet.name, {
+        type: "structural",
+        request: {
+          repeatCell: {
+            range: {
+              sheetId: Number(this.sheet.sheetId || 0),
+              startRowIndex: this.startRow1 - 1,
+              endRowIndex: this.startRow1 - 1 + this.numRows,
+              startColumnIndex: this.startCol1 - 1,
+              endColumnIndex: this.startCol1 - 1 + this.numCols,
+            },
+            cell: cellObj,
+            fields: "userEnteredFormat.backgroundColor",
+          },
+        },
+      });
+    }
     return this;
   }
-  setBackgrounds() {
+  setBackgrounds(colorMatrix) {
+    if (!Array.isArray(colorMatrix) || colorMatrix.length === 0) return this;
+    if (this.sheet && this.sheet.spreadsheet && this.sheet.spreadsheet.isRemoteGoogleSheet) {
+      for (let r = 0; r < colorMatrix.length; r++) {
+        const row = colorMatrix[r];
+        if (!Array.isArray(row)) continue;
+        for (let c = 0; c < row.length; c++) {
+          const color = row[c];
+          const rgb = hexToGoogleRgb_(color);
+          const cellObj = rgb
+            ? { userEnteredFormat: { backgroundColor: rgb } }
+            : { userEnteredFormat: {} };
+          this.sheet.spreadsheet._onSheetMutated(this.sheet.name, {
+            type: "structural",
+            request: {
+              repeatCell: {
+                range: {
+                  sheetId: Number(this.sheet.sheetId || 0),
+                  startRowIndex: this.startRow1 - 1 + r,
+                  endRowIndex: this.startRow1 + r,
+                  startColumnIndex: this.startCol1 - 1 + c,
+                  endColumnIndex: this.startCol1 + c,
+                },
+                cell: cellObj,
+                fields: "userEnteredFormat.backgroundColor",
+              },
+            },
+          });
+        }
+      }
+    }
     return this;
   }
   setFontColor() {
@@ -909,7 +977,12 @@ class VirtualRangeList {
   setFontFamily() {
     return this;
   }
-  setBackground() {
+  setBackground(color) {
+    for (const r of this.ranges) r.setBackground(color);
+    return this;
+  }
+  setBackgrounds(colors) {
+    for (const r of this.ranges) r.setBackgrounds(colors);
     return this;
   }
   setHorizontalAlignment() {

@@ -1054,7 +1054,13 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
     const oldStartDate = retParseSheetDate(parentRow[37]);
     const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
     const intervalMonths = retDetectIntervalMonths(childDates) || 1;
-    const defaultSendDay = childDates.length > 0 ? childDates[0].getDate() : newStart.getDate();
+    const b51TargetDay = parseInt(tolerance?.retainerInvoiceDay, 10) > 0 ? parseInt(tolerance.retainerInvoiceDay, 10) : 28;
+    const parsedExplicitDay = parseInt(params?.invoiceSendDay, 10);
+    const defaultSendDay = (!isNaN(parsedExplicitDay) && parsedExplicitDay >= 1 && parsedExplicitDay <= 31)
+      ? parsedExplicitDay
+      : (childDates.length > 0 && (!oldStartDate || childDates[0].getDate() !== oldStartDate.getDate()))
+        ? childDates[0].getDate()
+        : b51TargetDay;
     const invoiceTimingOffset = retDetectInvoiceTimingOffset_(childDates, oldStartDate, intervalMonths);
     const timingMonthAdjust = invoiceTimingOffset === "before" ? -1 : (invoiceTimingOffset === "after" ? 1 : 0);
 
@@ -1084,7 +1090,10 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
     const targetPeriodCount = Math.min(periodStarts.length, pastCount + 18);
 
     const newRowDates = periodStarts.slice(0, targetPeriodCount).map(p => {
-      return new Date(p.getFullYear(), p.getMonth() + timingMonthAdjust, defaultSendDay);
+      const targetYear = p.getFullYear();
+      const targetMonth = p.getMonth() + timingMonthAdjust;
+      const maxDays = new Date(targetYear, targetMonth + 1, 0).getDate();
+      return new Date(targetYear, targetMonth, Math.min(defaultSendDay, maxDays));
     });
 
     const targetCount = newRowDates.length;
@@ -2257,12 +2266,14 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     const perInvoiceAmount = monthlyFee * intervalMonths;
 
     const parsedExplicitDay = parseInt(invoiceSendDay, 10);
-    const targetDay =
-      !isNaN(parsedExplicitDay) && parsedExplicitDay >= 1 && parsedExplicitDay <= 31
-        ? parsedExplicitDay
-        : b51TargetDay;
-    const sendDay =
-      childDates.length > 0 ? childDates[childDates.length - 1].getDate() : targetDay;
+    const hasExplicitDay =
+      !isNaN(parsedExplicitDay) && parsedExplicitDay >= 1 && parsedExplicitDay <= 31;
+    const targetDay = hasExplicitDay ? parsedExplicitDay : b51TargetDay;
+    const sendDay = hasExplicitDay
+      ? parsedExplicitDay
+      : childDates.length > 0
+        ? childDates[childDates.length - 1].getDate()
+        : targetDay;
 
     let lastDate;
     if (childDates.length > 0) {

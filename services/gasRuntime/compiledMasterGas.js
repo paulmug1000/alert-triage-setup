@@ -7221,6 +7221,7 @@ async function logMyQuickBooksTaxCodesWithIDs() {
  * ==      CRM TASKS (CRMComp) LOGIC      ==
  * =========================================
  *
+ * v3.13 (Ensure _copyPipelineJobToConfirmed bounds targetDayVal to month length and pass retainerDay and defaultDays in processInstantConfirmedJobs_)
  * v3.12 (Prevent copying single-row retainer invoices and automatic placeholder invoices from Pipeline to Confirmed, and prevent instant recovery from resurrecting already-copied jobs)
  * v3.11 (Use active spreadsheet timezone or Europe/London in valuesAreDifferent to ensure BST dates match serial dates)
  * v3.10 (Prevent reverting Pipeline copied status to No when job already exists on Confirmed tab)
@@ -8818,7 +8819,8 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
     if (totalMonthsActual >= 1) {
        for (let m = 0; m < rowsToCreate; m++) {
          const childRow = newRow + 1 + m;
-         const invDate = new Date(startDate.getFullYear(), startDate.getMonth() + m, targetDayVal); 
+         const maxDaysInMonth = new Date(startDate.getFullYear(), startDate.getMonth() + m + 1, 0).getDate();
+         const invDate = new Date(startDate.getFullYear(), startDate.getMonth() + m, Math.min(targetDayVal, maxDaysInMonth)); 
          setVal(childRow, 'Client', details.client);
          setVal(childRow, 'Job name', details.jobName);
          if (recurringAmt > 0) {
@@ -8967,6 +8969,8 @@ async function processInstantConfirmedJobs_(ss) {
     
     // Calculate cutoff date based on the number of months stored in DataChgAlert!B55
     const monthsBack = alertSheet ? (parseInt(alertSheet.getRange("B55").getValue()) || 0) : 0;
+    const retainerDay = alertSheet ? (parseInt(alertSheet.getRange("B51").getValue()) || 0) : 0;
+    const defaultDays = alertSheet ? (parseInt(alertSheet.getRange("B52").getValue()) || 30) : 30;
     let cutoffDate = null;
     if (monthsBack > 0) {
         cutoffDate = new Date();
@@ -9212,7 +9216,7 @@ async function processInstantConfirmedJobs_(ss) {
                 let copySuccess = false;
                 try {
                     if (typeof _copyPipelineJobToConfirmed === 'function') {
-                        copyLog = _copyPipelineJobToConfirmed(clientSs, jobDetails, null, null, null);
+                        copyLog = _copyPipelineJobToConfirmed(clientSs, jobDetails, null, null, null, retainerDay, defaultDays, null);
                         Logger.log(`   -> _copyPipelineJobToConfirmed result: ${copyLog}`);
                         if (copyLog && !copyLog.toLowerCase().includes("error")) {
                             copySuccess = true;
@@ -9291,7 +9295,7 @@ async function processInstantConfirmedJobs_(ss) {
                         let copySuccess = false;
                         try {
                             if (typeof _copyPipelineJobToConfirmed === 'function') {
-                                copyLog = _copyPipelineJobToConfirmed(clientSs, jobDetails, null, null, null);
+                                copyLog = _copyPipelineJobToConfirmed(clientSs, jobDetails, null, null, null, retainerDay, defaultDays, null);
                                 Logger.log(`   -> Recovery _copyPipelineJobToConfirmed result: ${copyLog}`);
                                 if (copyLog && !copyLog.toLowerCase().includes("error")) {
                                     copySuccess = true;
@@ -9334,6 +9338,7 @@ async function processInstantConfirmedJobs_(ss) {
  * ----------------------------------------------------------------
  * 5_AGENT_RECEIVER
  * 
+ * v3.31 (Default retainerDay to 28 instead of 1 in auditInvoiceGaps, processRowGap_, and calculateRevenueSplit_, and bound dates to month length)
  * v3.30 (Prevent runInvoiceSheetAudit_ from creating single-row retainer placeholder invoices on the Confirmed parent row)
  * v3.29 (Robust retainer billing interval detection using parent type and modal interval across all child dates)
  * v3.28 (Enforce d-mmm-yy number format on date placeholder cells in writeInvoiceManualEntry_)
@@ -11572,7 +11577,7 @@ async function auditInvoiceGaps(isHeadless, writeToSheet = false) {
   
   // 1. CONFIGURATION
   const projLogicMode = alertSheet.getRange("B50").getValue() || "50-50";
-  const retainerDayVal = parseInt(alertSheet.getRange("B51").getValue()) || 1;
+  const retainerDayVal = parseInt(alertSheet.getRange("B51").getValue()) || 28;
   
   // --- NEW: Default Days ---
   const defaultDays = parseInt(alertSheet.getRange("B52").getValue()) || 30;
@@ -11886,7 +11891,7 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
       } else {
           const baseDate = (startDate instanceof Date && !isNaN(startDate.getTime())) ? startDate : today;
           const maxDaysInMonth = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0).getDate();
-          const safeDay = Math.min(retainerDay || 1, maxDaysInMonth);
+          const safeDay = Math.min(retainerDay || 28, maxDaysInMonth);
           anchorDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), safeDay);
       }
       
@@ -12174,7 +12179,8 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
 
       const newChildRow = job.insertAfter + 2;
       const pStart = job.startDate || today;
-      const fourthMonthStart = new Date(pStart.getFullYear(), pStart.getMonth() + 3, retainerDay);
+      const maxDaysFourth = new Date(pStart.getFullYear(), pStart.getMonth() + 4, 0).getDate();
+      const fourthMonthStart = new Date(pStart.getFullYear(), pStart.getMonth() + 3, Math.min(retainerDay || 28, maxDaysFourth));
 
       sheet.getRange(newChildRow, colClient + 1).setValue(sanitizeSheetCell_(job.client));
       sheet.getRange(newChildRow, colJobName + 1).setValue(sanitizeSheetCell_(job.job));
@@ -12236,7 +12242,9 @@ function calculateRevenueSplit_(amount, mode, start, end, retainerDay, xeroCount
         const amtPerMonth = amount / slotsNeeded;
         const allocations = [];
         for (let m = 0; m < slotsNeeded; m++) {
-            const invDate = new Date(start.getFullYear(), start.getMonth() + xeroCount + m, retainerDay || 1);
+            const targetMonth = start.getMonth() + xeroCount + m;
+            const maxDays = new Date(start.getFullYear(), targetMonth + 1, 0).getDate();
+            const invDate = new Date(start.getFullYear(), targetMonth, Math.min(retainerDay || 28, maxDays));
             allocations.push({ amt: amtPerMonth, date: invDate });
         }
         return allocations;

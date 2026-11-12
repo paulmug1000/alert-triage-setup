@@ -976,10 +976,7 @@ export default function CashflowReconTab({
     } else if (itemType === "other_expenses") {
       reconVal = recon.outgoings || 0;
       targetAdjustmentRow = row.targetAdjustmentRow || 17; // Other expenses adjustment
-      const tabName = recon.tabName || reconData?.reconTabName;
-      formula = tabName
-        ? `=IMPORTRANGE(KeyInfo!$G$1, "'${tabName}'!X4")-${cellRef}`
-        : `=${reconVal.toFixed(2)}-${cellRef}`;
+      formula = `=${reconVal.toFixed(2)}-${cellRef}`;
     } else if (itemType === "corporation_tax") {
       reconVal = recon.corpTax || 0;
       targetAdjustmentRow = row.targetAdjustmentRow || 20; // Corporation tax adjustment
@@ -1135,10 +1132,7 @@ export default function CashflowReconTab({
         }
 
         if (reconVal !== null && targetRow) {
-          const tabName = recon.tabName || reconData?.reconTabName;
-          const formula = (itemType === "other_expenses" && tabName)
-            ? `=IMPORTRANGE(KeyInfo!$G$1, "'${tabName}'!X4")-${cellRef}`
-            : `=${reconVal.toFixed(2)}-${cellRef}`;
+          const formula = `=${reconVal.toFixed(2)}-${cellRef}`;
           adjustments.push({
             sheetRow: targetRow,
             formula

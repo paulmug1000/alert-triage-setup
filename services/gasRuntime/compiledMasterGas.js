@@ -7221,6 +7221,7 @@ async function logMyQuickBooksTaxCodesWithIDs() {
  * ==      CRM TASKS (CRMComp) LOGIC      ==
  * =========================================
  *
+ * v3.12 (Prevent copying single-row retainer invoices and automatic placeholder invoices from Pipeline to Confirmed, and prevent instant recovery from resurrecting already-copied jobs)
  * v3.11 (Use active spreadsheet timezone or Europe/London in valuesAreDifferent to ensure BST dates match serial dates)
  * v3.10 (Prevent reverting Pipeline copied status to No when job already exists on Confirmed tab)
  * v3.09 (Support JobCosting headers in DataChgAlert exclusion mapping, datesChanged detection, and Pipeline row clearing)
@@ -8685,11 +8686,31 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
   if (isTargetJobCosting) {
       ensureJobCostingRowFormulas_(targetSheet, newRow, true, headers, false);
   }
+  const isRetainer = String(details.jobType).trim().toLowerCase() === 'retainer';
+
  // 1. Dump everything from the dynamic payload first
  if (details.dynamicPayload) {
      for (const header in details.dynamicPayload) {
+         const hNorm = String(header || '').trim().toLowerCase();
+         const cleanH = hNorm.replace(/[^a-z0-9]/g, '');
+
+         // Retainers on Confirmed must never have invoice slots on the parent row
+         if (isRetainer && (cleanH.includes('inv') || cleanH.includes('invoice'))) {
+             if (cleanH.includes('projectinvoice') || cleanH.includes('inv1') || cleanH.includes('inv2') || cleanH.includes('inv3')) {
+                 continue;
+             }
+         }
+
+         // Strip automatic placeholder invoice references from ANY job
+         if (cleanH.includes('inv') && (cleanH.includes('ref') || cleanH.includes('id') || cleanH.includes('no'))) {
+             const refVal = String(details.dynamicPayload[header] || '').trim();
+             const isAutoPlaceholder = typeof isPlaceholderInvoice_ === 'function' ? isPlaceholderInvoice_(refVal) : (refVal.includes('PLACE-INV') || refVal.includes('MANUAL-INV'));
+             if (isAutoPlaceholder) {
+                 continue;
+             }
+         }
+
          if (isTargetJobCosting) {
-             const hNorm = String(header || '').trim().toLowerCase();
              if (
                hNorm === 'revenue' ||
                hNorm === 'revenue (proj total / ongoing pm) - excl vat' ||
@@ -8755,7 +8776,6 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
   }
 
   // --- RETAINER LOGIC ---
-  const isRetainer = String(details.jobType).trim().toLowerCase() === 'retainer';
   const targetDayVal = (retainerDay && retainerDay > 0) ? retainerDay : 28;
 
   // NEW LOGIC: Only use Generative Mode if the retainer has NO child rows in the Pipeline
@@ -8822,7 +8842,9 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
       if (pipelineInvoices) {
          [1, 2, 3].forEach(slot => {
             const k = `inv${slot}`;
-            if ((parseFloat(pipelineInvoices[k].amt) || 0) > 0) {
+            const refVal = String(pipelineInvoices[k].ref || '').trim();
+            const isAutoPlaceholder = typeof isPlaceholderInvoice_ === 'function' ? isPlaceholderInvoice_(refVal) : (refVal.includes('PLACE-INV') || refVal.includes('MANUAL-INV'));
+            if (!isAutoPlaceholder && (parseFloat(pipelineInvoices[k].amt) || 0) > 0) {
                 setVal(newRow, slot === 1 ? 'Project invoice 1 / monthly retainer (excl VAT)' : `Project invoice ${slot} (excl VAT)`, pipelineInvoices[k].amt);
                 setVal(newRow, `Inv ${slot} SEND date`, pipelineInvoices[k].date);
                 setVal(newRow, `Inv ${slot} status`, pipelineInvoices[k].status);
@@ -8847,7 +8869,9 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
           if (child.invoices) {
               [1, 2, 3].forEach(slot => {
                   const ck = `inv${slot}`;
-                  if ((parseFloat(child.invoices[ck].amt) || 0) > 0) {
+                  const cRefVal = String(child.invoices[ck].ref || '').trim();
+                  const cIsAutoPlaceholder = typeof isPlaceholderInvoice_ === 'function' ? isPlaceholderInvoice_(cRefVal) : (cRefVal.includes('PLACE-INV') || cRefVal.includes('MANUAL-INV'));
+                  if (!cIsAutoPlaceholder && (parseFloat(child.invoices[ck].amt) || 0) > 0) {
                       setVal(childRow, 'VAT?', 'Yes');
                       setVal(childRow, slot === 1 ? 'Project invoice 1 / monthly retainer (excl VAT)' : `Project invoice ${slot} (excl VAT)`, child.invoices[ck].amt);
                       setVal(childRow, `Inv ${slot} SEND date`, child.invoices[ck].date);
@@ -8887,10 +8911,12 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
   }
 
   // --- MANUAL INVOICE COPY (FALLBACK) ---
-  if (pipelineInvoices) {
+  if (!isRetainer && pipelineInvoices) {
      [1, 2, 3].forEach(slot => {
         const k = `inv${slot}`;
-        if ((parseFloat(pipelineInvoices[k].amt) || 0) > 0) {
+        const refVal = String(pipelineInvoices[k].ref || '').trim();
+        const isAutoPlaceholder = typeof isPlaceholderInvoice_ === 'function' ? isPlaceholderInvoice_(refVal) : (refVal.includes('PLACE-INV') || refVal.includes('MANUAL-INV'));
+        if (!isAutoPlaceholder && (parseFloat(pipelineInvoices[k].amt) || 0) > 0) {
            setVal(newRow, slot === 1 ? 'Project invoice 1 / monthly retainer (excl VAT)' : `Project invoice ${slot} (excl VAT)`, pipelineInvoices[k].amt);
            setVal(newRow, `Inv ${slot} SEND date`, pipelineInvoices[k].date);
            setVal(newRow, `Inv ${slot} status`, pipelineInvoices[k].status);
@@ -9219,7 +9245,6 @@ async function processInstantConfirmedJobs_(ss) {
                 // Increment so the next trapped job goes directly beneath this one
                 nextAvailableRow++; 
             } else if (inPipe && !inConf) {
-                Logger.log(`   -> Job ${codeStr} exists in Pipeline but MISSING from Confirmed. Attempting recovery...`);
                 let codeColIdx = pipeHeadersNorm.findIndex(h => h === 'projectcode');
                 if (codeColIdx === -1) codeColIdx = pipeHeadersNorm.findIndex(h => h.includes('code') || h.includes('id'));
                 if (codeColIdx !== -1) {
@@ -9228,6 +9253,15 @@ async function processInstantConfirmedJobs_(ss) {
                     const targetPipeRow = existingPipeCodes.findIndex(c => String(c || '').trim().toUpperCase() === codeStr) + 1;
                     if (targetPipeRow > 1) {
                         const pipeRowVals = pipelineSheet.getRange(targetPipeRow, 1, 1, pipelineSheet.getLastColumn()).getValues()[0];
+                        let copiedColIdx = pipeHeadersNorm.findIndex(h => h.includes('copiedtoconf'));
+                        const currentCopiedVal = (copiedColIdx !== -1) ? String(pipeRowVals[copiedColIdx] || '').trim().toLowerCase() : '';
+
+                        // If already copied or processed in the past, do not resurrect into Confirmed
+                        if (currentCopiedVal === 'yes') {
+                            Logger.log(`   -> Job ${codeStr} in Pipeline already has Copied to Confirmed = 'Yes'. Skipping recovery.`);
+                            return;
+                        }
+                        Logger.log(`   -> Job ${codeStr} exists in Pipeline but MISSING from Confirmed. Attempting recovery...`);
                         const dynamicPayload = {};
                         pipeHeadersRow.forEach((h, i) => {
                             if (h && pipeRowVals[i] !== "") dynamicPayload[h] = pipeRowVals[i];
@@ -9300,6 +9334,7 @@ async function processInstantConfirmedJobs_(ss) {
  * ----------------------------------------------------------------
  * 5_AGENT_RECEIVER
  * 
+ * v3.30 (Prevent runInvoiceSheetAudit_ from creating single-row retainer placeholder invoices on the Confirmed parent row)
  * v3.29 (Robust retainer billing interval detection using parent type and modal interval across all child dates)
  * v3.28 (Enforce d-mmm-yy number format on date placeholder cells in writeInvoiceManualEntry_)
  * v3.27 (Add run_revenue_comparison action dispatcher in doPost for on-demand Revenue Check runs)
@@ -11858,6 +11893,11 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
       if (gapNeeded > 0.05 && !isParentRow) {
           const allocations = [];
           if (isRetainer) {
+              if (sheetName === "Confirmed") {
+                  // Confirmed retainers are managed exclusively via monthly child rows (processRetainerAudit).
+                  // Never create single-row retainer invoices on the parent row of Confirmed.
+                  return false;
+              }
               if (slots[0] && slots[0].amt !== -1) {
                   allocations.push({ amt: gapNeeded, date: anchorDate, targetSlotIndex: 0 });
               }

@@ -1954,6 +1954,20 @@ export async function autoReconcileClientBankTransactions({
       defaultAccount
     });
 
+    // Safety guard: if nextBankTxns is empty while currentBankTxns had transactions, DO NOT overwrite!
+    if ((!updateResult.nextBankTxns || updateResult.nextBankTxns.length === 0) && currentBankTxns.length > 0) {
+      console.warn(`[Bank Recon Auto] Safety: refused to overwrite ${currentBankTxns.length} existing transactions with 0 transactions for ${resolvedClient} (${tabName})`);
+      results.push({
+        tabName,
+        monthKey: tabMonthKey,
+        success: true,
+        count: currentBankTxns.length,
+        skipped: true,
+        warning: "Zero transactions produced from merge; existing transactions preserved"
+      });
+      continue;
+    }
+
     // Save updated transactions and unreconciled items back to the Recon Sheet
     await Promise.all([
       syncReconBankTransactions({

@@ -740,7 +740,7 @@ async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = 
   return emptyRecord;
 }
 
-async function saveVirtualTabGrid_(
+export async function saveVirtualTabGrid_(
   ctx,
   sheetRole,
   tabName,
@@ -1281,8 +1281,8 @@ function hasPendingOrInFlightClientRecompute_(clientNameOrKey) {
   const unpersistedSet = _unpersistedSkippedClientTabsByClient.get(key);
   return Boolean(
     (pendingSet && pendingSet.size > 0) ||
-      (unpersistedSet && unpersistedSet.size > 0) ||
-      _inFlightClientRecomputeByClient.has(key)
+    (unpersistedSet && unpersistedSet.size > 0) ||
+    _inFlightClientRecomputeByClient.has(key)
   );
 }
 
@@ -1373,12 +1373,12 @@ export async function flushPendingClientRecomputes(rawSheetsApi = null, clientNa
   const keys = clientName
     ? [String(clientName).toLowerCase()]
     : [
-        ...new Set([
-          ..._pendingClientTabsByClient.keys(),
-          ..._unpersistedSkippedClientTabsByClient.keys(),
-          ..._inFlightClientRecomputeByClient.keys(),
-        ]),
-      ];
+      ...new Set([
+        ..._pendingClientTabsByClient.keys(),
+        ..._unpersistedSkippedClientTabsByClient.keys(),
+        ..._inFlightClientRecomputeByClient.keys(),
+      ]),
+    ];
   for (const key of keys) {
     const ctx = _pendingClientCtxByClient.get(key);
     if (hasPendingOrInFlightClientRecompute_(key) && ctx) {
@@ -1671,7 +1671,7 @@ async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
   }
 
   while (_inFlightClientRecomputeByClient.has(clientKey)) {
-    await _inFlightClientRecomputeByClient.get(clientKey).catch(() => {});
+    await _inFlightClientRecomputeByClient.get(clientKey).catch(() => { });
   }
 
   const pendingSetCheck = _pendingClientTabsByClient.get(clientKey);
@@ -3157,16 +3157,16 @@ async function syncReconPeriodAndItemsFromGrid_(ctx, monthKey, grid) {
   const colCD = colLetterToIdx0("CD"); // 81
   for (let r = 3; r < Math.min(grid.length, 60); r++) {
     const row = grid[r] || [];
-    const txnDate = formatCellForDisplay("recon", monthKey, r, colCD, row[colCD], grid);
+    const dateVal = row[colCD + 2] ?? row[colCD]; // CF for Xero, CD for QB
+    const txnDate = formatCellForDisplay("recon", monthKey, r, colCD + 2, dateVal, grid);
     const payee = String(row[colCD + 3] || "").trim(); // CG
-    const grossAmt = parseNumericVal_(row[colCD + 4]); // CH
-    const netAmt = parseNumericVal_(row[colCD + 5]); // CI
-    const cat = String(row[colCD + 6] || "").trim(); // CJ
-    const vatApplies = String(row[colCD + 7] || "No").trim(); // CK
-    const vatAmt = parseNumericVal_(row[colCD + 8]); // CL
-    const isExclRaw = row[colCD + 10]; // CN
-    const isExcluded = Boolean(isExclRaw === true || String(isExclRaw || "").toUpperCase() === "TRUE");
-    if (!txnDate && !payee && !grossAmt && !netAmt) continue;
+    const particulars = String(row[colCD + 4] || "").trim(); // CH
+    const rawAmt = parseNumericVal_(row[colCD + 5]); // CI
+    const cat = String(row[colCD + 9] || "").trim(); // CM
+    const vatApplies = String(row[colCD + 10] || "No").trim(); // CN
+    const vatAmt = vatApplies.toLowerCase() === "yes" ? Math.round(Math.abs(rawAmt) * (20 / 120) * 100) / 100 : 0;
+    const netAmt = Math.round((Math.abs(rawAmt) - vatAmt) * 100) / 100;
+    if (!txnDate && !payee && !rawAmt) continue;
     itemsToInsert.push({
       client_id: ctx.clientId,
       client_name: ctx.clientName,
@@ -3177,15 +3177,15 @@ async function syncReconPeriodAndItemsFromGrid_(ctx, monthKey, grid) {
       txn_date: txnDate,
       account_name: "",
       payee,
-      particulars: String(row[colCD + 2] || "").trim(),
-      reference: String(row[colCD + 1] || "").trim(),
-      out_amount: grossAmt < 0 ? Math.abs(grossAmt) : 0,
-      in_amount: grossAmt > 0 ? grossAmt : 0,
+      particulars,
+      reference: "",
+      out_amount: rawAmt < 0 ? Math.abs(rawAmt) : 0,
+      in_amount: rawAmt > 0 ? rawAmt : 0,
       net_amount: netAmt,
       vat_amount: vatAmt,
       category: cat,
       vat_applies: vatApplies,
-      is_excluded: isExcluded,
+      is_excluded: false,
     });
   }
 

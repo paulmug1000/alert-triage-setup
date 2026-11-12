@@ -174,7 +174,7 @@ export function isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid = 
 
   if (sheetRole === "recon" || /^\d{4}$/.test(tabName) || tabName === "Template") {
     if (row0 >= 2 && col0 === 1 && isPlausibleSerial) return true;
-    if (row0 >= 3 && col0 === 81 && isPlausibleSerial) return true;
+    if (row0 >= 3 && (col0 === 81 || col0 === 83) && isPlausibleSerial) return true;
     if (tabName === "PLAdds" && row0 === 2 && col0 >= 3 && isPlausibleSerial) return true;
     return false;
   }

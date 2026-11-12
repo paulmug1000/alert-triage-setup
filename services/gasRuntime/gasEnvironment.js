@@ -1536,13 +1536,20 @@ export async function createGasEnvironment({
 
   // 1. Load active Master & Recon tabs for this client from Supabase `master_sheet_grids`
   // Omit `formulas_grid` on bulk fetch (since Master formulas are evaluated in JS by `masterFormulaEngine.js`).
-  const [gridResp, y0FormulaResp] = await Promise.all([
+  // Note: Master tabs are filtered to ACTIVE_GAS_MASTER_TABS; Recon tabs (monthly MMYY tabs, KeyInfo, PLAdds, etc.)
+  // must all be loaded so that CR2 reconciliation gates and unreconciled items are accessible to the GAS runtime.
+  const [masterGridResp, reconGridResp, y0FormulaResp] = await Promise.all([
     supabase
       .from("master_sheet_grids")
       .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
       .eq("client_name", ctx.clientName)
-      .in("sheet_role", ["master", "recon"])
+      .eq("sheet_role", "master")
       .in("tab_name", ACTIVE_GAS_MASTER_TABS),
+    supabase
+      .from("master_sheet_grids")
+      .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
+      .eq("client_name", ctx.clientName)
+      .eq("sheet_role", "recon"),
     supabase
       .from("master_sheet_grids")
       .select("formulas_grid")
@@ -1552,10 +1559,13 @@ export async function createGasEnvironment({
       .maybeSingle(),
   ]);
 
-  if (gridResp.error) {
-    throw new Error(`Failed to load master_sheet_grids for ${ctx.clientName}: ${gridResp.error.message}`);
+  if (masterGridResp?.error) {
+    throw new Error(`Failed to load master_sheet_grids for ${ctx.clientName}: ${masterGridResp.error.message}`);
   }
-  const gridRows = gridResp.data || [];
+  if (reconGridResp?.error) {
+    throw new Error(`Failed to load recon_sheet_grids for ${ctx.clientName}: ${reconGridResp.error.message}`);
+  }
+  const gridRows = [...(masterGridResp?.data || []), ...(reconGridResp?.data || [])];
   const y0FormulasGrid = y0FormulaResp?.data?.formulas_grid || null;
 
   const masterSS = new VirtualSpreadsheet({

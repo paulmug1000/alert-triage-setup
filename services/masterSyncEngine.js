@@ -467,7 +467,7 @@ export async function syncExpenseBreakdownToClientSheetNative(sheets, clientName
     executionMeta: { functionName: "syncExpenseTransactionBreakdownToClientSheet_", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
-  const res = await gas.syncExpenseTransactionBreakdownToClientSheet_(env.masterSS, true);
+  const res = await gas.syncExpenseTransactionBreakdownToClientSheet_(true);
   await env.finalizeExecution({ summary: "Synced expense breakdown to Client Sheet" });
   return res || { success: true };
 }

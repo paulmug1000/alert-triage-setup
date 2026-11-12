@@ -13958,6 +13958,7 @@ async function getBrokerExcelAccessToken_() {
 /**
  * ----------------------------------------------------------------
  * 7_COST_SYNC
+ * v3.48 (Apply Net of Credit scaling to Xero and QuickBooks bills in fetchXeroCostTransactions_ and fetchQBCostTransactions_, resolve payment date from actual cash payments rather than credit note allocation date, and self-heal credit-cleared part-payment balance tranches in Outgoings and Confirmed)
  * v3.47 (Read client name from KeyInfo!B1 in autoReconcileBankFeedsBeforeBreakdown_ with B3 fallback, and add defense-in-depth deduplication matching unreconciled items against actual expenseRows to prevent double-counting)
  * v3.46 (Protect paid/settled expense slots and blank-ID locked historical entries in runSheetAudit from being treated as automatic PLACE-EXP placeholders)
  * v3.45 (In analyseExpenseSlots_, recognize placeholder expenses by description as well as App ID so missing or blank App IDs do not prevent automated gap rebalancing)
@@ -17042,29 +17043,40 @@ async function fetchXeroCostTransactions_(targetCodes, token, fetchAllExpenses =
               if (shouldInclude) {
                 const accName = line.AccountName || accountNameMap.get(line.AccountCode) || "";
                 
-                // Extract partial payment details
+                // Extract partial payment and credit details (Net of Credit)
                 const rawDue = parseFloat(inv.AmountDue) || 0;
                 const rawPaid = parseFloat(inv.AmountPaid) || 0;
-                const rawTotal = parseFloat(inv.Total) || (rawDue + rawPaid);
+                const rawCredit = parseFloat(inv.AmountCredited) || 0;
+                const originalTotal = parseFloat(inv.Total) || (rawDue + rawPaid + rawCredit);
+                const effectiveTotal = Math.max(0, originalTotal - rawCredit);
+                const creditRatio = (originalTotal > 0) ? (effectiveTotal / originalTotal) : 1;
 
+                // Extract payment date: prioritise actual cash payment dates from inv.Payments.
+                // In Xero, FullyPaidOnDate reflects the date the invoice reached zero balance, which will be the
+                // Credit Note date if a credit note cleared the final balance. If cash payments exist, use the
+                // latest cash payment date so cashflow accurately reflects when funds left the bank.
                 let datePaid = "";
-                if (inv.FullyPaidOnDate) {
-                    const dateMatch = String(inv.FullyPaidOnDate).match(/\d+/);
-                    if (dateMatch) datePaid = new Date(parseInt(dateMatch[0])).toISOString().split('T')[0];
-                } else if (rawPaid > 0 && inv.Payments && inv.Payments.length > 0) {
-                    let maxMs = 0;
+                let maxPaymentMs = 0;
+                if (rawPaid > 0 && Array.isArray(inv.Payments) && inv.Payments.length > 0) {
                     inv.Payments.forEach(p => {
-                        if (p.Date) {
-                            const m = String(p.Date).match(/\d+/);
-                            if (m) {
-                                const d = new Date(parseInt(m[0]));
-                                if (!isNaN(d.getTime()) && d.getTime() > maxMs) {
-                                    maxMs = d.getTime();
-                                    datePaid = d.toISOString().split('T')[0];
-                                }
+                        if (p.Status && String(p.Status).toUpperCase() === "DELETED") return;
+                        const rawD = p.DateString || p.Date;
+                        if (rawD) {
+                            const match = String(rawD).match(/\/Date\((\d+)/);
+                            const ms = match ? parseInt(match[1], 10) : (parseDateSafe_(rawD)?.getTime() || 0);
+                            if (ms > maxPaymentMs) {
+                                maxPaymentMs = ms;
+                                datePaid = Utilities.formatDate(new Date(ms), SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone(), "yyyy-MM-dd");
                             }
                         }
                     });
+                }
+                if (!datePaid && inv.FullyPaidOnDate && (rawCredit <= 0 || rawPaid > 0)) {
+                    const match = String(inv.FullyPaidOnDate).match(/\d+/);
+                    if (match) {
+                        const d = new Date(parseInt(match[0], 10));
+                        datePaid = Utilities.formatDate(d, SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone(), "yyyy-MM-dd");
+                    }
                 }
 
                 let dueDateStr = "";
@@ -17084,7 +17096,12 @@ async function fetchXeroCostTransactions_(targetCodes, token, fetchAllExpenses =
                     }
                 }
 
-                const { net, vat, gross } = parseXeroAmounts(line, inv.LineAmountTypes);
+                const { net: rawLineNet, vat: rawLineVat, gross: rawLineGross } = parseXeroAmounts(line, inv.LineAmountTypes);
+                
+                // Scale line amounts net of credit
+                const lineNet = rawLineNet * creditRatio;
+                const lineVat = rawLineVat * creditRatio;
+                const lineGross = rawLineGross * creditRatio;
                 
                 // --- V11.3: SMART SUPPLIER DESCRIPTION ---
                 // FIXED: Sanitize carriage returns and newlines from Xero immediately
@@ -17102,11 +17119,11 @@ async function fetchXeroCostTransactions_(targetCodes, token, fetchAllExpenses =
                 const currencyCode = inv.CurrencyCode || "";
                 const currencyRate = parseFloat(inv.CurrencyRate) || 1;
                 const convFactor = (currencyRate > 0 && currencyRate !== 1) ? (1 / currencyRate) : 1;
-                const baseNet = Math.round(net * convFactor * 100) / 100;
-                const baseVat = Math.round(vat * convFactor * 100) / 100;
-                const baseGross = Math.round(gross * convFactor * 100) / 100;
+                const baseNet = Math.round(lineNet * convFactor * 100) / 100;
+                const baseVat = Math.round(lineVat * convFactor * 100) / 100;
+                const baseGross = Math.round(lineGross * convFactor * 100) / 100;
 
-                const lineRatio = (rawTotal > 0 && Math.abs(gross - rawTotal) > 0.01) ? (gross / rawTotal) : 1;
+                const lineRatio = (effectiveTotal > 0 && Math.abs(baseGross - effectiveTotal) > 0.01) ? (baseGross / effectiveTotal) : 1;
                 const baseDue = Math.round(rawDue * lineRatio * convFactor * 100) / 100;
                 const basePaid = Math.round(rawPaid * lineRatio * convFactor * 100) / 100;
 
@@ -17386,7 +17403,7 @@ async function fetchQBCostTransactions_(targetCodes, token, fetchAllExpenses = f
       
       const vendorName = item.VendorRef?.name || item.EntityRef?.name || "";
       
-      // FIXED: Pre-calculate total tax and total net for proportional VAT distribution
+      // Pre-calculate total tax and total net for proportional VAT distribution
       const totalTax = item.TxnTaxDetail?.TotalTax || 0;
       let totalLineNet = 0;
       (item.Line || []).forEach(l => {
@@ -17394,6 +17411,24 @@ async function fetchQBCostTransactions_(targetCodes, token, fetchAllExpenses = f
               totalLineNet += (l.Amount || 0);
           }
       });
+
+      // Net of Credit calculation for QuickBooks Bills
+      let totalCredit = 0;
+      if (type === "Bill" && item.LinkedTxn && Array.isArray(item.LinkedTxn)) {
+          item.LinkedTxn.forEach(txn => {
+              if (txn.TxnType === 'VendorCredit') {
+                  totalCredit += parseFloat(txn.Amount) || 0;
+              }
+          });
+      }
+      const rawTotal = parseFloat(item.TotalAmt) || (totalLineNet + totalTax);
+      const effectiveTotal = Math.max(0, rawTotal - totalCredit);
+      const creditRatio = (rawTotal > 0) ? (effectiveTotal / rawTotal) : 1;
+      const rawDue = (type === "Bill") ? (parseFloat(item.Balance) || 0) : 0;
+      const rawPaid = (type === "Bill") ? Math.max(0, effectiveTotal - rawDue) : (totalLineNet + totalTax);
+      const dueDateStr = (type === "Bill" && item.DueDate) ? String(item.DueDate).split('T')[0] : (item.TxnDate || "");
+      const baseDue = Math.round(rawDue * 100) / 100;
+      const basePaid = Math.round(rawPaid * 100) / 100;
 
       (item.Line || []).forEach(line => {
         let acctRef = null;
@@ -17450,7 +17485,8 @@ async function fetchQBCostTransactions_(targetCodes, token, fetchAllExpenses = f
           const shouldInclude = fetchAllExpenses || (targetCodes && targetCodes.includes(matchedCode)) || isItemBased; 
 
           if (shouldInclude) {
-             const net = line.Amount || 0; 
+             const rawLineNet = line.Amount || 0;
+             const net = Math.round(rawLineNet * creditRatio * 100) / 100; 
              
              // Apply line-level VAT using company TaxCodes and rates
              const lineTaxCodeId = String(
@@ -17465,15 +17501,15 @@ async function fetchQBCostTransactions_(targetCodes, token, fetchAllExpenses = f
              } else if (lineTaxCodeId && taxCodeRateMap && taxCodeRateMap[lineTaxCodeId] !== undefined) {
                  vat = Math.round(net * taxCodeRateMap[lineTaxCodeId] * 100) / 100;
                  if (vat === 0 && totalTax > 0 && (item.Line || []).filter(l => (l.Amount || 0) > 0).length === 1) {
-                     vat = totalTax;
+                     vat = Math.round(totalTax * creditRatio * 100) / 100;
                  }
              } else if (totalLineNet > 0) {
-                 vat = (net / totalLineNet) * totalTax;
+                 vat = Math.round((net / totalLineNet) * totalTax * 100) / 100;
              } else if (totalTax > 0) {
                  const validLines = (item.Line || []).filter(l => l.Amount > 0).length || 1;
-                 vat = totalTax / validLines;
+                 vat = Math.round((totalTax * creditRatio / validLines) * 100) / 100;
              }
-             const gross = net + vat;
+             const gross = Math.round((net + vat) * 100) / 100;
              
              // If ItemBased, append "[Item]" to account name so you know why it's there
              const displayAccName = isItemBased ? `[Item] ${acctRef.name}` : acctRef.name;
@@ -17495,7 +17531,10 @@ async function fetchQBCostTransactions_(targetCodes, token, fetchAllExpenses = f
                  item.Id, 
                  datePaid,
                  qbCurrencyCode,
-                 qbCurrencyRate
+                 qbCurrencyRate,
+                 baseDue,
+                 basePaid,
+                 dueDateStr
              ]);
           }
         }
@@ -20168,6 +20207,58 @@ async function processPartPaidExpenses(ss, alertSheet) {
               }
             });
 
+            // Check if a balance tranche was eliminated by a credit note (e.g. sheet blocks sum to £4000, but jnlNet is £2500)
+            const jnlNet = idxNet !== -1 ? (parseFloat(String(jnlRow[idxNet]).replace(/,/g, "")) || 0) : 0;
+            let sumTargetAmts = 0;
+            targetIndices.forEach(idx => {
+              const m = rawBlocks[idx].match(/\{Amt:\s*([\d.]+)\}/);
+              if (m) sumTargetAmts += parseFloat(m[1]) || 0;
+            });
+            const isClearedByCredit = (targetIndices.length > 1 && sumTargetAmts > jnlNet + 0.05);
+
+            if (isClearedByCredit) {
+              const balBlockIdx = targetIndices.find(idx => rawBlocks[idx].includes("Part-paid (balance)") || rawBlocks[idx].includes(`{App ID: ${txnId}-bal}`));
+              if (balBlockIdx !== undefined) {
+                const balAmtMatch = rawBlocks[balBlockIdx].match(/\{Amt:\s*([\d.]+)\}/);
+                const balAmt = balAmtMatch ? (parseFloat(balAmtMatch[1]) || 0) : 0;
+
+                // Remove the balance block from rawBlocks
+                rawBlocks.splice(balBlockIdx, 1);
+
+                // Deduct the credited balance amount directly from the Outgoings cell value
+                const cell = outgoingsSheet.getRange(r + 1, c + 1);
+                const currentVal = parseFloat(cell.getValue()) || 0;
+                cell.setValue(Math.max(0, Math.round((currentVal - balAmt) * 100) / 100));
+
+                // Update the remaining target block(s) to Paid
+                rawBlocks = rawBlocks.map(block => {
+                  if (block.includes(`{App ID: ${txnId}}`) || block.includes(`{App ID: ${txnId}-P1}`)) {
+                    let b = block.replace(/\{App ID:\s*[^}]+\}/, `{App ID: ${txnId}}`);
+                    b = b.replace(/\{Status:\s*[^}]+\}/, `{Status: Paid}`);
+                    if (payStr) b = b.replace(/\{Pay date:\s*[^}]+\}/, `{Pay date: ${payStr}}`);
+                    if (cleanD) b = b.replace(/\{Description:\s*[^}]+\}/, `{Description: ${cleanD}}`);
+                    return b;
+                  }
+                  return block;
+                });
+
+                const newBottomText = rawBlocks.join("\n\n");
+                const timestamp = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), "dd-MMM HH:mm");
+                const auditMsg = `${timestamp}: Part-payment balance cleared by credit note (Net £${balAmt.toFixed(2)}, Paid £${jnlNet.toFixed(2)} on ${payStr})`;
+                const newTopText = topAuditText ? `${auditMsg}\n${topAuditText}` : auditMsg;
+                const finalNote = `${newTopText}\n\n${newBottomText}`;
+
+                outgoingsSheet.getRange(r + 1, c + 1).setNote(finalNote);
+                outNotes[r][c] = finalNote;
+                totalUpdated++;
+
+                const colMonthName = headers[c] instanceof Date ? fmtDate_(headers[c]) : String(headers[c]);
+                const rowLabel = String(outValues[r][0] || `Row ${r + 1}`).trim();
+                logDetails.push(`[Outgoings] Removed credit-note cleared balance block (£${balAmt.toFixed(2)}) for ${rowLabel} (${txnId}) in ${colMonthName}, retaining paid tranche £${jnlNet.toFixed(2)}.`);
+                continue;
+              }
+            }
+
             const anyBlockMatchesPayStr = targetIndices.some(idx => {
               const pm = rawBlocks[idx].match(/\{Pay date:\s*([^}]+)\}/i);
               return pm && pm[1].trim() === payStr;
@@ -20328,6 +20419,37 @@ async function processPartPaidExpenses(ss, alertSheet) {
             }
           }
           if (matchingSlots.length === 0) continue;
+
+          // Check if balance slot was eliminated by credit note
+          const jnlNet = idxNet !== -1 ? (parseFloat(String(jnlRow[idxNet]).replace(/,/g, "")) || 0) : 0;
+          let sumSlotAmts = 0;
+          matchingSlots.forEach(s => {
+            sumSlotAmts += parseFloat(row[slotCols[s].amt]) || 0;
+          });
+          const isSlotClearedByCredit = (matchingSlots.length > 1 && sumSlotAmts > jnlNet + 0.05);
+
+          if (isSlotClearedByCredit) {
+            const balSlot = matchingSlots.find(s => String(row[slotCols[s].status] || "").toLowerCase().includes("balance"));
+            if (balSlot) {
+              const bCols = slotCols[balSlot];
+              if (bCols.desc !== -1) confirmedSheet.getRange(r + 1, bCols.desc + 1).setValue("");
+              if (bCols.amt !== -1) confirmedSheet.getRange(r + 1, bCols.amt + 1).setValue("");
+              if (bCols.vat !== -1) confirmedSheet.getRange(r + 1, bCols.vat + 1).setValue("");
+              if (bCols.rec !== -1) confirmedSheet.getRange(r + 1, bCols.rec + 1).setValue("");
+              if (bCols.days !== -1) confirmedSheet.getRange(r + 1, bCols.days + 1).setValue("");
+              if (bCols.status !== -1) confirmedSheet.getRange(r + 1, bCols.status + 1).setValue("");
+              if (bCols.id !== -1) confirmedSheet.getRange(r + 1, bCols.id + 1).setValue("");
+
+              const primarySlot = matchingSlots.find(s => s !== balSlot);
+              if (primarySlot) {
+                const pCols = slotCols[primarySlot];
+                if (pCols.status !== -1) confirmedSheet.getRange(r + 1, pCols.status + 1).setValue("Paid");
+              }
+              totalUpdated++;
+              logDetails.push(`[Confirmed] Cleared credit-note resolved balance slot for Direct Cost Row ${r + 1} Slot ${balSlot} (${txnId}), retaining primary paid slot.`);
+              continue;
+            }
+          }
 
           const anySlotMatchesFinalDays = finalDays !== null && matchingSlots.some(s => {
             const dCol = slotCols[s].days;

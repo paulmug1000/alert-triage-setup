@@ -32,7 +32,7 @@ import { redisClient } from "./redisClient.js";
 import { anthropic } from "./claudeClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
-import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId } from "./userPermissions.js";
 import { getSupabaseAdmin } from "./supabaseClient.js";
@@ -5619,15 +5619,26 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
 
           const mismatchFields = alert.mismatchFields || [];
-          const APP_FIELD_CONFIG = [
-            { name: "Client name", sheet: client, crm: crmClient, col: "A", writable: true },
-            { name: "Job name", sheet: jobName, crm: crmJob, col: "B", writable: true },
-            { name: "Revenue", sheet: revenue, crm: crmRevenue, col: "AG", writable: true },
-            { name: "Direct costs", sheet: dirCosts, crm: crmDirCosts, col: "AH", writable: true },
-            { name: "Start date", sheet: startDate, crm: crmStart, col: "AL", writable: true },
-            { name: "End date", sheet: endDate, crm: crmEnd, col: "AM", writable: true },
-            { name: "% Likelihood", sheet: likelihood, crm: crmLikely, col: "AN", writable: tabName === "Pipeline" },
-          ];
+          const isJobCostingTab = isJobCostingStyle({ headers: tabRows[0] || [] });
+          const APP_FIELD_CONFIG = isJobCostingTab
+            ? [
+                { name: "Client name", sheet: client, crm: crmClient, col: "A", writable: true },
+                { name: "Job name", sheet: jobName, crm: crmJob, col: "B", writable: true },
+                { name: "Revenue", sheet: revenue, crm: crmRevenue, col: "I", writable: true },
+                { name: "Direct costs", sheet: dirCosts, crm: crmDirCosts, col: "AH", writable: false },
+                { name: "Start date", sheet: startDate, crm: crmStart, col: "F", writable: true },
+                { name: "End date", sheet: endDate, crm: crmEnd, col: "G", writable: true },
+                { name: "% Likelihood", sheet: likelihood, crm: crmLikely, col: "AN", writable: tabName === "Pipeline" },
+              ]
+            : [
+                { name: "Client name", sheet: client, crm: crmClient, col: "A", writable: true },
+                { name: "Job name", sheet: jobName, crm: crmJob, col: "B", writable: true },
+                { name: "Revenue", sheet: revenue, crm: crmRevenue, col: "AG", writable: true },
+                { name: "Direct costs", sheet: dirCosts, crm: crmDirCosts, col: "AH", writable: true },
+                { name: "Start date", sheet: startDate, crm: crmStart, col: "AL", writable: true },
+                { name: "End date", sheet: endDate, crm: crmEnd, col: "AM", writable: true },
+                { name: "% Likelihood", sheet: likelihood, crm: crmLikely, col: "AN", writable: tabName === "Pipeline" },
+              ];
 
           if (jobRow) {
             // Collect child rows to safely batch structural updates (Client/Job names)
@@ -5884,15 +5895,26 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         let options = [];
 
         // Field config: [flagName, crmValue, sheetValue, tabCol, isWritable, note]
-        const FIELD_CONFIG = [
-          { name: "Client name", crm: crmClient, sheet: shtClient, col: "A", writable: true },
-          { name: "Job name", crm: crmJob, sheet: shtJob, col: "B", writable: true },
-          { name: "Revenue", crm: crmRevenue, sheet: shtRevenue, col: "AG", writable: true },
-          { name: "Direct costs", crm: crmDirCosts, sheet: shtDirCosts, col: "AH", writable: true },
-          { name: "Start date", crm: crmStart, sheet: shtStart, col: "AL", writable: true },
-          { name: "End date", crm: crmEnd, sheet: shtEnd, col: "AM", writable: true },
-          { name: "% Likelihood", crm: crmLikely, sheet: shtLikely, col: "AN", writable: tabName === "Pipeline" },
-        ];
+        const isJobCostingTab = isJobCostingStyle({ headers: tabRows[0] || [] });
+        const FIELD_CONFIG = isJobCostingTab
+          ? [
+              { name: "Client name", crm: crmClient, sheet: shtClient, col: "A", writable: true },
+              { name: "Job name", crm: crmJob, sheet: shtJob, col: "B", writable: true },
+              { name: "Revenue", crm: crmRevenue, sheet: shtRevenue, col: "I", writable: true },
+              { name: "Direct costs", crm: crmDirCosts, sheet: shtDirCosts, col: "AH", writable: false },
+              { name: "Start date", crm: crmStart, sheet: shtStart, col: "F", writable: true },
+              { name: "End date", crm: crmEnd, sheet: shtEnd, col: "G", writable: true },
+              { name: "% Likelihood", crm: crmLikely, sheet: shtLikely, col: "AN", writable: tabName === "Pipeline" },
+            ]
+          : [
+              { name: "Client name", crm: crmClient, sheet: shtClient, col: "A", writable: true },
+              { name: "Job name", crm: crmJob, sheet: shtJob, col: "B", writable: true },
+              { name: "Revenue", crm: crmRevenue, sheet: shtRevenue, col: "AG", writable: true },
+              { name: "Direct costs", crm: crmDirCosts, sheet: shtDirCosts, col: "AH", writable: true },
+              { name: "Start date", crm: crmStart, sheet: shtStart, col: "AL", writable: true },
+              { name: "End date", crm: crmEnd, sheet: shtEnd, col: "AM", writable: true },
+              { name: "% Likelihood", crm: crmLikely, sheet: shtLikely, col: "AN", writable: tabName === "Pipeline" },
+            ];
 
         if (jobRow) {
           // Collect child rows to safely batch structural updates (Client/Job names)
@@ -8183,33 +8205,76 @@ export async function handleAcceptOption(req, res, sheets) {
         const strVal = (v) => String(v ?? "").trim();
         const numVal = (v) => String(v ?? "").replace(/[£,]/g, "").trim();
 
-        const fieldMap = [
-          ["A", strVal(d.clientName)],
-          ["B", strVal(d.jobName)],
-          ["C", strVal(d.projectCode)],
-          ["D", toSheetDateFormat(new Date())],
-          ["AG", numVal(d.revenue)],
-          ["AH", numVal(d.directCosts || "0")],
-          ["AI", strVal(d.vatYesNo || "No")],
-          ["AJ", strVal(d.projectType || "Project")],
-          ["AL", strVal(d.startDate)],
-          ["AM", strVal(d.endDate)],
-          // Inv1
-          ["AP", numVal(d.inv1Amount)],
-          ["AQ", strVal(d.inv1Ref)],
-          ["AR", strVal(d.inv1SentDate)],
-          ["AS", daysVal(d.inv1DaysToPay)],
-          ["AT", strVal(d.inv1Status || (d.inv1Amount ? "Sent" : ""))],
-          // Inv2 (if present)
-          ["AW", numVal(d.inv2Amount || "")],
-          ["AX", strVal(d.inv2Ref || "")],
-          ["AY", strVal(d.inv2SentDate || "")],
-          ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
-          ["BA", strVal(d.inv2Status || "")],
-        ];
+        const isJobCosting = isJobCostingStyle({ headers: allRows[0] || [] });
+        const fieldMap = isJobCosting
+          ? [
+              ["A", strVal(d.clientName)],
+              ["B", strVal(d.jobName)],
+              ["C", strVal(d.projectCode)],
+              ["D", toSheetDateFormat(new Date())],
+              ["F", strVal(d.startDate)],
+              ["G", strVal(d.endDate)],
+              ["I", numVal(d.revenue)],
+              ["AI", strVal(d.vatYesNo || "No")],
+              ["AJ", strVal(d.projectType || "Project")],
+              // Inv1
+              ["AP", numVal(d.inv1Amount)],
+              ["AQ", strVal(d.inv1Ref)],
+              ["AR", strVal(d.inv1SentDate)],
+              ["AS", daysVal(d.inv1DaysToPay)],
+              ["AT", strVal(d.inv1Status || (d.inv1Amount ? "Sent" : ""))],
+              // Inv2 (if present)
+              ["AW", numVal(d.inv2Amount || "")],
+              ["AX", strVal(d.inv2Ref || "")],
+              ["AY", strVal(d.inv2SentDate || "")],
+              ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
+              ["BA", strVal(d.inv2Status || "")],
+            ]
+          : [
+              ["A", strVal(d.clientName)],
+              ["B", strVal(d.jobName)],
+              ["C", strVal(d.projectCode)],
+              ["D", toSheetDateFormat(new Date())],
+              ["AG", numVal(d.revenue)],
+              ["AH", numVal(d.directCosts || "0")],
+              ["AI", strVal(d.vatYesNo || "No")],
+              ["AJ", strVal(d.projectType || "Project")],
+              ["AL", strVal(d.startDate)],
+              ["AM", strVal(d.endDate)],
+              // Inv1
+              ["AP", numVal(d.inv1Amount)],
+              ["AQ", strVal(d.inv1Ref)],
+              ["AR", strVal(d.inv1SentDate)],
+              ["AS", daysVal(d.inv1DaysToPay)],
+              ["AT", strVal(d.inv1Status || (d.inv1Amount ? "Sent" : ""))],
+              // Inv2 (if present)
+              ["AW", numVal(d.inv2Amount || "")],
+              ["AX", strVal(d.inv2Ref || "")],
+              ["AY", strVal(d.inv2SentDate || "")],
+              ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
+              ["BA", strVal(d.inv2Status || "")],
+            ];
 
         for (const [col, val] of fieldMap) {
           if (val !== "") createCellUpdates.push({ cell: `${col}${newRow}`, value: val });
+        }
+
+        if (isJobCosting) {
+          const formulasMap = getJobCostingRowFormulasMap(writeTab, newRow);
+          const colIdxToColLetter = (idx) => {
+            let temp = idx + 1;
+            let letter = "";
+            while (temp > 0) {
+              let mod = (temp - 1) % 26;
+              letter = String.fromCharCode(65 + mod) + letter;
+              temp = Math.floor((temp - mod) / 26);
+            }
+            return letter;
+          };
+          for (const [colIdxStr, formula] of Object.entries(formulasMap)) {
+            const colLetter = colIdxToColLetter(parseInt(colIdxStr, 10));
+            createCellUpdates.push({ cell: `${colLetter}${newRow}`, value: formula });
+          }
         }
         console.log(`  newJobData parsed: ${createCellUpdates.length} fields`);
 

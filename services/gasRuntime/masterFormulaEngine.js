@@ -1973,7 +1973,7 @@ export function evaluateCRMComp(grids) {
     writeRect(crmComp, r0, 50, [[AY, AZ, BA, BB, BC, BD, BE, BF]], 8);
 
     const flagCheck = `${AY}${AZ}${BA}${BB}${BC}${BD}${BE}${BF}`;
-    const alertCol0 = isConfMode ? 1 : 4; // B (col 1) for Confirmed, E (col 4) for Pipeline in DataChgAlert!B60 / E60
+    const alertCol0 = isConfMode ? 4 : 1; // E (col 4) for Confirmed, B (col 1) for Pipeline in DataChgAlert!E60 / B60
     if (flagCheck !== "") {
       const BJ = isAlertIgnore(59, alertCol0) ? "<IGNORE>" : X;
       const BK = isAlertIgnore(60, alertCol0) ? "<IGNORE>" : Y;
@@ -2072,7 +2072,7 @@ export function evaluateCRMComp(grids) {
     writeRect(crmComp, r0, 160, [[FE, FF, FG, FH, FI, FJ, FK, FL]], 8);
 
     const rFlagCheck = `${FF}${FG}${FH}${FI}${FJ}${FK}${FL}`;
-    const alertCol0 = isConfMode ? 1 : 4; // B (col 1) or E (col 4)
+    const alertCol0 = isConfMode ? 4 : 1; // E (col 4) for Confirmed, B (col 1) for Pipeline in DataChgAlert!E73 / B73
     if (rFlagCheck !== "") {
       const FO = isAlertIgnore(72, alertCol0) ? "<IGNORE>" : EV;
       const FP = isAlertIgnore(73, alertCol0) ? "<IGNORE>" : EW;
@@ -2100,7 +2100,7 @@ export function evaluateCRMComp(grids) {
       }
       writeRect(crmComp, r0, 202, [[GU, GV, GW, GX, GY, GZ, HA]], 7);
       if (isJobCosting || !isBlankCell(getCell(crmComp, 4, 209))) {
-        const HB = isConfMode ? "" : (isAlertIgnore(78, 4) || colIgnore4(209)) ? "<IGNORE>" : FB;
+        const HB = isConfMode ? "" : (isAlertIgnore(78, alertCol0) || colIgnore4(209)) ? "<IGNORE>" : FB;
         setCell(crmComp, r0, 209, HB);
       }
       if (isJobCosting || !isBlankCell(getCell(crmComp, 4, 210))) {

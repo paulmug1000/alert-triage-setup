@@ -104,13 +104,13 @@ export async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
 }
 
 export async function setCRMMode(sheets, spreadsheetId, mode, currentMode = null) {
+  if (currentMode !== null && String(currentMode).trim() === mode) {
+    console.log(`  ✅ CRMComp!B2 already set to ${mode} - skipping write and delay`);
+    return;
+  }
   const supaCtx = await resolveSupabaseSheetContext({ spreadsheetId });
   if (supaCtx && supaCtx.masterMode === "supabase") {
     await recomputeCrmComparisonInSupabase(sheets, supaCtx.clientName, mode);
-    return;
-  }
-  if (currentMode !== null && String(currentMode).trim() === mode) {
-    console.log(`  ✅ CRMComp!B2 already set to ${mode} - skipping write and delay`);
     return;
   }
   await sheets.spreadsheets.values.update({

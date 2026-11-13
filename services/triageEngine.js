@@ -121,8 +121,8 @@ export async function runBackgroundTriageRefresh({
   baseUrl,
   cronSecret,
   automationCommanderSheetId,
-  forceProactive = true,
-  forceAll = true,
+  forceProactive = false,
+  forceAll = false,
   bypassToken = "",
 }) {
   const startTime = Date.now();
@@ -135,6 +135,16 @@ export async function runBackgroundTriageRefresh({
   };
   console.log(`\n🔄 [Background Refresh] Starting triage pipeline (baseUrl: ${baseUrl}, forceProactive: ${forceProactive}, forceAll: ${forceAll})...`);
 
+  // Serverless execution budget: Vercel maxDuration is 300s.
+  // Step 1: Sweep chunks up to 150s from start
+  // Step 2: Build options up to 230s from start
+  // Step 3: Store precomputed ALWAYS executes (remaining budget)
+  const SWEEP_TIME_BUDGET_MS = 150000;
+  const BUILD_TIME_BUDGET_MS = 230000;
+
+  let step1Error = null;
+  let step2Error = null;
+
   try {
     await setTriageRefreshStatus({
       status: "running",
@@ -145,72 +155,92 @@ export async function runBackgroundTriageRefresh({
     });
 
     // Step 1: Sweep all clients in chunks
-    let sweepHasMore = true;
-    let sweepIdx = 0;
-    while (sweepHasMore) {
-      const batchNum = Math.floor(sweepIdx / 4) + 1;
-      await setTriageRefreshStatus({
-        status: "running",
-        step: "sweep",
-        progress: `Scanning clients (batch ${batchNum})...`,
-        startedAt: startTime,
-        updatedAt: Date.now(),
-      });
+    try {
+      let sweepHasMore = true;
+      let sweepIdx = 0;
+      while (sweepHasMore) {
+        if (Date.now() - startTime > SWEEP_TIME_BUDGET_MS) {
+          console.log(`  ⏳ [Background Refresh] Sweep time budget reached (${Math.round((Date.now() - startTime) / 1000)}s). Yielding sweep to proceed to build & store precomputed.`);
+          break;
+        }
 
-      console.log(`  [Background Refresh] Sweep batch ${batchNum} from index ${sweepIdx}...`);
-      const sweepResp = await fetch(`${baseUrl}/api/triage`, {
-        method: "POST",
-        headers: internalHeaders,
-        body: JSON.stringify({
-          action: "run_flag_sweep",
-          secret: cronSecret,
-          automationCommanderSheetId,
-          startIdx: sweepIdx,
-          forceProactive,
-          forceAll,
-        }),
-      });
-      const sweepData = await sweepResp.json();
-      if (!sweepResp.ok || !sweepData.success) {
-        throw new Error(sweepData.error || `Sweep failed on batch ${batchNum}`);
+        const batchNum = Math.floor(sweepIdx / 4) + 1;
+        await setTriageRefreshStatus({
+          status: "running",
+          step: "sweep",
+          progress: `Scanning clients (batch ${batchNum})...`,
+          startedAt: startTime,
+          updatedAt: Date.now(),
+        });
+
+        console.log(`  [Background Refresh] Sweep batch ${batchNum} from index ${sweepIdx}...`);
+        const sweepResp = await fetch(`${baseUrl}/api/triage`, {
+          method: "POST",
+          headers: internalHeaders,
+          body: JSON.stringify({
+            action: "run_flag_sweep",
+            secret: cronSecret,
+            automationCommanderSheetId,
+            startIdx: sweepIdx,
+            forceProactive,
+            forceAll,
+          }),
+        });
+        const sweepData = await sweepResp.json();
+        if (!sweepResp.ok || !sweepData.success) {
+          throw new Error(sweepData.error || `Sweep failed on batch ${batchNum}`);
+        }
+        sweepHasMore = sweepData.hasMore;
+        sweepIdx = sweepData.nextIdx;
       }
-      sweepHasMore = sweepData.hasMore;
-      sweepIdx = sweepData.nextIdx;
+    } catch (s1Err) {
+      console.warn("⚠️ [Background Refresh] Non-fatal warning during Step 1 (sweep):", s1Err.message);
+      step1Error = s1Err.message;
     }
 
     // Step 2: Build Options in chunks
-    let hasMore = true;
-    let buildCount = 1;
-    while (hasMore) {
-      await setTriageRefreshStatus({
-        status: "running",
-        step: "build",
-        progress: `Generating options (batch ${buildCount})...`,
-        startedAt: startTime,
-        updatedAt: Date.now(),
-      });
+    try {
+      let hasMore = true;
+      let buildCount = 1;
+      while (hasMore) {
+        if (Date.now() - startTime > BUILD_TIME_BUDGET_MS) {
+          console.log(`  ⏳ [Background Refresh] Options build time budget reached (${Math.round((Date.now() - startTime) / 1000)}s). Yielding build to proceed to store precomputed.`);
+          break;
+        }
 
-      console.log(`  [Background Refresh] Build batch ${buildCount}...`);
-      const buildResp = await fetch(`${baseUrl}/api/triage`, {
-        method: "POST",
-        headers: internalHeaders,
-        body: JSON.stringify({
-          action: "build_cached_alert_options",
-          baseUrl,
-          secret: cronSecret,
-          automationCommanderSheetId,
-          isContinuation: buildCount > 1,
-        }),
-      });
-      const buildData = await buildResp.json();
-      if (!buildResp.ok || !buildData.success) {
-        throw new Error(buildData.error || `Build options failed on batch ${buildCount}`);
+        await setTriageRefreshStatus({
+          status: "running",
+          step: "build",
+          progress: `Generating options (batch ${buildCount})...`,
+          startedAt: startTime,
+          updatedAt: Date.now(),
+        });
+
+        console.log(`  [Background Refresh] Build batch ${buildCount}...`);
+        const buildResp = await fetch(`${baseUrl}/api/triage`, {
+          method: "POST",
+          headers: internalHeaders,
+          body: JSON.stringify({
+            action: "build_cached_alert_options",
+            baseUrl,
+            secret: cronSecret,
+            automationCommanderSheetId,
+            isContinuation: buildCount > 1,
+          }),
+        });
+        const buildData = await buildResp.json();
+        if (!buildResp.ok || !buildData.success) {
+          throw new Error(buildData.error || `Build options failed on batch ${buildCount}`);
+        }
+        hasMore = buildData.hasMore;
+        buildCount++;
       }
-      hasMore = buildData.hasMore;
-      buildCount++;
+    } catch (s2Err) {
+      console.warn("⚠️ [Background Refresh] Non-fatal warning during Step 2 (build options):", s2Err.message);
+      step2Error = s2Err.message;
     }
 
-    // Step 3: Store Precomputed Data
+    // Step 3: Store Precomputed Data (ALWAYS runs to guarantee Redis is fresh)
     await setTriageRefreshStatus({
       status: "running",
       step: "store",
@@ -252,9 +282,11 @@ export async function runBackgroundTriageRefresh({
       startedAt: startTime,
       completedAt: Date.now(),
       updatedAt: Date.now(),
+      step1Error,
+      step2Error,
     }, 300);
 
-    return { success: true, elapsedSeconds: elapsedS };
+    return { success: true, elapsedSeconds: elapsedS, step1Error, step2Error };
   } catch (err) {
     console.error("❌ [Background Refresh] Pipeline error:", err);
     await setTriageRefreshStatus({
@@ -2340,63 +2372,13 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 .eq("client_name", supaCtx.clientName);
             }
 
-            const parseFreqMs = (freqStr) => {
-              const s = String(freqStr || "").trim().toLowerCase();
-              const num = parseFloat(s) || 0;
-              if (!num) return 0;
-              if (s.includes("min")) return num * 60 * 1000;
-              if (s.includes("hr")) return num * 3600 * 1000;
-              if (s.includes("day") || s.includes("24")) return 24 * 3600 * 1000;
-              if (s.includes("week")) return 7 * 24 * 3600 * 1000;
-              return 0;
-            };
-
-            const isSeqDue = (freqStr, lastIso) => {
-              const reqMs = parseFreqMs(freqStr);
-              if (!reqMs) return false;
-              if (isForced) return true;
-              if (!lastIso) return true;
-              const lastMs = new Date(lastIso).getTime();
-              const effectiveReqMs = Math.max(0, reqMs - 3 * 60 * 1000);
-              return isNaN(lastMs) || Date.now() - lastMs >= effectiveReqMs;
-            };
-
             hasInvoice = isValidFrequency(effectiveInvFreq);
             hasCRM = isValidFrequency(effectiveCrmFreq);
             hasExpense = isValidFrequency(effectiveExpFreq);
 
-            const invDue = isSeqDue(effectiveInvFreq, sched?.last_inv_run);
-            const crmDue = isSeqDue(effectiveCrmFreq, sched?.last_crm_run);
-            const expDue = isSeqDue(effectiveExpFreq, sched?.last_exp_run);
-
-            const dueTypes = [
-              invDue ? "invoice" : null,
-              crmDue ? "crm" : null,
-              expDue ? "expense" : null,
-            ].filter(Boolean);
-
-            if (dueTypes.length > 0) {
-              console.log(`  ⚡ Running native Supabase sync (${dueTypes.join(", ")}) for ${client.clientName}...`);
-              await runNativeMasterSync({
-                sheets,
-                clientName: client.clientName,
-                syncType: dueTypes.length === 3 ? "all" : (dueTypes.length === 1 ? dueTypes[0] : "all"),
-                types: dueTypes,
-                userEmail: "System (Scheduled Sweep)",
-              });
-            }
-
-            if (dueTypes.length === 0 && actionableDue && (hasInvoice || hasExpense)) {
-              await ensureFreshMasterComparisons(sheets, { clientName: client.clientName });
-            }
-
-            const nowMs = Date.now();
-            if (invDue) client.invAutoLastRunMs = nowMs;
-            else if (sched?.last_inv_run) client.invAutoLastRunMs = new Date(sched.last_inv_run).getTime();
-            if (crmDue) client.crmAutoLastRunMs = nowMs;
-            else if (sched?.last_crm_run) client.crmAutoLastRunMs = new Date(sched.last_crm_run).getTime();
-            if (expDue) client.expAutoLastRunMs = nowMs;
-            else if (sched?.last_exp_run) client.expAutoLastRunMs = new Date(sched.last_exp_run).getTime();
+            if (sched?.last_inv_run) client.invAutoLastRunMs = new Date(sched.last_inv_run).getTime();
+            if (sched?.last_crm_run) client.crmAutoLastRunMs = new Date(sched.last_crm_run).getTime();
+            if (sched?.last_exp_run) client.expAutoLastRunMs = new Date(sched.last_exp_run).getTime();
           }
         } catch (syncErr) {
           console.warn(`  ⚠️ Native Supabase sync warning for ${client.clientName}: ${syncErr.message}`);
@@ -3264,7 +3246,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
       }
     }
 
-    if (!hasMore) {
+    if (!hasMore || startIdx === 0) {
       try {
         if (!isForced) {
           if (actionableDue) await markCategoryChecked_(sheets, acIdSweep, "actionable", schedule);
@@ -3352,7 +3334,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     let built = 0, notFound = 0, errors = 0;
     let hasMore = false;
     let builtDetail = [];
-    const TIME_LIMIT_MS = 220000;
+    const TIME_LIMIT_MS = 75000;
 
     for (const [key, rows] of groups.entries()) {
       if (Date.now() - buildStart > TIME_LIMIT_MS) {

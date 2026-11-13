@@ -133,6 +133,7 @@ export default async function handler(req, res) {
         forceProactive,
         forceAll,
         bypassToken,
+        chain: true,
       });
 
       const cronHeaders = {

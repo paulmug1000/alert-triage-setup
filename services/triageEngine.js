@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { waitUntil } from "@vercel/functions";
 import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter, applySheetFontFormat, sanitizeFormulaInput } from "./sheetsClient.js";
 import {
   buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory,
@@ -117,6 +118,73 @@ async function syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options
   }
 }
 
+/**
+ * Resolves the canonical base URL for internal API callbacks/chain dispatches.
+ */
+export function getBaseUrlFromReq(req, fallbackUrl = "") {
+  if (fallbackUrl && typeof fallbackUrl === "string" && fallbackUrl.trim()) {
+    const trimmed = fallbackUrl.trim();
+    return trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
+  }
+  const cleanUrl = (url) => (url ? (url.startsWith("http") ? url : `https://${url}`) : null);
+  const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL) || cleanUrl(process.env.VERCEL_URL);
+  if (prodUrl) return prodUrl;
+
+  const host = req?.headers?.["x-forwarded-host"] || req?.headers?.host || `127.0.0.1:${process.env.PORT || 3000}`;
+  const protocol = req?.headers?.["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
+  return `${protocol}://${host}`;
+}
+
+/**
+ * Dispatches an asynchronous HTTP step in the triage continuation chain.
+ * Uses Vercel Pro's waitUntil() so the parent lambda can terminate immediately
+ * while guaranteeing the next container is triggered.
+ */
+export function dispatchAsyncChainStep(baseUrl, payload, bypassToken = "") {
+  const cleanBase = (baseUrl && typeof baseUrl === "string" && baseUrl.trim())
+    ? (baseUrl.trim().startsWith("http") ? baseUrl.trim() : `https://${baseUrl.trim()}`)
+    : "http://127.0.0.1:3000";
+  const url = `${cleanBase}/api/triage`;
+  const effectiveBypass = String(
+    bypassToken || process.env.VERCEL_BYPASS_TOKEN || process.env.VERCEL_AUTOMATION_BYPASS_SECRET || ""
+  ).trim();
+  const cronSecret = String(payload.secret || process.env.CRON_SECRET || "").trim();
+
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${cronSecret}`,
+    "x-cron-secret": cronSecret,
+    ...(effectiveBypass ? { "x-vercel-protection-bypass": effectiveBypass } : {}),
+  };
+
+  const dispatchPromise = fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.error(`❌ [Triage Chain] Step '${payload.action}' HTTP error ${res.status}: ${text}`);
+      } else {
+        console.log(`🔗 [Triage Chain] Dispatched step '${payload.action}' successfully (status ${res.status})`);
+      }
+    })
+    .catch((err) => {
+      console.error(`❌ [Triage Chain] Network dispatch failure for step '${payload.action}':`, err.message);
+    });
+
+  try {
+    if (typeof waitUntil === "function") {
+      waitUntil(dispatchPromise);
+    }
+  } catch (_) {
+    // Non-Vercel environment fallback
+  }
+
+  return dispatchPromise;
+}
+
 export async function runBackgroundTriageRefresh({
   baseUrl,
   cronSecret,
@@ -124,6 +192,7 @@ export async function runBackgroundTriageRefresh({
   forceProactive = false,
   forceAll = false,
   bypassToken = "",
+  chain = true,
 }) {
   const startTime = Date.now();
   const effectiveBypass = String(
@@ -133,7 +202,34 @@ export async function runBackgroundTriageRefresh({
     "Content-Type": "application/json",
     ...(effectiveBypass ? { "x-vercel-protection-bypass": effectiveBypass } : {}),
   };
-  console.log(`\n🔄 [Background Refresh] Starting triage pipeline (baseUrl: ${baseUrl}, forceProactive: ${forceProactive}, forceAll: ${forceAll})...`);
+
+  if (chain) {
+    console.log(`\n🔗 [Background Refresh] Launching daisy-chained triage pipeline (baseUrl: ${baseUrl}, forceProactive: ${forceProactive}, forceAll: ${forceAll})...`);
+    await setTriageRefreshStatus({
+      status: "running",
+      step: "sweep",
+      progress: "Starting daisy-chained scan (batch 1)...",
+      startedAt: startTime,
+      updatedAt: Date.now(),
+    });
+
+    dispatchAsyncChainStep(baseUrl, {
+      action: "run_flag_sweep",
+      secret: cronSecret,
+      automationCommanderSheetId,
+      startIdx: 0,
+      chunkSize: 4,
+      forceProactive,
+      forceAll,
+      baseUrl,
+      chain: true,
+      bypassToken: effectiveBypass,
+    }, effectiveBypass);
+
+    return { success: true, chained: true, startedAt: startTime };
+  }
+
+  console.log(`\n🔄 [Background Refresh] Starting synchronous triage pipeline (baseUrl: ${baseUrl}, forceProactive: ${forceProactive}, forceAll: ${forceAll})...`);
 
   // Serverless execution budget: Vercel maxDuration is 300s.
   // Step 1: Sweep chunks up to 150s from start
@@ -2035,9 +2131,28 @@ export async function handleStorePrecomputed(req, res, sheets) {
       console.log(`⚠️ Could not log precompute run: ${logErr.message}`);
     }
 
+    if (req.body?.chain) {
+      console.log(`🔗 [Triage Chain] Step 3 complete: stored precomputed alerts in Redis. Setting status to completed!`);
+      await setTriageRefreshStatus({
+        status: "completed",
+        step: "complete",
+        progress: "Refresh complete",
+        completedAt: Date.now(),
+        updatedAt: Date.now(),
+      }, 300).catch(() => {});
+    }
+
     return res.status(200).json({ success: true, stored: precomputedData.totalAlerts });
   } catch (err) {
     console.error("❌ Error storing precomputed data:", err);
+    if (req.body?.chain) {
+      await setTriageRefreshStatus({
+        status: "error",
+        error: `Store precomputed failed: ${err.message}`,
+        completedAt: Date.now(),
+        updatedAt: Date.now(),
+      }, 300).catch(() => {});
+    }
     return res.status(500).json({ success: false, error: err.message });
   }
 }
@@ -3261,9 +3376,68 @@ export async function handleRunFlagSweep(req, res, sheets) {
     const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
     console.log(`run_flag_sweep chunk complete in ${elapsedS}s: ${clientsChecked} clients checked, ${flagsRaised} flags raised, ${errors} errors, delayed: ${alertsDelayed}, woken: ${alertsWoken}, hasMore: ${hasMore}`);
     await logFlagSweepRun(sheets, acIdSweep, { clientsChecked, flagsRaised, errors, alertsDelayed, alertsWoken, elapsedSeconds: elapsedS, raisedDetail, isContinuation: startIdx > 0, categoriesRun: categoriesRunStr });
+
+    if (req.body?.chain) {
+      const effectiveBaseUrl = getBaseUrlFromReq(req, req.body?.baseUrl);
+      const effectiveBypass = String(
+        req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || ""
+      ).trim();
+
+      if (hasMore) {
+        const nextBatchNum = Math.floor(nextIdx / (Number(req.body?.chunkSize) || 4)) + 1;
+        console.log(`🔗 [Triage Chain] Sweep chunk finished. Chaining to next sweep batch ${nextBatchNum} at index ${nextIdx}...`);
+        await setTriageRefreshStatus({
+          status: "running",
+          step: "sweep",
+          progress: `Scanning clients (batch ${nextBatchNum})...`,
+          updatedAt: Date.now(),
+        }).catch(() => {});
+
+        dispatchAsyncChainStep(effectiveBaseUrl, {
+          action: "run_flag_sweep",
+          secret: sweepSecret,
+          automationCommanderSheetId: acIdSweep,
+          startIdx: nextIdx,
+          chunkSize: Number(req.body?.chunkSize) || 4,
+          forceProactive: Boolean(req.body?.forceProactive),
+          forceAll: Boolean(req.body?.forceAll),
+          baseUrl: effectiveBaseUrl,
+          chain: true,
+          bypassToken: effectiveBypass,
+        }, effectiveBypass);
+      } else {
+        console.log(`🔗 [Triage Chain] Sweep complete across all clients. Chaining to Step 2 (build cached alert options)...`);
+        await setTriageRefreshStatus({
+          status: "running",
+          step: "build",
+          progress: "Generating options (batch 1)...",
+          updatedAt: Date.now(),
+        }).catch(() => {});
+
+        dispatchAsyncChainStep(effectiveBaseUrl, {
+          action: "build_cached_alert_options",
+          secret: sweepSecret,
+          automationCommanderSheetId: acIdSweep,
+          baseUrl: effectiveBaseUrl,
+          chain: true,
+          buildBatch: 1,
+          bypassToken: effectiveBypass,
+        }, effectiveBypass);
+      }
+    }
+
     return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, alertsDelayed, alertsWoken, elapsedSeconds: elapsedS, raisedDetail, hasMore, nextIdx });
   } catch (err) {
     console.error("❌ run_flag_sweep error:", err);
+    if (req.body?.chain) {
+      console.error(`❌ [Triage Chain] Sweep chunk failed at index ${startIdx}:`, err.message);
+      await setTriageRefreshStatus({
+        status: "error",
+        error: `Sweep failed at index ${startIdx}: ${err.message}`,
+        completedAt: Date.now(),
+        updatedAt: Date.now(),
+      }, 300).catch(() => {});
+    }
     const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
     await logFlagSweepRun(sheets, acIdSweep, { clientsChecked: clientsChecked || 0, flagsRaised: flagsRaised || 0, errors: (errors || 0) + 1, alertsDelayed: alertsDelayed || 0, alertsWoken: alertsWoken || 0, elapsedSeconds: elapsedS, raisedDetail: raisedDetail || [], isContinuation: startIdx > 0, categoriesRun: categoriesRunStr || "" }).catch(() => { });
     return res.status(500).json({ success: false, error: err.message });
@@ -3582,9 +3756,72 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
       processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, builtDetail, isContinuation: req.body.isContinuation
     });
 
+    if (req.body?.chain) {
+      const effectiveBaseUrl = getBaseUrlFromReq(req, req.body?.baseUrl);
+      const effectiveBypass = String(
+        req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || ""
+      ).trim();
+
+      if (hasMore) {
+        const nextBatch = (Number(req.body?.buildBatch) || 1) + 1;
+        console.log(`🔗 [Triage Chain] Options batch finished with more pending. Chaining to batch ${nextBatch}...`);
+        await setTriageRefreshStatus({
+          status: "running",
+          step: "build",
+          progress: `Generating options (batch ${nextBatch})...`,
+          updatedAt: Date.now(),
+        }).catch(() => {});
+
+        dispatchAsyncChainStep(effectiveBaseUrl, {
+          action: "build_cached_alert_options",
+          secret: buildSecret,
+          automationCommanderSheetId: acIdBuild,
+          baseUrl: effectiveBaseUrl,
+          chain: true,
+          isContinuation: true,
+          buildBatch: nextBatch,
+          bypassToken: effectiveBypass,
+        }, effectiveBypass);
+      } else {
+        console.log(`🔗 [Triage Chain] Options build complete. Chaining to Step 3 (store precomputed)...`);
+        await setTriageRefreshStatus({
+          status: "running",
+          step: "store",
+          progress: "Finalising data...",
+          updatedAt: Date.now(),
+        }).catch(() => {});
+
+        dispatchAsyncChainStep(effectiveBaseUrl, {
+          action: "store_precomputed",
+          secret: buildSecret,
+          automationCommanderSheetId: acIdBuild,
+          baseUrl: effectiveBaseUrl,
+          chain: true,
+          computedAt: new Date().toISOString(),
+          bypassToken: effectiveBypass,
+        }, effectiveBypass);
+      }
+    }
+
     return res.status(200).json({ success: true, processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, hasMore, richAnalyzed, richErrors });
   } catch (err) {
     console.error("❌ build_cached_alert_options error:", err);
+    if (req.body?.chain) {
+      console.warn("⚠️ [Triage Chain] Non-fatal error during build options; chaining to store precomputed so Redis is updated:", err.message);
+      const effectiveBaseUrl = getBaseUrlFromReq(req, req.body?.baseUrl);
+      const effectiveBypass = String(
+        req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || ""
+      ).trim();
+      dispatchAsyncChainStep(effectiveBaseUrl, {
+        action: "store_precomputed",
+        secret: buildSecret,
+        automationCommanderSheetId: acIdBuild,
+        baseUrl: effectiveBaseUrl,
+        chain: true,
+        computedAt: new Date().toISOString(),
+        bypassToken: effectiveBypass,
+      }, effectiveBypass);
+    }
     return res.status(500).json({ success: false, error: err.message });
   }
 }

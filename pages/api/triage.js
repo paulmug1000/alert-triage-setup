@@ -1256,6 +1256,8 @@ export default async function handler(req, res) {
           cronSecret,
           automationCommanderSheetId,
           forceProactive: req.body.forceProactive !== false,
+          chain: true,
+          bypassToken: String(req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || "").trim(),
         }).catch(err => {
           console.error("❌ Background triage refresh task error:", err);
         });

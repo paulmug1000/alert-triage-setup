@@ -4700,6 +4700,24 @@ export async function triggerSupabaseClockNow(updatedBy = "Admin") {
 }
 
 /**
+ * Updates the cron schedule for pulse-30m-wakeup-clock in Supabase via set_pulse_clock_schedule RPC.
+ */
+export async function setSupabaseClockSchedule(newSchedule = "*/10 * * * *", updatedBy = "Admin") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const { data, error } = await supabase.rpc("set_pulse_clock_schedule", { p_schedule: newSchedule });
+  if (error) {
+    throw new Error(
+      error.message.includes("set_pulse_clock_schedule")
+        ? "Supabase function public.set_pulse_clock_schedule() is not installed yet. Copy and run the 0005_update_cron_frequency_to_10m.sql migration in the Supabase SQL Editor first."
+        : error.message
+    );
+  }
+  return getSupabaseClockStatusAndSyncConfig(updatedBy);
+}
+
+/**
  * Fetches a virtual tab grid for the Admin Workbook Inspector
  */
 export async function getVirtualTabForInspector({

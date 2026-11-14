@@ -606,7 +606,14 @@ export function normalizeCellForStorage(
     if (trimmed.startsWith("=")) return trimmed;
 
     // Check if it's a formatted date string
-    if (isFormattedDateString(trimmed)) {
+    // On raw sync tabs (DataFromCRM / InvFromApp), avoid coercing date-like text inside non-date columns (e.g. Website Address)
+    const headerLabel = String(fullGrid?.[0]?.[col0] ?? "").trim();
+    const skipDateCoercion =
+      (tabName === "DataFromCRM" || tabName === "InvFromApp") &&
+      row0 >= 1 &&
+      headerLabel !== "" &&
+      !isExplicitDateHeader_(headerLabel);
+    if (!skipDateCoercion && isFormattedDateString(trimmed)) {
       const s = toSerialOrNull(trimmed);
       if (s !== null) return s;
     }

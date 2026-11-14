@@ -2079,6 +2079,46 @@ function getAlertJobTargetInternal_(alertOrNa, isInfo = false, clientInfo = null
     };
   }
 
+  if (alertType === "deleted_expense") {
+    const endClientName = String(m.endClientName || alertOrNa.endClientName || "").trim();
+    const jobName = String(m.jobName || alertOrNa.jobName || "").trim();
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/row\s*(\d+)/i)?.[1]);
+    const slotNum = m.slotNum || alertOrNa.slotNum || (alertOrNa.detail && alertOrNa.detail.match(/expense slot\s*(\d+)/i)?.[1]);
+    const expRef = String(m.expRef || m.stableJobKey || alertOrNa.stableJobKey || (alertOrNa.detail && alertOrNa.detail.match(/Expense\s+([^\s(]+)/i)?.[1]) || "").trim();
+    const isOutgoings = Boolean(m.isOutgoings || alertOrNa.isOutgoings || (!rowNum && endClientName.toLowerCase() === "outgoings"));
+
+    if (isOutgoings) {
+      return {
+        isOutgoings: true,
+        client: effectiveClient,
+        clientName: cName,
+        clientSheetId: cSheetId,
+        contractor: jobName || endClientName,
+        amount: m.amount || alertOrNa.amount,
+        recDate: m.recDate || alertOrNa.recDate,
+        appId: expRef,
+        description: m.description || alertOrNa.description,
+      };
+    }
+
+    return {
+      isOutgoings: false,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
+      rowNum: rowNum ? Number(rowNum) : null,
+      tabName: "Confirmed",
+      jobName,
+      endClientName,
+      projectCode: m.projectCode || alertOrNa.projectCode,
+      slotNum: slotNum ? Number(slotNum) : null,
+      expRef,
+      description: m.description || alertOrNa.description,
+      amount: m.amount || alertOrNa.amount,
+      recDate: m.recDate || alertOrNa.recDate,
+    };
+  }
+
   if (alertType === "part_paid_balance") {
     const isExp = (m.itemType || alertOrNa.itemType) === "expense";
     if (isExp) {

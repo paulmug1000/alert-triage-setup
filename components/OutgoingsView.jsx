@@ -1751,7 +1751,7 @@ export default function OutgoingsView({
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 16px", marginBottom: "12px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "8px", color: "#1e40af", fontSize: "13px", fontWeight: 600 }}>
               <Spinner size={14} color="#2563eb" />
-              <span>Loading {isPassThroughScreen ? "pass-through costs and confirmed jobs" : "contractor cost schedules"} for {effectiveClientName || "client"}...</span>
+              <span>Loading {isPassThroughScreen ? "pass-through costs and confirmed jobs" : "contractor costs"} for {effectiveClientName || "client"}...</span>
             </div>
             {isPassThroughScreen ? <PmaInvoicesTableSkeleton /> : <PmaOutgoingsTableSkeleton />}
           </div>

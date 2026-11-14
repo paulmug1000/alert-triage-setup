@@ -73,6 +73,22 @@ export function useJobs(initialClient = null) {
     if (initialClient?.crmDrives) return initialClient.crmDrives;
     return "NA";
   });
+  const [clientMode, setClientMode] = useState(() => {
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "jobs_All");
+      if (cached?.data?.clientMode) return cached.data.clientMode;
+    }
+    return "sheet";
+  });
+  const [jobsLastUpdatedAt, setJobsLastUpdatedAt] = useState(() => {
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "jobs_All");
+      if (cached?.data?.jobs) return cached.timestamp || Date.now();
+    }
+    return null;
+  });
   const [noEndDateRetainerMonths, setNoEndDateRetainerMonths] = useState(() => {
     if (initialClient?.clientSheetId) {
       const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
@@ -106,9 +122,11 @@ export function useJobs(initialClient = null) {
       if (cached.data.existingClients) setExistingClients(cached.data.existingClients);
       if (cached.data.crmTool) setCrmTool(cached.data.crmTool);
       if (cached.data.crmDrives) setCrmDrives(cached.data.crmDrives);
+      if (cached.data.clientMode) setClientMode(cached.data.clientMode);
       if (typeof cached.data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(cached.data.noEndDateRetainerMonths);
       if (cached.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(cached.data.hasAccountingIntegration));
       else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+      setJobsLastUpdatedAt(cached.timestamp || Date.now());
       setJobsLoading(false);
       // If cached data is fresh (< 120s), return immediately
       if (!cached.isStale) return;
@@ -130,9 +148,11 @@ export function useJobs(initialClient = null) {
             if (fresh.data.existingClients) setExistingClients(fresh.data.existingClients);
             if (fresh.data.crmTool) setCrmTool(fresh.data.crmTool);
             if (fresh.data.crmDrives) setCrmDrives(fresh.data.crmDrives);
+            if (fresh.data.clientMode) setClientMode(fresh.data.clientMode);
             if (typeof fresh.data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(fresh.data.noEndDateRetainerMonths);
             if (fresh.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(fresh.data.hasAccountingIntegration));
             else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+            setJobsLastUpdatedAt(fresh.timestamp || Date.now());
             setJobsLoading(false);
             return;
           }
@@ -155,9 +175,11 @@ export function useJobs(initialClient = null) {
         if (data.existingClients) setExistingClients(data.existingClients);
         if (data.crmTool) setCrmTool(data.crmTool);
         if (data.crmDrives) setCrmDrives(data.crmDrives);
+        setClientMode(data.clientMode || "sheet");
         if (typeof data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(data.noEndDateRetainerMonths);
         if (data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
         else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+        setJobsLastUpdatedAt(Date.now());
         setCachedClientData(client.clientSheetId, cacheKey, data);
       }
     } catch (e) {
@@ -181,6 +203,8 @@ export function useJobs(initialClient = null) {
     hasAccountingIntegration,
     crmTool, setCrmTool,
     crmDrives, setCrmDrives,
+    clientMode,
+    jobsLastUpdatedAt,
     noEndDateRetainerMonths,
     loadJobsData
   };

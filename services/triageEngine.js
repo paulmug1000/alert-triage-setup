@@ -185,6 +185,44 @@ export function dispatchAsyncChainStep(baseUrl, payload, bypassToken = "") {
   return dispatchPromise;
 }
 
+async function flushAsyncChainDispatch_(dispatchPromise, waitMs = 350) {
+  if (!dispatchPromise) return;
+  await Promise.race([
+    dispatchPromise.catch(() => {}),
+    new Promise(resolve => setTimeout(resolve, waitMs)),
+  ]);
+}
+
+async function invokeInProcessHandler_(handlerFn, sheets, body) {
+  let statusCode = 200;
+  let responsePayload = null;
+  const mockReq = {
+    method: "POST",
+    body,
+    query: {},
+    headers: {},
+    isSystemAuthorized: true,
+  };
+  const mockRes = {
+    statusCode: 200,
+    setHeader() {},
+    status(code) {
+      statusCode = code;
+      this.statusCode = code;
+      return this;
+    },
+    json(data) {
+      responsePayload = data;
+      return this;
+    },
+    end() {
+      return this;
+    },
+  };
+  await handlerFn(mockReq, mockRes, sheets);
+  return { statusCode, data: responsePayload || { success: false, error: `Empty response (HTTP ${statusCode})` } };
+}
+
 export async function runBackgroundTriageRefresh({
   baseUrl,
   cronSecret,
@@ -213,7 +251,7 @@ export async function runBackgroundTriageRefresh({
       updatedAt: Date.now(),
     });
 
-    dispatchAsyncChainStep(baseUrl, {
+    const stepPromise = dispatchAsyncChainStep(baseUrl, {
       action: "run_flag_sweep",
       secret: cronSecret,
       automationCommanderSheetId,
@@ -225,6 +263,7 @@ export async function runBackgroundTriageRefresh({
       chain: true,
       bypassToken: effectiveBypass,
     }, effectiveBypass);
+    await flushAsyncChainDispatch_(stepPromise);
 
     return { success: true, chained: true, startedAt: startTime };
   }
@@ -880,6 +919,7 @@ export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null
 export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, masterSheetId) {
   try {
     console.log(`\n📖 Reading CRMComp alerts (${mode} mode) for ${alertTypes.join(", ")}...`);
+    await ensureFreshMasterComparisons(sheets, { spreadsheetId: masterSheetId || spreadsheetId });
     let triageSettings = null;
     let currentB2 = null;
     const dcaSheetId = masterSheetId || spreadsheetId;
@@ -920,10 +960,13 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
     let dashData = [];
     let appData = [];
     let pipelineCalcsData = [];
+    let confCalcsData = [];
     try {
       const rangesToFetch = ["CRMComp!X6:BF1000", "CRMComp!EF6:FL1000"];
       if (mode === "Pipeline") {
         rangesToFetch.push("CRMComp!DM6:DU1000");
+      } else if (mode === "Confirmed") {
+        rangesToFetch.push("ConfCalcs!A1:BE5000");
       }
       const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
         spreadsheetId, ranges: rangesToFetch, valueRenderOption: "FORMATTED_VALUE"
@@ -932,6 +975,8 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
       appData = batchResp.data.valueRanges[1]?.values || [];
       if (mode === "Pipeline") {
         pipelineCalcsData = batchResp.data.valueRanges[2]?.values || [];
+      } else if (mode === "Confirmed") {
+        confCalcsData = batchResp.data.valueRanges[2]?.values || [];
       }
     } catch (e) { }
 
@@ -950,6 +995,62 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
       };
       pipelineCalcsData.forEach(addRowToMap);
       appData.forEach(addRowToMap);
+    }
+
+    const confirmedInvoicedJobs = new Set();
+    if (mode === "Confirmed" && confCalcsData.length > 1) {
+      const ccHeaders = (confCalcsData[0] || []).map(h => String(h ?? "").replace(/\s+/g, " ").trim().toLowerCase());
+      const findCcHdr = (candidates, fallbackIdx) => {
+        for (const c of candidates) {
+          const idx = ccHeaders.indexOf(c);
+          if (idx >= 0) return idx;
+        }
+        return fallbackIdx;
+      };
+      const colClient = findCcHdr(["client"], 0);
+      const colJob = findCcHdr(["job name", "job"], 1);
+      const colCode = findCcHdr(["project code", "code"], 2);
+      const colRev = findCcHdr(["revenue (proj total / ongoing pm) - excl vat", "job revenue", "revenue"], 32);
+      const colStart = findCcHdr(["start date", "date job will start"], 37);
+      const colInv1 = findCcHdr(["inv 1 ref"], 42);
+      const colInv2 = findCcHdr(["inv 2 ref"], 49);
+      const colInv3 = findCcHdr(["inv 3 ref"], 56);
+
+      let activeBlock = null;
+      for (let r = 1; r < confCalcsData.length; r++) {
+        const ccRow = confCalcsData[r];
+        if (!ccRow || ccRow.length === 0) continue;
+        const ccClient = String(ccRow[colClient] ?? "").trim().toLowerCase();
+        const ccJob = String(ccRow[colJob] ?? "").trim().toLowerCase();
+        const ccCode = String(ccRow[colCode] ?? "").trim().toLowerCase();
+        if (!ccClient && !ccJob && !ccCode) continue;
+
+        const ccRev = parseFloat(String(ccRow[colRev] ?? "").replace(/[^0-9.-]/g, "")) || 0;
+        const ccStart = String(ccRow[colStart] ?? "").trim();
+        const isChildRow = Boolean(
+          activeBlock &&
+          ccClient === activeBlock.client &&
+          ccJob === activeBlock.job &&
+          ccRev === 0 &&
+          ccStart === ""
+        );
+        if (!isChildRow) {
+          activeBlock = { client: ccClient, job: ccJob, code: ccCode };
+        } else if (!activeBlock.code && ccCode) {
+          activeBlock.code = ccCode;
+        }
+
+        const hasRealInvoice = [colInv1, colInv2, colInv3].some((cIdx) => {
+          const ref = String(ccRow[cIdx] ?? "").trim();
+          return ref !== "" && ref !== "0" && !/PLACE-INV|MANUAL-INV/i.test(ref);
+        });
+        if (hasRealInvoice) {
+          if (activeBlock.code) confirmedInvoicedJobs.add(`code:${activeBlock.code}`);
+          if (activeBlock.client && activeBlock.job) {
+            confirmedInvoicedJobs.add(`name:${activeBlock.client}|${activeBlock.job}`);
+          }
+        }
+      }
     }
 
     for (const alertType of alertTypes) {
@@ -996,9 +1097,36 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
           return (sk && settingsBlock[sk] === false) ? "0" : v;
         }) : flagValues;
         // Confirmed mode suppression rule:
-        // Confirmed jobs are already won and do not track likelihood in Confirmed tab
+        // Confirmed jobs are already won and do not track likelihood in Confirmed tab;
+        // also suppress CRM client_mismatch when the Confirmed job block already has a real linked invoice (Xero client name takes precedence).
         if (mode === "Confirmed") {
           filteredFlags[7] = "0";
+          if (filteredFlags[1] === "1" && confirmedInvoicedJobs.size > 0) {
+            let shtCode = "", shtClient = "", shtJob = "", crmCode = "", crmClient = "", crmJob = "";
+            if (alertType === "crmConfAppDiscr") {
+              shtClient = String(row[0] || "").trim().toLowerCase();
+              shtJob = String(row[1] || "").trim().toLowerCase();
+              shtCode = String(row[2] || "").trim().toLowerCase();
+              crmCode = String(row[15] || "").trim().toLowerCase();
+              crmClient = String(row[16] || "").trim().toLowerCase();
+              crmJob = String(row[17] || "").trim().toLowerCase();
+            } else if (alertType === "crmConfDashDiscr") {
+              crmClient = String(row[0] || "").trim().toLowerCase();
+              crmJob = String(row[1] || "").trim().toLowerCase();
+              crmCode = String(row[2] || "").trim().toLowerCase();
+              shtCode = String(row[17] || "").trim().toLowerCase();
+              shtClient = String(row[18] || "").trim().toLowerCase();
+              shtJob = String(row[19] || "").trim().toLowerCase();
+            }
+            const isInvoiced =
+              (shtCode && confirmedInvoicedJobs.has(`code:${shtCode}`)) ||
+              (crmCode && confirmedInvoicedJobs.has(`code:${crmCode}`)) ||
+              (shtClient && shtJob && confirmedInvoicedJobs.has(`name:${shtClient}|${shtJob}`)) ||
+              (crmClient && crmJob && confirmedInvoicedJobs.has(`name:${crmClient}|${crmJob}`));
+            if (isInvoiced) {
+              filteredFlags[1] = "0";
+            }
+          }
         }
         if (!filteredFlags.some(v => v === "1")) continue;
 
@@ -2414,9 +2542,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
     await ensureSweepScheduleTab(sheets, acIdSweep);
     const schedule = await readSweepSchedule_(sheets, acIdSweep);
     const isForced = req.body.forceProactive === true || req.body.forceAll === true;
-    const actionableDue = isForced || isCategoryDue_(schedule.actionable);
-    const infoDue = isForced || isCategoryDue_(schedule.info);
-    const proactiveDue = isForced || isCategoryDue_(schedule.proactive);
+    const actionableDue = isForced || req.body.actionableDue === true || isCategoryDue_(schedule.actionable);
+    const infoDue = isForced || req.body.infoDue === true || isCategoryDue_(schedule.info);
+    const proactiveDue = isForced || req.body.proactiveDue === true || isCategoryDue_(schedule.proactive);
     categoriesRunStr = [actionableDue ? "act" : "", infoDue ? "info" : "", proactiveDue ? "pro" : ""].filter(Boolean).join(",");
     console.log(`run_flag_sweep: actionableDue=${actionableDue}, infoDue=${infoDue}, proactiveDue=${proactiveDue}`);
 
@@ -2494,6 +2622,10 @@ export async function handleRunFlagSweep(req, res, sheets) {
             if (sched?.last_inv_run) client.invAutoLastRunMs = new Date(sched.last_inv_run).getTime();
             if (sched?.last_crm_run) client.crmAutoLastRunMs = new Date(sched.last_crm_run).getTime();
             if (sched?.last_exp_run) client.expAutoLastRunMs = new Date(sched.last_exp_run).getTime();
+
+            if (actionableDue && (hasInvoice || hasCRM || hasExpense)) {
+              await ensureFreshMasterComparisons(sheets, { clientName: supaCtx.clientName });
+            }
           }
         } catch (syncErr) {
           console.warn(`  ⚠️ Native Supabase sync warning for ${client.clientName}: ${syncErr.message}`);
@@ -3361,7 +3493,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
       }
     }
 
-    if (!hasMore || startIdx === 0) {
+    if (!hasMore) {
       try {
         if (!isForced) {
           if (actionableDue) await markCategoryChecked_(sheets, acIdSweep, "actionable", schedule);
@@ -3393,7 +3525,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           updatedAt: Date.now(),
         }).catch(() => {});
 
-        dispatchAsyncChainStep(effectiveBaseUrl, {
+        const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
           action: "run_flag_sweep",
           secret: sweepSecret,
           automationCommanderSheetId: acIdSweep,
@@ -3401,10 +3533,14 @@ export async function handleRunFlagSweep(req, res, sheets) {
           chunkSize: Number(req.body?.chunkSize) || 4,
           forceProactive: Boolean(req.body?.forceProactive),
           forceAll: Boolean(req.body?.forceAll),
+          actionableDue,
+          infoDue,
+          proactiveDue,
           baseUrl: effectiveBaseUrl,
           chain: true,
           bypassToken: effectiveBypass,
         }, effectiveBypass);
+        await flushAsyncChainDispatch_(stepPromise);
       } else {
         console.log(`🔗 [Triage Chain] Sweep complete across all clients. Chaining to Step 2 (build cached alert options)...`);
         await setTriageRefreshStatus({
@@ -3414,7 +3550,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           updatedAt: Date.now(),
         }).catch(() => {});
 
-        dispatchAsyncChainStep(effectiveBaseUrl, {
+        const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
           action: "build_cached_alert_options",
           secret: sweepSecret,
           automationCommanderSheetId: acIdSweep,
@@ -3423,6 +3559,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           buildBatch: 1,
           bypassToken: effectiveBypass,
         }, effectiveBypass);
+        await flushAsyncChainDispatch_(stepPromise);
       }
     }
 
@@ -3497,13 +3634,6 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
 
     const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdBuild);
     const clientByName = new Map(clientRows.map(c => [c.clientName, c]));
-
-    const host = req?.headers?.["x-forwarded-host"] || req?.headers?.host || `127.0.0.1:${process.env.PORT || 3000}`;
-    const protocol = req?.headers?.["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
-    const prodUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
-      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-      : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
-    const baseUrl = prodUrl || `${protocol}://${host}`;
 
     let built = 0, notFound = 0, errors = 0;
     let hasMore = false;
@@ -3622,17 +3752,15 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           match.fingerprintHash = row.fingerprintHash;
 
           try {
-            const cronSecret = process.env.CRON_SECRET || "";
-            const analyzeRes = await fetch(`${baseUrl}/api/triage`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${cronSecret}`,
-                "x-cron-secret": cronSecret
-              },
-              body: JSON.stringify({ action: "analyze_alert", secret: cronSecret, alert: match, memoryRow: row, automationCommanderSheetId: acIdBuild, sharedData }),
+            const cronSecret = (buildSecret || process.env.CRON_SECRET || "").trim();
+            const { data: analyzeData } = await invokeInProcessHandler_(handleAnalyzeAlert, sheets, {
+              action: "analyze_alert",
+              secret: cronSecret,
+              alert: match,
+              memoryRow: row,
+              automationCommanderSheetId: acIdBuild,
+              sharedData,
             });
-            const analyzeData = await analyzeRes.json();
             if (analyzeData.success) {
               if (analyzeData.options) {
                 let updatedSnapshot = row.dataSnapshot;
@@ -3716,23 +3844,17 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
         const client = clientByName.get(row.clientName);
         if (!client) { richErrors++; continue; }
         try {
-          const cronSecret = process.env.CRON_SECRET || "";
-          const analyzeRes = await fetch(`${baseUrl}/api/triage`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${cronSecret}`,
-              "x-cron-secret": cronSecret
-            },
-            body: JSON.stringify({
-              action: "analyze_noaction_flag",
-              secret: cronSecret,
-              clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId,
-              automationCommanderSheetId: acIdBuild, flagType: row.alertType, clientName: row.clientName,
-              targetLine: row.alertSummary,
-            }),
+          const cronSecret = (buildSecret || process.env.CRON_SECRET || "").trim();
+          const { data: analyzeData } = await invokeInProcessHandler_(handleAnalyzeNoActionFlag, sheets, {
+            action: "analyze_noaction_flag",
+            secret: cronSecret,
+            clientSheetId: client.clientSheetId,
+            masterSheetId: client.masterSheetId,
+            automationCommanderSheetId: acIdBuild,
+            flagType: row.alertType,
+            clientName: row.clientName,
+            targetLine: row.alertSummary,
           });
-          const analyzeData = await analyzeRes.json();
           if (analyzeData.success) {
             await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
               ...row, cachedOptionsJSON: JSON.stringify(analyzeData), preserveHandledStatus: true,
@@ -3772,7 +3894,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           updatedAt: Date.now(),
         }).catch(() => {});
 
-        dispatchAsyncChainStep(effectiveBaseUrl, {
+        const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
           action: "build_cached_alert_options",
           secret: buildSecret,
           automationCommanderSheetId: acIdBuild,
@@ -3782,8 +3904,9 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           buildBatch: nextBatch,
           bypassToken: effectiveBypass,
         }, effectiveBypass);
+        await flushAsyncChainDispatch_(stepPromise);
       } else {
-        console.log(`🔗 [Triage Chain] Options build complete. Chaining to Step 3 (store precomputed)...`);
+        console.log(`🔗 [Triage Chain] Options build complete. Running Step 3 (store_precomputed) in-process...`);
         await setTriageRefreshStatus({
           status: "running",
           step: "store",
@@ -3791,15 +3914,16 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           updatedAt: Date.now(),
         }).catch(() => {});
 
-        dispatchAsyncChainStep(effectiveBaseUrl, {
+        const storeResult = await invokeInProcessHandler_(handleStorePrecomputed, sheets, {
           action: "store_precomputed",
-          secret: buildSecret,
+          secret: (buildSecret || process.env.CRON_SECRET || "").trim(),
           automationCommanderSheetId: acIdBuild,
-          baseUrl: effectiveBaseUrl,
           chain: true,
           computedAt: new Date().toISOString(),
-          bypassToken: effectiveBypass,
-        }, effectiveBypass);
+        });
+        if (!storeResult.data?.success) {
+          console.error(`❌ [Triage Chain] In-process store_precomputed failed: ${storeResult.data?.error || "unknown error"}`);
+        }
       }
     }
 
@@ -3807,20 +3931,16 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
   } catch (err) {
     console.error("❌ build_cached_alert_options error:", err);
     if (req.body?.chain) {
-      console.warn("⚠️ [Triage Chain] Non-fatal error during build options; chaining to store precomputed so Redis is updated:", err.message);
-      const effectiveBaseUrl = getBaseUrlFromReq(req, req.body?.baseUrl);
-      const effectiveBypass = String(
-        req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || ""
-      ).trim();
-      dispatchAsyncChainStep(effectiveBaseUrl, {
+      console.warn("⚠️ [Triage Chain] Non-fatal error during build options; running store_precomputed in-process so Redis is updated:", err.message);
+      await invokeInProcessHandler_(handleStorePrecomputed, sheets, {
         action: "store_precomputed",
-        secret: buildSecret,
+        secret: (buildSecret || process.env.CRON_SECRET || "").trim(),
         automationCommanderSheetId: acIdBuild,
-        baseUrl: effectiveBaseUrl,
         chain: true,
         computedAt: new Date().toISOString(),
-        bypassToken: effectiveBypass,
-      }, effectiveBypass);
+      }).catch(storeErr => {
+        console.error("❌ [Triage Chain] In-process store_precomputed fallback failed:", storeErr.message);
+      });
     }
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -6604,11 +6724,40 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           writeActions.push(`write ${invPayDate} to ${slotCols.days}${matchedRowNum}`);
         }
 
-        // 6. Client mismatch
+        // 6. Client mismatch (update parent row and any explicit child continuation rows with Col A populated)
         if ((isClientMismatch || (invClient && jobClient.toLowerCase() !== invClient.toLowerCase())) && invClient) {
           mismatchNames.push("client");
           explanationParts.push(`Client: "${invClient}"`);
-          writeActions.push(`write "${invClient}" to A${matchedRowNum}`);
+          const jcLower = jobClient.toLowerCase();
+          const jnLower = jobName.toLowerCase();
+          let parentRowForClient = matchedRowNum;
+          if (!jcLower && !jnLower) {
+            for (let pi = matchedRowNum - 2; pi >= 1; pi--) {
+              const pr = invConfirmedRows[pi] || [];
+              if (String(pr[0] || "").trim() || String(pr[1] || "").trim()) {
+                parentRowForClient = pi + 1;
+                break;
+              }
+            }
+          }
+          const parentClientLower = String(invConfirmedRows[parentRowForClient - 1]?.[0] || "").trim().toLowerCase();
+          const parentJobLower = String(invConfirmedRows[parentRowForClient - 1]?.[1] || "").trim().toLowerCase();
+          const clientWriteRows = [parentRowForClient];
+          for (let ri = parentRowForClient; ri < invConfirmedRows.length; ri++) {
+            const r = invConfirmedRows[ri] || [];
+            const rClient = String(r[0] || "").trim();
+            const rJob = String(r[1] || "").trim();
+            if (!rClient && !rJob) {
+              if (!r.some(cell => String(cell || "").trim() !== "")) break;
+              continue;
+            }
+            if (rClient.toLowerCase() !== parentClientLower || rJob.toLowerCase() !== parentJobLower) break;
+            if (String(r[32] || "").trim()) break;
+            clientWriteRows.push(ri + 1);
+          }
+          for (const rNum of clientWriteRows) {
+            writeActions.push(`write "${invClient.replace(/"/g, "'")}" to A${rNum}`);
+          }
         }
 
         // Fallback if no specific fields identified but it's a data mismatch
@@ -7095,6 +7244,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           slotMatches.push({
             rowNum: slot.sheetRow,
             parentRowNum: job.parentRowNum,
+            jobRowNums: job.jobRows
+              .filter(jr => jr.isParent || String(jr.row?.[0] || "").trim() !== "")
+              .map(jr => jr.sheetRow),
             client: job.client,
             jobName: job.jobName,
             projectCode: job.projectCode,
@@ -7133,6 +7285,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               slotMatches.push({
                 rowNum: firstSlot.sheetRow,
                 parentRowNum: job.parentRowNum,
+                jobRowNums: job.jobRows
+                  .filter(jr => jr.isParent || String(jr.row?.[0] || "").trim() !== "")
+                  .map(jr => jr.sheetRow),
                 client: job.client,
                 jobName: job.jobName,
                 projectCode: job.projectCode,
@@ -7368,6 +7523,24 @@ INSTRUCTIONS FOR USING THESE MATCHES:
       console.log(`  ✅ Tier 1 match - generating option without Claude: ${slotLabel}`);
 
       const parentRow = m.parentRowNum || rowNum;
+      const tier1InvClient = String(alert.summary?.client || invoiceClient || alert.data?.accounting?.[0] || "").trim();
+      const tier1RecActions = [
+        `Place invoice ${invoiceRef} (£${invoiceAmtForMatch.toFixed(2)}) in invoice slot ${slotNum} of the ${m.client} ${m.jobName} ${isManual ? "project, " + slotDesc : "job"}`,
+        [
+          `write ${invoiceAmtForMatch.toFixed(2)} to ${slotColLetter}${rowNum} (invoice ${slotNum} amount)`,
+          `write ${invoiceRef} to ${refColLetter}${rowNum} (invoice ${slotNum} reference)`,
+          `write ${sentDate || ""} to ${sentColLetter}${rowNum} (invoice ${slotNum} sent date)`,
+          `write ${daysToPayValue || 30} to ${daysColLetter}${rowNum} (invoice ${slotNum} days to pay)`,
+          `write ${invoiceStatus || "Sent"} to ${statColLetter}${rowNum} (invoice ${slotNum} status)`,
+        ].join(", "),
+      ];
+      if (tier1InvClient && tier1InvClient.toLowerCase() !== String(m.client || "").trim().toLowerCase()) {
+        const targetClientRows = m.jobRowNums?.length ? m.jobRowNums : [parentRow];
+        tier1RecActions.push(
+          targetClientRows.map(r => `write "${tier1InvClient.replace(/"/g, "'")}" to A${r}`).join(", ")
+        );
+      }
+
       const tier1Option = {
         optionId: 1,
         title: `Place in ${m.client} - ${m.jobName} - exact amount match, ${isManual ? "replacing placeholder" : "date match"}`,
@@ -7394,16 +7567,7 @@ INSTRUCTIONS FOR USING THESE MATCHES:
           reasonForChoice: `Amount exact match (£${invoiceAmtForMatch.toFixed(2)}). Client name match (${m.client}). Invoice sent ${sentDate} vs slot date ${m.slotDate} - within tolerance.`,
           discrepancies: "None",
         },
-        recommendedActions: [
-          `Place invoice ${invoiceRef} (£${invoiceAmtForMatch.toFixed(2)}) in invoice slot ${slotNum} of the ${m.client} ${m.jobName} ${isManual ? "project, " + slotDesc : "job"}`,
-          [
-            `write ${invoiceAmtForMatch.toFixed(2)} to ${slotColLetter}${rowNum} (invoice ${slotNum} amount)`,
-            `write ${invoiceRef} to ${refColLetter}${rowNum} (invoice ${slotNum} reference)`,
-            `write ${sentDate || ""} to ${sentColLetter}${rowNum} (invoice ${slotNum} sent date)`,
-            `write ${daysToPayValue || 30} to ${daysColLetter}${rowNum} (invoice ${slotNum} days to pay)`,
-            `write ${invoiceStatus || "Sent"} to ${statColLetter}${rowNum} (invoice ${slotNum} status)`,
-          ].join(", "),
-        ],
+        recommendedActions: tier1RecActions,
         slotBreakdown: { lines: [`Row ${rowNum} Slot ${slotNum}: ${invoiceRef} £${invoiceAmtForMatch.toFixed(2)} ← this invoice`], correctedTotal: `£${invoiceAmtForMatch.toFixed(2)}`, currentRevenue: `£${m.revenue || 0}` },
       };
 
@@ -7615,6 +7779,18 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               `write "" to ${s.statusCol}${s.sheetRow}`,
             ].join(", "));
           }
+        }
+      }
+
+      const tier2InvClient = String(effectiveInvClient || "").trim();
+      if (tier2InvClient && tier2InvClient.toLowerCase() !== String(job.client || "").trim().toLowerCase()) {
+        const targetClientRows = (job.jobRows || [])
+          .filter(jr => jr.isParent || String(jr.row?.[0] || "").trim() !== "")
+          .map(jr => jr.sheetRow);
+        if (targetClientRows.length > 0) {
+          recActions.push(
+            targetClientRows.map(r => `write "${tier2InvClient.replace(/"/g, "'")}" to A${r}`).join(", ")
+          );
         }
       }
 
@@ -8285,8 +8461,11 @@ export async function handleAcceptOption(req, res, sheets) {
           const regex1 = /write\s+(.+?)\s+to\s+Col(?:umn)?\s+([A-Z]{1,3})(?:\s*[,.()\n]|$)/gi;
           let match1;
           while ((match1 = regex1.exec(actionString)) !== null) {
-            const val1 = match1[1].trim().replace(/^["']|["']$/g, '').trim();
-            if (val1 && !/[A-Z]{1,3}\d+/.test(val1)) createCellUpdates.push({ cell: `${match1[2]}${newRow}`, value: val1 });
+            const rawVal1 = match1[1].trim();
+            const val1 = rawVal1.replace(/^["']|["']$/g, '').trim();
+            if (val1 && (rawVal1.startsWith('"') || rawVal1.startsWith("'") || !/\bto\s+[A-Z]{1,3}\d+/i.test(rawVal1))) {
+              createCellUpdates.push({ cell: `${match1[2]}${newRow}`, value: val1 });
+            }
           }
         }
         if (createCellUpdates.length === 0) {
@@ -8295,8 +8474,11 @@ export async function handleAcceptOption(req, res, sheets) {
             const regex2 = /write\s+(.+?)\s+to\s+([A-Z]{1,3}\d+)(?:\s*[,(]|$)/gi;
             let match2;
             while ((match2 = regex2.exec(actionString)) !== null) {
-              const val2 = match2[1].trim().replace(/^["']|["']$/g, '').trim();
-              if (val2 && !/[A-Z]{1,3}\d+/.test(val2)) createCellUpdates.push({ cell: match2[2], value: val2 });
+              const rawVal2 = match2[1].trim();
+              const val2 = rawVal2.replace(/^["']|["']$/g, '').trim();
+              if (val2 && (rawVal2.startsWith('"') || rawVal2.startsWith("'") || !/\bto\s+[A-Z]{1,3}\d+/i.test(rawVal2))) {
+                createCellUpdates.push({ cell: match2[2], value: val2 });
+              }
             }
           }
         }
@@ -8374,44 +8556,50 @@ export async function handleAcceptOption(req, res, sheets) {
         });
       }
 
-      // Log to TriageLog
-      // Log to TriageLog and update AlertMemory - failures here don't affect the user
-      try {
-        const timestamp = new Date().toISOString();
-        await sheets.spreadsheets.values.append({
-          spreadsheetId: automationCommanderSheetId,
-          range: "TriageLog!A:H",
-          valueInputOption: "USER_ENTERED",
-          requestBody: {
-            values: [[
-              timestamp,
-              sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
-              sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
-              sanitizeFormulaInput(String(alert.clientName || "")),
-              sanitizeFormulaInput(String(alert.summary?.amount || "")),
-              sanitizeFormulaInput(JSON.stringify({ matchAnalysis: option.matchAnalysis })),
-              "ACCEPTED",
-              sanitizeFormulaInput(`Created new job at row ${newRow}: ${option.title}`),
-            ]]
-          },
-        });
-
-        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-        const memoryRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
-        const fingerprintHash2 = alert.fingerprintHash || buildAlertFingerprint(alert);
-        const memoryRow2 = findMemoryRow(memoryRows2, fingerprintHash2);
-        const alertSummary2 = alert.summary?.summary || `${alert.type} ${fingerprintHash2}`;
-        if (memoryRow2 && (!memoryRow2.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow2.clientName))) {
-          await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow2.rowIndex, { ...memoryRow2, status: "accepted" });
-        } else {
-          await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-            fingerprintHash: fingerprintHash2, alertType: alert.type || alert.flagType || "unknown",
-            clientName: alert.clientName || "", alertSummary: alertSummary2,
-            cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
+      // Log to TriageLog and update AlertMemory in background so job creation returns immediately
+      const postLogPromise = (async () => {
+        try {
+          const timestamp = new Date().toISOString();
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId,
+            range: "TriageLog!A:H",
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: [[
+                timestamp,
+                sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+                sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+                sanitizeFormulaInput(String(alert.clientName || "")),
+                sanitizeFormulaInput(String(alert.summary?.amount || "")),
+                sanitizeFormulaInput(JSON.stringify({ matchAnalysis: option.matchAnalysis })),
+                "ACCEPTED",
+                sanitizeFormulaInput(`Created new job at row ${newRow}: ${option.title}`),
+              ]]
+            },
           });
+
+          await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+          const memoryRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
+          const fingerprintHash2 = alert.fingerprintHash || buildAlertFingerprint(alert);
+          const memoryRow2 = findMemoryRow(memoryRows2, fingerprintHash2);
+          const alertSummary2 = alert.summary?.summary || `${alert.type} ${fingerprintHash2}`;
+          if (memoryRow2 && (!memoryRow2.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow2.clientName))) {
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow2.rowIndex, { ...memoryRow2, status: "accepted" });
+          } else {
+            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+              fingerprintHash: fingerprintHash2, alertType: alert.type || alert.flagType || "unknown",
+              clientName: alert.clientName || "", alertSummary: alertSummary2,
+              cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
+            });
+          }
+        } catch (postWriteErr) {
+          console.log(`  ⚠️ Post-write logging failed (job was still created): ${postWriteErr.message}`);
         }
-      } catch (postWriteErr) {
-        console.log(`  ⚠️ Post-write logging failed (job was still created): ${postWriteErr.message}`);
+      })();
+      if (typeof waitUntil === "function") {
+        waitUntil(postLogPromise);
+      } else {
+        await postLogPromise;
       }
 
       return res.status(200).json({
@@ -8430,9 +8618,14 @@ export async function handleAcceptOption(req, res, sheets) {
           while ((match = regex.exec(actionString)) !== null) {
             let value = match[1].trim();
             const cell = match[2];
-            // Reject malformed captures where the value itself contains a cell reference
-            // e.g. "to CI51, write Received" - this means the regex caught too much
-            if (/[A-Z]{1,3}\d+/.test(value)) {
+            // Reject malformed captures where an unquoted value itself contains a cell reference
+            // e.g. "to CI51, write Received" - allow quoted values like "Studio A1" or "B2B Ltd"
+            const isQuotedValue = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"));
+            if (!isQuotedValue && /\bto\s+[A-Z]{1,3}\d+/i.test(value)) {
+              console.log(`  ⚠ Skipping malformed write action - value "${value}" contains cell reference`);
+              continue;
+            }
+            if (!isQuotedValue && /[A-Z]{1,3}\d+/.test(value) && value.includes(",")) {
               console.log(`  ⚠ Skipping malformed write action - value "${value}" contains cell reference`);
               continue;
             }
@@ -8707,6 +8900,21 @@ export async function handleAcceptOption(req, res, sheets) {
                 if (um && parseInt(um[2], 10) === origRow && invColToSlot[um[1]]?.s === origSlot && String(u.value ?? "").trim() !== "") {
                   const fieldKey = invColToSlot[um[1]].f;
                   u.cell = `${invSlotToCol[resolved.slotNum][fieldKey]}${resolved.rowNum}`;
+                }
+              }
+            }
+            if (alert.type === "invoice" || alert.sheetName === "InvComp") {
+              const authInvClient = String(alert.summary?.client || alert.data?.accounting?.[0] || "").trim();
+              const existingParentClient = String(resolved.parentClient || "").trim();
+              if (authInvClient && authInvClient.toLowerCase() !== existingParentClient.toLowerCase()) {
+                const clientRowsToSync = resolved.explicitClientRowNums?.length
+                  ? resolved.explicitClientRowNums
+                  : [resolved.parentRowNum || origRow];
+                for (const r of clientRowsToSync) {
+                  const targetCell = `A${r}`;
+                  if (!cellUpdates.some(u => String(u.cell || "").toUpperCase() === targetCell)) {
+                    cellUpdates.push({ cell: targetCell, value: authInvClient });
+                  }
                 }
               }
             }

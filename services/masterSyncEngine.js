@@ -191,6 +191,7 @@ export async function recomputeClientComparisonsInSupabase(sheets, clientName = 
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    loadTabsMode: "comparisons_only",
   });
   await env.finalizeExecution({ recordExecution: false });
   markMasterComparisonsFresh(ctx.clientName);
@@ -210,6 +211,7 @@ export async function recomputeCrmComparisonInSupabase(sheets, clientName, reque
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    loadTabsMode: "comparisons_only",
   });
 
   const crmCompSheet = env.masterSS.getSheetByName("CRMComp");
@@ -589,7 +591,7 @@ export async function runNativeMasterSync({
     userEmail === "System" ||
     userEmail === "system@cron" ||
     String(userEmail).startsWith("System (");
-  const triggerLabel = isAutomated ? "Scheduled (30m clock)" : `Manual (${userEmail})`;
+  const triggerLabel = isAutomated ? "Scheduled (10m clock)" : `Manual (${userEmail})`;
 
   const env = await createGasEnvironment({
     ctx,
@@ -609,20 +611,64 @@ export async function runNativeMasterSync({
 
   const gas = createMasterGasInstance(env);
 
+  const { data: curSched } = await supabase
+    .from("sync_schedules")
+    .select("flags")
+    .eq("client_name", ctx.clientName)
+    .maybeSingle();
+  const baseFlags = curSched?.flags && typeof curSched.flags === "object" ? curSched.flags : {};
+
+  await supabase
+    .from("sync_schedules")
+    .update({
+      flags: {
+        ...baseFlags,
+        in_flight_since: runStartedIso,
+        in_flight_seqs: activeSeqs,
+      },
+    })
+    .eq("client_name", ctx.clientName);
+
   // Execute the verbatim GAS `runAgencyAutomator`
-  await gas.runAgencyAutomator(runInv, runCrm, runExp);
+  try {
+    await gas.runAgencyAutomator(runInv, runCrm, runExp);
 
-  // Extract latest AutoLog summary written by runAgencyAutomator for the execution header
-  const autoLogGrid = env.masterSS.getSheetByName("AutoLog")?.valuesGrid || [];
-  const latestAutoSummary = autoLogGrid[1]
-    ? `${autoLogGrid[1][1] || ""}: ${autoLogGrid[1][2] || ""}`
-    : `Completed ${activeSeqs.join(", ")} sequence`;
+    // Extract latest AutoLog summary written by runAgencyAutomator for the execution header
+    const autoLogGrid = env.masterSS.getSheetByName("AutoLog")?.valuesGrid || [];
+    const latestAutoSummary = autoLogGrid[1]
+      ? `${autoLogGrid[1][1] || ""}: ${autoLogGrid[1][2] || ""}`
+      : `Completed ${activeSeqs.join(", ")} sequence`;
 
-  await env.finalizeExecution({
-    functionName: fnLabel,
-    triggerSource: triggerLabel,
-    summary: latestAutoSummary,
-  });
+    await env.finalizeExecution({
+      functionName: fnLabel,
+      triggerSource: triggerLabel,
+      summary: latestAutoSummary,
+    });
+  } catch (runErr) {
+    env.console.error(`Uncaught sequence failure: ${runErr.message}`);
+    await env
+      .finalizeExecution({
+        functionName: fnLabel,
+        triggerSource: triggerLabel,
+        status: "Failed",
+        summary: `Error: ${runErr.message}`,
+      })
+      .catch(() => {});
+    await supabase
+      .from("sync_schedules")
+      .update({
+        flags: {
+          ...baseFlags,
+          in_flight_since: null,
+          in_flight_seqs: null,
+        },
+      })
+      .eq("client_name", ctx.clientName)
+      .catch(() => {});
+    await invalidateClientActivityCache(ctx.clientName).catch(() => {});
+    throw runErr;
+  }
+
   markMasterComparisonsFresh(ctx.clientName);
 
   // Invalidate Redis activity cache so AutoLog entries appear immediately in PMA > Activity
@@ -637,7 +683,13 @@ export async function runNativeMasterSync({
   const directCostsPulled = Math.max(0, jnlGrid.length - 1);
   const crmDealsPulled = Math.max(0, dfcGrid.length - 1);
 
-  const schedulePatch = {};
+  const schedulePatch = {
+    flags: {
+      ...baseFlags,
+      in_flight_since: null,
+      in_flight_seqs: null,
+    },
+  };
   if (runInv) {
     schedulePatch.last_inv_run = runStartedIso;
     schedulePatch.inv_status = String(dcaGrid[1]?.[28] || `Synced (${invoicesPulled} invoices)`); // AC2
@@ -651,12 +703,10 @@ export async function runNativeMasterSync({
     schedulePatch.exp_status = String(dcaGrid[3]?.[28] || `Synced (${directCostsPulled} bills)`); // AC4
   }
 
-  if (Object.keys(schedulePatch).length > 0) {
-    await supabase
-      .from("sync_schedules")
-      .update(schedulePatch)
-      .eq("client_name", ctx.clientName);
-  }
+  await supabase
+    .from("sync_schedules")
+    .update(schedulePatch)
+    .eq("client_name", ctx.clientName);
 
   const comparisons = summarizeComparisonsFromMasterSS_(env.masterSS, ctx.clientName);
 
@@ -700,14 +750,22 @@ export async function dispatchDueNativeMasterSyncs({
   const supabase = getSupabaseAdmin();
   if (!supabase) return { dispatched: 0, syncs: [] };
 
-  const { data: schedRows } = await supabase.from("sync_schedules").select("*");
+  const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }] = await Promise.all([
+    supabase.from("sync_schedules").select("*"),
+    supabase.from("clients").select("client_name, status, master_mode"),
+    supabase
+      .from("master_sheet_grids")
+      .select("client_name, values_grid")
+      .eq("sheet_role", "master")
+      .eq("tab_name", "DataChgAlert"),
+  ]);
   if (!Array.isArray(schedRows) || schedRows.length === 0) return { dispatched: 0, syncs: [] };
 
-  const { data: dcaRows } = await supabase
-    .from("master_sheet_grids")
-    .select("client_name, values_grid")
-    .eq("sheet_role", "master")
-    .eq("tab_name", "DataChgAlert");
+  const eligibleClients = new Set(
+    (clientRows || [])
+      .filter((c) => c.status === "live" && c.master_mode === "supabase")
+      .map((c) => c.client_name)
+  );
 
   const dcaMap = new Map();
   if (Array.isArray(dcaRows)) {
@@ -739,6 +797,29 @@ export async function dispatchDueNativeMasterSyncs({
   const queue = [];
   for (const sched of schedRows) {
     const clientName = sched.client_name;
+    if (sched.automation_enabled === false || !eligibleClients.has(clientName)) {
+      continue;
+    }
+
+    const flags = sched.flags && typeof sched.flags === "object" ? sched.flags : {};
+    if (flags.in_flight_since) {
+      const inFlightMs = new Date(flags.in_flight_since).getTime();
+      const ageMs = Date.now() - inFlightMs;
+      if (!Number.isNaN(inFlightMs) && ageMs < 310_000) {
+        console.log(
+          `dispatchDueNativeMasterSyncs: Skipping ${clientName} (already in-flight for ${Math.round(ageMs / 1000)}s).`
+        );
+        continue;
+      }
+      console.warn(
+        `dispatchDueNativeMasterSyncs: Clearing stale in_flight_since lease for ${clientName} (${flags.in_flight_since}).`
+      );
+      await supabase
+        .from("sync_schedules")
+        .update({ flags: { ...flags, in_flight_since: null, in_flight_seqs: null } })
+        .eq("client_name", clientName);
+    }
+
     const dcaGrid = dcaMap.get(clientName) || null;
     const effectiveInvFreq = dcaGrid ? String(dcaGrid[1]?.[24] ?? "").trim() : String(sched.inv_freq ?? "").trim();
     const effectiveCrmFreq = dcaGrid ? String(dcaGrid[2]?.[24] ?? "").trim() : String(sched.crm_freq ?? "").trim();
@@ -774,8 +855,7 @@ export async function dispatchDueNativeMasterSyncs({
     ...(bypassToken ? { "x-vercel-protection-bypass": bypassToken } : {}),
   };
 
-  const executeItem = async (item) => {
-    const itemStart = Date.now();
+  const runChunk = async (clientName, chunkTypes, chunkSyncType) => {
     try {
       if (baseUrl) {
         const res = await fetch(`${baseUrl}/api/pma/master-engine`, {
@@ -783,44 +863,60 @@ export async function dispatchDueNativeMasterSyncs({
           headers,
           body: JSON.stringify({
             action: "run_native_sync",
-            clientName: item.clientName,
-            syncType: item.syncType,
-            types: item.types,
+            clientName,
+            syncType: chunkSyncType,
+            types: chunkTypes,
             skipAlertsRefresh: true,
             secret: cronSecret,
           }),
         });
         const json = await res.json().catch(() => ({}));
-        results.push({
-          ...item,
-          success: res.ok && json.success,
-          durationMs: Date.now() - itemStart,
-          error: json.error || null,
-        });
-      } else {
-        const { getSheetsClient } = await import("./sheetsClient.js");
-        const sheets = await getSheetsClient("background");
-        await runNativeMasterSync({
-          sheets,
-          clientName: item.clientName,
-          syncType: item.syncType,
-          types: item.types,
-          userEmail,
-        });
-        results.push({
-          ...item,
-          success: true,
-          durationMs: Date.now() - itemStart,
-        });
+        return {
+          types: chunkTypes,
+          success: Boolean(res.ok && json.success),
+          error: json.error || (!res.ok ? `HTTP ${res.status}` : null),
+        };
       }
+      const { getSheetsClient } = await import("./sheetsClient.js");
+      const sheets = await getSheetsClient("background");
+      await runNativeMasterSync({
+        sheets,
+        clientName,
+        syncType: chunkSyncType,
+        types: chunkTypes,
+        userEmail,
+      });
+      return { types: chunkTypes, success: true, error: null };
     } catch (err) {
+      return { types: chunkTypes, success: false, error: err.message };
+    }
+  };
+
+  const executeItem = async (item) => {
+    const itemStart = Date.now();
+    const shouldSplitExpense = item.types.includes("expense") && item.types.length > 1;
+    if (shouldSplitExpense) {
+      const nonExpTypes = item.types.filter((t) => t !== "expense");
+      const firstSyncType = nonExpTypes.length === 1 ? nonExpTypes[0] : "all";
+      const firstRes = await runChunk(item.clientName, nonExpTypes, firstSyncType);
+      const secondRes = await runChunk(item.clientName, ["expense"], "expense");
       results.push({
         ...item,
-        success: false,
+        success: firstRes.success && secondRes.success,
         durationMs: Date.now() - itemStart,
-        error: err.message,
+        error: [firstRes.error, secondRes.error].filter(Boolean).join("; ") || null,
+        phases: [firstRes, secondRes],
       });
+      return;
     }
+
+    const singleRes = await runChunk(item.clientName, item.types, item.syncType);
+    results.push({
+      ...item,
+      success: singleRes.success,
+      durationMs: Date.now() - itemStart,
+      error: singleRes.error,
+    });
   };
 
   for (let i = 0; i < queue.length; i += maxConcurrency) {
@@ -829,4 +925,154 @@ export async function dispatchDueNativeMasterSyncs({
   }
 
   return { dispatched: queue.length, syncs: results };
+}
+
+const AMD_ACTION_CONFIG = {
+  pull_invoices: {
+    fnName: "PullInvoicesBasedOn",
+    label: "Pull invoices",
+  },
+  pull_expenses: {
+    fnName: "syncAccountingDataToSheet",
+    label: "Pull expenses",
+  },
+  pull_crm: {
+    fnName: "PullCRMBasedOn",
+    label: "Pull CRM",
+  },
+  pull_pl: {
+    fnName: "PullPLBasedOn",
+    label: "Pull P&L",
+  },
+  expenses_gap_check: {
+    fnName: "runManualEntryAndGapScan",
+    label: "Run expenses gap check",
+  },
+  invoices_gap_check: {
+    fnName: "runManualInvoiceGapScan",
+    label: "Run invoices gap check",
+  },
+  retainer_fix: {
+    fnName: "RetainerInvoiceFix",
+    label: "Run retainer fix",
+  },
+  pull_outgoings_notes: {
+    fnName: "refreshOutgoingsAndUI",
+    label: "Pull outgoings notes metadata",
+  },
+};
+
+/**
+ * Executes an individual AMD Master Sheet menu command 100% verbatim inside the Supabase GAS runtime.
+ */
+export async function runNativeMasterAmdAction({
+  sheets,
+  clientName = "APPTEST",
+  amdAction = "",
+  userEmail = "Admin",
+}) {
+  const cfg = AMD_ACTION_CONFIG[amdAction];
+  if (!cfg) {
+    throw new Error(`Unsupported AMD action: ${amdAction}`);
+  }
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx) throw new Error(`Client "${clientName}" not found.`);
+
+  const startMs = Date.now();
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: {
+      functionName: cfg.fnName,
+      triggerSource: `Manual (${userEmail})`,
+    },
+  });
+  const gas = createMasterGasInstance(env);
+
+  let rawResult = null;
+  let metrics = {};
+
+  switch (amdAction) {
+    case "pull_invoices": {
+      rawResult = await gas.PullInvoicesBasedOn(true);
+      const rows = env.masterSS.getSheetByName("InvFromApp")?.valuesGrid || [];
+      metrics.rowsCount = Math.max(0, rows.length - 1);
+      break;
+    }
+    case "pull_expenses": {
+      rawResult = await gas.syncAccountingDataToSheet(true);
+      const rows = env.masterSS.getSheetByName("JnlsFromApp")?.valuesGrid || [];
+      metrics.rowsCount = Math.max(0, rows.length - 1);
+      break;
+    }
+    case "pull_crm": {
+      rawResult = await gas.PullCRMBasedOn(true);
+      const rows = env.masterSS.getSheetByName("DataFromCRM")?.valuesGrid || [];
+      metrics.rowsCount = Math.max(0, rows.length - 1);
+      break;
+    }
+    case "pull_pl": {
+      rawResult = await gas.PullPLBasedOn(true);
+      const rows = env.masterSS.getSheetByName("PLFromApp")?.valuesGrid || [];
+      metrics.categoriesCount = Math.max(0, rows.length - 1);
+      break;
+    }
+    case "expenses_gap_check": {
+      rawResult = await gas.runManualEntryAndGapScan(false);
+      const dirComp = env.masterSS.getSheetByName("DirComp")?.valuesGrid || [];
+      metrics.unreconciledGaps = dirComp[1]?.[1] ?? 0;
+      metrics.placeholderEntries = dirComp[1]?.[2] ?? 0;
+      break;
+    }
+    case "invoices_gap_check": {
+      rawResult = await gas.runManualInvoiceGapScan();
+      const invComp = env.masterSS.getSheetByName("InvComp")?.valuesGrid || [];
+      metrics.staleUnsentCount = invComp[1]?.[2] ?? 0;
+      break;
+    }
+    case "retainer_fix": {
+      rawResult = await gas.RetainerInvoiceFix();
+      break;
+    }
+    case "pull_outgoings_notes": {
+      rawResult = await gas.refreshOutgoingsAndUI();
+      const notesGrid = env.masterSS.getSheetByName("OutgNotes")?.valuesGrid || [];
+      let nonEmptyNotes = 0;
+      for (const r of notesGrid) {
+        if (!Array.isArray(r)) continue;
+        for (const c of r) {
+          if (c !== "" && c !== null && c !== undefined) nonEmptyNotes++;
+        }
+      }
+      metrics.notesCount = nonEmptyNotes;
+      break;
+    }
+  }
+
+  const uiAlerts = Array.isArray(env.uiAlerts) ? [...env.uiAlerts] : [];
+  const durationMs = Date.now() - startMs;
+  const summaryText =
+    uiAlerts.length > 0
+      ? `${cfg.label}: ${uiAlerts.join(" | ")}`
+      : `${cfg.label} completed in ${(durationMs / 1000).toFixed(1)}s`;
+
+  await env.finalizeExecution({ summary: summaryText });
+  markMasterComparisonsFresh(ctx.clientName);
+  await invalidateClientActivityCache(ctx.clientName).catch(() => { });
+
+  const comparisons = summarizeComparisonsFromMasterSS_(env.masterSS, ctx.clientName);
+
+  return {
+    success: true,
+    clientName: ctx.clientName,
+    amdAction,
+    fnName: cfg.fnName,
+    actionLabel: cfg.label,
+    durationMs,
+    uiAlerts,
+    metrics,
+    comparisons,
+    rawResult: rawResult && typeof rawResult === "object" ? rawResult : null,
+  };
 }

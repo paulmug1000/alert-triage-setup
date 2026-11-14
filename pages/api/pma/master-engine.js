@@ -1,7 +1,9 @@
+import { waitUntil } from "@vercel/functions";
 import { getSessionUser, safeCompareSecret } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
+import { invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
 import {
   getStage2Status,
@@ -19,6 +21,7 @@ import {
 } from "../../../services/masterEngineService.js";
 import {
   runNativeMasterSync,
+  runNativeMasterAmdAction,
   ensureFreshMasterComparisons,
   recomputeClientComparisonsInSupabase,
 } from "../../../services/masterSyncEngine.js";
@@ -50,6 +53,24 @@ async function refreshPrecomputedAlerts_(sheets, acId) {
   } catch (err) {
     console.warn("[master-engine] refreshPrecomputedAlerts_ warning:", err.message);
   }
+}
+
+function scheduleBackgroundWork_(promise) {
+  try {
+    if (typeof waitUntil === "function") {
+      waitUntil(promise);
+    }
+  } catch (_) {
+    // Outside Vercel runtime, the unawaited promise continues in the event loop
+  }
+}
+
+function scheduleAlertsRefreshInBackground_(sheets, acId) {
+  invalidatePrecomputedMemoryCache();
+  const job = refreshPrecomputedAlerts_(sheets, acId).catch((err) => {
+    console.warn("[master-engine] background refreshPrecomputedAlerts_ warning:", err.message);
+  });
+  scheduleBackgroundWork_(job);
 }
 
 export const config = {
@@ -157,6 +178,14 @@ export default async function handler(req, res) {
     if (action === "seed_client_sheet") {
       const sheets = await getSheetsClient();
       const summary = await seedClientSheetToSupabase(sheets, cleanClient);
+      await invalidatePmaClientCache(summary.clientSheetId, summary.masterSheetId, [
+        "jobs",
+        "invoices",
+        "retainers",
+        "outgoings",
+        "views",
+        "cash",
+      ]).catch(() => {});
       await logPmaActivity(sheets, {
         automationCommanderSheetId: acId,
         clientName: cleanClient,
@@ -227,7 +256,7 @@ export default async function handler(req, res) {
       if (syncType === "recompute") {
         const comparisons = await recomputeClientComparisonsInSupabase(sheets, cleanClient);
         if (!req.body?.skipAlertsRefresh && !isCronAuth) {
-          await refreshPrecomputedAlerts_(sheets, acId);
+          scheduleAlertsRefreshInBackground_(sheets, acId);
         } else {
           invalidatePrecomputedMemoryCache();
         }
@@ -246,12 +275,45 @@ export default async function handler(req, res) {
         userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       });
       if (!req.body?.skipAlertsRefresh && !isCronAuth) {
-        await refreshPrecomputedAlerts_(sheets, acId);
+        scheduleAlertsRefreshInBackground_(sheets, acId);
       } else {
         invalidatePrecomputedMemoryCache();
       }
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, syncResult, status });
+    }
+
+    if (action === "run_amd_action") {
+      const amdAction = String(req.body?.amdAction || "").trim();
+      if (!amdAction) {
+        return res.status(400).json({ success: false, error: "amdAction is required." });
+      }
+      const sheets = await getSheetsClient();
+      const userEmail = sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin");
+      const amdResult = await runNativeMasterAmdAction({
+        sheets,
+        clientName: cleanClient,
+        amdAction,
+        userEmail,
+      });
+      if (!req.body?.skipAlertsRefresh && !isCronAuth) {
+        scheduleAlertsRefreshInBackground_(sheets, acId);
+      } else {
+        invalidatePrecomputedMemoryCache();
+      }
+      scheduleBackgroundWork_(
+        logPmaActivity(sheets, {
+          automationCommanderSheetId: acId,
+          clientName: cleanClient,
+          category: "SYSTEM",
+          action: `AMD_ACTION_${amdAction.toUpperCase()}`,
+          summary: `Executed AMD action "${amdResult.label}" on ${cleanClient} (${amdResult.durationMs}ms)`,
+          details: amdResult,
+          userEmail,
+        }).catch(() => { })
+      );
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, amdResult, status });
     }
 
     if (action === "get_tab_grid") {
@@ -268,7 +330,7 @@ export default async function handler(req, res) {
         "ConfCalcs",
         "PipeCalcs",
       ]);
-      if (sheetRole === "master" && LIVE_COMPARISON_TABS.has(tabName)) {
+      if (req.body?.ensureFresh && sheetRole === "master" && LIVE_COMPARISON_TABS.has(tabName)) {
         try {
           const sheets = await getSheetsClient();
           await ensureFreshMasterComparisons(sheets, { clientName: cleanClient, maxAgeMs: 15000 });
@@ -280,6 +342,10 @@ export default async function handler(req, res) {
         tabName,
         maxRows: Number(maxRows) || 300,
         maxCols: Number(maxCols) || 500,
+        includeFormulas: req.body?.includeFormulas !== undefined ? Boolean(req.body.includeFormulas) : true,
+        includeRawValues: Boolean(req.body?.includeRawValues),
+        includeNotes: Boolean(req.body?.includeNotes),
+        trimTrailingEmptyRows: Boolean(req.body?.trimTrailingEmptyRows),
       });
       return res.status(200).json({ success: true, ...gridData });
     }
@@ -298,15 +364,31 @@ export default async function handler(req, res) {
         colIndex0: Number(colIndex0),
         value: value ?? "",
       });
-      await logPmaActivity(sheets, {
-        automationCommanderSheetId: acId,
-        clientName: cleanClient,
-        category: "SYSTEM",
-        action: "WORKBOOK_INSPECTOR_CELL_UPDATED",
-        summary: `Updated ${cleanClient} (${sheetRole}) ${tabName}!${updateRes.cellCoord} to "${value ?? ""}"`,
-        details: updateRes,
-        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
-      }).catch(() => { });
+      scheduleBackgroundWork_(
+        logPmaActivity(sheets, {
+          automationCommanderSheetId: acId,
+          clientName: cleanClient,
+          category: "SYSTEM",
+          action: "WORKBOOK_INSPECTOR_CELL_UPDATED",
+          summary: `Updated ${cleanClient} (${sheetRole}) ${tabName}!${updateRes.cellCoord} to "${value ?? ""}"`,
+          details: updateRes,
+          userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+        }).catch(() => { })
+      );
+      if (req.body?.returnUpdatedGrid) {
+        const gridData = await getVirtualTabForInspector({
+          clientName: cleanClient,
+          sheetRole,
+          tabName,
+          maxRows: Number(maxRows) || 300,
+          maxCols: Number(maxCols) || 500,
+          includeFormulas: req.body?.includeFormulas !== undefined ? Boolean(req.body.includeFormulas) : true,
+          includeRawValues: Boolean(req.body?.includeRawValues ?? true),
+          includeNotes: Boolean(req.body?.includeNotes ?? true),
+          trimTrailingEmptyRows: Boolean(req.body?.trimTrailingEmptyRows),
+        });
+        return res.status(200).json({ ...updateRes, gridData });
+      }
       return res.status(200).json(updateRes);
     }
 

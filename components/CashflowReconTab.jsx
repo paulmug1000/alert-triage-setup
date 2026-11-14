@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
-import CashflowWorkbenchView from "./CashflowWorkbenchView";
+import CashflowWorkbenchView, { buildAlignedComparison, summarizeSettlementVariances } from "./CashflowWorkbenchView";
 import EditClientSelector from "./EditClientSelector";
 
 const DARK_GREEN = "#14532d";
@@ -22,6 +22,23 @@ function formatGBP(num) {
   if (num == null || isNaN(num)) return "£0.00";
   const sign = num < 0 ? "-" : "";
   return `${sign}£${Math.abs(num).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatSignedGBP(num) {
+  if (num == null || isNaN(num)) return "£0.00";
+  const sign = num > 0 ? "+" : num < 0 ? "-" : "";
+  return `${sign}£${Math.abs(num).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function buildSettlementVarianceClause(items = [], mappedItemType = "") {
+  if (!Array.isArray(items) || items.length === 0) return "";
+  const isInflow = mappedItemType === "confirmed_cash";
+  const parts = items.slice(0, 3).map(it => {
+    const party = String(it.clientOrPayee || (isInflow ? "Customer" : "Supplier")).trim();
+    const refPart = it.ref ? ` ref ${it.ref}` : "";
+    return `${party}${refPart} (${isInflow ? "received" : "paid"} ${formatGBP(it.bankAmt)} vs ${formatGBP(it.pulseAmt)} in Pulse, net ${formatSignedGBP(it.cashImpact)})`;
+  });
+  return items.length > 3 ? `${parts.join("; ")} + ${items.length - 3} more` : parts.join("; ");
 }
 
 export default function CashflowReconTab({
@@ -72,9 +89,10 @@ export default function CashflowReconTab({
   // Track rows where recon has been applied during this session
   const [reconAppliedRows, setReconAppliedRows] = useState(new Set());
 
-  // Live signed category actuals and unreconciled items pushed from CashflowWorkbenchView as bankTxns change
+  // Live signed category actuals, unreconciled items, and settled FX/fee variances pushed from CashflowWorkbenchView as bankTxns change
   const [liveSignedActuals, setLiveSignedActuals] = useState(null);
   const [liveUnreconItems, setLiveUnreconItems] = useState(null);
+  const [liveSettlementVariances, setLiveSettlementVariances] = useState(null);
 
   // Edit adjustment modal note drafts
   const [editGeneralNote, setEditGeneralNote] = useState("");
@@ -146,6 +164,74 @@ export default function CashflowReconTab({
       setError(err.message || "Failed to save salaries note");
     } finally {
       setApplyingSalariesNote(false);
+    }
+  };
+
+  const handleApplyVarianceNote = async (baseRow, adjRow, adjCell) => {
+    if (!adjRow || !adjCell || !currentClientInfo || !reconData) return;
+    const mappedType = baseRow?.mappedItemType || adjRow?.mappedItemType || "";
+    const varSummary = getSettlementVarianceForType(mappedType);
+    if (!varSummary?.items?.length) return;
+
+    const cellVal = (adjCell?.numVal !== undefined && adjCell?.numVal !== null)
+      ? adjCell.numVal
+      : parseAmount(adjCell?.v);
+    const existing = parseNoteParts(adjCell?.note || "");
+    const suggested = generateSuggestedNotesForRow({
+      rowLabel: baseRow?.label || adjRow?.label,
+      mappedItemType: mappedType,
+      targetMonthLabel: targetCol?.label || reconData?.targetMonthLabel || "",
+      targetAdjVal: cellVal,
+      nextOffsetVal: null
+    });
+
+    const varClause = buildSettlementVarianceClause(varSummary.items, mappedType);
+    const varImpactStr = formatSignedGBP(varSummary.totalCashImpact);
+    const nextGeneral = existing.generalNote
+      ? (existing.generalNote.includes("FX/settlement")
+        ? existing.generalNote
+        : `${existing.generalNote}\nIncludes permanent FX/settlement variance (${varImpactStr}): ${varClause}.`)
+      : suggested.targetGeneral;
+    const nextPulse = existing.pulseNote
+      ? (existing.pulseNote.includes("FX/settlement")
+        ? existing.pulseNote
+        : `${existing.pulseNote} Includes ${varImpactStr} FX/settlement difference (${varClause}).`)
+      : suggested.targetPulse;
+    const finalNote = formatCombinedNote(nextGeneral, nextPulse);
+
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_cash_cell_note",
+          clientSheetId: currentClientInfo.clientSheetId,
+          cashTabSheetId: reconData.cashTabSheetId,
+          sheetRow: adjRow.sheetRow,
+          colIdx: adjCell.colIdx,
+          note: finalNote,
+          clientName: selectedClient,
+          automationCommanderSheetId
+        })
+      });
+      const res = await resp.json();
+      if (!res.success) throw new Error(res.error || "Failed to save note");
+
+      setReconData(prev => {
+        if (!prev) return prev;
+        const newRows = prev.rows.map(r => {
+          if (r.sheetRow !== adjRow.sheetRow) return r;
+          const newCells = r.cells.map(c => {
+            if (c.colIdx !== adjCell.colIdx) return c;
+            return { ...c, note: finalNote };
+          });
+          return { ...r, cells: newCells };
+        });
+        return { ...prev, rows: newRows };
+      });
+      setSuccessMsg("FX / settlement explanation note saved to adjustment.");
+    } catch (err) {
+      setError(err.message || "Failed to save FX / settlement variance note");
     }
   };
 
@@ -340,6 +426,7 @@ export default function CashflowReconTab({
 
   useEffect(() => {
     setLiveSignedActuals(null);
+    setLiveSettlementVariances(null);
     if (selectedClient) {
       sessionStorage.setItem("pma_cashflow_recon_client", selectedClient);
       loadData(selectedClient);
@@ -352,6 +439,38 @@ export default function CashflowReconTab({
   const effectiveReconActuals = useMemo(() => {
     return liveSignedActuals || reconData?.reconActuals || null;
   }, [liveSignedActuals, reconData?.reconActuals]);
+
+  // Settled FX / settlement variances across Revenue, Contractors, and Direct costs
+  const effectiveSettlementVariances = useMemo(() => {
+    if (liveSettlementVariances) return liveSettlementVariances;
+    if (!reconData) return {};
+    const filterBank = (arr = []) => arr.filter(b => {
+      if (String(b.date || "").startsWith("#") || String(b.payee || "").startsWith("#")) return false;
+      return parseAmount(b.inAmt) > 0 || parseAmount(b.outAmt) > 0 || parseAmount(b.amount) > 0;
+    });
+    const filterPulse = (arr = []) => arr.filter(p => !String(p.client || "").startsWith("#") && !String(p.amount || "").startsWith("#"));
+    return {
+      confirmed_cash: summarizeSettlementVariances(
+        buildAlignedComparison(filterBank(reconData.revenueBreakdown?.bankItems), filterPulse(reconData.revenueBreakdown?.pulseInvoices), { type: "revenue" }),
+        "revenue"
+      ),
+      contractors: summarizeSettlementVariances(
+        buildAlignedComparison(filterBank(reconData.contractorsBreakdown?.bankItems), filterPulse(reconData.contractorsBreakdown?.pulseContractors), { type: "contractors" }),
+        "contractors"
+      ),
+      direct_costs: summarizeSettlementVariances(
+        buildAlignedComparison(filterBank(reconData.directCostsBreakdown?.bankItems), filterPulse(reconData.directCostsBreakdown?.pulseDirectCosts), { type: "direct_costs" }),
+        "direct_costs"
+      )
+    };
+  }, [liveSettlementVariances, reconData]);
+
+  const getSettlementVarianceForType = useCallback((mappedItemType) => {
+    if (mappedItemType === "confirmed_cash") return effectiveSettlementVariances?.confirmed_cash || { items: [], totalCashImpact: 0 };
+    if (mappedItemType === "contractors") return effectiveSettlementVariances?.contractors || { items: [], totalCashImpact: 0 };
+    if (mappedItemType === "direct_costs") return effectiveSettlementVariances?.direct_costs || { items: [], totalCashImpact: 0 };
+    return { items: [], totalCashImpact: 0 };
+  }, [effectiveSettlementVariances]);
 
   // Option A: Combined Transfers mode when KeyInfo!B10 is "Transfers" and client hasn't split transfers into separate Corp tax / VAT categories
   const isCombinedTransferMode = useMemo(() => {
@@ -520,8 +639,31 @@ export default function CashflowReconTab({
     const fmtTargetAbs = formatGBP(absTarget);
     const fmtTargetSigned = formatGBP(Number(targetAdjVal) || 0);
 
-    // Case 1: Single-month adjustment (no Next Month offset)
-    if (nextOffsetVal === null || nextOffsetVal === undefined) {
+    const varSummary = getSettlementVarianceForType(mappedItemType);
+    const varItems = varSummary?.items || [];
+    const hasVariance = varItems.length > 0;
+    const varImpact = varSummary?.totalCashImpact || 0;
+    const varImpactStr = formatSignedGBP(varImpact);
+    const varClause = hasVariance ? buildSettlementVarianceClause(varItems, mappedItemType) : "";
+
+    // Case 1: Single-month adjustment (no Next Month offset, or zero timing offset when only permanent FX/settlement variance applies)
+    if (nextOffsetVal === null || nextOffsetVal === undefined || (hasVariance && Math.abs(Number(nextOffsetVal) || 0) < 0.005)) {
+      if (hasVariance && unreconForCat.length > 0) {
+        return {
+          targetGeneral: `Reconciled ${cleanLower} to ${tMonth} bank actuals (${fmtTargetSigned} adjustment). Includes permanent FX/settlement variance (${varImpactStr}): ${varClause}; plus unreconciled ${isInflowCat ? "receipt" : "payment"} (${unreconSummary}).`,
+          targetPulse: `Adjusted by ${fmtTargetSigned} to match ${tMonth} bank actuals: includes permanent FX/settlement variance (${varImpactStr}: ${varClause}) and ${isInflowCat ? "receipts" : "payments"} awaiting reconciliation (${unreconSummary}).`,
+          nextGeneral: "",
+          nextPulse: ""
+        };
+      }
+      if (hasVariance) {
+        return {
+          targetGeneral: `Reconciled ${cleanLower} to ${tMonth} bank actuals (${fmtTargetSigned} adjustment). Includes permanent FX/settlement variance (${varImpactStr}): ${varClause}.`,
+          targetPulse: `Includes ${varImpactStr} permanent FX/settlement variance on settled items in ${tMonth}: ${varClause}.`,
+          nextGeneral: "",
+          nextPulse: ""
+        };
+      }
       if (unreconForCat.length > 0) {
         return {
           targetGeneral: `Reconciled ${cleanLower} to ${tMonth} bank actuals (${fmtTargetSigned} adjustment; includes unreconciled ${isInflowCat ? "receipt" : "payment"}: ${unreconSummary}).`,
@@ -546,14 +688,16 @@ export default function CashflowReconTab({
     const fmtNextAbs = formatGBP(absNext);
     const fmtNextSigned = formatGBP(numNext);
 
+    let twoMonthResult;
+
     // 2a. Unreconciled receipt / payment timing lag (e.g. Thrive £4,350 unreconciled payment)
     if (unreconForCat.length > 0 || (isLinkedOffset && isInflowCat)) {
-      const detailText = unreconSummary ? ` (${unreconSummary})` : ` (${fmtTargetAbs})`;
-      return {
-        targetGeneral: `Includes unreconciled bank ${isInflowCat ? "receipt" : "payment"}${detailText} in ${tMonth} not yet matched in accounting software. Linked offset applied in ${nMonth}.`,
+      const detailText = unreconSummary ? ` (${unreconSummary})` : ` (${fmtNextAbs})`;
+      twoMonthResult = {
+        targetGeneral: `Includes unreconciled bank ${isInflowCat ? "receipt" : "payment"}${detailText} in ${tMonth} not yet matched in accounting software. Offset applied in ${nMonth}.`,
         targetPulse: isInflowCat
-          ? `Includes ${fmtTargetAbs} received in the bank in ${tMonth} awaiting invoice reconciliation.`
-          : `Includes ${fmtTargetAbs} paid in ${tMonth} awaiting bill reconciliation.`,
+          ? `Includes ${hasVariance ? fmtNextAbs : fmtTargetAbs} received in the bank in ${tMonth} awaiting invoice reconciliation.`
+          : `Includes ${hasVariance ? fmtNextAbs : fmtTargetAbs} paid in ${tMonth} awaiting bill reconciliation.`,
         nextGeneral: isLinkedOffset
           ? `Auto-reversing offset (${fmtNextSigned}) for ${tMonth} unreconciled ${cleanLower}${detailText} whose open invoice/bill pushed into ${nMonth}. Automatically clears once reconciled.`
           : `Offset (${fmtNextSigned}) for ${tMonth} unreconciled ${cleanLower}${detailText} carried into ${nMonth}.`,
@@ -561,34 +705,41 @@ export default function CashflowReconTab({
           ? `Adjusted by ${fmtNextSigned} to reflect revenue already received in the bank in ${tMonth}.`
           : `Adjusted by ${fmtNextSigned} to reflect ${cleanLower} already paid in ${tMonth}.`
       };
-    }
-
-    // 2b. Partial or full cash deferral / early payment across months (e.g. Orinoco salary deferral)
-    if (!isInflowCat && targetAdjVal > 0 && numNext < 0) {
-      return {
+    } else if (!isInflowCat && targetAdjVal > 0 && numNext < 0) {
+      // 2b. Partial or full cash deferral / early payment across months (e.g. Orinoco salary deferral)
+      twoMonthResult = {
         targetGeneral: `Reconciled ${cleanLower} to ${tMonth} bank actuals (${fmtTargetSigned} vs forecast). ${fmtNextAbs} deferred to ${nMonth}.`,
         targetPulse: `Adjusted to match actual ${cleanLower} paid in ${tMonth} (${fmtNextAbs} deferred to ${nMonth}).`,
         nextGeneral: `Carry-over ${cleanLower} outflow (${fmtNextSigned}) deferred from ${tMonth}.`,
         nextPulse: `Includes ${fmtNextAbs} of ${tMonth} ${cleanLower} deferred into ${nMonth}.`
       };
-    }
-
-    if (!isInflowCat && targetAdjVal < 0 && numNext > 0) {
-      return {
+    } else if (!isInflowCat && targetAdjVal < 0 && numNext > 0) {
+      twoMonthResult = {
         targetGeneral: `Reconciled ${cleanLower} to ${tMonth} bank actuals (${fmtTargetSigned} vs forecast). ${fmtNextAbs} offset in ${nMonth}.`,
         targetPulse: `Adjusted to match actual ${cleanLower} paid in ${tMonth} (includes ${fmtNextAbs} paid ahead of ${nMonth}).`,
         nextGeneral: `Offset (${fmtNextSigned}) for ${cleanLower} already paid in ${tMonth}.`,
         nextPulse: `Reduced by ${fmtNextAbs} for ${cleanLower} already paid in ${tMonth}.`
       };
+    } else {
+      twoMonthResult = {
+        targetGeneral: `Reconciled ${cleanLower} for ${tMonth} (${fmtTargetSigned} adjustment) with ${fmtNextSigned} offset in ${nMonth}.`,
+        targetPulse: `Adjusted by ${fmtTargetSigned} to reflect ${tMonth} timing difference carried into ${nMonth}.`,
+        nextGeneral: `${isLinkedOffset ? "Auto-reversing offset" : "Carry-over adjustment"} (${fmtNextSigned}) from ${tMonth} ${cleanLower}.`,
+        nextPulse: `Adjusted by ${fmtNextSigned} to offset ${tMonth} ${cleanLower} timing difference.`
+      };
     }
 
-    return {
-      targetGeneral: `Reconciled ${cleanLower} for ${tMonth} (${fmtTargetSigned} adjustment) with ${fmtNextSigned} offset in ${nMonth}.`,
-      targetPulse: `Adjusted by ${fmtTargetSigned} to reflect ${tMonth} timing difference carried into ${nMonth}.`,
-      nextGeneral: `${isLinkedOffset ? "Auto-reversing offset" : "Carry-over adjustment"} (${fmtNextSigned}) from ${tMonth} ${cleanLower}.`,
-      nextPulse: `Adjusted by ${fmtNextSigned} to offset ${tMonth} ${cleanLower} timing difference.`
-    };
-  }, [targetCol, nextCol, reconData?.targetMonthLabel, getUnreconItemsForRow]);
+    if (hasVariance) {
+      return {
+        targetGeneral: `${twoMonthResult.targetGeneral} Permanent FX/settlement variance (${varImpactStr}: ${varClause}) remains in ${tMonth}.`,
+        targetPulse: `${twoMonthResult.targetPulse} Permanent FX/settlement variance (${varImpactStr}) remains in ${tMonth}: ${varClause}.`,
+        nextGeneral: `${twoMonthResult.nextGeneral} Excludes ${varImpactStr} permanent FX/settlement variance absorbed in ${tMonth}.`,
+        nextPulse: `${twoMonthResult.nextPulse} (excludes ${varImpactStr} settled FX/settlement difference from ${tMonth}).`
+      };
+    }
+
+    return twoMonthResult;
+  }, [targetCol, nextCol, reconData?.targetMonthLabel, getUnreconItemsForRow, getSettlementVarianceForType]);
 
   // Helper: check if recon figure is actively in use for a row
   const isReconUsedForRow = useCallback((row) => {
@@ -1008,6 +1159,22 @@ export default function CashflowReconTab({
     const rawVal = adjCell?.rawVal ?? "";
     const currentFormula = (typeof rawVal === "string" && (rawVal.startsWith("=") || /^['’]=/.test(rawVal))) ? rawVal.replace(/^['’]/, "") : "";
 
+    const baseCell = row.cells?.find(c => c.colIdx === targetMonthCell.colIdx);
+    const baseVal = (baseCell?.numVal !== undefined && baseCell?.numVal !== null) ? baseCell.numVal : parseAmount(baseCell?.v);
+    const expectedAdjVal = Number((reconVal - baseVal).toFixed(2));
+    const varSummary = getSettlementVarianceForType(itemType);
+    let suggestedNote = undefined;
+    if (varSummary?.items?.length > 0) {
+      const suggested = generateSuggestedNotesForRow({
+        rowLabel: row.label,
+        mappedItemType: itemType,
+        targetMonthLabel: targetMonthCell.label || targetCol?.label || reconData?.targetMonthLabel,
+        targetAdjVal: expectedAdjVal,
+        nextOffsetVal: null
+      });
+      suggestedNote = formatCombinedNote(suggested.targetGeneral, suggested.targetPulse) || undefined;
+    }
+
     // Check if cell has a non-zero value or formula
     const cleanStr = String(rawVal || currentVal).replace(/[£,\s]/g, "").trim();
     const num = parseFloat(cleanStr);
@@ -1020,13 +1187,19 @@ export default function CashflowReconTab({
         formula,
         targetRow: targetAdjustmentRow,
         colLetter,
+        colIdx: targetMonthCell.colIdx,
         currentValue: currentVal,
         currentFormula,
-        adjRowLabel: adjRowObj?.label || `Row ${targetAdjustmentRow}`
+        adjRowLabel: adjRowObj?.label || (isAdmin ? `Row ${targetAdjustmentRow}` : "Adjustment"),
+        suggestedNote,
+        applySuggestedNote: Boolean(suggestedNote),
+        hasSettlementVariance: Boolean(suggestedNote)
       });
     } else {
-      // Overwrite safe: apply immediately
-      executeApplyReconFormula(targetAdjustmentRow, colLetter, formula);
+      // Overwrite safe: apply immediately (attach FX/settlement note if cell has no existing note)
+      const existingNote = String(adjCell?.note || "").trim();
+      const noteToWrite = (!existingNote && suggestedNote) ? suggestedNote : undefined;
+      executeApplyReconFormula(targetAdjustmentRow, colLetter, formula, noteToWrite, targetMonthCell.colIdx);
     }
   };
 
@@ -1067,9 +1240,10 @@ export default function CashflowReconTab({
         formula,
         targetRow: targetAdjustmentRow,
         colLetter,
+        colIdx: col.colIdx,
         currentValue: currentVal,
         currentFormula,
-        adjRowLabel: adjRowObj?.label || `Row ${targetAdjustmentRow}`
+        adjRowLabel: adjRowObj?.label || (isAdmin ? `Row ${targetAdjustmentRow}` : "Adjustment")
       });
     } else {
       executeApplyReconFormula(targetAdjustmentRow, colLetter, formula);
@@ -1133,10 +1307,32 @@ export default function CashflowReconTab({
 
         if (reconVal !== null && targetRow) {
           const formula = `=${reconVal.toFixed(2)}-${cellRef}`;
-          adjustments.push({
+          let note = undefined;
+          const varSummary = getSettlementVarianceForType(itemType);
+          if (varSummary?.items?.length > 0) {
+            const adjRowObj = (reconData.rows || []).find(r => r.sheetRow === targetRow);
+            const adjCell = adjRowObj?.cells?.find(c => c.colIdx === targetCol.colIdx);
+            const existingNote = String(adjCell?.note || "").trim();
+            if (!existingNote) {
+              const baseCell = row.cells?.find(c => c.colIdx === targetCol.colIdx);
+              const baseVal = (baseCell?.numVal !== undefined && baseCell?.numVal !== null) ? baseCell.numVal : parseAmount(baseCell?.v);
+              const expectedAdjVal = Number((reconVal - baseVal).toFixed(2));
+              const suggested = generateSuggestedNotesForRow({
+                rowLabel: row.label,
+                mappedItemType: itemType,
+                targetMonthLabel: targetCol.label || reconData?.targetMonthLabel,
+                targetAdjVal: expectedAdjVal,
+                nextOffsetVal: null
+              });
+              note = formatCombinedNote(suggested.targetGeneral, suggested.targetPulse) || undefined;
+            }
+          }
+          const adjEntry = {
             sheetRow: targetRow,
             formula
-          });
+          };
+          if (note !== undefined) adjEntry.note = note;
+          adjustments.push(adjEntry);
           resolvedRows.push(row.sheetRow);
         }
       });
@@ -1159,7 +1355,7 @@ export default function CashflowReconTab({
       }
 
       applyOptimisticCellUpdates(
-        adjustments.map(a => ({ sheetRow: a.sheetRow, rawVal: a.formula })),
+        adjustments.map(a => a.note !== undefined ? { sheetRow: a.sheetRow, rawVal: a.formula, note: a.note } : { sheetRow: a.sheetRow, rawVal: a.formula }),
         colLetter,
         resolvedRows
       );
@@ -1308,26 +1504,37 @@ export default function CashflowReconTab({
     }
   }, [liveSignedActuals, reconData?.rows, reconData?.cashTabSheetId, targetCol, currentClientInfo, isCombinedTransferMode, combinedTransferTxVal, applyOptimisticCellUpdates, selectedClient, automationCommanderSheetId]);
 
-  const executeApplyReconFormula = async (targetRow, colLetter, formula) => {
+  const executeApplyReconFormula = async (targetRow, colLetter, formula, note = undefined, colIdx = undefined) => {
     if (!currentClientInfo) return;
     setApplyingRecon(true);
     setApplyingReconRow(targetRow);
     setError("");
     try {
       const cleanFormula = typeof formula === "string" ? formula.trim().replace(/^['’]=/, "=") : formula;
-      applyOptimisticCellUpdates([{ sheetRow: targetRow, rawVal: cleanFormula }], colLetter);
+      const optimisticEntry = { sheetRow: targetRow, rawVal: cleanFormula };
+      if (note !== undefined) optimisticEntry.note = note;
+      applyOptimisticCellUpdates([optimisticEntry], colLetter);
+
+      const resolvedColIdx = colIdx !== undefined ? colIdx : targetCol?.colIdx;
+      const payload = {
+        action: "update_cash_adjustment",
+        clientSheetId: currentClientInfo.clientSheetId,
+        colLetter,
+        sheetRow: targetRow,
+        value: cleanFormula,
+        clientName: selectedClient,
+        automationCommanderSheetId
+      };
+      if (note !== undefined && reconData?.cashTabSheetId !== undefined && resolvedColIdx !== undefined) {
+        payload.note = note;
+        payload.cashTabSheetId = reconData.cashTabSheetId;
+        payload.colIdx = resolvedColIdx;
+      }
+
       const resp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "update_cash_adjustment",
-          clientSheetId: currentClientInfo.clientSheetId,
-          colLetter,
-          sheetRow: targetRow,
-          value: cleanFormula,
-          clientName: selectedClient,
-          automationCommanderSheetId
-        })
+        body: JSON.stringify(payload)
       });
       const res = await resp.json();
       if (!res.success) throw new Error(res.error || "Failed to apply recon formula");
@@ -1501,6 +1708,13 @@ export default function CashflowReconTab({
     const applyTargetReconDefault = Boolean(!isReconAlreadyUsed && hasUnreconciledVariance && reconFormula);
     const effectiveTargetAdjVal = applyTargetReconDefault ? reconAdjVal : currentTargetAdjVal;
 
+    const varSummary = getSettlementVarianceForType(mappedItemType);
+    const varianceItems = varSummary?.items || [];
+    const hasSettlementVariance = varianceItems.length > 0 && Math.abs(varSummary?.totalCashImpact || 0) >= 0.005;
+    const permanentFxImpact = hasSettlementVariance ? Number((varSummary.totalCashImpact || 0).toFixed(2)) : 0;
+    const rawReversibleTargetAdj = Number((effectiveTargetAdjVal - permanentFxImpact).toFixed(2));
+    const suggestedOffsetExclFx = Math.abs(rawReversibleTargetAdj) < 0.05 ? 0 : Number((-rawReversibleTargetAdj).toFixed(2));
+
     // Detect if next month already has a linked formula or custom value
     const nextRawStr = typeof nextAdjCell?.rawVal === "string" ? nextAdjCell.rawVal.replace(/^['’]/, "").trim() : "";
     const linkedFormulaStr = `=-${targetCol.colLetter}${adjRow.sheetRow}`;
@@ -1508,10 +1722,12 @@ export default function CashflowReconTab({
     const isExistingCustom = hasExistingNextOffset &&
       nextRawStr.toUpperCase() !== linkedFormulaStr.toUpperCase();
 
-    const initialMode = isExistingCustom ? "custom" : "linked";
+    const initialMode = isExistingCustom
+      ? "custom"
+      : (hasSettlementVariance && !hasExistingNextOffset ? "custom" : "linked");
     const defaultCustomAmt = isExistingCustom
       ? currentNextAdjVal
-      : Number((-effectiveTargetAdjVal).toFixed(2));
+      : (hasSettlementVariance ? suggestedOffsetExclFx : Number((-effectiveTargetAdjVal).toFixed(2)));
     const effectiveNextVal = initialMode === "linked"
       ? Number((-effectiveTargetAdjVal).toFixed(2))
       : defaultCustomAmt;
@@ -1542,6 +1758,9 @@ export default function CashflowReconTab({
       isReconAlreadyUsed,
       hasUnreconciledVariance,
       applyTargetRecon: applyTargetReconDefault,
+      hasSettlementVariance,
+      permanentFxImpact,
+      varianceItems,
       hasExistingNextOffset,
       currentNextAdjVal,
       offsetMode: initialMode, // "linked" | "custom"
@@ -1551,7 +1770,7 @@ export default function CashflowReconTab({
       nextGeneralNote: existingNextNotes.generalNote || suggested.nextGeneral,
       nextPulseNote: existingNextNotes.pulseNote || suggested.nextPulse
     });
-  }, [targetCol, nextCol, reconData, getCategoryTxAmount, combinedTransferTxVal, isReconUsedForTransfer, isReconUsedForRow, parseNoteParts, generateSuggestedNotesForRow]);
+  }, [targetCol, nextCol, reconData, getCategoryTxAmount, combinedTransferTxVal, isReconUsedForTransfer, isReconUsedForRow, parseNoteParts, generateSuggestedNotesForRow, getSettlementVarianceForType]);
 
   const handleRefreshOffsetSuggestedNotes = useCallback((modalState) => {
     const m = modalState || offsetModal;
@@ -2386,6 +2605,8 @@ export default function CashflowReconTab({
             onRegisterActions={setWorkbenchActions}
             onLiveSignedActualsChange={setLiveSignedActuals}
             onLiveUnreconItemsChange={setLiveUnreconItems}
+            onLiveSettlementVariancesChange={setLiveSettlementVariances}
+            onApplyVarianceNote={handleApplyVarianceNote}
             applyingRecon={applyingRecon}
             applyingReconRow={applyingReconRow}
             resolvingCellKey={resolvingCellKey}
@@ -4452,6 +4673,35 @@ export default function CashflowReconTab({
               </p>
             )}
 
+            {overwriteModal.suggestedNote && (
+              <label style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: "8px",
+                padding: "10px 12px",
+                background: "#fffbeb",
+                border: "1px solid #fde68a",
+                borderRadius: "6px",
+                marginBottom: "14px",
+                cursor: "pointer",
+                fontSize: "12px",
+                color: "#92400e"
+              }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(overwriteModal.applySuggestedNote)}
+                  onChange={(e) => setOverwriteModal(prev => prev ? ({ ...prev, applySuggestedNote: e.target.checked }) : prev)}
+                  style={{ marginTop: "2px" }}
+                />
+                <span>
+                  <strong style={{ display: "block" }}>Also update note with FX / settlement variance breakdown</strong>
+                  <span style={{ display: "block", fontSize: "11px", color: "#b45309", marginTop: "2px", lineHeight: "1.35" }}>
+                    Explains settled FX/settlement differences on this adjustment without carrying them into next month.
+                  </span>
+                </span>
+              </label>
+            )}
+
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
               <button
                 onClick={() => setOverwriteModal(null)}
@@ -4470,7 +4720,13 @@ export default function CashflowReconTab({
                 Cancel
               </button>
               <button
-                onClick={() => executeApplyReconFormula(overwriteModal.targetRow, overwriteModal.colLetter, overwriteModal.formula)}
+                onClick={() => executeApplyReconFormula(
+                  overwriteModal.targetRow,
+                  overwriteModal.colLetter,
+                  overwriteModal.formula,
+                  overwriteModal.applySuggestedNote ? overwriteModal.suggestedNote : undefined,
+                  overwriteModal.colIdx
+                )}
                 disabled={applyingRecon}
                 style={{
                   padding: "7px 16px",
@@ -4763,6 +5019,9 @@ export default function CashflowReconTab({
       {offsetModal && targetCol && nextCol && (() => {
         const effectiveTargetAdj = offsetModal.applyTargetRecon ? offsetModal.reconAdjVal : offsetModal.currentTargetAdjVal;
         const linkedOffsetVal = -effectiveTargetAdj;
+        const permanentFxImpact = offsetModal.hasSettlementVariance ? (offsetModal.permanentFxImpact || 0) : 0;
+        const reversibleTargetAdj = Number((effectiveTargetAdj - permanentFxImpact).toFixed(2));
+        const timingOnlyOffsetVal = Math.abs(reversibleTargetAdj) < 0.05 ? 0 : Number((-reversibleTargetAdj).toFixed(2));
         const customOffsetVal = parseFloat(String(offsetModal.customAmount || "0").replace(/[£,\s]/g, "")) || 0;
         const activeNextOffsetVal = offsetModal.offsetMode === "linked" ? linkedOffsetVal : customOffsetVal;
         const nextShortLabel = (nextCol.label || "next month").split(" ")[0];
@@ -4863,11 +5122,15 @@ export default function CashflowReconTab({
                       onChange={(e) => {
                         const checked = e.target.checked;
                         const nextTargetAdj = checked ? offsetModal.reconAdjVal : offsetModal.currentTargetAdjVal;
-                        const nextDefaultCustom = Number((-nextTargetAdj).toFixed(2));
+                        const nextReversible = Number((nextTargetAdj - permanentFxImpact).toFixed(2));
+                        const nextTimingOnly = Math.abs(nextReversible) < 0.05 ? 0 : Number((-nextReversible).toFixed(2));
+                        const nextDefaultCustom = offsetModal.hasSettlementVariance
+                          ? nextTimingOnly
+                          : Number((-nextTargetAdj).toFixed(2));
                         const nextState = {
                           ...offsetModal,
                           applyTargetRecon: checked,
-                          customAmount: offsetModal.offsetMode === "linked" ? String(nextDefaultCustom) : offsetModal.customAmount
+                          customAmount: (offsetModal.offsetMode === "linked" || offsetModal.hasSettlementVariance) ? String(nextDefaultCustom) : offsetModal.customAmount
                         };
                         setOffsetModal(nextState);
                         handleRefreshOffsetSuggestedNotes(nextState);
@@ -4879,6 +5142,74 @@ export default function CashflowReconTab({
                   </label>
                 )}
               </div>
+
+              {offsetModal.hasSettlementVariance && (
+                <div style={{
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  borderRadius: "8px",
+                  padding: "10px 12px",
+                  marginBottom: "14px",
+                  fontSize: "12px",
+                  color: "#78350f",
+                  lineHeight: "1.45"
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "4px", flexWrap: "wrap" }}>
+                    <strong style={{ color: "#92400e" }}>
+                      Permanent FX / settlement variance detected ({formatSignedGBP(permanentFxImpact)})
+                    </strong>
+                    <span style={{ fontSize: "11px", fontWeight: "700", color: "#b45309" }}>
+                      Suggested {nextCol.label} timing offset: {formatGBP(timingOnlyOffsetVal)}
+                    </span>
+                  </div>
+                  {offsetModal.varianceItems?.length > 0 && (
+                    <ul style={{ margin: "4px 0 6px", paddingLeft: "18px", fontSize: "11px", color: "#92400e" }}>
+                      {offsetModal.varianceItems.slice(0, 3).map((it, vIdx) => (
+                        <li key={vIdx}>
+                          <strong>{it.clientOrPayee}</strong>{it.ref ? ` (ref ${it.ref})` : ""}: {formatGBP(it.bankAmt)} bank vs {formatGBP(it.pulseAmt)} in Pulse ({formatSignedGBP(it.cashImpact)})
+                        </li>
+                      ))}
+                      {offsetModal.varianceItems.length > 3 && (
+                        <li>+ {offsetModal.varianceItems.length - 3} more settled item(s)</li>
+                      )}
+                    </ul>
+                  )}
+                  <div style={{ fontSize: "11.5px" }}>
+                    Settled FX and fee differences are permanent and absorbed in {targetCol.label} — they are excluded from the suggested {nextCol.label} offset.
+                  </div>
+                  {offsetModal.offsetMode === "linked" && (
+                    <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px dashed #fcd34d", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: "11.5px", fontWeight: "600", color: "#991b1b" }}>
+                        Full linked offset would incorrectly reverse {formatSignedGBP(permanentFxImpact)} into {nextCol.label}.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextState = {
+                            ...offsetModal,
+                            offsetMode: "custom",
+                            customAmount: String(timingOnlyOffsetVal)
+                          };
+                          setOffsetModal(nextState);
+                          handleRefreshOffsetSuggestedNotes(nextState);
+                        }}
+                        style={{
+                          padding: "4px 9px",
+                          borderRadius: "5px",
+                          border: "1px solid #f59e0b",
+                          background: "#fef3c7",
+                          color: "#92400e",
+                          fontSize: "11px",
+                          fontWeight: "700",
+                          cursor: "pointer"
+                        }}
+                      >
+                        Use timing-only offset ({formatGBP(timingOnlyOffsetVal)})
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Next Month Offset Mode Selector */}
               <div style={{ marginBottom: "14px" }}>
@@ -4989,6 +5320,28 @@ export default function CashflowReconTab({
                               background: "#ffffff"
                             }}
                           />
+                          {offsetModal.hasSettlementVariance && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextState = { ...offsetModal, customAmount: String(timingOnlyOffsetVal) };
+                                setOffsetModal(nextState);
+                                handleRefreshOffsetSuggestedNotes(nextState);
+                              }}
+                              style={{
+                                padding: "4px 8px",
+                                borderRadius: "4px",
+                                border: "1px solid #f59e0b",
+                                background: "#fffbeb",
+                                color: "#92400e",
+                                fontSize: "11px",
+                                fontWeight: "700",
+                                cursor: "pointer"
+                              }}
+                            >
+                              Excl. FX/fees ({formatGBP(timingOnlyOffsetVal)})
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => setOffsetModal(prev => prev ? ({ ...prev, customAmount: String(Number(linkedOffsetVal.toFixed(2))) }) : prev)}

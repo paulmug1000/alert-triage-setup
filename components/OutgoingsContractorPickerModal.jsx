@@ -57,7 +57,7 @@ export default function OutgoingsContractorPickerModal({
       const expDateStr = String(expense?.date || "").trim();
       let targetMonthIdx = -1;
       if (expDateStr) {
-        const monthsMap = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+        const monthsMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
         const mMatch = expDateStr.match(/(\d{1,2})-([A-Za-z]{3})-(\d{2,4})/);
         if (mMatch) {
           const yr = mMatch[3].slice(-2);
@@ -560,7 +560,7 @@ export default function OutgoingsContractorPickerModal({
                 }}
               >
                 <h3 style={{ margin: "0 0 12px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
-                  Placeholder / unrecon gap exists
+                  Placeholder exists
                 </h3>
                 <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
                   This month already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />

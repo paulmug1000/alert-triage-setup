@@ -406,7 +406,7 @@ export default function MonthView({
                 border: "1px solid #d0e1f9",
                 borderLeft: "4px solid #0047AB",
                 borderRadius: "8px",
-                padding: "18px 22px",
+                padding: "16px 18px",
                 boxShadow: "0 1px 4px rgba(0, 71, 171, 0.06)",
                 display: "flex",
                 flexDirection: "column",
@@ -418,28 +418,29 @@ export default function MonthView({
                 style={{
                   fontSize: "12px",
                   fontWeight: 700,
-                  letterSpacing: "0.8px",
+                  letterSpacing: "0.6px",
                   color: "#0047AB",
-                  textTransform: "uppercase",
                   fontFamily: "'Kumbh Sans', sans-serif",
                   marginBottom: "4px",
                 }}
               >
-                Executive Summary
+                Executive summary
               </div>
               <div
                 className="home-exec-body"
                 style={{
                   color: "#0f294a",
-                  fontSize: "19.25px",
+                  fontSize: "18px",
                   fontWeight: 500,
-                  lineHeight: 1.55,
+                  lineHeight: 1.5,
                   whiteSpace: "pre-wrap",
+                  textWrap: "pretty",
                   fontFamily: "'Kumbh Sans', sans-serif",
                 }}
                 dangerouslySetInnerHTML={{
                   __html: escapeHtml(headerSummaryText)
-                    .replace(/([£$€¥]\s*\d[\d,]*(?:\.\d+)?)/g, "<strong style='font-weight: 700; color: #0047AB; font-size: 1.2em;'>$1</strong>")
+                    .replace(/([+-]?[£$€¥]\s*\d[\d,]*(?:\.\d+)?)/g, "<strong style='font-weight: 700; color: #0047AB; font-size: 1.15em; white-space: nowrap;'>$1</strong>")
+                    .replace(/([ \t]+)(\(?\s*[-+]?\d[\d,]*(?:\.\d+)?%\s*\)?)/g, "&nbsp;<span style='white-space: nowrap;'>$2</span>")
                     .replace(/\n/g, "<br />"),
                 }}
               />

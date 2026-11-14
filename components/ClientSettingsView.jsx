@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useRouter } from "next/router";
 import Spinner from "./Spinner";
 import EditClientSelector from "./EditClientSelector";
+import AdminSettingNoteTooltip from "./AdminSettingNoteTooltip";
+import { MASTER_SHEET_SETTING_NOTES } from "../config/masterSheetSettingNotes";
 
 const SECTIONS = [
   { id: "main", label: "Main", icon: "🏢", adminOnly: true },
@@ -852,7 +854,7 @@ export default function ClientSettingsView({
 }) {
   const router = useRouter();
   const effectiveIsAdmin = Boolean(isAdmin || user?.isAdmin || user?.role === "Admin");
-  const isSysAdmin = effectiveIsAdmin;
+  const isSysAdmin = Boolean(!user?.isReadOnly && effectiveIsAdmin);
 
   // Client selection - user must actively select a client unless managedClient or initialClientName is set
   const [selectedClientName, setSelectedClientName] = useState(() => {
@@ -1394,6 +1396,14 @@ export default function ClientSettingsView({
         Cell: {cell}
       </div>
     );
+  };
+
+  // Master sheet explainer tooltip helper (Only visible to system admins)
+  const renderAdminNote = (noteKey) => {
+    if (!isSysAdmin || !noteKey) return null;
+    const notes = MASTER_SHEET_SETTING_NOTES[noteKey];
+    if (!notes || notes.length === 0) return null;
+    return <AdminSettingNoteTooltip isAdmin={isSysAdmin} notes={notes} />;
   };
 
   // Switch helper
@@ -2956,8 +2966,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          VAT payment scheme
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>VAT payment scheme</span>
+                          {renderAdminNote("main.vatPaymentScheme")}
                         </label>
                         <select
                           value={settings.main?.vatPaymentScheme || "Accrual"}
@@ -2972,8 +2983,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          VAT rate
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>VAT rate</span>
+                          {renderAdminNote("main.vatRate")}
                         </label>
                         <input
                           type="text"
@@ -3036,8 +3048,9 @@ export default function ClientSettingsView({
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Reporting & customisation</h4>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "16px" }}>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Revenue or income focus
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Revenue or income focus</span>
+                          {renderAdminNote("main.revenueFocus")}
                         </label>
                         <select
                           value={settings.customisation?.revenueFocus || "Revenue"}
@@ -3062,8 +3075,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Direct costs considered as
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Direct costs considered as</span>
+                          {renderAdminNote("main.directCostsMode")}
                         </label>
                         <select
                           value={(settings.customisation?.revenueFocus || "Revenue") === "Income" ? "Pass-through" : (settings.customisation?.directCostsMode || "Contractors")}
@@ -3095,8 +3109,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Tax payment method
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Tax payment method</span>
+                          {renderAdminNote("main.taxPaymentMethod")}
                         </label>
                         <select
                           value={settings.customisation?.taxPaymentMethod || "Standard"}
@@ -3111,8 +3126,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Currency symbol
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Currency symbol</span>
+                          {renderAdminNote("main.currencySymbol")}
                         </label>
                         <select
                           value={settings.customisation?.currencySymbol || "£"}
@@ -3127,8 +3143,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Thousands separator
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Thousands separator</span>
+                          {renderAdminNote("main.thousandsSeparator")}
                         </label>
                         <select
                           value={settings.customisation?.thousandsSeparator || ","}
@@ -3143,8 +3160,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Invoice method
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Invoice method</span>
+                          {renderAdminNote("main.invoiceMethod")}
                         </label>
                         <select
                           value={settings.customisation?.invoiceMethod || "Lines"}
@@ -3159,8 +3177,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Profit share %
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Profit share %</span>
+                          {renderAdminNote("main.profitSharePercent")}
                         </label>
                         <input
                           type="text"
@@ -3172,8 +3191,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Profit share accrual method
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Profit share accrual method</span>
+                          {renderAdminNote("main.profitShareAccrual")}
                         </label>
                         <select
                           value={settings.customisation?.profitShareAccrual || "Monthly"}
@@ -3188,8 +3208,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Profit share payment
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Profit share payment</span>
+                          {renderAdminNote("main.profitSharePayment")}
                         </label>
                         <select
                           value={settings.customisation?.profitSharePayment || "YearlyM13"}
@@ -3204,8 +3225,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Job table style
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Job table style</span>
+                          {renderAdminNote("main.jobTableStyle")}
                         </label>
                         <select
                           value={settings.jobs?.jobCostingStyle || "Standard"}
@@ -3282,8 +3304,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          CRM in use
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>CRM in use</span>
+                          {renderAdminNote("main.crmInUse")}
                         </label>
                         <select
                           value={settings.crm?.toolInUse || "None"}
@@ -3298,8 +3321,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          CRM drives
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>CRM drives</span>
+                          {renderAdminNote("main.crmDrives")}
                         </label>
                         <select
                           value={settings.crm?.crmDrives || "Pipeline"}
@@ -3364,8 +3388,9 @@ export default function ClientSettingsView({
                               {renderCellRef("KeyInfo!X14")}
                             </div>
                             <div>
-                              <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                                Key headers
+                              <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                                <span>Key headers</span>
+                                {renderAdminNote("main.keyHeaders")}
                               </label>
                               <input
                                 type="text"
@@ -3432,18 +3457,19 @@ export default function ClientSettingsView({
                         {settings.crm.toolInUse === "Excel" && (
                           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "12px" }}>
                             {[
-                              { key: "azureTenantId", label: "Azure tenant ID", cell: "KeyInfo!X33" },
-                              { key: "azureClientId", label: "Azure client ID", cell: "KeyInfo!X34" },
-                              { key: "driveId", label: "Drive ID", cell: "KeyInfo!X36" },
-                              { key: "fileId", label: "File ID", cell: "KeyInfo!X37" },
+                              { key: "azureTenantId", label: "Azure tenant ID", cell: "KeyInfo!X33", noteKey: "main.excelAzureAuth" },
+                              { key: "azureClientId", label: "Azure client ID", cell: "KeyInfo!X34", noteKey: "main.excelAzureAuth" },
+                              { key: "driveId", label: "Drive ID", cell: "KeyInfo!X36", noteKey: "main.excelDriveAndFileId" },
+                              { key: "fileId", label: "File ID", cell: "KeyInfo!X37", noteKey: "main.excelDriveAndFileId" },
                               { key: "worksheetName", label: "Worksheet name", cell: "KeyInfo!X38" },
                               { key: "range", label: "Excel range", cell: "KeyInfo!X39" },
                               { key: "columnRow", label: "Column row", cell: "KeyInfo!X40" },
-                              { key: "keyHeaders", label: "Key headers", cell: "KeyInfo!X41" }
+                              { key: "keyHeaders", label: "Key headers", cell: "KeyInfo!X41", noteKey: "main.keyHeaders" }
                             ].map(f => (
                               <div key={f.key}>
-                                <label style={{ fontSize: "11px", fontWeight: "600", color: "#475569", display: "block", marginBottom: "3px" }}>
-                                  {f.label}
+                                <label style={{ fontSize: "11px", fontWeight: "600", color: "#475569", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                                  <span>{f.label}</span>
+                                  {f.noteKey && renderAdminNote(f.noteKey)}
                                 </label>
                                 <input
                                   type="text"
@@ -3467,7 +3493,10 @@ export default function ClientSettingsView({
                             {/* Azure Client Secret */}
                             <div>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" }}>
-                                <label style={{ fontSize: "11px", fontWeight: "600", color: "#475569" }}>Azure client secret</label>
+                                <label style={{ fontSize: "11px", fontWeight: "600", color: "#475569", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                  <span>Azure client secret</span>
+                                  {renderAdminNote("main.excelAzureAuth")}
+                                </label>
                                 <button
                                   type="button"
                                   onClick={() => setShowClientSecret(v => !v)}
@@ -3517,12 +3546,13 @@ export default function ClientSettingsView({
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "16px" }}>
                       {[
                         { key: "invoices", label: "Invoices frequency", cell: "DataChgAlert!Y2" },
-                        { key: "crm", label: "CRM frequency", cell: "DataChgAlert!Y3" },
-                        { key: "expenses", label: "Expenses frequency", cell: "DataChgAlert!Y4" }
+                        { key: "crm", label: "CRM frequency", cell: "DataChgAlert!Y3", noteKey: "main.crmFrequency" },
+                        { key: "expenses", label: "Expenses frequency", cell: "DataChgAlert!Y4", noteKey: "main.expensesFrequency" }
                       ].map(f => (
                         <div key={f.key} style={{ background: "#F8FAFC", padding: "14px", borderRadius: "8px", border: "1px solid #E2E8F0" }}>
-                          <label style={{ fontSize: "12px", fontWeight: "600", color: "#1E293B", display: "block", marginBottom: "4px" }}>
-                            {f.label}
+                          <label style={{ fontSize: "12px", fontWeight: "600", color: "#1E293B", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                            <span>{f.label}</span>
+                            {f.noteKey && renderAdminNote(f.noteKey)}
                           </label>
                           <select
                             value={settings.automation?.frequencies?.[f.key] || ""}
@@ -3565,8 +3595,9 @@ export default function ClientSettingsView({
                   {/* Making up Cost of Sale % (Client Sheet Outgoings!A112) */}
                   <div style={{ background: "#F8FAFC", borderRadius: "10px", border: "1px solid #E2E8F0", padding: "18px", marginBottom: "20px" }}>
                     <div style={{ maxWidth: "360px" }}>
-                      <label style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", display: "block", marginBottom: "6px" }}>
-                        Making up Cost of Sale %
+                      <label style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "5px", marginBottom: "6px" }}>
+                        <span>Making up Cost of Sale %</span>
+                        {renderAdminNote("customisation.makingUpCos")}
                       </label>
                       <input
                         type="text"
@@ -3866,8 +3897,9 @@ export default function ClientSettingsView({
                     <div style={{ marginBottom: "24px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "14px" }}>
                         <div>
-                          <h5 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>
-                            Cash bank accounts
+                          <h5 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span>Cash bank accounts</span>
+                            {renderAdminNote("accounting.cashBankAccounts")}
                           </h5>
                           <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
                             Select and prioritize the company bank accounts included in cash flow, management reporting, and end-of-month tools.{effectiveIsAdmin ? " Names in KeyInfo!H12:H21, Accounting Tool IDs in KeyInfo!I12:I21." : ""}
@@ -4296,8 +4328,9 @@ export default function ClientSettingsView({
                   {/* Invoice number formatting (InvAppList!F1) */}
                   <div style={{ marginBottom: "28px", background: "#FFFFFF", borderRadius: "10px", padding: "20px", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
                     <div style={{ marginBottom: "16px", borderBottom: "1px solid #F1F5F9", paddingBottom: "12px" }}>
-                      <h4 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
-                        Invoice number formatting
+                      <h4 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <span>Invoice number formatting</span>
+                        {renderAdminNote("accounting.invoiceNumberFormatting")}
                       </h4>
                       <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
                         Configure how invoice reference numbers are formatted for comparison and display in Pulse.
@@ -4449,8 +4482,9 @@ export default function ClientSettingsView({
                   <div style={{ marginBottom: "28px", background: "#F8FAFC", borderRadius: "10px", padding: "16px", border: "1px solid #E2E8F0" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "14px" }}>
                       <div>
-                        <h4 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>
-                          Manual category tracking
+                        <h4 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span>Manual category tracking</span>
+                          {renderAdminNote("accounting.manualCategoryTracking")}
                         </h4>
                         <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
                           {((settings.customisation?.revenueFocus || "Revenue") === "Income" || settings.customisation?.directCostsMode === "Pass-through")
@@ -4544,8 +4578,9 @@ export default function ClientSettingsView({
                   <div style={{ background: "#FFFFFF", borderRadius: "10px", border: "1px solid #E2E8F0", padding: "16px", boxSizing: "border-box", width: "100%", minWidth: 0, overflow: "hidden" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "16px", borderBottom: "1px solid #F1F5F9", paddingBottom: "12px" }}>
                       <div>
-                        <h4 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>
-                          Category mapping rules
+                        <h4 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span>Category mapping rules</span>
+                          {renderAdminNote("accounting.categoryMappingRules")}
                         </h4>
                         <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
                           Assign categories from your P&amp;L into Pulse financial categories. Each P&amp;L category can only be selected once.
@@ -4599,10 +4634,10 @@ export default function ClientSettingsView({
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "14px", width: "100%", minWidth: 0, boxSizing: "border-box" }}>
                       {[
                         { key: "revenue", label: "Revenue", max: 16, cell: "KeyInfo!BA2:BA17" },
-                        { key: "cosStaffCosts", label: "COS staff costs", max: 10, cell: "KeyInfo!BA19:BA28" },
+                        { key: "cosStaffCosts", label: "COS staff costs", max: 10, cell: "KeyInfo!BA19:BA28", noteKey: "accounting.cosStaffCosts" },
                         { key: "nonCosStaffCosts", label: "Non-COS staff costs", max: 9, cell: "KeyInfo!BA35:BA43" },
                         { key: "corporationTax", label: "Corporation tax", max: 3, cell: "KeyInfo!BA50:BA52" },
-                        { key: "depreciation", label: "Depreciation", max: 3, cell: "KeyInfo!BA54:BA56" },
+                        { key: "depreciation", label: "Depreciation", max: 3, cell: "KeyInfo!BA54:BA56", noteKey: "accounting.depreciation" },
                         { key: "otherCostOfSale", label: "Other costs of sale", max: 20, cell: "KeyInfo!BA59:BA78" },
                         { key: "nonOperatingIncome", label: "Non-operating income", max: 13, cell: "KeyInfo!BA81:BA93" },
                         { key: "nonOperatingExpenses", label: "Non-operating expenses", max: 10, cell: "KeyInfo!BA101:BA110" },
@@ -4611,7 +4646,10 @@ export default function ClientSettingsView({
                         return (
                           <div key={group.key} style={{ background: "#F8FAFC", padding: "12px 14px", borderRadius: "8px", border: "1px solid #E2E8F0", minWidth: 0, width: "100%", boxSizing: "border-box" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", minWidth: 0, gap: "6px" }}>
-                              <label style={{ fontSize: "12px", fontWeight: "700", color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.label}</label>
+                              <div style={{ display: "flex", alignItems: "center", gap: "5px", minWidth: 0 }}>
+                                <label style={{ fontSize: "12px", fontWeight: "700", color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.label}</label>
+                                {group.noteKey && renderAdminNote(group.noteKey)}
+                              </div>
                               {renderCellRef(group.cell)}
                             </div>
                             {renderProgressiveDropdowns({
@@ -4780,6 +4818,13 @@ export default function ClientSettingsView({
                                 [...availableHeaders, mapping.crmField].filter(Boolean)
                               ));
 
+                              const fieldNoteKey = {
+                                startDate: "crm.field.startDate",
+                                endDate: "crm.field.endDate",
+                                likelihood: "crm.field.likelihood",
+                                projectRetainer: "crm.field.projectRetainer"
+                              }[f.key];
+
                               return (
                                 <th
                                   key={f.key}
@@ -4846,8 +4891,9 @@ export default function ClientSettingsView({
                                   {/* Transformation Rule Dropdown (only rendered if field has transformation options) */}
                                   {f.formatOptions.length > 0 && (
                                     <div>
-                                      <label style={{ display: "block", fontSize: "10px", fontWeight: "600", color: "#64748B", textTransform: "uppercase", letterSpacing: "0.4px", marginBottom: "2px" }}>
-                                        TRANSFORMATION RULE:
+                                      <label style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: "600", color: "#64748B", textTransform: "uppercase", letterSpacing: "0.4px", marginBottom: "2px" }}>
+                                        <span>TRANSFORMATION RULE:</span>
+                                        {fieldNoteKey && renderAdminNote(fieldNoteKey)}
                                       </label>
                                       <select
                                         value={mapping.formatRule !== undefined ? mapping.formatRule : f.defaultFormat}
@@ -5028,8 +5074,9 @@ export default function ClientSettingsView({
                             </div>
 
                             <div>
-                              <label style={{ fontSize: "11px", fontWeight: "600", color: "#374151", display: "block", marginBottom: "4px" }}>
-                                Logic Operator (DH2)
+                              <label style={{ fontSize: "11px", fontWeight: "600", color: "#374151", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                                <span>Logic Operator (DH2)</span>
+                                {renderAdminNote("crm.def.confirmedOperator")}
                               </label>
                               <select
                                 value={settings.crm?.jobDefinitions?.confirmedOperator || "Or"}
@@ -5063,8 +5110,9 @@ export default function ClientSettingsView({
                           </div>
 
                           <div>
-                            <label style={{ fontSize: "11px", fontWeight: "600", color: "#374151", display: "block", marginBottom: "4px" }}>
-                              Status includes (DF2)
+                            <label style={{ fontSize: "11px", fontWeight: "600", color: "#374151", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                              <span>Status includes (DF2)</span>
+                              {renderAdminNote("crm.def.confirmedStatus")}
                             </label>
                             <ChipInput
                               values={(settings.crm?.jobDefinitions?.confirmedStatus || "")
@@ -5101,6 +5149,7 @@ export default function ClientSettingsView({
                           <span style={{ fontSize: "11px", background: "#EDE9FE", color: "#5B21B6", padding: "1px 6px", borderRadius: "10px", fontWeight: "600" }}>
                             DU4:EG
                           </span>
+                          {renderAdminNote("crm.def.pipelineCard")}
                         </div>
 
                         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
@@ -5109,8 +5158,9 @@ export default function ClientSettingsView({
                           </div>
 
                           <div>
-                            <label style={{ fontSize: "11px", fontWeight: "600", color: "#374151", display: "block", marginBottom: "4px" }}>
-                              Additional statuses to EXCLUDE from pipeline (EE2)
+                            <label style={{ fontSize: "11px", fontWeight: "600", color: "#374151", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                              <span>Additional statuses to EXCLUDE from pipeline (EE2)</span>
+                              {renderAdminNote("crm.def.pipelineExcludedStatuses")}
                             </label>
                             <ChipInput
                               values={(settings.crm?.jobDefinitions?.pipelineExcludedStatuses || "")
@@ -5361,8 +5411,18 @@ export default function ClientSettingsView({
                         <thead>
                           <tr style={{ background: "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
                             <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569" }}>CRM status / stage name</th>
-                            <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569", width: "140px" }}>Likelihood %</th>
-                            <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569", width: "210px" }}>Start date rule</th>
+                            <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569", width: "140px" }}>
+                              <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                <span>Likelihood %</span>
+                                {renderAdminNote("crm.statusTable.likelihood")}
+                              </div>
+                            </th>
+                            <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569", width: "210px" }}>
+                              <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                <span>Start date rule</span>
+                                {renderAdminNote("crm.statusTable.startDateRule")}
+                              </div>
+                            </th>
                             <th style={{ padding: "8px 12px", width: "60px" }}></th>
                           </tr>
                         </thead>
@@ -5487,8 +5547,9 @@ export default function ClientSettingsView({
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Date adjustments</h4>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "16px" }}>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Project start date
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Project start date</span>
+                          {renderAdminNote("jobs.projectStartDate")}
                         </label>
                         <select
                           value={settings.jobs?.dateAdjustment?.projectStartDate || PROJECT_DATE_ADJUST_OPTIONS[1]}
@@ -5506,8 +5567,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Project end date
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Project end date</span>
+                          {renderAdminNote("jobs.projectEndDate")}
                         </label>
                         <select
                           value={settings.jobs?.dateAdjustment?.projectEndDate || PROJECT_DATE_ADJUST_OPTIONS[2]}
@@ -5525,8 +5587,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Retainer dates
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Retainer dates</span>
+                          {renderAdminNote("jobs.retainerDates")}
                         </label>
                         <select
                           value={settings.jobs?.dateAdjustment?.retainerDates || RETAINER_DATES_OPTIONS[1]}
@@ -5544,8 +5607,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Retainer duration
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Retainer duration</span>
+                          {renderAdminNote("jobs.retainerDur")}
                         </label>
                         <select
                           value={settings.jobs?.dateAdjustment?.retainerDur || RETAINER_DUR_OPTIONS[0]}
@@ -5563,8 +5627,9 @@ export default function ClientSettingsView({
                       </div>
 
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          Move CRM dates if in past?
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                          <span>Move CRM dates if in past?</span>
+                          {renderAdminNote("jobs.moveCrmDatesIfPast")}
                         </label>
                         <select
                           value={settings.jobs?.dateAdjustment?.moveCrmDatesIfPast || MOVE_CRM_DATES_OPTIONS[1]}
@@ -5584,6 +5649,9 @@ export default function ClientSettingsView({
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
                           Number of months to include in retainer total revenue calculations, when “no end date” is selected
+                          <span style={{ marginLeft: "5px", display: "inline-block", verticalAlign: "middle" }}>
+                            {renderAdminNote("jobs.noEndDateRetainerMonths")}
+                          </span>
                         </label>
                         <input
                           type="number"
@@ -5611,8 +5679,9 @@ export default function ClientSettingsView({
 
                     {/* 15 Product Lines */}
                     <div style={{ marginBottom: "20px" }}>
-                      <div style={{ fontSize: "12px", fontWeight: "600", color: "#334155", marginBottom: "6px" }}>
-                        Product line names (up to 15)
+                      <div style={{ fontSize: "12px", fontWeight: "600", color: "#334155", marginBottom: "6px", display: "flex", alignItems: "center", gap: "5px" }}>
+                        <span>Product line names (up to 15)</span>
+                        {renderAdminNote("jobs.productLines")}
                       </div>
                       {renderCellRef("KeyInfo!B23:B37")}
                       {renderProgressiveInputs({
@@ -5628,8 +5697,9 @@ export default function ClientSettingsView({
                     <div style={{ background: "#F8FAFC", borderRadius: "8px", padding: "16px", border: "1px solid #E2E8F0" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "12px" }}>
                         <div>
-                          <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A" }}>
-                            CRM product line mappings
+                          <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span>CRM product line mappings</span>
+                            {renderAdminNote("jobs.productLineMappings")}
                           </div>
                           {renderCellRef("KeyInfo!E23:F62")}
                           {productLinesMsg && (
@@ -5793,8 +5863,9 @@ export default function ClientSettingsView({
 
                     {/* Client-specific lead sources */}
                     <div style={{ marginBottom: "20px" }}>
-                      <div style={{ fontSize: "12px", fontWeight: "600", color: "#334155", marginBottom: "6px" }}>
-                        Client-specific lead sources (max 10)
+                      <div style={{ fontSize: "12px", fontWeight: "600", color: "#334155", marginBottom: "6px", display: "flex", alignItems: "center", gap: "5px" }}>
+                        <span>Client-specific lead sources (max 10)</span>
+                        {renderAdminNote("jobs.leadSources")}
                       </div>
                       {renderCellRef("KeyInfo!G63:G72")}
                       {renderProgressiveInputs({
@@ -5810,8 +5881,9 @@ export default function ClientSettingsView({
                     <div style={{ background: "#F8FAFC", borderRadius: "8px", padding: "16px", border: "1px solid #E2E8F0" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "12px" }}>
                         <div>
-                          <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A" }}>
-                            Lead source mappings
+                          <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span>Lead source mappings</span>
+                            {renderAdminNote("jobs.leadSourceMappings")}
                           </div>
                           {renderCellRef("KeyInfo!I32:J75")}
                           {leadSourcesMsg && (
@@ -5980,7 +6052,10 @@ export default function ClientSettingsView({
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Invoices</h4>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px", marginBottom: "20px" }}>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Months to compare</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Months to compare</span>
+                          {renderAdminNote("automation.inv.monthsToCompare")}
+                        </label>
                         <select
                           value={String(settings.automation?.invoices?.monthsToCompare || "6")}
                           onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, monthsToCompare: e.target.value } } }))}
@@ -5993,7 +6068,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!B32")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Months for others</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Months for others</span>
+                          {renderAdminNote("automation.inv.monthsForOthers")}
+                        </label>
                         <select
                           value={String(settings.automation?.invoices?.monthsForOthers || "6")}
                           onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, monthsForOthers: e.target.value } } }))}
@@ -6019,7 +6097,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!D39")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Month tolerance</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Month tolerance</span>
+                          {renderAdminNote("automation.inv.monthTolerance")}
+                        </label>
                         <input
                           type="text"
                           value={settings.automation?.invoices?.monthTolerance || "0"}
@@ -6029,7 +6110,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!F39")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Include half/third amounts?</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Include half/third amounts?</span>
+                          {renderAdminNote("automation.inv.includeHalfThird")}
+                        </label>
                         <select
                           value={settings.automation?.invoices?.includeHalfThird || "Yes"}
                           onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, includeHalfThird: e.target.value } } }))}
@@ -6042,7 +6126,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!H39")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Default project invoicing</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Default project invoicing</span>
+                          {renderAdminNote("automation.inv.defaultProjectInvoicing")}
+                        </label>
                         <select
                           value={settings.automation?.invoices?.defaultProjectInvoiceDetails || DEFAULT_INVOICING_DETAILS_OPTIONS[2]}
                           onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, defaultProjectInvoiceDetails: e.target.value } } }))}
@@ -6055,7 +6142,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!B50")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Default retainer invoice date</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Default retainer invoice date</span>
+                          {renderAdminNote("automation.inv.defaultRetainerInvoiceDate")}
+                        </label>
                         <input
                           type="text"
                           value={settings.automation?.invoices?.defaultRetainerInvoiceDate || "28"}
@@ -6065,7 +6155,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!B51")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Default days to pay</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Default days to pay</span>
+                          {renderAdminNote("automation.inv.defaultDaysToPay")}
+                        </label>
                         <input
                           type="text"
                           value={settings.automation?.invoices?.defaultDaysToPay || "30"}
@@ -6075,7 +6168,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!B52")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Update days to pay on new month</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Update days to pay on new month</span>
+                          {renderAdminNote("automation.inv.updateDaysToPayNewMonth")}
+                        </label>
                         <select
                           value={settings.automation?.invoices?.updateDaysToPayNewMonth || "Yes"}
                           onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, updateDaysToPayNewMonth: e.target.value } } }))}
@@ -6088,7 +6184,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!B47")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Create invoices for retainers</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Create invoices for retainers</span>
+                          {renderAdminNote("automation.inv.createInvoiceRowsRetainers")}
+                        </label>
                         <select
                           value={settings.automation?.invoices?.createInvoiceRowsRetainers || "Yes"}
                           onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, createInvoiceRowsRetainers: e.target.value } } }))}
@@ -6111,15 +6210,18 @@ export default function ClientSettingsView({
                         {[
                           { key: "missingInvoice", label: "Missing invoice?", cell: "DataChgAlert!B39" },
                           { key: "clientMismatch", label: "Client mismatch", cell: "DataChgAlert!B40" },
-                          { key: "invAmtMismatch", label: "Inv amt mismatch?", cell: "DataChgAlert!B41" },
+                          { key: "invAmtMismatch", label: "Inv amt mismatch?", cell: "DataChgAlert!B41", noteKey: "automation.inv.invAmtMismatch" },
                           { key: "sentDateMismatch", label: "Sent date mismatch?", cell: "DataChgAlert!B42" },
-                          { key: "duplicateInvNo", label: "Duplicate inv no?", cell: "DataChgAlert!B43" },
+                          { key: "duplicateInvNo", label: "Duplicate inv no?", cell: "DataChgAlert!B43", noteKey: "automation.inv.duplicateInvNo" },
                           { key: "fullyPaidMismatch", label: "Fully paid on mismatch?", cell: "DataChgAlert!B44" },
                           { key: "statusMismatch", label: "Status mismatch?", cell: "DataChgAlert!B45" }
                         ].map(r => (
                           <div key={r.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FFFFFF", padding: "6px 10px", borderRadius: "6px", border: "1px solid #E2E8F0" }}>
                             <div>
-                              <span style={{ fontSize: "12px", color: "#334155" }}>{r.label}</span>
+                              <span style={{ fontSize: "12px", color: "#334155", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                <span>{r.label}</span>
+                                {r.noteKey && renderAdminNote(r.noteKey)}
+                              </span>
                               {renderCellRef(r.cell)}
                             </div>
                             <select
@@ -6180,7 +6282,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!B102")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Default direct cost receiving</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Default direct cost receiving</span>
+                          {renderAdminNote("automation.exp.defaultDirectCostDetails")}
+                        </label>
                         <select
                           value={settings.automation?.expenses?.defaultDirectCostDetails || DEFAULT_INVOICING_DETAILS_OPTIONS[2]}
                           onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, expenses: { ...prev.automation.expenses, defaultDirectCostDetails: e.target.value } } }))}
@@ -6193,7 +6298,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!B105")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Default retainer expense date</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Default retainer expense date</span>
+                          {renderAdminNote("automation.exp.defaultRetainerExpenseDate")}
+                        </label>
                         <input
                           type="text"
                           value={settings.automation?.expenses?.defaultRetainerExpenseDate || "28"}
@@ -6216,7 +6324,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!H111")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Month tolerance</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Month tolerance</span>
+                          {renderAdminNote("automation.exp.monthTolerance")}
+                        </label>
                         <input
                           type="text"
                           value={settings.automation?.expenses?.monthTolerance || "0"}
@@ -6237,15 +6348,18 @@ export default function ClientSettingsView({
                           { key: "missingCost", label: "Missing cost?", cell: "DataChgAlert!B111" },
                           { key: "duplicateAppId", label: "Duplicate app ID?", cell: "DataChgAlert!B112" },
                           { key: "descrMismatch", label: "Descr. mismatch?", cell: "DataChgAlert!B113" },
-                          { key: "amountMismatch", label: "Amount mismatch?", cell: "DataChgAlert!B114" },
-                          { key: "vatMismatch", label: "VAT mismatch?", cell: "DataChgAlert!B115" },
+                          { key: "amountMismatch", label: "Amount mismatch?", cell: "DataChgAlert!B114", noteKey: "automation.exp.amountAndVatMismatch" },
+                          { key: "vatMismatch", label: "VAT mismatch?", cell: "DataChgAlert!B115", noteKey: "automation.exp.amountAndVatMismatch" },
                           { key: "recDateMismatch", label: "Rec date mismatch?", cell: "DataChgAlert!B116" },
                           { key: "payDateMismatch", label: "Pay date mismatch?", cell: "DataChgAlert!B117" },
                           { key: "statusMismatch", label: "Status mismatch?", cell: "DataChgAlert!B118" }
                         ].map(r => (
                           <div key={r.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FFFFFF", padding: "6px 10px", borderRadius: "6px", border: "1px solid #E2E8F0" }}>
                             <div>
-                              <span style={{ fontSize: "12px", color: "#334155" }}>{r.label}</span>
+                              <span style={{ fontSize: "12px", color: "#334155", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                <span>{r.label}</span>
+                                {r.noteKey && renderAdminNote(r.noteKey)}
+                              </span>
                               {renderCellRef(r.cell)}
                             </div>
                             <select
@@ -6280,7 +6394,10 @@ export default function ClientSettingsView({
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>CRM discrepancy rules</h4>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px", marginBottom: "18px" }}>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>CRM months to compare</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>CRM months to compare</span>
+                          {renderAdminNote("automation.crm.monthsToCompare")}
+                        </label>
                         <select
                           value={String(settings.automation?.crm?.monthsToCompare || "6")}
                           onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, crm: { ...prev.automation.crm, monthsToCompare: e.target.value } } }))}
@@ -6293,7 +6410,10 @@ export default function ClientSettingsView({
                         {renderCellRef("DataChgAlert!B55")}
                       </div>
                       <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Pipeline mode - add jobs to confirmed?</label>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
+                          <span>Pipeline mode - add jobs to confirmed?</span>
+                          {renderAdminNote("automation.crm.pipelineAddJobsToConf")}
+                        </label>
                         <select
                           value={settings.automation?.crm?.pipelineAddJobsToConf || "Yes"}
                           onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, crm: { ...prev.automation.crm, pipelineAddJobsToConf: e.target.value } } }))}
@@ -6318,8 +6438,9 @@ export default function ClientSettingsView({
                       return (
                         <div key={table.key} style={{ background: "#F8FAFC", borderRadius: "8px", padding: "14px", border: "1px solid #E2E8F0", marginBottom: "14px" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                            <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A" }}>
-                              {table.title}
+                            <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "6px" }}>
+                              <span>{table.title}</span>
+                              {table.key === "crmConf" && renderAdminNote("automation.crm.table.crmConf")}
                             </div>
                             {renderCellRef(table.cell)}
                           </div>
@@ -6332,14 +6453,36 @@ export default function ClientSettingsView({
                               <thead>
                                 <tr style={{ background: "#F1F5F9", borderBottom: "1px solid #E2E8F0", textAlign: "left" }}>
                                   <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569" }}>Discrepancy rule</th>
-                                  <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "140px" }}>GAS automation</th>
-                                  <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "140px" }}>PMA alerts</th>
+                                  <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "140px" }}>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                      <span>GAS automation</span>
+                                      {renderAdminNote("automation.crm.col.gasAutomation")}
+                                    </div>
+                                  </th>
+                                  <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "140px" }}>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                      <span>PMA alerts</span>
+                                      {renderAdminNote("automation.crm.col.pmaAlerts")}
+                                    </div>
+                                  </th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {rules.map((r, rIdx) => (
+                                {rules.map((r, rIdx) => {
+                                  const lowerLabel = String(r.label || "").toLowerCase();
+                                  const isMissingJobRule =
+                                    (table.key === "crmPipe" || table.key === "crmConf") &&
+                                    lowerLabel.includes("missing job");
+                                  const isLikelihoodRule = lowerLabel.includes("likel");
+                                  return (
                                   <tr key={rIdx} style={{ borderBottom: "1px solid #F1F5F9" }}>
-                                    <td style={{ padding: "6px 10px", color: "#334155", fontWeight: "500" }}>{r.label}</td>
+                                    <td style={{ padding: "6px 10px", color: "#334155", fontWeight: "500" }}>
+                                      <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                        <span>{r.label}</span>
+                                        {isMissingJobRule && renderAdminNote("automation.crm.row.crmMissingJob")}
+                                        {isLikelihoodRule && renderAdminNote("automation.crm.row.likelihoodMismatch")}
+                                      </span>
+                                    </td>
                                     <td style={{ padding: "6px 10px" }}>
                                       <select
                                         value={r.gasAction || "Include"}
@@ -6395,7 +6538,8 @@ export default function ClientSettingsView({
                                       </select>
                                     </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>

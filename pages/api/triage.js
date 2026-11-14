@@ -40,7 +40,7 @@ import {
   handleCreateOutgoingsVendor, handleUpdateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
-  handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote, handleSetMakingUpCosZero, handleSetMakingUpCosTarget,
+  handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleVerifyExpenseInPulse, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote, handleSetMakingUpCosZero, handleSetMakingUpCosTarget,
   handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, handleGetDefaultDaysToPay, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
@@ -50,6 +50,7 @@ import {
   handleApplyRetainerSplitInvoice, handleDeleteRetainer
 } from "../../services/retainers";
 import {
+  handleEomGetOverviewBootstrap,
   handleEomGetTemplates, handleEomGetExcludedClients, handleEomToggleClientExcluded,
   handleEomReorderClients, handleEomSaveTemplate, handleEomGetClientTasks,
   handleEomGetClientDetail, handleEomSaveClientTask, handleEomGetMonthStatus,
@@ -122,6 +123,7 @@ import {
   resolveSupabaseSheetContext,
   getSupabaseClockStatusAndSyncConfig,
   flushPendingClientRecomputes,
+  flushImmediateAndScheduleBackgroundClientRecomputes,
 } from "../../services/masterEngineService";
 import { getSupabaseAdmin } from "../../services/supabaseClient";
 import { syncExpenseBreakdownToClientSheetNative } from "../../services/masterSyncEngine";
@@ -227,9 +229,21 @@ export default async function handler(req, res) {
     return;
   }
 
+  const requestAction = req.method === "GET" ? req.query?.action : req.body?.action;
+  const BACKGROUND_POOL_ACTIONS = new Set([
+    "run_flag_sweep",
+    "build_cached_alert_options",
+    "store_precomputed",
+    "trigger_proactive_checks",
+    "cleanup_alert_memory",
+    "rehash_alert_memory",
+    "rehash_ignored_alerts",
+    "send_daily_alerts_summary",
+  ]);
+
   try {
     // Handle both POST (req.body) and GET (req.query) requests
-    const action = req.method === "GET" ? req.query.action : req.body?.action;
+    const action = requestAction;
     const automationCommanderSheetId = getCanonicalAcSheetId();
     if (req.body && typeof req.body === "object") {
       req.body.automationCommanderSheetId = automationCommanderSheetId;
@@ -321,11 +335,14 @@ export default async function handler(req, res) {
       "get_invoice_jobs",
       "get_all_client_jobs",
       "get_retainer_jobs",
+      "verify_expense_in_pulse",
+      "eom_get_overview_bootstrap",
       "eom_get_templates",
       "eom_get_excluded_clients",
       "eom_get_client_tasks",
       "eom_get_client_detail",
       "eom_get_month_status",
+      "eom_get_default_tasks",
       "eom_get_bank_accounts",
       "eom_get_cash_balance_progress",
       "eom_get_pl_comp_data",
@@ -343,17 +360,6 @@ export default async function handler(req, res) {
         error: `Method Not Allowed: Action '${action}' modifies state and requires POST.`
       });
     }
-
-    const BACKGROUND_POOL_ACTIONS = new Set([
-      "run_flag_sweep",
-      "build_cached_alert_options",
-      "store_precomputed",
-      "trigger_proactive_checks",
-      "cleanup_alert_memory",
-      "rehash_alert_memory",
-      "rehash_ignored_alerts",
-      "send_daily_alerts_summary",
-    ]);
 
     const sheets = await getSheetsClient({
       pool: BACKGROUND_POOL_ACTIONS.has(action) ? "background" : "interactive",
@@ -675,6 +681,8 @@ export default async function handler(req, res) {
       return await handleMoveInvoiceToJob(req, res, sheets);
     } else if (action === "verify_invoice_slot") {
       return await handleVerifyInvoiceSlot(req, res, sheets);
+    } else if (action === "verify_expense_in_pulse") {
+      return await handleVerifyExpenseInPulse(req, res, sheets);
     } else if (action === "create_job_from_invoice") {
       return await handleCreateJobFromInvoice(req, res, sheets);
     } else if (action === "get_default_days_to_pay") {
@@ -765,7 +773,7 @@ export default async function handler(req, res) {
       }
     } else if (action === "update_cash_adjustment") {
       try {
-        const { clientSheetId, colLetter, sheetRow, value, clientName, automationCommanderSheetId } = req.body;
+        const { clientSheetId, colLetter, sheetRow, value, note, cashTabSheetId, colIdx, clientName, automationCommanderSheetId } = req.body;
         if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
@@ -774,6 +782,9 @@ export default async function handler(req, res) {
           colLetter,
           sheetRow,
           value,
+          note,
+          cashTabSheetId,
+          colIdx,
           clientName,
           automationCommanderSheetId,
           isAdmin: Boolean(sessionUser?.isAdmin || isSystemAuthorized)
@@ -1466,6 +1477,8 @@ export default async function handler(req, res) {
       return await handleProcessPayrollDocument(req, res, sheets);
     } else if (action === "process_time_document") {
       return await handleProcessTimeDocument(req, res, sheets);
+    } else if (action === "eom_get_overview_bootstrap") {
+      return await handleEomGetOverviewBootstrap(req, res, sheets);
     } else if (action === "eom_get_templates") {
       return await handleEomGetTemplates(req, res, sheets);
     } else if (action === "eom_get_excluded_clients") {
@@ -1566,13 +1579,16 @@ export default async function handler(req, res) {
       return await handleEomPreviewMgmtReport(req, res, sheets);
 
     } else if (action === "get_flag_sweep_log") {
-      const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);
+      const limit = Math.min(Math.max(parseInt(req.body.limit, 10) || 100, 1), 200);
+      const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId, limit);
       return res.status(200).json({ success: true, runs });
     } else if (action === "get_precompute_log") {
-      const runs = await readPrecomputeLog(sheets, req.body.automationCommanderSheetId);
+      const limit = Math.min(Math.max(parseInt(req.body.limit, 10) || 100, 1), 200);
+      const runs = await readPrecomputeLog(sheets, req.body.automationCommanderSheetId, limit);
       return res.status(200).json({ success: true, runs });
     } else if (action === "get_build_options_log") {
-      const runs = await readBuildOptionsLog(sheets, req.body.automationCommanderSheetId);
+      const limit = Math.min(Math.max(parseInt(req.body.limit, 10) || 100, 1), 200);
+      const runs = await readBuildOptionsLog(sheets, req.body.automationCommanderSheetId, limit);
       return res.status(200).json({ success: true, runs });
     } else if (action === "get_security_audit_log") {
       if (!sessionUser || !sessionUser.isAdmin) {
@@ -1594,7 +1610,11 @@ export default async function handler(req, res) {
       error: safeMsg,
     });
   } finally {
-    await flushPendingClientRecomputes().catch(() => { });
+    if (BACKGROUND_POOL_ACTIONS.has(requestAction)) {
+      await flushPendingClientRecomputes().catch(() => { });
+    } else {
+      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+    }
   }
 }
 

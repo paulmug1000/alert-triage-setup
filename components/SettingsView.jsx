@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import Skeleton from "./Skeleton";
 import ClientSettingsView from "./ClientSettingsView";
-import SupabaseControlPlaneCard from "./SupabaseControlPlaneCard";
 import UserManagementCard from "./UserManagementCard";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
@@ -63,6 +62,7 @@ export default function SettingsView({
 
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [triggerProactiveMsg, setTriggerProactiveMsg] = useState("");
+  const [showZeroActivityLogs, setShowZeroActivityLogs] = useState(false);
 
   // User preference: Daily alerts digest email
   const [dailyAlertsEmail, setDailyAlertsEmail] = useState("Yes");
@@ -74,10 +74,7 @@ export default function SettingsView({
     settingsData, setSettingsData, settingsLoading, setSettingsLoading,
     settingsEditHourly, setSettingsEditHourly, settingsEditDaily, setSettingsEditDaily,
     settingsEditAnomaly, setSettingsEditAnomaly, settingsSaving, setSettingsSaving,
-    settingsSaveMsg, setSettingsSaveMsg, agentRunClient, setAgentRunClient,
-    agentRunTypes, setAgentRunTypes, agentRunStatus, setAgentRunStatus,
-    agentRunMsg, setAgentRunMsg, agentRunId, setAgentRunId,
-    agentProgressEntries, setAgentProgressEntries, agentRunStartedAt, setAgentRunStartedAt,
+    settingsSaveMsg, setSettingsSaveMsg,
     sweepSchedule, setSweepSchedule, sweepScheduleLoading, setSweepScheduleLoading,
     sweepScheduleLoaded, setSweepScheduleLoaded, sweepFrequencySaving, setSweepFrequencySaving,
     flagSweepLog, setFlagSweepLog, flagSweepLogLoading, setFlagSweepLogLoading,
@@ -435,7 +432,6 @@ export default function SettingsView({
           {/* Admin Only Sections */}
           {effectiveIsAdmin && (
             <>
-              <SupabaseControlPlaneCard automationCommanderSheetId={automationCommanderSheetId} />
               <UserManagementCard
                 automationCommanderSheetId={automationCommanderSheetId}
                 currentUserEmail={user?.email || ""}
@@ -445,112 +441,6 @@ export default function SettingsView({
 
               {!settingsLoading && (
                 <>
-                  {/* Run Client Automation */}
-                  <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-                    <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Run client automation</h3>
-                    <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-                      Runs a client&apos;s invoice/CRM/expense automation sequence on demand via that client&apos;s Master Sheet Web App. Executes immediately and reports live progress below.
-                    </p>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "14px" }}>
-                      <div>
-                        <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Client</label>
-                        <select value={agentRunClient} onChange={e => { setAgentRunClient(e.target.value); setAgentRunStatus("idle"); setAgentRunMsg(""); }}
-                          style={{ width: "100%", padding: "8px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }}>
-                          <option value="">Select a client...</option>
-                          {(allOutgoingsClients || []).map(c => (
-                            <option key={c.clientName} value={c.clientName}>
-                              {c.clientName}{!c.hasWebAppUrl ? " (no Web App URL configured)" : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Sequences to run</label>
-                        <div style={{ display: "flex", gap: "14px", paddingTop: "8px" }}>
-                          {[["invoice", "Invoice"], ["crm", "CRM"], ["expense", "Expense"]].map(([key, label]) => (
-                            <label key={key} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "#333", cursor: "pointer" }}>
-                              <input type="checkbox" checked={!!agentRunTypes[key]}
-                                onChange={e => setAgentRunTypes(prev => ({ ...prev, [key]: e.target.checked }))} />
-                              {label}
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-                      <button
-                        disabled={!agentRunClient || agentRunStatus === "running" || !Object.values(agentRunTypes).some(Boolean)}
-                        onClick={async () => {
-                          setAgentRunStatus("running"); setAgentRunMsg(""); setAgentProgressEntries([]); setAgentRunId(null);
-                          setAgentRunStartedAt(Date.now());
-                          const types = Object.entries(agentRunTypes).filter(([, v]) => v).map(([k]) => k);
-                          try {
-                            const r = await fetch("/api/triage", {
-                              method: "POST", headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ action: "trigger_agent_run", automationCommanderSheetId, clientName: agentRunClient, types })
-                            });
-                            const d = await r.json();
-                            if (d.success) {
-                              setAgentRunMsg("Automation started - live progress is streamed below.");
-                              setAgentRunId(d.runId || null);
-                            } else {
-                              setAgentRunStatus("error");
-                              setAgentRunMsg(d.error || "Failed to trigger run");
-                            }
-                          } catch (e) {
-                            setAgentRunStatus("error");
-                            setAgentRunMsg(e.message);
-                          }
-                        }}
-                        style={{
-                          padding: "8px 20px", background: (!agentRunClient || agentRunStatus === "running" || !Object.values(agentRunTypes).some(Boolean)) ? "#ccc" : "#0066cc",
-                          color: "#fff", border: "none", borderRadius: "6px",
-                          cursor: (!agentRunClient || agentRunStatus === "running") ? "default" : "pointer", fontSize: "13px", fontWeight: "600",
-                          display: "inline-flex", alignItems: "center", gap: "6px"
-                        }}>
-                        {agentRunStatus === "running" ? <><Spinner size={12} color="#fff" /> Running...</> : "Run"}
-                      </button>
-                      {agentRunMsg && (
-                        <span style={{ fontSize: "13px", fontWeight: 500, color: agentRunStatus === "success" ? "#166534" : agentRunStatus === "error" ? "#dc2626" : "#2563eb" }}>{agentRunMsg}</span>
-                      )}
-                    </div>
-
-                    {agentProgressEntries.length > 0 && (
-                      <div style={{ marginTop: "14px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "12px 14px", maxHeight: "240px", overflowY: "auto" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", borderBottom: "1px solid #e2e8f0", paddingBottom: "6px" }}>
-                          <span style={{ fontSize: "12px", fontWeight: "700", color: "#334155", textTransform: "uppercase", letterSpacing: "0.5px" }}>Live execution log</span>
-                          {agentRunStatus === "running" && (
-                            <span style={{ fontSize: "11px", color: "#0284c7", fontWeight: 600 }}>Active</span>
-                          )}
-                        </div>
-                        {agentProgressEntries.map((entry, i) => {
-                          const stageColor = {
-                            init: "#64748b",
-                            info: "#0284c7",
-                            invoice: "#2563eb",
-                            crm: "#7c3aed",
-                            expense: "#d97706",
-                            done: "#16a34a",
-                            error: "#dc2626"
-                          }[entry.stage] || "#475569";
-                          return (
-                            <div key={i} style={{ fontSize: "12px", color: "#334155", padding: "4px 0", display: "flex", gap: "8px", alignItems: "baseline", borderBottom: i < agentProgressEntries.length - 1 ? "1px solid #f1f5f9" : "none" }}>
-                              <span style={{ color: "#94a3b8", fontFamily: "monospace", fontSize: "11px", flexShrink: 0 }}>
-                                {entry.at ? new Date(entry.at).toLocaleTimeString() : ""}
-                              </span>
-                              <span style={{ fontSize: "11px", fontWeight: 700, color: stageColor, textTransform: "uppercase", padding: "1px 6px", borderRadius: "4px", background: `${stageColor}15`, flexShrink: 0 }}>
-                                {entry.stage}
-                              </span>
-                              <span style={{ flex: 1, wordBreak: "break-word" }}>{entry.message}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
                   {/* Alert System */}
                   <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
                     <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700" }}>Alert system</h3>
@@ -601,129 +491,202 @@ export default function SettingsView({
                       </div>
                     </div>
 
-                    {/* Alert Pipeline Activity */}
+                    {/* Alert pipeline activity */}
                     <div style={{ marginBottom: "20px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
                         <div style={{ flex: "1 1 200px" }}>
-                          <h3 style={{ margin: "0 0 4px", fontSize: "15px", fontWeight: "700" }}>Alert Pipeline Activity</h3>
+                          <h3 style={{ margin: "0 0 4px", fontSize: "15px", fontWeight: "700" }}>Alert pipeline activity</h3>
                           <p style={{ margin: 0, fontSize: "12px", color: "#666" }}>
-                            The end-to-end flow of alerts: Detection (Sweep) → AI & Logic (Build) → App Cache (Precompute).
+                            The end-to-end flow of alerts: detection (sweep) → AI &amp; logic (build) → app cache (precompute).
                           </p>
                         </div>
-                        <button className="triage-btn" disabled={flagSweepLogLoading || buildOptionsLogLoading || precomputeLogLoading} onClick={() => { loadFlagSweepLog(); loadBuildOptionsLog(); loadPrecomputeLog(); }}
-                          style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", cursor: (flagSweepLogLoading || buildOptionsLogLoading || precomputeLogLoading) ? "wait" : "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                          {(flagSweepLogLoading || buildOptionsLogLoading || precomputeLogLoading) ? <><Spinner size={12} /> Refreshing...</> : "↻ Refresh logs"}
-                        </button>
-                      </div>
-
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "6px" }}>
-                        {/* Column 1: Sweep */}
-                        <div style={{ background: "#f8f9ff", border: "1px solid #e8eaf0", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px", minWidth: 0 }}>
-                          <div style={{ padding: "8px", background: "#eef2ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0", wordBreak: "break-word" }}>
-                            <div style={{ fontSize: "12px", fontWeight: "700", color: "#1d4ed8", marginBottom: "2px", hyphens: "auto" }}>🔍 1. Flag Sweep</div>
-                            <div style={{ fontSize: "10px", color: "#666", hyphens: "auto" }}>Searches sheets for new discrepancies</div>
-                          </div>
-
-                          <div style={{ padding: "6px", overflowY: "auto", flex: 1, minWidth: 0 }}>
-                            {flagSweepLogLoading && <div style={{ fontSize: "11px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
-                            {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
-                            {flagSweepLog?.map((run, i) => (
-                              <div key={i} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
-                                <div onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
-                                  <span>{run.raisedDetail?.length > 0 ? (flagSweepLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
-                                  <span style={{ color: (run.flagsRaised > 0 || run.alertsWoken > 0) ? "#b45309" : "#166534" }}>
-                                    {run.flagsRaised} raised{run.alertsDelayed > 0 ? ` (${run.alertsDelayed} delayed)` : ""}{run.alertsWoken > 0 ? ` · ${run.alertsWoken} woken` : ""}
-                                  </span>
-                                </div>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
-                                  <span>{run.clientsChecked} checked {run.categoriesRun ? `(${run.categoriesRun})` : ""}</span>
-                                  <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}</span>
-                                </div>
-                                {flagSweepLogExpanded.has(i) && run.raisedDetail?.length > 0 && (
-                                  <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
-                                    {run.raisedDetail.map((d, di) => (
-                                      <div key={di} style={{ fontSize: "9px", color: "#555" }}>
-                                        <strong>{d.clientName}</strong>:<br />{getFlagName(d.flagKey)}
-                                        <span style={{ color: d.status === "delayed" ? "#d97706" : d.status === "woken" ? "#059669" : "#1d4ed8", fontWeight: "600" }}> ({d.status || "raised"})</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* Column 2: Build */}
-                        <div style={{ background: "#fdf8ff", border: "1px solid #f3e8ff", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px", minWidth: 0 }}>
-                          <div style={{ padding: "8px", background: "#f3e8ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0", wordBreak: "break-word" }}>
-                            <div style={{ fontSize: "12px", fontWeight: "700", color: "#7c3aed", marginBottom: "2px", hyphens: "auto" }}>⚙️ 2. Build Options</div>
-                            <div style={{ fontSize: "10px", color: "#666", hyphens: "auto" }}>Generates resolutions for new alerts</div>
-                          </div>
-                          <div style={{ padding: "6px", overflowY: "auto", flex: 1, minWidth: 0 }}>
-                            {buildOptionsLogLoading && <div style={{ fontSize: "11px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
-                            {!buildOptionsLogLoading && buildOptionsLog && buildOptionsLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
-                            {buildOptionsLog?.map((run, i) => (
-                              <div key={i} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
-                                <div onClick={() => run.builtDetail?.length > 0 && toggleBuildOptionsLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.builtDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
-                                  <span>{run.builtDetail?.length > 0 ? (buildOptionsLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
-                                  <span style={{ color: run.built > 0 ? "#7c3aed" : "#666" }}>{run.built} built</span>
-                                </div>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
-                                  <span>{run.processed} processed</span>
-                                  <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}{run.notFound > 0 ? ` · ${run.notFound} skip` : ""}</span>
-                                </div>
-                                {buildOptionsLogExpanded.has(i) && run.builtDetail?.length > 0 && (
-                                  <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
-                                    {run.builtDetail.map((d, di) => (
-                                      <div key={di} style={{ fontSize: "9px", color: "#555", display: "flex", flexDirection: "column", gap: "1px" }}>
-                                        <strong>{d.clientName}</strong>
-                                        <span>{getFlagName(d.flagKey)}{d.fromCache ? " (cached)" : ""}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* Column 3: Precompute */}
-                        <div style={{ background: "#f0fdf4", border: "1px solid #dcfce7", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px", minWidth: 0 }}>
-                          <div style={{ padding: "8px", background: "#dcfce7", borderBottom: "1px solid #bbf7d0", borderRadius: "8px 8px 0 0", wordBreak: "break-word" }}>
-                            <div style={{ fontSize: "12px", fontWeight: "700", color: "#15803d", marginBottom: "2px", hyphens: "auto" }}>📦 3. Precompute</div>
-                            <div style={{ fontSize: "10px", color: "#666", hyphens: "auto" }}>Compiles final data for the app</div>
-                          </div>
-                          <div style={{ padding: "6px", overflowY: "auto", flex: 1, minWidth: 0 }}>
-                            {precomputeLogLoading && <div style={{ fontSize: "11px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
-                            {!precomputeLogLoading && precomputeLog && precomputeLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
-                            {precomputeLog?.map((run, i) => (
-                              <div key={i} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
-                                <div onClick={() => run.clientDetail?.length > 0 && togglePrecomputeLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.clientDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
-                                  <span>{run.clientDetail?.length > 0 ? (precomputeLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
-                                  <span style={{ color: (run.totalAlerts + run.noActionCount + (run.proactiveCount || 0)) > 0 ? "#15803d" : "#666" }}>
-                                    {(run.totalAlerts || 0) + (run.noActionCount || 0) + (run.proactiveCount || 0)} alerts
-                                  </span>
-                                </div>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
-                                  <span>{run.clientsWithFlags} clients</span>
-                                  <span>{run.totalAlerts} a · {run.noActionCount} i · {run.proactiveCount || 0} p</span>
-                                </div>
-                                {precomputeLogExpanded.has(i) && run.clientDetail?.length > 0 && (
-                                  <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "2px" }}>
-                                    {run.clientDetail.map((c, ci) => (
-                                      <div key={ci} style={{ fontSize: "9px", color: "#555", display: "flex", flexDirection: "column", gap: "1px" }}>
-                                        <strong>{c.clientName}</strong>
-                                        <span>{c.alertCount} a, {c.noActionCount} i, {c.proactiveCount || 0} p</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                          <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569", cursor: "pointer", userSelect: "none" }}>
+                            <input
+                              type="checkbox"
+                              checked={showZeroActivityLogs}
+                              onChange={(e) => setShowZeroActivityLogs(e.target.checked)}
+                              style={{ cursor: "pointer", accentColor: "#0066cc" }}
+                            />
+                            <span>Show zero activity items</span>
+                          </label>
+                          <button
+                            className="triage-btn"
+                            disabled={flagSweepLogLoading || buildOptionsLogLoading || precomputeLogLoading}
+                            onClick={() => { loadFlagSweepLog(); loadBuildOptionsLog(); loadPrecomputeLog(); }}
+                            style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", cursor: (flagSweepLogLoading || buildOptionsLogLoading || precomputeLogLoading) ? "wait" : "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                          >
+                            {(flagSweepLogLoading || buildOptionsLogLoading || precomputeLogLoading) ? <><Spinner size={12} /> Refreshing...</> : "Refresh logs"}
+                          </button>
                         </div>
                       </div>
+
+                      {(() => {
+                        const indexedFlagSweep = (flagSweepLog || []).map((run, origIdx) => ({ run, origIdx }));
+                        const visibleFlagSweep = showZeroActivityLogs
+                          ? indexedFlagSweep
+                          : indexedFlagSweep.filter(({ run }) => (
+                              (run.flagsRaised || 0) > 0 ||
+                              (run.alertsWoken || 0) > 0 ||
+                              (run.alertsDelayed || 0) > 0 ||
+                              (run.errors || 0) > 0 ||
+                              (run.raisedDetail && run.raisedDetail.length > 0)
+                            ));
+
+                        const indexedBuildOptions = (buildOptionsLog || []).map((run, origIdx) => ({ run, origIdx }));
+                        const visibleBuildOptions = showZeroActivityLogs
+                          ? indexedBuildOptions
+                          : indexedBuildOptions.filter(({ run }) => (
+                              (run.built || 0) > 0 ||
+                              (run.errors || 0) > 0 ||
+                              (run.notFound || 0) > 0 ||
+                              (run.builtDetail && run.builtDetail.length > 0)
+                            ));
+
+                        const getPrecomputeSig = (r) => {
+                          if (!r) return "";
+                          const detailSig = (r.clientDetail || [])
+                            .map((c) => `${c.clientName || ""}:${c.alertCount || 0}:${c.noActionCount || 0}:${c.proactiveCount || 0}`)
+                            .sort()
+                            .join("|");
+                          return `${r.clientsWithFlags || 0}:${r.totalAlerts || 0}:${r.noActionCount || 0}:${r.proactiveCount || 0}:${detailSig}`;
+                        };
+                        const allPrecompute = precomputeLog || [];
+                        const indexedPrecompute = allPrecompute.map((run, origIdx) => {
+                          const hasPrevious = origIdx + 1 < allPrecompute.length;
+                          const totalCount = (run.totalAlerts || 0) + (run.noActionCount || 0) + (run.proactiveCount || 0) + (run.clientsWithFlags || 0);
+                          const hasChanged = hasPrevious
+                            ? getPrecomputeSig(run) !== getPrecomputeSig(allPrecompute[origIdx + 1])
+                            : totalCount > 0;
+                          return { run, origIdx, hasChanged };
+                        });
+                        const visiblePrecompute = showZeroActivityLogs
+                          ? indexedPrecompute
+                          : indexedPrecompute.filter(({ hasChanged }) => hasChanged);
+
+                        return (
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "6px" }}>
+                            {/* Column 1: Sweep */}
+                            <div style={{ background: "#f8f9ff", border: "1px solid #e8eaf0", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px", minWidth: 0 }}>
+                              <div style={{ padding: "8px", background: "#eef2ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0", wordBreak: "break-word" }}>
+                                <div style={{ fontSize: "12px", fontWeight: "700", color: "#1d4ed8", marginBottom: "2px", hyphens: "auto" }}>1. Flag sweep</div>
+                                <div style={{ fontSize: "10px", color: "#666", hyphens: "auto" }}>Searches sheets for new discrepancies</div>
+                              </div>
+
+                              <div style={{ padding: "6px", overflowY: "auto", flex: 1, minWidth: 0 }}>
+                                {flagSweepLogLoading && <div style={{ fontSize: "11px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
+                                {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
+                                {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length > 0 && visibleFlagSweep.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No activity in recent runs</div>}
+                                {visibleFlagSweep.map(({ run, origIdx }) => {
+                                  const rowKey = `${run.runAt}_${origIdx}`;
+                                  return (
+                                    <div key={rowKey} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
+                                      <div onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(rowKey)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                                        <span>{run.raisedDetail?.length > 0 ? (flagSweepLogExpanded.has(rowKey) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
+                                        <span style={{ color: (run.flagsRaised > 0 || run.alertsWoken > 0) ? "#b45309" : "#166534" }}>
+                                          {run.flagsRaised} raised{run.alertsDelayed > 0 ? ` (${run.alertsDelayed} delayed)` : ""}{run.alertsWoken > 0 ? ` · ${run.alertsWoken} woken` : ""}
+                                        </span>
+                                      </div>
+                                      <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
+                                        <span>{run.clientsChecked} checked {run.categoriesRun ? `(${run.categoriesRun})` : ""}</span>
+                                        <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}</span>
+                                      </div>
+                                      {flagSweepLogExpanded.has(rowKey) && run.raisedDetail?.length > 0 && (
+                                        <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
+                                          {run.raisedDetail.map((d, di) => (
+                                            <div key={di} style={{ fontSize: "9px", color: "#555" }}>
+                                              <strong>{d.clientName}</strong>:<br />{getFlagName(d.flagKey)}
+                                              <span style={{ color: d.status === "delayed" ? "#d97706" : d.status === "woken" ? "#059669" : "#1d4ed8", fontWeight: "600" }}> ({d.status || "raised"})</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Column 2: Build */}
+                            <div style={{ background: "#fdf8ff", border: "1px solid #f3e8ff", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px", minWidth: 0 }}>
+                              <div style={{ padding: "8px", background: "#f3e8ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0", wordBreak: "break-word" }}>
+                                <div style={{ fontSize: "12px", fontWeight: "700", color: "#7c3aed", marginBottom: "2px", hyphens: "auto" }}>2. Build options</div>
+                                <div style={{ fontSize: "10px", color: "#666", hyphens: "auto" }}>Generates resolutions for new alerts</div>
+                              </div>
+                              <div style={{ padding: "6px", overflowY: "auto", flex: 1, minWidth: 0 }}>
+                                {buildOptionsLogLoading && <div style={{ fontSize: "11px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
+                                {!buildOptionsLogLoading && buildOptionsLog && buildOptionsLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
+                                {!buildOptionsLogLoading && buildOptionsLog && buildOptionsLog.length > 0 && visibleBuildOptions.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No activity in recent runs</div>}
+                                {visibleBuildOptions.map(({ run, origIdx }) => {
+                                  const rowKey = `${run.runAt}_${origIdx}`;
+                                  return (
+                                    <div key={rowKey} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
+                                      <div onClick={() => run.builtDetail?.length > 0 && toggleBuildOptionsLogDetail(rowKey)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.builtDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                                        <span>{run.builtDetail?.length > 0 ? (buildOptionsLogExpanded.has(rowKey) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
+                                        <span style={{ color: run.built > 0 ? "#7c3aed" : "#666" }}>{run.built} built</span>
+                                      </div>
+                                      <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
+                                        <span>{run.processed} processed</span>
+                                        <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}{run.notFound > 0 ? ` · ${run.notFound} skip` : ""}</span>
+                                      </div>
+                                      {buildOptionsLogExpanded.has(rowKey) && run.builtDetail?.length > 0 && (
+                                        <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
+                                          {run.builtDetail.map((d, di) => (
+                                            <div key={di} style={{ fontSize: "9px", color: "#555", display: "flex", flexDirection: "column", gap: "1px" }}>
+                                              <strong>{d.clientName}</strong>
+                                              <span>{getFlagName(d.flagKey)}{d.fromCache ? " (cached)" : ""}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Column 3: Precompute */}
+                            <div style={{ background: "#f0fdf4", border: "1px solid #dcfce7", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px", minWidth: 0 }}>
+                              <div style={{ padding: "8px", background: "#dcfce7", borderBottom: "1px solid #bbf7d0", borderRadius: "8px 8px 0 0", wordBreak: "break-word" }}>
+                                <div style={{ fontSize: "12px", fontWeight: "700", color: "#15803d", marginBottom: "2px", hyphens: "auto" }}>3. Precompute</div>
+                                <div style={{ fontSize: "10px", color: "#666", hyphens: "auto" }}>Compiles final data for the app</div>
+                              </div>
+                              <div style={{ padding: "6px", overflowY: "auto", flex: 1, minWidth: 0 }}>
+                                {precomputeLogLoading && <div style={{ fontSize: "11px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
+                                {!precomputeLogLoading && precomputeLog && precomputeLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
+                                {!precomputeLogLoading && precomputeLog && precomputeLog.length > 0 && visiblePrecompute.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No activity in recent runs</div>}
+                                {visiblePrecompute.map(({ run, origIdx }) => {
+                                  const rowKey = `${run.runAt}_${origIdx}`;
+                                  return (
+                                    <div key={rowKey} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
+                                      <div onClick={() => run.clientDetail?.length > 0 && togglePrecomputeLogDetail(rowKey)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.clientDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                                        <span>{run.clientDetail?.length > 0 ? (precomputeLogExpanded.has(rowKey) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
+                                        <span style={{ color: (run.totalAlerts + run.noActionCount + (run.proactiveCount || 0)) > 0 ? "#15803d" : "#666" }}>
+                                          {(run.totalAlerts || 0) + (run.noActionCount || 0) + (run.proactiveCount || 0)} alerts
+                                        </span>
+                                      </div>
+                                      <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
+                                        <span>{run.clientsWithFlags} clients</span>
+                                        <span>{run.totalAlerts} a · {run.noActionCount} i · {run.proactiveCount || 0} p</span>
+                                      </div>
+                                      {precomputeLogExpanded.has(rowKey) && run.clientDetail?.length > 0 && (
+                                        <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "2px" }}>
+                                          {run.clientDetail.map((c, ci) => (
+                                            <div key={ci} style={{ fontSize: "9px", color: "#555", display: "flex", flexDirection: "column", gap: "1px" }}>
+                                              <strong>{c.clientName}</strong>
+                                              <span>{c.alertCount} a, {c.noActionCount} i, {c.proactiveCount || 0} p</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {/* Alert Types */}

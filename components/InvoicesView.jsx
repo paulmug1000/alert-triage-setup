@@ -1042,11 +1042,34 @@ export default function InvoicesView({
                   rows: updatedJob.rows.map(r => ({ ...r, revenue: resData.updatedRevenue }))
                 };
               }
+              const restored = hasRow ? resData?.restoredPlaceholderSlot : null;
               return {
                 ...updatedJob,
-                rows: updatedJob.rows.map(r => r.rowNum !== rNum ? r : {
-                  ...r,
-                  invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== sNum ? sl : { ...sl, ...newData })
+                rows: updatedJob.rows.map(r => {
+                  const matchesEditedRow = r.rowNum === rNum;
+                  const matchesRestoredRow = restored && Number(r.rowNum) === Number(restored.rowNum);
+                  if (!matchesEditedRow && !matchesRestoredRow) return r;
+                  return {
+                    ...r,
+                    invoiceSlots: r.invoiceSlots.map(sl => {
+                      if (matchesEditedRow && sl.slotNum === sNum) return { ...sl, ...newData };
+                      if (
+                        matchesRestoredRow &&
+                        Number(sl.slotNum) === Number(restored.slotNum || 1) &&
+                        !(matchesEditedRow && Number(sNum) === Number(restored.slotNum || 1))
+                      ) {
+                        return {
+                          ...sl,
+                          ref: restored.ref || "",
+                          amount: restored.amount || "",
+                          sentDate: restored.sentDate || "",
+                          daysToPay: restored.daysToPay || "",
+                          status: restored.status || ""
+                        };
+                      }
+                      return sl;
+                    })
+                  };
                 }),
               };
             }));

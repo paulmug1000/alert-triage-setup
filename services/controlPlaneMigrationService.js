@@ -130,6 +130,184 @@ export async function getControlPlaneStatus() {
 }
 
 /**
+ * Reads all 6 EoM control tabs from Automation Commander and upserts them
+ * into `public.eom_cycles_and_tasks` using schemaVersion 2 payloads.
+ */
+export async function seedEomControlPlaneFromSheets(sheets, acId, sb, userEmail = "system") {
+  if (!sheets || !acId || !sb) return { rowCount: 0 };
+
+  const ranges = [
+    "EomTemplates!A2:H1000",
+    "EomClientTasks!A2:H5000",
+    "EomMonthlyStatus!A2:F200000",
+    "EomExcludedClients!A2:C1000",
+    "EomDefaultTasks!A2:I1000",
+    "EomBankAccounts!A2:C50000",
+  ];
+
+  let valueLists = null;
+  try {
+    const batchResp = await withRetry(() =>
+      sheets.spreadsheets.values.batchGet({ spreadsheetId: acId, ranges })
+    );
+    const vrs = batchResp.data?.valueRanges || [];
+    valueLists = ranges.map((_, idx) => vrs[idx]?.values || []);
+  } catch (_) {
+    const individual = await Promise.all(
+      ranges.map((range) =>
+        withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: acId, range }))
+          .then((r) => r.data?.values || [])
+          .catch(() => [])
+      )
+    );
+    valueLists = individual;
+  }
+
+  const [
+    tmplRows = [],
+    clientTaskRows = [],
+    statusRows = [],
+    exclRows = [],
+    defaultTaskRows = [],
+    bankAccountRows = [],
+  ] = valueLists;
+
+  const nowIso = new Date().toISOString();
+  const eomTemplates = tmplRows
+    .filter((r) => r[0])
+    .map((r, i) => ({
+      templateId: r[0],
+      name: r[1] || "",
+      defaultNotes: r[2] || "",
+      linkedFunction: r[3] || "",
+      active: r[4] !== "FALSE" && r[4] !== false,
+      createdAt: r[5] || "",
+      alertCategories: r[6] || "",
+      sortOrder: r[7] !== undefined && r[7] !== "" ? Number(r[7]) : 1000000 + i,
+    }));
+
+  const eomExcluded = exclRows
+    .filter((r) => r[0])
+    .map((r) => ({
+      clientName: String(r[0]).trim(),
+      excluded: r[1] === "TRUE" || r[1] === true,
+      sortOrder: r[2] !== undefined && r[2] !== "" ? Number(r[2]) : null,
+    }));
+
+  const eomDefaultTasks = defaultTaskRows
+    .filter((r) => r[0])
+    .map((r, i) => ({
+      defaultTaskId: r[0],
+      templateId: r[1] || "",
+      taskName: r[2] || "",
+      defaultNotes: r[3] || "",
+      active: r[4] !== "FALSE" && r[4] !== false,
+      createdAt: r[5] || "",
+      sortOrder: r[6] !== undefined && r[6] !== "" ? Number(r[6]) : 1000000 + i,
+      linkedFunction: r[7] || "",
+      alertCategories: r[8] || "",
+    }));
+
+  const bankAccountsByClient = {};
+  let bankAccountsLoadedAt = "";
+  bankAccountRows.forEach((r) => {
+    const cName = String(r[0] || "").trim();
+    const acct = String(r[1] || "").trim();
+    if (!cName || !acct) return;
+    if (!bankAccountsByClient[cName]) bankAccountsByClient[cName] = [];
+    bankAccountsByClient[cName].push(acct);
+    if (r[2]) bankAccountsLoadedAt = String(r[2]);
+  });
+
+  const eomRowsToUpsert = [
+    {
+      work_month_key: "__global__",
+      client_name: "__system__",
+      record_type: "template",
+      tasks_payload: {
+        schemaVersion: 2,
+        seededAt: nowIso,
+        templates: eomTemplates,
+        excludedClients: eomExcluded,
+        defaultTasks: eomDefaultTasks,
+        bankAccountsByClient,
+        bankAccountsLoadedAt,
+      },
+      updated_by: userEmail,
+    },
+  ];
+
+  const clientTasksMap = new Map();
+  clientTaskRows.forEach((r, idx) => {
+    if (!r[0] || !r[1]) return;
+    const cName = String(r[1]).trim();
+    if (!clientTasksMap.has(cName)) clientTasksMap.set(cName, []);
+    const rawH = r[7];
+    const hasNumSort = rawH !== undefined && String(rawH).trim() !== "" && !isNaN(Number(rawH));
+    clientTasksMap.get(cName).push({
+      taskId: r[0],
+      clientName: cName,
+      templateId: r[2] || "",
+      taskName: r[3] || "",
+      clientNotes: r[4] || "",
+      active: r[5] !== "FALSE" && r[5] !== false,
+      createdAt: r[6] || "",
+      sortOrder: hasNumSort ? Number(rawH) : 1000000 + idx,
+      ...(hasNumSort || !rawH ? {} : { linkedFunction: String(rawH).trim() }),
+    });
+  });
+
+  for (const [cName, tasks] of clientTasksMap.entries()) {
+    eomRowsToUpsert.push({
+      work_month_key: "__definitions__",
+      client_name: cName,
+      record_type: "client_tasks",
+      tasks_payload: { tasks },
+      updated_by: userEmail,
+    });
+  }
+
+  const monthlyStatusByClientMonth = new Map();
+  statusRows.forEach((r) => {
+    const cName = String(r[0] || "").trim();
+    const taskId = String(r[1] || "").trim();
+    const monthKey = String(r[2] || "").trim();
+    if (!cName || !taskId || !monthKey) return;
+    const mapKey = `${monthKey}||${cName}`;
+    if (!monthlyStatusByClientMonth.has(mapKey)) {
+      monthlyStatusByClientMonth.set(mapKey, { monthKey, clientName: cName, statuses: {} });
+    }
+    monthlyStatusByClientMonth.get(mapKey).statuses[taskId] = {
+      status: r[3] || "pending",
+      completedAt: r[4] || "",
+      notelet: r[5] || "",
+    };
+  });
+
+  for (const { monthKey, clientName: cName, statuses } of monthlyStatusByClientMonth.values()) {
+    eomRowsToUpsert.push({
+      work_month_key: monthKey,
+      client_name: cName,
+      record_type: "client_tasks",
+      tasks_payload: { statuses },
+      updated_by: userEmail,
+    });
+  }
+
+  for (let i = 0; i < eomRowsToUpsert.length; i += 500) {
+    const batch = eomRowsToUpsert.slice(i, i + 500);
+    const { error } = await sb
+      .from("eom_cycles_and_tasks")
+      .upsert(batch, { onConflict: "work_month_key,client_name,record_type" });
+    if (error) {
+      throw new Error(`Supabase eom_cycles_and_tasks upsert failed: ${error.message}`);
+    }
+  }
+
+  return { rowCount: eomRowsToUpsert.length };
+}
+
+/**
  * Imports all existing Control Plane spreadsheet tabs and permanent Redis keys into Supabase.
  */
 export async function syncControlPlaneToSupabase({ sheets, automationCommanderSheetId, userEmail = "Admin" }) {
@@ -265,10 +443,48 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
   });
 
   if (schedulesToUpsert.length > 0) {
-    const enrichedSchedules = schedulesToUpsert.map(s => ({
-      ...s,
-      client_id: clientIdByNormKey.get(normalizeKey(s.client_name)) || null,
-    }));
+    const { data: existingScheds } = await sb.from("sync_schedules").select("*");
+    const existingByClient = new Map();
+    (existingScheds || []).forEach(ex => {
+      if (ex?.client_name) existingByClient.set(ex.client_name, ex);
+    });
+
+    const pickSeqState = (ex, sheetLastIso, sheetStatus, seqPrefix, freqVal) => {
+      const exLastIso = ex?.[`last_${seqPrefix}_run`] || null;
+      const exStatus = ex?.[`${seqPrefix}_status`];
+      const exMs = exLastIso ? new Date(exLastIso).getTime() : NaN;
+      const shMs = sheetLastIso ? new Date(sheetLastIso).getTime() : NaN;
+      const keepExistingRun =
+        Boolean(exLastIso) &&
+        (!sheetLastIso || (!Number.isNaN(exMs) && (Number.isNaN(shMs) || exMs >= shMs)));
+
+      if (keepExistingRun) {
+        return { lastRun: exLastIso, status: typeof exStatus === "string" ? exStatus : sheetStatus };
+      }
+      if (!freqVal && ex && exStatus === "") {
+        return { lastRun: sheetLastIso, status: "" };
+      }
+      return { lastRun: sheetLastIso, status: sheetStatus };
+    };
+
+    const enrichedSchedules = schedulesToUpsert.map(s => {
+      const ex = existingByClient.get(s.client_name);
+      const invState = pickSeqState(ex, s.last_inv_run, s.inv_status, "inv", s.inv_freq);
+      const crmState = pickSeqState(ex, s.last_crm_run, s.crm_status, "crm", s.crm_freq);
+      const expState = pickSeqState(ex, s.last_exp_run, s.exp_status, "exp", s.exp_freq);
+      return {
+        ...s,
+        client_id: clientIdByNormKey.get(normalizeKey(s.client_name)) || null,
+        automation_enabled: typeof ex?.automation_enabled === "boolean" ? ex.automation_enabled : s.automation_enabled,
+        flags: (ex?.flags && typeof ex.flags === "object") ? ex.flags : {},
+        last_inv_run: invState.lastRun,
+        inv_status: invState.status,
+        last_crm_run: crmState.lastRun,
+        crm_status: crmState.status,
+        last_exp_run: expState.lastRun,
+        exp_status: expState.status,
+      };
+    });
     const { error: schedErr } = await sb
       .from("sync_schedules")
       .upsert(enrichedSchedules, { onConflict: "client_name" });
@@ -602,98 +818,8 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
 
   // ── 6b. EOM TEMPLATES, CLIENT TASKS & MONTHLY STATUS ───────────────────────
   try {
-    const [eomTmplResp, eomClientTasksResp, eomStatusResp, eomExclResp] = await Promise.all([
-      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: acId, range: "EomTemplates!A2:H1000" })).catch(() => ({ data: { values: [] } })),
-      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: acId, range: "EomClientTasks!A2:H5000" })).catch(() => ({ data: { values: [] } })),
-      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: acId, range: "EomMonthlyStatus!A2:E50000" })).catch(() => ({ data: { values: [] } })),
-      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: acId, range: "EomExcludedClients!A2:C1000" })).catch(() => ({ data: { values: [] } })),
-    ]);
-
-    const eomRowsToUpsert = [];
-    const eomTemplates = (eomTmplResp.data?.values || []).filter(r => r[0]).map((r, i) => ({
-      templateId: r[0],
-      name: r[1] || "",
-      defaultNotes: r[2] || "",
-      linkedFunction: r[3] || "",
-      active: r[4] !== "FALSE" && r[4] !== false,
-      createdAt: r[5] || "",
-      alertCategories: r[6] || "",
-      sortOrder: r[7] !== undefined && r[7] !== "" ? Number(r[7]) : 1000000 + i,
-    }));
-
-    const eomExcluded = (eomExclResp.data?.values || []).filter(r => r[0]).map(r => ({
-      clientName: r[0],
-      excluded: r[1] === "TRUE" || r[1] === true,
-      sortOrder: r[2] !== undefined && r[2] !== "" ? Number(r[2]) : null,
-    }));
-
-    eomRowsToUpsert.push({
-      work_month_key: "__global__",
-      client_name: "__system__",
-      record_type: "template",
-      tasks_payload: { templates: eomTemplates, excludedClients: eomExcluded },
-      updated_by: userEmail,
-    });
-
-    const clientTasksMap = new Map();
-    (eomClientTasksResp.data?.values || []).forEach(r => {
-      if (!r[0] || !r[1]) return;
-      const cName = String(r[1]).trim();
-      if (!clientTasksMap.has(cName)) clientTasksMap.set(cName, []);
-      clientTasksMap.get(cName).push({
-        taskId: r[0],
-        clientName: cName,
-        templateId: r[2] || "",
-        name: r[3] || "",
-        notes: r[4] || "",
-        active: r[5] !== "FALSE" && r[5] !== false,
-        sortOrder: r[6] !== undefined && r[6] !== "" ? Number(r[6]) : 0,
-        linkedFunction: r[7] || "",
-      });
-    });
-
-    for (const [cName, tasks] of clientTasksMap.entries()) {
-      eomRowsToUpsert.push({
-        work_month_key: "__definitions__",
-        client_name: cName,
-        record_type: "client_tasks",
-        tasks_payload: { tasks },
-        updated_by: userEmail,
-      });
-    }
-
-    const monthlyStatusByClientMonth = new Map();
-    (eomStatusResp.data?.values || []).forEach(r => {
-      const cName = String(r[0] || "").trim();
-      const taskId = String(r[1] || "").trim();
-      const monthKey = String(r[2] || "").trim();
-      if (!cName || !taskId || !monthKey) return;
-      const mapKey = `${monthKey}||${cName}`;
-      if (!monthlyStatusByClientMonth.has(mapKey)) {
-        monthlyStatusByClientMonth.set(mapKey, { monthKey, clientName: cName, statuses: {} });
-      }
-      monthlyStatusByClientMonth.get(mapKey).statuses[taskId] = {
-        status: r[3] || "pending",
-        completedAt: r[4] || "",
-      };
-    });
-
-    for (const { monthKey, clientName: cName, statuses } of monthlyStatusByClientMonth.values()) {
-      eomRowsToUpsert.push({
-        work_month_key: monthKey,
-        client_name: cName,
-        record_type: "client_tasks",
-        tasks_payload: { statuses },
-        updated_by: userEmail,
-      });
-    }
-
-    if (eomRowsToUpsert.length > 0) {
-      await sb
-        .from("eom_cycles_and_tasks")
-        .upsert(eomRowsToUpsert, { onConflict: "work_month_key,client_name,record_type" });
-      summary.eom_cycles_and_tasks = eomRowsToUpsert.length;
-    }
+    const eomSeedRes = await seedEomControlPlaneFromSheets(sheets, acId, sb, userEmail);
+    summary.eom_cycles_and_tasks = eomSeedRes.rowCount || 0;
   } catch (eomErr) {
     console.warn("⚠️ EoM migration sync warning:", eomErr.message);
   }

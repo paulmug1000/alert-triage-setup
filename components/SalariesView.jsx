@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import Skeleton, { PmaSalariesSkeleton } from "./Skeleton";
 import CellNoteIndicator from "./CellNoteIndicator";
@@ -124,6 +124,7 @@ export default function SalariesView({
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
   const isSysAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
+  const canEditDividends = Boolean(!user?.isReadOnly && isAdmin);
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   // Client Selection State (synchronous initial selection from managedClient or initialClient to eliminate flash)
@@ -169,6 +170,12 @@ export default function SalariesView({
   const [editingDividendPct, setEditingDividendPct] = useState(false);
   const [savingDividendPct, setSavingDividendPct] = useState(false);
   const [dividendPctInput, setDividendPctInput] = useState(() => salariesData?.dividends?.fyConfigs?.[salariesData?.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
+  const [hoveredDividendCell, setHoveredDividendCell] = useState(null); // { sheetRow, colIdx }
+  const [dividendDragState, setDividendDragState] = useState(null); // { sheetRow, startIdx, currentIdx, sourceValue, colLetters }
+  const dividendDragRef = useRef(null);
+  const suppressDividendClickRef = useRef(false);
+  const saveDividendsBatchRef = useRef(null);
+  const dividendRowRefs = useRef({});
 
   // Resolve active client from managedClient or initialClient
   useEffect(() => {
@@ -412,13 +419,12 @@ export default function SalariesView({
     }
   };
 
-  // ── SAVE DIVIDEND MONTHLY AMOUNT HANDLER ───────────────────────────────────
-  const handleSaveDividendAmount = async (colLetter, newVal) => {
-    if (!selectedClient || !colLetter) return;
+  // ── SAVE DIVIDEND MONTHLY AMOUNTS (SINGLE OR DRAG BATCH) ───────────────────
+  const saveDividendsBatch = async (targetRow, monthlyAmounts, successMsg) => {
+    if (!selectedClient || !monthlyAmounts || Object.keys(monthlyAmounts).length === 0) return;
     setSaving(true);
     setError(null);
     try {
-      const targetRow = editingDividendMonth?.sheetRow || 118;
       const res = await fetch("/api/pma/salaries", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -428,9 +434,7 @@ export default function SalariesView({
           masterSheetId: selectedClient.masterSheetId,
           clientSheetId: selectedClient.clientSheetId,
           sheetRow: targetRow,
-          monthlyAmounts: {
-            [colLetter]: newVal,
-          },
+          monthlyAmounts,
         }),
       });
       const data = await res.json();
@@ -444,7 +448,9 @@ export default function SalariesView({
           const rowObj = fy[rowProp];
           if (!rowObj?.months) return fy;
           const updatedMonths = rowObj.months.map((m) =>
-            m.colLetter === colLetter ? { ...m, value: newVal } : m
+            Object.prototype.hasOwnProperty.call(monthlyAmounts, m.colLetter)
+              ? { ...m, value: monthlyAmounts[m.colLetter] }
+              : m
           );
           return {
             ...fy,
@@ -463,7 +469,7 @@ export default function SalariesView({
         };
       });
       setEditingDividendMonth(null);
-      showSuccess("Updated dividend amount successfully.");
+      showSuccess(successMsg);
       fetchSalaries(selectedClient, true, true);
     } catch (err) {
       console.error("Save dividend amount error:", err);
@@ -472,6 +478,81 @@ export default function SalariesView({
       setSaving(false);
     }
   };
+  saveDividendsBatchRef.current = saveDividendsBatch;
+
+  const handleSaveDividendAmount = async (colLetter, newVal) => {
+    if (!selectedClient || !colLetter) return;
+    const targetRow = editingDividendMonth?.sheetRow || 118;
+    await saveDividendsBatch(targetRow, { [colLetter]: newVal }, "Updated dividend amount successfully.");
+  };
+
+  // Drag-fill mousemove (vertical-drift tolerant) & mouseup commit across dividend months
+  const isDraggingDividend = Boolean(dividendDragState);
+  useEffect(() => {
+    if (!isDraggingDividend) return undefined;
+
+    const handleWindowMouseMove = (e) => {
+      const drag = dividendDragRef.current;
+      if (!drag) return;
+      const rowEl = dividendRowRefs.current?.[drag.sheetRow];
+      if (!rowEl || !rowEl.children) return;
+      const colCount = drag.colLetters?.length || 0;
+      let matchedIdx = null;
+      for (let i = 0; i < colCount; i += 1) {
+        const cellEl = rowEl.children[i + 1]; // index 0 is description cell
+        if (!cellEl) continue;
+        const rect = cellEl.getBoundingClientRect();
+        if (e.clientX >= rect.left && e.clientX <= rect.right) {
+          matchedIdx = i;
+          break;
+        }
+      }
+      if (matchedIdx !== null && matchedIdx !== drag.currentIdx) {
+        const updated = { ...drag, currentIdx: matchedIdx };
+        dividendDragRef.current = updated;
+        setDividendDragState(updated);
+      }
+    };
+
+    const handleWindowMouseUp = () => {
+      const drag = dividendDragRef.current;
+      if (!drag) return;
+      dividendDragRef.current = null;
+      setDividendDragState(null);
+      setHoveredDividendCell(null);
+      if (drag.currentIdx !== drag.startIdx) {
+        suppressDividendClickRef.current = true;
+        setTimeout(() => {
+          suppressDividendClickRef.current = false;
+        }, 120);
+        const minIdx = Math.min(drag.startIdx, drag.currentIdx);
+        const maxIdx = Math.max(drag.startIdx, drag.currentIdx);
+        const monthlyAmounts = {};
+        for (let idx = minIdx; idx <= maxIdx; idx += 1) {
+          if (idx === drag.startIdx) continue;
+          const colLetter = drag.colLetters?.[idx];
+          if (colLetter) {
+            monthlyAmounts[colLetter] = drag.sourceValue;
+          }
+        }
+        const count = Object.keys(monthlyAmounts).length;
+        if (count > 0) {
+          saveDividendsBatchRef.current?.(
+            drag.sheetRow,
+            monthlyAmounts,
+            `Updated dividends across ${count + 1} months.`
+          );
+        }
+      }
+    };
+
+    window.addEventListener("mousemove", handleWindowMouseMove);
+    window.addEventListener("mouseup", handleWindowMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleWindowMouseMove);
+      window.removeEventListener("mouseup", handleWindowMouseUp);
+    };
+  }, [isDraggingDividend]);
 
   // Quick Action: Add Employee to next available row
   const handleAddEmployee = () => {
@@ -1585,83 +1666,132 @@ export default function SalariesView({
                     </tr>
                   </thead>
                   <tbody>
-                    {/* Row 118: Primary Dividends Row */}
-                    <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0", fontSize: "13px" }}>
-                      <td style={{ padding: "9px 12px", textAlign: "left", fontWeight: 600, color: "#1e293b" }}>
-                        {currentFy.row118.description}
-                      </td>
-                      {currentFy.row118.months.map((m) => (
-                        <td
-                          key={m.colLetter}
-                          onClick={() => {
-                            if (isAdmin) {
-                              setEditingDividendMonth({
-                                sheetRow: 118,
-                                colLetter: m.colLetter,
-                                label: m.label,
-                                value: m.value,
-                              });
-                            }
+                    {[
+                      { sheetRow: 118, row: currentFy.row118, rowLabel: currentFy.row118.description },
+                      ...(currentFy.row119.hasData
+                        ? [{ sheetRow: 119, row: currentFy.row119, rowLabel: currentFy.row119.description || (isSysAdmin ? "Dividends slot 2" : "Dividends 2") }]
+                        : []),
+                    ].map(({ sheetRow, row, rowLabel }) => {
+                      const isDraggingThisRow = dividendDragState && dividendDragState.sheetRow === sheetRow;
+                      const dragMin = isDraggingThisRow ? Math.min(dividendDragState.startIdx, dividendDragState.currentIdx) : -1;
+                      const dragMax = isDraggingThisRow ? Math.max(dividendDragState.startIdx, dividendDragState.currentIdx) : -1;
+                      return (
+                        <tr
+                          key={sheetRow}
+                          ref={(el) => {
+                            dividendRowRefs.current[sheetRow] = el;
                           }}
-                          style={{
-                            padding: "9px 10px",
-                            color: "#0f172a",
-                            fontWeight: 600,
-                            cursor: isAdmin ? "pointer" : "default",
-                            background: isAdmin ? "transparent" : undefined,
-                            transition: "background 0.1s",
-                          }}
-                          title={isAdmin ? `Click to edit ${m.label} amount` : undefined}
-                          onMouseEnter={(e) => {
-                            if (isAdmin) e.currentTarget.style.background = "#eff6ff";
-                          }}
-                          onMouseLeave={(e) => {
-                            if (isAdmin) e.currentTarget.style.background = "transparent";
-                          }}
+                          style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0", fontSize: "13px" }}
                         >
-                          {m.value}
-                        </td>
-                      ))}
-                      <td style={{ padding: "9px 12px", fontWeight: 800, color: "#0047AB", background: "#f0f7ff" }}>
-                        {currentFy.row118.total}
-                      </td>
-                    </tr>
-
-                    {/* Row 119: Second Dividends Row (if present) */}
-                    {currentFy.row119.hasData && (
-                      <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0", fontSize: "13px" }}>
-                        <td style={{ padding: "9px 12px", textAlign: "left", fontWeight: 600, color: "#1e293b" }}>
-                          {currentFy.row119.description || (isSysAdmin ? "Dividends slot 2" : "Dividends 2")}
-                        </td>
-                        {currentFy.row119.months.map((m) => (
-                          <td
-                            key={m.colLetter}
-                            onClick={() => {
-                              if (isAdmin) {
-                                setEditingDividendMonth({
-                                  sheetRow: 119,
-                                  colLetter: m.colLetter,
-                                  label: m.label,
-                                  value: m.value,
-                                });
-                              }
-                            }}
-                            style={{
-                              padding: "9px 10px",
-                              color: "#0f172a",
-                              fontWeight: 600,
-                              cursor: isAdmin ? "pointer" : "default",
-                            }}
-                            title={isAdmin ? `Click to edit ${m.label} amount` : undefined}
-                          >
-                            {m.value}
+                          <td style={{ padding: "9px 12px", textAlign: "left", fontWeight: 600, color: "#1e293b" }}>
+                            {rowLabel}
                           </td>
-                        ))}
-                        <td style={{ padding: "9px 12px", fontWeight: 800, color: "#0047AB", background: "#f0f7ff" }}>
-                          {currentFy.row119.total}
-                        </td>
-                      </tr>
-                    )}
+                          {row.months.map((m, colIdx) => {
+                            const isInDragRange = isDraggingThisRow && colIdx >= dragMin && colIdx <= dragMax;
+                            const isDragTarget = isInDragRange && colIdx !== dividendDragState.startIdx;
+                            const isHovered =
+                              canEditDividends &&
+                              !dividendDragState &&
+                              hoveredDividendCell?.sheetRow === sheetRow &&
+                              hoveredDividendCell?.colIdx === colIdx;
+                            const showHandle =
+                              canEditDividends &&
+                              !saving &&
+                              (isHovered || (isDraggingThisRow && colIdx === dividendDragState.startIdx));
+
+                            return (
+                              <td
+                                key={m.colLetter}
+                                onClick={() => {
+                                  if (suppressDividendClickRef.current) return;
+                                  if (canEditDividends) {
+                                    setEditingDividendMonth({
+                                      sheetRow,
+                                      colLetter: m.colLetter,
+                                      label: m.label,
+                                      value: m.value,
+                                    });
+                                  }
+                                }}
+                                onMouseEnter={() => {
+                                  const activeDrag = dividendDragRef.current;
+                                  if (activeDrag && activeDrag.sheetRow === sheetRow) {
+                                    if (activeDrag.currentIdx !== colIdx) {
+                                      const updated = { ...activeDrag, currentIdx: colIdx };
+                                      dividendDragRef.current = updated;
+                                      setDividendDragState(updated);
+                                    }
+                                    return;
+                                  }
+                                  if (canEditDividends) {
+                                    setHoveredDividendCell({ sheetRow, colIdx });
+                                  }
+                                }}
+                                onMouseLeave={() => {
+                                  if (!dividendDragRef.current) {
+                                    setHoveredDividendCell((prev) =>
+                                      prev?.sheetRow === sheetRow && prev?.colIdx === colIdx ? null : prev
+                                    );
+                                  }
+                                }}
+                                style={{
+                                  position: "relative",
+                                  padding: "9px 10px",
+                                  color: isDragTarget ? "#1d4ed8" : "#0f172a",
+                                  fontWeight: 600,
+                                  cursor: isDraggingThisRow ? "ew-resize" : canEditDividends ? "pointer" : "default",
+                                  background: isDragTarget
+                                    ? "#dbeafe"
+                                    : isInDragRange || isHovered
+                                    ? "#eff6ff"
+                                    : "transparent",
+                                  boxShadow: isInDragRange ? "inset 0 0 0 1.5px #0066cc" : undefined,
+                                  userSelect: dividendDragState ? "none" : undefined,
+                                  transition: "background 0.1s",
+                                }}
+                                title={canEditDividends ? `Click to edit ${m.label} amount, or drag corner handle across months` : undefined}
+                              >
+                                {isDragTarget ? dividendDragState.sourceValue : m.value}
+                                {showHandle && (
+                                  <div
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      const nextDrag = {
+                                        sheetRow,
+                                        startIdx: colIdx,
+                                        currentIdx: colIdx,
+                                        sourceValue: m.value,
+                                        colLetters: row.months.map((item) => item.colLetter),
+                                      };
+                                      dividendDragRef.current = nextDrag;
+                                      setDividendDragState(nextDrag);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    title="Drag across months to fill this amount"
+                                    style={{
+                                      position: "absolute",
+                                      right: "-1px",
+                                      bottom: "-1px",
+                                      width: "8px",
+                                      height: "8px",
+                                      background: "#0066cc",
+                                      border: "1px solid #ffffff",
+                                      borderRadius: "1px",
+                                      cursor: "ew-resize",
+                                      zIndex: 3,
+                                    }}
+                                  />
+                                )}
+                              </td>
+                            );
+                          })}
+                          <td style={{ padding: "9px 12px", fontWeight: 800, color: "#0047AB", background: "#f0f7ff" }}>
+                            {row.total}
+                          </td>
+                        </tr>
+                      );
+                    })}
 
                     {/* Blank spacer row separating main dividend rows from totals */}
                     <tr style={{ height: "24px", background: "#ffffff" }}>
@@ -2035,7 +2165,7 @@ export default function SalariesView({
             onClick={(e) => e.stopPropagation()}
           >
             <h4 style={{ margin: "0 0 12px", fontSize: "15px", color: "#1e293b" }}>
-              Edit Dividend ({editingDividendMonth.label})
+              Edit dividend ({editingDividendMonth.label})
             </h4>
             <div style={{ marginBottom: "14px" }}>
               <label style={{ display: "block", fontSize: "12px", color: "#64748b", marginBottom: "4px" }}>

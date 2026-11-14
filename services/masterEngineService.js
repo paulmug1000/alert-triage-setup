@@ -556,7 +556,7 @@ export function compactClientTabForStorage_(tabName, valuesGrid, formulasGrid, n
   return { storedValues: compactVals, storedNotes: cleanNotes, totalRows: vGrid.length };
 }
 
-export function expandClientTabFromStorage_(data, tabName) {
+export function expandClientTabFromStorage_(data, tabName, { valuesOnly = false } = {}) {
   const hadNotesGridFromDb = Boolean(data.notes_grid && typeof data.notes_grid === "object");
   const rawDbNotesJson = hadNotesGridFromDb ? JSON.stringify(data.notes_grid) : null;
   const rawNotes = hadNotesGridFromDb ? { ...data.notes_grid } : {};
@@ -571,24 +571,26 @@ export function expandClientTabFromStorage_(data, tabName) {
   ) {
     meta = { totalRows: data.row_count, templateRowIdx: storedVals.length - 2 };
   }
-  const storedForms = Array.isArray(rawNotes.__formulas_grid)
-    ? rawNotes.__formulas_grid
-    : Array.isArray(data.formulas_grid) && data.formulas_grid.length > 0
-      ? data.formulas_grid
-      : storedVals;
+  const storedForms = !valuesOnly
+    ? (Array.isArray(rawNotes.__formulas_grid)
+      ? rawNotes.__formulas_grid
+      : Array.isArray(data.formulas_grid) && data.formulas_grid.length > 0
+        ? data.formulas_grid
+        : storedVals)
+    : null;
 
   delete rawNotes.__formulas_grid;
   delete rawNotes.__compact_meta;
 
   if (meta && meta.totalRows > storedVals.length && storedVals.length >= 2) {
     const { totalRows, templateRowIdx } = meta;
-    const uncompactedForms = expandFormulasGrid2D_(storedForms, storedVals, minCols);
+    const uncompactedForms = valuesOnly ? null : expandFormulasGrid2D_(storedForms, storedVals, minCols);
     const expandedVals = [];
-    const expandedForms = [];
+    const expandedForms = valuesOnly ? expandedVals : [];
     const tplValRow = storedVals[templateRowIdx] || [];
-    const tplFormRow = uncompactedForms[templateRowIdx] || [];
+    const tplFormRow = uncompactedForms ? (uncompactedForms[templateRowIdx] || []) : null;
     const tailValRow = storedVals[storedVals.length - 1] || [];
-    const tailFormRow = uncompactedForms[uncompactedForms.length - 1] || [];
+    const tailFormRow = uncompactedForms ? (uncompactedForms[uncompactedForms.length - 1] || []) : null;
 
     for (let r = 0; r <= templateRowIdx; r++) {
       const rowCopy = Array.isArray(storedVals[r]) ? [...storedVals[r]] : [];
@@ -596,15 +598,21 @@ export function expandClientTabFromStorage_(data, tabName) {
         while (rowCopy.length < minCols) rowCopy.push("");
       }
       expandedVals.push(rowCopy);
-      expandedForms.push(Array.isArray(uncompactedForms[r]) ? [...uncompactedForms[r]] : []);
+      if (!valuesOnly) {
+        expandedForms.push(Array.isArray(uncompactedForms[r]) ? [...uncompactedForms[r]] : []);
+      }
     }
     const sharedInactiveValRow = [...tplValRow];
     for (let r = templateRowIdx + 1; r < totalRows - 1; r++) {
       expandedVals.push(sharedInactiveValRow);
-      expandedForms.push(tplFormRow);
+      if (!valuesOnly) {
+        expandedForms.push(tplFormRow);
+      }
     }
     expandedVals.push([...tailValRow]);
-    expandedForms.push([...tailFormRow]);
+    if (!valuesOnly) {
+      expandedForms.push([...tailFormRow]);
+    }
 
     data.values_grid = expandedVals;
     data.formulas_grid = expandedForms;
@@ -625,7 +633,7 @@ export function expandClientTabFromStorage_(data, tabName) {
     }
     return copy;
   });
-  const expandedForms = expandFormulasGrid2D_(storedForms, expandedVals, minCols);
+  const expandedForms = valuesOnly ? expandedVals : expandFormulasGrid2D_(storedForms, expandedVals, minCols);
 
   data.values_grid = expandedVals;
   data.formulas_grid = expandedForms;
@@ -638,13 +646,14 @@ export function expandClientTabFromStorage_(data, tabName) {
   return data;
 }
 
-async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = null) {
+async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = null, options = {}) {
+  const valuesOnly = Boolean(options?.valuesOnly);
   const supabase = getSupabaseAdmin();
   if (!supabase) return { values_grid: [], formulas_grid: [], notes_grid: {} };
 
   const cacheKey = `${ctx.clientName.toLowerCase()}::${sheetRole}::${tabName}`;
   const cached = _gridMemoryCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now() && !cached.record._valuesOnlyLoaded) {
+  if (cached && cached.expiresAt > Date.now() && (!cached.record._valuesOnlyLoaded || valuesOnly)) {
     return cached.record;
   }
 
@@ -652,9 +661,12 @@ async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = 
   let error = null;
 
   if (sheetRole === "client") {
+    const selectCols = valuesOnly
+      ? "id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count"
+      : "id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count";
     const res = await supabase
       .from("master_sheet_grids")
-      .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
+      .select(selectCols)
       .eq("client_name", ctx.clientName)
       .or(`and(sheet_role.eq.client,tab_name.eq.${tabName}),and(sheet_role.eq.master,tab_name.eq.Client::${tabName})`)
       .limit(1)
@@ -662,7 +674,8 @@ async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = 
     data = res.data;
     error = res.error;
     if (!error && data) {
-      expandClientTabFromStorage_(data, tabName);
+      expandClientTabFromStorage_(data, tabName, { valuesOnly });
+      if (valuesOnly) data._valuesOnlyLoaded = true;
       _gridMemoryCache.set(cacheKey, { record: data, expiresAt: Date.now() + GRID_CACHE_TTL_MS });
       return data;
     }
@@ -1479,6 +1492,38 @@ export async function flushPendingClientRecomputes(rawSheetsApi = null, clientNa
   }
 }
 
+/**
+ * Interactive request flush: synchronously persists only any immediate input tabs
+ * (_unpersistedSkippedClientTabsByClient, ~1s) and ensures downstream multi-tab
+ * formula recalculation runs in the background via Vercel waitUntil instead of blocking
+ * interactive HTTP responses for ~40s.
+ */
+export async function flushImmediateAndScheduleBackgroundClientRecomputes(rawSheetsApi = null, clientName = null) {
+  const keys = clientName
+    ? [String(clientName).toLowerCase()]
+    : [
+      ...new Set([
+        ..._unpersistedSkippedClientTabsByClient.keys(),
+        ..._pendingClientTabsByClient.keys(),
+      ]),
+    ];
+  for (const key of keys) {
+    const ctx = _pendingClientCtxByClient.get(key);
+    if (!ctx) continue;
+    const unpersistedSet = _unpersistedSkippedClientTabsByClient.get(key);
+    if (unpersistedSet && unpersistedSet.size > 0) {
+      await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
+        console.warn("[masterEngineService] Immediate client flush warning:", e.message)
+      );
+      continue;
+    }
+    const pendingSet = _pendingClientTabsByClient.get(key);
+    if (pendingSet && pendingSet.size > 0 && !_inFlightClientRecomputeByClient.has(key)) {
+      scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
+    }
+  }
+}
+
 const DIRECT_INPUT_CLIENT_TABS = new Set([
   "Confirmed",
   "Pipeline",
@@ -1955,7 +2000,7 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
       for (const r of rows) {
         const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
         if (!recordsByTab[cleanTab]) {
-          expandClientTabFromStorage_(r, cleanTab);
+          expandClientTabFromStorage_(r, cleanTab, { valuesOnly });
           if (valuesOnly) r._valuesOnlyLoaded = true;
           recordsByTab[cleanTab] = r;
           _gridMemoryCache.set(`${clientKey}::client::${cleanTab}`, {
@@ -2110,10 +2155,12 @@ export async function handleVirtualSheetsCall({
         );
       }
     }
-    const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
+    const isUnformatted = params.valueRenderOption === "UNFORMATTED_VALUE";
+    const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi, {
+      valuesOnly: sheetRole === "client" && isUnformatted,
+    });
     const isFormula =
       params.valueRenderOption === "FORMULA" && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0;
-    const isUnformatted = params.valueRenderOption === "UNFORMATTED_VALUE";
     const sourceGrid = isFormula ? rec.formulas_grid : rec.values_grid || [];
     const sliced = sliceGrid2D_(sourceGrid, parsed);
     const values =
@@ -2155,13 +2202,52 @@ export async function handleVirtualSheetsCall({
     }
     const uniqueTabs = [...new Set(parsedList.map((p) => p.parsed.tabName))];
 
+    const isFormulaReq = params.valueRenderOption === "FORMULA";
+    const isUnformattedReq = params.valueRenderOption === "UNFORMATTED_VALUE";
     const byTab = new Map();
     if (sheetRole === "client") {
-      for (let i = 0; i < uniqueTabs.length; i += 3) {
-        const chunk = uniqueTabs.slice(i, i + 3);
+      if (isUnformattedReq) {
+        const clientKeyLower = ctx.clientName.toLowerCase();
+        const uncachedTabs = [];
+        for (const t of uniqueTabs) {
+          const cached = _gridMemoryCache.get(`${clientKeyLower}::client::${t}`);
+          if (cached && cached.expiresAt > Date.now()) {
+            byTab.set(t, cached.record);
+          } else {
+            uncachedTabs.push(t);
+          }
+        }
+        if (uncachedTabs.length > 0 && supabase) {
+          const dbRole = _useClientRoleFallback ? "master" : "client";
+          const targetNames = _useClientRoleFallback
+            ? uncachedTabs.map((t) => `Client::${t}`)
+            : uncachedTabs;
+          const { data: rows } = await supabase
+            .from("master_sheet_grids")
+            .select("id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count")
+            .eq("client_name", ctx.clientName)
+            .eq("sheet_role", dbRole)
+            .in("tab_name", targetNames);
+          for (const r of rows || []) {
+            const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
+            expandClientTabFromStorage_(r, cleanTab, { valuesOnly: true });
+            r._valuesOnlyLoaded = true;
+            byTab.set(cleanTab, r);
+            _gridMemoryCache.set(`${clientKeyLower}::client::${cleanTab}`, {
+              record: r,
+              expiresAt: Date.now() + GRID_CACHE_TTL_MS,
+            });
+          }
+        }
+      }
+      const remainingTabs = uniqueTabs.filter((t) => !byTab.has(t));
+      for (let i = 0; i < remainingTabs.length; i += 3) {
+        const chunk = remainingTabs.slice(i, i + 3);
         await Promise.all(
           chunk.map(async (tabName) => {
-            const rec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheetsApi);
+            const rec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheetsApi, {
+              valuesOnly: isUnformattedReq,
+            });
             byTab.set(tabName, rec);
           })
         );
@@ -2182,9 +2268,6 @@ export async function handleVirtualSheetsCall({
         });
       }
     }
-
-    const isFormulaReq = params.valueRenderOption === "FORMULA";
-    const isUnformattedReq = params.valueRenderOption === "UNFORMATTED_VALUE";
 
     const valueRanges = [];
     for (const item of parsedList) {
@@ -2626,22 +2709,51 @@ export async function handleVirtualSheetsCall({
 
         if (matchingRanges.length > 0) {
           sheetObj.data = matchingRanges.map((mr) => {
+            const mrStartR = mr.startRow0 ?? 0;
+            const mrStartC = mr.startCol0 ?? 0;
             const slicedVals = sliceGrid2D_(t.values_grid || [], mr);
             const slicedForms = sliceGrid2D_(t.formulas_grid || t.values_grid || [], mr);
+            let maxNoteRowCount = 0;
+            const noteMaxColCountByRow = new Map();
+            if (t.notes_grid && typeof t.notes_grid === "object") {
+              for (const nKey of Object.keys(t.notes_grid)) {
+                if (nKey.startsWith("__") || !t.notes_grid[nKey]) continue;
+                const colonIdx = nKey.indexOf(":");
+                if (colonIdx <= 0) continue;
+                const nr = parseInt(nKey.slice(0, colonIdx), 10);
+                const nc = parseInt(nKey.slice(colonIdx + 1), 10);
+                if (Number.isNaN(nr) || Number.isNaN(nc)) continue;
+                if (
+                  nr >= mrStartR &&
+                  (mr.endRow0 == null || nr <= mr.endRow0) &&
+                  nc >= mrStartC &&
+                  (mr.endCol0 == null || nc <= mr.endCol0)
+                ) {
+                  const rOffset = nr - mrStartR;
+                  const cCount = nc - mrStartC + 1;
+                  if (rOffset + 1 > maxNoteRowCount) maxNoteRowCount = rOffset + 1;
+                  if (cCount > (noteMaxColCountByRow.get(rOffset) || 0)) {
+                    noteMaxColCountByRow.set(rOffset, cCount);
+                  }
+                }
+              }
+            }
             const rowCount = Math.max(
               slicedVals.length,
               slicedForms.length,
-              t.tab_name === "Cash" && mr.endRow0 != null ? Math.min(76, mr.endRow0 + 1) - (mr.startRow0 ?? 0) : 0
+              maxNoteRowCount,
+              t.tab_name === "Cash" && mr.endRow0 != null ? Math.min(76, mr.endRow0 + 1) - mrStartR : 0
             );
             const rowData = [];
             for (let rOffset = 0; rOffset < rowCount; rOffset++) {
-              const absR = (mr.startRow0 ?? 0) + rOffset;
+              const absR = mrStartR + rOffset;
               const rArr = slicedVals[rOffset] || [];
               const fArr = slicedForms[rOffset] || [];
               const colCount = Math.max(
                 rArr.length,
                 fArr.length,
-                t.tab_name === "Cash" && mr.endCol0 != null ? Math.min(37, mr.endCol0 + 1) - (mr.startCol0 ?? 0) : 0
+                noteMaxColCountByRow.get(rOffset) || 0,
+                t.tab_name === "Cash" && mr.endCol0 != null ? Math.min(37, mr.endCol0 + 1) - mrStartC : 0
               );
               const values = [];
               for (let cOffset = 0; cOffset < colCount; cOffset++) {
@@ -4366,70 +4478,124 @@ export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") 
   return {
     success: true,
     clientName: ctx.clientName,
+    clientSheetId: ctx.clientSheetId,
+    masterSheetId: ctx.masterSheetId,
     clientTabsSynced: tabsToFetch.length,
     outgoingsNotesCount: Object.keys(outNotesMap).length,
     usedRoleFallback: _useClientRoleFallback,
   };
 }
 
+let _verifiedStage2SchemaReady = false;
+let _cachedSqlFiles = null;
+
+function readCachedMigrationSqlFiles_() {
+  if (_cachedSqlFiles) return _cachedSqlFiles;
+  let migrationSql = "";
+  let clockMigrationSql = "";
+  try {
+    const sqlPath = path.join(process.cwd(), "supabase", "migrations", "0002_stage2_master_and_recon.sql");
+    if (fs.existsSync(sqlPath)) {
+      migrationSql = fs.readFileSync(sqlPath, "utf8");
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const clockSqlPath = path.join(process.cwd(), "supabase", "migrations", "0003_supabase_30m_cron_clock.sql");
+    if (fs.existsSync(clockSqlPath)) {
+      clockMigrationSql = fs.readFileSync(clockSqlPath, "utf8");
+    }
+  } catch {
+    // ignore
+  }
+  _cachedSqlFiles = { migrationSql, clockMigrationSql };
+  return _cachedSqlFiles;
+}
+
 /**
- * Returns Stage 2 & Stage 4 table counts, client master_mode / client_mode status, and virtual tabs for PMA Settings & Workbook Inspector
+ * Returns Stage 2 table counts, client master_mode / client_mode status, and virtual tabs for PMA DB & Workbook Inspector
  */
 export async function getStage2Status(targetClientName = "APPTEST") {
   if (!isSupabaseConfigured()) {
     return { configured: false, schemaReady: false, tables: [], clients: [] };
   }
   const supabase = getSupabaseAdmin();
-  const tableResults = await Promise.all(
-    STAGE2_TABLES.map(async (t) => {
-      try {
-        const { count, error } = await supabase
-          .from(t.name)
-          .select("client_name", { count: "exact" })
-          .eq("client_name", targetClientName)
-          .limit(1);
-        if (error) {
-          return { ...t, exists: false, count: 0, error: error.message };
+
+  const [
+    tableResults,
+    clientsResp,
+    allKiResp,
+    allGridsResp,
+    allSchedsResp,
+    allIntsResp,
+    targetGridsResp,
+    clockStatus,
+  ] = await Promise.all([
+    Promise.all(
+      STAGE2_TABLES.map(async (t) => {
+        try {
+          const { count, error } = await supabase
+            .from(t.name)
+            .select("client_name", { count: "exact", head: true })
+            .eq("client_name", targetClientName);
+          if (error) {
+            return { ...t, exists: false, count: 0, error: error.message };
+          }
+          return { ...t, exists: true, count: count ?? 0 };
+        } catch (err) {
+          return { ...t, exists: false, count: 0, error: err.message };
         }
-        return { ...t, exists: true, count: count ?? 0 };
-      } catch (err) {
-        return { ...t, exists: false, count: 0, error: err.message };
-      }
-    })
-  );
+      })
+    ),
+    supabase
+      .from("clients")
+      .select("id, client_name, normalized_key, status, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id")
+      .order("client_name", { ascending: true }),
+    supabase
+      .from("tenant_key_info")
+      .select("client_name, accounting_tool, crm_tool, crm_drives, client_materialized_at, updated_at")
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
+    supabase
+      .from("master_sheet_grids")
+      .select("client_name, sheet_role, tab_name, updated_at")
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
+    supabase
+      .from("sync_schedules")
+      .select("client_name, inv_freq, crm_freq, exp_freq, last_inv_run, last_crm_run, last_exp_run")
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
+    supabase
+      .from("tenant_integrations")
+      .select("client_id, tool, status")
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
+    supabase
+      .from("master_sheet_grids")
+      .select("sheet_role, tab_name, row_count, col_count, updated_at")
+      .eq("client_name", targetClientName)
+      .order("tab_name", { ascending: true })
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
+    getSupabaseClockStatusAndSyncConfig().catch(() => null),
+  ]);
 
-  const schemaReady = tableResults.every((t) => t.exists);
+  const schemaReady = _verifiedStage2SchemaReady || tableResults.every((t) => t.exists);
+  if (schemaReady) _verifiedStage2SchemaReady = true;
 
-  const { data: clientsData } = await supabase
-    .from("clients")
-    .select("id, client_name, normalized_key, status, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id")
-    .order("client_name", { ascending: true });
-
+  const clientsData = clientsResp?.data || [];
   let keyInfoMeta = null;
   let availableTabs = { master: [], recon: [], client: [] };
-  let enrichedClients = clientsData || [];
+  let enrichedClients = clientsData;
 
   if (schemaReady) {
-    const [{ data: allKi }, { data: allGrids }, { data: allScheds }, { data: allInts }, { data: targetGrids }] =
-      await Promise.all([
-        supabase
-          .from("tenant_key_info")
-          .select("client_name, accounting_tool, crm_tool, crm_drives, client_materialized_at, updated_at"),
-        supabase
-          .from("master_sheet_grids")
-          .select("client_name, sheet_role, tab_name, updated_at"),
-        supabase
-          .from("sync_schedules")
-          .select("client_name, inv_freq, crm_freq, exp_freq, last_inv_run, last_crm_run, last_exp_run"),
-        supabase
-          .from("tenant_integrations")
-          .select("client_id, tool, status"),
-        supabase
-          .from("master_sheet_grids")
-          .select("sheet_role, tab_name, row_count, col_count, updated_at")
-          .eq("client_name", targetClientName)
-          .order("tab_name", { ascending: true }),
-      ]);
+    const allKi = allKiResp?.data || [];
+    const allGrids = allGridsResp?.data || [];
+    const allScheds = allSchedsResp?.data || [];
+    const allInts = allIntsResp?.data || [];
+    const targetGrids = targetGridsResp?.data || [];
 
     const kiByClient = new Map();
     for (const k of allKi || []) {
@@ -4526,37 +4692,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     });
   }
 
-  let migrationSql = "";
-  try {
-    const sqlPath = path.join(process.cwd(), "supabase", "migrations", "0002_stage2_master_and_recon.sql");
-    if (fs.existsSync(sqlPath)) {
-      migrationSql = fs.readFileSync(sqlPath, "utf8");
-    }
-  } catch {
-    // ignore
-  }
-
-  let clockMigrationSql = "";
-  try {
-    const clockSqlPath = path.join(process.cwd(), "supabase", "migrations", "0003_supabase_30m_cron_clock.sql");
-    if (fs.existsSync(clockSqlPath)) {
-      clockMigrationSql = fs.readFileSync(clockSqlPath, "utf8");
-    }
-  } catch {
-    // ignore
-  }
-
-  let stage4MigrationSql = "";
-  try {
-    const stage4SqlPath = path.join(process.cwd(), "supabase", "migrations", "0004_stage4_client_sheet_engine.sql");
-    if (fs.existsSync(stage4SqlPath)) {
-      stage4MigrationSql = fs.readFileSync(stage4SqlPath, "utf8");
-    }
-  } catch {
-    // ignore
-  }
-
-  const clockStatus = await getSupabaseClockStatusAndSyncConfig().catch(() => null);
+  const { migrationSql, clockMigrationSql } = readCachedMigrationSqlFiles_();
 
   return {
     configured: true,
@@ -4568,7 +4704,6 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     clients: enrichedClients,
     migrationSql,
     clockMigrationSql,
-    stage4MigrationSql,
     clockStatus,
   };
 }
@@ -4726,12 +4861,17 @@ export async function getVirtualTabForInspector({
   tabName = "KeyInfo",
   maxRows = 300,
   maxCols = 500,
+  includeFormulas = true,
+  includeRawValues = false,
+  includeNotes = false,
+  trimTrailingEmptyRows = false,
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
 
   let data = null;
   let error = null;
+  let staleAgainstClientEdits = false;
   if (sheetRole === "client") {
     const res = await supabase
       .from("master_sheet_grids")
@@ -4746,15 +4886,58 @@ export async function getVirtualTabForInspector({
       expandClientTabFromStorage_(data, tabName);
     }
   } else {
-    const res = await supabase
-      .from("master_sheet_grids")
-      .select("*")
-      .eq("client_name", clientName)
-      .eq("sheet_role", sheetRole)
-      .eq("tab_name", tabName)
-      .maybeSingle();
+    const selectCols = includeFormulas
+      ? "row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
+      : "row_count, col_count, values_grid, notes_grid, updated_at";
+    const isComparisonTab =
+      sheetRole === "master" &&
+      (tabName === "InvComp" || tabName === "DirComp" || tabName === "CRMComp");
+    const [res, clientEditRes] = await Promise.all([
+      supabase
+        .from("master_sheet_grids")
+        .select(selectCols)
+        .eq("client_name", clientName)
+        .eq("sheet_role", sheetRole)
+        .eq("tab_name", tabName)
+        .maybeSingle(),
+      isComparisonTab
+        ? supabase
+          .from("master_sheet_grids")
+          .select("updated_at")
+          .eq("client_name", clientName)
+          .in("tab_name", [
+            "Confirmed",
+            "Pipeline",
+            "Outgoings",
+            "Client::Confirmed",
+            "Client::Pipeline",
+            "Client::Outgoings",
+          ])
+          .order("updated_at", { ascending: false })
+          .limit(1)
+        : Promise.resolve({ data: null, error: null }),
+    ]);
     data = res.data;
     error = res.error;
+    try {
+      if (
+        isComparisonTab &&
+        !clientEditRes?.error &&
+        Array.isArray(clientEditRes?.data) &&
+        clientEditRes.data[0]?.updated_at &&
+        data?.updated_at
+      ) {
+        const latestClientMs = Date.parse(clientEditRes.data[0].updated_at);
+        const masterUpdatedMs = Date.parse(data.updated_at);
+        staleAgainstClientEdits = Boolean(
+          Number.isFinite(latestClientMs) &&
+          Number.isFinite(masterUpdatedMs) &&
+          latestClientMs > masterUpdatedMs + 2000
+        );
+      }
+    } catch (_) {
+      staleAgainstClientEdits = false;
+    }
   }
 
   if (error) throw new Error(error.message);
@@ -4766,13 +4949,43 @@ export async function getVirtualTabForInspector({
       rowCount: 0,
       colCount: 0,
       valuesGrid: [],
-      formulasGrid: [],
+      ...(includeFormulas ? { formulasGrid: [] } : {}),
+      ...(includeRawValues ? { rawValuesGrid: [] } : {}),
+      ...(includeNotes ? { notesGrid: {} } : {}),
+      staleAgainstClientEdits: false,
       updatedAt: null,
     };
   }
 
-  const rawSlice = (data.values_grid || [])
-    .slice(0, maxRows)
+  const allVals = data.values_grid || [];
+  let effectiveMaxRows = maxRows;
+  if (trimTrailingEmptyRows) {
+    const scanLimit = Math.min(allVals.length, maxRows);
+    let lastMeaningfulRow = 20;
+    for (let r = scanLimit - 1; r >= 5; r--) {
+      const row = allVals[r];
+      if (!Array.isArray(row)) continue;
+      let hasContent = false;
+      for (let c = 0; c < row.length; c++) {
+        const v = row[c];
+        if (v !== null && v !== undefined && v !== false) {
+          const s = String(v).trim();
+          if (s !== "" && s.toUpperCase() !== "FALSE") {
+            hasContent = true;
+            break;
+          }
+        }
+      }
+      if (hasContent) {
+        lastMeaningfulRow = r;
+        break;
+      }
+    }
+    effectiveMaxRows = Math.min(maxRows, Math.max(26, lastMeaningfulRow + 6));
+  }
+
+  const rawSlice = allVals
+    .slice(0, effectiveMaxRows)
     .map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []));
   const vGrid =
     tabName === "GasExecLogs"
@@ -4783,21 +4996,26 @@ export async function getVirtualTabForInspector({
         rawSlice,
         0,
         0,
-        data.values_grid || [],
+        allVals,
         data.notes_grid || {}
       );
-  const fGrid = (data.formulas_grid || data.values_grid || [])
-    .slice(0, maxRows)
-    .map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []));
+  const fGrid = includeFormulas
+    ? (data.formulas_grid || allVals)
+      .slice(0, effectiveMaxRows)
+      .map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []))
+    : null;
 
   return {
     clientName,
     sheetRole,
     tabName,
-    rowCount: data.row_count || (data.values_grid || []).length,
+    rowCount: data.row_count || allVals.length,
     colCount: data.col_count || 0,
     valuesGrid: vGrid,
-    formulasGrid: fGrid,
+    ...(includeFormulas ? { formulasGrid: fGrid } : {}),
+    ...(includeRawValues ? { rawValuesGrid: rawSlice } : {}),
+    ...(includeNotes ? { notesGrid: data.notes_grid || {} } : {}),
+    staleAgainstClientEdits,
     updatedAt: data.updated_at,
   };
 }

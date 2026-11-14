@@ -905,6 +905,7 @@ export default function JobsView({
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth?.user?.isReadOnly && !!(auth?.user?.isAdmin || auth?.user?.role === "Admin"));
+  const isSysAdmin = Boolean(!auth?.user?.isReadOnly && (auth?.user?.isAdmin || auth?.user?.role === "Admin"));
   const { outgoingsPullPendingRef, assignedAppIds, setAssignedAppIds } = useAppGlobals();
 
   const {
@@ -921,9 +922,46 @@ export default function JobsView({
     hasAccountingIntegration,
     crmTool,
     crmDrives,
+    clientMode,
+    jobsLastUpdatedAt,
     noEndDateRetainerMonths,
     loadJobsData
   } = useJobs(managedClient || initialClient);
+
+  const [showPullFromSheetConfirm, setShowPullFromSheetConfirm] = useState(false);
+  const [pullingFromSheet, setPullingFromSheet] = useState(false);
+
+  const toggleJobsSort = (colBase, defaultDir = "asc") => {
+    const ascKey = colBase === "clientName" ? "clientName" : colBase === "rowNumber" ? "rowNumber" : `${colBase}Asc`;
+    const descKey = colBase === "clientName" ? "clientDesc" : colBase === "rowNumber" ? "rowNumberDesc" : `${colBase}Desc`;
+    setJobsSortBy((prev) => (prev === ascKey ? descKey : prev === descKey ? ascKey : (defaultDir === "desc" ? descKey : ascKey)));
+  };
+
+  const renderSortableTh = ({ label, colBase, defaultDir = "asc", style = {}, title = undefined }) => {
+    const ascKey = colBase === "clientName" ? "clientName" : colBase === "rowNumber" ? "rowNumber" : `${colBase}Asc`;
+    const descKey = colBase === "clientName" ? "clientDesc" : colBase === "rowNumber" ? "rowNumberDesc" : `${colBase}Desc`;
+    const isAsc = jobsSortBy === ascKey || (colBase === "clientName" && jobsSortBy === "clientAsc");
+    const isDesc = jobsSortBy === descKey;
+    const isActive = isAsc || isDesc;
+    const arrow = isAsc ? "▲" : isDesc ? "▼" : "⇅";
+    return (
+      <th
+        key={colBase}
+        onClick={() => toggleJobsSort(colBase, defaultDir)}
+        title={title || `Sort by ${label}`}
+        style={{
+          cursor: "pointer",
+          userSelect: "none",
+          whiteSpace: "nowrap",
+          color: isActive ? "#1d4ed8" : style.color,
+          ...style,
+        }}
+      >
+        <span>{label}</span>
+        <span style={{ fontSize: "10px", marginLeft: "4px", color: isActive ? "#1d4ed8" : "#94a3b8" }}>{arrow}</span>
+      </th>
+    );
+  };
 
   const prevInitialClientRef = useRef(null);
   const prevManagedClientRef = useRef(null);
@@ -958,6 +996,32 @@ export default function JobsView({
     }
   }, [managedClient, initialClient, allOutgoingsClients, jobsClient?.clientSheetId]);
 
+  const draftEditsRef = useRef(draftEdits);
+  draftEditsRef.current = draftEdits;
+
+  const handlePullJobsFromSheet = async () => {
+    if (!isSysAdmin || !jobsClient?.clientName || pullingFromSheet) return;
+    setPullingFromSheet(true);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "seed_client_sheet", clientName: jobsClient.clientName }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to pull latest jobs from sheet");
+      }
+      setShowPullFromSheetConfirm(false);
+      await loadJobsData(jobsClient, "All", true);
+    } catch (e) {
+      setActionError(e.message || "Failed to pull latest jobs from sheet");
+    } finally {
+      setPullingFromSheet(false);
+    }
+  };
+
   // Mode: "modern" (default, user-friendly combined view) or "legacy" (spreadsheet view for admins)
   const [viewMode, setViewMode] = useState("modern");
   const effectiveViewMode = isAdmin ? viewMode : "modern";
@@ -975,6 +1039,43 @@ export default function JobsView({
 
   // Loading / saving states
   const [savingJobKeys, setSavingJobKeys] = useState(() => new Set());
+  const savingJobKeysRef = useRef(savingJobKeys);
+  savingJobKeysRef.current = savingJobKeys;
+  const jobsLastUpdatedAtRef = useRef(jobsLastUpdatedAt);
+  jobsLastUpdatedAtRef.current = jobsLastUpdatedAt;
+  const jobsLoadingRef = useRef(jobsLoading);
+  jobsLoadingRef.current = jobsLoading;
+  const pullingFromSheetRef = useRef(pullingFromSheet);
+  pullingFromSheetRef.current = pullingFromSheet;
+  const jobsClientRef = useRef(jobsClient);
+  jobsClientRef.current = jobsClient;
+  const jobsClientSheetId = jobsClient?.clientSheetId || "";
+
+  // Silently revalidate jobs when user returns to the tab/window after >30s
+  // with no active edits or in-flight saves.
+  useEffect(() => {
+    if (!jobsClientSheetId) return undefined;
+    const handleFocusOrVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible") {
+        return;
+      }
+      const activeClient = jobsClientRef.current;
+      if (!activeClient?.clientSheetId) return;
+      if (jobsLoadingRef.current || pullingFromSheetRef.current) return;
+      if (savingJobKeysRef.current && savingJobKeysRef.current.size > 0) return;
+      if (Object.keys(draftEditsRef.current || {}).length > 0) return;
+      const lastTs = jobsLastUpdatedAtRef.current ? new Date(jobsLastUpdatedAtRef.current).getTime() : 0;
+      if (Date.now() - lastTs < 30000) return;
+      const targetTab = effectiveViewMode === "legacy" ? (jobsTab || "Confirmed") : "All";
+      loadJobsData(activeClient, targetTab, true);
+    };
+    window.addEventListener("focus", handleFocusOrVisible);
+    document.addEventListener("visibilitychange", handleFocusOrVisible);
+    return () => {
+      window.removeEventListener("focus", handleFocusOrVisible);
+      document.removeEventListener("visibilitychange", handleFocusOrVisible);
+    };
+  }, [jobsClientSheetId, effectiveViewMode, jobsTab, loadJobsData]);
   const [confirmingJobKeys, setConfirmingJobKeys] = useState(() => new Set());
   const [markingAlreadyConfirmedKeys, setMarkingAlreadyConfirmedKeys] = useState(() => new Set());
   const [deletingJobKeys, setDeletingJobKeys] = useState(() => new Set());
@@ -2224,89 +2325,134 @@ export default function JobsView({
       list = list.filter((j) => isJobMatchSearch(j, searchQuery, draftEdits));
     }
 
-    // 2. Sort jobs
+    // 2. Sort jobs (always using persisted row values, never unsaved draftEdits; blank dates always sort last)
+    const compareDatesBlankLast = (da, db, asc) => {
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      return asc ? da.getTime() - db.getTime() : db.getTime() - da.getTime();
+    };
+    const parseMoneyVal = (v) => parseFloat(String(v || "0").replace(/[£$€,\s]/g, "")) || 0;
+
     return list.sort((a, b) => {
       const rowA = a.rows?.[0] || {};
       const rowB = b.rows?.[0] || {};
+      const tieRow = () => (rowA.rowNum || 0) - (rowB.rowNum || 0);
 
       switch (jobsSortBy) {
+        case "statusAsc":
+        case "statusDesc": {
+          const sA = String(a.tabName || rowA.tabName || "Confirmed").trim();
+          const sB = String(b.tabName || rowB.tabName || "Confirmed").trim();
+          const cmp = jobsSortBy === "statusAsc" ? sA.localeCompare(sB) : sB.localeCompare(sA);
+          return cmp !== 0 ? cmp : compareDatesBlankLast(parseSheetDate(rowA.startDate), parseSheetDate(rowB.startDate), false);
+        }
         case "startDateAsc": {
-          const da = parseSheetDate(rowA.startDate);
-          const db = parseSheetDate(rowB.startDate);
-          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          return da.getTime() - db.getTime();
+          const cmp = compareDatesBlankLast(parseSheetDate(rowA.startDate), parseSheetDate(rowB.startDate), true);
+          return cmp !== 0 ? cmp : tieRow();
         }
         case "endDateDesc": {
-          const da = parseSheetDate(rowA.endDate);
-          const db = parseSheetDate(rowB.endDate);
-          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          return db.getTime() - da.getTime();
+          const cmp = compareDatesBlankLast(parseSheetDate(rowA.endDate), parseSheetDate(rowB.endDate), false);
+          return cmp !== 0 ? cmp : tieRow();
         }
         case "endDateAsc": {
-          const da = parseSheetDate(rowA.endDate);
-          const db = parseSheetDate(rowB.endDate);
-          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          return da.getTime() - db.getTime();
+          const cmp = compareDatesBlankLast(parseSheetDate(rowA.endDate), parseSheetDate(rowB.endDate), true);
+          return cmp !== 0 ? cmp : tieRow();
         }
         case "dateConfDesc": {
-          const da = getJobDateConf(a);
-          const db = getJobDateConf(b);
-          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          const diff = db.getTime() - da.getTime();
-          return diff !== 0 ? diff : (rowA.rowNum || 0) - (rowB.rowNum || 0);
+          const cmp = compareDatesBlankLast(getJobDateConf(a), getJobDateConf(b), false);
+          return cmp !== 0 ? cmp : tieRow();
         }
         case "dateConfAsc": {
-          const da = getJobDateConf(a);
-          const db = getJobDateConf(b);
-          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          const diff = da.getTime() - db.getTime();
-          return diff !== 0 ? diff : (rowA.rowNum || 0) - (rowB.rowNum || 0);
+          const cmp = compareDatesBlankLast(getJobDateConf(a), getJobDateConf(b), true);
+          return cmp !== 0 ? cmp : tieRow();
         }
         case "revDesc": {
-          const revA = parseFloat(String(rowA.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
-          const revB = parseFloat(String(rowB.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
-          return revB - revA;
+          const diff = parseMoneyVal(rowB.revenue) - parseMoneyVal(rowA.revenue);
+          return diff !== 0 ? diff : tieRow();
         }
         case "revAsc": {
-          const revA = parseFloat(String(rowA.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
-          const revB = parseFloat(String(rowB.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
-          return revA - revB;
+          const diff = parseMoneyVal(rowA.revenue) - parseMoneyVal(rowB.revenue);
+          return diff !== 0 ? diff : tieRow();
         }
-        case "clientName": {
+        case "costsDesc": {
+          const diff = parseMoneyVal(rowB.directCosts) - parseMoneyVal(rowA.directCosts);
+          return diff !== 0 ? diff : tieRow();
+        }
+        case "costsAsc": {
+          const diff = parseMoneyVal(rowA.directCosts) - parseMoneyVal(rowB.directCosts);
+          return diff !== 0 ? diff : tieRow();
+        }
+        case "clientName":
+        case "clientAsc":
+        case "clientDesc": {
           const nameA = String(a.client || rowA.client || "").trim();
           const nameB = String(b.client || rowB.client || "").trim();
-          const cmp = nameA.localeCompare(nameB, undefined, { sensitivity: "base", numeric: true });
+          const cmp = jobsSortBy === "clientDesc"
+            ? nameB.localeCompare(nameA, undefined, { sensitivity: "base", numeric: true })
+            : nameA.localeCompare(nameB, undefined, { sensitivity: "base", numeric: true });
           if (cmp !== 0) return cmp;
           const jobA = String(a.jobName || rowA.jobName || "").trim();
           const jobB = String(b.jobName || rowB.jobName || "").trim();
           return jobA.localeCompare(jobB, undefined, { sensitivity: "base", numeric: true });
         }
-        case "likelihoodDesc": {
+        case "jobNameAsc":
+        case "jobNameDesc": {
+          const jA = String(a.jobName || rowA.jobName || "").trim();
+          const jB = String(b.jobName || rowB.jobName || "").trim();
+          const cmp = jobsSortBy === "jobNameDesc"
+            ? jB.localeCompare(jA, undefined, { sensitivity: "base", numeric: true })
+            : jA.localeCompare(jB, undefined, { sensitivity: "base", numeric: true });
+          if (cmp !== 0) return cmp;
+          return String(a.client || rowA.client || "").localeCompare(String(b.client || rowB.client || ""));
+        }
+        case "typeAsc":
+        case "typeDesc": {
+          const tA = String(rowA.projectRetainer || "Project").trim();
+          const tB = String(rowB.projectRetainer || "Project").trim();
+          const cmp = jobsSortBy === "typeDesc" ? tB.localeCompare(tA) : tA.localeCompare(tB);
+          return cmp !== 0 ? cmp : tieRow();
+        }
+        case "codeAsc":
+        case "codeDesc": {
+          const cA = String(rowA.projectCode || "").trim();
+          const cB = String(rowB.projectCode || "").trim();
+          const cmp = jobsSortBy === "codeDesc"
+            ? cB.localeCompare(cA, undefined, { sensitivity: "base", numeric: true })
+            : cA.localeCompare(cB, undefined, { sensitivity: "base", numeric: true });
+          return cmp !== 0 ? cmp : tieRow();
+        }
+        case "leadSrcAsc":
+        case "leadSrcDesc": {
+          const lA = String(rowA.leadSrc || "").trim();
+          const lB = String(rowB.leadSrc || "").trim();
+          const cmp = jobsSortBy === "leadSrcDesc" ? lB.localeCompare(lA) : lA.localeCompare(lB);
+          return cmp !== 0 ? cmp : tieRow();
+        }
+        case "prodLineAsc":
+        case "prodLineDesc": {
+          const pA = String(rowA.prodLine || "").trim();
+          const pB = String(rowB.prodLine || "").trim();
+          const cmp = jobsSortBy === "prodLineDesc" ? pB.localeCompare(pA) : pA.localeCompare(pB);
+          return cmp !== 0 ? cmp : tieRow();
+        }
+        case "likelihoodDesc":
+        case "likelihoodAsc": {
           const lA = parseFloat(String(rowA.likelihood || "0").replace(/[^0-9.-]/g, "")) || 0;
           const lB = parseFloat(String(rowB.likelihood || "0").replace(/[^0-9.-]/g, "")) || 0;
-          return lB - lA;
+          const diff = jobsSortBy === "likelihoodAsc" ? lA - lB : lB - lA;
+          return diff !== 0 ? diff : tieRow();
         }
         case "rowNumber": {
           return (rowA.rowNum || 0) - (rowB.rowNum || 0);
         }
+        case "rowNumberDesc": {
+          return (rowB.rowNum || 0) - (rowA.rowNum || 0);
+        }
         case "startDateDesc":
         default: {
-          const da = parseSheetDate(rowA.startDate);
-          const db = parseSheetDate(rowB.startDate);
-          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          return db.getTime() - da.getTime();
+          const cmp = compareDatesBlankLast(parseSheetDate(rowA.startDate), parseSheetDate(rowB.startDate), false);
+          return cmp !== 0 ? cmp : tieRow();
         }
       }
     });
@@ -2909,18 +3055,35 @@ export default function JobsView({
                     rows: updatedJob.rows.map(r => ({ ...r, revenue: resData.updatedRevenue }))
                   };
                 }
+                const restored = hasRow ? resData?.restoredPlaceholderSlot : null;
                 return {
                   ...updatedJob,
-                  rows: updatedJob.rows.map((r) =>
-                    r.rowNum !== rNum
-                      ? r
-                      : {
-                        ...r,
-                        invoiceSlots: r.invoiceSlots.map((sl) =>
-                          sl.slotNum !== sNum ? sl : { ...sl, ...newData }
-                        )
-                      }
-                  )
+                  rows: updatedJob.rows.map((r) => {
+                    const matchesEditedRow = r.rowNum === rNum;
+                    const matchesRestoredRow = restored && Number(r.rowNum) === Number(restored.rowNum);
+                    if (!matchesEditedRow && !matchesRestoredRow) return r;
+                    return {
+                      ...r,
+                      invoiceSlots: r.invoiceSlots.map((sl) => {
+                        if (matchesEditedRow && sl.slotNum === sNum) return { ...sl, ...newData };
+                        if (
+                          matchesRestoredRow &&
+                          Number(sl.slotNum) === Number(restored.slotNum || 1) &&
+                          !(matchesEditedRow && Number(sNum) === Number(restored.slotNum || 1))
+                        ) {
+                          return {
+                            ...sl,
+                            ref: restored.ref || "",
+                            amount: restored.amount || "",
+                            sentDate: restored.sentDate || "",
+                            daysToPay: restored.daysToPay || "",
+                            status: restored.status || ""
+                          };
+                        }
+                        return sl;
+                      })
+                    };
+                  })
                 };
               })
             );
@@ -3220,6 +3383,74 @@ export default function JobsView({
 
           {jobsClient && (
             <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              {jobsLastUpdatedAt && (
+                <span style={{ fontSize: "12px", color: "#64748b", whiteSpace: "nowrap" }}>
+                  Updated {new Date(jobsLastUpdatedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={() => loadJobsData(jobsClient, effectiveViewMode === "legacy" ? (jobsTab || "Confirmed") : "All", true)}
+                disabled={jobsLoading || pullingFromSheet}
+                style={{
+                  padding: "7px 13px",
+                  borderRadius: "7px",
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  color: "#334155",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: (jobsLoading || pullingFromSheet) ? "default" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+                  opacity: (jobsLoading || pullingFromSheet) ? 0.7 : 1,
+                }}
+                title="Refresh jobs data"
+              >
+                {jobsLoading ? (
+                  <><Spinner size={13} color="#334155" /> Refreshing...</>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 2v6h-6" />
+                      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                      <path d="M3 22v-6h6" />
+                      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+                    </svg>
+                    <span>Refresh</span>
+                  </>
+                )}
+              </button>
+
+              {isSysAdmin && clientMode === "supabase" && (
+                <button
+                  type="button"
+                  onClick={() => setShowPullFromSheetConfirm(true)}
+                  disabled={pullingFromSheet || jobsLoading}
+                  style={{
+                    padding: "7px 13px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    background: "#ffffff",
+                    color: "#334155",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: (pullingFromSheet || jobsLoading) ? "default" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+                    opacity: (pullingFromSheet || jobsLoading) ? 0.7 : 1,
+                  }}
+                  title="Re-read this client's spreadsheet tabs into Supabase"
+                >
+                  {pullingFromSheet ? <><Spinner size={13} color="#334155" /> Pulling...</> : "Pull from sheet"}
+                </button>
+              )}
+
               {/* Legacy View Toggle Button - Admins only */}
               {isAdmin && (
                 <button
@@ -3241,7 +3472,7 @@ export default function JobsView({
                   }}
                   title={effectiveViewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
                 >
-                  <span>{effectiveViewMode === "modern" ? "📋 Legacy view" : "✨ Modern view"}</span>
+                  <span>{effectiveViewMode === "modern" ? "Legacy view" : "Modern view"}</span>
                 </button>
               )}
 
@@ -3382,7 +3613,7 @@ export default function JobsView({
                       })}
                     </div>
 
-                    {/* Secondary controls: Show 0% jobs, Sort, Refresh */}
+                    {/* Secondary controls: Show 0% jobs, Refresh */}
                     <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                       {/* Show 0% jobs toggle checkbox */}
                       <label
@@ -3419,42 +3650,7 @@ export default function JobsView({
                         <span>Show 0% jobs</span>
                       </label>
 
-                      {/* Sort Select */}
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#64748b" }}>Sort:</label>
-                        <select
-                          value={jobsSortBy}
-                          onChange={(e) => setJobsSortBy(e.target.value)}
-                          style={{
-                            padding: "5px 10px",
-                            borderRadius: "6px",
-                            border: "1px solid #cbd5e1",
-                            fontSize: "13px",
-                            fontWeight: "500",
-                            color: "#1e293b",
-                            background: "#ffffff",
-                            cursor: "pointer",
-                            outline: "none"
-                          }}
-                        >
-                          <option value="startDateDesc">Start Date (Newest first)</option>
-                          <option value="startDateAsc">Start Date (Oldest first)</option>
-                          <option value="endDateDesc">End Date (Newest first)</option>
-                          <option value="endDateAsc">End Date (Oldest first)</option>
-                          {hasDateConfirmed && (
-                            <>
-                              <option value="dateConfDesc">Date confirmed (descending)</option>
-                              <option value="dateConfAsc">Date confirmed (ascending)</option>
-                            </>
-                          )}
-                          <option value="revDesc">Revenue (Highest first)</option>
-                          <option value="revAsc">Revenue (Lowest first)</option>
-                          <option value="clientName">Client Name (A - Z)</option>
-                          <option value="likelihoodDesc">% Likelihood (Highest first)</option>
-                        </select>
-                      </div>
-
-                      {/* Refresh Button */}
+                      {/* Refresh button */}
                       <button
                         type="button"
                         onClick={() => loadJobsData(jobsClient, "All", true)}
@@ -3474,7 +3670,7 @@ export default function JobsView({
                           opacity: jobsLoading ? 0.7 : 1
                         }}
                       >
-                        {jobsLoading ? <><Spinner size={12} color="#475569" /> Refreshing...</> : "↻ Refresh"}
+                        {jobsLoading ? <><Spinner size={12} color="#475569" /> Refreshing...</> : "Refresh"}
                       </button>
                     </div>
                   </div>
@@ -3645,18 +3841,18 @@ export default function JobsView({
                   <div style={{ background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", overflowX: "auto", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left", minWidth: "1220px" }}>
                       <thead>
-                        <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontWeight: "600", fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                        <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontWeight: "600", fontSize: "12px", letterSpacing: "0.02em" }}>
                           <th style={{ padding: "10px 10px", width: "36px", textAlign: "center" }}></th>
-                          <th style={{ padding: "10px 10px", width: "95px" }}>Status</th>
+                          {renderSortableTh({ label: "Status", colBase: "status", defaultDir: "asc", style: { padding: "10px 10px", width: "95px" } })}
                           <th style={{ padding: "10px 4px", width: "36px", textAlign: "center" }} title="Job notes"></th>
-                          <th style={{ padding: "10px 10px", width: "180px", minWidth: "160px" }}>Client</th>
-                          <th style={{ padding: "10px 10px", width: "240px", minWidth: "200px" }}>Job name</th>
-                          <th style={{ padding: "10px 10px", width: "115px" }}>Type</th>
-                          <th style={{ padding: "10px 10px", width: "125px" }}>Revenue</th>
-                          <th style={{ padding: "10px 10px", width: "125px" }}>Direct costs</th>
-                          <th style={{ padding: "10px 10px", width: "130px" }}>Start date</th>
-                          <th style={{ padding: "10px 10px", width: "130px" }}>End date</th>
-                          <th style={{ padding: "10px 10px", width: "100px" }}>Likelihood</th>
+                          {renderSortableTh({ label: "Client", colBase: "clientName", defaultDir: "asc", style: { padding: "10px 10px", width: "180px", minWidth: "160px" } })}
+                          {renderSortableTh({ label: "Job name", colBase: "jobName", defaultDir: "asc", style: { padding: "10px 10px", width: "240px", minWidth: "200px" } })}
+                          {renderSortableTh({ label: "Type", colBase: "type", defaultDir: "asc", style: { padding: "10px 10px", width: "115px" } })}
+                          {renderSortableTh({ label: "Revenue", colBase: "rev", defaultDir: "desc", style: { padding: "10px 10px", width: "125px" } })}
+                          {renderSortableTh({ label: "Direct costs", colBase: "costs", defaultDir: "desc", style: { padding: "10px 10px", width: "125px" } })}
+                          {renderSortableTh({ label: "Start date", colBase: "startDate", defaultDir: "desc", style: { padding: "10px 10px", width: "130px" } })}
+                          {renderSortableTh({ label: "End date", colBase: "endDate", defaultDir: "desc", style: { padding: "10px 10px", width: "130px" } })}
+                          {renderSortableTh({ label: "Likelihood", colBase: "likelihood", defaultDir: "desc", style: { padding: "10px 10px", width: "100px" } })}
                           <th style={{ padding: "10px 12px", width: "110px", textAlign: "right" }}>Actions</th>
                         </tr>
                       </thead>
@@ -5504,46 +5700,12 @@ export default function JobsView({
                         <span>Show 0% jobs</span>
                       </label>
                     )}
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <label htmlFor="legacy-sort-select" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>
-                        Sort:
-                      </label>
-                      <select
-                        id="legacy-sort-select"
-                        value={jobsSortBy}
-                        onChange={(e) => setJobsSortBy(e.target.value)}
-                        style={{
-                          padding: "5px 10px",
-                          borderRadius: "6px",
-                          border: "1px solid #cbd5e1",
-                          fontSize: "13px",
-                          fontWeight: "500",
-                          color: "#1e293b",
-                          background: "#fff",
-                          cursor: "pointer",
-                          outline: "none"
-                        }}
-                      >
-                        <option value="startDateDesc">By job start date - descending</option>
-                        <option value="endDateDesc">By job end date - descending</option>
-                        <option value="startDateAsc">By job start date - ascending</option>
-                        <option value="endDateAsc">By job end date - ascending</option>
-                        {hasDateConfirmed && (
-                          <>
-                            <option value="dateConfDesc">Date confirmed (descending)</option>
-                            <option value="dateConfAsc">Date confirmed (ascending)</option>
-                          </>
-                        )}
-                        <option value="clientName">By client name</option>
-                        <option value="rowNumber">By row number</option>
-                      </select>
-                    </div>
                     <button
                       onClick={() => loadJobsData(jobsClient, jobsTab, true)}
                       disabled={jobsLoading}
                       style={{ background: "none", border: "none", color: "#666", cursor: jobsLoading ? "default" : "pointer", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "4px", opacity: jobsLoading ? 0.7 : 1 }}
                     >
-                      {jobsLoading ? <><Spinner size={12} color="#666" /> Refreshing...</> : "↻ Refresh"}
+                      {jobsLoading ? <><Spinner size={12} color="#666" /> Refreshing...</> : "Refresh"}
                     </button>
                   </div>
                 </div>
@@ -5555,12 +5717,47 @@ export default function JobsView({
                     <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "2000px", tableLayout: "fixed" }}>
                       <thead>
                         <tr style={{ background: "#f5f6fa" }}>
-                          {["", "Row", "Client", "Job name", "Code", jobsTab === "Pipeline" ? "Date Added" : "Date Conf", "Lead src", "Type", "Prod. line", "Split", "Revenue", "Costs", "VAT", "Start", "End",
-                            ...(jobsTab === "Pipeline" ? ["Likelihood", "Copied?"] : []),
-                            "InvSlot1", "InvSlot2", "InvSlot3", "Left to inv.",
-                            "ExpSlot1", "ExpSlot2", "ExpSlot3", "Costs outst."].map((h, i) => (
-                              <th key={i} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
-                            ))}
+                          {[
+                            { label: "" },
+                            { label: "Row", colBase: "rowNumber", defaultDir: "asc" },
+                            { label: "Client", colBase: "clientName", defaultDir: "asc" },
+                            { label: "Job name", colBase: "jobName", defaultDir: "asc" },
+                            { label: "Code", colBase: "code", defaultDir: "asc" },
+                            { label: jobsTab === "Pipeline" ? "Date added" : "Date conf", colBase: "dateConf", defaultDir: "desc" },
+                            { label: "Lead src", colBase: "leadSrc", defaultDir: "asc" },
+                            { label: "Type", colBase: "type", defaultDir: "asc" },
+                            { label: "Prod. line", colBase: "prodLine", defaultDir: "asc" },
+                            { label: "Split" },
+                            { label: "Revenue", colBase: "rev", defaultDir: "desc" },
+                            { label: "Costs", colBase: "costs", defaultDir: "desc" },
+                            { label: "VAT" },
+                            { label: "Start", colBase: "startDate", defaultDir: "desc" },
+                            { label: "End", colBase: "endDate", defaultDir: "desc" },
+                            ...(jobsTab === "Pipeline"
+                              ? [{ label: "Likelihood", colBase: "likelihood", defaultDir: "desc" }, { label: "Copied?" }]
+                              : []),
+                            { label: "InvSlot1" },
+                            { label: "InvSlot2" },
+                            { label: "InvSlot3" },
+                            { label: "Left to inv." },
+                            { label: "ExpSlot1" },
+                            { label: "ExpSlot2" },
+                            { label: "ExpSlot3" },
+                            { label: "Costs outst." },
+                          ].map((col, i) =>
+                            col.colBase ? (
+                              renderSortableTh({
+                                label: col.label,
+                                colBase: col.colBase,
+                                defaultDir: col.defaultDir,
+                                style: { padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd" },
+                              })
+                            ) : (
+                              <th key={`legacy-col-${i}`} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>
+                                {col.label}
+                              </th>
+                            )
+                          )}
                         </tr>
                       </thead>
                       <tbody>
@@ -5765,6 +5962,82 @@ export default function JobsView({
           </>
         )}
       </div>
+
+      {isSysAdmin && showPullFromSheetConfirm && jobsClient && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.45)",
+            zIndex: 1100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "16px",
+          }}
+          onClick={() => !pullingFromSheet && setShowPullFromSheetConfirm(false)}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "10px",
+              padding: "22px 24px",
+              width: "100%",
+              maxWidth: "430px",
+              boxShadow: "0 14px 36px rgba(15, 23, 42, 0.22)",
+              border: "1px solid #e2e8f0",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: "0 0 8px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+              Pull latest jobs from sheet
+            </h3>
+            <p style={{ margin: "0 0 18px", fontSize: "13px", color: "#475569", lineHeight: 1.5 }}>
+              Re-read {jobsClient.clientName}&apos;s Confirmed, Pipeline, and CRM tabs directly from Google Sheets and refresh Supabase?
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+              <button
+                type="button"
+                disabled={pullingFromSheet}
+                onClick={() => setShowPullFromSheetConfirm(false)}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: "7px",
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  color: "#475569",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: pullingFromSheet ? "default" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={pullingFromSheet}
+                onClick={handlePullJobsFromSheet}
+                style={{
+                  padding: "7px 15px",
+                  borderRadius: "7px",
+                  border: "none",
+                  background: "#2563eb",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: pullingFromSheet ? "default" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  opacity: pullingFromSheet ? 0.75 : 1,
+                }}
+              >
+                {pullingFromSheet ? <><Spinner size={13} color="#ffffff" /> Pulling...</> : "Pull from sheet"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

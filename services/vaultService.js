@@ -1005,3 +1005,57 @@ export async function deleteIntegrationTokens(arg1, arg2, arg3) {
 
 export const removeIntegrationTokens = deleteIntegrationTokens;
 
+// Module-level in-flight refresh mutex to prevent local container concurrent refresh token collisions
+const inFlightRefreshes = new Map();
+
+/**
+ * Distributed concurrency mutex using Redis SET NX EX, backed by in-memory deduplication.
+ * Prevents single-use refresh token collisions across multiple serverless containers and background workers.
+ */
+export async function refreshWithConcurrencyLock(lockKey, refreshFn, getLatestTokenFn) {
+  const redisLockKey = `pulse:lock:refresh:${lockKey}`;
+
+  // 1. Fast in-process check for local container deduplication
+  if (inFlightRefreshes.has(lockKey)) {
+    console.log(`⏳ Token Broker: Local refresh already in-flight for "${lockKey}". Awaiting active promise...`);
+    return await inFlightRefreshes.get(lockKey);
+  }
+
+  const promise = (async () => {
+    let hasRedisLock = false;
+    try {
+      if (redisClient?.isOpen) {
+        // Try to acquire distributed Redis lock (valid for 20 seconds)
+        const acquired = await redisClient.set(redisLockKey, "locked", { NX: true, EX: 20 });
+        if (!acquired) {
+          console.log(`🔒 Token Broker: Another worker holds distributed lock for "${lockKey}". Waiting for fresh token...`);
+          // Spin-wait for up to 6 seconds for the active worker to finish and persist fresh tokens
+          for (let attempt = 0; attempt < 24; attempt++) {
+            await new Promise(r => setTimeout(r, 250));
+            if (getLatestTokenFn) {
+              const fresh = await getLatestTokenFn();
+              if (fresh && fresh.expiresIn >= 300) {
+                console.log(`✅ Token Broker: Obtained fresh token refreshed by concurrent worker for "${lockKey}".`);
+                return fresh;
+              }
+            }
+          }
+          console.warn(`⚠️ Token Broker: Distributed lock wait timeout for "${lockKey}". Proceeding with local refresh attempt.`);
+        } else {
+          hasRedisLock = true;
+        }
+      }
+
+      return await refreshFn();
+    } finally {
+      if (hasRedisLock && redisClient?.isOpen) {
+        try { await redisClient.del(redisLockKey); } catch (_) {}
+      }
+      inFlightRefreshes.delete(lockKey);
+    }
+  })();
+
+  inFlightRefreshes.set(lockKey, promise);
+  return await promise;
+}
+

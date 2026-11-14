@@ -70,7 +70,7 @@ export default function SupabaseBackupManagerPanel({
   });
 
   const [showAllClients, setShowAllClients] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [sweeping, setSweeping] = useState(false);
   const [updatingPolicy, setUpdatingPolicy] = useState(false);
@@ -982,6 +982,16 @@ export default function SupabaseBackupManagerPanel({
                   </tr>
                 );
               })}
+              {loading && snapshots.length === 0 && (
+                <tr>
+                  <td colSpan={7} style={{ padding: "16px", textAlign: "center", color: "#475569" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px" }}>
+                      <Spinner size={14} color="#1e40af" style={{ marginRight: 0 }} />
+                      Loading backup snapshots...
+                    </span>
+                  </td>
+                </tr>
+              )}
               {!loading && snapshots.length === 0 && (
                 <tr>
                   <td colSpan={7} style={{ padding: "14px", textAlign: "center", color: "#94a3b8" }}>

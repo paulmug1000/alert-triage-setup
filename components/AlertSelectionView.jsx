@@ -8,6 +8,7 @@ import NonAdminAlertListView from "./NonAdminAlertListView";
 import JobDetailModal from "./JobDetailModal";
 import OutgoingsDetailModal from "./OutgoingsDetailModal";
 import DeleteInvoiceFromPulseModal from "./DeleteInvoiceFromPulseModal";
+import DeleteExpenseFromPulseModal from "./DeleteExpenseFromPulseModal";
 import { useBulkActions } from "../hooks/useBulkActions";
 import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
@@ -100,6 +101,7 @@ export default function AlertSelectionView({
   const [viewingJobTarget, setViewingJobTarget] = useState(null);
   const [viewingOutgoingsTarget, setViewingOutgoingsTarget] = useState(null);
   const [deleteInvoiceTarget, setDeleteInvoiceTarget] = useState(null);
+  const [deleteExpenseTarget, setDeleteExpenseTarget] = useState(null);
   const [expandedAutoLogAlerts, setExpandedAutoLogAlerts] = useState({});
   const [autoLogModalAlert, setAutoLogModalAlert] = useState(null);
   const [copiedAutoLog, setCopiedAutoLog] = useState(false);
@@ -1533,6 +1535,7 @@ export default function AlertSelectionView({
             totalVisibleAlertsCount={totalVisibleAlertsCount}
             onViewJob={handleViewJobOrExpense}
             onDeleteInvoice={setDeleteInvoiceTarget}
+            onDeleteExpense={setDeleteExpenseTarget}
           />
         ) : (
           <>
@@ -2802,9 +2805,12 @@ export default function AlertSelectionView({
                                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}</div>}
                                         {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
-                                        {(m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
+                                        {(m.expRef || m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.expRef || m.stableJobKey || alert.stableJobKey}</div>}
+                                        {(m.description || alert.description) && <div><strong>Description:</strong> {m.description || alert.description}</div>}
+                                        {(m.amount || alert.amount) && <div><strong>Amount:</strong> £{parseFloat(String(m.amount || alert.amount).replace(/[£,\s]/g, "")).toFixed(2)}</div>}
+                                        {(m.recDate || alert.recDate) && <div><strong>Date:</strong> {m.recDate || alert.recDate}</div>}
                                         <div style={{ marginTop: "4px", color: "#c62828" }}>
-                                          Expense reference appears Pulse confirmed jobs but was not found in the accounting system (it may have been deleted or voided in Xero).
+                                          Expense reference appears in Pulse but was not found in the accounting system (it may have been deleted or voided in Xero).
                                         </div>
                                       </div>
                                     )}
@@ -2977,6 +2983,35 @@ export default function AlertSelectionView({
                                                   title="Delete this invoice entry from the Confirmed tab in Pulse"
                                                 >
                                                   Delete invoice from Pulse
+                                                </button>
+                                              )}
+                                              {alert.alertType === "deleted_expense" && (
+                                                <button
+                                                  className="triage-btn"
+                                                  onClick={() => {
+                                                    const rowNum = m.confirmedRow || alert.confirmedRow || (alert.detail && alert.detail.match(/row\s*(\d+)/i)?.[1]);
+                                                    const slotNum = m.slotNum || alert.slotNum || (alert.detail && alert.detail.match(/expense slot\s*(\d+)/i)?.[1]);
+                                                    const expRef = m.expRef || m.stableJobKey || alert.stableJobKey || (alert.detail && alert.detail.match(/Expense\s+([^\s(]+)/i)?.[1]);
+                                                    setDeleteExpenseTarget({
+                                                      alert,
+                                                      clientInfo,
+                                                      clientName: cName,
+                                                      clientSheetId: clientInfo?.clientSheetId || alert.clientSheetId,
+                                                      masterSheetId: clientInfo?.masterSheetId || alert.masterSheetId,
+                                                      confirmedRow: rowNum ? Number(rowNum) : null,
+                                                      slotNum: slotNum ? Number(slotNum) : null,
+                                                      expRef: expRef ? String(expRef).trim() : "",
+                                                      jobName: m.jobName || alert.jobName,
+                                                      endClientName: m.endClientName || alert.endClientName,
+                                                      description: m.description || alert.description,
+                                                      amount: m.amount || alert.amount,
+                                                      recDate: m.recDate || alert.recDate,
+                                                    });
+                                                  }}
+                                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#dc2626", borderColor: "#fecaca" }}
+                                                  title="Delete this expense entry from Pulse"
+                                                >
+                                                  Delete expense from Pulse
                                                 </button>
                                               )}
                                               {isAdmin && (clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
@@ -3310,6 +3345,32 @@ export default function AlertSelectionView({
           onClose={() => setDeleteInvoiceTarget(null)}
           onDeleted={(alertKey, rowIndex) => {
             setDeleteInvoiceTarget(null);
+            const remaining = proactiveAlerts.filter(a => {
+              if (rowIndex != null && a.rowIndex != null) return a.rowIndex !== rowIndex;
+              return a.alertKey !== alertKey;
+            });
+            const counts = {};
+            remaining.forEach(a => {
+              const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+              if (cName) counts[cName] = (counts[cName] || 0) + 1;
+            });
+            setProactiveCountsByClient(counts);
+            setProactiveAlerts(remaining);
+            loadProactiveAlerts();
+          }}
+        />
+      )}
+
+      {deleteExpenseTarget && (
+        <DeleteExpenseFromPulseModal
+          isOpen={Boolean(deleteExpenseTarget)}
+          target={deleteExpenseTarget}
+          automationCommanderSheetId={automationCommanderSheetId}
+          sessionId={sessionId}
+          isAdmin={isAdmin}
+          onClose={() => setDeleteExpenseTarget(null)}
+          onDeleted={(alertKey, rowIndex) => {
+            setDeleteExpenseTarget(null);
             const remaining = proactiveAlerts.filter(a => {
               if (rowIndex != null && a.rowIndex != null) return a.rowIndex !== rowIndex;
               return a.alertKey !== alertKey;

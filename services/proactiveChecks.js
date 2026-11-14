@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../utils/helpers.js";
+import { serialToDate } from "./gasRuntime/sheetValueUtils.js";
 import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid, sanitizeFormulaInput } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
 import { redisClient } from "./redisClient.js";
@@ -16,12 +17,12 @@ import {
 export function parseConfirmedDate_(val) {
   if (!val) return null;
   if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
-  
+
   if (typeof val === "number" && Number.isFinite(val)) {
     const utc = new Date(Math.round((val - 25569) * 86400 * 1000));
     return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
   }
-  
+
   const s = String(val).trim();
   if (/^\d{5}(?:\.\d+)?$/.test(s)) {
     const num = parseFloat(s);
@@ -30,7 +31,7 @@ export function parseConfirmedDate_(val) {
       return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
     }
   }
-  const months = { Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11 };
+  const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
   const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
   if (m) {
     const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
@@ -103,7 +104,7 @@ export function sumExpSlotAmounts_(row) {
 export function collectJobRows_(data, parentIdx) {
   const rows = [];
   const parentClient = String(data[parentIdx][0] || "").trim().toLowerCase();
-  const parentJob    = String(data[parentIdx][1] || "").trim().toLowerCase();
+  const parentJob = String(data[parentIdx][1] || "").trim().toLowerCase();
   rows.push({ row: data[parentIdx], sheetRow: parentIdx + 1, isParent: true });
   for (let ri = parentIdx + 1; ri < data.length; ri++) {
     const r = data[ri];
@@ -147,7 +148,7 @@ export function inferFrequency_(sortedDates) {
   if (sortedDates.length < 2) return 30;
   const gaps = [];
   for (let i = 1; i < sortedDates.length; i++) {
-    gaps.push(Math.round((sortedDates[i].getTime() - sortedDates[i-1].getTime()) / 86400000));
+    gaps.push(Math.round((sortedDates[i].getTime() - sortedDates[i - 1].getTime()) / 86400000));
   }
   gaps.sort((a, b) => a - b);
   const median = gaps[Math.floor(gaps.length / 2)];
@@ -167,14 +168,14 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
     try {
       const resp = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "InvComp!A6:K5000" });
       invData = resp.data.values || [];
-    } catch(e) { return null; }
+    } catch (e) { return null; }
 
     let confData = sharedData?.confirmedData;
     if (!confData) {
       try {
         const confResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Confirmed!A1:BH5000" });
         confData = confResp.data.values || [];
-      } catch(e) { confData = []; }
+      } catch (e) { confData = []; }
     }
 
     // Collect invoice refs already attached to the current retainer job so we do not propose them as unattached/changed matches
@@ -199,7 +200,7 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
 
     const windowMs = 7 * 24 * 60 * 60 * 1000;
     const expectedTime = expectedDate.getTime();
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const fmtDate = (d) => `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
 
     const candidates = [];
@@ -214,19 +215,19 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
       if (isNaN(sentDate.getTime())) continue;
       if (Math.abs(sentDate.getTime() - expectedTime) > windowMs) continue;
 
-      const invoiceNo    = String(row[5] || "").trim();
+      const invoiceNo = String(row[5] || "").trim();
       if (invoiceNo && sameJobRefs.has(invoiceNo.toUpperCase())) continue;
-      const invoiceAmt   = parseFloat(String(row[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
+      const invoiceAmt = parseFloat(String(row[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
       const totalExclVAT = parseFloat(String(row[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
-      const vatAmount    = parseFloat(String(row[4] || "0").replace(/[£$€,\s]/g, "")) || 0;
-      const status       = String(row[9] || "").trim();
+      const vatAmount = parseFloat(String(row[4] || "0").replace(/[£$€,\s]/g, "")) || 0;
+      const status = String(row[9] || "").trim();
       candidates.push({ invoiceNo, amount: totalExclVAT > 0 ? totalExclVAT : invoiceAmt, sentDate, vatAmount, status });
     }
     if (candidates.length === 0) return null;
 
     candidates.sort((a, b) => {
-      const aReal = (String(a.status||"").toLowerCase() === "sent" || String(a.status||"").toLowerCase() === "paid");
-      const bReal = (String(b.status||"").toLowerCase() === "sent" || String(b.status||"").toLowerCase() === "paid");
+      const aReal = (String(a.status || "").toLowerCase() === "sent" || String(a.status || "").toLowerCase() === "paid");
+      const bReal = (String(b.status || "").toLowerCase() === "sent" || String(b.status || "").toLowerCase() === "paid");
       if (aReal !== bReal) return aReal ? -1 : 1;
       return Math.abs(a.sentDate.getTime() - expectedTime) - Math.abs(b.sentDate.getTime() - expectedTime);
     });
@@ -240,7 +241,7 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
     if (confData && confData.length > 0) {
       const refCols = [42, 49, 56];
       let attachedRow = null, attachedJobStart = null, attachedJobEnd = null, attachedJobInvCount = 0;
-      
+
       for (let cr = 1; cr < confData.length; cr++) {
         const crow = confData[cr];
         for (let rc = 0; rc < refCols.length; rc++) {
@@ -251,12 +252,12 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
             while (parentIdx > 0 && !(confData[parentIdx][32] && confData[parentIdx][37] && confData[parentIdx][38])) parentIdx--;
             const parentRow = confData[parentIdx];
             attachedJobStart = parentRow[37];
-            attachedJobEnd   = parentRow[38];
+            attachedJobEnd = parentRow[38];
             attachedJobInvCount = 0;
             for (let jr = parentIdx; jr < confData.length; jr++) {
               const jrow = confData[jr];
-              if (jr > parentIdx && String(jrow[0]||"").trim() !== String(parentRow[0]||"").trim()) break;
-              if (jr > parentIdx && String(jrow[1]||"").trim() !== String(parentRow[1]||"").trim()) break;
+              if (jr > parentIdx && String(jrow[0] || "").trim() !== String(parentRow[0] || "").trim()) break;
+              if (jr > parentIdx && String(jrow[1] || "").trim() !== String(parentRow[1] || "").trim()) break;
               for (let jc = 0; jc < refCols.length; jc++) {
                 if (String(jrow[refCols[jc]] || "").trim()) attachedJobInvCount++;
               }
@@ -273,11 +274,11 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
         result.attachedToRow = attachedRow;
         if (attachedJobInvCount === 1 && attachedJobStart && attachedJobEnd) {
           const jStart = attachedJobStart instanceof Date ? attachedJobStart : new Date(attachedJobStart);
-          const jEnd   = attachedJobEnd instanceof Date ? attachedJobEnd : new Date(attachedJobEnd);
+          const jEnd = attachedJobEnd instanceof Date ? attachedJobEnd : new Date(attachedJobEnd);
           const sendMonth = best.sentDate.getMonth(), sendYear = best.sentDate.getFullYear();
           const lastDayOfMonth = new Date(sendYear, sendMonth + 1, 0).getDate();
           if (jStart.getDate() === 1 && jStart.getMonth() === sendMonth && jStart.getFullYear() === sendYear &&
-              jEnd.getDate() === lastDayOfMonth && jEnd.getMonth() === sendMonth && jEnd.getFullYear() === sendYear) {
+            jEnd.getDate() === lastDayOfMonth && jEnd.getMonth() === sendMonth && jEnd.getFullYear() === sendYear) {
             result.confidence = "high";
           }
         }
@@ -295,21 +296,21 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
     const data = sharedData?.confirmedData || [];
     if (data.length < 2) return alerts;
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const fmtDate = (d) => `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
 
     for (let r = 1; r < data.length; r++) {
       const row = data[r];
-      const jobType  = String(row[35] || "").toLowerCase();
+      const jobType = String(row[35] || "").toLowerCase();
       if (!jobType.includes("retainer")) continue;
 
-      const revenue  = row[32];
+      const revenue = row[32];
       const startVal = row[37];
-      const endVal   = row[38];
+      const endVal = row[38];
       if (!revenue || !startVal || !endVal) continue;
 
       const clientNameRow = String(row[0] || "").trim();
-      const jobName       = String(row[1] || "").trim();
+      const jobName = String(row[1] || "").trim();
       if (!jobName) continue;
 
       const endDate = parseConfirmedDate_(endVal);
@@ -322,8 +323,8 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
       const childRows = [];
       for (let cr = r + 1; cr < data.length; cr++) {
         const childRow = data[cr];
-        const childClient  = String(childRow[0] || "").trim();
-        const childJob     = String(childRow[1] || "").trim();
+        const childClient = String(childRow[0] || "").trim();
+        const childJob = String(childRow[1] || "").trim();
         if ((childRow[32] || childRow[37] || childRow[38]) && (childClient !== clientNameRow || childJob !== jobName)) break;
         if (childClient !== clientNameRow || childJob !== jobName) break;
         if (childRow[32] || childRow[37] || childRow[38]) break;
@@ -397,7 +398,7 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
 
         for (let s2 = 0; s2 < slots2.length; s2++) {
           const sentVal2 = cr2[slots2[s2].sentIdx];
-          const refVal2  = String(cr2[slots2[s2].refIdx] || "").trim();
+          const refVal2 = String(cr2[slots2[s2].refIdx] || "").trim();
           if (!sentVal2 || (refVal2 && !isPlaceholderInvoice(refVal2))) continue;
           const rawSentDate2 = parseConfirmedDate_(sentVal2);
           if (!rawSentDate2) continue;
@@ -553,7 +554,7 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         });
       }
     }
-  } catch(e) { }
+  } catch (e) { }
   return alerts;
 }
 
@@ -565,12 +566,12 @@ export async function checkCRMWipe_(clientName, masterSheetId, sharedData) {
     for (let r = 0; r < data.length; r++) {
       const row = data[r];
       const timestamp = row[0];
-      const details   = String(row[3] || "");
+      const details = String(row[3] || "");
       if (!details.includes(WARNING_TEXT)) continue;
 
       const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
       const sequenceType = String(row[1] || "");
-      const summary      = String(row[2] || "");
+      const summary = String(row[2] || "");
       const jobMatch = details.match(/Job[:\s]+([^\n,]+)/i);
       const jobInfo = jobMatch ? jobMatch[1].trim() : "";
 
@@ -581,7 +582,7 @@ export async function checkCRMWipe_(clientName, masterSheetId, sharedData) {
         timestamp: tsStr, sequenceType, summary, jobInfo, detailsSnippet: details.slice(0, 300),
       });
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
@@ -596,10 +597,10 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
     let r = 1;
     while (r < data.length) {
       const row = data[r];
-      const revenue  = row[32];
-      const jobType  = String(row[35] || "").toLowerCase();
+      const revenue = row[32];
+      const jobType = String(row[35] || "").toLowerCase();
       const startVal = row[37];
-      const endVal   = row[38];
+      const endVal = row[38];
 
       if (!revenue || !startVal || !endVal) { r++; continue; }
 
@@ -610,8 +611,8 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
         let totalInvoiced0 = 0;
         for (let jr0 = 0; jr0 < jobRows0.length; jr0++) totalInvoiced0 += sumInvSlotAmounts_(jobRows0[jr0].row);
         if (totalInvoiced0 > 0) {
-          const jobClient0  = String(row[0] || "").trim();
-          const jobName0    = String(row[1] || "").trim();
+          const jobClient0 = String(row[0] || "").trim();
+          const jobName0 = String(row[1] || "").trim();
           const projectCode0 = String(row[2] || "").trim();
           alerts.push({
             alertType: "revenue_mismatch",
@@ -631,13 +632,13 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
       const startDate = parseConfirmedDate_(startVal);
       if (startDate && startDate > today) { r++; continue; }
 
-      const jobClient   = String(row[0] || "").trim();
-      const jobName     = String(row[1] || "").trim();
+      const jobClient = String(row[0] || "").trim();
+      const jobName = String(row[1] || "").trim();
       const projectCode = String(row[2] || "").trim();
       if (!jobName) { r++; continue; }
 
       const isRetainer = jobType.includes("retainer");
-      const jobRows    = collectJobRows_(data, r);
+      const jobRows = collectJobRows_(data, r);
 
       let mismatch = false, detail = "", mismatchTotalInvoiced = 0;
 
@@ -670,13 +671,13 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
       }
       r += jobRows.length;
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
 export async function checkDirectCostsMismatch_(clientName, clientSheetId, sharedData) {
   const alerts = [];
-  const tabName  = "Confirmed";
+  const tabName = "Confirmed";
   const startRow = 2;
   try {
     const data = sharedData?.confirmedData ? sharedData.confirmedData.slice(startRow - 1) : [];
@@ -685,102 +686,102 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const TOLERANCE = 1.00;
     let r = 0;
-      while (r < data.length) {
-        const row = data[r];
-        const revenue      = row[32];
-        const directCosts  = row[33];
-        const jobType      = String(row[35] || "").toLowerCase();
-        const startVal     = row[37];
-        const endVal       = row[38];
+    while (r < data.length) {
+      const row = data[r];
+      const revenue = row[32];
+      const directCosts = row[33];
+      const jobType = String(row[35] || "").toLowerCase();
+      const startVal = row[37];
+      const endVal = row[38];
 
-        if (!revenue || !startVal || !endVal) { r++; continue; }
+      if (!revenue || !startVal || !endVal) { r++; continue; }
 
-        const directCostsAmt = parseFloat(String(directCosts || "0").replace(/[£$€,\s]/g, "")) || 0;
-        if (directCostsAmt <= 0) {
-          const skipRows = collectJobRows_(data, r);
-          r += skipRows.length;
-          continue;
+      const directCostsAmt = parseFloat(String(directCosts || "0").replace(/[£$€,\s]/g, "")) || 0;
+      if (directCostsAmt <= 0) {
+        const skipRows = collectJobRows_(data, r);
+        r += skipRows.length;
+        continue;
+      }
+
+      const startDate = parseConfirmedDate_(startVal);
+      if (startDate && startDate > today) { r++; continue; }
+
+      const revenueAmt = parseFloat(String(revenue).replace(/[£$€,\s]/g, "")) || 0;
+      const jobClient = String(row[0] || "").trim();
+      const jobName = String(row[1] || "").trim();
+      const projectCode = String(row[2] || "").trim();
+      if (!jobName) { r++; continue; }
+
+      const isRetainer = jobType.includes("retainer");
+      const jobRows = collectJobRows_(data, r);
+      const sheetRow = startRow + r;
+
+      let mismatch = false, detail = "", mismatchExpTotal = 0;
+
+      if (!isRetainer) {
+        let totalExpenses = 0;
+        for (let jr = 0; jr < jobRows.length; jr++) totalExpenses += sumExpSlotAmounts_(jobRows[jr].row);
+        if (totalExpenses === 0) { r += jobRows.length; continue; }
+
+        const diff = Math.abs(totalExpenses - directCostsAmt);
+        if (diff > TOLERANCE) {
+          mismatch = true;
+          mismatchExpTotal = totalExpenses;
+          detail = `${jobClient} | ${jobName} (Row ${sheetRow})${projectCode ? ` [${projectCode}]` : ""} [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses (incl. placeholders) = £${totalExpenses.toFixed(2)} - difference of £${diff.toFixed(2)}`;
         }
-
-        const startDate = parseConfirmedDate_(startVal);
-        if (startDate && startDate > today) { r++; continue; }
-
-        const revenueAmt  = parseFloat(String(revenue).replace(/[£$€,\s]/g, "")) || 0;
-        const jobClient   = String(row[0] || "").trim();
-        const jobName     = String(row[1] || "").trim();
-        const projectCode = String(row[2] || "").trim();
-        if (!jobName) { r++; continue; }
-
-        const isRetainer = jobType.includes("retainer");
-        const jobRows    = collectJobRows_(data, r);
-        const sheetRow   = startRow + r;
-
-        let mismatch = false, detail = "", mismatchExpTotal = 0;
-
-        if (!isRetainer) {
-          let totalExpenses = 0;
-          for (let jr = 0; jr < jobRows.length; jr++) totalExpenses += sumExpSlotAmounts_(jobRows[jr].row);
-          if (totalExpenses === 0) { r += jobRows.length; continue; }
-
-          const diff = Math.abs(totalExpenses - directCostsAmt);
-          if (diff > TOLERANCE) {
+      } else {
+        const childRows = jobRows.filter(jr => !jr.isParent);
+        if (childRows.length === 0) {
+          const parentExp = sumExpSlotAmounts_(row);
+          if (parentExp === 0) { r += jobRows.length; continue; }
+          const diffA = Math.abs(parentExp - directCostsAmt);
+          if (diffA > TOLERANCE) {
             mismatch = true;
-            mismatchExpTotal = totalExpenses;
-            detail = `${jobClient} | ${jobName} (Row ${sheetRow})${projectCode ? ` [${projectCode}]` : ""} [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses (incl. placeholders) = £${totalExpenses.toFixed(2)} - difference of £${diff.toFixed(2)}`;
+            mismatchExpTotal = parentExp;
+            detail = `${jobClient} | ${jobName} (Row ${sheetRow}) [retainer, single-row] [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses on parent = £${parentExp.toFixed(2)} - difference of £${diffA.toFixed(2)}`;
           }
         } else {
-          const childRows = jobRows.filter(jr => !jr.isParent);
-          if (childRows.length === 0) {
-            const parentExp = sumExpSlotAmounts_(row);
-            if (parentExp === 0) { r += jobRows.length; continue; }
-            const diffA = Math.abs(parentExp - directCostsAmt);
-            if (diffA > TOLERANCE) {
-              mismatch = true;
-              mismatchExpTotal = parentExp;
-              detail = `${jobClient} | ${jobName} (Row ${sheetRow}) [retainer, single-row] [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses on parent = £${parentExp.toFixed(2)} - difference of £${diffA.toFixed(2)}`;
-            }
-          } else {
-            for (let ci = 0; ci < childRows.length; ci++) {
-              const cr = childRows[ci];
-              const childExp = sumExpSlotAmounts_(cr.row);
-              if (childExp === 0) continue;
-              const mult = detectPeriodMultiplier_(cr.row, revenueAmt);
-              const expectedForRow = directCostsAmt * mult;
-              const diffC = Math.abs(childExp - expectedForRow);
-              if (diffC > TOLERANCE) {
-                const txId = String(cr.row[81] || "").trim();
-                const expDate = String(cr.row[78] || "").trim();
-                const suffix = txId || expDate || `child-${ci}`;
-                const childSheetRow = cr.sheetRow + startRow - 1;
-                
-                alerts.push({
-                  alertType: "direct_costs_mismatch", 
-                  alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}|${suffix}${projectCode ? `|${projectCode}` : ""}|exp:${childExp.toFixed(2)}|expected:${expectedForRow.toFixed(2)}`,
-                  legacyAlertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}|${suffix}${projectCode ? `|${projectCode}` : ""}`,
-                  heading: "Direct costs / total expenses mismatch", 
-                  detail: `${jobClient} | ${jobName} (Row ${childSheetRow}) [retainer, multi-row] [${tabName} tab]: £${childExp.toFixed(2)} expenses, expected £${expectedForRow.toFixed(2)} (${mult}× monthly budget of £${directCostsAmt.toFixed(2)}) - diff £${diffC.toFixed(2)}`, 
-                  jobName, endClientName: jobClient, projectCode, confirmedRow: childSheetRow, isRetainer, tab: tabName,
-                  endDate: endVal ? toSheetDateFormat(endVal) : "",
-                  childExp: childExp.toFixed(2), expectedForRow: expectedForRow.toFixed(2), directCosts: directCostsAmt.toFixed(2),
-                });
-              }
+          for (let ci = 0; ci < childRows.length; ci++) {
+            const cr = childRows[ci];
+            const childExp = sumExpSlotAmounts_(cr.row);
+            if (childExp === 0) continue;
+            const mult = detectPeriodMultiplier_(cr.row, revenueAmt);
+            const expectedForRow = directCostsAmt * mult;
+            const diffC = Math.abs(childExp - expectedForRow);
+            if (diffC > TOLERANCE) {
+              const txId = String(cr.row[81] || "").trim();
+              const expDate = String(cr.row[78] || "").trim();
+              const suffix = txId || expDate || `child-${ci}`;
+              const childSheetRow = cr.sheetRow + startRow - 1;
+
+              alerts.push({
+                alertType: "direct_costs_mismatch",
+                alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}|${suffix}${projectCode ? `|${projectCode}` : ""}|exp:${childExp.toFixed(2)}|expected:${expectedForRow.toFixed(2)}`,
+                legacyAlertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}|${suffix}${projectCode ? `|${projectCode}` : ""}`,
+                heading: "Direct costs / total expenses mismatch",
+                detail: `${jobClient} | ${jobName} (Row ${childSheetRow}) [retainer, multi-row] [${tabName} tab]: £${childExp.toFixed(2)} expenses, expected £${expectedForRow.toFixed(2)} (${mult}× monthly budget of £${directCostsAmt.toFixed(2)}) - diff £${diffC.toFixed(2)}`,
+                jobName, endClientName: jobClient, projectCode, confirmedRow: childSheetRow, isRetainer, tab: tabName,
+                endDate: endVal ? toSheetDateFormat(endVal) : "",
+                childExp: childExp.toFixed(2), expectedForRow: expectedForRow.toFixed(2), directCosts: directCostsAmt.toFixed(2),
+              });
             }
           }
         }
-
-        if (mismatch) {
-          alerts.push({
-            alertType: "direct_costs_mismatch",
-            alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}${projectCode ? `|${projectCode}` : ""}|budget:${directCostsAmt.toFixed(2)}|exp:${mismatchExpTotal.toFixed(2)}`,
-            legacyAlertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}${projectCode ? `|${projectCode}` : ""}`,
-            heading: "Direct costs / total expenses mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: sheetRow, isRetainer, tab: tabName,
-            endDate: endVal ? toSheetDateFormat(endVal) : "",
-            directCosts: directCostsAmt.toFixed(2), totalExpenses: mismatchExpTotal.toFixed(2), diff: Math.abs(mismatchExpTotal - directCostsAmt).toFixed(2),
-          });
-        }
-        r += jobRows.length;
       }
-  } catch(e) {}
+
+      if (mismatch) {
+        alerts.push({
+          alertType: "direct_costs_mismatch",
+          alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}${projectCode ? `|${projectCode}` : ""}|budget:${directCostsAmt.toFixed(2)}|exp:${mismatchExpTotal.toFixed(2)}`,
+          legacyAlertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}${projectCode ? `|${projectCode}` : ""}`,
+          heading: "Direct costs / total expenses mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: sheetRow, isRetainer, tab: tabName,
+          endDate: endVal ? toSheetDateFormat(endVal) : "",
+          directCosts: directCostsAmt.toFixed(2), totalExpenses: mismatchExpTotal.toFixed(2), diff: Math.abs(mismatchExpTotal - directCostsAmt).toFixed(2),
+        });
+      }
+      r += jobRows.length;
+    }
+  } catch (e) { }
   return alerts;
 }
 
@@ -795,8 +796,8 @@ export async function checkPipelineConfirmedOverlap_(clientName, clientSheetId, 
     for (let p = 1; p < pipeData.length; p++) {
       const pr = pipeData[p];
       const pClient = String(pr[0] || "").trim();
-      const pJob    = String(pr[1] || "").trim();
-      const pCode   = String(pr[2] || "").trim();
+      const pJob = String(pr[1] || "").trim();
+      const pCode = String(pr[2] || "").trim();
       const pLikelihood = String(pr[39] || "").trim();
       const pCopied = String(pr[107] || "").trim();
       if (!pClient && !pJob && !pCode) continue;
@@ -808,11 +809,11 @@ export async function checkPipelineConfirmedOverlap_(clientName, clientSheetId, 
 
     for (let r = 1; r < confData.length; r++) {
       const row = confData[r];
-      const confClient  = String(row[0] || "").trim();
-      const confJob     = String(row[1] || "").trim();
-      const confCode    = String(row[2] || "").trim();
+      const confClient = String(row[0] || "").trim();
+      const confJob = String(row[1] || "").trim();
+      const confCode = String(row[2] || "").trim();
       const confRevenue = row[32];
-      const confStart   = row[37];
+      const confStart = row[37];
       const confJobType = String(row[35] || "").trim();
 
       if (!confRevenue || !confStart || !confJob) continue;
@@ -838,7 +839,7 @@ export async function checkPipelineConfirmedOverlap_(clientName, clientSheetId, 
         projectCode: confCode, confirmedRow: r + 1, pipelineRow: pipeMatch.sheetRow, likelihood: pipeMatch.likelihood, copiedToConf: pipeMatch.copiedToConf, jobType: confJobType,
       });
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
@@ -879,7 +880,7 @@ export async function checkRetainerShrinkBlocked_(clientName, masterSheetId, sha
         jobName, endClientName: endClientStr, childRowNum, clientJobStr, timestamp: tsStr, confirmedRow: childRowNum,
       });
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
@@ -891,7 +892,7 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const oneMonthAgo = new Date(today);
     oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const fmtDate = (d) => `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
 
     let r = 1;
@@ -972,7 +973,7 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
       }
       r += jobRows.length;
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
@@ -984,7 +985,7 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
     const TOLERANCE = 1.00;
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const fmtDate = (d) => `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
 
     let r = 1;
@@ -993,7 +994,7 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
       const revenue = row[32];
       const jobType = String(row[35] || "").toLowerCase();
       const startVal = row[37];
-      const endVal   = row[38];
+      const endVal = row[38];
 
       if (!revenue || !startVal || !endVal) { r++; continue; }
       if (jobType.includes("retainer")) { r += collectJobRows_(data, r).length; continue; }
@@ -1001,8 +1002,8 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
       const endDate = parseConfirmedDate_(endVal);
       if (!endDate || (today.getTime() - endDate.getTime()) <= TWO_WEEKS_MS) { r += collectJobRows_(data, r).length; continue; }
 
-      const jobClient   = String(row[0] || "").trim();
-      const jobName     = String(row[1] || "").trim();
+      const jobClient = String(row[0] || "").trim();
+      const jobName = String(row[1] || "").trim();
       const projectCode = String(row[2] || "").trim();
       if (!jobName) { r++; continue; }
 
@@ -1034,7 +1035,7 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
       }
       r += jobRows.length;
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
@@ -1045,7 +1046,7 @@ export async function checkDeletedInvoices_(clientName, clientSheetId, masterShe
     try {
       const invCompResp = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "InvComp!AT6:BS5000" });
       rightData = invCompResp.data.values || [];
-    } catch(e) { return alerts; }
+    } catch (e) { return alerts; }
 
     const candidateRefs = [];
     for (let r = 0; r < rightData.length; r++) {
@@ -1061,13 +1062,13 @@ export async function checkDeletedInvoices_(clientName, clientSheetId, masterShe
       try {
         const confResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Confirmed!A1:BH5000" });
         confData = confResp.data.values || [];
-      } catch(e) { return alerts; }
+      } catch (e) { return alerts; }
     }
 
     const slotDefs = [{ ref: 42, amt: 41, sent: 43 }, { ref: 49, amt: 48, sent: 50 }, { ref: 56, amt: 55, sent: 57 }];
     const now = new Date();
     const bufferMs = 2 * 24 * 60 * 60 * 1000;
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
     for (let c = 0; c < candidateRefs.length; c++) {
       const candidateRef = candidateRefs[c];
@@ -1083,12 +1084,12 @@ export async function checkDeletedInvoices_(clientName, clientSheetId, masterShe
       }
       if (!found) continue;
 
-        const sentDateObj = parseConfirmedDate_(found.sentDate);
-        const sentDateValid = sentDateObj !== null;
-        if (sentDateValid && (now.getTime() - sentDateObj.getTime() < bufferMs)) continue;
+      const sentDateObj = parseConfirmedDate_(found.sentDate);
+      const sentDateValid = sentDateObj !== null;
+      if (sentDateValid && (now.getTime() - sentDateObj.getTime() < bufferMs)) continue;
 
-        const amountNum = parseFloat(String(found.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
-        const sentDateStr = sentDateValid ? `${String(sentDateObj.getDate()).padStart(2,'0')}-${months[sentDateObj.getMonth()]}-${String(sentDateObj.getFullYear()).slice(-2)}` : String(found.sentDate || "(unknown)");
+      const amountNum = parseFloat(String(found.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+      const sentDateStr = sentDateValid ? `${String(sentDateObj.getDate()).padStart(2, '0')}-${months[sentDateObj.getMonth()]}-${String(sentDateObj.getFullYear()).slice(-2)}` : String(found.sentDate || "(unknown)");
 
       alerts.push({
         alertType: "deleted_invoice", alertKey: `deleted_invoice|${clientName}|${candidateRef}`,
@@ -1103,7 +1104,7 @@ export async function checkDeletedInvoices_(clientName, clientSheetId, masterShe
         }
       });
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
@@ -1124,15 +1125,15 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
       return hasVal(row[base]) || hasVal(row[base + 1]) || hasVal(row[base + 6]);
     };
     const fmtDate = (d) => {
-      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       return `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
     };
 
     let r = 1;
     while (r < data.length) {
       const row = data[r];
-      const jobClient   = String(row[0] || "").trim();
-      const jobNameV    = String(row[1] || "").trim();
+      const jobClient = String(row[0] || "").trim();
+      const jobNameV = String(row[1] || "").trim();
       const projectCode = String(row[2] || "").trim();
       const revenue = row[32], jobType = String(row[35] || "").toLowerCase(), startVal = row[37], endVal = row[38];
 
@@ -1145,7 +1146,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
 
       const parsedStart = parseConfirmedDate_(startVal);
       const parsedEnd = parseConfirmedDate_(endVal);
-      
+
       let isSingleMonth = false;
 
       if (parsedStart && parsedEnd) {
@@ -1206,9 +1207,9 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
 
       if (problems.length > 0) {
         const problemFootprint = Buffer.from(problems.join("; ")).toString("base64");
-        
+
         alerts.push({
-          alertType: "job_structure_error", 
+          alertType: "job_structure_error",
           alertKey: `job_structure_error|${clientName}|${jobClient}|${jobNameV}${projectCode ? `|${projectCode}` : ""}|${problemFootprint}`,
           heading: "Job structure doesn't match expected invoice/expense layout",
           detail: `${jobClient} | ${jobNameV}${projectCode ? ` [${projectCode}]` : ""} (${isRetainer ? "Retainer" : "Project"}): ${problems.join("; ")}`,
@@ -1220,7 +1221,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
       }
       r += jobRows.length;
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
@@ -1231,11 +1232,11 @@ export async function checkDeletedExpenses_(clientName, clientSheetId, masterShe
     try {
       const dirCompResp = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "DirComp!DG6:FQ5000" });
       wideData = dirCompResp.data.values || [];
-    } catch(e) { return alerts; }
+    } catch (e) { return alerts; }
 
     const now = new Date();
     const bufferMs = 2 * 24 * 60 * 60 * 1000;
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     let confData = sharedData?.confirmedDataWide || sharedData?.confirmedData || null;
 
     const expSlotDefs = [{ ref: 81, amt: 76 }, { ref: 88, amt: 83 }, { ref: 95, amt: 90 }];
@@ -1253,14 +1254,14 @@ export async function checkDeletedExpenses_(clientName, clientSheetId, masterShe
 
       const jobClientD = String(row[0] || "").trim(), jobNameD = String(row[1] || "").trim(), description = String(row[2] || "").trim();
       const grossAmount = parseFloat(String(row[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
-      const recDateStr = recDateValid ? `${String(recDateObj.getDate()).padStart(2,'0')}-${months[recDateObj.getMonth()]}-${String(recDateObj.getFullYear()).slice(-2)}` : String(recDateRaw || "(unknown)");
+      const recDateStr = recDateValid ? `${String(recDateObj.getDate()).padStart(2, '0')}-${months[recDateObj.getMonth()]}-${String(recDateObj.getFullYear()).slice(-2)}` : String(recDateRaw || "(unknown)");
 
       let foundRow = null, foundSlot = null;
       if (confData === null) {
         try {
           const confResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Confirmed!A1:CR5000" });
           confData = confResp.data.values || [];
-        } catch(e) { confData = []; }
+        } catch (e) { confData = []; }
       }
       for (let cr = 1; cr < confData.length && !foundRow; cr++) {
         const crow = confData[cr];
@@ -1271,14 +1272,27 @@ export async function checkDeletedExpenses_(clientName, clientSheetId, masterShe
         }
       }
 
+      const isOutgoings = !foundRow && jobClientD.toLowerCase() === "outgoings";
       alerts.push({
         alertType: "deleted_expense", alertKey: `deleted_expense|${clientName}|${appId}`,
         heading: "Expense reference no longer found in accounting system",
         detail: `Expense ${appId} (${jobClientD}${jobNameD ? ` - ${jobNameD}` : ""})${description ? `, ${description}` : ""}, received ${recDateStr}${grossAmount > 0 ? `, £${grossAmount.toFixed(2)}` : ""}${foundRow ? ` (Confirmed row ${foundRow}, expense slot${foundSlot})` : ""} but no longer appears in the accounting system. It may have been deleted or voided - check Xero directly.`,
-        jobName: jobNameD, endClientName: jobClientD, confirmedRow: foundRow || "", stableJobKey: appId,
+        jobName: jobNameD, endClientName: jobClientD, confirmedRow: foundRow || "", slotNum: foundSlot || null,
+        stableJobKey: appId, description, amount: grossAmount || "", recDate: recDateStr, isOutgoings,
+        metadata: {
+          expRef: appId,
+          confirmedRow: foundRow || null,
+          slotNum: foundSlot || null,
+          endClientName: jobClientD,
+          jobName: jobNameD,
+          description,
+          amount: grossAmount || "",
+          recDate: recDateStr,
+          isOutgoings,
+        },
       });
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
@@ -1290,7 +1304,7 @@ export async function checkUnreceivedExpenses_(clientName, clientSheetId, shared
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
     const TOLERANCE = 1.00;
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const fmtDate = (d) => `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
     const expSlots = [{ amt: 76, ref: 81 }, { amt: 83, ref: 88 }, { amt: 90, ref: 95 }];
 
@@ -1345,7 +1359,7 @@ export async function checkUnreceivedExpenses_(clientName, clientSheetId, shared
       }
       r += jobRows.length;
     }
-  } catch(e) {}
+  } catch (e) { }
   return alerts;
 }
 
@@ -1385,7 +1399,7 @@ function extractEntityFromAutoLogLine_(line) {
 
   let jobName = "";
   let endClientName = "";
-  const clientJobMatch = line.match(/(?:Row\s*\d+,\s*|\(\s*)([^|\n]+)\s*\|\s*([^,\n\-:\)]+)/);
+  const clientJobMatch = line.match(/(?:Row\s*\d+,\s*|\(\s*)([^|\n]+)\s*\|\s*((?:[^,\n\-:\(\)]+|\([^,\n\-:\(\)]*\))+)/);
   if (clientJobMatch) {
     endClientName = clientJobMatch[1].trim();
     jobName = clientJobMatch[2].trim();
@@ -1400,26 +1414,46 @@ function extractEntityFromAutoLogLine_(line) {
 function parseAutoLogLineTransitions_(line) {
   if (!line || !line.includes("->")) return [];
   const results = [];
-  
-  const p1 = /(?:[-–•,\n:]|^)\s*([A-Za-z\s]+?)\s*:\s*('?[^':\r\n]+?'?)\s*->\s*('?[^':\r\n;]+?'?)(?:[\r\n,;]|$)/g;
-  let m;
-  while ((m = p1.exec(line)) !== null) {
-    const rawField = m[1].trim();
-    const fromVal = cleanAutoLogVal_(m[2]);
-    const toVal = cleanAutoLogVal_(m[3]);
-    if (rawField.length <= 35 && fromVal && toVal && fromVal.toLowerCase() !== toVal.toLowerCase()) {
-      results.push({ rawField, fromVal, toVal });
+  const matchedSpans = [];
+  const seen = new Set();
+
+  const recordMatch = (rawField, rawFrom, rawTo, span) => {
+    const field = rawField.trim();
+    const fromVal = cleanAutoLogVal_(rawFrom);
+    const toVal = cleanAutoLogVal_(rawTo);
+    if (field.length > 35 || !fromVal || !toVal || fromVal.toLowerCase() === toVal.toLowerCase()) {
+      return;
     }
+    const dedupKey = `${normalizeAutoLogFieldName_(field)}|${fromVal.toLowerCase()}|${toVal.toLowerCase()}`;
+    if (seen.has(dedupKey)) return;
+    seen.add(dedupKey);
+    results.push({ rawField: field, fromVal, toVal });
+    if (span) matchedSpans.push(span);
+  };
+
+  // Pass 1: colon-separated field with single-quoted values (supports colons/apostrophes inside quotes and parens/symbols in field names)
+  const pQuoted = /(?:[-–•,\n:]|^)\s*([A-Za-z0-9\s()%#&/_]+?)\s*:\s*'((?:[^'\r\n]|'(?!\s*(?:->|[,;\r\n]|$)))+)'\s*->\s*'((?:[^'\r\n]|'(?!\s*(?:->|[,;\r\n]|$)))+)'(?=\s*(?:[\r\n,;]|$))/g;
+  let m;
+  while ((m = pQuoted.exec(line)) !== null) {
+    recordMatch(m[1], m[2], m[3], [m.index, m.index + m[0].length]);
   }
 
-  const p2 = /(?:[-–•,:\n]|^)\s*(Extended days|Date moved)\s+('?[^':\r\n]+?'?)\s*->\s*('?[^':\r\n;]+?'?)(?:[\r\n,;]|$)/gi;
+  // Pass 2: colon-separated field with unquoted fallback values
+  const pUnquoted = /(?:[-–•,\n:]|^)\s*([A-Za-z0-9\s()%#&/_]+?)\s*:\s*([^':\r\n]+?)\s*->\s*([^':\r\n;]+?)(?=\s*(?:[\r\n,;]|$))/g;
+  while ((m = pUnquoted.exec(line)) !== null) {
+    const start = m.index;
+    const end = m.index + m[0].length;
+    if (matchedSpans.some(([qs, qe]) => start < qe && end > qs)) continue;
+    recordMatch(m[1], m[2], m[3], [start, end]);
+  }
+
+  // Pass 3: colonless legacy patterns ("Extended days", "Date moved")
+  const p2 = /(?:[-–•,:\n]|^)\s*(Extended days|Date moved)\s+('?[^':\r\n]+?'?)\s*->\s*('?[^':\r\n;]+?'?)(?=\s*(?:[\r\n,;]|$))/gi;
   while ((m = p2.exec(line)) !== null) {
-    const rawField = m[1].trim();
-    const fromVal = cleanAutoLogVal_(m[2]);
-    const toVal = cleanAutoLogVal_(m[3]);
-    if (fromVal && toVal && fromVal.toLowerCase() !== toVal.toLowerCase()) {
-      results.push({ rawField, fromVal, toVal });
-    }
+    const start = m.index;
+    const end = m.index + m[0].length;
+    if (matchedSpans.some(([qs, qe]) => start < qe && end > qs)) continue;
+    recordMatch(m[1], m[2], m[3], [start, end]);
   }
 
   return results;
@@ -1565,7 +1599,7 @@ export async function checkRetroactiveOutgoingsChanges_(clientName, masterSheetI
       // Detect P&L Outgoings updates from automated sequence or bank transaction fallbacks
       const isOutgoingsUpdate = summary.toLowerCase().startsWith("p&l outgoings updated:");
       const isBankTxnFallback = summary.toLowerCase().includes("bank transaction added from unreconciled") ||
-                                summary.toLowerCase().includes("bank transaction added from unrecon");
+        summary.toLowerCase().includes("bank transaction added from unrecon");
 
       if (isOutgoingsUpdate || isBankTxnFallback) {
         const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
@@ -1596,6 +1630,28 @@ export async function checkRetroactiveOutgoingsChanges_(clientName, masterSheetI
   return alerts;
 }
 
+function formatAutoLogTimestamp_(ts) {
+  if (!ts) return "";
+  if (ts instanceof Date && !Number.isNaN(ts.getTime())) {
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const dd = String(ts.getDate()).padStart(2, "0");
+    const mmm = months[ts.getMonth()];
+    const yy = String(ts.getFullYear()).slice(-2);
+    const hh = String(ts.getHours()).padStart(2, "0");
+    const mm = String(ts.getMinutes()).padStart(2, "0");
+    return `${dd}-${mmm}-${yy} ${hh}:${mm}`;
+  }
+  const str = String(ts).trim();
+  const num = typeof ts === "number" ? ts : (/^\d{5}(?:\.\d+)?$/.test(str) ? parseFloat(str) : NaN);
+  if (Number.isFinite(num) && num > 20000 && num < 90000) {
+    const dt = serialToDate(num);
+    if (dt && !Number.isNaN(dt.getTime())) {
+      return formatAutoLogTimestamp_(dt);
+    }
+  }
+  return str;
+}
+
 export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, sharedData) {
   const alerts = [];
   try {
@@ -1612,7 +1668,7 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
       const category = String(row[1] || "").trim();
       const details = String(row[3] || "");
       const lines = details.split(/\r?\n/);
-      const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
+      const tsStr = formatAutoLogTimestamp_(timestamp);
 
       let currentContext = { invNo: "", rowNo: "", endClientName: "", jobName: "", slotNo: "" };
 
@@ -1621,6 +1677,17 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
         if (!line) continue;
 
         const lineEntity = extractEntityFromAutoLogLine_(line);
+        const isNewRow = Boolean(lineEntity.rowNo && lineEntity.rowNo !== currentContext.rowNo);
+        const hasOwnEntityWithoutInv = Boolean(
+          !lineEntity.invNo && (lineEntity.rowNo || lineEntity.endClientName || lineEntity.jobName)
+        );
+        if (isNewRow) {
+          currentContext = { invNo: "", rowNo: "", endClientName: "", jobName: "", slotNo: "" };
+        } else if (hasOwnEntityWithoutInv) {
+          currentContext.invNo = "";
+          currentContext.slotNo = "";
+        }
+
         if (lineEntity.invNo) currentContext.invNo = lineEntity.invNo;
         if (lineEntity.rowNo) currentContext.rowNo = lineEntity.rowNo;
         if (lineEntity.endClientName) currentContext.endClientName = lineEntity.endClientName;
@@ -1638,15 +1705,15 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
 
           const entityKey = rowNo ? `row_${rowNo}`
             : (invNo ? `inv_${invNo}`
-            : (jobName ? `job_${jobName.toLowerCase()}` : "unknown"));
+              : (jobName ? `job_${jobName.toLowerCase()}` : "unknown"));
 
           if (entityKey === "unknown") continue;
 
           const displayEntity = invNo
             ? `Invoice #${invNo}${rowNo ? ` (Row ${rowNo})` : ""}`
             : (rowNo
-            ? `Row ${rowNo}${jobName ? ` (${jobName})` : ""}`
-            : (jobName || "Job"));
+              ? `Row ${rowNo}${jobName ? ` (${jobName})` : ""}`
+              : (jobName || "Job"));
 
           const normalizedField = normalizeAutoLogFieldName_(t.rawField);
           const key = `${entityKey}|${normalizedField}`;
@@ -1718,7 +1785,17 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
       if (normalizedField === "invoice_days_to_pay" || normalizedField === "invoice_paid_date") {
         suggestion = "Likely caused by invoice having a pay date recorded without a 'Paid' status, causing payment terms to fight with the overdue date extender.";
       } else if (normalizedField === "client_name") {
-        suggestion = "Likely caused by a naming mismatch between accounting software (Xero) and CRM.";
+        const isMultiInvoiceSlotConflict = completedOscillations.some(
+          (o) =>
+            o.tStart.category === "INVOICES" &&
+            o.tEnd.category === "INVOICES" &&
+            o.tStart.invNo &&
+            o.tEnd.invNo &&
+            o.tStart.invNo !== o.tEnd.invNo
+        );
+        suggestion = isMultiInvoiceSlotConflict
+          ? "Likely caused by multiple linked invoices on the same job referencing different customer names in accounting software (Xero)."
+          : "Likely caused by a naming mismatch between accounting software (Xero) and CRM.";
       } else if (normalizedField === "copied_status") {
         suggestion = "Likely caused by Pipeline source data reverting copied status.";
       }
@@ -1765,7 +1842,7 @@ export async function checkStaleUnreconGapExpenses_(clientName, clientSheetId, s
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const SIX_WEEKS_MS = 6 * 7 * 24 * 60 * 60 * 1000;
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const fmtDate = (d) => `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
 
     // 1. Check Outgoings tab
@@ -1989,9 +2066,9 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
       const val = String(r[0] || "").trim();
       const lower = val.toLowerCase();
       const isInvalid = !val || val.startsWith("#") || lower.includes("#n/a") ||
-                        lower.includes("#ref!") || lower.includes("#value!") ||
-                        lower.includes("#name?") || lower.includes("#error!") ||
-                        lower === "extra ignore";
+        lower.includes("#ref!") || lower.includes("#value!") ||
+        lower.includes("#name?") || lower.includes("#error!") ||
+        lower === "extra ignore";
       if (!isInvalid) {
         quarantinedCats.push({ name: val, rowNum: 180 + idx });
       }
@@ -2082,7 +2159,7 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
     // 1. Match 'Jul 26' or 'Jul-26'
     const m = s.match(/^([A-Za-z]{3})[\s\-_]*(\d{2})$/);
     if (m) {
-      const monthNames = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
       const mIdx = monthNames.indexOf(m[1].toLowerCase());
       if (mIdx !== -1) {
         const yr = 2000 + parseInt(m[2], 10);
@@ -2092,7 +2169,7 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
     // 2. Match 'July 2026' or 'July 26'
     const mLong = s.match(/^([A-Za-z]+)[\s\-_]*(\d{2,4})$/);
     if (mLong) {
-      const monthNamesLong = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+      const monthNamesLong = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
       const mIdx = monthNamesLong.indexOf(mLong[1].toLowerCase());
       if (mIdx !== -1) {
         let yr = parseInt(mLong[2], 10);
@@ -2466,7 +2543,7 @@ export async function handleClassifyPLCategory(sheets, {
         range: "KeyInfo!X28"
       }));
       targetClientSheetId = String(x28Res.data.values?.[0]?.[0] || "").trim();
-    } catch (e) {}
+    } catch (e) { }
   }
 
   const cleanName = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim();
@@ -2690,9 +2767,9 @@ export async function handleClassifyPLCategory(sheets, {
         r.alertType === "unmapped_pl_category" &&
         r.clientName === clientName &&
         (r.fingerprintHash === fp ||
-         r.fingerprintHash === legacyFp ||
-         r.alertSummary.toLowerCase().includes(cleanName.toLowerCase()) ||
-         r.alertSummary.toLowerCase().includes(categoryName.toLowerCase()))
+          r.fingerprintHash === legacyFp ||
+          r.alertSummary.toLowerCase().includes(cleanName.toLowerCase()) ||
+          r.alertSummary.toLowerCase().includes(categoryName.toLowerCase()))
       );
 
       if (matchingRows.length > 0) {
@@ -2777,7 +2854,7 @@ export async function handleClassifyPLCategory(sheets, {
               await redisClient.set(sk, JSON.stringify(parsed), { EX: 86400 * 7 });
             }
           }
-        } catch (_) {}
+        } catch (_) { }
       }
     } catch (keysErr) {
       console.warn("Could not sweep active sessions for classified category:", keysErr.message);

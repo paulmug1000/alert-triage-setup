@@ -236,7 +236,7 @@ export default function PortalShell({
               />
             </a>
 
-            <div style={{ height: "20px", minHeight: "20px", display: "flex", alignItems: "center" }}>
+            <div style={{ minHeight: "22px", maxWidth: "100%", display: "flex", alignItems: "center", minWidth: 0 }}>
               {clientName ? (
                 <div
                   className="portal-nav-dropdown"
@@ -244,12 +244,15 @@ export default function PortalShell({
                     position: "relative",
                     display: "flex",
                     alignItems: "center",
-                    height: "20px",
+                    minHeight: "22px",
+                    maxWidth: "100%",
+                    minWidth: 0,
                     animation: "portalFadeIn 0.22s ease-out"
                   }}
                 >
                   <button
                     type="button"
+                    className="portal-client-selector-btn"
                     disabled={clients.length <= 1}
                     onClick={() => {
                       if (clients.length > 1) toggleDropdown("client");
@@ -258,14 +261,17 @@ export default function PortalShell({
                       background: openDropdown === "client" && clients.length > 1 ? "rgba(255, 255, 255, 0.1)" : "transparent",
                       border: clients.length > 1 ? "1px solid rgba(255, 255, 255, 0.28)" : "1px solid transparent",
                       borderRadius: "4px",
-                      padding: clients.length > 1 ? "0 5px" : "0 2px",
-                      height: "20px",
+                      padding: clients.length > 1 ? "2px 6px" : "2px 2px",
+                      minHeight: "22px",
+                      height: "auto",
+                      maxWidth: "100%",
+                      minWidth: 0,
                       boxSizing: "border-box",
                       color: "#ffffff",
                       fontSize: "0.85rem",
                       fontWeight: 400,
                       letterSpacing: "0.2px",
-                      lineHeight: "1.1",
+                      lineHeight: "1.2",
                       cursor: clients.length > 1 ? "pointer" : "default",
                       display: "inline-flex",
                       alignItems: "center",
@@ -285,7 +291,7 @@ export default function PortalShell({
                         e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.28)";
                       }
                     }}
-                    title={clients.length > 1 ? "Switch client" : undefined}
+                    title={clients.length > 1 ? `${clientName} — Switch client` : clientName}
                   >
                     <span
                       className="portal-client-title"
@@ -294,7 +300,13 @@ export default function PortalShell({
                         fontSize: "0.85rem",
                         fontWeight: 400,
                         letterSpacing: "0.2px",
-                        lineHeight: "1.1"
+                        lineHeight: "1.2",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        minWidth: 0,
+                        maxWidth: "min(300px, 50vw)",
+                        display: "block"
                       }}
                     >
                       {clientName}
@@ -306,6 +318,7 @@ export default function PortalShell({
                         maxWidth: clients.length > 1 ? "12px" : "0px",
                         overflow: "hidden",
                         lineHeight: 1,
+                        flexShrink: 0,
                         userSelect: "none",
                         transition: "opacity 0.22s ease, max-width 0.22s ease"
                       }}
@@ -321,7 +334,7 @@ export default function PortalShell({
                         left: 0,
                         right: "auto",
                         top: "calc(100% + 4px)",
-                        maxHeight: "360px",
+                        maxHeight: "min(360px, calc(100vh - 88px))",
                         overflowY: "auto",
                         minWidth: "200px",
                         zIndex: 1100
@@ -333,12 +346,11 @@ export default function PortalShell({
                           fontSize: "11px",
                           fontWeight: 700,
                           color: "#64748b",
-                          textTransform: "uppercase",
-                          letterSpacing: "0.5px",
+                          letterSpacing: "0.3px",
                           borderBottom: "1px solid #e2e8f0"
                         }}
                       >
-                        Switch Client
+                        Switch client
                       </div>
                       {clients.map((c) => (
                         <a
@@ -1117,7 +1129,7 @@ export default function PortalShell({
             transform: rotate(360deg);
           }
         }
-        @media (max-width: 900px) {
+        @media (max-width: 900px), ((orientation: landscape) and (max-height: 520px) and (max-width: 960px)) {
           .portal-desktop-nav {
             display: none !important;
           }
@@ -1127,7 +1139,7 @@ export default function PortalShell({
             justify-content: center !important;
           }
         }
-        @media (min-width: 901px) {
+        @media (min-width: 901px) and (min-height: 521px), (min-width: 961px) {
           .portal-mobile-toggle {
             display: none !important;
           }
@@ -1141,7 +1153,7 @@ export default function PortalShell({
             height: 40px !important;
           }
           .portal-client-title {
-            max-width: 200px !important;
+            max-width: min(200px, calc(100vw - 150px)) !important;
             white-space: nowrap !important;
             overflow: hidden !important;
             text-overflow: ellipsis !important;
@@ -1153,12 +1165,23 @@ export default function PortalShell({
         }
         @media (orientation: landscape) and (max-height: 520px), (orientation: landscape) and (max-width: 1024px) {
           .portal-header-bar-inner {
-            padding-left: max(2.5rem, calc(env(safe-area-inset-left, 0px) + 1.25rem)) !important;
-            padding-right: max(2.5rem, calc(env(safe-area-inset-right, 0px) + 1.25rem)) !important;
+            padding-left: max(2.25rem, calc(env(safe-area-inset-left, 0px) + 1rem)) !important;
+            padding-right: max(2.25rem, calc(env(safe-area-inset-right, 0px) + 1rem)) !important;
+            gap: 0.65rem !important;
+          }
+          .portal-brand-logo {
+            height: 36px !important;
+          }
+          .portal-client-title {
+            max-width: min(460px, calc(100vw - 180px)) !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            font-size: 0.85rem !important;
           }
           .portal-main-content-wrapper {
-            padding-left: max(2.5rem, calc(env(safe-area-inset-left, 0px) + 1.25rem)) !important;
-            padding-right: max(2.5rem, calc(env(safe-area-inset-right, 0px) + 1.25rem)) !important;
+            padding-left: max(2.25rem, calc(env(safe-area-inset-left, 0px) + 1rem)) !important;
+            padding-right: max(2.25rem, calc(env(safe-area-inset-right, 0px) + 1rem)) !important;
           }
         }
       `}</style>

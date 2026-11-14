@@ -5,7 +5,7 @@ import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTasks } from "../contexts/TaskContext";
 import { useAuth } from "../hooks/useAuth";
-import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp, isPlaceholderExpense, isPlaceholderInvoice } from "../utils/helpers";
+import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp, isPlaceholderExpense, isPlaceholderInvoice, parseSheetDate } from "../utils/helpers";
 import JobMatchCard, { buildJobsFromRows } from "./JobMatchCard";
 import ExploreJobsModal from "./ExploreJobsModal";
 import OutgoingsContractorPickerModal from "./OutgoingsContractorPickerModal";
@@ -258,11 +258,28 @@ export default function TriageAnalysisView({
       const invNo = alert.summary?.invoiceNo || alert.data?.accounting?.[5] || "";
       const amt = parseFloat(String(alert.summary?.amount || alert.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
       const sentDate = alert.summary?.sentDate || alert.data?.accounting?.[6] || "";
+      const datePaid = alert.summary?.datePaid || alert.data?.accounting?.[8] || "";
       const status = alert.summary?.status || alert.data?.accounting?.[9] || "Sent";
+      const invoiceClient = String(alert.summary?.client || alert.data?.accounting?.[0] || "").trim();
+      const existingJobClient = String(jobRow.client || "").trim();
+      const clientDiffers = Boolean(invoiceClient && existingJobClient.toLowerCase() !== invoiceClient.toLowerCase());
+      let computedDaysToPay = 30;
+      if (String(status).toLowerCase() === "paid" && sentDate && datePaid) {
+        const sDt = parseSheetDate(sentDate);
+        const pDt = parseSheetDate(datePaid);
+        if (sDt && pDt) {
+          const diff = Math.round((pDt.getTime() - sDt.getTime()) / 86400000);
+          if (!isNaN(diff) && diff >= 0 && diff <= 365) computedDaysToPay = diff;
+        }
+      }
 
       setPlacementPrompt({
         type: "invoice",
-        jobClient: jobRow.client || selectedClient?.clientName,
+        jobClient: existingJobClient || selectedClient?.clientName,
+        existingJobClient,
+        invoiceClient,
+        clientDiffers,
+        updateClientName: clientDiffers,
         jobName: jobRow.jobName,
         projectCode: jobRow.projectCode || "",
         rowNum: targetRowNum,
@@ -276,7 +293,7 @@ export default function TriageAnalysisView({
         amount: amt,
         sentDate,
         status,
-        daysToPay: 30
+        daysToPay: computedDaysToPay
       });
     }
   };
@@ -408,6 +425,8 @@ export default function TriageAnalysisView({
 
     try {
       if (placementPrompt.type === "invoice") {
+        const shouldSyncClient = Boolean(placementPrompt.updateClientName && placementPrompt.invoiceClient);
+        const effectiveJobClient = shouldSyncClient ? placementPrompt.invoiceClient : placementPrompt.jobClient;
         const res = await fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -420,13 +439,15 @@ export default function TriageAnalysisView({
             rowNum: placementPrompt.rowNum,
             slotNum: placementPrompt.slotNum,
             createNewRow: Boolean(placementPrompt.createNewRow),
-            jobClient: placementPrompt.jobClient,
+            jobClient: effectiveJobClient,
             jobName: placementPrompt.jobName,
+            updateClientName: shouldSyncClient,
+            newClientName: placementPrompt.invoiceClient || "",
             invoice: {
               invoiceNo: placementPrompt.invoiceNo,
               amount: parseFloat(placementPrompt.amount) || 0,
               sentDate: placementPrompt.sentDate || "",
-              daysToPay: parseInt(placementPrompt.daysToPay, 10) || 30,
+              daysToPay: placementPrompt.daysToPay !== undefined && placementPrompt.daysToPay !== null ? parseInt(placementPrompt.daysToPay, 10) : 30,
               status: placementPrompt.status || "Sent"
             }
           })
@@ -439,8 +460,8 @@ export default function TriageAnalysisView({
         const invDesc = placementPrompt.createNewRow
           ? `Added new invoice entry for invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName}`
           : (placementPrompt.isRetainer && placementPrompt.slotLabel && !isPlaceholderInvoice(placementPrompt.slotLabel) && !placementPrompt.slotLabel.toLowerCase().includes("invoice") && !placementPrompt.slotLabel.toLowerCase().includes("placeholder")
-              ? `Placed invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName} (${placementPrompt.slotLabel})`
-              : `Placed invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName}`);
+            ? `Placed invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName} (${placementPrompt.slotLabel})`
+            : `Placed invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName}`);
         await handleResolveAlertAfterPlacement(alert, invDesc);
       } else if (placementPrompt.type === "expense_job") {
         const res = await fetch("/api/triage", {
@@ -476,8 +497,8 @@ export default function TriageAnalysisView({
         const expDesc = placementPrompt.createNewRow
           ? `Added new direct cost entry for expense on ${placementPrompt.jobName}`
           : (placementPrompt.isRetainer && placementPrompt.slotLabel && !isPlaceholderExpense(placementPrompt.slotLabel) && !placementPrompt.slotLabel.toLowerCase().includes("cost") && !placementPrompt.slotLabel.toLowerCase().includes("placeholder")
-              ? `Placed expense of £${placementPrompt.amount} on ${placementPrompt.jobName} (${placementPrompt.slotLabel})`
-              : `Placed expense of £${placementPrompt.amount} on ${placementPrompt.jobName}`);
+            ? `Placed expense of £${placementPrompt.amount} on ${placementPrompt.jobName} (${placementPrompt.slotLabel})`
+            : `Placed expense of £${placementPrompt.amount} on ${placementPrompt.jobName}`);
         await handleResolveAlertAfterPlacement(alert, expDesc);
       } else if (placementPrompt.type === "expense_contractor") {
         const newBlock = {
@@ -2294,7 +2315,7 @@ export default function TriageAnalysisView({
                 }}
               >
                 <h3 style={{ margin: "0 0 12px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
-                  Placeholder / unrecon gap exists
+                  Placeholder exists
                 </h3>
                 <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
                   This month already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />
@@ -2387,6 +2408,25 @@ export default function TriageAnalysisView({
                       <strong style={{ color: "#0f172a" }}>{placementPrompt.jobName}</strong>
                       {placementPrompt.jobClient && <span style={{ color: "#64748b" }}> ({placementPrompt.jobClient})</span>}
                     </div>
+                    {placementPrompt.clientDiffers && (
+                      <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", padding: "8px 10px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "6px", fontSize: "12px", color: "#1e40af", cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(placementPrompt.updateClientName)}
+                          onChange={(e) => setPlacementPrompt(prev => prev ? { ...prev, updateClientName: e.target.checked } : prev)}
+                          style={{ marginTop: "2px", cursor: "pointer" }}
+                        />
+                        {placementPrompt.existingJobClient ? (
+                          <span>
+                            Update job client name from <strong>&ldquo;{placementPrompt.existingJobClient}&rdquo;</strong> to <strong>&ldquo;{placementPrompt.invoiceClient}&rdquo;</strong>
+                          </span>
+                        ) : (
+                          <span>
+                            Set job client name to <strong>&ldquo;{placementPrompt.invoiceClient}&rdquo;</strong>
+                          </span>
+                        )}
+                      </label>
+                    )}
                     {/* Retainer target month when a specific month is available */}
                     {placementPrompt.isRetainer && placementPrompt.slotLabel && !isPlaceholderInvoice(placementPrompt.slotLabel) && !placementPrompt.slotLabel.toLowerCase().includes("invoice") && !placementPrompt.slotLabel.toLowerCase().includes("entry") && !placementPrompt.slotLabel.toLowerCase().includes("placeholder") && (
                       <div>

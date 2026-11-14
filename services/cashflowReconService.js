@@ -1545,6 +1545,9 @@ export async function updateCashAdjustment({
   colLetter,
   sheetRow,
   value,
+  note,
+  cashTabSheetId,
+  colIdx,
   clientName,
   automationCommanderSheetId,
   isAdmin = true
@@ -1577,6 +1580,32 @@ export async function updateCashAdjustment({
   // Ensure KeyInfo!G1 in Client Sheet has the Recon Sheet URL if dynamic IMPORTRANGE is used
   if (typeof safeValue === "string" && safeValue.includes("KeyInfo!$G$1")) {
     await ensureClientReconSheetUrl_(sheets, cleanClientSheetId, automationCommanderSheetId, clientName);
+  }
+
+  // Update cell note first (if provided) so formatting/notes do not wait on formula recalculation
+  if (note !== undefined && cashTabSheetId !== undefined && cashTabSheetId !== null && colIdx !== undefined) {
+    const tColIdx = parseInt(colIdx, 10);
+    if (!isNaN(tColIdx) && tColIdx >= 1 && tColIdx <= 50) {
+      await withRetry(() => sheets.spreadsheets.batchUpdate({
+        spreadsheetId: cleanClientSheetId,
+        requestBody: {
+          requests: [{
+            updateCells: {
+              range: {
+                sheetId: cashTabSheetId,
+                startRowIndex: rowNum - 1,
+                endRowIndex: rowNum,
+                startColumnIndex: tColIdx,
+                endColumnIndex: tColIdx + 1
+              },
+              rows: [{ values: [{ note: String(note || "") }] }],
+              fields: "note"
+            }
+          }]
+        },
+        _skipFormulaRecompute: true
+      }));
+    }
   }
 
   const updateRes = await withRetry(() => sheets.spreadsheets.values.update({
@@ -1944,31 +1973,51 @@ export async function batchMatchCashflowActuals({
     throw new Error("Invalid Cash column");
   }
 
-  // 1. Batch update resolved background colors FIRST while the sheet is idle (<1s)
+  // 1. Batch update resolved background colors and optional cell notes FIRST while the sheet is idle (<1s)
   const validResolvedRows = (resolvedRows || []).map(r => parseInt(r, 10)).filter(r => !isNaN(r) && r >= 3 && r <= 80);
-  if (validResolvedRows.length > 0 && cashTabSheetId) {
-    const formatRequests = validResolvedRows.map(rowNum => ({
-      repeatCell: {
-        range: {
-          sheetId: cashTabSheetId,
-          startRowIndex: rowNum - 1,
-          endRowIndex: rowNum,
-          startColumnIndex: colIndex,
-          endColumnIndex: colIndex + 1
-        },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: RESOLVED_GREEN_RGB
-          }
-        },
-        fields: "userEnteredFormat.backgroundColor"
-      }
-    }));
+  const formatRequests = validResolvedRows.map(rowNum => ({
+    repeatCell: {
+      range: {
+        sheetId: cashTabSheetId,
+        startRowIndex: rowNum - 1,
+        endRowIndex: rowNum,
+        startColumnIndex: colIndex,
+        endColumnIndex: colIndex + 1
+      },
+      cell: {
+        userEnteredFormat: {
+          backgroundColor: RESOLVED_GREEN_RGB
+        }
+      },
+      fields: "userEnteredFormat.backgroundColor"
+    }
+  }));
 
+  const noteRequests = (adjustments || [])
+    .filter(adj => adj?.note !== undefined && ALLOWED_ADJUSTMENT_ROWS.has(parseInt(adj?.sheetRow, 10)))
+    .map(adj => {
+      const rowNum = parseInt(adj.sheetRow, 10);
+      return {
+        updateCells: {
+          range: {
+            sheetId: cashTabSheetId,
+            startRowIndex: rowNum - 1,
+            endRowIndex: rowNum,
+            startColumnIndex: colIndex,
+            endColumnIndex: colIndex + 1
+          },
+          rows: [{ values: [{ note: String(adj.note || "") }] }],
+          fields: "note"
+        }
+      };
+    });
+
+  const cellRequests = [...formatRequests, ...noteRequests];
+  if (cellRequests.length > 0 && cashTabSheetId !== undefined && cashTabSheetId !== null) {
     await withRetry(() => sheets.spreadsheets.batchUpdate({
       spreadsheetId: cleanClientSheetId,
       requestBody: {
-        requests: formatRequests
+        requests: cellRequests
       }
     }));
   }

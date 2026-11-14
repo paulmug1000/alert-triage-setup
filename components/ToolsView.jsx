@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import dynamic from "next/dynamic";
 import Spinner from "./Spinner";
 import Skeleton from "./Skeleton";
 import { useEoM } from "../hooks/useEoM";
@@ -6,11 +7,26 @@ import { useTools } from "../hooks/useTools";
 import { eomWorkMonthToTargetMonth, sanitizeSpreadsheetTerms } from "../utils/helpers";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
-import PushOutgoingsTab from "./PushOutgoingsTab";
-import CashflowReconTab from "./CashflowReconTab";
-import RevenueCheckTab from "./RevenueCheckTab";
-import ReportingTab from "./ReportingTab";
 import { useAuth } from "../hooks/useAuth";
+
+const PushOutgoingsTab = dynamic(() => import("./PushOutgoingsTab"), {
+  ssr: false,
+  loading: () => <div style={{ padding: "24px", fontSize: "13px", color: "#666" }}>Loading push outgoings...</div>,
+});
+const CashflowReconTab = dynamic(() => import("./CashflowReconTab"), {
+  ssr: false,
+  loading: () => <div style={{ padding: "24px", fontSize: "13px", color: "#666" }}>Loading cashflow reconciliation...</div>,
+});
+const RevenueCheckTab = dynamic(() => import("./RevenueCheckTab"), {
+  ssr: false,
+  loading: () => <div style={{ padding: "24px", fontSize: "13px", color: "#666" }}>Loading revenue comparison...</div>,
+});
+const ReportingTab = dynamic(() => import("./ReportingTab"), {
+  ssr: false,
+  loading: () => <div style={{ padding: "24px", fontSize: "13px", color: "#666" }}>Loading reporting...</div>,
+});
+
+const _eomBootstrapCacheByMonth = new Map();
 
 export default function ToolsView({
   allOutgoingsClients,
@@ -143,47 +159,107 @@ export default function ToolsView({
   // --- EOM DATA LOADING & EFFECTS ---
 
   useEffect(() => {
-    setEomStatusLoading(true);
+    if (!automationCommanderSheetId) return;
+    let cancelled = false;
+    const bootstrapKey = `${automationCommanderSheetId}::${eomMonthKey || ""}`;
+    const cached = _eomBootstrapCacheByMonth.get(bootstrapKey);
+
+    if (cached) {
+      setEomAllTasks(cached.tasks || []);
+      setEomStatusOverrides(cached.statusOverrides || []);
+      setEomDefaultTasks(cached.defaultTasks || []);
+      setEomClientSettings(cached.excludedClients || []);
+      setEomTemplates(cached.templates || []);
+      setEomStatusLoading(false);
+    } else {
+      setEomStatusLoading(true);
+    }
     setEomStatusError("");
-    Promise.all([
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId })
-      }).then(r => r.json()),
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId })
-      }).then(r => r.json()),
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_get_default_tasks", automationCommanderSheetId })
-      }).then(r => r.json()),
-    ])
-      .then(([tasksD, statusD, defaultD]) => {
-        if (tasksD.success) setEomAllTasks(tasksD.tasks || []);
-        else setEomStatusError(tasksD.error || "Failed to load tasks");
-        if (statusD.success) setEomStatusOverrides(statusD.statusOverrides || []);
-        else setEomStatusError(statusD.error || "Failed to load status");
-        if (defaultD && defaultD.success) setEomDefaultTasks(defaultD.defaultTasks || []);
+
+    fetch("/api/triage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_get_overview_bootstrap",
+        monthKey: eomMonthKey,
+        automationCommanderSheetId,
+      }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        if (d.success) {
+          const nextTasks = d.tasks || [];
+          const nextStatuses = d.statusOverrides || [];
+          const nextDefaults = d.defaultTasks || [];
+          const nextExcluded = d.excludedClients || [];
+          const nextTemplates = d.templates || [];
+          setEomAllTasks(nextTasks);
+          setEomStatusOverrides(nextStatuses);
+          setEomDefaultTasks(nextDefaults);
+          setEomClientSettings(nextExcluded);
+          setEomTemplates(nextTemplates);
+          _eomBootstrapCacheByMonth.set(bootstrapKey, {
+            tasks: nextTasks,
+            statusOverrides: nextStatuses,
+            defaultTasks: nextDefaults,
+            excludedClients: nextExcluded,
+            templates: nextTemplates,
+            cachedAt: Date.now(),
+          });
+        } else if (!cached) {
+          setEomStatusError(d.error || "Failed to load EoM data");
+        }
       })
-      .catch(e => setEomStatusError(e.message))
-      .finally(() => setEomStatusLoading(false));
-  }, [automationCommanderSheetId, eomMonthKey, setEomAllTasks, setEomDefaultTasks, setEomStatusError, setEomStatusLoading, setEomStatusOverrides]);
+      .catch((e) => {
+        if (!cancelled && !cached) setEomStatusError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setEomStatusLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    automationCommanderSheetId,
+    eomMonthKey,
+    setEomAllTasks,
+    setEomClientSettings,
+    setEomDefaultTasks,
+    setEomStatusError,
+    setEomStatusLoading,
+    setEomStatusOverrides,
+    setEomTemplates,
+  ]);
 
   useEffect(() => {
-    if (eomClientSettings !== null) return;
-    fetch("/api/triage", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_excluded_clients", automationCommanderSheetId })
-    })
-      .then(r => r.json())
-      .then(d => { if (d.success) setEomClientSettings(d.clients || []); })
-      .catch(e => console.error("eom_get_excluded_clients error:", e));
-  }, [automationCommanderSheetId, eomClientSettings, setEomClientSettings]);
+    if (!automationCommanderSheetId || eomStatusLoading) return;
+    if (eomClientSettings === null || eomTemplates === null || eomDefaultTasks === null) return;
+    const bootstrapKey = `${automationCommanderSheetId}::${eomMonthKey || ""}`;
+    _eomBootstrapCacheByMonth.set(bootstrapKey, {
+      tasks: eomAllTasks || [],
+      statusOverrides: eomStatusOverrides || [],
+      defaultTasks: eomDefaultTasks || [],
+      excludedClients: eomClientSettings || [],
+      templates: eomTemplates || [],
+      cachedAt: Date.now(),
+    });
+  }, [
+    automationCommanderSheetId,
+    eomAllTasks,
+    eomClientSettings,
+    eomDefaultTasks,
+    eomMonthKey,
+    eomStatusLoading,
+    eomStatusOverrides,
+    eomTemplates,
+  ]);
 
   // Template loading effects moved below useCallback definitions
 
   useEffect(() => {
+    if (!(eomSubView === "cash" || eomCashPendingClient)) return;
     if (eomBankAccountsByClient !== null) return;
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -192,9 +268,10 @@ export default function ToolsView({
       .then(r => r.json())
       .then(d => { if (d.success) { setEomBankAccountsByClient(d.accountsByClient || {}); setEomBankAccountsLoadedAt(d.loadedAt || ""); } })
       .catch(e => console.error("eom_get_bank_accounts error:", e));
-  }, [automationCommanderSheetId, eomBankAccountsByClient, setEomBankAccountsByClient, setEomBankAccountsLoadedAt]);
+  }, [automationCommanderSheetId, eomBankAccountsByClient, eomCashPendingClient, eomSubView, setEomBankAccountsByClient, setEomBankAccountsLoadedAt]);
 
   useEffect(() => {
+    if (!(eomSubView === "cash" || eomCashPendingClient)) return;
     setEomCashProgressLoading(true);
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -204,7 +281,7 @@ export default function ToolsView({
       .then(d => { if (d.success) setEomCashCompletedClients(d.completedClients || []); })
       .catch(e => console.error("eom_get_cash_balance_progress error:", e))
       .finally(() => setEomCashProgressLoading(false));
-  }, [automationCommanderSheetId, eomCashMonthKey, setEomCashCompletedClients, setEomCashProgressLoading]);
+  }, [automationCommanderSheetId, eomCashMonthKey, eomCashPendingClient, eomSubView, setEomCashCompletedClients, setEomCashProgressLoading]);
 
   // Cash client effect moved below useCallback definitions
 
@@ -374,11 +451,6 @@ export default function ToolsView({
   }, [setEomCashSubView, setupEntryForClient]);
 
   // --- EFFECTS THAT DEPEND ON CALLBACKS ---
-
-  useEffect(() => {
-    if (eomTemplates) return;
-    reloadEomTemplatesForPicker();
-  }, [eomTemplates, reloadEomTemplatesForPicker]);
 
   useEffect(() => {
     if (!eomShowTemplateManager) return;

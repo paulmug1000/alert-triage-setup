@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import Spinner from "./Spinner";
 
 function colIdxToLetter(idx0) {
   let n = Number(idx0) + 1;
@@ -884,6 +885,12 @@ export default function AdminWorkbookInspectorModal({
 
             {/* Grid viewport */}
             <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
+              {loading && activeGrid.length === 0 ? (
+                <div style={{ padding: "32px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", color: "#475569", fontSize: "13px" }}>
+                  <Spinner size={16} color="#2563eb" style={{ marginRight: 0 }} />
+                  <span>Loading {selectedTab || "workbook"} grid...</span>
+                </div>
+              ) : (
               <table
                 style={{
                   borderCollapse: "collapse",
@@ -984,6 +991,7 @@ export default function AdminWorkbookInspectorModal({
                   })}
                 </tbody>
               </table>
+              )}
             </div>
 
             {/* Bottom sheet tab strip */}

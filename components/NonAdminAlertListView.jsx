@@ -58,7 +58,8 @@ export default function NonAdminAlertListView({
   freqLabel,
   totalVisibleAlertsCount,
   onViewJob,
-  onDeleteInvoice
+  onDeleteInvoice,
+  onDeleteExpense
 }) {
   const [selectedClassifications, setSelectedClassifications] = React.useState({});
   const [applyingClassification, setApplyingClassification] = React.useState({});
@@ -1232,9 +1233,12 @@ export default function NonAdminAlertListView({
                           <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                             {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                             {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}</div>}
-                            {(m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
+                            {(m.expRef || m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.expRef || m.stableJobKey || alert.stableJobKey}</div>}
+                            {(m.description || alert.description) && <div><strong>Description:</strong> {m.description || alert.description}</div>}
+                            {(m.amount || alert.amount) && <div><strong>Amount:</strong> £{parseFloat(String(m.amount || alert.amount).replace(/[£,\s]/g, "")).toFixed(2)}</div>}
+                            {(m.recDate || alert.recDate) && <div><strong>Date:</strong> {m.recDate || alert.recDate}</div>}
                             <div style={{ marginTop: "4px", color: "#c62828" }}>
-                              Expense reference appears in Confirmed jobs but was not found in the accounting system (it may have been deleted or voided in Xero).
+                              Expense reference appears in Pulse but was not found in the accounting system (it may have been deleted or voided in Xero).
                             </div>
                           </div>
                         )}
@@ -1400,9 +1404,38 @@ export default function NonAdminAlertListView({
                                         });
                                       }}
                                       style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#dc2626", borderColor: "#fecaca" }}
-                                      title="Delete this invoice entry from Pulse confirmed jobs"
+                                      title="Delete this invoice entry from Pulse"
                                     >
                                       Delete invoice from Pulse
+                                    </button>
+                                  )}
+                                  {alert.alertType === "deleted_expense" && onDeleteExpense && (
+                                    <button
+                                      className="triage-btn"
+                                      onClick={() => {
+                                        const rowNum = m.confirmedRow || alert.confirmedRow || (alert.detail && alert.detail.match(/row\s*(\d+)/i)?.[1]);
+                                        const slotNum = m.slotNum || alert.slotNum || (alert.detail && alert.detail.match(/expense slot\s*(\d+)/i)?.[1]);
+                                        const expRef = m.expRef || m.stableJobKey || alert.stableJobKey || (alert.detail && alert.detail.match(/Expense\s+([^\s(]+)/i)?.[1]);
+                                        onDeleteExpense({
+                                          alert,
+                                          clientInfo,
+                                          clientName: cName,
+                                          clientSheetId: clientInfo?.clientSheetId || alert.clientSheetId,
+                                          masterSheetId: clientInfo?.masterSheetId || alert.masterSheetId,
+                                          confirmedRow: rowNum ? Number(rowNum) : null,
+                                          slotNum: slotNum ? Number(slotNum) : null,
+                                          expRef: expRef ? String(expRef).trim() : "",
+                                          jobName: m.jobName || alert.jobName,
+                                          endClientName: m.endClientName || alert.endClientName,
+                                          description: m.description || alert.description,
+                                          amount: m.amount || alert.amount,
+                                          recDate: m.recDate || alert.recDate,
+                                        });
+                                      }}
+                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#dc2626", borderColor: "#fecaca" }}
+                                      title="Delete this expense entry from Pulse"
+                                    >
+                                      Delete expense from Pulse
                                     </button>
                                   )}
                                   {(alert.alertType === "contractorsDashboardDiscr" || alert.alertType === "expenseDashboardDiscr") && clientInfo && (

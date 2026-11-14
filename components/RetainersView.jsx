@@ -265,26 +265,46 @@ export default function RetainersView({
           availableJobs={retainersJobs}
           onClose={() => setInvoicesEditSlot(null)}
           onInvoiceMoved={() => loadRetainersJobs(retainersClient, true)}
-          onUpdateInvoiceJobs={(rNum, sNum, newData) => {
+          onUpdateInvoiceJobs={(rNum, sNum, newData, resData) => {
             if (invoicesEditSlot?.createNewRow) {
               loadRetainersJobs(retainersClient, true);
               return;
             }
             setRetainersJobs((prev) =>
               prev &&
-              prev.map((j) => ({
-                ...j,
-                rows: j.rows.map((r) =>
-                  r.rowNum !== rNum
-                    ? r
-                    : {
-                        ...r,
-                        invoiceSlots: r.invoiceSlots.map((sl) =>
-                          sl.slotNum !== sNum ? sl : { ...sl, ...newData }
-                        ),
-                      }
-                ),
-              }))
+              prev.map((j) => {
+                const hasRow = j.rows?.some((r) => r.rowNum === rNum);
+                const restored = hasRow ? resData?.restoredPlaceholderSlot : null;
+                return {
+                  ...j,
+                  rows: j.rows.map((r) => {
+                    const matchesEditedRow = r.rowNum === rNum;
+                    const matchesRestoredRow = restored && Number(r.rowNum) === Number(restored.rowNum);
+                    if (!matchesEditedRow && !matchesRestoredRow) return r;
+                    return {
+                      ...r,
+                      invoiceSlots: r.invoiceSlots.map((sl) => {
+                        if (matchesEditedRow && sl.slotNum === sNum) return { ...sl, ...newData };
+                        if (
+                          matchesRestoredRow &&
+                          Number(sl.slotNum) === Number(restored.slotNum || 1) &&
+                          !(matchesEditedRow && Number(sNum) === Number(restored.slotNum || 1))
+                        ) {
+                          return {
+                            ...sl,
+                            ref: restored.ref || "",
+                            amount: restored.amount || "",
+                            sentDate: restored.sentDate || "",
+                            daysToPay: restored.daysToPay || "",
+                            status: restored.status || "",
+                          };
+                        }
+                        return sl;
+                      }),
+                    };
+                  }),
+                };
+              })
             );
           }}
         />

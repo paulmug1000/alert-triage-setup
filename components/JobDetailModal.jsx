@@ -32,7 +32,8 @@ import {
   isNoEndDateSentinel,
   stripCurrency,
   INVOICE_STATUS_OPTIONS,
-  canonicalizeInvoiceStatus
+  canonicalizeInvoiceStatus,
+  sanitizeSpreadsheetTerms
 } from "../utils/helpers";
 import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -162,6 +163,9 @@ export default function JobDetailModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [job, setJob] = useState(null);
+  const jobRef = useRef(null);
+  jobRef.current = job;
+  const loadedTargetKeyRef = useRef("");
   const [productLines, setProductLines] = useState([]);
   const [leadSources, setLeadSources] = useState([]);
   const [draftEdits, setDraftEdits] = useState({});
@@ -266,6 +270,7 @@ export default function JobDetailModal({
   // Fetch job details on-demand when opened
   useEffect(() => {
     if (!isOpen) {
+      loadedTargetKeyRef.current = "";
       setJob(null);
       setDraftEdits({});
       setError(null);
@@ -276,12 +281,28 @@ export default function JobDetailModal({
     let isMounted = true;
     let { clientSheetId } = resolvedClientInfo;
     const initialTargetTab = (target?.tabName === "Confirmed" || target?.tabName === "Pipeline") ? target.tabName : "All";
+    const targetKey = JSON.stringify({
+      sheetId: clientSheetId || "",
+      tabName: target?.tabName || "",
+      rowNum: target?.rowNum || "",
+      jobName: target?.jobName || "",
+      endClientName: target?.endClientName || (typeof target?.client === "string" ? target.client : "") || "",
+      projectCode: target?.projectCode || ""
+    });
+    const isSilentRefresh = Boolean(
+      reloadTrigger > 0 &&
+      jobRef.current &&
+      loadedTargetKeyRef.current &&
+      loadedTargetKeyRef.current === targetKey
+    );
 
     const executeFetch = async (sheetId, queryTab = initialTargetTab) => {
-      setLoading(true);
-      setError(null);
-      setJob(null);
-      setDraftEdits({});
+      if (!isSilentRefresh) {
+        setLoading(true);
+        setError(null);
+        setJob(null);
+        setDraftEdits({});
+      }
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 35000);
@@ -314,42 +335,53 @@ export default function JobDetailModal({
           const found = matchTargetJob(data.jobs, target);
 
           if (found) {
+            loadedTargetKeyRef.current = targetKey;
             setJob(found);
           } else if (queryTab !== "All") {
             // Fallback: If not found in the specific target tab, query "All" tabs
             await executeFetch(sheetId, "All");
             return;
           } else {
-            const rawCode = String(target?.projectCode || "").trim().toLowerCase();
-            const targetProjectCode = ["-", "n/a", "none"].includes(rawCode) ? "" : rawCode;
-            const targetJobName = String(target?.jobName || "").trim().toLowerCase();
-            const targetEndClient = String(target?.endClientName || (target?.client && typeof target.client === "string" ? target.client : "")).trim().toLowerCase();
-            const targetRow = target?.rowNum ? Number(target.rowNum) : null;
-            const desc = [
-              targetProjectCode ? `[${target.projectCode}]` : null,
-              targetEndClient ? targetEndClient : null,
-              target.jobName ? `"${target.jobName}"` : null,
-              isAdmin && targetRow ? `(row ${targetRow})` : null
-            ].filter(Boolean).join(" ");
-            setError(`Job ${desc} could not be found in ${isAdmin ? "the client sheet" : "Pulse"}.`);
+            if (isSilentRefresh) {
+              console.warn("Silent refresh did not match target job; keeping loaded state.");
+            } else {
+              const rawCode = String(target?.projectCode || "").trim().toLowerCase();
+              const targetProjectCode = ["-", "n/a", "none"].includes(rawCode) ? "" : rawCode;
+              const targetJobName = String(target?.jobName || "").trim().toLowerCase();
+              const targetEndClient = String(target?.endClientName || (target?.client && typeof target.client === "string" ? target.client : "")).trim().toLowerCase();
+              const targetRow = target?.rowNum ? Number(target.rowNum) : null;
+              const desc = [
+                targetProjectCode ? `[${target.projectCode}]` : null,
+                targetEndClient ? targetEndClient : null,
+                target.jobName ? `"${target.jobName}"` : null,
+                isAdmin && targetRow ? `(row ${targetRow})` : null
+              ].filter(Boolean).join(" ");
+              setError(`Job ${desc} could not be found in ${isAdmin ? "the client sheet" : "Pulse"}.`);
+            }
           }
+        } else if (isSilentRefresh) {
+          console.warn("Silent refresh returned error; keeping loaded state:", data.error);
         } else {
-          setError(data.error || `Failed to load job details from ${isAdmin ? "spreadsheet" : "Pulse"}.`);
+          const rawErr = data.error || `Failed to load job details from ${isAdmin ? "spreadsheet" : "Pulse"}.`;
+          setError(isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr));
         }
       } catch (err) {
         clearTimeout(timeoutId);
         if (!isMounted) return;
-        if (err.name === "AbortError") {
+        if (isSilentRefresh) {
+          console.warn("Silent refresh failed/timed out; keeping loaded state:", err?.message || err);
+        } else if (err.name === "AbortError") {
           setError(
             isAdmin
               ? "Loading timed out. The client spreadsheet is currently undergoing a heavy recalculation in Google Sheets. Please click 'Try again' in a moment."
               : "Loading timed out. Client data is currently updating in the background. Please click 'Try again' in a moment."
           );
         } else {
-          setError(err.message || (isAdmin ? "Failed to fetch job details from spreadsheet." : "Failed to fetch job details."));
+          const rawErr = err?.message || (isAdmin ? "Failed to fetch job details from spreadsheet." : "Failed to fetch job details.");
+          setError(isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr));
         }
       } finally {
-        if (isMounted) setLoading(false);
+        if (isMounted && !isSilentRefresh) setLoading(false);
       }
     };
 
@@ -361,7 +393,7 @@ export default function JobDetailModal({
 
       // If clientSheetId wasn't in activeClientsMap and activeClientsMap is empty, try fetching all clients dynamically
       if (!activeClientsMap || Object.keys(activeClientsMap).length === 0) {
-        setLoading(true);
+        if (!isSilentRefresh) setLoading(true);
         let dynamicSheetId = null;
         try {
           const clientsRes = await fetch("/api/triage", {
@@ -404,7 +436,7 @@ export default function JobDetailModal({
       }
 
       // If still no sheet ID found
-      if (isMounted) {
+      if (isMounted && !isSilentRefresh) {
         setLoading(false);
         setJob(null);
         setDraftEdits({});
@@ -1033,6 +1065,8 @@ export default function JobDetailModal({
     if (updates.length === 0 && !invoicesModified) return;
 
     const savedInvoicesModified = invoicesModified;
+    const wasExistingRetainer = String(parentRow?.projectRetainer || "").toLowerCase().includes("retainer");
+    const savedChangedToRetainer = !wasExistingRetainer && isRetainer;
     setSaving(true);
     try {
       const res = await fetch("/api/triage", {
@@ -1076,7 +1110,9 @@ export default function JobDetailModal({
 
       setJob((prev) => {
         if (!prev) return prev;
-        const updatedRows = prev.rows.map((r, rIdx) => {
+        const trimmedSet = new Set((data.trimmedRowNums || []).map((n) => Number(n)));
+        const filteredRows = prev.rows.filter((r, rIdx) => rIdx === 0 || !trimmedSet.has(Number(r.rowNum)));
+        const updatedRows = filteredRows.map((r, rIdx) => {
           const nextRow = { ...r };
           Object.keys(draftEdits).forEach((f) => {
             let nextVal = draftEdits[f];
@@ -1100,12 +1136,44 @@ export default function JobDetailModal({
           }
           return nextRow;
         });
+
+        let finalRows = updatedRows;
+        if (Array.isArray(data.addedChildRows) && data.addedChildRows.length > 0) {
+          const existingNums = new Set(updatedRows.map((r) => Number(r.rowNum)));
+          const parentUpdated = updatedRows[0] || {};
+          const formattedAdded = data.addedChildRows
+            .filter((ar) => !existingNums.has(Number(ar.rowNum)))
+            .map((ar) => ({
+              ...ar,
+              client: parentUpdated.client || ar.client || "",
+              jobName: parentUpdated.jobName || ar.jobName || "",
+              vat: parentUpdated.vat || ar.vat || "",
+              invoiceSlots: (ar.invoiceSlots || []).map((sl) => ({
+                ...sl,
+                amount: sl.amount !== "" && sl.amount !== undefined && sl.amount !== null ? formatCurrency(sl.amount) : "",
+              })),
+            }));
+          if (formattedAdded.length > 0) {
+            const parentOnly = updatedRows.slice(0, 1);
+            const childrenCombined = [...updatedRows.slice(1), ...formattedAdded].sort(
+              (a, b) => Number(a.rowNum) - Number(b.rowNum)
+            );
+            finalRows = [...parentOnly, ...childrenCombined];
+          }
+        }
+
+        const nextHeaderRevenue =
+          draftEdits.revenue !== undefined && draftEdits.revenue !== "" && draftEdits.revenue !== null
+            ? formatCurrency(draftEdits.revenue)
+            : (draftEdits.revenue !== undefined ? "" : prev.revenue);
+
         return {
           ...prev,
           client: draftEdits.client || prev.client,
           jobName: draftEdits.jobName || prev.jobName,
           projectCode: draftEdits.projectCode !== undefined ? draftEdits.projectCode : prev.projectCode,
-          rows: updatedRows
+          revenue: nextHeaderRevenue,
+          rows: finalRows
         };
       });
 
@@ -1132,11 +1200,12 @@ export default function JobDetailModal({
       if (data.backgroundProvisioning || savedInvoicesModified) {
         setTimeout(() => setReloadTrigger((prev) => prev + 1), 1000);
         setTimeout(() => setReloadTrigger((prev) => prev + 1), 4000);
-      } else if (isRetainer && (draftEdits.endDate !== undefined || draftEdits.startDate !== undefined || data.trimmed > 0 || data.grown > 0)) {
+      } else if (savedChangedToRetainer) {
         setReloadTrigger((prev) => prev + 1);
       }
     } catch (err) {
-      alert("Error saving job: " + err.message);
+      const rawMsg = err?.message || "Failed to save job";
+      alert("Error saving job: " + (isAdmin ? rawMsg : sanitizeSpreadsheetTerms(rawMsg)));
     } finally {
       setSaving(false);
     }
@@ -1159,11 +1228,99 @@ export default function JobDetailModal({
           }
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
-          onInvoiceMoved={() => {
+          onInvoiceMoved={(moveInfo) => {
             hasSavedChangesRef.current = true;
-            if (typeof onJobSaved === "function") onJobSaved({ subModalSaved: true });
-            if (typeof onSaved === "function") onSaved({ subModalSaved: true });
-            setReloadTrigger((prev) => prev + 1);
+            if (typeof onJobSaved === "function") onJobSaved({ subModalSaved: true, moveInfo });
+            if (typeof onSaved === "function") onSaved({ subModalSaved: true, moveInfo });
+            if (moveInfo?.sourceRowNum && moveInfo?.sourceSlotNum) {
+              setRecentlySaved(true);
+              setTimeout(() => setRecentlySaved(false), 3000);
+              const { sourceRowNum, sourceSlotNum, targetRowNum, targetSlotNum, invoice, resData } = moveInfo;
+              setJob((prev) => {
+                if (!prev) return prev;
+                const spaUpdatesMap = new Map();
+                const spa = resData?.sourcePlaceholderAdjustment;
+                if (spa) {
+                  if (Array.isArray(spa.slotUpdates)) {
+                    spa.slotUpdates.forEach((su) => {
+                      const numAmt = parseFloat(stripCurrency(su.amount)) || 0;
+                      spaUpdatesMap.set(`${su.rowNum}_${su.slotNum}`, {
+                        ...su,
+                        amount:
+                          su.amount !== "" && su.amount !== undefined && su.amount !== null && numAmt > 0
+                            ? formatCurrency(su.amount)
+                            : "",
+                      });
+                    });
+                  } else if (spa.rowNum && spa.slotNum) {
+                    const pAmt = spa.newAmount ?? spa.amount ?? 0;
+                    const numAmt = parseFloat(stripCurrency(pAmt)) || 0;
+                    spaUpdatesMap.set(`${spa.rowNum}_${spa.slotNum}`, {
+                      amount: !spa.cleared && numAmt > 0 ? formatCurrency(pAmt) : "",
+                    });
+                  }
+                }
+                const rs = resData?.restoredSourceSlot;
+                const targetOnSameJob =
+                  !resData?.isNewRow &&
+                  targetRowNum &&
+                  targetSlotNum &&
+                  prev.rows.some((r) => Number(r.rowNum) === Number(targetRowNum));
+                return {
+                  ...prev,
+                  rows: prev.rows.map((r) => ({
+                    ...r,
+                    invoiceSlots: (r.invoiceSlots || []).map((sl) => {
+                      let nextSl = sl;
+                      if (Number(r.rowNum) === Number(sourceRowNum) && Number(sl.slotNum) === Number(sourceSlotNum)) {
+                        nextSl = { ...nextSl, ref: "", amount: "", sentDate: "", daysToPay: "", status: "" };
+                      }
+                      if (rs && Number(r.rowNum) === Number(rs.rowNum) && Number(sl.slotNum) === Number(rs.slotNum || 1)) {
+                        nextSl = {
+                          ...nextSl,
+                          ref: rs.ref || "",
+                          amount:
+                            rs.amount !== "" && rs.amount !== undefined && rs.amount !== null
+                              ? formatCurrency(rs.amount)
+                              : "",
+                          sentDate: rs.sentDate || "",
+                          daysToPay: rs.daysToPay || "",
+                          status: rs.status || "",
+                        };
+                      }
+                      const spaMatch = spaUpdatesMap.get(`${r.rowNum}_${sl.slotNum}`);
+                      if (spaMatch) {
+                        nextSl = { ...nextSl, ...spaMatch };
+                      }
+                      if (
+                        targetOnSameJob &&
+                        Number(r.rowNum) === Number(targetRowNum) &&
+                        Number(sl.slotNum) === Number(targetSlotNum) &&
+                        invoice
+                      ) {
+                        nextSl = {
+                          ...nextSl,
+                          ref: invoice.invoiceNo || invoice.ref || "",
+                          amount:
+                            invoice.amount !== "" && invoice.amount !== undefined && invoice.amount !== null
+                              ? formatCurrency(invoice.amount)
+                              : "",
+                          sentDate: invoice.sentDate || "",
+                          daysToPay: invoice.daysToPay ? String(invoice.daysToPay) : "30",
+                          status: invoice.status || "Sent",
+                        };
+                      }
+                      return nextSl;
+                    }),
+                  })),
+                };
+              });
+              if (resData?.isNewRow) {
+                setReloadTrigger((prev) => prev + 1);
+              }
+            } else {
+              setReloadTrigger((prev) => prev + 1);
+            }
           }}
           onUpdateInvoiceJobs={(rNum, sNum, newData, resData) => {
             hasSavedChangesRef.current = true;
@@ -1175,37 +1332,89 @@ export default function JobDetailModal({
             }
             setRecentlySaved(true);
             setTimeout(() => setRecentlySaved(false), 3000);
+            const formattedNewData = {
+              ...newData,
+              amount:
+                newData?.amount !== "" && newData?.amount !== undefined && newData?.amount !== null
+                  ? formatCurrency(newData.amount)
+                  : "",
+            };
             setJob((prev) => {
               if (!prev) return prev;
               let updated = { ...prev };
-              if (resData?.placeholderAdjustment) {
-                const { rowNum: pRow, slotNum: pSlot, newAmount: pAmt } = resData.placeholderAdjustment;
-                updated.rows = updated.rows.map(r => {
-                  if (r.rowNum === pRow) {
-                    return {
-                      ...r,
-                      invoiceSlots: (r.invoiceSlots || []).map(sl =>
-                        sl.slotNum === pSlot ? { ...sl, amount: pAmt > 0 ? String(pAmt) : "" } : sl
-                      )
-                    };
-                  }
-                  return r;
-                });
+              const pa = resData?.placeholderAdjustment;
+              if (pa) {
+                const paMap = new Map();
+                if (Array.isArray(pa.slotUpdates)) {
+                  pa.slotUpdates.forEach((su) => {
+                    const numAmt = parseFloat(stripCurrency(su.amount)) || 0;
+                    paMap.set(`${su.rowNum}_${su.slotNum}`, {
+                      ...su,
+                      amount:
+                        su.amount !== "" && su.amount !== undefined && su.amount !== null && numAmt > 0
+                          ? formatCurrency(su.amount)
+                          : "",
+                    });
+                  });
+                } else if (pa.rowNum && pa.slotNum) {
+                  const pAmt = pa.newAmount ?? pa.amount ?? 0;
+                  const numAmt = parseFloat(stripCurrency(pAmt)) || 0;
+                  paMap.set(`${pa.rowNum}_${pa.slotNum}`, {
+                    amount: !pa.cleared && numAmt > 0 ? formatCurrency(pAmt) : "",
+                  });
+                }
+                if (paMap.size > 0) {
+                  updated.rows = updated.rows.map((r) => ({
+                    ...r,
+                    invoiceSlots: (r.invoiceSlots || []).map((sl) => {
+                      const match = paMap.get(`${r.rowNum}_${sl.slotNum}`);
+                      return match ? { ...sl, ...match } : sl;
+                    }),
+                  }));
+                }
               }
               if (resData?.updatedRevenue !== undefined) {
-                updated.revenue = resData.updatedRevenue;
-                updated.rows = updated.rows.map(r => ({ ...r, revenue: resData.updatedRevenue }));
+                const fmtRev =
+                  resData.updatedRevenue !== "" && resData.updatedRevenue !== null
+                    ? formatCurrency(resData.updatedRevenue)
+                    : "";
+                updated.revenue = fmtRev;
+                updated.rows = updated.rows.map((r, idx) => (idx === 0 ? { ...r, revenue: fmtRev } : r));
               }
+              const rs = resData?.restoredPlaceholderSlot;
               return {
                 ...updated,
-                rows: updated.rows.map((r) =>
-                  r.rowNum !== rNum
-                    ? r
-                    : {
-                      ...r,
-                      invoiceSlots: (r.invoiceSlots || []).map((sl) => (sl.slotNum !== sNum ? sl : { ...sl, ...newData }))
-                    }
-                )
+                rows: updated.rows.map((r) => {
+                  const isEditedRow = Number(r.rowNum) === Number(rNum);
+                  const isRestoredRow = rs && Number(r.rowNum) === Number(rs.rowNum);
+                  if (!isEditedRow && !isRestoredRow) return r;
+                  return {
+                    ...r,
+                    invoiceSlots: (r.invoiceSlots || []).map((sl) => {
+                      if (isEditedRow && Number(sl.slotNum) === Number(sNum)) {
+                        return { ...sl, ...formattedNewData };
+                      }
+                      if (
+                        isRestoredRow &&
+                        Number(sl.slotNum) === Number(rs.slotNum || 1) &&
+                        !(isEditedRow && Number(sNum) === Number(rs.slotNum || 1))
+                      ) {
+                        return {
+                          ...sl,
+                          ref: rs.ref || "",
+                          amount:
+                            rs.amount !== "" && rs.amount !== undefined && rs.amount !== null
+                              ? formatCurrency(rs.amount)
+                              : "",
+                          sentDate: rs.sentDate || "",
+                          daysToPay: rs.daysToPay || "",
+                          status: rs.status || "",
+                        };
+                      }
+                      return sl;
+                    }),
+                  };
+                }),
               };
             });
           }}
@@ -1295,8 +1504,33 @@ export default function JobDetailModal({
           target={retainerChangeSendDates}
           automationCommanderSheetId={resolvedClientInfo?.client?.automationCommanderSheetId || target?.automationCommanderSheetId}
           onClose={() => setRetainerChangeSendDates(null)}
-          onUpdated={async () => {
-            setReloadTrigger(prev => prev + 1);
+          onUpdated={async (data) => {
+            hasSavedChangesRef.current = true;
+            if (typeof onJobSaved === "function") onJobSaved({ subModalSaved: true });
+            if (typeof onSaved === "function") onSaved({ subModalSaved: true });
+            if (Array.isArray(data?.slotUpdates) && data.slotUpdates.length > 0) {
+              setRecentlySaved(true);
+              setTimeout(() => setRecentlySaved(false), 3000);
+              const sendMap = new Map();
+              data.slotUpdates.forEach((su) => {
+                sendMap.set(`${su.rowNum}_${su.slotNum || 1}`, su.sentDate);
+              });
+              setJob((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  rows: prev.rows.map((r) => ({
+                    ...r,
+                    invoiceSlots: (r.invoiceSlots || []).map((sl) => {
+                      const nextSent = sendMap.get(`${r.rowNum}_${sl.slotNum}`);
+                      return nextSent !== undefined ? { ...sl, sentDate: nextSent } : sl;
+                    }),
+                  })),
+                };
+              });
+            } else {
+              setReloadTrigger((prev) => prev + 1);
+            }
           }}
         />
       )}

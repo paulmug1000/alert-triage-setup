@@ -34,6 +34,7 @@ const TasksView = dynamic(() => import("../components/TasksView"), { loading: ()
 const CreateTaskModal = dynamic(() => import("../components/CreateTaskModal"));
 const ToolsView = dynamic(() => import("../components/ToolsView"), { loading: () => <PmaSetupOverviewSkeleton /> });
 const SettingsView = dynamic(() => import("../components/SettingsView"), { loading: () => <PmaSetupOverviewSkeleton /> });
+const DbView = dynamic(() => import("../components/DbView"), { loading: () => <PmaSetupOverviewSkeleton /> });
 const IntegrationsView = dynamic(() => import("../components/IntegrationsView"), { loading: () => <PmaIntegrationsSkeleton /> });
 const SetupView = dynamic(() => import("../components/SetupView"), { loading: () => <PmaSetupOverviewSkeleton /> });
 import { useAuth } from "../hooks/useAuth";
@@ -141,6 +142,11 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     return "home";
   });
   useEffect(() => {
+    if (!authChecking && isAuthenticated && !isAdmin && activeNav === "db") {
+      setActiveNav("home");
+    }
+  }, [authChecking, isAuthenticated, isAdmin, activeNav]);
+  useEffect(() => {
     if (activeNav === "alerts") {
       window.scrollTo(0, 0);
     }
@@ -153,6 +159,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     return "";
   });
   const [settingsClientName, setSettingsClientName] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("client") || "";
+    }
+    return "";
+  });
+  const [dbClientName, setDbClientName] = useState(() => {
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
       return p.get("client") || "";
@@ -192,6 +205,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     if (query.client && typeof query.client === "string") {
       setSetupClientName(query.client);
       setSettingsClientName(query.client);
+      setDbClientName(query.client);
     }
     if (query.section && typeof query.section === "string") {
       setSettingsSection(query.section);
@@ -833,6 +847,15 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     setActiveNav("settings");
     loadClients();
   });
+  const handleNavDb = (clientName = "") => navigateWithGuard(() => {
+    if (!isAdmin) return;
+    fireOutgoingsPullIfPending();
+    if (typeof clientName === "string" && clientName.trim()) {
+      setDbClientName(clientName.trim());
+    }
+    setActiveNav("db");
+    loadClients();
+  });
   const handleNavIntegrations = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setSettingsSubsection(""); setActiveNav("integrations"); loadClients(true); });
   const handleNavSetup = (clientName = "") => navigateWithGuard(() => {
     fireOutgoingsPullIfPending();
@@ -892,6 +915,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       if (settingsSection && settingsSection !== "main") params.set("section", settingsSection);
       if (settingsSubsection) params.set("subsection", settingsSubsection);
       target = `/pma?${params.toString()}`;
+    } else if (activeNav === "db") {
+      const targetDbClient = managedClient?.clientName || dbClientName;
+      target = targetDbClient ? `/pma?nav=db&client=${encodeURIComponent(targetDbClient)}` : "/pma?nav=db";
     } else if (activeNav !== "home") {
       target = `/pma?nav=${activeNav}`;
     }
@@ -900,7 +926,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       lastHandledAsPathRef.current = target;
       window.history.replaceState({ nav: activeNav }, "", target);
     }
-  }, [activeNav, setupClientName, settingsClientName, settingsSection, settingsSubsection, managedClient]);
+  }, [activeNav, setupClientName, settingsClientName, settingsSection, settingsSubsection, dbClientName, managedClient]);
 
   useEffect(() => {
     const onPopState = (e) => {
@@ -912,6 +938,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           if (clientParam) {
             setSetupClientName(clientParam);
             setSettingsClientName(clientParam);
+            setDbClientName(clientParam);
           }
           const sectionParam = p.get("section");
           if (sectionParam) setSettingsSection(sectionParam);
@@ -940,10 +967,12 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       if (clientParam) {
         setSetupClientName(clientParam);
         setSettingsClientName(clientParam);
+        setDbClientName(clientParam);
       }
       if (manageParam) {
         setSetupClientName(manageParam);
         setSettingsClientName(manageParam);
+        setDbClientName(manageParam);
         if (!managedClient || managedClient.clientName !== manageParam) {
           setManagedClient(manageParam);
         }
@@ -1446,6 +1475,20 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       );
     }
 
+    // ── DB SCREEN (ADMIN ONLY) ─────────────────────────────────────────────────
+    if (activeNav === "db" && isAdmin) {
+      return (
+        <DbView
+          automationCommanderSheetId={automationCommanderSheetId}
+          isAdmin={isAdmin}
+          user={user}
+          managedClient={managedClient}
+          initialClientName={dbClientName}
+          onSelectClient={(name) => setDbClientName(name || "")}
+        />
+      );
+    }
+
     // ── VIEWS SCREEN ────────────────────────────────────────────────────────────
     if (activeNav === "views") {
       return (
@@ -1543,6 +1586,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onIntegrations={handleNavIntegrations}
         onSetup={handleNavSetup}
         onSettings={handleNavSettings}
+        onDb={handleNavDb}
         homeAlertCount={managedClient ? (managedClientAlertCount ?? 0) : (triageEngine.triageComplete ? currentLiveAlertCount : (cachedAlertCount || currentLiveAlertCount))}
         taskCount={navTaskCount}
         integrationsCount={integrationsAttentionCount}

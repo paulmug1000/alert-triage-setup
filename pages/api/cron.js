@@ -49,15 +49,7 @@ export default async function handler(req, res) {
   }
 
   const currentStatus = await getTriageRefreshStatus().catch(() => null);
-  if (currentStatus && currentStatus.status === "running") {
-    console.log("⏭️ CRON: Triage refresh is already running; skipping overlapping tick.");
-    return res.status(200).json({
-      success: true,
-      alreadyRunning: true,
-      message: "Triage pipeline is already running.",
-      status: currentStatus,
-    });
-  }
+  const triageAlreadyRunning = Boolean(currentStatus && currentStatus.status === "running");
 
   const forceProactive = Boolean(req.body?.forceProactive === true || req.query?.forceProactive === "true");
   const forceAll = Boolean(req.body?.forceAll === true || req.query?.forceAll === "true");
@@ -76,6 +68,7 @@ export default async function handler(req, res) {
     source: triggerSource,
     forceProactive,
     forceAll,
+    triageAlreadyRunning,
   });
 
   const host = req.headers["x-forwarded-host"] || req.headers.host || `127.0.0.1:${process.env.PORT || 3000}`;
@@ -119,22 +112,26 @@ export default async function handler(req, res) {
           baseUrl,
           cronSecret,
           bypassToken,
-          maxConcurrency: 4,
+          maxConcurrency: 2,
         });
         console.log(`CRON: Completed dispatch of ${syncDispatchRes.dispatched} native sync sequence(s).`);
       } catch (syncErr) {
         console.warn("⚠️ CRON: Error in dispatchDueNativeMasterSyncs:", syncErr.message);
       }
 
-      await runBackgroundTriageRefresh({
-        baseUrl,
-        cronSecret,
-        automationCommanderSheetId: acId,
-        forceProactive,
-        forceAll,
-        bypassToken,
-        chain: true,
-      });
+      if (triageAlreadyRunning) {
+        console.log("⏭️ CRON: Triage refresh is already running; native sync sweep completed, skipping overlapping triage run.");
+      } else {
+        await runBackgroundTriageRefresh({
+          baseUrl,
+          cronSecret,
+          automationCommanderSheetId: acId,
+          forceProactive,
+          forceAll,
+          bypassToken,
+          chain: true,
+        });
+      }
 
       const cronHeaders = {
         "Content-Type": "application/json",

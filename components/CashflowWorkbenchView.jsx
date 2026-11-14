@@ -121,7 +121,11 @@ export function formatAmount2DP(val) {
  * Pairs bank transactions with Pulse items based on spreadsheet row cross-references
  * or heuristic amount matches, separating cleanly into matched pairs and unmatched lists.
  */
-export function buildAlignedComparison(bankItems = [], pulseItems = []) {
+export function buildAlignedComparison(bankItems = [], pulseItems = [], options = {}) {
+  const type = options.type || "revenue";
+  const isCredit = type === "revenue";
+  const maxVariancePct = options.maxVariancePct ?? 0.15;
+
   const isErr = (val) => {
     if (val == null) return false;
     const s = String(val).trim();
@@ -129,6 +133,22 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
   };
 
   const parseAmt = (v) => parseFloat(String(v || "0").replace(/[£,\s]/g, "")) || 0;
+
+  const getExpectedDirAmt = (b) => {
+    const inV = parseAmt(b?.inAmt);
+    const outV = parseAmt(b?.outAmt);
+    if (isCredit) {
+      if (outV > 0 && inV === 0) return -outV;
+      return inV > 0 ? inV : parseAmt(b?.amount);
+    }
+    if (inV > 0 && outV === 0) return -inV;
+    return outV > 0 ? outV : parseAmt(b?.amount);
+  };
+
+  const isSettledPulseItem = (p) => {
+    const st = String(p?.status || "").trim().toLowerCase();
+    return st === "paid" || st === "reconciled" || st === "complete" || st === "completed";
+  };
 
   // Filter out any invalid / formula error items and zero-value (e.g. Voided) lines
   const cleanBank = (bankItems || []).filter(b => {
@@ -183,6 +203,24 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
     if (!p.ref) return null;
     const refs = extractCandidateRefs(p.ref);
     return refs.length > 0 ? refs[0] : String(p.ref).trim().replace(/\D/g, "") || String(p.ref).trim();
+  };
+
+  // Require explicit invoice/bill marker or >=4-digit standalone ref when matching across differing amounts,
+  // avoiding false matches on incidental 2-digit dates (e.g. "26" in "August 26").
+  const hasExplicitRefToken = (b, refStr) => {
+    if (!b || !refStr) return false;
+    const cleanRef = String(refStr).replace(/\D/g, "");
+    if (!cleanRef) return false;
+    if (String(b.ref || "").replace(/\D/g, "") === cleanRef) return true;
+    const combined = `${b.particulars || ""} ${b.ref || ""} ${b.payee || ""}`;
+    const escaped = cleanRef.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const explicitPattern = new RegExp(`(?:inv|invoice|rv|bill|ref)[-:\\s#]*[a-z]{0,4}[-:\\s#]*0*${escaped}\\b`, "i");
+    if (explicitPattern.test(combined)) return true;
+    if (cleanRef.length >= 4) {
+      const partAndRef = `${b.particulars || ""} ${b.ref || ""}`;
+      if (new RegExp(`\\b0*${escaped}\\b`, "i").test(partAndRef)) return true;
+    }
+    return false;
   };
 
   const namesMatch = (nameA, nameB) => {
@@ -496,6 +534,130 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
     }
   });
 
+  // 4C. Settled FX / settlement variance match (reference + payee/explicit ref match, status is Paid/complete, within ±15%)
+  // 4C-i: 1 Bank item -> multiple settled Pulse items sharing an invoice/bill reference
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    const bAmt = getExpectedDirAmt(b);
+    if (bAmt <= 0) return;
+    const bRefs = getBankRefs(b);
+    if (bRefs.length === 0) return;
+    const bPayee = b.payee || b.particulars || "";
+
+    for (const ref of bRefs) {
+      const candidatePulseIndices = [];
+      let sumPulse = 0;
+      let allSettledAndPositive = true;
+      let hasPayeeOrExplicitRef = false;
+
+      cleanPulse.forEach((p, pIdx) => {
+        if (usedPulseIndices.has(pIdx)) return;
+        const pRef = getPulseRef(p);
+        if (pRef === ref) {
+          const pAmt = parseAmt(p.amount);
+          if (!isSettledPulseItem(p) || pAmt <= 0) {
+            allSettledAndPositive = false;
+          }
+          if (namesMatch(bPayee, p.client) || hasExplicitRefToken(b, ref)) {
+            hasPayeeOrExplicitRef = true;
+          }
+          candidatePulseIndices.push(pIdx);
+          sumPulse += pAmt;
+        }
+      });
+
+      if (candidatePulseIndices.length > 1 && allSettledAndPositive && hasPayeeOrExplicitRef && sumPulse > 0) {
+        const diff = Math.abs(bAmt - sumPulse);
+        if (diff >= 0.05 && (diff / sumPulse) <= maxVariancePct) {
+          matchedPairs.push({
+            bank: b,
+            pulse: candidatePulseIndices.map(i => cleanPulse[i]),
+            isMultiPulse: true,
+            matchType: "ref_fx_multi_pulse"
+          });
+          usedBankIndices.add(bIdx);
+          candidatePulseIndices.forEach(i => usedPulseIndices.add(i));
+          break;
+        }
+      }
+    }
+  });
+
+  // 4C-ii: Multiple Bank items sharing a reference -> 1 settled Pulse item (within ±15%)
+  cleanPulse.forEach((p, pIdx) => {
+    if (usedPulseIndices.has(pIdx) || !p.ref || !isSettledPulseItem(p)) return;
+    const pAmt = parseAmt(p.amount);
+    if (pAmt <= 0) return;
+    const pRef = getPulseRef(p);
+    if (!pRef) return;
+
+    const otherSameRef = cleanPulse.some((op, oIdx) => oIdx !== pIdx && !usedPulseIndices.has(oIdx) && getPulseRef(op) === pRef);
+    if (otherSameRef) return;
+
+    const candidateBankIndices = [];
+    let sumBank = 0;
+    cleanBank.forEach((b, bIdx) => {
+      if (usedBankIndices.has(bIdx)) return;
+      const bAmt = getExpectedDirAmt(b);
+      if (bAmt <= 0) return;
+      const bRefs = getBankRefs(b);
+      if (!bRefs.includes(pRef)) return;
+      const bPayee = b.payee || b.particulars || "";
+      if (namesMatch(bPayee, p.client) || hasExplicitRefToken(b, pRef)) {
+        candidateBankIndices.push(bIdx);
+        sumBank += bAmt;
+      }
+    });
+
+    if (candidateBankIndices.length > 1 && sumBank > 0) {
+      const diff = Math.abs(sumBank - pAmt);
+      if (diff >= 0.05 && (diff / pAmt) <= maxVariancePct) {
+        matchedPairs.push({
+          bank: candidateBankIndices.map(i => cleanBank[i]),
+          pulse: p,
+          isMultiBank: true,
+          matchType: "ref_fx_partial_sum"
+        });
+        candidateBankIndices.forEach(i => usedBankIndices.add(i));
+        usedPulseIndices.add(pIdx);
+      }
+    }
+  });
+
+  // 4C-iii: 1-to-1 settled reference variance match (FX rate movement or settlement deduction within ±15%)
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    const bAmt = getExpectedDirAmt(b);
+    if (bAmt <= 0) return;
+    const bRefs = getBankRefs(b);
+    if (bRefs.length === 0) return;
+    const bPayee = b.payee || b.particulars || "";
+
+    let bestPulseIdx = -1;
+    let bestDiff = Infinity;
+
+    cleanPulse.forEach((p, idx) => {
+      if (usedPulseIndices.has(idx) || !isSettledPulseItem(p)) return;
+      const pAmt = parseAmt(p.amount);
+      if (pAmt <= 0) return;
+      const pRef = getPulseRef(p);
+      if (!pRef || !bRefs.includes(pRef)) return;
+      if (!namesMatch(bPayee, p.client) && !hasExplicitRefToken(b, pRef)) return;
+
+      const diff = Math.abs(bAmt - pAmt);
+      if (diff >= 0.05 && (diff / pAmt) <= maxVariancePct && diff < bestDiff) {
+        bestDiff = diff;
+        bestPulseIdx = idx;
+      }
+    });
+
+    if (bestPulseIdx !== -1) {
+      matchedPairs.push({ bank: b, pulse: cleanPulse[bestPulseIdx], matchType: "ref_fx_variance" });
+      usedBankIndices.add(bIdx);
+      usedPulseIndices.add(bestPulseIdx);
+    }
+  });
+
   // 5. Match by exact amount fallback
   cleanBank.forEach((b, bIdx) => {
     if (usedBankIndices.has(bIdx)) return;
@@ -515,10 +677,62 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
     }
   });
 
+  const enrichedPairs = matchedPairs.map(pair => {
+    const bankList = Array.isArray(pair.bank) ? pair.bank : [pair.bank];
+    const pulseList = Array.isArray(pair.pulse) ? pair.pulse : [pair.pulse];
+    const bankTotal = Math.round(bankList.reduce((acc, item) => acc + getExpectedDirAmt(item), 0) * 100) / 100;
+    const pulseTotal = Math.round(pulseList.reduce((acc, item) => acc + parseAmt(item?.amount), 0) * 100) / 100;
+    const amountDiff = Math.round((bankTotal - pulseTotal) * 100) / 100;
+    // Cash impact on client's bank balance: inflows increase cash when bank > Pulse; outflows reduce cash when bank > Pulse
+    const cashImpact = isCredit ? amountDiff : Math.round((pulseTotal - bankTotal) * 100) / 100;
+    const hasVariance = Math.abs(amountDiff) >= 0.05;
+    const variancePct = pulseTotal > 0 ? Math.round((amountDiff / pulseTotal) * 10000) / 100 : 0;
+    return {
+      ...pair,
+      bankTotal,
+      pulseTotal,
+      amountDiff,
+      cashImpact,
+      hasVariance,
+      variancePct
+    };
+  });
+
+  const variancePairs = enrichedPairs.filter(mp => mp.hasVariance);
+  const totalCashVariance = Math.round(variancePairs.reduce((s, mp) => s + mp.cashImpact, 0) * 100) / 100;
+
   const unmatchedBank = cleanBank.filter((_, idx) => !usedBankIndices.has(idx));
   const unmatchedPulse = cleanPulse.filter((_, idx) => !usedPulseIndices.has(idx));
 
-  return { matchedPairs, unmatchedBank, unmatchedPulse };
+  return { matchedPairs: enrichedPairs, unmatchedBank, unmatchedPulse, variancePairs, totalCashVariance };
+}
+
+/**
+ * Summarizes settled FX / settlement variances from a comparison result for finalisation cards & note generation.
+ */
+export function summarizeSettlementVariances(comparison, type = "revenue") {
+  const variancePairs = comparison?.variancePairs || [];
+  const items = variancePairs.map(pair => {
+    const bankArr = Array.isArray(pair.bank) ? pair.bank : [pair.bank];
+    const pulseArr = Array.isArray(pair.pulse) ? pair.pulse : [pair.pulse];
+    const clientOrPayee = String(
+      pulseArr[0]?.client || bankArr[0]?.payee || bankArr[0]?.particulars || (type === "revenue" ? "Customer" : "Supplier")
+    ).trim();
+    const ref = String(pulseArr[0]?.ref || bankArr[0]?.ref || "").trim();
+    return {
+      clientOrPayee,
+      ref,
+      bankAmt: pair.bankTotal,
+      pulseAmt: pair.pulseTotal,
+      amountDiff: pair.amountDiff,
+      cashImpact: pair.cashImpact,
+      variancePct: pair.variancePct
+    };
+  });
+  return {
+    items,
+    totalCashImpact: comparison?.totalCashVariance || 0
+  };
 }
 
 /**
@@ -530,14 +744,15 @@ function AlignedBreakdownView({
   type = "revenue",
   bankItems = [],
   pulseItems = [],
+  comparison: externalComparison = null,
   title = "Revenue matching",
   subtitle = "Bank deposits tagged as revenue vs paid invoices in Pulse:"
 }) {
   const comparison = useMemo(() => {
-    return buildAlignedComparison(bankItems, pulseItems);
-  }, [bankItems, pulseItems]);
+    return externalComparison || buildAlignedComparison(bankItems, pulseItems, { type });
+  }, [externalComparison, bankItems, pulseItems, type]);
 
-  const { matchedPairs, unmatchedBank, unmatchedPulse } = comparison;
+  const { matchedPairs, unmatchedBank, unmatchedPulse, variancePairs = [], totalCashVariance = 0 } = comparison;
 
   const isCredit = type === "revenue";
   const bankTheme = isCredit
@@ -578,6 +793,91 @@ function AlignedBreakdownView({
     return `${p.client || "Client"} — ${p.job || "Job"}`;
   };
 
+  const renderBankStatusBadge = (pair, isSum = false) => {
+    if (pair.hasVariance) {
+      return (
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "3px",
+            padding: "2px 6px",
+            background: "#fef3c7",
+            color: "#92400e",
+            borderRadius: "4px",
+            fontSize: "10px",
+            fontWeight: "700",
+            border: "1px solid #fde68a"
+          }}
+        >
+          ✓ Matched • FX / fee variance
+        </span>
+      );
+    }
+    return (
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "3px",
+          padding: "2px 6px",
+          background: "#dcfce7",
+          color: "#166534",
+          borderRadius: "4px",
+          fontSize: "10px",
+          fontWeight: "700",
+          border: "1px solid #86efac"
+        }}
+      >
+        {isSum ? "✓ Matched sum" : "✓ Matched"}
+      </span>
+    );
+  };
+
+  const renderPulseStatusBadge = (pair, isSum = false) => {
+    if (pair.hasVariance) {
+      const impactStr = `${pair.cashImpact >= 0 ? "+" : ""}${formatGBP(pair.cashImpact)}`;
+      const pctStr = `${pair.variancePct >= 0 ? "+" : ""}${pair.variancePct.toFixed(1)}%`;
+      return (
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "3px",
+            padding: "2px 6px",
+            background: "#fef3c7",
+            color: "#92400e",
+            borderRadius: "4px",
+            fontSize: "10px",
+            fontWeight: "700",
+            border: "1px solid #fde68a"
+          }}
+          title="Permanent settlement difference absorbed in this month's cashflow adjustment"
+        >
+          Cash impact: {impactStr} ({pctStr})
+        </span>
+      );
+    }
+    return (
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "3px",
+          padding: "2px 6px",
+          background: "#dcfce7",
+          color: "#166534",
+          borderRadius: "4px",
+          fontSize: "10px",
+          fontWeight: "700",
+          border: "1px solid #86efac"
+        }}
+      >
+        {isSum ? "✓ Matched sum" : "✓ Matched"}
+      </span>
+    );
+  };
+
   return (
     <div>
       <div
@@ -595,10 +895,15 @@ function AlignedBreakdownView({
         <span>
           <strong>{title}:</strong> {subtitle}
         </span>
-        <div style={{ display: "flex", gap: "8px", fontSize: "11px" }}>
+        <div style={{ display: "flex", gap: "8px", fontSize: "11px", flexWrap: "wrap" }}>
           <span style={{ padding: "2px 8px", background: "#dcfce7", color: "#166534", borderRadius: "10px", fontWeight: "600" }}>
             ✓ {matchedPairs.length} matched
           </span>
+          {variancePairs.length > 0 && (
+            <span style={{ padding: "2px 8px", background: "#fef3c7", color: "#92400e", borderRadius: "10px", fontWeight: "600", border: "1px solid #fde68a" }}>
+              {variancePairs.length} FX / settlement variance ({totalCashVariance >= 0 ? "+" : ""}{formatGBP(totalCashVariance)})
+            </span>
+          )}
           {(unmatchedBank.length > 0 || unmatchedPulse.length > 0) && (
             <span style={{ padding: "2px 8px", background: "#fee2e2", color: "#991b1b", borderRadius: "10px", fontWeight: "600" }}>
               ⚠️ {unmatchedBank.length + unmatchedPulse.length} unmatched ({unmatchedBank.length} bank, {unmatchedPulse.length} Pulse)
@@ -606,6 +911,24 @@ function AlignedBreakdownView({
           )}
         </div>
       </div>
+
+      {variancePairs.length > 0 && (
+        <div
+          style={{
+            marginBottom: "12px",
+            padding: "9px 12px",
+            background: "#fffbeb",
+            border: "1px solid #fde68a",
+            borderRadius: "6px",
+            fontSize: "11.5px",
+            color: "#92400e",
+            lineHeight: "1.45"
+          }}
+        >
+          <strong>FX / settlement variance ({totalCashVariance >= 0 ? "+" : ""}{formatGBP(totalCashVariance)} cash impact across {variancePairs.length} settled {variancePairs.length === 1 ? "item" : "items"}):</strong>{" "}
+          Absorbed permanently via the category adjustment in Cashflow finalisation — do not carry over to next month.
+        </div>
+      )}
 
       {/* Column Headers */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "8px" }}>
@@ -646,6 +969,8 @@ function AlignedBreakdownView({
               const totalPulse = isMultiPulse
                 ? pair.pulse.reduce((acc, p) => acc + parseAmount(p.amount), 0)
                 : parseAmount(pair.pulse?.amount);
+              const bankCardBorder = pair.hasVariance ? "#fcd34d" : bankTheme.border;
+              const pulseCardBorder = pair.hasVariance ? "#fcd34d" : pulseTheme.border;
 
               return (
                 <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", alignItems: "stretch" }}>
@@ -654,7 +979,7 @@ function AlignedBreakdownView({
                     style={{
                       padding: "8px 10px",
                       background: bankTheme.bg,
-                      border: `1px solid ${bankTheme.border}`,
+                      border: `1px solid ${bankCardBorder}`,
                       borderRadius: "6px",
                       display: "flex",
                       flexDirection: "column",
@@ -685,26 +1010,11 @@ function AlignedBreakdownView({
                             </div>
                           ))}
                         </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "2px", gap: "6px", flexWrap: "wrap" }}>
                           <span>
                             Combined match to {Array.isArray(pair.pulse) ? (pair.pulse[0]?.ref ? `Inv ${pair.pulse[0].ref}` : "Pulse items") : (pair.pulse.ref ? `Inv ${pair.pulse.ref}` : "Pulse item")}
                           </span>
-                          <span
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "3px",
-                              padding: "2px 6px",
-                              background: "#dcfce7",
-                              color: "#166534",
-                              borderRadius: "4px",
-                              fontSize: "10px",
-                              fontWeight: "700",
-                              border: "1px solid #86efac"
-                            }}
-                          >
-                            ✓ Matched sum
-                          </span>
+                          {renderBankStatusBadge(pair, true)}
                         </div>
                       </div>
                     ) : (
@@ -724,24 +1034,9 @@ function AlignedBreakdownView({
                             {formatAmount2DP(getBankAmt(pair.bank)) || "£0.00"}
                           </span>
                         </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "4px", gap: "6px", flexWrap: "wrap" }}>
                           <span>{formatDateDMmmYy(pair.bank.date) || "No date"}{pair.bank.ref ? ` • ${pair.bank.ref}` : ""}</span>
-                          <span
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "3px",
-                              padding: "2px 6px",
-                              background: "#dcfce7",
-                              color: "#166534",
-                              borderRadius: "4px",
-                              fontSize: "10px",
-                              fontWeight: "700",
-                              border: "1px solid #86efac"
-                            }}
-                          >
-                            ✓ Matched
-                          </span>
+                          {renderBankStatusBadge(pair, false)}
                         </div>
                       </div>
                     )}
@@ -752,7 +1047,7 @@ function AlignedBreakdownView({
                     style={{
                       padding: "8px 10px",
                       background: pulseTheme.bg,
-                      border: `1px solid ${pulseTheme.border}`,
+                      border: `1px solid ${pulseCardBorder}`,
                       borderRadius: "6px",
                       display: "flex",
                       flexDirection: "column",
@@ -785,26 +1080,11 @@ function AlignedBreakdownView({
                             </div>
                           ))}
                         </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "2px", gap: "6px", flexWrap: "wrap" }}>
                           <span>
                             {pair.pulse[0]?.ref ? `Inv ${pair.pulse[0].ref}` : "Combined Pulse items"} • {pair.pulse[0]?.status || "Paid"}
                           </span>
-                          <span
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "3px",
-                              padding: "2px 6px",
-                              background: "#dcfce7",
-                              color: "#166534",
-                              borderRadius: "4px",
-                              fontSize: "10px",
-                              fontWeight: "700",
-                              border: "1px solid #86efac"
-                            }}
-                          >
-                            ✓ Matched sum
-                          </span>
+                          {renderPulseStatusBadge(pair, true)}
                         </div>
                       </div>
                     ) : (
@@ -817,24 +1097,9 @@ function AlignedBreakdownView({
                             {formatAmount2DP(pair.pulse.amount) || "£0.00"}
                           </span>
                         </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "4px", gap: "6px", flexWrap: "wrap" }}>
                           <span>{pair.pulse.ref ? `Inv ${pair.pulse.ref}` : "Pulse item"} • {pair.pulse.status || "Paid"}</span>
-                          <span
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "3px",
-                              padding: "2px 6px",
-                              background: "#dcfce7",
-                              color: "#166534",
-                              borderRadius: "4px",
-                              fontSize: "10px",
-                              fontWeight: "700",
-                              border: "1px solid #86efac"
-                            }}
-                          >
-                            ✓ Matched
-                          </span>
+                          {renderPulseStatusBadge(pair, false)}
                         </div>
                       </div>
                     )}
@@ -989,6 +1254,8 @@ export default function CashflowWorkbenchView({
   onRegisterActions,
   onLiveSignedActualsChange,
   onLiveUnreconItemsChange,
+  onLiveSettlementVariancesChange,
+  onApplyVarianceNote,
   applyingRecon = false,
   applyingReconRow = null,
   resolvingCellKey = null,
@@ -1776,6 +2043,32 @@ export default function CashflowWorkbenchView({
   const sanitizedPulseDirectCosts = useMemo(() => {
     return (reconData?.directCostsBreakdown?.pulseDirectCosts || []).filter(p => !String(p.client || "").startsWith("#") && !String(p.amount || "").startsWith("#"));
   }, [reconData]);
+
+  const revenueComparison = useMemo(() => {
+    return buildAlignedComparison(liveRevenueBankItems, sanitizedPulseInvoices, { type: "revenue" });
+  }, [liveRevenueBankItems, sanitizedPulseInvoices]);
+
+  const contractorsComparison = useMemo(() => {
+    return buildAlignedComparison(liveContractorsBankItems, sanitizedPulseContractors, { type: "contractors" });
+  }, [liveContractorsBankItems, sanitizedPulseContractors]);
+
+  const directCostsComparison = useMemo(() => {
+    return buildAlignedComparison(liveDirectCostsBankItems, sanitizedPulseDirectCosts, { type: "direct_costs" });
+  }, [liveDirectCostsBankItems, sanitizedPulseDirectCosts]);
+
+  const liveSettlementVariances = useMemo(() => {
+    return {
+      confirmed_cash: summarizeSettlementVariances(revenueComparison, "revenue"),
+      contractors: summarizeSettlementVariances(contractorsComparison, "contractors"),
+      direct_costs: summarizeSettlementVariances(directCostsComparison, "direct_costs")
+    };
+  }, [revenueComparison, contractorsComparison, directCostsComparison]);
+
+  useEffect(() => {
+    if (onLiveSettlementVariancesChange && !isGuidedSetupOpen) {
+      onLiveSettlementVariancesChange(liveSettlementVariances);
+    }
+  }, [liveSettlementVariances, onLiveSettlementVariancesChange, isGuidedSetupOpen]);
 
   // 1c. Confirmation Pop-up for Overwrite All
   const handleConfirmOverwriteAll = () => {
@@ -3603,6 +3896,15 @@ export default function CashflowWorkbenchView({
                                 );
                                 const isReconUsed = isReconUsedForRow ? isReconUsedForRow(elem.baseRow) : false;
                                 const isThisApplying = applyingRecon && (applyingReconRow === elem.adjRow?.sheetRow || applyingReconRow === elem.baseRow?.targetAdjustmentRow);
+                                const catSettlementVar = liveSettlementVariances?.[elem.mappedItemType];
+                                const hasCatFxVar = Boolean(catSettlementVar?.items?.length > 0 && Math.abs(catSettlementVar.totalCashImpact) >= 0.005);
+                                const showAddFxNoteBtn = Boolean(
+                                  hasCatFxVar &&
+                                  onApplyVarianceNote &&
+                                  isReconUsed &&
+                                  Math.abs(adjVal) >= 0.005 &&
+                                  !String(adjCell?.note || "").trim()
+                                );
 
                                 return (
                                   <div
@@ -3619,8 +3921,28 @@ export default function CashflowWorkbenchView({
                                     }}
                                   >
                                     {/* Row 1: Category & Forecast */}
-                                    <div style={{ gridColumn: "1", gridRow: "1", padding: "6px 10px", fontWeight: "700", fontSize: "12px", color: "#0f172a", borderBottom: "1px dashed #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                                    <div style={{ gridColumn: "1", gridRow: "1", padding: "6px 10px", fontWeight: "700", fontSize: "12px", color: "#0f172a", borderBottom: "1px dashed #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px", flexWrap: "wrap" }}>
                                       <span>{elem.title}</span>
+                                      {hasCatFxVar && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setActiveRightTab(elem.mappedItemType === "confirmed_cash" ? "revenue" : elem.mappedItemType)}
+                                          title="Permanent FX / settlement difference on settled items — click to inspect matched breakdown"
+                                          style={{
+                                            padding: "2px 6px",
+                                            background: "#fffbeb",
+                                            color: "#92400e",
+                                            border: "1px solid #fde68a",
+                                            borderRadius: "4px",
+                                            fontSize: "9.5px",
+                                            fontWeight: "600",
+                                            cursor: "pointer",
+                                            whiteSpace: "nowrap"
+                                          }}
+                                        >
+                                          FX / fee: {catSettlementVar.totalCashImpact >= 0 ? "+" : ""}{formatGBP(catSettlementVar.totalCashImpact)}
+                                        </button>
+                                      )}
                                       {elem.mappedItemType === "salaries" && (
                                         <button
                                           type="button"
@@ -3686,7 +4008,7 @@ export default function CashflowWorkbenchView({
                                       })}
                                     </div>
                                     <div style={{ gridColumn: "2", gridRow: "2", padding: "4px 8px 5px", background: "#f8fafc", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
-                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "3px", flexWrap: "wrap" }}>
                                         {renderInlineNoteBtn(elem.adjRow, adjCell)}
                                         {onUseReconFigures && (
                                           <button
@@ -3711,6 +4033,26 @@ export default function CashflowWorkbenchView({
                                           >
                                             {isThisApplying ? <Spinner size={8} /> : null}
                                             Recon
+                                          </button>
+                                        )}
+                                        {showAddFxNoteBtn && (
+                                          <button
+                                            type="button"
+                                            onClick={() => onApplyVarianceNote(elem.baseRow, elem.adjRow, adjCell)}
+                                            title="Save FX / settlement explanation note to this adjustment"
+                                            style={{
+                                              padding: "2px 5px",
+                                              borderRadius: "4px",
+                                              border: "1px solid #fde68a",
+                                              background: "#fffbeb",
+                                              color: "#92400e",
+                                              fontSize: "8.5px",
+                                              fontWeight: "700",
+                                              cursor: "pointer",
+                                              whiteSpace: "nowrap"
+                                            }}
+                                          >
+                                            Add FX note
                                           </button>
                                         )}
                                       </div>
@@ -4204,6 +4546,7 @@ export default function CashflowWorkbenchView({
                     type="revenue"
                     bankItems={liveRevenueBankItems}
                     pulseItems={sanitizedPulseInvoices}
+                    comparison={revenueComparison}
                     title="Revenue matching"
                     subtitle={isAdmin ? "Bank deposits tagged as Revenue vs paid invoices from Pulse Monthly! tab:" : "Bank deposits tagged as Revenue vs paid invoices in Pulse:"}
                   />
@@ -4215,6 +4558,7 @@ export default function CashflowWorkbenchView({
                     type="contractors"
                     bankItems={liveContractorsBankItems}
                     pulseItems={sanitizedPulseContractors}
+                    comparison={contractorsComparison}
                     title="Contractors matching"
                     subtitle="Bank debits tagged as Contractors vs Pulse contractor payments:"
                   />
@@ -4226,6 +4570,7 @@ export default function CashflowWorkbenchView({
                     type="direct_costs"
                     bankItems={liveDirectCostsBankItems}
                     pulseItems={sanitizedPulseDirectCosts}
+                    comparison={directCostsComparison}
                     title="Direct costs matching"
                     subtitle="Bank debits tagged as Direct costs vs Pulse direct cost job items:"
                   />

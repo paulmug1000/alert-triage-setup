@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * PULSE GAS RUNTIME ENVIRONMENT (services/gasRuntime/gasEnvironment.js)
- * Version: 1.03 — Single-tab Supabase upserts to prevent statement timeouts on large Master tabs
+ * Version: 1.04 — Comparisons-only fast load, snapshot diffing, batch upserts, UI alert capture
  * ============================================================================
  * Provides a 100% faithful Google Apps Script execution environment for the
  * verbatim compiled Master GAS scripts (`compiledMasterGas.js`), backed by:
@@ -37,6 +37,7 @@ import {
   updateRefreshedTokens,
   getSharedXeroGrant,
   updateSharedXeroGrantTokens,
+  refreshWithConcurrencyLock,
 } from "../vaultService.js";
 import { refreshXeroTokens } from "../xeroService.js";
 import { refreshQBTokens } from "../quickbooksService.js";
@@ -133,6 +134,30 @@ const ACTIVE_GAS_MASTER_TABS = [
   "Data",
   "GasExecLogs",
   "GasScriptProps",
+];
+
+const COMPARISON_ONLY_MASTER_TABS = [
+  "KeyInfo",
+  "DataChgAlert",
+  "InvFromApp",
+  "InvAppList",
+  "InvDashList",
+  "InvComp",
+  "JnlsFromApp",
+  "JnlAppList",
+  "DirDashList",
+  "DirComp",
+  "DataFromCRM",
+  "CRMList",
+  "CRMComp",
+  "PLFromApp",
+  "Year0PLFromApp",
+  "PLAdds",
+  "PLComp",
+  "Outgoings",
+  "OutgNotes",
+  "ConfCalcs",
+  "PipeCalcs",
 ];
 
 function cloneGrid2D(grid) {
@@ -298,6 +323,42 @@ export function formatGasDate(dateObj, timeZone = "Europe/London", pattern = "yy
 }
 
 /**
+ * Retries transient Google Sheets API errors (429 rate limits, 5xx, network blips)
+ * with exponential backoff + jitter.
+ */
+async function withSheetsRetry_(fn, label = "Sheets API", maxRetries = 4) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const status = Number(err?.code || err?.status || err?.response?.status || 0);
+      const msg = String(err?.message || "").toLowerCase();
+      const isTransient =
+        status === 429 ||
+        status === 500 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504 ||
+        msg.includes("quota") ||
+        msg.includes("rate limit") ||
+        msg.includes("429") ||
+        msg.includes("etimedout") ||
+        msg.includes("econnreset") ||
+        msg.includes("socket hang up");
+      if (!isTransient || attempt === maxRetries) {
+        throw err;
+      }
+      const waitMs = Math.min(20000, 1000 * Math.pow(2, attempt) + Math.floor(Math.random() * 500));
+      console.warn(`[gasEnvironment] ${label} transient error (${status || err.message}), retrying in ${waitMs}ms...`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Resolves a fresh OAuth access token in-process for `/api/integrations/token` requests
  */
 async function resolveBrokerTokenInProcess(ctx, toolRaw) {
@@ -326,73 +387,81 @@ async function resolveBrokerTokenInProcess(ctx, toolRaw) {
   const isExpiringSoon = expiresIn < 300;
 
   if (isExpiringSoon) {
-    try {
-      if (normalizedTool === "xero") {
-        if (record.isSharedGrant) {
-          const latestShared = await getSharedXeroGrant();
-          const refreshToken = latestShared?.tokens?.refreshToken || record.tokens.refreshToken;
-          if (refreshToken) {
-            const refreshed = await refreshXeroTokens(refreshToken);
-            await updateSharedXeroGrantTokens(refreshed);
-            accessToken = refreshed.accessToken;
-            expiresIn = refreshed.expiresIn || 1800;
-          }
-        } else if (record.tokens.refreshToken) {
-          const refreshed = await refreshXeroTokens(record.tokens.refreshToken);
-          await updateRefreshedTokens({ clientKey: record.clientKey, tool: "xero", tokens: refreshed });
-          accessToken = refreshed.accessToken;
-          expiresIn = refreshed.expiresIn || 1800;
-        }
-      } else if (normalizedTool === "quickbooks" && record.tokens.refreshToken) {
-        const refreshed = await refreshQBTokens(record.tokens.refreshToken);
-        await updateRefreshedTokens({ clientKey: record.clientKey, tool: "quickbooks", tokens: refreshed });
-        accessToken = refreshed.accessToken;
-        expiresIn = refreshed.expiresIn || 3600;
-      } else if (normalizedTool === "pipedrive" && record.tokens.refreshToken) {
-        const refreshed = await refreshPipedriveTokens(record.tokens.refreshToken);
-        await updateRefreshedTokens({ clientKey: record.clientKey, tool: "pipedrive", tokens: refreshed });
-        accessToken = refreshed.accessToken;
-        expiresIn = refreshed.expiresIn || 3600;
-      } else if (normalizedTool === "monday" && record.tokens.refreshToken) {
-        const refreshed = await refreshMondayTokens(record.tokens.refreshToken);
-        await updateRefreshedTokens({ clientKey: record.clientKey, tool: "monday", tokens: refreshed });
-        accessToken = refreshed.accessToken;
-        expiresIn = refreshed.expiresIn || 3600;
-      } else if (normalizedTool === "capsule" && record.tokens.refreshToken) {
-        const refreshed = await refreshCapsuleTokens(record.tokens.refreshToken);
-        await updateRefreshedTokens({ clientKey: record.clientKey, tool: "capsule", tokens: refreshed });
-        accessToken = refreshed.accessToken;
-        expiresIn = refreshed.expiresIn || 3600;
-      } else if (normalizedTool === "close" && record.tokens.refreshToken) {
-        const refreshed = await refreshCloseTokens(record.tokens.refreshToken);
-        await updateRefreshedTokens({ clientKey: record.clientKey, tool: "close", tokens: refreshed });
-        accessToken = refreshed.accessToken;
-        expiresIn = refreshed.expiresIn || 3600;
-      } else if (normalizedTool === "hubspot" && record.tokens.refreshToken) {
-        const refreshed = await refreshHubSpotTokens(record.tokens.refreshToken);
-        await updateRefreshedTokens({ clientKey: record.clientKey, tool: "hubspot", tokens: refreshed });
-        accessToken = refreshed.accessToken;
-        expiresIn = refreshed.expiresIn || 1800;
-      } else if (normalizedTool === "googlesheet" && record.tokens.refreshToken) {
-        const refreshed = await refreshGoogleSheetTokens(record.tokens.refreshToken);
-        await updateRefreshedTokens({ clientKey: record.clientKey, tool: "googlesheet", tokens: refreshed });
-        accessToken = refreshed.accessToken;
-        expiresIn = refreshed.expiresIn || 3600;
-      } else if (normalizedTool === "excel" && record.tokens.refreshToken) {
-        const refreshed = await refreshExcelTokens(record.tokens.refreshToken);
-        await updateRefreshedTokens({ clientKey: record.clientKey, tool: "excel", tokens: refreshed });
-        accessToken = refreshed.accessToken;
-        expiresIn = refreshed.expiresIn || 3600;
-      }
-    } catch (refreshErr) {
-      return {
-        status: 401,
-        body: {
-          success: false,
-          error: `Failed to refresh ${normalizedTool} connection (${refreshErr.message}).`,
-          reconnectRequired: true,
-        },
+    const OAUTH_REFRESHERS = {
+      quickbooks: refreshQBTokens,
+      pipedrive: refreshPipedriveTokens,
+      monday: refreshMondayTokens,
+      capsule: refreshCapsuleTokens,
+      close: refreshCloseTokens,
+      hubspot: refreshHubSpotTokens,
+      googlesheet: refreshGoogleSheetTokens,
+      excel: refreshExcelTokens,
+    };
+
+    if (normalizedTool === "xero" || OAUTH_REFRESHERS[normalizedTool]) {
+      const lockKey = (normalizedTool === "xero" && record.isSharedGrant)
+        ? "xero:shared"
+        : `${normalizedTool}:${record.clientKey}`;
+
+      const getLatestTokenFn = async () => {
+        const latest = (normalizedTool === "xero" && record.isSharedGrant)
+          ? await getSharedXeroGrant()
+          : await getIntegrationTokens({
+            clientKey: record.clientKey,
+            masterSheetId: ctx.masterSheetId,
+            tool: normalizedTool,
+          });
+        if (!latest?.tokens?.accessToken) return null;
+        const latestExpiresIn = Math.max(0, Math.round(((latest.expiresAt || 0) - Date.now()) / 1000));
+        return {
+          accessToken: latest.tokens.accessToken,
+          expiresIn: latestExpiresIn,
+          refreshToken: latest.tokens.refreshToken,
+        };
       };
+
+      try {
+        const refreshResult = await refreshWithConcurrencyLock(
+          lockKey,
+          async () => {
+            const latest = await getLatestTokenFn();
+            if (latest && latest.expiresIn >= 300) {
+              return { accessToken: latest.accessToken, expiresIn: latest.expiresIn };
+            }
+            const refreshTokenToUse = latest?.refreshToken || record.tokens.refreshToken;
+            if (!refreshTokenToUse) {
+              return { accessToken, expiresIn };
+            }
+            if (normalizedTool === "xero" && record.isSharedGrant) {
+              const refreshed = await refreshXeroTokens(refreshTokenToUse);
+              await updateSharedXeroGrantTokens(refreshed);
+              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn || 1800 };
+            }
+            const refreshFn = normalizedTool === "xero" ? refreshXeroTokens : OAUTH_REFRESHERS[normalizedTool];
+            const refreshed = await refreshFn(refreshTokenToUse);
+            await updateRefreshedTokens({ clientKey: record.clientKey, tool: normalizedTool, tokens: refreshed });
+            const defaultExp = normalizedTool === "xero" || normalizedTool === "hubspot" ? 1800 : 3600;
+            return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn || defaultExp };
+          },
+          async () => {
+            const latest = await getLatestTokenFn();
+            return latest ? { accessToken: latest.accessToken, expiresIn: latest.expiresIn } : null;
+          }
+        );
+        if (refreshResult?.accessToken) {
+          accessToken = refreshResult.accessToken;
+          expiresIn = refreshResult.expiresIn ?? expiresIn;
+        }
+      } catch (refreshErr) {
+        return {
+          status: 401,
+          body: {
+            success: false,
+            error: `Failed to refresh ${normalizedTool} connection (${refreshErr.message}).`,
+            reconnectRequired: true,
+          },
+        };
+      }
     }
   }
 
@@ -1480,8 +1549,13 @@ class VirtualSpreadsheet {
   }
 
   _onSheetMutated(tabName, mutation) {
-    if (this.sheetRole === "master" && FORMULA_INPUT_MASTER_TABS.has(tabName)) {
+    if (
+      (this.sheetRole === "master" &&
+        (FORMULA_INPUT_MASTER_TABS.has(tabName) || tabName === "OutgNotes" || tabName === "Year0PLFromApp")) ||
+      (this.sheetRole === "recon" && tabName === "PLAdds")
+    ) {
       this.env.masterFormulasDirty = true;
+      this.env.gridsMutatedAfterRecompute = true;
     }
 
     if (this.isRemoteGoogleSheet && mutation) {
@@ -1527,6 +1601,7 @@ export async function createGasEnvironment({
   onProgress = null,
   autoReconcileFn = null,
   executionMeta = null,
+  loadTabsMode = "all",
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -1534,6 +1609,7 @@ export async function createGasEnvironment({
   const execStartedAtMs = Date.now();
   const execStartedAtIso = new Date(execStartedAtMs).toISOString();
   const executionLogs = [];
+  const uiAlerts = [];
 
   function formatLogArg_(arg) {
     if (arg === null) return "null";
@@ -1580,6 +1656,8 @@ export async function createGasEnvironment({
     ctx,
     sheets,
     masterFormulasDirty: false,
+    gridsMutatedAfterRecompute: false,
+    uiAlerts,
     masterSS: null,
     reconSS: null,
     remoteSpreadsheets: new Map(),
@@ -1609,27 +1687,35 @@ export async function createGasEnvironment({
 
   // 1. Load active Master & Recon tabs for this client from Supabase `master_sheet_grids`
   // Omit `formulas_grid` on bulk fetch (since Master formulas are evaluated in JS by `masterFormulaEngine.js`).
-  // Note: Master tabs are filtered to ACTIVE_GAS_MASTER_TABS; Recon tabs (monthly MMYY tabs, KeyInfo, PLAdds, etc.)
-  // must all be loaded so that CR2 reconciliation gates and unreconciled items are accessible to the GAS runtime.
+  // Note: Master tabs are filtered to ACTIVE_GAS_MASTER_TABS (or COMPARISON_ONLY_MASTER_TABS when `loadTabsMode === "comparisons_only"`);
+  // Recon tabs (monthly MMYY tabs, KeyInfo, PLAdds, etc.) are all loaded for full GAS runtime runs,
+  // or narrowed to `PLAdds` when `loadTabsMode === "comparisons_only"`.
+  const isComparisonsOnly = loadTabsMode === "comparisons_only";
+  const masterTabsFilter = isComparisonsOnly ? COMPARISON_ONLY_MASTER_TABS : ACTIVE_GAS_MASTER_TABS;
+  const reconQuery = supabase
+    .from("master_sheet_grids")
+    .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
+    .eq("client_name", ctx.clientName)
+    .eq("sheet_role", "recon");
+  const filteredReconQuery = isComparisonsOnly ? reconQuery.eq("tab_name", "PLAdds") : reconQuery;
+
   const [masterGridResp, reconGridResp, y0FormulaResp] = await Promise.all([
     supabase
       .from("master_sheet_grids")
       .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
       .eq("client_name", ctx.clientName)
       .eq("sheet_role", "master")
-      .in("tab_name", ACTIVE_GAS_MASTER_TABS),
-    supabase
-      .from("master_sheet_grids")
-      .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
-      .eq("client_name", ctx.clientName)
-      .eq("sheet_role", "recon"),
-    supabase
-      .from("master_sheet_grids")
-      .select("formulas_grid")
-      .eq("client_name", ctx.clientName)
-      .eq("sheet_role", "master")
-      .eq("tab_name", "Year0Data")
-      .maybeSingle(),
+      .in("tab_name", masterTabsFilter),
+    filteredReconQuery,
+    isComparisonsOnly
+      ? Promise.resolve({ data: null })
+      : supabase
+        .from("master_sheet_grids")
+        .select("formulas_grid")
+        .eq("client_name", ctx.clientName)
+        .eq("sheet_role", "master")
+        .eq("tab_name", "Year0Data")
+        .maybeSingle(),
   ]);
 
   if (masterGridResp?.error) {
@@ -1678,6 +1764,8 @@ export async function createGasEnvironment({
       Math.max(1000, row.row_count || 0),
       Math.max(50, row.col_count || 0)
     );
+    vs._loadedValuesJson = JSON.stringify(compactedVals);
+    vs._loadedNotesJson = JSON.stringify(row.notes_grid || {});
     targetSS.sheetsByName.set(row.tab_name, vs);
   }
 
@@ -1731,20 +1819,26 @@ export async function createGasEnvironment({
     if (!sheets || !ctx.clientSheetId) return;
     try {
       const [resp, outgNotesResp] = await Promise.all([
-        sheets.spreadsheets.values.batchGet({
-          spreadsheetId: ctx.clientSheetId,
-          ranges: ["ConfCalcs!A1:JG5001", "PipeCalcs!A1:JG1000", "Outgoings!A1:AX295"],
-          valueRenderOption: "UNFORMATTED_VALUE",
-          _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
-        }),
-        sheets.spreadsheets.values
-          .get({
-            spreadsheetId: ctx.clientSheetId,
-            range: "OutgNotes!A1:AV112",
-            valueRenderOption: "UNFORMATTED_VALUE",
-            _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
-          })
-          .catch(() => null),
+        withSheetsRetry_(
+          () =>
+            sheets.spreadsheets.values.batchGet({
+              spreadsheetId: ctx.clientSheetId,
+              ranges: ["ConfCalcs!A1:JG5001", "PipeCalcs!A1:JG1000", "Outgoings!A1:AX295"],
+              valueRenderOption: "UNFORMATTED_VALUE",
+              _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
+            }),
+          `syncClientLinkedMasterTabs batchGet(${ctx.clientName})`
+        ),
+        withSheetsRetry_(
+          () =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: ctx.clientSheetId,
+              range: "OutgNotes!A1:AV112",
+              valueRenderOption: "UNFORMATTED_VALUE",
+              _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
+            }),
+          `syncClientLinkedMasterTabs OutgNotes(${ctx.clientName})`
+        ).catch(() => null),
       ]);
       const vRanges = resp?.data?.valueRanges || [];
       if (vRanges[0]?.values) {
@@ -1815,6 +1909,7 @@ export async function createGasEnvironment({
       }
     }
     envState.masterFormulasDirty = false;
+    envState.gridsMutatedAfterRecompute = false;
   };
 
   // Run initial formula evaluation so all comparison tabs are fresh
@@ -1835,11 +1930,15 @@ export async function createGasEnvironment({
 
     const isClientSheet = cleanId === ctx.clientSheetId;
     const bypassVirtual = isClientSheet ? ctx.clientMode !== "supabase" : true;
-    const metaResp = await sheets.spreadsheets.get({
-      spreadsheetId: cleanId,
-      fields: "properties.title,sheets(properties(sheetId,title,index,gridProperties),rowGroups)",
-      _bypassSupabaseVirtualSheet: bypassVirtual,
-    });
+    const metaResp = await withSheetsRetry_(
+      () =>
+        sheets.spreadsheets.get({
+          spreadsheetId: cleanId,
+          fields: "properties.title,sheets(properties(sheetId,title,index,gridProperties),rowGroups)",
+          _bypassSupabaseVirtualSheet: bypassVirtual,
+        }),
+      `spreadsheets.get(${cleanId})`
+    );
 
     const remoteSS = new VirtualSpreadsheet({
       id: cleanId,
@@ -1861,65 +1960,87 @@ export async function createGasEnvironment({
     const formulasByTab = new Map();
     const notesByTab = new Map();
 
+    const chunks = [];
     for (let i = 0; i < tabsToLoad.length; i += 6) {
-      const chunk = tabsToLoad.slice(i, i + 6);
-      const ranges = chunk.map((t) => `'${t}'`);
-      const [valBatch, formBatch] = await Promise.all([
-        sheets.spreadsheets.values.batchGet({
-          spreadsheetId: cleanId,
-          ranges,
-          valueRenderOption: "UNFORMATTED_VALUE",
-          _bypassSupabaseVirtualSheet: bypassVirtual,
-        }),
-        sheets.spreadsheets.values
-          .batchGet({
-            spreadsheetId: cleanId,
-            ranges,
-            valueRenderOption: "FORMULA",
-            _bypassSupabaseVirtualSheet: bypassVirtual,
-          })
-          .catch(() => ({ data: { valueRanges: [] } })),
-      ]);
+      chunks.push(tabsToLoad.slice(i, i + 6));
+    }
 
+    const noteRanges = [];
+    if (isClientSheet) {
+      if (existingTabNames.has("Outgoings")) noteRanges.push("Outgoings!A1:AZ130");
+      if (existingTabNames.has("Confirmed")) noteRanges.push("Confirmed!A1:CR800");
+    }
+
+    const [chunkResults, notesResp] = await Promise.all([
+      Promise.all(
+        chunks.map(async (chunk) => {
+          const ranges = chunk.map((t) => `'${t}'`);
+          const [valBatch, formBatch] = await Promise.all([
+            withSheetsRetry_(
+              () =>
+                sheets.spreadsheets.values.batchGet({
+                  spreadsheetId: cleanId,
+                  ranges,
+                  valueRenderOption: "UNFORMATTED_VALUE",
+                  _bypassSupabaseVirtualSheet: bypassVirtual,
+                }),
+              `values.batchGet(${cleanId})`
+            ),
+            withSheetsRetry_(
+              () =>
+                sheets.spreadsheets.values.batchGet({
+                  spreadsheetId: cleanId,
+                  ranges,
+                  valueRenderOption: "FORMULA",
+                  _bypassSupabaseVirtualSheet: bypassVirtual,
+                }),
+              `values.batchGet formulas(${cleanId})`
+            ).catch(() => ({ data: { valueRanges: [] } })),
+          ]);
+          return { chunk, valBatch, formBatch };
+        })
+      ),
+      noteRanges.length > 0
+        ? withSheetsRetry_(
+          () =>
+            sheets.spreadsheets.get({
+              spreadsheetId: cleanId,
+              ranges: noteRanges,
+              fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
+              _bypassSupabaseVirtualSheet: bypassVirtual,
+            }),
+          `spreadsheets.get notes(${cleanId})`
+        ).catch((nErr) => {
+          console.warn(`[gasEnvironment] Note preload warning for ${cleanId}:`, nErr.message);
+          return null;
+        })
+        : Promise.resolve(null),
+    ]);
+
+    for (const { chunk, valBatch, formBatch } of chunkResults) {
       chunk.forEach((tabName, idx) => {
         valuesByTab.set(tabName, valBatch?.data?.valueRanges?.[idx]?.values || []);
         formulasByTab.set(tabName, formBatch?.data?.valueRanges?.[idx]?.values || []);
       });
     }
 
-    // Also load cell notes for Outgoings and Confirmed on the Client Sheet
-    if (isClientSheet) {
-      const noteRanges = [];
-      if (existingTabNames.has("Outgoings")) noteRanges.push("Outgoings!A1:AZ130");
-      if (existingTabNames.has("Confirmed")) noteRanges.push("Confirmed!A1:CR800");
-      if (noteRanges.length > 0) {
-        try {
-          const notesResp = await sheets.spreadsheets.get({
-            spreadsheetId: cleanId,
-            ranges: noteRanges,
-            fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
-            _bypassSupabaseVirtualSheet: bypassVirtual,
+    if (notesResp?.data?.sheets) {
+      for (const sh of notesResp.data.sheets) {
+        const tName = sh.properties?.title;
+        if (!tName) continue;
+        const nMap = {};
+        for (const dBlock of sh.data || []) {
+          const sR = dBlock.startRow || 0;
+          const sC = dBlock.startColumn || 0;
+          (dBlock.rowData || []).forEach((rObj, rOff) => {
+            (rObj.values || []).forEach((cObj, cOff) => {
+              if (cObj?.note) {
+                nMap[`${sR + rOff}:${sC + cOff}`] = cObj.note;
+              }
+            });
           });
-          for (const sh of notesResp?.data?.sheets || []) {
-            const tName = sh.properties?.title;
-            if (!tName) continue;
-            const nMap = {};
-            for (const dBlock of sh.data || []) {
-              const sR = dBlock.startRow || 0;
-              const sC = dBlock.startColumn || 0;
-              (dBlock.rowData || []).forEach((rObj, rOff) => {
-                (rObj.values || []).forEach((cObj, cOff) => {
-                  if (cObj?.note) {
-                    nMap[`${sR + rOff}:${sC + cOff}`] = cObj.note;
-                  }
-                });
-              });
-            }
-            notesByTab.set(tName, nMap);
-          }
-        } catch (nErr) {
-          console.warn(`[gasEnvironment] Note preload warning for ${cleanId}:`, nErr.message);
         }
+        notesByTab.set(tName, nMap);
       }
     }
 
@@ -1955,29 +2076,41 @@ export async function createGasEnvironment({
         const phase = phases[pIdx];
         const skipRecompute = isClientSheet && !bypassVirtual && pIdx < phases.length - 1;
         if (phase.type === "clear" && phase.ranges.length > 0) {
-          await sheets.spreadsheets.values.batchClear({
-            spreadsheetId: remoteId,
-            requestBody: { ranges: phase.ranges },
-            _bypassSupabaseVirtualSheet: bypassVirtual,
-            _skipFormulaRecompute: skipRecompute,
-          });
+          await withSheetsRetry_(
+            () =>
+              sheets.spreadsheets.values.batchClear({
+                spreadsheetId: remoteId,
+                requestBody: { ranges: phase.ranges },
+                _bypassSupabaseVirtualSheet: bypassVirtual,
+                _skipFormulaRecompute: skipRecompute,
+              }),
+            `values.batchClear(${remoteId})`
+          );
         } else if (phase.type === "values" && phase.data.length > 0) {
-          await sheets.spreadsheets.values.batchUpdate({
-            spreadsheetId: remoteId,
-            requestBody: {
-              valueInputOption: "USER_ENTERED",
-              data: phase.data,
-            },
-            _bypassSupabaseVirtualSheet: bypassVirtual,
-            _skipFormulaRecompute: skipRecompute,
-          });
+          await withSheetsRetry_(
+            () =>
+              sheets.spreadsheets.values.batchUpdate({
+                spreadsheetId: remoteId,
+                requestBody: {
+                  valueInputOption: "USER_ENTERED",
+                  data: phase.data,
+                },
+                _bypassSupabaseVirtualSheet: bypassVirtual,
+                _skipFormulaRecompute: skipRecompute,
+              }),
+            `values.batchUpdate(${remoteId})`
+          );
         } else if (phase.type === "structural" && phase.requests.length > 0) {
-          await sheets.spreadsheets.batchUpdate({
-            spreadsheetId: remoteId,
-            requestBody: { requests: phase.requests },
-            _bypassSupabaseVirtualSheet: bypassVirtual,
-            _skipFormulaRecompute: skipRecompute,
-          });
+          await withSheetsRetry_(
+            () =>
+              sheets.spreadsheets.batchUpdate({
+                spreadsheetId: remoteId,
+                requestBody: { requests: phase.requests },
+                _bypassSupabaseVirtualSheet: bypassVirtual,
+                _skipFormulaRecompute: skipRecompute,
+              }),
+            `spreadsheets.batchUpdate(${remoteId})`
+          );
         }
       }
     }
@@ -1986,62 +2119,67 @@ export async function createGasEnvironment({
       await syncClientLinkedMasterTabsFromLiveSheet();
     }
 
-    if (envState.masterFormulasDirty) {
+    if (envState.masterFormulasDirty || envState.gridsMutatedAfterRecompute) {
       envState.recomputeMasterFormulasSync();
     }
 
     if (persistSupabase) {
       const upserts = [];
-      for (const sObj of masterSS.sheetsByName.values()) {
-        if (!sObj.dirty) continue;
+      const nowIso = new Date().toISOString();
+      const collectUpsert = (sObj, sheetRole) => {
+        if (!sObj.dirty) return;
         sObj.valuesGrid = compactGrid2D(sObj.valuesGrid);
+        const notesObj = sObj.notesGrid || {};
+        const nextValsJson = JSON.stringify(sObj.valuesGrid);
+        const nextNotesJson = JSON.stringify(notesObj);
+        if (sObj._loadedValuesJson === nextValsJson && sObj._loadedNotesJson === nextNotesJson) {
+          sObj.dirty = false;
+          return;
+        }
+        sObj._loadedValuesJson = nextValsJson;
+        sObj._loadedNotesJson = nextNotesJson;
         const maxC = getGridLastCol(sObj.valuesGrid);
         upserts.push({
           client_id: ctx.clientId,
           client_name: ctx.clientName,
-          sheet_role: "master",
+          sheet_role: sheetRole,
           tab_name: sObj.name,
           values_grid: sObj.valuesGrid,
-          notes_grid: sObj.notesGrid,
+          notes_grid: notesObj,
           row_count: sObj.valuesGrid.length,
           col_count: maxC,
-          updated_at: new Date().toISOString(),
+          updated_at: nowIso,
         });
         sObj.dirty = false;
+      };
+
+      for (const sObj of masterSS.sheetsByName.values()) {
+        collectUpsert(sObj, "master");
       }
       for (const sObj of reconSS.sheetsByName.values()) {
-        if (!sObj.dirty) continue;
-        sObj.valuesGrid = compactGrid2D(sObj.valuesGrid);
-        const maxC = getGridLastCol(sObj.valuesGrid);
-        upserts.push({
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          sheet_role: "recon",
-          tab_name: sObj.name,
-          values_grid: sObj.valuesGrid,
-          notes_grid: sObj.notesGrid,
-          row_count: sObj.valuesGrid.length,
-          col_count: maxC,
-          updated_at: new Date().toISOString(),
-        });
-        sObj.dirty = false;
+        collectUpsert(sObj, "recon");
       }
 
-      for (let i = 0; i < upserts.length; i += 3) {
-        const batch = upserts.slice(i, i + 3);
-        await Promise.all(
-          batch.map(async (item) => {
-            const { error: uErr } = await supabase
-              .from("master_sheet_grids")
-              .upsert([item], { onConflict: "client_name,sheet_role,tab_name" });
-            if (uErr) {
-              console.warn(
-                `[gasEnvironment] Supabase upsert warning for ${ctx.clientName} (${item.tab_name}):`,
-                uErr.message
-              );
-            }
-          })
-        );
+      for (let i = 0; i < upserts.length; i += 6) {
+        const batch = upserts.slice(i, i + 6);
+        const { error: batchErr } = await supabase
+          .from("master_sheet_grids")
+          .upsert(batch, { onConflict: "client_name,sheet_role,tab_name" });
+        if (batchErr) {
+          await Promise.all(
+            batch.map(async (item) => {
+              const { error: uErr } = await supabase
+                .from("master_sheet_grids")
+                .upsert([item], { onConflict: "client_name,sheet_role,tab_name" });
+              if (uErr) {
+                console.warn(
+                  `[gasEnvironment] Supabase upsert warning for ${ctx.clientName} (${item.tab_name}):`,
+                  uErr.message
+                );
+              }
+            })
+          );
+        }
       }
 
       if (upserts.length > 0) {
@@ -2091,7 +2229,11 @@ export async function createGasEnvironment({
       ButtonSet: { OK: "OK", OK_CANCEL: "OK_CANCEL", YES_NO: "YES_NO", YES_NO_CANCEL: "YES_NO_CANCEL" },
       Button: { OK: "OK", CANCEL: "CANCEL", YES: "YES", NO: "NO", CLOSE: "CLOSE" },
       alert: (title, msg) => {
-        console.log(`[GAS UI Alert] ${title}:`, msg || "");
+        const text = msg !== undefined && msg !== null ? `${title}: ${msg}` : String(title ?? "");
+        if (text.trim()) {
+          uiAlerts.push(text.trim());
+          gasConsole.log(`[UI Alert] ${text.trim()}`);
+        }
         return "OK";
       },
       prompt: () => ({ getSelectedButton: () => "OK", getResponseText: () => "" }),
@@ -2500,6 +2642,7 @@ export async function createGasEnvironment({
     ContentService,
     console: gasConsole,
     executionLogs,
+    uiAlerts,
     masterSS,
     reconSS,
     recomputeMasterFormulasSync: envState.recomputeMasterFormulasSync,
@@ -2590,7 +2733,9 @@ export async function createGasEnvironment({
         pSheet.dirty = true;
       }
 
-      envState.masterFormulasDirty = true;
+      if (envState.gridsMutatedAfterRecompute) {
+        envState.masterFormulasDirty = true;
+      }
       await flushAll({ persistSupabase: true });
     },
   };

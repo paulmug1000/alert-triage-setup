@@ -280,7 +280,7 @@ if (typeof document !== "undefined") {
 export default function NavShell({
   activeNav, activeViewTab = "fyPerformance", onSelectViewTab,
   onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
-  onOutgoings, onPassThrough, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onViews, onTools, onIntegrations, onSetup, onSettings,
+  onOutgoings, onPassThrough, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onViews, onTools, onIntegrations, onSetup, onSettings, onDb,
   homeAlertCount, taskCount, integrationsCount, user, onLogout, clients = [],
   managedClient, activeEditClient, onSelectManagedClient, onClearManagedClient,
   isSingleClientUser: propIsSingleClientUser, singleClient: propSingleClient,
@@ -532,6 +532,7 @@ export default function NavShell({
     { key: "setup", label: "Setup", handler: onSetup },
     { key: "activity", label: "Activity", handler: onActivity || onAppLog },
     { key: "settings", label: "Settings", handler: onSettings },
+    ...(isAdmin ? [{ key: "db", label: "DB", handler: onDb }] : []),
   ];
 
   const editGroupItem = allNavItems.find((n) => n.key === "edit");

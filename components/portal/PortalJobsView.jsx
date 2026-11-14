@@ -49,7 +49,13 @@ export default function PortalJobsView({
 }) {
   const [filterType, setFilterType] = useState("all"); // 'all' | 'confirmed' | 'pipeline' | 'project' | 'retainer'
   const [searchTerm, setSearchTerm] = useState("");
-  const [sortBy, setSortBy] = useState("startDateDesc"); // 'startDateDesc' | 'revDesc' | 'revAsc' | 'clientAsc'
+  const [sortBy, setSortBy] = useState("startDateDesc");
+  const togglePortalSort = (colBase, defaultDir = "asc") => {
+    const ascKey = `${colBase}Asc`;
+    const descKey = `${colBase}Desc`;
+    setSortBy((prev) => (prev === ascKey ? descKey : prev === descKey ? ascKey : (defaultDir === "desc" ? descKey : ascKey)));
+    setCurrentPage(1);
+  };
   const [currentPage, setCurrentPage] = useState(1);
   const [editingJob, setEditingJob] = useState(null); // null or job object
   const [isSaving, setIsSaving] = useState(false);
@@ -338,72 +344,92 @@ export default function PortalJobsView({
     }
 
     // Sort
+    const getSortDateTs = (val, isEndDate = false) => {
+      if (isEndDate && isNoEndDateSentinel(val)) return Number.MAX_SAFE_INTEGER;
+      const d = parseDate(val);
+      return d ? d.getTime() : null;
+    };
+    const compareDatesWithBlankLast = (tsA, tsB, asc) => {
+      if (tsA === null && tsB === null) return 0;
+      if (tsA === null) return 1;
+      if (tsB === null) return -1;
+      return asc ? tsA - tsB : tsB - tsA;
+    };
+    const getLikelihoodVal = (j) => (
+      typeof j.likelihoodNum === "number" && !isNaN(j.likelihoodNum)
+        ? j.likelihoodNum
+        : (parseFloat(String(j.likelihood || "").replace("%", "")) || 0)
+    );
+    const getRevVal = (j) => (
+      typeof j.revNum === "number" && !isNaN(j.revNum)
+        ? j.revNum
+        : (parseMoney(j.revenue) || 0)
+    );
+    const getCostsVal = (j) => (
+      typeof j.costsNum === "number" && !isNaN(j.costsNum)
+        ? j.costsNum
+        : (parseMoney(j.directCosts) || 0)
+    );
+
     list.sort((a, b) => {
-      if (sortBy === "startDateDesc") {
-        const timeA = parseDate(a.startDate)?.getTime() || 0;
-        const timeB = parseDate(b.startDate)?.getTime() || 0;
-        if (timeB !== timeA) return timeB - timeA;
+      if (sortBy === "statusAsc" || sortBy === "statusDesc") {
+        const sA = String(a.type || "").trim();
+        const sB = String(b.type || "").trim();
+        const cmp = sortBy === "statusAsc" ? sA.localeCompare(sB) : sB.localeCompare(sA);
+        if (cmp !== 0) return cmp;
         return (a.client || "").localeCompare(b.client || "");
       }
-      if (sortBy === "startDateAsc") {
-        const timeA = parseDate(a.startDate)?.getTime() || 0;
-        const timeB = parseDate(b.startDate)?.getTime() || 0;
-        if (timeA !== timeB) return timeA - timeB;
+      if (sortBy === "startDateDesc" || sortBy === "startDateAsc") {
+        const cmp = compareDatesWithBlankLast(getSortDateTs(a.startDate), getSortDateTs(b.startDate), sortBy === "startDateAsc");
+        if (cmp !== 0) return cmp;
         return (a.client || "").localeCompare(b.client || "");
       }
-      if (sortBy === "clientAsc") {
-        const cmp = (a.client || "").localeCompare(b.client || "");
+      if (sortBy === "endDateDesc" || sortBy === "endDateAsc") {
+        const cmp = compareDatesWithBlankLast(getSortDateTs(a.endDate, true), getSortDateTs(b.endDate, true), sortBy === "endDateAsc");
+        if (cmp !== 0) return cmp;
+        return (a.client || "").localeCompare(b.client || "");
+      }
+      if (sortBy === "clientAsc" || sortBy === "clientDesc") {
+        const cmp = sortBy === "clientAsc"
+          ? (a.client || "").localeCompare(b.client || "")
+          : (b.client || "").localeCompare(a.client || "");
         if (cmp !== 0) return cmp;
         return (a.jobName || "").localeCompare(b.jobName || "");
       }
-      if (sortBy === "likelihoodDesc") {
-        const likA = typeof a.likelihoodNum === "number" && !isNaN(a.likelihoodNum)
-          ? a.likelihoodNum
-          : (parseFloat(String(a.likelihood || "").replace("%", "")) || 0);
-        const likB = typeof b.likelihoodNum === "number" && !isNaN(b.likelihoodNum)
-          ? b.likelihoodNum
-          : (parseFloat(String(b.likelihood || "").replace("%", "")) || 0);
-        if (likB !== likA) return likB - likA;
-        return (b.revNum || 0) - (a.revNum || 0);
+      if (sortBy === "jobNameAsc" || sortBy === "jobNameDesc") {
+        const cmp = sortBy === "jobNameAsc"
+          ? (a.jobName || "").localeCompare(b.jobName || "")
+          : (b.jobName || "").localeCompare(a.jobName || "");
+        if (cmp !== 0) return cmp;
+        return (a.client || "").localeCompare(b.client || "");
       }
-      if (sortBy === "likelihoodAsc") {
-        const likA = typeof a.likelihoodNum === "number" && !isNaN(a.likelihoodNum)
-          ? a.likelihoodNum
-          : (parseFloat(String(a.likelihood || "").replace("%", "")) || 0);
-        const likB = typeof b.likelihoodNum === "number" && !isNaN(b.likelihoodNum)
-          ? b.likelihoodNum
-          : (parseFloat(String(b.likelihood || "").replace("%", "")) || 0);
-        if (likA !== likB) return likA - likB;
-        return (b.revNum || 0) - (a.revNum || 0);
+      if (sortBy === "typeAsc" || sortBy === "typeDesc") {
+        const tA = String(a.projectRetainer || "Project");
+        const tB = String(b.projectRetainer || "Project");
+        const cmp = sortBy === "typeAsc" ? tA.localeCompare(tB) : tB.localeCompare(tA);
+        if (cmp !== 0) return cmp;
+        return (a.client || "").localeCompare(b.client || "");
       }
-      if (sortBy === "revDesc") {
-        const revA = typeof a.revNum === "number" && !isNaN(a.revNum)
-          ? a.revNum
-          : parseMoney(a.revenue);
-        const revB = typeof b.revNum === "number" && !isNaN(b.revNum)
-          ? b.revNum
-          : parseMoney(b.revenue);
-        if (revB !== revA) return revB - revA;
-        const timeA = parseDate(a.startDate)?.getTime() || 0;
-        const timeB = parseDate(b.startDate)?.getTime() || 0;
-        return timeB - timeA;
+      if (sortBy === "likelihoodDesc" || sortBy === "likelihoodAsc") {
+        const likA = getLikelihoodVal(a);
+        const likB = getLikelihoodVal(b);
+        if (likB !== likA) return sortBy === "likelihoodDesc" ? likB - likA : likA - likB;
+        return getRevVal(b) - getRevVal(a);
       }
-      if (sortBy === "revAsc") {
-        const revA = typeof a.revNum === "number" && !isNaN(a.revNum)
-          ? a.revNum
-          : parseMoney(a.revenue);
-        const revB = typeof b.revNum === "number" && !isNaN(b.revNum)
-          ? b.revNum
-          : parseMoney(b.revenue);
-        if (revA !== revB) return revA - revB;
-        const timeA = parseDate(a.startDate)?.getTime() || 0;
-        const timeB = parseDate(b.startDate)?.getTime() || 0;
-        return timeB - timeA;
+      if (sortBy === "revDesc" || sortBy === "revAsc") {
+        const revA = getRevVal(a);
+        const revB = getRevVal(b);
+        if (revB !== revA) return sortBy === "revDesc" ? revB - revA : revA - revB;
+        return compareDatesWithBlankLast(getSortDateTs(a.startDate), getSortDateTs(b.startDate), false);
+      }
+      if (sortBy === "costsDesc" || sortBy === "costsAsc") {
+        const cA = getCostsVal(a);
+        const cB = getCostsVal(b);
+        if (cB !== cA) return sortBy === "costsDesc" ? cB - cA : cA - cB;
+        return compareDatesWithBlankLast(getSortDateTs(a.startDate), getSortDateTs(b.startDate), false);
       }
       // Default: Start date (descending)
-      const timeA = parseDate(a.startDate)?.getTime() || 0;
-      const timeB = parseDate(b.startDate)?.getTime() || 0;
-      return timeB - timeA;
+      return compareDatesWithBlankLast(getSortDateTs(a.startDate), getSortDateTs(b.startDate), false);
     });
 
     return list;
@@ -1382,31 +1408,6 @@ export default function PortalJobsView({
               width: "180px",
             }}
           />
-          <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Sort by:</span>
-          <select
-            value={sortBy}
-            onChange={(e) => {
-              setSortBy(e.target.value);
-              setCurrentPage(1);
-            }}
-            style={{
-              padding: "4px 8px",
-              borderRadius: "6px",
-              border: "1px solid #cbd5e1",
-              fontSize: "12px",
-              background: "#ffffff",
-              color: "#334155",
-              cursor: "pointer",
-            }}
-          >
-            <option value="startDateDesc">Start date (descending)</option>
-            <option value="startDateAsc">Start date (ascending)</option>
-            <option value="clientAsc">Client name</option>
-            <option value="likelihoodDesc">Likelihood % (descending)</option>
-            <option value="likelihoodAsc">Likelihood % (ascending)</option>
-            <option value="revDesc">Revenue (descending)</option>
-            <option value="revAsc">Revenue (ascending)</option>
-          </select>
         </div>
       </div>
 
@@ -1435,33 +1436,53 @@ export default function PortalJobsView({
           >
             <thead style={{ background: "#0047AB" }}>
               <tr style={{ background: "#0047AB", color: "#ffffff" }}>
-                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "9%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  Status
-                </th>
-                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "13%", fontSize: "13.5px", background: "#0047AB" }}>
-                  Client
-                </th>
-                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "15%", fontSize: "13.5px", background: "#0047AB" }}>
-                  Job name
-                </th>
-                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "7%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  Type
-                </th>
-                <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "13%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  Revenue
-                </th>
-                <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "11%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  Direct costs
-                </th>
-                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  Start date
-                </th>
-                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  End date
-                </th>
-                <th style={{ padding: "10px 10px", textAlign: "center", fontWeight: 700, width: "12%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  Likelihood
-                </th>
+                {[
+                  { base: "status", label: "Status", width: "12%", align: "left", defaultDir: "asc", pad: "10px 10px" },
+                  { base: "client", label: "Client", width: "13%", align: "left", defaultDir: "asc", pad: "10px 12px" },
+                  { base: "jobName", label: "Job name", width: "16%", align: "left", defaultDir: "asc", pad: "10px 12px" },
+                  { base: "type", label: "Type", width: "8%", align: "center", defaultDir: "asc", pad: "10px 10px" },
+                  { base: "rev", label: "Revenue", width: "12%", align: "right", defaultDir: "desc", pad: "10px 12px" },
+                  { base: "costs", label: "Direct costs", width: "11%", align: "right", defaultDir: "desc", pad: "10px 12px" },
+                  { base: "startDate", label: "Start date", width: "9.5%", align: "center", defaultDir: "desc", pad: "10px 10px" },
+                  { base: "endDate", label: "End date", width: "9.5%", align: "center", defaultDir: "desc", pad: "10px 10px" },
+                  { base: "likelihood", label: "Likelihood", width: "9%", align: "center", defaultDir: "desc", pad: "10px 10px" },
+                ].map((col) => {
+                  const isAsc = sortBy === `${col.base}Asc`;
+                  const isDesc = sortBy === `${col.base}Desc`;
+                  const isActive = isAsc || isDesc;
+                  const indicator = isAsc ? "▲" : isDesc ? "▼" : "⇅";
+                  return (
+                    <th
+                      key={col.base}
+                      onClick={() => togglePortalSort(col.base, col.defaultDir)}
+                      aria-sort={isAsc ? "ascending" : isDesc ? "descending" : "none"}
+                      title={`Sort by ${col.label.toLowerCase()}`}
+                      style={{
+                        padding: col.pad,
+                        textAlign: col.align,
+                        fontWeight: 700,
+                        width: col.width,
+                        fontSize: "13.5px",
+                        background: "#0047AB",
+                        whiteSpace: "nowrap",
+                        cursor: "pointer",
+                        userSelect: "none",
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: col.align === "right" ? "flex-end" : col.align === "center" ? "center" : "flex-start",
+                          gap: "4px",
+                        }}
+                      >
+                        <span>{col.label}</span>
+                        <span style={{ fontSize: "10px", opacity: isActive ? 1 : 0.45 }}>{indicator}</span>
+                      </span>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
 
@@ -1494,21 +1515,23 @@ export default function PortalJobsView({
                       }}
                     >
                       {/* Status */}
-                      <td style={{ padding: "10px 12px" }}>
-                        <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                      <td style={{ padding: "10px 10px", overflow: "hidden", verticalAlign: "middle" }}>
+                        <div className="portal-job-status-cell" style={{ display: "inline-flex", alignItems: "center", gap: "5px", maxWidth: "100%", whiteSpace: "nowrap" }}>
                           <span
+                            className="portal-job-status-pill"
                             style={{
-                              padding: "2px 8px",
+                              padding: "2px 7px",
                               borderRadius: "10px",
                               fontSize: "11.5px",
                               fontWeight: 700,
                               background: isConfirmed ? "#dcfce7" : "#e0f2fe",
                               color: isConfirmed ? "#166534" : "#0369a1",
+                              flexShrink: 0,
                             }}
                           >
                             {job.type}
                           </span>
-                          {isJobFromCrm && <CrmSyncBadge crmDisplayName={crmDisplayName} />}
+                          {isJobFromCrm && <CrmSyncBadge crmDisplayName={crmDisplayName} size={18} iconSize={10} />}
                         </div>
                       </td>
 
@@ -4111,6 +4134,13 @@ export default function PortalJobsView({
         @media (max-width: 640px) {
           .portal-action-bar {
             gap: 0.75rem !important;
+          }
+          .portal-job-status-cell {
+            gap: 4px !important;
+          }
+          .portal-job-status-pill {
+            font-size: 11px !important;
+            padding: 2px 6px !important;
           }
           .portal-filter-pills {
             display: flex !important;

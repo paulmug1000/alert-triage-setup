@@ -28,6 +28,32 @@ export const XERO_SCOPES = [
 ].join(" ");
 
 /**
+ * Fetches a Xero REST API URL with automatic Retry-After and exponential backoff
+ * on HTTP 429 rate limits and transient 5xx responses.
+ */
+async function fetchXeroWithRetry_(url, init = {}, label = "Xero API", maxRetries = 4) {
+  let lastRes = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    lastRes = await fetch(url, init);
+    const status = lastRes.status;
+    if (status !== 429 && status !== 502 && status !== 503 && status !== 504) {
+      return lastRes;
+    }
+    if (attempt === maxRetries) {
+      return lastRes;
+    }
+    const retryAfterRaw = lastRes.headers?.get?.("retry-after");
+    const retryAfterSec = parseFloat(String(retryAfterRaw || "").trim());
+    const waitMs = (Number.isFinite(retryAfterSec) && retryAfterSec > 0)
+      ? Math.min(60000, Math.max(1000, Math.round(retryAfterSec * 1000) + 500))
+      : Math.min(60000, 1500 * Math.pow(2, attempt) + Math.floor(Math.random() * 500));
+    console.warn(`[${label}] HTTP ${status} rate-limited/transient (attempt ${attempt + 1}/${maxRetries}). Waiting ${waitMs}ms before retry...`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+  return lastRes;
+}
+
+/**
  * Returns configured Xero credentials from environment.
  */
 export function getXeroCredentials() {
@@ -232,14 +258,14 @@ export async function fetchXeroBankAccounts(accessToken, tenantId) {
   }
 
   const url = "https://api.xero.com/api.xro/2.0/Accounts?where=Type%3D%3D%22BANK%22";
-  const res = await fetch(url, {
+  const res = await fetchXeroWithRetry_(url, {
     method: "GET",
     headers: {
       "Authorization": `Bearer ${accessToken}`,
       "Xero-tenant-id": tenantId,
       "Accept": "application/json"
     }
-  });
+  }, "Xero Bank Accounts");
 
   if (!res.ok) {
     const errorText = await res.text();
@@ -334,7 +360,7 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
   // 1. Fetch direct Spend/Receive Bank Transactions
   try {
     const btUrl = `https://api.xero.com/api.xro/2.0/BankTransactions?where=BankAccount.AccountID%3D%3Dguid(%22${accountId}%22)%20AND%20${encodeURIComponent(dateClause)}`;
-    const btRes = await fetch(btUrl, { method: "GET", headers });
+    const btRes = await fetchXeroWithRetry_(btUrl, { method: "GET", headers }, "Xero BankTransactions");
     if (btRes.ok) {
       const btData = await btRes.json();
       (btData?.BankTransactions || []).forEach(tx => {
@@ -375,7 +401,7 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
   // 2. Fetch Invoice & Bill Payments tied to this Bank Account
   try {
     const payUrl = `https://api.xero.com/api.xro/2.0/Payments?where=Account.AccountID%3D%3Dguid(%22${accountId}%22)%20AND%20${encodeURIComponent(dateClause)}`;
-    const payRes = await fetch(payUrl, { method: "GET", headers });
+    const payRes = await fetchXeroWithRetry_(payUrl, { method: "GET", headers }, "Xero Payments");
     if (payRes.ok) {
       const payData = await payRes.json();
       (payData?.Payments || []).forEach(p => {
@@ -435,7 +461,7 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
   // 3. Fetch Bank Transfers
   try {
     const xferUrl = `https://api.xero.com/api.xro/2.0/BankTransfers?where=${encodeURIComponent(dateClause)}`;
-    const xferRes = await fetch(xferUrl, { method: "GET", headers });
+    const xferRes = await fetchXeroWithRetry_(xferUrl, { method: "GET", headers }, "Xero BankTransfers");
     if (xferRes.ok) {
       const xferData = await xferRes.json();
       (xferData?.BankTransfers || []).forEach(xf => {
@@ -521,14 +547,14 @@ export async function fetchXeroBankSummaryReport({ accessToken, tenantId, fromDa
   }
 
   const url = `https://api.xero.com/api.xro/2.0/Reports/BankSummary?fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
-  const res = await fetch(url, {
+  const res = await fetchXeroWithRetry_(url, {
     method: "GET",
     headers: {
       "Authorization": `Bearer ${accessToken}`,
       "Xero-tenant-id": tenantId,
       "Accept": "application/json"
     }
-  });
+  }, "Xero BankSummary");
 
   if (!res.ok) {
     const errorText = await res.text();

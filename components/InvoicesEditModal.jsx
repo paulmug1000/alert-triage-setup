@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
-import { stripCurrency, isPlaceholderInvoice, isDraftInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus, calculatePaymentDate } from "../utils/helpers";
+import { stripCurrency, isPlaceholderInvoice, isDraftInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus, calculatePaymentDate, sanitizeSpreadsheetTerms } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import DateInput from "./DateInput";
@@ -226,7 +226,8 @@ export default function InvoicesEditModal({
       });
       const data = await res.json();
       if (!data.success) {
-        alert(data.error || "Failed to update invoice");
+        const rawErr = data.error || "Failed to update invoice";
+      alert(isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr));
         return;
       }
       if (invoicesClient?.masterSheetId) {
@@ -320,7 +321,8 @@ export default function InvoicesEditModal({
 
       const resData = await res.json();
       if (!resData.success) {
-        alert(resData.error || "Failed to move invoice");
+        const rawErr = resData.error || "Failed to move invoice";
+      alert(isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr));
         return;
       }
 
@@ -346,7 +348,8 @@ export default function InvoicesEditModal({
       onClose();
     } catch (e) {
       console.error("move_invoice_to_job error:", e);
-      alert("Error moving invoice: " + e.message);
+      const errMsg = "Error moving invoice: " + (e?.message || "Unknown error");
+      alert(isAdmin ? errMsg : sanitizeSpreadsheetTerms(errMsg));
     } finally {
       setSaving(false);
     }
@@ -386,26 +389,55 @@ export default function InvoicesEditModal({
   const doDelete = async () => {
     setSaving(true);
     try {
-      await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_invoice_slot",
           clientSheetId: invoicesClient?.clientSheetId,
+          masterSheetId: invoicesClient?.masterSheetId,
           clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           tabName: tabName || editSlot.tabName || "Confirmed",
-          rowNum, slotNum, deleteSlot: true,
-          jobClient, jobName,
+          rowNum,
+          slotNum,
+          deleteSlot: true,
+          jobClient,
+          jobName,
+          jobRowNums: Array.isArray(job?.rows) ? job.rows.map(r => r.rowNum).filter(Boolean) : undefined,
         }),
       });
-      if (invoicesClient?.masterSheetId) {
+      const resData = await resp.json().catch(() => ({}));
+      if (!resp.ok || !resData.success) {
+        const rawErr = resData.error || "Failed to delete invoice";
+        alert(isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr));
+        return;
+      }
+      if (invoicesClient?.masterSheetId && typeof onMarkPullPending === "function") {
         onMarkPullPending(invoicesClient.masterSheetId);
       }
-      onUpdateInvoiceJobs(rowNum, slotNum, {
-        ref: "", amount: "", sentDate: "", daysToPay: "", status: ""
-      });
+      const restored = resData.restoredPlaceholderSlot;
+      const isRestoredInDeletedSlot =
+        restored &&
+        Number(restored.rowNum) === Number(rowNum) &&
+        Number(restored.slotNum || 1) === Number(slotNum);
+      const slotPayload = isRestoredInDeletedSlot
+        ? {
+            ref: restored.ref || "",
+            amount: restored.amount || "",
+            sentDate: restored.sentDate || "",
+            daysToPay: restored.daysToPay || "",
+            status: restored.status || "",
+          }
+        : { ref: "", amount: "", sentDate: "", daysToPay: "", status: "" };
+      onUpdateInvoiceJobs(rowNum, slotNum, slotPayload, resData);
       onClose();
-    } catch (e) { console.error("update_invoice_slot delete error:", e); }
-    finally { setSaving(false); }
+    } catch (e) {
+      console.error("update_invoice_slot delete error:", e);
+      const errMsg = e?.message || "Failed to delete invoice";
+      alert(isAdmin ? errMsg : sanitizeSpreadsheetTerms(errMsg));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const filteredTargetJobs = useMemo(() => {

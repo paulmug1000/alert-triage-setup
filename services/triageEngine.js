@@ -3059,6 +3059,16 @@ export async function handleRunFlagSweep(req, res, sheets) {
         }
       }
 
+      const proactiveLegacyDatesMatch_ = (a, snap) => {
+        const aEnd = a?.endDate || a?.metadata?.endDate;
+        const sEnd = snap?.endDate || snap?.metadata?.endDate;
+        if (aEnd && sEnd && String(aEnd).trim() !== String(sEnd).trim()) return false;
+        const aStart = a?.startDate || a?.metadata?.startDate;
+        const sStart = snap?.startDate || snap?.metadata?.startDate;
+        if (aStart && sStart && String(aStart).trim() !== String(sStart).trim()) return false;
+        return true;
+      };
+
       for (const item of sweepItems) {
         if (item.category === "discrepancy" || item.category === "proactive" || item.alertType === "expenseUnreconGaps" || item.alertType === "invoiceStaleUnsentChanges") {
           const freshHashes = new Set();
@@ -3074,7 +3084,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
                     const snapLegacy = snap.legacyAlertKey || "";
                     if (
                       (a.alertKey && (snapLegacy === a.alertKey || snapKey === a.alertKey)) ||
-                      (a.legacyAlertKey && (snapLegacy === a.legacyAlertKey || snapKey === a.legacyAlertKey)) ||
+                      (a.legacyAlertKey && (snapLegacy === a.legacyAlertKey || snapKey === a.legacyAlertKey) && proactiveLegacyDatesMatch_(a, snap)) ||
                       ((item.alertType === "autolog_error" || item.alertType === "infinite_loop") && a.alertKey && snapKey.startsWith(a.alertKey + "|"))
                     ) {
                       freshHashes.add(r.fingerprintHash);
@@ -3169,6 +3179,10 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
         if (!item.alerts || item.alerts.length === 0) continue;
 
+        const currentItemFingerprints = new Set((item.alerts || []).map(a => a._fingerprint).filter(Boolean));
+        const currentItemAlertKeys = new Set((item.alerts || []).map(a => a.alertKey).filter(Boolean));
+        const claimedMemoryRowIndices = new Set();
+
         for (const alert of item.alerts) {
           try {
             let summary = alert.summary;
@@ -3187,31 +3201,57 @@ export async function handleRunFlagSweep(req, res, sheets) {
             summary = summary || `${item.alertType} - ${item.clientName} (row ${alert.rowNumber})`;
 
             // Priority candidate match: find all matching rows across modern hash, legacy hash, and snapshot alertKey
+            const parsedSnapCache = new Map();
+            const getSnap = (row) => {
+              if (!parsedSnapCache.has(row)) {
+                let s = {};
+                try { s = JSON.parse(row.dataSnapshot || "{}"); } catch (e) { }
+                parsedSnapCache.set(row, s);
+              }
+              return parsedSnapCache.get(row);
+            };
             const candidateMatches = memoryRows.filter(r => {
               if (r.clientName !== item.clientName) return false;
+              if (r.rowIndex != null && claimedMemoryRowIndices.has(r.rowIndex)) return false;
               if (r.fingerprintHash === alert._fingerprint) return true;
-              if (alert._legacyFingerprint && r.fingerprintHash === alert._legacyFingerprint) return true;
+              if (r.fingerprintHash && currentItemFingerprints.has(r.fingerprintHash)) return false;
+              if (alert._legacyFingerprint && r.fingerprintHash === alert._legacyFingerprint) {
+                if (item.category === "proactive" && !proactiveLegacyDatesMatch_(alert, getSnap(r))) return false;
+                return true;
+              }
               if (item.category === "proactive" && r.alertType === item.alertType) {
-                try {
-                  const snap = JSON.parse(r.dataSnapshot || "{}");
-                  const snapKey = snap.alertKey || "";
-                  const snapLegacy = snap.legacyAlertKey || "";
-                  if (alert.alertKey && (snapKey === alert.alertKey || snapLegacy === alert.alertKey)) return true;
-                  if (alert.legacyAlertKey && (snapKey === alert.legacyAlertKey || snapLegacy === alert.legacyAlertKey)) return true;
-                  if ((item.alertType === "autolog_error" || item.alertType === "infinite_loop") && alert.alertKey && snapKey.startsWith(alert.alertKey + "|")) return true;
-                } catch (e) { }
+                const snap = getSnap(r);
+                const snapKey = snap.alertKey || "";
+                const snapLegacy = snap.legacyAlertKey || "";
+                if (snapKey && currentItemAlertKeys.has(snapKey) && snapKey !== alert.alertKey) return false;
+                if (alert.alertKey && (snapKey === alert.alertKey || snapLegacy === alert.alertKey)) return true;
+                if (alert.legacyAlertKey && (snapKey === alert.legacyAlertKey || snapLegacy === alert.legacyAlertKey)) {
+                  return proactiveLegacyDatesMatch_(alert, snap);
+                }
+                if ((item.alertType === "autolog_error" || item.alertType === "infinite_loop") && alert.alertKey && snapKey.startsWith(alert.alertKey + "|")) return true;
               }
               return false;
             });
 
-            // Priority: Handled (accepted/ignored/task/pending_automation) > Active (cached) > Inactive (auto_resolved/superseded/task_resolved)
+            // Priority: Exact fingerprint/alertKey match > fallback legacy match, then
+            // Handled (accepted/ignored/task/pending_automation) > Active (cached) > Inactive (auto_resolved/superseded/task_resolved)
             // Tie-break: if both are active ("cached"), prefer the row that already has cachedOptionsJSON and earliest firstSeen
+            const isExactMemoryMatch = (r) => {
+              if (r.fingerprintHash === alert._fingerprint) return true;
+              if (item.category === "proactive" && alert.alertKey) {
+                const snap = getSnap(r);
+                if (snap.alertKey && snap.alertKey === alert.alertKey) return true;
+              }
+              return false;
+            };
             const statusPriority = (s) => {
               if (s === "accepted" || s === "ignored" || s === "task" || s === "pending_automation") return 3;
               if (s === "cached") return 2;
               return 1;
             };
             candidateMatches.sort((a, b) => {
+              const exactDiff = (isExactMemoryMatch(b) ? 1 : 0) - (isExactMemoryMatch(a) ? 1 : 0);
+              if (exactDiff !== 0) return exactDiff;
               const pd = statusPriority(b.status) - statusPriority(a.status);
               if (pd !== 0) return pd;
               if (a.status === "cached" && b.status === "cached") {
@@ -3228,11 +3268,13 @@ export async function handleRunFlagSweep(req, res, sheets) {
             });
 
             let exRow = candidateMatches[0] || null;
+            if (exRow?.rowIndex != null) claimedMemoryRowIndices.add(exRow.rowIndex);
             const detectedAtIso = new Date().toISOString();
 
             // If there are duplicate rows and the winning row is handled or active, suppress any duplicate cached/pending rows so they don't appear in PMA or revive
             if (candidateMatches.length > 1 && exRow && (exRow.status === "accepted" || exRow.status === "ignored" || exRow.status === "task" || exRow.status === "cached" || exRow.status === "pending_automation")) {
               for (const dup of candidateMatches.slice(1)) {
+                if (dup.rowIndex != null) claimedMemoryRowIndices.add(dup.rowIndex);
                 if (dup.status === "cached" || dup.status === "pending_automation") {
                   try {
                     await updateAlertMemoryRow(sheets, acIdSweep, dup.rowIndex, {
@@ -3476,6 +3518,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
             };
             const appendedRow = await appendAlertMemoryRow(sheets, acIdSweep, newRow);
             memoryRows.push(appendedRow || newRow);
+            if (appendedRow?.rowIndex != null) claimedMemoryRowIndices.add(appendedRow.rowIndex);
 
             flagsRaised++;
             if (status === "pending_automation") {

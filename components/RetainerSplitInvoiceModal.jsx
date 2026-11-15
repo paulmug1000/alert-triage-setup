@@ -6,6 +6,7 @@ export default function RetainerSplitInvoiceModal({
   alertMeta,
   alertKey,
   automationCommanderSheetId,
+  sessionId,
   clientSheetId,
   masterSheetId,
   clientName,
@@ -159,7 +160,10 @@ export default function RetainerSplitInvoiceModal({
               action: "resolve_proactive_alert",
               automationCommanderSheetId,
               alertKey,
+              rowIndex: alertMeta?.rowIndex,
+              alertData: alertMeta,
               clientName: effectiveClientName || alertMeta?.endClientName || "",
+              sessionId: sessionId || "",
               resolution: "Invoice split between retainer and extra revenue job",
             }),
           });
@@ -167,7 +171,7 @@ export default function RetainerSplitInvoiceModal({
           console.error("Failed to mark alert resolved:", resolveErr);
         }
       }
-      await onResolved();
+      await onResolved(alertKey, alertMeta?.rowIndex);
       onClose();
     } catch (e) {
       setError(e.message || "Failed to apply the split.");

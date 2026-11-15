@@ -7,6 +7,7 @@ export default function RetainerAlertResolutionModal({
   alertMeta,
   alertKey,
   automationCommanderSheetId,
+  sessionId,
   clientSheetId,
   masterSheetId,
   clientName,
@@ -173,7 +174,10 @@ export default function RetainerAlertResolutionModal({
               action: "resolve_proactive_alert",
               automationCommanderSheetId,
               alertKey,
+              rowIndex: alertMeta?.rowIndex,
+              alertData: alertMeta,
               clientName: alertMeta?.clientName || alertMeta?.endClientName || "",
+              sessionId: sessionId || "",
               resolution: resolutionType === "end" ? "Retainer ended" : "Retainer amount changed",
             }),
           });
@@ -181,7 +185,7 @@ export default function RetainerAlertResolutionModal({
           console.error("Failed to mark alert resolved:", resolveErr);
         }
       }
-      await onResolved();
+      await onResolved(alertKey, alertMeta?.rowIndex);
       onClose();
     } catch (e) {
       setError(e.message || "Failed to apply the change.");

@@ -262,6 +262,27 @@ export default function AlertSelectionView({
     }, 320);
   };
 
+  /** Optimistically removes a resolved/deleted proactive alert and syncs counts and local cache. */
+  const removeResolvedProactiveAlert = (alertKey, rowIndex) => {
+    setProactiveAlerts(prev => {
+      const remaining = prev.filter(a => {
+        if (rowIndex != null && a.rowIndex != null) return a.rowIndex !== rowIndex;
+        if (alertKey && a.alertKey) return a.alertKey !== alertKey;
+        return true;
+      });
+      const counts = {};
+      remaining.forEach(a => {
+        const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+        if (cName) counts[cName] = (counts[cName] || 0) + 1;
+      });
+      setProactiveCountsByClient(counts);
+      try {
+        localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(remaining));
+      } catch { }
+      return remaining;
+    });
+  };
+
   const handleApplyPLClassification = async (alert) => {
     const alertKey = alert.alertKey;
     const classification = selectedClassifications[alertKey] || alert.metadata?.suggestedClassification || alert.suggestedClassification || "delivery_expense";
@@ -3281,12 +3302,13 @@ export default function AlertSelectionView({
           alertMeta={retainerAlertResolution.alertMeta}
           alertKey={retainerAlertResolution.alertKey}
           automationCommanderSheetId={automationCommanderSheetId}
+          sessionId={sessionId}
           clientSheetId={retainerAlertResolution.clientSheetId || selectedClient?.clientSheetId}
           masterSheetId={retainerAlertResolution.masterSheetId || selectedClient?.masterSheetId}
           clientName={retainerAlertResolution.alertMeta?.clientName || selectedClient?.clientName}
           isAdmin={isAdmin}
           onClose={() => setRetainerAlertResolution(null)}
-          onResolved={() => loadProactiveAlerts()}
+          onResolved={(resolvedKey, resolvedRowIndex) => removeResolvedProactiveAlert(resolvedKey, resolvedRowIndex)}
         />
       )}
       {retainerSplitInvoice && (
@@ -3294,12 +3316,13 @@ export default function AlertSelectionView({
           alertMeta={retainerSplitInvoice.alertMeta}
           alertKey={retainerSplitInvoice.alertKey}
           automationCommanderSheetId={automationCommanderSheetId}
+          sessionId={sessionId}
           clientSheetId={retainerSplitInvoice.clientSheetId || selectedClient?.clientSheetId}
           masterSheetId={retainerSplitInvoice.masterSheetId || selectedClient?.masterSheetId}
           clientName={retainerSplitInvoice.alertMeta?.clientName || selectedClient?.clientName}
           isAdmin={isAdmin}
           onClose={() => setRetainerSplitInvoice(null)}
-          onResolved={() => loadProactiveAlerts()}
+          onResolved={(resolvedKey, resolvedRowIndex) => removeResolvedProactiveAlert(resolvedKey, resolvedRowIndex)}
         />
       )}
 
@@ -3345,18 +3368,7 @@ export default function AlertSelectionView({
           onClose={() => setDeleteInvoiceTarget(null)}
           onDeleted={(alertKey, rowIndex) => {
             setDeleteInvoiceTarget(null);
-            const remaining = proactiveAlerts.filter(a => {
-              if (rowIndex != null && a.rowIndex != null) return a.rowIndex !== rowIndex;
-              return a.alertKey !== alertKey;
-            });
-            const counts = {};
-            remaining.forEach(a => {
-              const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
-              if (cName) counts[cName] = (counts[cName] || 0) + 1;
-            });
-            setProactiveCountsByClient(counts);
-            setProactiveAlerts(remaining);
-            loadProactiveAlerts();
+            removeResolvedProactiveAlert(alertKey, rowIndex);
           }}
         />
       )}
@@ -3371,18 +3383,7 @@ export default function AlertSelectionView({
           onClose={() => setDeleteExpenseTarget(null)}
           onDeleted={(alertKey, rowIndex) => {
             setDeleteExpenseTarget(null);
-            const remaining = proactiveAlerts.filter(a => {
-              if (rowIndex != null && a.rowIndex != null) return a.rowIndex !== rowIndex;
-              return a.alertKey !== alertKey;
-            });
-            const counts = {};
-            remaining.forEach(a => {
-              const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
-              if (cName) counts[cName] = (counts[cName] || 0) + 1;
-            });
-            setProactiveCountsByClient(counts);
-            setProactiveAlerts(remaining);
-            loadProactiveAlerts();
+            removeResolvedProactiveAlert(alertKey, rowIndex);
           }}
         />
       )}

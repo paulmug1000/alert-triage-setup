@@ -202,6 +202,8 @@ export default function DeleteExpenseFromPulseModal({
             action: "resolve_proactive_alert",
             automationCommanderSheetId,
             alertKey,
+            rowIndex: alert?.rowIndex,
+            alertData: alert,
             clientName: clientName || effectiveClient || "",
             sessionId: sessionId || "",
             resolution: isAlreadyGone

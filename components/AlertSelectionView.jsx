@@ -2364,7 +2364,21 @@ export default function AlertSelectionView({
                                           const displayEndDate = m.endDate || alert.endDate || alert.detail?.match(/ends\s+([0-9a-zA-Z-]+)/i)?.[1];
                                           return displayEndDate ? <div><strong>Job end date:</strong> {formatJobEndDateDisplay(displayEndDate, displayEndDate)}</div> : null;
                                         })()}
-                                        {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
+                                        {(() => {
+                                          const feeRevNum = parseFloat(m.feeRevenue ?? alert.feeRevenue ?? 0);
+                                          const rechExpNum = parseFloat(m.rechargedExpenses ?? alert.rechargedExpenses ?? 0);
+                                          const revTotalStr = m.billableBudget || m.revenue || alert.revenue;
+                                          if (!revTotalStr) return null;
+                                          if (rechExpNum > 0) {
+                                            return (
+                                              <div>
+                                                <strong>Billable budget:</strong> £{parseFloat(revTotalStr).toFixed(2)}{" "}
+                                                <span style={{ color: "#64748b" }}>(£{feeRevNum.toFixed(2)} fee + £{rechExpNum.toFixed(2)} recharged expenses)</span>
+                                              </div>
+                                            );
+                                          }
+                                          return <div><strong>Revenue:</strong> £{parseFloat(revTotalStr).toFixed(2)}</div>;
+                                        })()}
                                         <div style={{ marginTop: "4px", color: "#c62828" }}>Over a month elapsed with zero real invoices sent.</div>
                                       </div>
                                     )}
@@ -2375,7 +2389,34 @@ export default function AlertSelectionView({
                                         {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                                         {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
                                         {m.endDate && <div><strong>Job ended:</strong> {formatJobEndDateDisplay(m.endDate, m.endDate)}</div>}
-                                        {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
+                                        {(() => {
+                                          const feeRevNum = parseFloat(m.feeRevenue ?? alert.feeRevenue ?? 0);
+                                          const rechExpNum = parseFloat(m.rechargedExpenses ?? alert.rechargedExpenses ?? 0);
+                                          const feeInvNum = parseFloat(m.feeInvoiced ?? alert.feeInvoiced ?? 0);
+                                          const rechInvNum = parseFloat(m.rechargedInvoiced ?? alert.rechargedInvoiced ?? 0);
+                                          const revTotalStr = m.billableBudget || m.revenue || alert.revenue;
+                                          const invTotalStr = m.totalInvoiced || alert.totalInvoiced;
+                                          return (
+                                            <>
+                                              {revTotalStr && (
+                                                rechExpNum > 0 ? (
+                                                  <div>
+                                                    <strong>Billable budget:</strong> £{parseFloat(revTotalStr).toFixed(2)}{" "}
+                                                    <span style={{ color: "#64748b" }}>(£{feeRevNum.toFixed(2)} fee + £{rechExpNum.toFixed(2)} recharged expenses)</span>
+                                                  </div>
+                                                ) : (
+                                                  <div><strong>Revenue:</strong> £{parseFloat(revTotalStr).toFixed(2)}</div>
+                                                )
+                                              )}
+                                              {invTotalStr && (rechExpNum > 0 || rechInvNum > 0) && (
+                                                <div>
+                                                  <strong>Invoiced (sent/paid):</strong> £{parseFloat(invTotalStr).toFixed(2)}{" "}
+                                                  <span style={{ color: "#64748b" }}>(£{feeInvNum.toFixed(2)} fee + £{rechInvNum.toFixed(2)} recharged expenses)</span>
+                                                </div>
+                                              )}
+                                            </>
+                                          );
+                                        })()}
                                         {m.uninvoicedAmount && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>£{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)</div>}
                                         {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "4px", color: "#d97706" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
                                       </div>
@@ -2649,9 +2690,15 @@ export default function AlertSelectionView({
                                       const todayMid = new Date();
                                       todayMid.setHours(0, 0, 0, 0);
                                       const endLabel = isNoEndDateSentinel(rawEDate) || (parsedEnd && parsedEnd > todayMid) ? "Job ends:" : "Job ended:";
-                                      const rev = m.revenue || alert.revenue || parsed.revenue;
+                                      const rev = m.billableBudget || m.revenue || alert.revenue || parsed.revenue;
+                                      const feeRevNum = parseFloat(m.feeRevenue ?? alert.feeRevenue ?? parsed.feeRevenue ?? 0);
+                                      const rechExpNum = parseFloat(m.rechargedExpenses ?? alert.rechargedExpenses ?? parsed.rechargedExpenses ?? 0);
                                       const inv = m.totalInvoiced || alert.totalInvoiced || parsed.totalInvoiced;
+                                      const feeInvNum = parseFloat(m.feeInvoiced ?? alert.feeInvoiced ?? parsed.feeInvoiced ?? 0);
+                                      const rechInvNum = parseFloat(m.rechargedInvoiced ?? alert.rechargedInvoiced ?? parsed.rechargedInvoiced ?? 0);
+                                      const rechDiffNum = parseFloat(m.rechargedDiff ?? alert.rechargedDiff ?? 0);
                                       const diff = m.diff || alert.diff || parsed.diff;
+                                      const hasRechargedContext = rechExpNum > 0 || rechInvNum > 0;
 
                                       return (
                                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
@@ -2659,9 +2706,38 @@ export default function AlertSelectionView({
                                           {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
                                           {confRow && <div><strong>Confirmed tab row:</strong> {confRow}</div>}
                                           {eDate && <div><strong>{endLabel}</strong> {eDate}</div>}
-                                          {rev && <div><strong>Revenue budget:</strong> £{parseFloat(rev).toFixed(2)}</div>}
-                                          {inv && <div><strong>Total invoiced:</strong> £{parseFloat(inv).toFixed(2)}</div>}
-                                          {diff && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>Difference: £{parseFloat(diff).toFixed(2)}</div>}
+                                          {rev && (
+                                            hasRechargedContext ? (
+                                              <div>
+                                                <strong>Billable budget:</strong> £{parseFloat(rev).toFixed(2)}{" "}
+                                                <span style={{ color: "#64748b" }}>(£{feeRevNum.toFixed(2)} fee + £{rechExpNum.toFixed(2)} recharged expenses)</span>
+                                              </div>
+                                            ) : (
+                                              <div><strong>Revenue budget:</strong> £{parseFloat(rev).toFixed(2)}</div>
+                                            )
+                                          )}
+                                          {inv && (
+                                            hasRechargedContext ? (
+                                              <div>
+                                                <strong>Total invoiced:</strong> £{parseFloat(inv).toFixed(2)}{" "}
+                                                <span style={{ color: "#64748b" }}>(£{feeInvNum.toFixed(2)} fee + £{rechInvNum.toFixed(2)} recharged expenses)</span>
+                                              </div>
+                                            ) : (
+                                              <div><strong>Total invoiced:</strong> £{parseFloat(inv).toFixed(2)}</div>
+                                            )
+                                          )}
+                                          {diff && (
+                                            rechDiffNum > 0.01 && Math.abs((parseFloat(inv || 0)) - (parseFloat(rev || 0))) <= 1.0 ? (
+                                              <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>
+                                                Recharged expenses difference: £{rechDiffNum.toFixed(2)}
+                                              </div>
+                                            ) : (
+                                              <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>
+                                                Difference: £{parseFloat(diff).toFixed(2)}
+                                                {rechDiffNum > 0.01 ? ` (incl. £${rechDiffNum.toFixed(2)} recharged expenses diff)` : ""}
+                                              </div>
+                                            )
+                                          )}
                                         </div>
                                       );
                                     })()}

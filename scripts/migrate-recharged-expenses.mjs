@@ -10,12 +10,47 @@
 
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { google } from "googleapis";
 import { getSheetsClient } from "../services/sheetsClient.js";
 import { getAllClients } from "../services/workspaces.js";
 import {
   resolveSupabaseSheetContext,
   invalidateMasterEngineCache,
 } from "../services/masterEngineService.js";
+
+const TEMPLATE_CLIENT_SHEET_ID = "1KE0CRs8a92WMzyxy6rMZtr6d9D7cGMpUB3YLV89xjno";
+const TEMPLATE_MASTER_SHEET_ID = "1Kt0dRbMCd0jgTxBU5uwVMlVN75CIc7YtVJQHnYMR61w";
+
+function stripBypassParam(params = {}) {
+  if (!params || typeof params !== "object") return params;
+  const { _bypassSupabaseVirtualSheet, ...rest } = params;
+  return rest;
+}
+
+function getPrimarySaSheetsClient() {
+  const email = process.env.SERVICE_ACCOUNT_EMAIL;
+  const key = process.env.SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
+  if (!email || !key) {
+    throw new Error("Missing SERVICE_ACCOUNT_EMAIL or SERVICE_ACCOUNT_PRIVATE_KEY in environment.");
+  }
+  const auth = new google.auth.GoogleAuth({
+    credentials: { client_email: email, private_key: key },
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+  const base = google.sheets({ version: "v4", auth });
+  return {
+    spreadsheets: {
+      get: (p, opts) => base.spreadsheets.get(stripBypassParam(p), opts),
+      batchUpdate: (p, opts) => base.spreadsheets.batchUpdate(stripBypassParam(p), opts),
+      values: {
+        get: (p, opts) => base.spreadsheets.values.get(stripBypassParam(p), opts),
+        batchGet: (p, opts) => base.spreadsheets.values.batchGet(stripBypassParam(p), opts),
+        update: (p, opts) => base.spreadsheets.values.update(stripBypassParam(p), opts),
+        batchUpdate: (p, opts) => base.spreadsheets.values.batchUpdate(stripBypassParam(p), opts),
+      },
+    },
+  };
+}
 
 const KEYINFO_C21_NOTE =
   "Recharged expenses delivery % (100% = recharged expenses captured as CoS, 0% = captured within overhead categories)";
@@ -44,11 +79,14 @@ function printUsage() {
     "Usage:\n" +
       "  node --env-file=.env.local scripts/migrate-recharged-expenses.mjs --dry-run --client=\"APPTEST\"\n" +
       "  node --env-file=.env.local scripts/migrate-recharged-expenses.mjs --apply --client=\"APPTEST\"\n" +
+      "  node --env-file=.env.local scripts/migrate-recharged-expenses.mjs --dry-run --templates\n" +
+      "  node --env-file=.env.local scripts/migrate-recharged-expenses.mjs --apply --templates\n" +
       "  node --env-file=.env.local scripts/migrate-recharged-expenses.mjs --dry-run --all\n" +
       "\nFlags:\n" +
       "  --dry-run         Inspect and report changes without writing (default)\n" +
       "  --apply           Execute writes against Google Sheets and Supabase virtual grids\n" +
       "  --client=<name>   Target a single client by name (case-insensitive)\n" +
+      "  --templates       Target the Client & Master Template spreadsheets (using primary SA)\n" +
       "  --all             Target all clients\n"
   );
 }
@@ -56,17 +94,19 @@ function printUsage() {
 function parseCliArgs(argv) {
   let apply = false;
   let all = false;
+  let templates = false;
   let client = "";
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--apply") apply = true;
     else if (arg === "--dry-run") apply = false;
     else if (arg === "--all") all = true;
+    else if (arg === "--templates") templates = true;
     else if (arg === "--help" || arg === "-h") return { help: true };
     else if (arg.startsWith("--client=")) client = arg.slice("--client=".length).trim();
     else if (arg === "--client" && argv[i + 1]) client = String(argv[++i]).trim();
   }
-  return { help: false, apply, all, client };
+  return { help: false, apply, all, templates, client };
 }
 
 function colIdxToA1(idx0) {
@@ -966,26 +1006,41 @@ async function applyClientMigration(rawSheets, virtSheets, client) {
 
 async function main() {
   const args = parseCliArgs(process.argv.slice(2));
-  if (args.help || (!args.all && !args.client)) {
+  if (args.help || (!args.all && !args.templates && !args.client)) {
     printUsage();
     setTimeout(() => process.exit(0), 50);
     return;
   }
 
-  const rawSheets = await getSheetsClient({ _bypassSupabaseVirtualSheet: true });
-  const virtSheets = await getSheetsClient();
-  const { clientsArray } = await getAllClients(rawSheets, { isAdmin: true }, true);
+  let rawSheets;
+  let virtSheets = null;
+  let targets = [];
 
-  let targets = clientsArray || [];
-  if (!args.all) {
-    const targetLower = args.client.toLowerCase();
-    targets = targets.filter((c) => String(c.clientName || "").trim().toLowerCase() === targetLower);
-  }
+  if (args.templates) {
+    rawSheets = getPrimarySaSheetsClient();
+    targets = [
+      {
+        clientName: "Templates (Client & Master)",
+        clientSheetId: TEMPLATE_CLIENT_SHEET_ID,
+        masterSheetId: TEMPLATE_MASTER_SHEET_ID,
+      },
+    ];
+  } else {
+    rawSheets = await getSheetsClient({ _bypassSupabaseVirtualSheet: true });
+    virtSheets = await getSheetsClient();
+    const { clientsArray } = await getAllClients(rawSheets, { isAdmin: true }, true);
 
-  if (targets.length === 0) {
-    console.error(`No matching clients found for ${args.all ? "--all" : `--client="${args.client}"`}.`);
-    setTimeout(() => process.exit(1), 50);
-    return;
+    targets = clientsArray || [];
+    if (!args.all) {
+      const targetLower = args.client.toLowerCase();
+      targets = targets.filter((c) => String(c.clientName || "").trim().toLowerCase() === targetLower);
+    }
+
+    if (targets.length === 0) {
+      console.error(`No matching clients found for ${args.all ? "--all" : `--client="${args.client}"`}.`);
+      setTimeout(() => process.exit(1), 50);
+      return;
+    }
   }
 
   console.log(`Mode: ${args.apply ? "APPLY" : "DRY-RUN"} | Target clients: ${targets.map((c) => c.clientName).join(", ")}`);

@@ -147,7 +147,7 @@ export async function flushAllAlertMemoryCaches(automationCommanderSheetId) {
   _alertMemoryCachedAt = 0;
   try {
     if (redisClient?.isOpen) {
-      const keysToDel = ["triage_tasks_cache", "triage_precomputed"];
+      const keysToDel = ["triage_tasks_cache"];
       if (automationCommanderSheetId) {
         keysToDel.push(
           `pulse:alert_memory:${automationCommanderSheetId}`,
@@ -156,8 +156,7 @@ export async function flushAllAlertMemoryCaches(automationCommanderSheetId) {
       }
       const wildcardKeys = await redisClient.keys("pulse:alert_memory*").catch(() => []);
       const precompKeys = await redisClient.keys("pulse:triage_precomputed:*").catch(() => []);
-      const sessionKeys = await redisClient.keys("triage_alerts:*").catch(() => []);
-      const allKeys = [...new Set([...keysToDel, ...wildcardKeys, ...precompKeys, ...sessionKeys])];
+      const allKeys = [...new Set([...keysToDel, ...wildcardKeys, ...precompKeys])];
       if (allKeys.length > 0) {
         await redisClient.del(allKeys);
       }

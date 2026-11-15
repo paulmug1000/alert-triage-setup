@@ -3154,7 +3154,7 @@ export default function ReportingTab({
                   <div style={{ padding: "60px 20px", textAlign: "center", color: "#64748b", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
                     <Spinner size="28px" color="#0284c7" />
                     <div style={{ fontSize: "14px", fontWeight: 600, color: "#334155" }}>
-                      Loading overhead expenses from Master Sheet...
+                      Loading overhead expenses...
                     </div>
                   </div>
                 ) : (

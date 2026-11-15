@@ -3033,6 +3033,7 @@ export async function resolveFullJobRowGroup_(sheets, sheetIdClean, targetTab, s
     }
   }
 
+  const norm = (s) => String(s || "").trim().toLowerCase();
   const isParentRowAt = (idx0) => {
     const r = allRows[idx0] || [];
     const hasRech = targetTab === "Confirmed" && r[17] !== undefined && r[17] !== null && String(r[17]).trim() !== "";
@@ -4539,6 +4540,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
     return res.status(400).json({ success: false, error: "Missing rowNum or slotNum" });
   }
   try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const slotCols = {
       1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
       2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
@@ -4885,8 +4887,21 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       }
     }
 
-    // Update revenue if user chose to increase job revenue to match total invoiced
+    // Update recharged expenses (Col R) if requested before revenue/placeholder calculations
     const parentRowIndex = matchingRowIndices.length > 0 ? matchingRowIndices[0] : (createNewRow ? targetRowNum : rowNum);
+    let effectiveRecharged = undefined;
+    if (req.body.updateJobRecharged && req.body.newJobRecharged !== undefined) {
+      const newRechNum = Math.max(0, Math.round((parseFloat(req.body.newJobRecharged) || 0) * 100) / 100);
+      const rechCellVal = newRechNum > 0 ? newRechNum : "";
+      allWriteData.push({
+        range: `Confirmed!R${parentRowIndex}`,
+        values: [[rechCellVal]],
+      });
+      if (allRows[parentRowIndex - 1]) allRows[parentRowIndex - 1][17] = rechCellVal;
+      effectiveRecharged = rechCellVal;
+    }
+
+    // Update revenue if user chose to increase job revenue to match total invoiced
     let effectiveRevenue = undefined;
     if (req.body.updateJobRevenue && req.body.newJobRevenue !== undefined) {
       const requestedBillable = parseFloat(req.body.newJobRevenue) || 0;

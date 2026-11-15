@@ -1310,6 +1310,7 @@ function writeToAutoLog(category, summary, details) {
 /**
  * PART 2: INTERNAL SHEET MANIPULATION FUNCTIONS
  *
+ * v3.10 (Protect Outgoings system rows 225-226 in pushOutgoingsWithPLAddsToClientSheet and support 7-col Confirmed recharged/cost-month slots in processPartPaidInvoices)
  * v3.09 (Protect Outgoings system rows 225-226 in pushOutgoingsToClientSheet, include Confirmed Col R recharged expenses in invoice slot capacity/fillFutureSlots, and widen Confirmed zone check to Col BJ)
  * v3.08 (Prevent block Client name updates in PushInvDetailsToConfirmed when linked invoices resolve to different accounting contacts, and fix UTF-8 currency mojibake in dialogs)
  * v3.07 (Read Monthly directly from the Client Sheet in getDashboardRevenueData_, with MthlyClient as fallback)
@@ -1800,8 +1801,20 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
     }
 
     const expenseStartRow = otherExpensesRowIndex + 3;
-    const expenseEndRow = totalRowIndex - 1;
-    const depreciationTargetRow = expenseEndRow - 1;
+    // Mirror pushOutgoingsToClientSheet ceiling protection so system rows 225-226 (Recharged expenses) are never overwritten
+    let depreciationTargetRow = Math.min(224, (totalRowIndex + 1) - 3);
+    let maxRowBeforeSystem = totalRowIndex;
+    for (let i = otherExpensesRowIndex + 2; i < totalRowIndex; i++) {
+      const lbl = String(targetDataA[i] || "").trim().toLowerCase();
+      if (lbl.includes("depreciation")) {
+        depreciationTargetRow = i + 1;
+      }
+      if (lbl === "recharged expenses (forecast)" || lbl === "recharged expenses recovery") {
+        maxRowBeforeSystem = Math.min(maxRowBeforeSystem, i);
+      }
+    }
+    depreciationTargetRow = Math.min(depreciationTargetRow, maxRowBeforeSystem);
+    const expenseEndRow = Math.min(totalRowIndex - 1, maxRowBeforeSystem);
 
     if (expenseStartRow > expenseEndRow || depreciationTargetRow < expenseStartRow) {
       const msg = 'Error: Invalid expense data range calculated.';
@@ -1881,7 +1894,7 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
       targetCategories.forEach((cat, idx) => {
          if (targetMonthFormulas[idx] && targetMonthFormulas[idx][0]) {
             targetMonthData[idx][0] = targetMonthFormulas[idx][0];
-         } else if (cat && cat !== depreciationCategoryName && !plCompData.has(cat)) {
+         } else if (cat && cat !== depreciationCategoryName && !cat.toLowerCase().startsWith("recharged expenses") && !plCompData.has(cat)) {
             targetMonthData[idx][0] = 0;
          }
       });
@@ -4962,9 +4975,38 @@ async function processPartPaidInvoices(ss, alertSheet) {
       ref: cHeaders.indexOf(`inv ${s} ref`),
       sendDate: cHeaders.indexOf(`inv ${s} send date`),
       days: cHeaders.indexOf(`inv ${s} days to pay`),
-      status: cHeaders.indexOf(`inv ${s} status`)
+      status: cHeaders.indexOf(`inv ${s} status`),
+      rech: cHeaders.indexOf(`inv ${s} of which rechgd`),
+      cm: cHeaders.indexOf(`inv ${s} cost month`)
     };
   }
+
+  const clearPartPaidSlot_ = (loc) => {
+    const sc = slotCols[loc.slot];
+    if (!sc) return;
+    changeLog.push({ row: loc.rowNumber, col: sc.amt + 1, value: "" });
+    changeLog.push({ row: loc.rowNumber, col: sc.ref + 1, value: "" });
+    changeLog.push({ row: loc.rowNumber, col: sc.sendDate + 1, value: "" });
+    changeLog.push({ row: loc.rowNumber, col: sc.days + 1, value: "" });
+    changeLog.push({ row: loc.rowNumber, col: sc.status + 1, value: "" });
+    if (sc.rech >= 0) changeLog.push({ row: loc.rowNumber, col: sc.rech + 1, value: "" });
+    if (sc.cm >= 0) changeLog.push({ row: loc.rowNumber, col: sc.cm + 1, value: "" });
+    if (confirmedData[loc.rowIndex]) {
+      confirmedData[loc.rowIndex][sc.amt] = "";
+      confirmedData[loc.rowIndex][sc.ref] = "";
+      confirmedData[loc.rowIndex][sc.sendDate] = "";
+      confirmedData[loc.rowIndex][sc.days] = "";
+      confirmedData[loc.rowIndex][sc.status] = "";
+      if (sc.rech >= 0) confirmedData[loc.rowIndex][sc.rech] = "";
+      if (sc.cm >= 0) confirmedData[loc.rowIndex][sc.cm] = "";
+    }
+  };
+  const parseRechCell_ = (v) => {
+    if (v === null || v === undefined || v === "") return 0;
+    const n = parseFloat(String(v).replace(/[£$€,\s]/g, ""));
+    return isNaN(n) ? 0 : n;
+  };
+  const hasCellVal_ = (v) => v !== null && v !== undefined && String(v).trim() !== "";
 
   if (colClient === -1 || colJobName === -1 || slotCols[1].ref === -1 || slotCols[1].status === -1) {
     return { count: 0, logs: ["Error: Part-Paid Invoices - Required headers missing in Confirmed sheet."], hasError: true, error: "Required headers missing in Confirmed sheet." };
@@ -5265,21 +5307,24 @@ async function processPartPaidInvoices(ss, alertSheet) {
         balanceLoc = otherSlots[0];
         const redundantSlots = otherSlots.slice(1);
         redundantSlots.forEach(extra => {
-          changeLog.push({ row: extra.rowNumber, col: slotCols[extra.slot].amt + 1, value: "" });
-          changeLog.push({ row: extra.rowNumber, col: slotCols[extra.slot].ref + 1, value: "" });
-          changeLog.push({ row: extra.rowNumber, col: slotCols[extra.slot].sendDate + 1, value: "" });
-          changeLog.push({ row: extra.rowNumber, col: slotCols[extra.slot].days + 1, value: "" });
-          changeLog.push({ row: extra.rowNumber, col: slotCols[extra.slot].status + 1, value: "" });
-          if (confirmedData[extra.rowIndex]) {
-            confirmedData[extra.rowIndex][slotCols[extra.slot].amt] = "";
-            confirmedData[extra.rowIndex][slotCols[extra.slot].ref] = "";
-            confirmedData[extra.rowIndex][slotCols[extra.slot].sendDate] = "";
-            confirmedData[extra.rowIndex][slotCols[extra.slot].days] = "";
-            confirmedData[extra.rowIndex][slotCols[extra.slot].status] = "";
-          }
+          clearPartPaidSlot_(extra);
           logDetails.push(`[Confirmed] Cleaned up duplicate balance slot for Invoice ${preferredRef} at Row ${extra.rowNumber} Slot ${extra.slot} on ${client} | ${jobName}`);
         });
       }
+
+      // Capture existing recharged amount & cost month across primary and balance slots BEFORE shielding relocation
+      const pCols = slotCols[primaryLoc.slot];
+      const primExistingRech = pCols.rech >= 0 ? parseRechCell_(confirmedData[primaryLoc.rowIndex]?.[pCols.rech]) : 0;
+      const bColsPre = balanceLoc ? slotCols[balanceLoc.slot] : null;
+      const balExistingRech = (balanceLoc && bColsPre && bColsPre.rech >= 0)
+        ? parseRechCell_(confirmedData[balanceLoc.rowIndex]?.[bColsPre.rech])
+        : 0;
+      const totalJobRech = Math.round((primExistingRech + balExistingRech) * 100) / 100;
+      const primExistingCm = pCols.cm >= 0 ? (confirmedData[primaryLoc.rowIndex]?.[pCols.cm] ?? "") : "";
+      const balExistingCm = (balanceLoc && bColsPre && bColsPre.cm >= 0)
+        ? (confirmedData[balanceLoc.rowIndex]?.[bColsPre.cm] ?? "")
+        : "";
+      const effectiveRechCm = hasCellVal_(primExistingCm) ? primExistingCm : (hasCellVal_(balExistingCm) ? balExistingCm : "");
 
       // Shield Retainer Parent rows and enforce local month row for Retainers
       const group = primaryLoc.jobGroup;
@@ -5288,18 +5333,7 @@ async function processPartPaidInvoices(ss, alertSheet) {
       const isMisplacedRetainer = balanceLoc && isRetainerJob && (balanceLoc.rowNumber !== primaryLoc.rowNumber);
 
       if (balanceLoc && (isMisplacedOnParent || isMisplacedRetainer)) {
-        changeLog.push({ row: balanceLoc.rowNumber, col: slotCols[balanceLoc.slot].amt + 1, value: "" });
-        changeLog.push({ row: balanceLoc.rowNumber, col: slotCols[balanceLoc.slot].ref + 1, value: "" });
-        changeLog.push({ row: balanceLoc.rowNumber, col: slotCols[balanceLoc.slot].sendDate + 1, value: "" });
-        changeLog.push({ row: balanceLoc.rowNumber, col: slotCols[balanceLoc.slot].days + 1, value: "" });
-        changeLog.push({ row: balanceLoc.rowNumber, col: slotCols[balanceLoc.slot].status + 1, value: "" });
-        if (confirmedData[balanceLoc.rowIndex]) {
-          confirmedData[balanceLoc.rowIndex][slotCols[balanceLoc.slot].amt] = "";
-          confirmedData[balanceLoc.rowIndex][slotCols[balanceLoc.slot].ref] = "";
-          confirmedData[balanceLoc.rowIndex][slotCols[balanceLoc.slot].sendDate] = "";
-          confirmedData[balanceLoc.rowIndex][slotCols[balanceLoc.slot].days] = "";
-          confirmedData[balanceLoc.rowIndex][slotCols[balanceLoc.slot].status] = "";
-        }
+        clearPartPaidSlot_(balanceLoc);
         logDetails.push(`[Confirmed] Cleaned up misplaced balance slot on Row ${balanceLoc.rowNumber} Slot ${balanceLoc.slot} for Invoice ${preferredRef} (parent row / wrong retainer row shielded)`);
         balanceLoc = null; // Forces assignment into the correct local month row slot
       }
@@ -5319,6 +5353,9 @@ async function processPartPaidInvoices(ss, alertSheet) {
         remainingPaidPool -= jobPaidShare;
         remainingDuePool -= jobDueShare;
       }
+
+      const targetPrimRech = Math.min(totalJobRech, Math.max(0, Math.round(jobPaidShare * 100) / 100));
+      const targetBalRech = Math.max(0, Math.round((totalJobRech - targetPrimRech) * 100) / 100);
 
       // Real invoice send date - ALWAYS preserve the date the invoice was actually sent
       const sendDateVal = inv.sentDate || primaryLoc.sendDate;
@@ -5363,8 +5400,17 @@ async function processPartPaidInvoices(ss, alertSheet) {
 
       const currentPrimaryDays = parseInt(primaryLoc.days, 10);
       const needsPaidDaysUpdate = (actualDaysToPay !== null && currentPrimaryDays !== actualDaysToPay);
+      const needsPrimRechUpdate = pCols.rech >= 0 && (
+        Math.abs(primExistingRech - targetPrimRech) >= 0.01 ||
+        (targetPrimRech === 0 && hasCellVal_(confirmedData[primaryLoc.rowIndex]?.[pCols.rech]))
+      );
+      const desiredPrimCm = targetPrimRech > 0 ? effectiveRechCm : "";
+      const needsPrimCmUpdate = pCols.cm >= 0 && (
+        (targetPrimRech === 0 && hasCellVal_(primExistingCm)) ||
+        (targetPrimRech > 0 && !hasCellVal_(primExistingCm) && hasCellVal_(desiredPrimCm))
+      );
 
-      if (needsPaidAmtUpdate || needsPaidStatusUpdate || needsPaidDaysUpdate) {
+      if (needsPaidAmtUpdate || needsPaidStatusUpdate || needsPaidDaysUpdate || needsPrimRechUpdate || needsPrimCmUpdate) {
         if (needsPaidAmtUpdate) {
           changeLog.push({
             row: primaryLoc.rowNumber,
@@ -5398,6 +5444,29 @@ async function processPartPaidInvoices(ss, alertSheet) {
           }
         }
 
+        if (needsPrimRechUpdate) {
+          const rechVal = targetPrimRech > 0 ? targetPrimRech : "";
+          changeLog.push({
+            row: primaryLoc.rowNumber,
+            col: pCols.rech + 1,
+            value: rechVal
+          });
+          if (confirmedData[primaryLoc.rowIndex]) {
+            confirmedData[primaryLoc.rowIndex][pCols.rech] = rechVal;
+          }
+        }
+
+        if (needsPrimCmUpdate) {
+          changeLog.push({
+            row: primaryLoc.rowNumber,
+            col: pCols.cm + 1,
+            value: desiredPrimCm
+          });
+          if (confirmedData[primaryLoc.rowIndex]) {
+            confirmedData[primaryLoc.rowIndex][pCols.cm] = desiredPrimCm;
+          }
+        }
+
         updateCount++;
         const daysNote = actualDaysToPay !== null ? `, ${actualDaysToPay} days to pay` : "";
         logDetails.push(`[Confirmed] Updated primary slot for Invoice ${preferredRef}: Row ${primaryLoc.rowNumber} Slot ${primaryLoc.slot} = £${jobPaidShare.toFixed(2)} (Part-paid (received)${daysNote}) on ${client} | ${jobName}`);
@@ -5405,14 +5474,24 @@ async function processPartPaidInvoices(ss, alertSheet) {
 
       // 2. UPDATE EXISTING BALANCE SLOT OR ASSIGN NEW BALANCE SLOT
       if (balanceLoc) {
+        const bCols = slotCols[balanceLoc.slot];
         const needsDueAmtUpdate = Math.abs(balanceLoc.amt - jobDueShare) >= 0.01;
         const needsDueStatusUpdate = balanceLoc.status !== "Part-paid (balance)";
         const currentLocSendDate = formatConfirmedDate_(balanceLoc.sendDate, timeZone);
         const needsSendDateUpdate = Boolean(formattedSendDate && (!currentLocSendDate || currentLocSendDate !== formattedSendDate));
         const currentDaysInt = parseInt(balanceLoc.days, 10);
         const needsDaysUpdate = isNaN(currentDaysInt) || currentDaysInt === 0;
+        const needsBalRechUpdate = bCols.rech >= 0 && (
+          Math.abs(balExistingRech - targetBalRech) >= 0.01 ||
+          (targetBalRech === 0 && hasCellVal_(confirmedData[balanceLoc.rowIndex]?.[bCols.rech]))
+        );
+        const desiredBalCm = targetBalRech > 0 ? effectiveRechCm : "";
+        const needsBalCmUpdate = bCols.cm >= 0 && (
+          (targetBalRech === 0 && hasCellVal_(balExistingCm)) ||
+          (targetBalRech > 0 && !hasCellVal_(balExistingCm) && hasCellVal_(desiredBalCm))
+        );
 
-        if (needsDueAmtUpdate || needsDueStatusUpdate || needsSendDateUpdate || needsDaysUpdate) {
+        if (needsDueAmtUpdate || needsDueStatusUpdate || needsSendDateUpdate || needsDaysUpdate || needsBalRechUpdate || needsBalCmUpdate) {
           if (needsDueAmtUpdate) {
             changeLog.push({
               row: balanceLoc.rowNumber,
@@ -5453,6 +5532,27 @@ async function processPartPaidInvoices(ss, alertSheet) {
               confirmedData[balanceLoc.rowIndex][slotCols[balanceLoc.slot].days] = calculatedDays;
             }
           }
+          if (needsBalRechUpdate) {
+            const rechVal = targetBalRech > 0 ? targetBalRech : "";
+            changeLog.push({
+              row: balanceLoc.rowNumber,
+              col: bCols.rech + 1,
+              value: rechVal
+            });
+            if (confirmedData[balanceLoc.rowIndex]) {
+              confirmedData[balanceLoc.rowIndex][bCols.rech] = rechVal;
+            }
+          }
+          if (needsBalCmUpdate) {
+            changeLog.push({
+              row: balanceLoc.rowNumber,
+              col: bCols.cm + 1,
+              value: desiredBalCm
+            });
+            if (confirmedData[balanceLoc.rowIndex]) {
+              confirmedData[balanceLoc.rowIndex][bCols.cm] = desiredBalCm;
+            }
+          }
 
           updateCount++;
           logDetails.push(`[Confirmed] Updated part-payment split for Invoice ${preferredRef}: Slot ${primaryLoc.slot} = £${jobPaidShare.toFixed(2)} (Part-paid (received)), Slot ${balanceLoc.slot} = £${jobDueShare.toFixed(2)} (Part-paid (balance), ${calculatedDays} days to pay) on ${client} | ${jobName}`);
@@ -5461,6 +5561,7 @@ async function processPartPaidInvoices(ss, alertSheet) {
         const targetSlotInfo = findTargetBalanceSlot_(primaryLoc);
         const targetRowNum = targetSlotInfo.rowNumber;
         const targetSlot = targetSlotInfo.slot;
+        const tCols = slotCols[targetSlot];
 
         changeLog.push({
           row: targetRowNum,
@@ -5488,6 +5589,14 @@ async function processPartPaidInvoices(ss, alertSheet) {
           col: slotCols[targetSlot].status + 1,
           value: "Part-paid (balance)"
         });
+        const newBalRechVal = targetBalRech > 0 ? targetBalRech : "";
+        const newBalCmVal = targetBalRech > 0 ? effectiveRechCm : "";
+        if (tCols.rech >= 0) {
+          changeLog.push({ row: targetRowNum, col: tCols.rech + 1, value: newBalRechVal });
+        }
+        if (tCols.cm >= 0) {
+          changeLog.push({ row: targetRowNum, col: tCols.cm + 1, value: newBalCmVal });
+        }
 
         const targetRIdx = targetRowNum - 1;
         if (confirmedData[targetRIdx]) {
@@ -5496,6 +5605,8 @@ async function processPartPaidInvoices(ss, alertSheet) {
           confirmedData[targetRIdx][slotCols[targetSlot].sendDate] = formattedSendDate;
           confirmedData[targetRIdx][slotCols[targetSlot].days] = calculatedDays;
           confirmedData[targetRIdx][slotCols[targetSlot].status] = "Part-paid (balance)";
+          if (tCols.rech >= 0) confirmedData[targetRIdx][tCols.rech] = newBalRechVal;
+          if (tCols.cm >= 0) confirmedData[targetRIdx][tCols.cm] = newBalCmVal;
         }
         updateCount++;
         const rowNote = targetSlotInfo.isNewRow ? ` (New Child Row ${targetRowNum})` : ` (Row ${targetRowNum})`;
@@ -5551,18 +5662,7 @@ async function processPartPaidInvoices(ss, alertSheet) {
       const group = balLoc.jobGroup;
       const isRetainerJob = group && (group.isRetainer || (group.childRows.length > 0 && colType !== -1 && String(confirmedData[group.parentRow - 1][colType] || "").trim().toLowerCase() === "retainer"));
       if (group && balLoc.rowNumber === group.parentRow && isRetainerJob) {
-        changeLog.push({ row: balLoc.rowNumber, col: slotCols[balLoc.slot].amt + 1, value: "" });
-        changeLog.push({ row: balLoc.rowNumber, col: slotCols[balLoc.slot].ref + 1, value: "" });
-        changeLog.push({ row: balLoc.rowNumber, col: slotCols[balLoc.slot].sendDate + 1, value: "" });
-        changeLog.push({ row: balLoc.rowNumber, col: slotCols[balLoc.slot].days + 1, value: "" });
-        changeLog.push({ row: balLoc.rowNumber, col: slotCols[balLoc.slot].status + 1, value: "" });
-        if (confirmedData[balLoc.rowIndex]) {
-          confirmedData[balLoc.rowIndex][slotCols[balLoc.slot].amt] = "";
-          confirmedData[balLoc.rowIndex][slotCols[balLoc.slot].ref] = "";
-          confirmedData[balLoc.rowIndex][slotCols[balLoc.slot].sendDate] = "";
-          confirmedData[balLoc.rowIndex][slotCols[balLoc.slot].days] = "";
-          confirmedData[balLoc.rowIndex][slotCols[balLoc.slot].status] = "";
-        }
+        clearPartPaidSlot_(balLoc);
         invoiceUpdated = true;
         logDetails.push(`[Confirmed] Cleaned up misplaced balance slot on Parent Row ${balLoc.rowNumber} Slot ${balLoc.slot} for fully-paid Invoice ${balLoc.ref}`);
         return;
@@ -9536,6 +9636,7 @@ async function processInstantConfirmedJobs_(ss) {
  * ----------------------------------------------------------------
  * 5_AGENT_RECEIVER
  * 
+ * v3.33 (Support 7-col Confirmed recharged/cost-month slots and Col R recharged expenses in runRetainerSheetAudit_ and runInvoiceSheetAudit_)
  * v3.32 (Ignore Last Swept and Last Synced metadata columns including emoji-prefixed headers in getCrmFieldChanges_)
  * v3.31 (Default retainerDay to 28 instead of 1 in auditInvoiceGaps, processRowGap_, and calculateRevenueSplit_, and bound dates to month length)
  * v3.30 (Prevent runInvoiceSheetAudit_ from creating single-row retainer placeholder invoices on the Confirmed parent row)
@@ -11017,14 +11118,17 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
      const cleanName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
      return normHeaders.indexOf(cleanName);
   };
+  const isConfTab = sheetName === "Confirmed";
   const colClient = getIdx("Client");
   const colJob = getIdx("Job name");
   const colRevenue = getIdx("Revenue (Proj total / Ongoing pm) - excl VAT");
+  const colRech = isConfTab ? getIdx("Recharged expenses (excl VAT)") : -1;
   const colVAT = getIdx("VAT?");
   const colType = getIdx("Project / retainer");
   const colStart = getIdx("Start date");
   const colEnd = getIdx("End date");
   const colInv1Amt = getIdx("Project invoice 1 / monthly retainer (excl VAT)");
+  const colInv1Rech = isConfTab ? getIdx("Inv 1 of which rechgd") : -1;
   const colInv1Date = getIdx("Inv 1 SEND date");
   
   const parseMoney = (val) => {
@@ -11041,11 +11145,12 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
 
   const maxRows = sheet.getMaxRows();
   let trueLastRow = 0;
+  const z3EndCol = isConfTab ? 62 : 60;
   for (let r = data.length - 1; r >= 0; r--) {
       const row = data[r];
-      const z1 = row.slice(0, 5).some(c => c !== "" && c !== null);
+      const z1 = row.slice(0, 5).some(c => c !== "" && c !== null) || (colRech !== -1 && row[colRech] !== "" && row[colRech] !== null);
       const z2 = row.slice(32, 39).some(c => c !== "" && c !== null);
-      const z3 = row.slice(41, 60).some(c => c !== "" && c !== null);
+      const z3 = row.slice(41, z3EndCol).some(c => c !== "" && c !== null);
       const z4 = row.slice(75, 96).some(c => c !== "" && c !== null);
       if (z1 || z2 || z3 || z4) {
           trueLastRow = r + 1;
@@ -11081,7 +11186,8 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
         const end = parseDateSafe(row[colEnd], new Date(2050, 11, 31));
 
         if (monthlyFee <= 0 || !start || isNaN(start.getTime())) continue;
-        const parentInvAmt = parseMoney(row[colInv1Amt]);
+        const parentRechAmt = colInv1Rech !== -1 ? parseMoney(row[colInv1Rech]) : 0;
+        const parentInvAmt = Math.max(0, parseMoney(row[colInv1Amt]) - parentRechAmt);
         if (parentInvAmt > 0) continue;
 
         const fuzzy = (str) => String(str || '').toLowerCase().replace(/&/g, 'and').replace(/\s+/g, '');
@@ -11094,11 +11200,12 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
 
         for (let j = i + 1; j < data.length; j++) {
             const nextRow = data[j];
-            if (nextRow[colStart] || parseMoney(nextRow[colRevenue]) > 0) break; 
+            if (nextRow[colStart] || parseMoney(nextRow[colRevenue]) > 0 || (colRech !== -1 && parseMoney(nextRow[colRech]) > 0)) break; 
             
             if (fuzzy(nextRow[colJob]) === parentJobFuzzy) {
                 childCount++;
-                const amt = parseMoney(nextRow[colInv1Amt]);
+                const childRechAmt = colInv1Rech !== -1 ? parseMoney(nextRow[colInv1Rech]) : 0;
+                const amt = Math.max(0, parseMoney(nextRow[colInv1Amt]) - childRechAmt);
                 totalInvoiced += amt;
 
                 const rowDate = nextRow[colInv1Date] ? new Date(nextRow[colInv1Date]) : null;
@@ -11246,7 +11353,7 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
                         
                         // FIXED: Push to batched array instead of making synchronous API calls
                         rangesToClear.push(`A${rowNum}:AM${rowNum}`);
-                        rangesToClear.push(`AP${rowNum}:BH${rowNum}`);
+                        rangesToClear.push(isConfTab ? `AP${rowNum}:BJ${rowNum}` : `AP${rowNum}:BH${rowNum}`);
                         rangesToClear.push(`BX${rowNum}:CR${rowNum}`);
                         
                         try { sheet.getRange(rowNum, 1).shiftRowGroupDepth(-1); } catch(e) {}
@@ -11327,9 +11434,9 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
   jobsToExpand.sort((a, b) => b.insertAfter - a.insertAfter);
 
   const isRowPopulatedInZones_ = (row) => {
-      const z1 = row.slice(0, 5).some(c => c !== "" && c !== null);
+      const z1 = row.slice(0, 5).some(c => c !== "" && c !== null) || (colRech !== -1 && row[colRech] !== "" && row[colRech] !== null);
       const z2 = row.slice(32, 39).some(c => c !== "" && c !== null);
-      const z3 = row.slice(41, 60).some(c => c !== "" && c !== null);
+      const z3 = row.slice(41, z3EndCol).some(c => c !== "" && c !== null);
       const z4 = row.slice(75, 96).some(c => c !== "" && c !== null);
       return z1 || z2 || z3 || z4;
   };
@@ -11882,9 +11989,11 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
      return -1;
   };
   
+  const isConfTab = sheetName === "Confirmed";
   // Map Columns
   const colType = getIdx(["Project / retainer", "Type"], true);
   const colRevenue = getIdx(["Revenue (Proj total / Ongoing pm) - excl VAT", "Revenue", "Est. Revenue", "Fee"], true);
+  const colRech = isConfTab ? getIdx(["Recharged expenses (excl VAT)"]) : -1;
   const colStart = getIdx("Start date");
   const colEnd = getIdx("End date");
   const colJobName = getIdx(["Job name", "Job", "Project name"]);
@@ -11902,7 +12011,9 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
       id: getIdx([`Inv ${i} no`, `Invoice ${i} number`, `Inv ${i} id`, `Inv ${i} ref`]),
       status: getIdx([`Inv ${i} status`, `Invoice ${i} status`]),
       days: getIdx([`Inv ${i} days to pay`, `Invoice ${i} days to pay`, `Project invoice ${i} days to pay`]),
-      dueDate: getIdx([`Inv ${i} due date`, `Invoice ${i} due date`])
+      dueDate: getIdx([`Inv ${i} due date`, `Invoice ${i} due date`]),
+      rech: isConfTab ? getIdx([`Inv ${i} of which rechgd`]) : -1,
+      cm: isConfTab ? getIdx([`Inv ${i} cost month`]) : -1
   }));
   
   if (colRevenue === -1) {
@@ -11930,15 +12041,18 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
       const jn = String(row[colJobName] || "");
       const cn = String(row[colClient] || "");
       const rawRev = parseMoney_(row[colRevenue]);
-      if (!jn || rawRev <= 0) return false;
+      const rawRech = colRech !== -1 ? parseMoney_(row[colRech]) : 0;
+      if (!jn || (rawRev + rawRech) <= 0) return false;
       if (dataIdx + 1 >= data.length) return false;
       const nextRow = data[dataIdx + 1];
       const nextJob = String(nextRow[colJobName] || "");
       const nextClient = String(nextRow[colClient] || "");
       const nextRev = parseMoney_(nextRow[colRevenue]);
+      const nextRech = colRech !== -1 ? parseMoney_(nextRow[colRech]) : 0;
       const nextStart = nextRow[colStart];
       return (fuzzy(nextClient) === fuzzy(cn) && fuzzy(nextJob) === fuzzy(jn) && 
               (isNaN(nextRev) || nextRev === 0) &&
+              (isNaN(nextRech) || nextRech === 0) &&
               (!nextStart || String(nextStart).trim() === ''));
   };
 
@@ -11951,9 +12065,10 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
           const childJob = fuzzy(data[j][colJobName]);
           const childClient = fuzzy(data[j][colClient]);
           const childRev = parseMoney_(data[j][colRevenue]);
+          const childRech = colRech !== -1 ? parseMoney_(data[j][colRech]) : 0;
           const childStart = data[j][colStart];
           if (childClient !== parentClient || childJob !== parentJob) break;
-          if (childRev > 0 || (childStart && String(childStart).trim() !== '')) break;
+          if (childRev > 0 || childRech > 0 || (childStart && String(childStart).trim() !== '')) break;
           count++;
       }
       return count;
@@ -11962,38 +12077,43 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
   // --- HELPER: Analyse slots for a single row ---
   const analyseRowSlots_ = (row) => {
       let realFilled = 0;
+      let realRechFilled = 0;
       let realCount = 0;
       let autoSlots = [];
       let emptySlots = [];
       slots.forEach((s) => {
           if (s.amt === -1) return;
           const val = parseMoney_(row[s.amt]);
+          const rechVal = (isConfTab && s.rech !== -1) ? parseMoney_(row[s.rech]) : 0;
           const idVal = String(row[s.id] || "").trim();
           const isAutoPlaceholder = isPlaceholderInvoice_(idVal);
           
           const isRealApp = idVal !== "" && !isAutoPlaceholder;
-          const hasVal = !isNaN(val) && val > 0.01;
+          const hasVal = (!isNaN(val) && val > 0.01) || (!isNaN(rechVal) && rechVal > 0.01);
           
           if (isAutoPlaceholder) {
               autoSlots.push(s);
           } else if (hasVal || isRealApp) {
               realFilled += val;
+              realRechFilled += rechVal;
               realCount++;
           } else {
               emptySlots.push(s);
           }
       });
-      return { realFilled, realCount, autoSlots, emptySlots, availableSlots: [...autoSlots, ...emptySlots] };
+      return { realFilled, realRechFilled, realCount, autoSlots, emptySlots, availableSlots: [...autoSlots, ...emptySlots] };
   };
 
   // --- HELPER: Write a gap allocation to a specific row/slot ---
-  const applyGapAllocation_ = (dataIdx, s, amountToWrite, dateToWrite, descType) => {
+  const applyGapAllocation_ = (dataIdx, s, amountToWrite, dateToWrite, descType, rechToWrite = 0) => {
       const sheetRow = dataIdx + 1;
       const rowData = data[dataIdx];
       const jn = String(rowData[colJobName] || "");
       if (dateToWrite instanceof Date && dateToWrite < today) dateToWrite = targetFifth;
 
       const currentVal = parseMoney_(rowData[s.amt]);
+      const currentRech = (isConfTab && s.rech !== -1) ? parseMoney_(rowData[s.rech]) : 0;
+      const desiredRech = (isConfTab && rechToWrite > 0.005) ? Math.round(rechToWrite * 100) / 100 : 0;
       const currentDateVal = rowData[s.date];
       let dateChanged = false;
       if (dateToWrite instanceof Date) {
@@ -12014,11 +12134,15 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
       const isRealApp = idVal !== "" && !isManualSlot;
       if (isRealApp) return false;
       
-      const isNewCreation = !isManualSlot && currentVal === 0;
+      const isNewCreation = !isManualSlot && currentVal === 0 && currentRech === 0;
+      const rechChanged = isConfTab && s.rech !== -1 && (
+        Math.abs(currentRech - desiredRech) > 0.01 ||
+        (desiredRech === 0 && String(rowData[s.rech] ?? "").trim() !== "")
+      );
       
-      if (Math.abs(currentVal - amountToWrite) > 0.01 || (isManualSlot && dateChanged) || isNewCreation) {
+      if (Math.abs(currentVal - amountToWrite) > 0.01 || (isManualSlot && dateChanged) || isNewCreation || rechChanged) {
           // FIXED: Pass rangesToFormat and rowData so styling and unchanged checks can be batched
-          writeInvoiceManualEntry_(sheet, sheetRow, s, amountToWrite, dateToWrite, descType, daysVal, rangesToFormat, rowData);
+          writeInvoiceManualEntry_(sheet, sheetRow, s, amountToWrite, dateToWrite, descType, daysVal, rangesToFormat, rowData, desiredRech);
           const client = rowData[colClient] || "Unknown";
           
           const isRetainer = descType.includes("Retainer");
@@ -12031,6 +12155,9 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
               const changes = [];
               if (Math.abs(currentVal - amountToWrite) > 0.01) {
                   changes.push(`Amt: £${currentVal.toFixed(2)} -> £${amountToWrite.toFixed(2)}`);
+              }
+              if (rechChanged) {
+                  changes.push(`Rechgd: £${currentRech.toFixed(2)} -> £${desiredRech.toFixed(2)}`);
               }
               if (dateChanged) {
                   const d1 = (currentDateVal instanceof Date) ? Utilities.formatDate(currentDateVal, spreadsheetTimeZone, "dd-MMM") : "Blank";
@@ -12050,7 +12177,9 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
       const rawRowType = String(row[colType] || "").toLowerCase();
       const isRetainer = isRetainerRow || rawRowType.includes("retainer");
       const jobName = String(row[colJobName] || "");
-      const { realFilled, realCount, availableSlots } = analyseRowSlots_(row);
+      const { realFilled, realRechFilled, realCount, availableSlots } = analyseRowSlots_(row);
+      const parentRech = (!isRetainer && isConfTab && colRech !== -1) ? parseMoney_(row[colRech]) : 0;
+      const effectiveTargetRevenue = isRetainer ? targetRevenue : Math.round((targetRevenue + parentRech) * 100) / 100;
       
       // FIXED: Pull Start and End dates exclusively from the *Calcs tab (Fallback to raw dates if missing)
       const rawCalcStart = (calcData[i] && calcStartCol !== -1) ? calcData[i][calcStartCol] : row[colStart];
@@ -12060,7 +12189,7 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
       
       // For retainers: If the row already has a real invoice (realCount > 0), the row is considered invoiced.
       // Retainers never split gaps across slots 2 or 3 to fill minor invoice discrepancies (e.g. currency diffs).
-      const gapNeeded = (isParentRow || !hasDates || (isRetainer && realCount > 0)) ? 0 : (targetRevenue - realFilled);
+      const gapNeeded = (isParentRow || !hasDates || (isRetainer && realCount > 0)) ? 0 : Math.max(0, Math.round((effectiveTargetRevenue - realFilled) * 100) / 100);
       
       const sheetRow = i + 1;
       let rowUpdated = false;
@@ -12103,26 +12232,39 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
                   return false;
               }
               if (slots[0] && slots[0].amt !== -1) {
-                  allocations.push({ amt: gapNeeded, date: anchorDate, targetSlotIndex: 0 });
+                  allocations.push({ amt: gapNeeded, rech: 0, date: anchorDate, targetSlotIndex: 0 });
               }
           } else {
-              const isReal_ = (s) => (parseMoney_(row[s.amt]) > 0 || String(row[s.id] || "").trim() !== "") && !isPlaceholderInvoice_(row[s.id]);
+              const isReal_ = (s) => (parseMoney_(row[s.amt]) > 0 || (isConfTab && s.rech !== -1 && parseMoney_(row[s.rech]) > 0) || String(row[s.id] || "").trim() !== "") && !isPlaceholderInvoice_(row[s.id]);
               const s1_real = isReal_(slots[0]);
               const s2_real = isReal_(slots[1]);
               const s3_real = isReal_(slots[2]);
               const xeroCount = (s1_real ? 1 : 0) + (s2_real ? 1 : 0) + (s3_real ? 1 : 0);
 
-              const splitRules = calculateRevenueSplit_(gapNeeded, logicMode, startDate, endDate, retainerDay, xeroCount);
+              const remainingRechgdToAllocate = isConfTab
+                ? Math.max(0, Math.min(gapNeeded, Math.round((parentRech - realRechFilled) * 100) / 100))
+                : 0;
+              const remainingNonRechgd = Math.max(0, Math.round((gapNeeded - remainingRechgdToAllocate) * 100) / 100);
+
+              const splitRules = remainingNonRechgd > 0
+                ? calculateRevenueSplit_(remainingNonRechgd, logicMode, startDate, endDate, retainerDay, xeroCount)
+                : [{ date: endDate, amt: 0 }];
+              if (remainingRechgdToAllocate > 0 && splitRules.length > 0) {
+                splitRules[splitRules.length - 1].amt = Math.round(((splitRules[splitRules.length - 1].amt || 0) + remainingRechgdToAllocate) * 100) / 100;
+                splitRules[splitRules.length - 1].rech = remainingRechgdToAllocate;
+              }
               
               const maxSlotsOnThisRow = Math.max(0, 3 - xeroCount);
               const currentInvRules = splitRules.slice(0, maxSlotsOnThisRow);
               let remainingRulesAmt = splitRules.slice(maxSlotsOnThisRow).reduce((sum, r) => sum + r.amt, 0);
+              let remainingRulesRech = splitRules.slice(maxSlotsOnThisRow).reduce((sum, r) => sum + (r.rech || 0), 0);
               
-              currentInvRules.forEach((rule, i) => {
-                  if (i < availableSlots.length) {
-                      allocations.push({ amt: rule.amt, date: rule.date, targetSlotIndex: availableSlots[i].index });
+              currentInvRules.forEach((rule, rIdx) => {
+                  if (rIdx < availableSlots.length) {
+                      allocations.push({ amt: rule.amt, rech: rule.rech || 0, date: rule.date, targetSlotIndex: availableSlots[rIdx].index });
                   } else {
                       remainingRulesAmt += rule.amt;
+                      remainingRulesRech += (rule.rech || 0);
                   }
               });
 
@@ -12133,6 +12275,7 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
                      job: jobName,
                      vat: (colVAT !== -1) ? row[colVAT] : "",
                      gapAmount: remainingRulesAmt,
+                     gapRech: Math.round(remainingRulesRech * 100) / 100,
                      date: endDate,
                      startDate: startDate
                   });
@@ -12143,7 +12286,7 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
               if (alloc.date < today) alloc.date = targetFifth;
               const s = slots[alloc.targetSlotIndex];
               if (!s) return;
-              if (applyGapAllocation_(i, s, alloc.amt, alloc.date, isRetainer ? "Retainer Invoice" : "Project Invoice")) {
+              if (applyGapAllocation_(i, s, alloc.amt, alloc.date, isRetainer ? "Retainer Invoice" : "Project Invoice", alloc.rech || 0)) {
                   rowUpdated = true;
               }
           });
@@ -12240,7 +12383,8 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
 
       if (isParentWithChildren_(i)) {
           const childCount = countChildRows_(i);
-          const parentRevenue = rawRevenue;
+          const parentRech = (isConfTab && colRech !== -1) ? parseMoney_(row[colRech]) : 0;
+          const parentRevenue = Math.round((rawRevenue + parentRech) * 100) / 100;
           
           // FIXED: Pull Parent Start and End dates exclusively from the *Calcs tab
           const rawCalcStart = (calcData[i] && calcStartCol !== -1) ? calcData[i][calcStartCol] : row[colStart];
@@ -12255,17 +12399,30 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
           const parentHasInvoices = parentSlotAnalysis.realCount > 0;
 
           let totalInvoiced = parentSlotAnalysis.realFilled;
+          let totalRechInvoiced = parentSlotAnalysis.realRechFilled;
           for (let c = 1; c <= childCount; c++) {
               const childAnalysis = analyseRowSlots_(data[i + c]);
               totalInvoiced += childAnalysis.realFilled;
+              totalRechInvoiced += childAnalysis.realRechFilled;
           }
 
-          const groupGap = hasDates ? (parentRevenue - totalInvoiced) : 0;
+          const groupGap = hasDates ? Math.max(0, Math.round((parentRevenue - totalInvoiced) * 100) / 100) : 0;
           if (groupGap > 0.05) {
               let groupXeroCount = parentHasInvoices ? parentSlotAnalysis.realCount : 0;
               for (let c = 1; c <= childCount; c++) groupXeroCount += analyseRowSlots_(data[i + c]).realCount;
+
+              const remainingRechgdToAllocate = isConfTab
+                ? Math.max(0, Math.min(groupGap, Math.round((parentRech - totalRechInvoiced) * 100) / 100))
+                : 0;
+              const remainingNonRechgd = Math.max(0, Math.round((groupGap - remainingRechgdToAllocate) * 100) / 100);
               
-              const allocations = calculateRevenueSplit_(groupGap, logicMode, parentStartDate, parentEndDate, retainerDay, groupXeroCount);
+              const allocations = remainingNonRechgd > 0
+                ? calculateRevenueSplit_(remainingNonRechgd, logicMode, parentStartDate, parentEndDate, retainerDay, groupXeroCount)
+                : [{ date: parentEndDate, amt: 0 }];
+              if (remainingRechgdToAllocate > 0 && allocations.length > 0) {
+                allocations[allocations.length - 1].amt = Math.round(((allocations[allocations.length - 1].amt || 0) + remainingRechgdToAllocate) * 100) / 100;
+                allocations[allocations.length - 1].rech = remainingRechgdToAllocate;
+              }
               const groupAutoSlots = [];
               const groupEmptySlots = [];
               
@@ -12286,7 +12443,7 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
               if (groupAvailableSlots.length >= allocations.length) {
                   allocations.forEach((alloc, idx) => {
                       const entry = groupAvailableSlots[idx];
-                      if (applyGapAllocation_(entry.dataIdx, entry.slot, alloc.amt, alloc.date, "Project Invoice")) {
+                      if (applyGapAllocation_(entry.dataIdx, entry.slot, alloc.amt, alloc.date, "Project Invoice", alloc.rech || 0)) {
                           updates++;
                       }
                   });
@@ -12306,6 +12463,7 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
                     job: jobName,
                     vat: (colVAT !== -1) ? row[colVAT] : "",
                     gapAmount: groupGap,
+                    gapRech: remainingRechgdToAllocate,
                     date: parentEndDate,
                     startDate: parentStartDate
                   });
@@ -12350,11 +12508,12 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
   // ====================================================================
   if (projectGroupsNeedingRows.length > 0) {
       let trueLastRow = 0;
+      const z3PostEnd = isConfTab ? 62 : 60;
       for (let r = data.length - 1; r >= 0; r--) {
           const row = data[r];
-          const z1 = row.slice(0, 5).some(c => c !== "" && c !== null);
+          const z1 = row.slice(0, 5).some(c => c !== "" && c !== null) || (colRech !== -1 && row[colRech] !== "" && row[colRech] !== null);
           const z2 = row.slice(32, 39).some(c => c !== "" && c !== null);
-          const z3 = row.slice(41, 60).some(c => c !== "" && c !== null);
+          const z3 = row.slice(41, z3PostEnd).some(c => c !== "" && c !== null);
           const z4 = row.slice(75, 96).some(c => c !== "" && c !== null);
           
           if (z1 || z2 || z3 || z4) {
@@ -12385,10 +12544,18 @@ function runInvoiceSheetAudit_(sheet, logicMode, retainerDay, defaultDays) {
       sheet.getRange(newChildRow, colJobName + 1).setValue(sanitizeSheetCell_(job.job));
       if (colVAT !== -1) sheet.getRange(newChildRow, colVAT + 1).setValue(sanitizeSheetCell_(job.vat));
 
-      const overflowRules = calculateRevenueSplit_(job.gapAmount, logicMode, fourthMonthStart, job.date, retainerDay);
+      const overflowRech = job.gapRech || 0;
+      const overflowNonRech = Math.max(0, Math.round((job.gapAmount - overflowRech) * 100) / 100);
+      const overflowRules = overflowNonRech > 0
+        ? calculateRevenueSplit_(overflowNonRech, logicMode, fourthMonthStart, job.date, retainerDay)
+        : [{ date: job.date, amt: 0 }];
+      if (overflowRech > 0 && overflowRules.length > 0) {
+        overflowRules[overflowRules.length - 1].amt = Math.round(((overflowRules[overflowRules.length - 1].amt || 0) + overflowRech) * 100) / 100;
+        overflowRules[overflowRules.length - 1].rech = overflowRech;
+      }
       overflowRules.forEach((rule, idx) => {
           if (idx < 3) { 
-              writeInvoiceManualEntry_(sheet, newChildRow, slots[idx], rule.amt, rule.date, "Project Invoice", daysVal, rangesToFormat);
+              writeInvoiceManualEntry_(sheet, newChildRow, slots[idx], rule.amt, rule.date, "Project Invoice", daysVal, rangesToFormat, null, rule.rech || 0);
           }
       });
 
@@ -12494,7 +12661,7 @@ function calculateRevenueSplit_(amount, mode, start, end, retainerDay, xeroCount
  * Internal Helper: Writes a placeholder invoice entry.
  * UPDATED: Batches formatting calls into a global array to prevent API exhaustion.
  */
-function writeInvoiceManualEntry_(sheet, row, slot, amount, dateObj, descType, defaultDays, rangesToFormatArray, existingRow) {
+function writeInvoiceManualEntry_(sheet, row, slot, amount, dateObj, descType, defaultDays, rangesToFormatArray, existingRow, rechAmount = 0) {
     const ms = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     const dateStr = (dateObj instanceof Date) ? `${ms[dateObj.getMonth()]}-${String(dateObj.getFullYear()).slice(-2)}` : "UNK";
     const rand = Math.floor(1000 + Math.random() * 9000);
@@ -12560,6 +12727,23 @@ function writeInvoiceManualEntry_(sheet, row, slot, amount, dateObj, descType, d
         dueObj.setDate(dateObj.getDate() + daysToUse); 
         writeAndTrack(slot.dueDate, dueObj);
     }
+
+    if (slot.rech !== undefined && slot.rech !== -1) {
+        const desiredRech = (rechAmount && rechAmount > 0.005) ? Math.round(rechAmount * 100) / 100 : "";
+        const existingRechRaw = existingRow ? existingRow[slot.rech] : undefined;
+        const hasExistingRech = existingRow && existingRechRaw !== undefined && String(existingRechRaw ?? "").trim() !== "";
+        const existingRechNum = parseFloat(String(existingRechRaw ?? "").replace(/[^0-9.-]/g, "")) || 0;
+        if (desiredRech === "") {
+            if (hasExistingRech || !existingRow) {
+                sheet.getRange(row, slot.rech + 1).setValue("");
+            }
+            if (slot.cm !== undefined && slot.cm !== -1 && (!existingRow || String(existingRow[slot.cm] ?? "").trim() !== "")) {
+                sheet.getRange(row, slot.cm + 1).setValue("");
+            }
+        } else if (!existingRow || !hasExistingRech || Math.abs(existingRechNum - desiredRech) >= 0.01) {
+            sheet.getRange(row, slot.rech + 1).setValue(desiredRech);
+        }
+    }
 }
 
 // --- HELPER: CLEAR INVOICE SLOT ---
@@ -12577,13 +12761,14 @@ function clearInvoiceSlot_(sheet, row, slot, rangesToClearArray) {
     };
     
     const add = (colIdx) => {
-        if (colIdx !== -1 && rangesToClearArray) {
+        if (colIdx !== undefined && colIdx !== -1 && rangesToClearArray) {
             rangesToClearArray.push(`${getColLetter(colIdx)}${row}`);
         }
     };
     
     add(slot.desc); add(slot.amt); add(slot.date);
     add(slot.id); add(slot.status); add(slot.days); add(slot.dueDate);
+    add(slot.rech); add(slot.cm);
 }
 
 /**

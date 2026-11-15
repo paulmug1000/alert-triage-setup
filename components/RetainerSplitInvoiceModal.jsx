@@ -31,6 +31,8 @@ export default function RetainerSplitInvoiceModal({
 
   const [loading, setLoading] = useState(true);
   const [preview, setPreview] = useState(null);
+  const [splitMode, setSplitMode] = useState("extra_revenue");
+  const [costMonth, setCostMonth] = useState("");
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState("");
   const [retryKey, setRetryKey] = useState(0);
@@ -79,6 +81,8 @@ export default function RetainerSplitInvoiceModal({
         setError(data.error || "Could not compute the split.");
       } else {
         setPreview(data);
+        setSplitMode("extra_revenue");
+        setCostMonth(data.defaultCostMonth || "");
       }
     } catch (e) {
       clearTimeout(timeoutId);
@@ -117,6 +121,7 @@ export default function RetainerSplitInvoiceModal({
     if (!preview) return;
     setApplying(true);
     setError("");
+    const activeSplitMode = preview.difference > 0 ? splitMode : "extra_revenue";
     try {
       const res = await fetch("/api/triage", {
         method: "POST",
@@ -142,6 +147,8 @@ export default function RetainerSplitInvoiceModal({
           extraJobMonth: preview.extraJobMonth,
           extraJobYear: preview.extraJobYear,
           existingConfirmedRow: preview.existingJobInfo?.confirmedRow,
+          splitMode: activeSplitMode,
+          costMonth: activeSplitMode === "recharged_expense" ? costMonth.trim() : "",
         }),
       });
       const data = await res.json();
@@ -164,7 +171,9 @@ export default function RetainerSplitInvoiceModal({
               alertData: alertMeta,
               clientName: effectiveClientName || alertMeta?.endClientName || "",
               sessionId: sessionId || "",
-              resolution: "Invoice split between retainer and extra revenue job",
+              resolution: activeSplitMode === "recharged_expense"
+                ? "Invoice recorded with recharged expenses on retainer"
+                : "Invoice split between retainer and extra revenue job",
             }),
           });
         } catch (resolveErr) {
@@ -184,7 +193,7 @@ export default function RetainerSplitInvoiceModal({
       style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={e => { if (e.target === e.currentTarget) close(); }}
     >
-      <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 500px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+      <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 520px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>
             Split invoice - {alertMeta?.endClientName}
@@ -196,7 +205,7 @@ export default function RetainerSplitInvoiceModal({
           <div style={{ padding: "30px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: "14px", textAlign: "center" }}>
             <Spinner size={32} color="#0891b2" />
             <div style={{ fontSize: "14px", color: "#0e7490", fontWeight: "600" }}>
-              {applying ? "Applying the split - this can take a little while..." : "Working out the split..."}
+              {applying ? "Applying changes - this can take a little while..." : "Working out the split..."}
             </div>
             {applying && <div style={{ fontSize: "12px", color: "#999" }}>Please don&apos;t close this window until it&apos;s done.</div>}
           </div>
@@ -227,16 +236,89 @@ export default function RetainerSplitInvoiceModal({
             <div style={{ fontSize: "13px", color: "#333", marginBottom: "16px" }}>
               <div><strong>Job:</strong> {alertMeta?.jobName}</div>
               <div style={{ marginTop: "8px", padding: "10px", background: "#ecfeff", border: "1px solid #a5f3fc", borderRadius: "6px" }}>
-                The retainer&apos;s <strong>{preview.missingRowPeriodLabel}</strong> invoice{isAdmin ? ` (row ${preview.missingRowNum})` : ""} will be recorded at the standard <strong>£{preview.standardMonthlyAmount.toFixed(2)}</strong>, using invoice #{preview.altInvoiceNo} sent {preview.altSentDate}.
-              </div>
-              <div style={{ marginTop: "8px", padding: "10px", background: preview.difference >= 0 ? "#f5f3ff" : "#fff7ed", border: `1px solid ${preview.difference >= 0 ? "#ddd6fe" : "#fed7aa"}`, borderRadius: "6px" }}>
-                The invoice was actually for <strong>£{preview.altAmount.toFixed(2)}</strong> - a difference of <strong>{preview.difference >= 0 ? "+" : ""}£{preview.difference.toFixed(2)}</strong>.{" "}
-                {preview.existingJobInfo ? (
-                  <>This will be applied to the existing job{isAdmin ? <> on row <strong>{preview.existingJobInfo.confirmedRow}</strong></> : ""} ({preview.existingJobInfo.jobName}), which will be renamed to <strong>&quot;{preview.extraJobName}&quot;</strong> and its revenue set to {preview.difference >= 0 ? "" : "-"}£{Math.abs(preview.difference).toFixed(2)}.</>
+                {preview.difference > 0 ? (
+                  <>
+                    Invoice #{preview.altInvoiceNo} (sent {preview.altSentDate}) is for <strong>£{preview.altAmount.toFixed(2)}</strong> vs the standard monthly fee of <strong>£{preview.standardMonthlyAmount.toFixed(2)}</strong> — an excess of <strong>+£{preview.difference.toFixed(2)}</strong>.
+                  </>
                 ) : (
-                  <>A new standalone job called <strong>&quot;{preview.extraJobName}&quot;</strong> will be created, with revenue {preview.difference >= 0 ? "" : "-"}£{Math.abs(preview.difference).toFixed(2)}.</>
+                  <>
+                    The retainer&apos;s <strong>{preview.missingRowPeriodLabel}</strong> invoice{isAdmin ? ` (row ${preview.missingRowNum})` : ""} will be recorded at the standard <strong>£{preview.standardMonthlyAmount.toFixed(2)}</strong>, using invoice #{preview.altInvoiceNo} sent {preview.altSentDate}.
+                  </>
                 )}
               </div>
+
+              {preview.difference > 0 ? (
+                <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
+                    Choose how to handle the +£{preview.difference.toFixed(2)} difference:
+                  </div>
+
+                  <label style={{ display: "flex", gap: "8px", alignItems: "flex-start", padding: "10px", borderRadius: "6px", border: `1px solid ${splitMode === "extra_revenue" ? "#0891b2" : "#e2e8f0"}`, background: splitMode === "extra_revenue" ? "#f0fdff" : "#fff", cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name="retainerSplitMode"
+                      value="extra_revenue"
+                      checked={splitMode === "extra_revenue"}
+                      onChange={() => setSplitMode("extra_revenue")}
+                      style={{ marginTop: "3px" }}
+                    />
+                    <div style={{ fontSize: "12.5px", lineHeight: "1.45" }}>
+                      <div style={{ fontWeight: "600", color: "#0f172a" }}>Create extra revenue job</div>
+                      <div style={{ color: "#475569", marginTop: "2px" }}>
+                        Records <strong>£{preview.standardMonthlyAmount.toFixed(2)}</strong> on the <strong>{preview.missingRowPeriodLabel}</strong> retainer invoice{isAdmin ? ` (row ${preview.missingRowNum})` : ""}.{" "}
+                        {preview.existingJobInfo ? (
+                          <>Applies +£{preview.difference.toFixed(2)} to the existing job{isAdmin ? <> on row <strong>{preview.existingJobInfo.confirmedRow}</strong></> : ""} ({preview.existingJobInfo.jobName}), renamed to <strong>&quot;{preview.extraJobName}&quot;</strong>.</>
+                        ) : (
+                          <>Creates a standalone job called <strong>&quot;{preview.extraJobName}&quot;</strong> with revenue £{preview.difference.toFixed(2)}.</>
+                        )}
+                      </div>
+                    </div>
+                  </label>
+
+                  <label style={{ display: "flex", gap: "8px", alignItems: "flex-start", padding: "10px", borderRadius: "6px", border: `1px solid ${splitMode === "recharged_expense" ? "#0891b2" : "#e2e8f0"}`, background: splitMode === "recharged_expense" ? "#f0fdff" : "#fff", cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name="retainerSplitMode"
+                      value="recharged_expense"
+                      checked={splitMode === "recharged_expense"}
+                      onChange={() => setSplitMode("recharged_expense")}
+                      style={{ marginTop: "3px" }}
+                    />
+                    <div style={{ fontSize: "12.5px", lineHeight: "1.45", flex: 1 }}>
+                      <div style={{ fontWeight: "600", color: "#0f172a" }}>Record excess as recharged expenses on this invoice</div>
+                      <div style={{ color: "#475569", marginTop: "2px" }}>
+                        Records the full <strong>£{preview.altAmount.toFixed(2)}</strong> on the <strong>{preview.missingRowPeriodLabel}</strong> retainer invoice{isAdmin ? ` (row ${preview.missingRowNum})` : ""}, marks <strong>£{preview.difference.toFixed(2)}</strong> as recharged expenses, and adds £{preview.difference.toFixed(2)} to the retainer&apos;s recharged expenses budget (fee revenue stays £{preview.standardMonthlyAmount.toFixed(2)}/mo).
+                      </div>
+                      {splitMode === "recharged_expense" && (
+                        <div style={{ marginTop: "8px" }} onClick={e => e.stopPropagation()}>
+                          <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#334155", marginBottom: "4px" }}>
+                            Cost month (optional, e.g. {preview.defaultCostMonth || "Oct-26"})
+                          </label>
+                          <input
+                            type="text"
+                            value={costMonth}
+                            onChange={e => setCostMonth(e.target.value)}
+                            placeholder={preview.defaultCostMonth || "e.g. Oct-26"}
+                            style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", fontSize: "12px", borderRadius: "5px", border: "1px solid #cbd5e1", background: "#fff", color: "#0f172a" }}
+                          />
+                          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+                            Leave blank to align with the invoice date, or specify when the underlying expense was incurred.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </label>
+                </div>
+              ) : (
+                <div style={{ marginTop: "8px", padding: "10px", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "6px" }}>
+                  The invoice was actually for <strong>£{preview.altAmount.toFixed(2)}</strong> - a difference of <strong>£{preview.difference.toFixed(2)}</strong>.{" "}
+                  {preview.existingJobInfo ? (
+                    <>This will be applied to the existing job{isAdmin ? <> on row <strong>{preview.existingJobInfo.confirmedRow}</strong></> : ""} ({preview.existingJobInfo.jobName}), which will be renamed to <strong>&quot;{preview.extraJobName}&quot;</strong> and its revenue set to {preview.difference >= 0 ? "" : "-"}£{Math.abs(preview.difference).toFixed(2)}.</>
+                  ) : (
+                    <>A new standalone job called <strong>&quot;{preview.extraJobName}&quot;</strong> will be created, with revenue {preview.difference >= 0 ? "" : "-"}£{Math.abs(preview.difference).toFixed(2)}.</>
+                  )}
+                </div>
+              )}
             </div>
 
             {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginBottom: "12px" }}>{error}</div>}
@@ -256,7 +338,7 @@ export default function RetainerSplitInvoiceModal({
                 disabled={applying}
                 style={{ padding: "8px 22px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}
               >
-                Confirm split
+                {splitMode === "recharged_expense" && preview.difference > 0 ? "Confirm recharged expenses" : "Confirm split"}
               </button>
             </div>
           </>

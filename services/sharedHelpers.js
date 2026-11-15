@@ -305,13 +305,14 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
 
     // Check if targetRow is already the parent row
     const targetRev = String(targetRow[32] || "").trim();
+    const targetRech = tabName === "Confirmed" ? String(targetRow[17] || "").trim() : "";
     const targetType = String(targetRow[35] || "").trim();
     const targetStart = String(targetRow[37] || "").trim();
     const targetCode = String(targetRow[2] || "").trim();
     let trueParentIndex = targetRowIndex;
 
     // Only scan upwards if targetRow is NOT already a parent row
-    if (!targetRev && !targetType && !targetStart && !targetCode) {
+    if (!targetRev && !targetRech && !targetType && !targetStart && !targetCode) {
       let pIdx = targetRowIndex - 1;
       while (pIdx >= (tabName === "Pipeline" ? 5 : 1)) {
         const prev = rows[pIdx] || [];
@@ -327,10 +328,11 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
 
         trueParentIndex = pIdx;
         const pRevenue = String(prev[32] || "").trim();
+        const pRech = tabName === "Confirmed" ? String(prev[17] || "").trim() : "";
         const pBudget = parseFloat(String(prev[33] || "").replace(/[£$€,\s]/g, "")) || 0;
         const pStart = String(prev[37] || "").trim();
         const pType = String(prev[35] || "").trim();
-        if (pRevenue || pBudget > 0 || pStart || pType) {
+        if (pRevenue || pRech || pBudget > 0 || pStart || pType) {
           break; // Reached the true parent row
         }
         pIdx--;
@@ -347,6 +349,7 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
       const rc = String(r[0] || "").trim();
       const rj = String(r[1] || "").trim();
       const rRevenue = String(r[32] || "").trim();
+      const rRech = tabName === "Confirmed" ? String(r[17] || "").trim() : "";
       const rBudget = parseFloat(String(r[33] || "").replace(/[£$€,\s]/g, "")) || 0;
       const rStart = String(r[37] || "").trim();
       const rType = String(r[35] || "").trim();
@@ -357,7 +360,7 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
       const matchesClient = !rc || rc.toLowerCase() === parentClient.toLowerCase();
       const matchesJob = (rj && rj.toLowerCase() === parentJob.toLowerCase()) || (!rj && (r[41] || r[42] || r[75] || r[76]));
 
-      if (matchesClient && matchesJob && !rRevenue && !rBudget && !rStart && !rType) {
+      if (matchesClient && matchesJob && !rRevenue && !rRech && !rBudget && !rStart && !rType) {
         allRows.push({ rowNum: i + 1, row: r, isParent: false });
       } else {
         break;
@@ -368,24 +371,28 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
     const buildRowData = ({ rowNum, row, isParent }) => ({
       rowNum,
       isParent,
-      client:        colVal(row, 0),
-      jobName:       colVal(row, 1),
-      projectCode:   colVal(row, 2),
-      unevenSplit:   colVal(row, 30),
-      revenue:       colVal(row, 32),
-      directCosts:   colVal(row, 33),
-      vat:           colVal(row, 34),
-      projectRetainer: colVal(row, 35),
-      startDate:     colVal(row, 37),
-      endDate:       colVal(row, 38),
-      likelihood:    tabName === "Pipeline" ? colVal(row, 39) : null,
-      copiedToConf:  tabName === "Pipeline" ? colVal(row, 107) : null,
+      client:            colVal(row, 0),
+      jobName:           colVal(row, 1),
+      projectCode:       colVal(row, 2),
+      unevenSplit:       colVal(row, 30),
+      rechargedExpenses: tabName === "Confirmed" ? colVal(row, 17) : null,
+      revenue:           colVal(row, 32),
+      directCosts:       colVal(row, 33),
+      vat:               colVal(row, 34),
+      projectRetainer:   colVal(row, 35),
+      startDate:         colVal(row, 37),
+      endDate:           colVal(row, 38),
+      likelihood:        tabName === "Pipeline" ? colVal(row, 39) : null,
+      copiedToConf:      tabName === "Pipeline" ? colVal(row, 107) : null,
       invoiceSlots: [
         { slotNum: 1, amount: colVal(row,41), ref: colVal(row,42), sentDate: colVal(row,43), daysToPay: colVal(row,44), status: canonicalizeInvoiceStatus(colVal(row,45)),
+          ofWhichRechgd: tabName === "Confirmed" ? colVal(row, 46) : null, costMonth: tabName === "Confirmed" ? colVal(row, 47) : null,
           highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 1 && highlightSlot.rowNum === rowNum },
         { slotNum: 2, amount: colVal(row,48), ref: colVal(row,49), sentDate: colVal(row,50), daysToPay: colVal(row,51), status: canonicalizeInvoiceStatus(colVal(row,52)),
+          ofWhichRechgd: tabName === "Confirmed" ? colVal(row, 53) : null, costMonth: tabName === "Confirmed" ? colVal(row, 54) : null,
           highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 2 && highlightSlot.rowNum === rowNum },
         { slotNum: 3, amount: colVal(row,55), ref: colVal(row,56), sentDate: colVal(row,57), daysToPay: colVal(row,58), status: canonicalizeInvoiceStatus(colVal(row,59)),
+          ofWhichRechgd: tabName === "Confirmed" ? colVal(row, 60) : null, costMonth: tabName === "Confirmed" ? colVal(row, 61) : null,
           highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 3 && highlightSlot.rowNum === rowNum },
       ],
       expenseSlots: [

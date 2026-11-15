@@ -2003,8 +2003,10 @@ export async function handleStorePrecomputed(req, res, sheets) {
                 "possibleMatchInvoiceNo", "possibleMatchAmount", "possibleMatchSentDate", "possibleMatchConfidence", "possibleMatchConfirmedRow", "possibleMatchVatAmount", "possibleMatchStatus", "possibleMatchCase",
                 "uninvoicedAmount", "projectCode", "draftCount", "draftTotal", "stableJobKey", "isRetainer", "tab",
                 "directCosts", "unreceivedAmount", "placeholderCount", "placeholderTotal",
+                "feeRevenue", "rechargedExpenses", "billableBudget", "feeInvoiced", "rechargedInvoiced", "uninvoicedFee", "uninvoicedRecharged", "rechargedDiff",
+                "totalInvoiced", "totalExpenses", "diff", "childExp", "expectedForRow",
                 "errorSnippet", "occurrenceCount", "category", "entityKey", "fieldName", "transition1", "transition2", "conflictType", "suggestion", "rawLogSnippet", "invoiceNo", "rawSnippet"];
-              const metadata = {};
+              const metadata = { ...(alertObj.metadata || {}) };
               for (const f of metaFields) { if (alertObj[f] !== undefined) metadata[f] = alertObj[f]; }
               newProactiveFromMemory.push({
                 ...alertObj, rowIndex: row.rowIndex, clientName: alertObj.clientName || row.clientName, alertType: alertObj.alertType || row.alertType, metadata, firstSeen: row.firstSeen, lastSeen: row.lastSeen
@@ -5097,7 +5099,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             const nc = String(next[0] || '').trim();
             const nj = String(next[1] || '').trim();
             const nb = String(next[33] || '').replace(/[£$€,\s]/g, '');
-            if (nc === parentClient && nj === parentJob && !next[32] && !parseFloat(nb) && !next[37]) {
+            if (nc === parentClient && nj === parentJob && !next[32] && !String(next[17] || '').trim() && !parseFloat(nb) && !next[37]) {
               jobRows.push({ row: next, sheetRow: cj + 1, isParent: false });
               cj++;
             } else { break; }
@@ -5107,14 +5109,16 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           if (isRetainer) {
             // For retainers: each child row is an independent budget unit.
             // The period covered by each child row is determined by comparing
-            // the child row's invoice amount to the parent's monthly revenue.
+            // the child row's invoice amount (excluding recharged expenses) to the parent's monthly revenue.
             // e.g. if monthly revenue = £3,456 and child invoice = £10,368 → quarterly (×3)
             const parentMonthlyRevenue = parseFloat(String(row[32] || '0').replace(/[£$€,\s]/g, '')) || 0;
             const parentMonthlyBudget = budget; // budget on parent row = per-month direct cost
 
             for (const { row: cr, sheetRow: childSheetRow } of jobRows.filter(r => !r.isParent)) {
-              // Child invoice amount is in slot 1 amount column (index 41 = AP)
-              const childInvoiceAmt = parseFloat(String(cr[41] || '0').replace(/[£$€,\s]/g, '')) || 0;
+              // Child invoice fee amount is slot 1 amount (index 41 = AP) minus of which rechgd (index 46 = AU)
+              const childGrossAmt = parseFloat(String(cr[41] || '0').replace(/[£$€,\s]/g, '')) || 0;
+              const childRechAmt = parseFloat(String(cr[46] || '0').replace(/[£$€,\s]/g, '')) || 0;
+              const childInvoiceAmt = Math.max(0, childGrossAmt - childRechAmt);
               // Determine period multiplier: how many months does this child row cover?
               let periodMultiplier = 1;
               if (parentMonthlyRevenue > 0 && childInvoiceAmt > 0) {
@@ -5941,7 +5945,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
               recommendedActions: [
                 `Blank all cells for "${jobDesc}" and its child rows in the ${tabName} tab`,
-                `All columns A:G, AG:AM, AN, AP:BH, BX:CR, DD will be cleared across the parent row and all child rows`,
+                `All columns ${tabName === "Confirmed" ? "A:G, R, AG:AM, AN, AP:BJ, BX:CR, DD" : "A:G, AG:AM, AN, AP:BH, BX:CR, DD"} will be cleared across the parent row and all child rows`,
                 `Verify no invoices or expenses are linked to this job before accepting`,
               ],
             },
@@ -6030,7 +6034,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         } else {
           const tabResp = await sheets.spreadsheets.values.get({
             spreadsheetId: alert.clientId,
-            range: `${tabName}!A1:AM5000`,
+            range: `${tabName}!A1:BJ5000`,
           });
           tabRows = tabResp.data.values || [];
         }
@@ -6086,8 +6090,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const r = tabRows[i] || [];
             const rClient = String(r[0] || "").trim().toLowerCase();
             const rJob = String(r[1] || "").trim().toLowerCase();
-            // If it shares the identity but has no revenue/dates of its own, it's a child row
-            if (rClient === clientToFind && rJob === jobToFind && !String(r[32] || "").trim() && !String(r[37] || "").trim()) {
+            // If it shares the identity but has no revenue/dates/recharged expenses of its own, it's a child row
+            if (rClient === clientToFind && rJob === jobToFind && !String(r[32] || "").trim() && !(tabName === "Confirmed" && String(r[17] || "").trim()) && !String(r[37] || "").trim()) {
               jobRowsToUpdate.push(i + 1);
             } else {
               break;
@@ -6114,6 +6118,11 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
 
           if (actions.length > 0) {
+            const shtRechargedRaw = tabName === "Confirmed" ? String(tabRows[jobRow - 1]?.[17] || "").trim() : "";
+            const shtRechargedVal = parseFloat(shtRechargedRaw.replace(/[£$€,\s]/g, "")) || 0;
+            const rechMismatchNote = (tabName === "Confirmed" && shtRechargedVal > 0 && mismatchFields.includes("Revenue"))
+              ? ` Note: Confirmed stores pure fee revenue (Col AG) separately from recharged expenses (Col R: ${shtRechargedRaw}).`
+              : "";
             let titleStr = "";
             let btnText = "";
             if (explanations.length === 1) {
@@ -6135,13 +6144,13 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               matchType: "existing_job",
               jobRow,
               jobName: shtJob || crmJob,
-              explanation: `Update ${tabName} to match CRM data: ${explanations.join("; ")}`,
+              explanation: `Update ${tabName} to match CRM data: ${explanations.join("; ")}.${rechMismatchNote}`,
               matchingDetails: {
                 unmatchedJobSummary: { clientName: shtClient || crmClient, jobName: shtJob || crmJob, projectCode: shtCode || crmCode },
               },
               matchAnalysis: {
                 matchConfidence: "High",
-                reasonForChoice: `Mismatched fields: ${explanations.join("; ")}. Updating ${tabName} to match CRM data.`,
+                reasonForChoice: `Mismatched fields: ${explanations.join("; ")}. Updating ${tabName} to match CRM data.${rechMismatchNote}`,
                 discrepancies: `Mismatch fields: ${mismatchFields.join(", ")}`,
               },
               recommendedActions: [
@@ -6515,10 +6524,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               clientName: effectiveClientName,
               isOnlyInvoiceOnJob: otherRealInvoicesCount === 0,
               slotCols: slotNum === 1
-                ? { ref: `AQ${rowNum}`, amt: `AP${rowNum}`, sent: `AR${rowNum}`, days: `AS${rowNum}`, status: `AT${rowNum}` }
+                ? { ref: `AQ${rowNum}`, amt: `AP${rowNum}`, sent: `AR${rowNum}`, days: `AS${rowNum}`, status: `AT${rowNum}`, rech: `AU${rowNum}`, cm: `AV${rowNum}` }
                 : slotNum === 2
-                  ? { ref: `AX${rowNum}`, amt: `AW${rowNum}`, sent: `AY${rowNum}`, days: `AZ${rowNum}`, status: `BA${rowNum}` }
-                  : { ref: `BE${rowNum}`, amt: `BD${rowNum}`, sent: `BF${rowNum}`, days: `BG${rowNum}`, status: `BH${rowNum}` },
+                  ? { ref: `AX${rowNum}`, amt: `AW${rowNum}`, sent: `AY${rowNum}`, days: `AZ${rowNum}`, status: `BA${rowNum}`, rech: `BB${rowNum}`, cm: `BC${rowNum}` }
+                  : { ref: `BE${rowNum}`, amt: `BD${rowNum}`, sent: `BF${rowNum}`, days: `BG${rowNum}`, status: `BH${rowNum}`, rech: `BI${rowNum}`, cm: `BJ${rowNum}` },
               slotAmt: slotNum === 1 ? String(r[41] || "0") : slotNum === 2 ? String(r[48] || "0") : String(r[55] || "0"),
             });
           }
@@ -6555,6 +6564,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               `write "" to ${j.slotCols.sent}`,
               `write "" to ${j.slotCols.days}`,
               `write "" to ${j.slotCols.status}`,
+              `write "" to ${j.slotCols.rech}`,
+              `write "" to ${j.slotCols.cm}`,
             ],
           });
 
@@ -6952,11 +6963,11 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
     let lastDataRow = 1;
     for (let row = confirmedData.length - 1; row > 0; row--) {
       const rowData = confirmedData[row] || [];
-      // A:G (0-6), AG:AM (32-38), AP:BH (41-59), BX:CR (75-94)
+      // A:G (0-6), R (17), AG:AM (32-38), AP:BJ (41-61), BX:CR (75-94)
       const colsToCheck = [
-        0, 1, 2, 3, 4, 5, 6,
+        0, 1, 2, 3, 4, 5, 6, 17,
         32, 33, 34, 35, 36, 37, 38,
-        41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59,
+        41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61,
         75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94
       ];
       const hasData = colsToCheck.some(col => rowData[col]);
@@ -7082,9 +7093,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
     // Slot column definitions
     const INV_SLOT_DEFS = [
-      { amtIdx: 41, refIdx: 42, sentIdx: 43, slotNum: 1, amtCol: "AP", refCol: "AQ", sentCol: "AR", daysCol: "AS", statusCol: "AT" },
-      { amtIdx: 48, refIdx: 49, sentIdx: 50, slotNum: 2, amtCol: "AW", refCol: "AX", sentCol: "AY", daysCol: "AZ", statusCol: "BA" },
-      { amtIdx: 55, refIdx: 56, sentIdx: 57, slotNum: 3, amtCol: "BD", refCol: "BE", sentCol: "BF", daysCol: "BG", statusCol: "BH" },
+      { amtIdx: 41, refIdx: 42, sentIdx: 43, slotNum: 1, amtCol: "AP", refCol: "AQ", sentCol: "AR", daysCol: "AS", statusCol: "AT", rechCol: "AU", cmCol: "AV" },
+      { amtIdx: 48, refIdx: 49, sentIdx: 50, slotNum: 2, amtCol: "AW", refCol: "AX", sentCol: "AY", daysCol: "AZ", statusCol: "BA", rechCol: "BB", cmCol: "BC" },
+      { amtIdx: 55, refIdx: 56, sentIdx: 57, slotNum: 3, amtCol: "BD", refCol: "BE", sentCol: "BF", daysCol: "BG", statusCol: "BH", rechCol: "BI", cmCol: "BJ" },
     ];
 
     // slotMatches and candidateJobs declared here so Tier 1 and Tier 2 can access them regardless of isMissingInvoice
@@ -7177,6 +7188,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               sentCol: sd.sentCol,
               daysCol: sd.daysCol,
               statusCol: sd.statusCol,
+              rechCol: sd.rechCol,
+              cmCol: sd.cmCol,
               rawAmt,
               amt,
               ref,
@@ -7243,7 +7256,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           jobName,
           projectCode: code,
           revenue: revRaw || String(jobRevenue),
-          revenueNum: jobRevenue,
+          revenueNum: effectiveBillable,
+          feeRevenueNum: jobRevenue,
+          rechargedExpensesNum: rechargedParsed,
           totalRealInvoiced,
           uninvoicedRevenue,
           directCosts: directCostsRaw,
@@ -7797,8 +7812,11 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       }
 
       const slotLines = [`Row ${targetSlot.sheetRow} Slot ${targetSlot.slotNum}: ${invoiceRef} £${invoiceAmtForMatch.toFixed(2)} ← this invoice`];
+      const revPrefix = job.rechargedExpensesNum > 0
+        ? `Billable budget: £${job.revenueNum.toFixed(2)} (£${job.feeRevenueNum.toFixed(2)} fee + £${job.rechargedExpensesNum.toFixed(2)} recharged)`
+        : `Revenue: £${job.revenueNum.toFixed(2)}`;
       const revLine = job.revenueNum > 0
-        ? `Revenue: £${job.revenueNum.toFixed(2)} | Invoiced to date (real): £${job.totalRealInvoiced.toFixed(2)} | New total: £${newTotal.toFixed(2)} | Remaining: £${(job.revenueNum - newTotal).toFixed(2)}`
+        ? `${revPrefix} | Invoiced to date (real): £${job.totalRealInvoiced.toFixed(2)} | New total: £${newTotal.toFixed(2)} | Remaining: £${(job.revenueNum - newTotal).toFixed(2)}`
         : `Revenue: unknown`;
 
       const recActions = [
@@ -7822,6 +7840,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               `write "" to ${s.sentCol}${s.sheetRow}`,
               `write "" to ${s.daysCol}${s.sheetRow}`,
               `write "" to ${s.statusCol}${s.sheetRow}`,
+              `write "" to ${s.rechCol}${s.sheetRow}`,
+              `write "" to ${s.cmCol}${s.sheetRow}`,
             ].join(", "));
           }
         }
@@ -8369,15 +8389,17 @@ export async function handleAcceptOption(req, res, sheets) {
 
       // Step 1: Find the last row with active job or slot data
       let lastJobRow = startRow - 1;
+      const maxSlotCheckCol = writeTab === "Confirmed" ? 61 : 59;
       for (let i = startRow - 1; i < allRows.length; i++) {
         const row = allRows[i] || [];
         const hasA = row[0] !== undefined && String(row[0]).trim() !== "";
         const hasB = row[1] !== undefined && String(row[1]).trim() !== "";
         const hasRev = row[32] !== undefined && String(row[32]).trim() !== "";
+        const hasRech = writeTab === "Confirmed" && row[17] !== undefined && String(row[17]).trim() !== "";
         const hasDates = (row[37] !== undefined && String(row[37]).trim() !== "") || (row[38] !== undefined && String(row[38]).trim() !== "");
 
         let hasSlotData = false;
-        for (let c = 41; c <= 60; c++) {
+        for (let c = 41; c <= maxSlotCheckCol; c++) {
           if (row[c] !== undefined && String(row[c]).trim() !== "") { hasSlotData = true; break; }
         }
         if (!hasSlotData) {
@@ -8386,16 +8408,21 @@ export async function handleAcceptOption(req, res, sheets) {
           }
         }
 
-        if (hasA || hasB || hasRev || hasDates || hasSlotData) {
+        if (hasA || hasB || hasRev || hasRech || hasDates || hasSlotData) {
           lastJobRow = i + 1; // 1-indexed
         }
       }
 
       // Step 2: Find the FIRST blank row beneath all existing jobs
       let newRow = Math.max(startRow, lastJobRow + 1);
+      const blankIndices = [
+        0, 1, 2, 3, 4,
+        ...(writeTab === "Confirmed" ? [17, 46, 53, 60] : []),
+        32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 48, 55, 75, 82, 89
+      ];
       for (let r = lastJobRow; r < allRows.length; r++) {
         const row = allRows[r] || [];
-        const isBlank = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 48, 55, 75, 82, 89].every(idx => {
+        const isBlank = blankIndices.every(idx => {
           const v = row[idx];
           return v === undefined || v === null || String(v).trim() === "";
         });
@@ -8418,7 +8445,9 @@ export async function handleAcceptOption(req, res, sheets) {
       };
 
       // Parse cell updates from newJobData (structured) or fall back to text parsing
+      const isJobCostingTabForCreate = isJobCostingStyle({ headers: allRows[0] || [] });
       const createCellUpdates = [];
+      const jobCostingFormulaUpdates = [];
 
       if (option.newJobData && typeof option.newJobData === "object") {
         // Primary path: Claude returned structured newJobData - map fields to columns
@@ -8426,7 +8455,7 @@ export async function handleAcceptOption(req, res, sheets) {
         const strVal = (v) => String(v ?? "").trim();
         const numVal = (v) => String(v ?? "").replace(/[£,]/g, "").trim();
 
-        const isJobCosting = isJobCostingStyle({ headers: allRows[0] || [] });
+        const isJobCosting = isJobCostingTabForCreate;
         const confRechargedPairs = writeTab === "Confirmed"
           ? [
               ["R", numVal(d.rechargedExpenses)],
@@ -8434,6 +8463,8 @@ export async function handleAcceptOption(req, res, sheets) {
               ["AV", strVal(d.inv1CostMonth)],
               ["BB", numVal(d.inv2OfWhichRechgd)],
               ["BC", strVal(d.inv2CostMonth)],
+              ["BI", numVal(d.inv3OfWhichRechgd)],
+              ["BJ", strVal(d.inv3CostMonth)],
             ]
           : [];
         const fieldMap = isJobCosting
@@ -8459,6 +8490,12 @@ export async function handleAcceptOption(req, res, sheets) {
               ["AY", strVal(d.inv2SentDate || "")],
               ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
               ["BA", strVal(d.inv2Status || "")],
+              // Inv3 (if present)
+              ["BD", numVal(d.inv3Amount || "")],
+              ["BE", strVal(d.inv3Ref || "")],
+              ["BF", strVal(d.inv3SentDate || "")],
+              ["BG", d.inv3Amount ? daysVal(d.inv3DaysToPay) : ""],
+              ["BH", strVal(d.inv3Status || "")],
               ...confRechargedPairs,
             ]
           : [
@@ -8484,6 +8521,12 @@ export async function handleAcceptOption(req, res, sheets) {
               ["AY", strVal(d.inv2SentDate || "")],
               ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
               ["BA", strVal(d.inv2Status || "")],
+              // Inv3 (if present)
+              ["BD", numVal(d.inv3Amount || "")],
+              ["BE", strVal(d.inv3Ref || "")],
+              ["BF", strVal(d.inv3SentDate || "")],
+              ["BG", d.inv3Amount ? daysVal(d.inv3DaysToPay) : ""],
+              ["BH", strVal(d.inv3Status || "")],
               ...confRechargedPairs,
             ];
 
@@ -8505,10 +8548,10 @@ export async function handleAcceptOption(req, res, sheets) {
           };
           for (const [colIdxStr, formula] of Object.entries(formulasMap)) {
             const colLetter = colIdxToColLetter(parseInt(colIdxStr, 10));
-            createCellUpdates.push({ cell: `${colLetter}${newRow}`, value: formula });
+            jobCostingFormulaUpdates.push({ cell: `${colLetter}${newRow}`, value: formula });
           }
         }
-        console.log(`  newJobData parsed: ${createCellUpdates.length} fields`);
+        console.log(`  newJobData parsed: ${createCellUpdates.length} fields (+${jobCostingFormulaUpdates.length} formulas)`);
 
       } else {
         // Fallback: try to parse from recommendedActions text
@@ -8541,7 +8584,7 @@ export async function handleAcceptOption(req, res, sheets) {
         console.log(`  Text fallback parsed: ${createCellUpdates.length} fields`);
       }
 
-      if (createCellUpdates.length === 0) {
+      if (createCellUpdates.length === 0 && jobCostingFormulaUpdates.length === 0) {
         return res.status(400).json({ success: false, error: "Could not parse any cell writes from create_new recommendedActions. Check the Claude output format." });
       }
 
@@ -8572,7 +8615,22 @@ export async function handleAcceptOption(req, res, sheets) {
 
       const isProtectedJobCol = (colLetters) => {
         const colIdx0 = colLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-        return (colIdx0 >= 5 && colIdx0 <= 29) || colIdx0 === 31 || colIdx0 === 40 || (colIdx0 >= 60 && colIdx0 <= 74) || (colIdx0 >= 96 && colIdx0 <= 106);
+        const revFormulaProtected = colIdx0 >= (writeTab === "Confirmed" ? 62 : 60) && colIdx0 <= 74;
+        const dirCostTotalProtected = (colIdx0 >= 96 && colIdx0 <= 106) || colIdx0 === 40;
+        if (revFormulaProtected || dirCostTotalProtected) return true;
+        if (isJobCostingTabForCreate) {
+          return (
+            colIdx0 === 10 ||
+            (colIdx0 >= 12 && colIdx0 <= 14) ||
+            colIdx0 === 20 ||
+            colIdx0 === 24 ||
+            colIdx0 === 32 ||
+            colIdx0 === 33 ||
+            colIdx0 === 37 ||
+            colIdx0 === 38
+          );
+        }
+        return (colIdx0 >= 5 && colIdx0 <= 29 && !(writeTab === "Confirmed" && colIdx0 === 17)) || colIdx0 === 31;
       };
       const safeCreateUpdates = createCellUpdates.filter(({ cell }) => {
         const m = String(cell || "").match(/^([A-Z]{1,3})(\d+)$/);
@@ -8586,15 +8644,21 @@ export async function handleAcceptOption(req, res, sheets) {
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: alert.clientId,
         requestBody: {
-          data: safeCreateUpdates.map(({ cell, value }) => ({
-            range: `${writeTab}!${cell}`,
-            values: [[sanitiseNew(cell, value)]],
-          })),
+          data: [
+            ...safeCreateUpdates.map(({ cell, value }) => ({
+              range: `${writeTab}!${cell}`,
+              values: [[sanitiseNew(cell, value)]],
+            })),
+            ...jobCostingFormulaUpdates.map(({ cell, value }) => ({
+              range: `${writeTab}!${cell}`,
+              values: [[value]],
+            })),
+          ],
           valueInputOption: "USER_ENTERED",
         },
       });
 
-      console.log(`  ✅ Created new job at row ${newRow} with ${safeCreateUpdates.length} fields`);
+      console.log(`  ✅ Created new job at row ${newRow} with ${safeCreateUpdates.length + jobCostingFormulaUpdates.length} fields`);
 
       const createdTypeCell = safeCreateUpdates.find(u => String(u.cell || "").toUpperCase() === `AJ${newRow}`);
       const isCreatedRetainer =
@@ -8892,16 +8956,28 @@ export async function handleAcceptOption(req, res, sheets) {
     // ── LIVE SLOT RESOLUTION (for Confirmed/Pipeline invoice & expense placements) ──
     let liveResolvedSlotInfo = null;
     if ((writeTab === "Confirmed" || writeTab === "Pipeline") && cellUpdates.length > 0) {
-      const invColToSlot = {
-        AP: { s: 1, f: "a" }, AQ: { s: 1, f: "ref" }, AR: { s: 1, f: "sent" }, AS: { s: 1, f: "days" }, AT: { s: 1, f: "st" },
-        AW: { s: 2, f: "a" }, AX: { s: 2, f: "ref" }, AY: { s: 2, f: "sent" }, AZ: { s: 2, f: "days" }, BA: { s: 2, f: "st" },
-        BD: { s: 3, f: "a" }, BE: { s: 3, f: "ref" }, BF: { s: 3, f: "sent" }, BG: { s: 3, f: "days" }, BH: { s: 3, f: "st" },
-      };
-      const invSlotToCol = {
-        1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
-        2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
-        3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
-      };
+      const invColToSlot = writeTab === "Confirmed"
+        ? {
+            AP: { s: 1, f: "a" }, AQ: { s: 1, f: "ref" }, AR: { s: 1, f: "sent" }, AS: { s: 1, f: "days" }, AT: { s: 1, f: "st" }, AU: { s: 1, f: "rech" }, AV: { s: 1, f: "cm" },
+            AW: { s: 2, f: "a" }, AX: { s: 2, f: "ref" }, AY: { s: 2, f: "sent" }, AZ: { s: 2, f: "days" }, BA: { s: 2, f: "st" }, BB: { s: 2, f: "rech" }, BC: { s: 2, f: "cm" },
+            BD: { s: 3, f: "a" }, BE: { s: 3, f: "ref" }, BF: { s: 3, f: "sent" }, BG: { s: 3, f: "days" }, BH: { s: 3, f: "st" }, BI: { s: 3, f: "rech" }, BJ: { s: 3, f: "cm" },
+          }
+        : {
+            AP: { s: 1, f: "a" }, AQ: { s: 1, f: "ref" }, AR: { s: 1, f: "sent" }, AS: { s: 1, f: "days" }, AT: { s: 1, f: "st" },
+            AW: { s: 2, f: "a" }, AX: { s: 2, f: "ref" }, AY: { s: 2, f: "sent" }, AZ: { s: 2, f: "days" }, BA: { s: 2, f: "st" },
+            BD: { s: 3, f: "a" }, BE: { s: 3, f: "ref" }, BF: { s: 3, f: "sent" }, BG: { s: 3, f: "days" }, BH: { s: 3, f: "st" },
+          };
+      const invSlotToCol = writeTab === "Confirmed"
+        ? {
+            1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
+            2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
+            3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH", rech: "BI", cm: "BJ" },
+          }
+        : {
+            1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
+            2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
+            3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+          };
       const expColToSlot = {
         BX: { s: 1, f: "d" }, BY: { s: 1, f: "a" }, BZ: { s: 1, f: "v" }, CA: { s: 1, f: "dt" }, CB: { s: 1, f: "dp" }, CC: { s: 1, f: "st" }, CD: { s: 1, f: "id" },
         CE: { s: 2, f: "d" }, CF: { s: 2, f: "a" }, CG: { s: 2, f: "v" }, CH: { s: 2, f: "dt" }, CI: { s: 2, f: "dp" }, CJ: { s: 2, f: "st" }, CK: { s: 2, f: "id" },
@@ -9070,9 +9146,73 @@ export async function handleAcceptOption(req, res, sheets) {
         return sanitizeFormulaInput(String(val ?? ""));
       };
 
+      let isJobCostingWriteTab = false;
+      if (writeTab === "Confirmed" || writeTab === "Pipeline") {
+        const touchesRange5to38 = cellUpdates.some(({ cell }) => {
+          const m = String(cell || "").match(/^([A-Z]{1,3})(\d+)$/);
+          if (!m) return false;
+          const idx0 = m[1].split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+          return idx0 >= 5 && idx0 <= 38;
+        });
+        if (touchesRange5to38) {
+          try {
+            const hdrResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: `${writeTab}!A1:AZ1`,
+            });
+            const hdrRow = hdrResp.data?.values?.[0] || [];
+            isJobCostingWriteTab = isJobCostingStyle({ headers: hdrRow });
+          } catch (hdrErr) {
+            console.warn(`Header lookup skipped for ${writeTab}:`, hdrErr.message);
+          }
+        }
+      }
+
+      const protectedOutgoingsRows = new Set();
+      if (writeTab === "Outgoings") {
+        const touchesRechRowRange = cellUpdates.some(({ cell }) => {
+          const m = String(cell || "").match(/^([A-Z]{1,3})(\d+)$/);
+          if (!m) return false;
+          const rn = parseInt(m[2], 10);
+          return rn >= 220 && rn <= 235;
+        });
+        if (touchesRechRowRange) {
+          try {
+            const ogSysResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: "Outgoings!A220:A235",
+            });
+            const ogSysRows = ogSysResp.data?.values || [];
+            ogSysRows.forEach((r, idx) => {
+              const label = String(r?.[0] || "").trim().toLowerCase();
+              if (label === "recharged expenses (forecast)" || label === "recharged expenses recovery") {
+                protectedOutgoingsRows.add(220 + idx);
+              }
+            });
+          } catch (ogSysErr) {
+            console.warn("Outgoings protected row check skipped:", ogSysErr.message);
+          }
+        }
+      }
+
       const isProtectedJobCol2 = (colLetters) => {
         const colIdx0 = colLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-        return (colIdx0 >= 5 && colIdx0 <= 29) || colIdx0 === 31 || colIdx0 === 40 || (colIdx0 >= 60 && colIdx0 <= 74) || (colIdx0 >= 96 && colIdx0 <= 106);
+        const revFormulaProtected = colIdx0 >= (writeTab === "Confirmed" ? 62 : 60) && colIdx0 <= 74;
+        const dirCostTotalProtected = (colIdx0 >= 96 && colIdx0 <= 106) || colIdx0 === 40;
+        if (revFormulaProtected || dirCostTotalProtected) return true;
+        if (isJobCostingWriteTab) {
+          return (
+            colIdx0 === 10 ||
+            (colIdx0 >= 12 && colIdx0 <= 14) ||
+            colIdx0 === 20 ||
+            colIdx0 === 24 ||
+            colIdx0 === 32 ||
+            colIdx0 === 33 ||
+            colIdx0 === 37 ||
+            colIdx0 === 38
+          );
+        }
+        return (colIdx0 >= 5 && colIdx0 <= 29 && !(writeTab === "Confirmed" && colIdx0 === 17)) || colIdx0 === 31;
       };
       const minAllowedRow = writeTab === "Outgoings" ? 13 : 2;
       const safeCellUpdates = cellUpdates.filter(({ cell }) => {
@@ -9080,6 +9220,7 @@ export async function handleAcceptOption(req, res, sheets) {
         if (!m) return false;
         const rowNum = parseInt(m[2], 10);
         if (rowNum < minAllowedRow) return false;
+        if (writeTab === "Outgoings" && protectedOutgoingsRows.has(rowNum)) return false;
         if ((writeTab === "Confirmed" || writeTab === "Pipeline") && isProtectedJobCol2(m[1])) return false;
         return true;
       });
@@ -9293,11 +9434,11 @@ export async function handleDeleteJob(req, res, sheets) {
       return res.status(400).json({ success: false, error: "Cannot delete: clientSheetId missing from alert - please re-analyse this alert and try again." });
     }
 
-    // Only read cols A:B (client, job) and AG (revenue - to identify parent vs child)
+    // Only read cols A:B (client, job), R (recharged), AG (revenue), AH (direct costs), AL (start date - to identify parent vs child)
     // This is much faster than reading A1:CR2000
     const tabResp = await sheets.spreadsheets.values.get({
       spreadsheetId: clientSheetId,
-      range: `${tabName}!A1:AG2000`,
+      range: `${tabName}!A1:AM2000`,
       valueRenderOption: "UNFORMATTED_VALUE",
     });
     const tabRows = tabResp.data.values || [];
@@ -9344,7 +9485,7 @@ export async function handleDeleteJob(req, res, sheets) {
     const parentSheetRow = parentRowIdx + 1;
     console.log(`  Found parent at row ${parentSheetRow}`);
 
-    // Collect child rows: same client + job, no revenue (32) + no direct costs (33) + no start date (37)
+    // Collect child rows: same client + job, no revenue (32), no recharged expenses (17 on Confirmed), no direct costs (33), no start date (37)
     const rowsToBlank = [parentRowIdx];
     let ci = parentRowIdx + 1;
     while (ci < tabRows.length) {
@@ -9353,7 +9494,7 @@ export async function handleDeleteJob(req, res, sheets) {
       const nj = String(next[1] || "").trim().toLowerCase();
       const hasContent = next.some(c => String(c || "").trim() !== "");
       const isChild = (!nc && !nj && hasContent) || (targetClient && nc === targetClient && nj === targetJob);
-      if (isChild && !next[32] && !next[33] && !next[37]) {
+      if (isChild && !next[32] && !(tabName === "Confirmed" && next[17]) && !next[33] && !next[37]) {
         rowsToBlank.push(ci);
         ci++;
       } else { break; }
@@ -9767,6 +9908,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
           if (!row) return {};
           return {
             rawRevenue: String(row[32] ?? "").trim(),
+            rawRechargedExpenses: String(row[17] ?? "").trim(),
             rawDirectCosts: String(row[33] ?? "").trim(),
             jobType: String(row[35] ?? "").trim(),
             startDate: row[37] ? toSheetDateFormat(String(row[37]).trim()) : "",
@@ -10253,7 +10395,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               const r = tabRows[ri];
               const rClient = String(r[0] || "").trim().toLowerCase();
               const rJob = String(r[1] || "").trim().toLowerCase();
-              const hasRevenue = !!(r[32]);
+              const hasRevenue = !!(r[32]) || (targetTab === "Confirmed" && !!(r[17]));
               if (rClient === clientLower && rJob === jobNameLower && hasRevenue) {
                 allMatchingIdxs.push(ri);
               }
@@ -10326,7 +10468,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             const nClient = String(next[0] || "").trim().toLowerCase();
             const nJob = String(next[1] || "").trim().toLowerCase();
             if (nClient !== clientLower || nJob !== jobNameLower) break;
-            if (next[32] || next[37] || next[38]) break; // has revenue/start/end = another parent
+            if (next[32] || (targetTab === "Confirmed" && next[17]) || next[37] || next[38]) break; // has revenue/recharged/start/end = another parent
             childRows.push({ row: next, sheetRow: ci + tabStartRow });
             ci++;
           }
@@ -10372,7 +10514,9 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
           let periodMonths = 1;
           let periodLabel = "monthly";
           if (childRows.length > 0 && monthlyRevenue > 0) {
-            const firstInv = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+            const firstGross = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+            const firstRech = targetTab === "Confirmed" ? (parseFloat(String(childRows[0].row[46] || "").replace(/[£$€,\s]/g, "")) || 0) : 0;
+            const firstInv = Math.max(0, firstGross - firstRech);
             if (firstInv > 0) {
               const ratio = Math.round(firstInv / monthlyRevenue);
               if (ratio >= 2) {
@@ -10627,14 +10771,14 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
 
           console.log(`  Found "${job.jobName}" (${job.clientNameFromLog}) at Confirmed row ${parentSheetRow}: start="${jobStart}", end="${jobEnd}"`);
 
-          // Collect child rows (same client + job, no revenue/start/end)
+          // Collect child rows (same client + job, no revenue/recharged/start/end)
           const childRows = [];
           for (let ri = parentRowIdx + 1; ri < delConfirmedRows.length; ri++) {
             const r = delConfirmedRows[ri];
             const rClient = String(r[0] || "").trim().toLowerCase();
             const rJob = String(r[1] || "").trim().toLowerCase();
             if (rClient !== clientLower || rJob !== jobNameLower) break;
-            if (r[32] || r[37] || r[38]) break; // has revenue/start/end = another parent
+            if (r[32] || r[17] || r[37] || r[38]) break; // has revenue/recharged/start/end = another parent
             childRows.push({ row: r, sheetRow: ri + 1 });
           }
 
@@ -10675,11 +10819,13 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             continue;
           }
 
-          // Determine period (monthly by default, infer from child row amounts)
+          // Determine period (monthly by default, infer from child row amounts excl. recharged expenses)
           let periodMonths = 1;
           let periodLabel = "monthly";
           if (childRows.length > 0 && monthlyRevenue > 0) {
-            const firstInv = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+            const firstGross = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+            const firstRech = parseFloat(String(childRows[0].row[46] || "").replace(/[£$€,\s]/g, "")) || 0;
+            const firstInv = Math.max(0, firstGross - firstRech);
             if (firstInv > 0) {
               const ratio = Math.round(firstInv / monthlyRevenue);
               if (ratio >= 2) {

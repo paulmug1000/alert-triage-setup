@@ -41,53 +41,81 @@ export function parseConfirmedDate_(val) {
   return isNaN(d.getTime()) ? null : d;
 }
 
+export function parseMoney_(val) {
+  if (val === "" || val === null || val === undefined) return 0;
+  if (typeof val === "number") return Number.isFinite(val) ? val : 0;
+  const n = parseFloat(String(val).replace(/[£$€,\s]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
 export function detectPeriodMultiplier_(childRow, monthlyRevenue) {
   if (!monthlyRevenue || monthlyRevenue <= 0) return 1;
   let totalInvAmt = 0;
-  const slotAmtIdxs = [41, 48, 55];
-  for (let s = 0; s < slotAmtIdxs.length; s++) {
-    const raw = childRow[slotAmtIdxs[s]];
+  const slotPairs = [[41, 46], [48, 53], [55, 60]];
+  for (let s = 0; s < slotPairs.length; s++) {
+    const [amtIdx, rechIdx] = slotPairs[s];
+    const raw = childRow[amtIdx];
     if (raw !== "" && raw !== null && raw !== undefined) {
-      totalInvAmt += parseFloat(String(raw).replace(/[£$€,\s]/g, "")) || 0;
+      const grossAmt = parseMoney_(raw);
+      const rechAmt = parseMoney_(childRow[rechIdx]);
+      totalInvAmt += Math.max(0, grossAmt - rechAmt);
     }
   }
   if (totalInvAmt <= 0) return 1;
   return Math.max(1, Math.round(totalInvAmt / monthlyRevenue));
 }
 
-export function sumInvSlotAmounts_(row) {
+export function sumInvSlotBreakdown_(row) {
   let total = 0;
-  const slotAmtIdxs = [41, 48, 55];
-  for (let s = 0; s < slotAmtIdxs.length; s++) {
-    const raw = row[slotAmtIdxs[s]];
-    if (raw === "" || raw === null || raw === undefined) continue;
-    total += parseFloat(String(raw).replace(/[£$€,\s]/g, "")) || 0;
+  let rechargedTotal = 0;
+  const slotPairs = [[41, 46], [48, 53], [55, 60]];
+  for (let s = 0; s < slotPairs.length; s++) {
+    const [amtIdx, rechIdx] = slotPairs[s];
+    total += parseMoney_(row?.[amtIdx]);
+    rechargedTotal += parseMoney_(row?.[rechIdx]);
   }
-  return total;
+  total = Math.round(total * 100) / 100;
+  rechargedTotal = Math.round(rechargedTotal * 100) / 100;
+  const feeTotal = Math.round((total - rechargedTotal) * 100) / 100;
+  return { total, rechargedTotal, feeTotal };
+}
+
+export function sumInvSlotAmounts_(row) {
+  return sumInvSlotBreakdown_(row).total;
 }
 
 export function sumRealInvSlotAmounts_(row) {
-  let total = 0, draftCount = 0, draftTotal = 0;
+  let total = 0, rechargedTotal = 0, draftCount = 0, draftTotal = 0, draftRechargedTotal = 0;
   const slots = [
-    { amtIdx: 41, refIdx: 42, statusIdx: 45 },
-    { amtIdx: 48, refIdx: 49, statusIdx: 52 },
-    { amtIdx: 55, refIdx: 56, statusIdx: 59 },
+    { amtIdx: 41, refIdx: 42, statusIdx: 45, rechIdx: 46 },
+    { amtIdx: 48, refIdx: 49, statusIdx: 52, rechIdx: 53 },
+    { amtIdx: 55, refIdx: 56, statusIdx: 59, rechIdx: 60 },
   ];
   for (let s = 0; s < slots.length; s++) {
     const ref = String(row[slots[s].refIdx] || "").trim();
     if (!ref || isPlaceholderInvoice(ref)) continue;
     const raw = row[slots[s].amtIdx];
     if (raw === "" || raw === null || raw === undefined) continue;
-    const amt = parseFloat(String(raw).replace(/[£$€,\s]/g, "")) || 0;
+    const amt = parseMoney_(raw);
+    const rechAmt = parseMoney_(row[slots[s].rechIdx]);
     const status = String(row[slots[s].statusIdx] || "").trim().toLowerCase();
-    if (status.indexOf("sent") !== -1 || status.indexOf("paid") !== -1) {
+    const isDraftOrUnsent = !status || status.includes("draft") || status.includes("unsent");
+    const isRealSentOrPaid = !isDraftOrUnsent && (status === "sent" || /\bsent\b/.test(status) || status.includes("paid") || status.includes("overdue"));
+    if (isRealSentOrPaid) {
       total += amt;
+      rechargedTotal += rechAmt;
     } else {
       draftCount++;
       draftTotal += amt;
+      draftRechargedTotal += rechAmt;
     }
   }
-  return { total, draftCount, draftTotal };
+  total = Math.round(total * 100) / 100;
+  rechargedTotal = Math.round(rechargedTotal * 100) / 100;
+  const netFeeTotal = Math.max(0, Math.round((total - rechargedTotal) * 100) / 100);
+  draftTotal = Math.round(draftTotal * 100) / 100;
+  draftRechargedTotal = Math.round(draftRechargedTotal * 100) / 100;
+  return { total, rechargedTotal, netFeeTotal, draftCount, draftTotal, draftRechargedTotal };
 }
 
 export function sumExpSlotAmounts_(row) {
@@ -325,9 +353,9 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         const childRow = data[cr];
         const childClient = String(childRow[0] || "").trim();
         const childJob = String(childRow[1] || "").trim();
-        if ((childRow[32] || childRow[37] || childRow[38]) && (childClient !== clientNameRow || childJob !== jobName)) break;
+        if ((childRow[17] || childRow[32] || childRow[37] || childRow[38]) && (childClient !== clientNameRow || childJob !== jobName)) break;
         if (childClient !== clientNameRow || childJob !== jobName) break;
-        if (childRow[32] || childRow[37] || childRow[38]) break;
+        if (childRow[17] || childRow[32] || childRow[37] || childRow[38]) break;
         collectSentInvoices_(childRow, sentInvoices);
         childRows.push({ crIndex: cr, sheetRow: cr + 1, row: childRow });
       }
@@ -336,9 +364,9 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
       const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
       const totalContractValue = monthlyRevenue * contractMonths;
 
-      let totalInvoiced = sumRealInvSlotAmounts_(row).total;
+      let totalInvoiced = sumRealInvSlotAmounts_(row).netFeeTotal;
       for (let cj = 0; cj < childRows.length; cj++) {
-        totalInvoiced += sumRealInvSlotAmounts_(childRows[cj].row).total;
+        totalInvoiced += sumRealInvSlotAmounts_(childRows[cj].row).netFeeTotal;
       }
 
       if (totalContractValue > 0 && totalInvoiced >= totalContractValue * 0.95) continue;
@@ -484,7 +512,7 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
       } else if (monthlyRevenue > 0) {
         let firstInvAmt = 0;
         for (let fj = 0; fj < allJobRows.length; fj++) {
-          const fjReal = sumRealInvSlotAmounts_(allJobRows[fj]).total;
+          const fjReal = sumRealInvSlotAmounts_(allJobRows[fj]).netFeeTotal;
           if (fjReal > 0) { firstInvAmt = fjReal; break; }
         }
         if (firstInvAmt > 0) {
@@ -593,23 +621,35 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
     if (data.length < 2) return alerts;
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const TOLERANCE = 1.00;
+    const hasVal = (v) => v !== "" && v !== null && v !== undefined && String(v).trim() !== "";
 
     let r = 1;
     while (r < data.length) {
       const row = data[r];
       const revenue = row[32];
+      const rechargedRaw = row[17];
       const jobType = String(row[35] || "").toLowerCase();
       const startVal = row[37];
       const endVal = row[38];
 
-      if (!revenue || !startVal || !endVal) { r++; continue; }
+      if ((!hasVal(revenue) && !hasVal(rechargedRaw)) || !startVal || !endVal) { r++; continue; }
 
-      const revenueAmt = parseFloat(String(revenue).replace(/[£$€,\s]/g, "")) || 0;
+      const feeBudget = Math.round(parseMoney_(revenue) * 100) / 100;
+      const rechargedBudget = Math.round(parseMoney_(rechargedRaw) * 100) / 100;
+      const billableBudget = Math.round((feeBudget + rechargedBudget) * 100) / 100;
 
-      if (revenueAmt <= 0) {
+      if (billableBudget <= 0) {
         const jobRows0 = collectJobRows_(data, r);
         let totalInvoiced0 = 0;
-        for (let jr0 = 0; jr0 < jobRows0.length; jr0++) totalInvoiced0 += sumInvSlotAmounts_(jobRows0[jr0].row);
+        let rechargedInvoiced0 = 0;
+        for (let jr0 = 0; jr0 < jobRows0.length; jr0++) {
+          const bd0 = sumInvSlotBreakdown_(jobRows0[jr0].row);
+          totalInvoiced0 += bd0.total;
+          rechargedInvoiced0 += bd0.rechargedTotal;
+        }
+        totalInvoiced0 = Math.round(totalInvoiced0 * 100) / 100;
+        rechargedInvoiced0 = Math.round(rechargedInvoiced0 * 100) / 100;
+        const feeInvoiced0 = Math.round((totalInvoiced0 - rechargedInvoiced0) * 100) / 100;
         if (totalInvoiced0 > 0) {
           const jobClient0 = String(row[0] || "").trim();
           const jobName0 = String(row[1] || "").trim();
@@ -622,7 +662,9 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
             detail: `${jobClient0} | ${jobName0} (Row ${r + 1})${projectCode0 ? ` [${projectCode0}]` : ""}: revenue = £0.00 but total invoiced (incl. placeholders) = £${totalInvoiced0.toFixed(2)} - job revenue appears to be missing or not yet set.`,
             jobName: jobName0, endClientName: jobClient0, projectCode: projectCode0, confirmedRow: r + 1, isRetainer: jobType.includes("retainer"),
             endDate: endVal ? toSheetDateFormat(endVal) : "",
-            revenue: "0.00", totalInvoiced: totalInvoiced0.toFixed(2), diff: totalInvoiced0.toFixed(2),
+            revenue: "0.00", feeRevenue: "0.00", rechargedExpenses: "0.00", billableBudget: "0.00",
+            totalInvoiced: totalInvoiced0.toFixed(2), feeInvoiced: feeInvoiced0.toFixed(2), rechargedInvoiced: rechargedInvoiced0.toFixed(2),
+            diff: totalInvoiced0.toFixed(2), rechargedDiff: rechargedInvoiced0.toFixed(2),
           });
         }
         r += jobRows0.length;
@@ -630,7 +672,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
       }
 
       const startDate = parseConfirmedDate_(startVal);
-      if (startDate && startDate > today) { r++; continue; }
+      if (startDate && startDate > today) { r += collectJobRows_(data, r).length; continue; }
 
       const jobClient = String(row[0] || "").trim();
       const jobName = String(row[1] || "").trim();
@@ -640,18 +682,40 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
       const isRetainer = jobType.includes("retainer");
       const jobRows = collectJobRows_(data, r);
 
-      let mismatch = false, detail = "", mismatchTotalInvoiced = 0;
+      let mismatch = false, detail = "", mismatchTotalInvoiced = 0, mismatchFeeInvoiced = 0, mismatchRechargedInvoiced = 0;
+      let billableDiff = 0, rechargedDiff = 0;
 
       if (!isRetainer) {
         let totalInvoiced = 0;
-        for (let jr = 0; jr < jobRows.length; jr++) totalInvoiced += sumInvSlotAmounts_(jobRows[jr].row);
+        let rechargedInvoiced = 0;
+        for (let jr = 0; jr < jobRows.length; jr++) {
+          const bd = sumInvSlotBreakdown_(jobRows[jr].row);
+          totalInvoiced += bd.total;
+          rechargedInvoiced += bd.rechargedTotal;
+        }
+        totalInvoiced = Math.round(totalInvoiced * 100) / 100;
+        rechargedInvoiced = Math.round(rechargedInvoiced * 100) / 100;
+        const feeInvoiced = Math.round((totalInvoiced - rechargedInvoiced) * 100) / 100;
         if (totalInvoiced === 0) { r += jobRows.length; continue; }
 
-        const diff = Math.abs(totalInvoiced - revenueAmt);
-        if (diff > TOLERANCE) {
+        billableDiff = Math.round((totalInvoiced - billableBudget) * 100) / 100;
+        rechargedDiff = Math.round((rechargedInvoiced - rechargedBudget) * 100) / 100;
+        if (Math.abs(billableDiff) > TOLERANCE || Math.abs(rechargedDiff) > TOLERANCE) {
           mismatch = true;
           mismatchTotalInvoiced = totalInvoiced;
-          detail = `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: revenue = £${revenueAmt.toFixed(2)}, total invoiced (incl. placeholders) = £${totalInvoiced.toFixed(2)} - difference of £${diff.toFixed(2)}`;
+          mismatchFeeInvoiced = feeInvoiced;
+          mismatchRechargedInvoiced = rechargedInvoiced;
+          if (Math.abs(billableDiff) > TOLERANCE) {
+            const budgetDesc = rechargedBudget > 0
+              ? `billable budget = £${billableBudget.toFixed(2)} (£${feeBudget.toFixed(2)} fee + £${rechargedBudget.toFixed(2)} recharged)`
+              : `revenue = £${billableBudget.toFixed(2)}`;
+            const invDesc = (rechargedInvoiced > 0 || rechargedBudget > 0)
+              ? `total invoiced (incl. placeholders) = £${totalInvoiced.toFixed(2)} (£${feeInvoiced.toFixed(2)} fee + £${rechargedInvoiced.toFixed(2)} recharged)`
+              : `total invoiced (incl. placeholders) = £${totalInvoiced.toFixed(2)}`;
+            detail = `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: ${budgetDesc}, ${invDesc} - difference of £${Math.abs(billableDiff).toFixed(2)}`;
+          } else {
+            detail = `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: total invoiced (£${totalInvoiced.toFixed(2)}) matches billable budget (£${billableBudget.toFixed(2)}), but invoiced recharged expenses (£${rechargedInvoiced.toFixed(2)}) do not match job recharged expenses (£${rechargedBudget.toFixed(2)}) - difference of £${Math.abs(rechargedDiff).toFixed(2)}`;
+          }
         }
       }
       // Note: Retainers recognise revenue according to their monthly job revenue amount (Col AG),
@@ -660,13 +724,26 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
       // are normal and do not raise revenue_mismatch alerts.
 
       if (mismatch) {
+        const baseAlertKey = `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}|rev:${billableBudget.toFixed(2)}|inv:${mismatchTotalInvoiced.toFixed(2)}`;
+        const alertKey = (Math.abs(billableDiff) <= TOLERANCE && Math.abs(rechargedDiff) > TOLERANCE)
+          ? `${baseAlertKey}|rech:${rechargedBudget.toFixed(2)}|rechInv:${mismatchRechargedInvoiced.toFixed(2)}`
+          : baseAlertKey;
+        const reportedDiff = Math.abs(billableDiff) > TOLERANCE ? Math.abs(billableDiff) : Math.abs(rechargedDiff);
         alerts.push({
           alertType: "revenue_mismatch",
-          alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}|rev:${revenueAmt.toFixed(2)}|inv:${mismatchTotalInvoiced.toFixed(2)}`,
+          alertKey,
           legacyAlertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}`,
           heading: "Revenue / total invoiced mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,
           endDate: endVal ? toSheetDateFormat(endVal) : "",
-          revenue: revenueAmt.toFixed(2), totalInvoiced: mismatchTotalInvoiced.toFixed(2), diff: Math.abs(mismatchTotalInvoiced - revenueAmt).toFixed(2),
+          revenue: billableBudget.toFixed(2),
+          feeRevenue: feeBudget.toFixed(2),
+          rechargedExpenses: rechargedBudget.toFixed(2),
+          billableBudget: billableBudget.toFixed(2),
+          totalInvoiced: mismatchTotalInvoiced.toFixed(2),
+          feeInvoiced: mismatchFeeInvoiced.toFixed(2),
+          rechargedInvoiced: mismatchRechargedInvoiced.toFixed(2),
+          diff: reportedDiff.toFixed(2),
+          rechargedDiff: Math.abs(rechargedDiff).toFixed(2),
         });
       }
       r += jobRows.length;
@@ -931,11 +1008,12 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
 
       for (let jr = 0; jr < jobRows.length; jr++) {
         const jRow = jobRows[jr].row;
-        const slots = [{ ref: 42, amt: 41 }, { ref: 49, amt: 48 }, { ref: 56, amt: 55 }];
+        const slots = [{ ref: 42, amt: 41, rech: 46 }, { ref: 49, amt: 48, rech: 53 }, { ref: 56, amt: 55, rech: 60 }];
         for (const s of slots) {
           const ref = String(jRow[s.ref] || "").trim();
-          const amtNum = parseFloat(String(jRow[s.amt] || "0").replace(/[£$€,\s]/g, "")) || 0;
-          if (ref && !isPlaceholderInvoice(ref) && amtNum > 0) {
+          const amtNum = parseMoney_(jRow[s.amt]);
+          const rechNum = parseMoney_(jRow[s.rech]);
+          if (ref && !isPlaceholderInvoice(ref) && (amtNum > 0 || rechNum > 0)) {
             hasRealInvoice = true;
             break;
           }
@@ -968,9 +1046,9 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
           stableJobKey: stableKey,
           heading: "Job started over a month ago with no invoices sent",
           detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job started ${fmtDate(startDate)}${formattedEndDate ? `, ends ${formattedEndDate}` : ""} (over a month ago)${rechargedAmt > 0 ? ` with £${billableAmt.toFixed(2)} billable (£${revenueAmt.toFixed(2)} fee + £${rechargedAmt.toFixed(2)} recharged)` : ""} but no real invoices have been recorded yet. All invoice slots are empty or contain manual placeholders.`,
-          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), startDate: fmtDate(startDate), endDate: formattedEndDate,
+          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), feeRevenue: String(revenueAmt), rechargedExpenses: String(rechargedAmt), billableBudget: String(billableAmt), startDate: fmtDate(startDate), endDate: formattedEndDate,
           jobType: resolvedJobType, isRetainer: isRetainerJob,
-          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), feeRevenue: String(revenueAmt), rechargedExpenses: String(rechargedAmt), startDate: fmtDate(startDate), endDate: formattedEndDate, stableJobKey: stableKey, jobType: resolvedJobType, isRetainer: isRetainerJob },
+          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), feeRevenue: String(revenueAmt), rechargedExpenses: String(rechargedAmt), billableBudget: String(billableAmt), startDate: fmtDate(startDate), endDate: formattedEndDate, stableJobKey: stableKey, jobType: resolvedJobType, isRetainer: isRetainerJob },
         });
       }
       r += jobRows.length;
@@ -1015,15 +1093,21 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
       const billableAmt = Math.round((revenueAmt + rechargedAmt) * 100) / 100;
       const jobRows = collectJobRows_(data, r);
 
-      let totalRealInvoiced = 0, draftCount = 0, draftTotal = 0;
+      let totalRealInvoiced = 0, totalRealRecharged = 0, draftCount = 0, draftTotal = 0;
       for (let jr = 0; jr < jobRows.length; jr++) {
         const slotResult = sumRealInvSlotAmounts_(jobRows[jr].row);
         totalRealInvoiced += slotResult.total;
+        totalRealRecharged += slotResult.rechargedTotal;
         draftCount += slotResult.draftCount;
         draftTotal += slotResult.draftTotal;
       }
+      totalRealInvoiced = Math.round(totalRealInvoiced * 100) / 100;
+      totalRealRecharged = Math.round(totalRealRecharged * 100) / 100;
+      const totalRealFee = Math.max(0, Math.round((totalRealInvoiced - totalRealRecharged) * 100) / 100);
 
-      const uninvoiced = billableAmt - totalRealInvoiced;
+      const uninvoiced = Math.round((billableAmt - totalRealInvoiced) * 100) / 100;
+      const uninvoicedFee = Math.max(0, Math.round((revenueAmt - totalRealFee) * 100) / 100);
+      const uninvoicedRecharged = Math.max(0, Math.round((rechargedAmt - totalRealRecharged) * 100) / 100);
       if (uninvoiced > TOLERANCE) {
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
         const draftNote = draftCount > 0 ? ` Note: ${draftCount} invoice(s) totalling £${draftTotal.toFixed(2)} have a reference but are still Draft (not yet sent) - these are not counted as invoiced.` : "";
@@ -1035,8 +1119,18 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
           stableJobKey: stableKey,
           heading: "Completed job has uninvoiced revenue",
           detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, ${billableBreakdown}, real sent/paid invoiced (excl. placeholders and drafts) = £${totalRealInvoiced.toFixed(2)} - £${uninvoiced.toFixed(2)} uninvoiced.${draftNote}`,
-          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)),
-          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), feeRevenue: String(revenueAmt), rechargedExpenses: String(rechargedAmt), endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)), stableJobKey: stableKey },
+          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1,
+          revenue: String(billableAmt), feeRevenue: String(revenueAmt), rechargedExpenses: String(rechargedAmt), billableBudget: String(billableAmt),
+          totalInvoiced: String(totalRealInvoiced.toFixed(2)), feeInvoiced: String(totalRealFee.toFixed(2)), rechargedInvoiced: String(totalRealRecharged.toFixed(2)),
+          uninvoicedFee: String(uninvoicedFee.toFixed(2)), uninvoicedRecharged: String(uninvoicedRecharged.toFixed(2)),
+          endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)),
+          metadata: {
+            jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1,
+            revenue: String(billableAmt), feeRevenue: String(revenueAmt), rechargedExpenses: String(rechargedAmt), billableBudget: String(billableAmt),
+            totalInvoiced: String(totalRealInvoiced.toFixed(2)), feeInvoiced: String(totalRealFee.toFixed(2)), rechargedInvoiced: String(totalRealRecharged.toFixed(2)),
+            uninvoicedFee: String(uninvoicedFee.toFixed(2)), uninvoicedRecharged: String(uninvoicedRecharged.toFixed(2)),
+            endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)), stableJobKey: stableKey
+          },
         });
       }
       r += jobRows.length;
@@ -1124,7 +1218,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
     const hasVal = (v) => v !== "" && v !== null && v !== undefined && String(v).trim() !== "";
     const hasInvSlotData = (row, sIdx) => {
       const base = sIdx === 0 ? 41 : sIdx === 1 ? 48 : 55;
-      return hasVal(row[base]) || hasVal(row[base + 1]);
+      return hasVal(row[base]) || hasVal(row[base + 1]) || hasVal(row[base + 5]);
     };
     const hasExpSlotData = (row, sIdx) => {
       const base = sIdx === 0 ? 75 : sIdx === 1 ? 82 : 89;
@@ -1141,9 +1235,9 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
       const jobClient = String(row[0] || "").trim();
       const jobNameV = String(row[1] || "").trim();
       const projectCode = String(row[2] || "").trim();
-      const revenue = row[32], jobType = String(row[35] || "").toLowerCase(), startVal = row[37], endVal = row[38];
+      const revenue = row[32], rechargedRaw = row[17], jobType = String(row[35] || "").toLowerCase(), startVal = row[37], endVal = row[38];
 
-      if (!jobClient || !jobNameV || !hasVal(revenue) || !hasVal(startVal) || !hasVal(endVal)) { r++; continue; }
+      if (!jobClient || !jobNameV || (!hasVal(revenue) && !hasVal(rechargedRaw)) || !hasVal(startVal) || !hasVal(endVal)) { r++; continue; }
 
       const isRetainer = jobType.includes("retainer");
       const jobRows = collectJobRows_(data, r);

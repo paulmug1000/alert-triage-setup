@@ -850,7 +850,7 @@ export default function PushOutgoingsTab({
                     {/* Difference Row */}
                     <tr style={{
                       background: "#ffffff",
-                      borderBottom: (section.depreciationInfo?.hasDepreciation) ? "1px dashed #cbd5e1" : "2px solid #e2e8f0"
+                      borderBottom: (section.depreciationInfo?.hasDepreciation || section.rechargedRecoveryInfo?.hasRechargedRecovery) ? "1px dashed #cbd5e1" : "2px solid #e2e8f0"
                     }}>
                       <td style={{
                         padding: "6px 16px 8px 28px",
@@ -889,7 +889,7 @@ export default function PushOutgoingsTab({
 
                     {/* Depreciation Note Row (for Total other expenses - non-del) */}
                     {section.depreciationInfo?.hasDepreciation && (
-                      <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>
+                      <tr style={{ background: "#f8fafc", borderBottom: section.rechargedRecoveryInfo?.hasRechargedRecovery ? "1px dashed #cbd5e1" : "2px solid #e2e8f0" }}>
                         <td colSpan={(activeData.months?.length || 6) + 1} style={{ padding: "12px 18px" }}>
                           <div style={{
                             background: "#f0f9ff",
@@ -935,6 +935,70 @@ export default function PushOutgoingsTab({
                                   </div>
                                   <div style={{ color: "#64748b" }}>
                                     Outgoings: <strong>{pm.outgoingsTotalFormatted}</strong> − Dep: <strong>{pm.depreciationFormatted}</strong> = <strong>{pm.outgoingsExclDepFormatted}</strong>
+                                  </div>
+                                  <div style={{ color: "#475569" }}>
+                                    P&amp;L shown: <strong>{pm.plTotalFormatted}</strong>
+                                    {pm.matchesIfExcluded ? (
+                                      <span style={{ color: "#15803d", fontWeight: "600", marginLeft: "6px" }}>(Matches P&amp;L)</span>
+                                    ) : (
+                                      <span style={{ color: "#b45309", fontWeight: "600", marginLeft: "6px" }}>(Diff: {pm.remainingDiffFormatted})</span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+
+                    {/* Recharged Expenses Recovery Note Row */}
+                    {section.rechargedRecoveryInfo?.hasRechargedRecovery && (
+                      <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>
+                        <td colSpan={(activeData.months?.length || 6) + 1} style={{ padding: "12px 18px" }}>
+                          <div style={{
+                            background: "#f0fdf4",
+                            border: "1px solid #bbf7d0",
+                            borderRadius: "8px",
+                            padding: "12px 16px",
+                            fontSize: "12px",
+                            color: "#166534",
+                            lineHeight: "1.5"
+                          }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", fontWeight: "700", fontSize: "13px", color: "#14532d" }}>
+                              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                              </svg>
+                              <span>Recharged expenses recovery note</span>
+                            </div>
+                            <p style={{ margin: "0 0 8px 0", color: "#166534" }}>
+                              {section.rechargedRecoveryInfo.summaryText}
+                            </p>
+
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "8px" }}>
+                              {(section.rechargedRecoveryInfo.perMonth || []).map(pm => (
+                                <div
+                                  key={pm.colLetter}
+                                  style={{
+                                    background: "#ffffff",
+                                    border: `1px solid ${pm.matchesIfExcluded ? "#86efac" : "#fcd34d"}`,
+                                    borderRadius: "6px",
+                                    padding: "6px 10px",
+                                    fontSize: "11px",
+                                    display: "inline-flex",
+                                    flexDirection: "column",
+                                    gap: "2px",
+                                    minWidth: "180px"
+                                  }}
+                                >
+                                  <div style={{ fontWeight: "700", color: "#1e293b", display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                                    <span>{pm.monthHeader}</span>
+                                    <span style={{ color: pm.matchesIfExcluded ? "#15803d" : "#b45309", fontSize: "10px" }}>
+                                      {pm.matchesIfExcluded ? "✓ Totals match" : "Diff remaining"}
+                                    </span>
+                                  </div>
+                                  <div style={{ color: "#64748b" }}>
+                                    Outgoings: <strong>{pm.outgoingsTotalFormatted}</strong> − Recovery: <strong>{pm.recoveryFormatted}</strong> = <strong>{pm.outgoingsExclRecFormatted}</strong>
                                   </div>
                                   <div style={{ color: "#475569" }}>
                                     P&amp;L shown: <strong>{pm.plTotalFormatted}</strong>

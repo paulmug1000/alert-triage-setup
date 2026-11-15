@@ -4551,6 +4551,11 @@ const formInputStyle = {
   background: "#ffffff",
 };
 
+const formSelectStyle = {
+  ...formInputStyle,
+  cursor: "pointer",
+};
+
 const pageBtnStyle = {
   padding: "3px 8px",
   borderRadius: "4px",

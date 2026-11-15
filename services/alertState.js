@@ -79,9 +79,9 @@ export async function handleGetAlerts(req, res) {
         }
         if (staleTargetIds.length > 0) {
           applyAlertRemovalToTriageData(parsedSession, staleTargetIds);
-          redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsedSession), { EX: 86400 * 7 }).catch(() => {});
+          redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsedSession), { EX: 86400 * 7 }).catch(() => { });
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Reconcile proactive alerts in parsedSession against handledMap
@@ -104,7 +104,7 @@ export async function handleGetAlerts(req, res) {
         }
         if (staleProactiveKeys.length > 0) {
           applyAlertRemovalToTriageData(parsedSession, staleProactiveKeys);
-          redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsedSession), { EX: 86400 * 7 }).catch(() => {});
+          redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsedSession), { EX: 86400 * 7 }).catch(() => { });
         }
       }
     } catch (recErr) {
@@ -286,7 +286,7 @@ export function restoreAlertToTriageData(data, alert, category) {
     if (a.fingerprintHash && b.fingerprintHash && a.fingerprintHash === b.fingerprintHash) return true;
     if (a.alertKey && b.alertKey && a.alertKey === b.alertKey) return true;
     if (a.sheetName && a.rowNumber != null && b.sheetName && b.rowNumber != null &&
-        a.sheetName === b.sheetName && String(a.rowNumber) === String(b.rowNumber)) return true;
+      a.sheetName === b.sheetName && String(a.rowNumber) === String(b.rowNumber)) return true;
     return false;
   };
 
@@ -405,7 +405,7 @@ export async function resolveAssignedAlertsInMemoryAndCache(sheets, {
           if (!isExpAlert && !isInvAlert) continue;
 
           let snapObj = {};
-          try { snapObj = r.dataSnapshot ? JSON.parse(r.dataSnapshot) : {}; } catch {}
+          try { snapObj = r.dataSnapshot ? JSON.parse(r.dataSnapshot) : {}; } catch { }
 
           let matched = false;
           if (isExpAlert && cleanExpIds.size > 0) {
@@ -1412,6 +1412,7 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
       "possibleMatchInvoiceNo", "possibleMatchAmount", "possibleMatchSentDate", "possibleMatchConfidence", "possibleMatchConfirmedRow", "possibleMatchVatAmount", "possibleMatchStatus", "possibleMatchCase",
       "uninvoicedAmount", "projectCode", "draftCount", "draftTotal", "stableJobKey", "isRetainer", "tab",
       "directCosts", "unreceivedAmount", "placeholderCount", "placeholderTotal",
+      "feeRevenue", "rechargedExpenses", "billableBudget", "feeInvoiced", "rechargedInvoiced", "uninvoicedFee", "uninvoicedRecharged", "rechargedDiff",
       "totalInvoiced", "totalExpenses", "diff", "childExp", "expectedForRow",
       "categoryName", "cleanName", "quarantineRow",
       "slotNum", "invoiceRef", "amount", "sentDate",

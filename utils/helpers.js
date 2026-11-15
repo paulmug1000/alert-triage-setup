@@ -984,11 +984,34 @@ export function parseRevenueMismatchDetail(detail = "") {
   const dateMatch = detail.match(/job ended\s*([^,]+)/i);
   if (dateMatch) result.endDate = dateMatch[1].trim();
 
-  const revMatch = detail.match(/revenue\s*=\s*£?([\d,.]+)/i);
+  const revMatch = detail.match(/(?:billable budget|revenue)\s*(?:=\s*£?|\(£?)([\d,.]+)/i);
   if (revMatch) result.revenue = revMatch[1].replace(/,/g, "");
+
+  const revBreakdownMatch = detail.match(/billable budget\s*=\s*£?([\d,.]+)\s*\(£?([\d,.]+)\s*fee\s*\+\s*£?([\d,.]+)\s*recharged\)/i);
+  if (revBreakdownMatch) {
+    result.revenue = revBreakdownMatch[1].replace(/,/g, "");
+    result.billableBudget = result.revenue;
+    result.feeRevenue = revBreakdownMatch[2].replace(/,/g, "");
+    result.rechargedExpenses = revBreakdownMatch[3].replace(/,/g, "");
+  }
 
   const invMatch = detail.match(/total invoiced[^\d]*£?([\d,.]+)/i);
   if (invMatch) result.totalInvoiced = invMatch[1].replace(/,/g, "");
+
+  const invBreakdownMatch = detail.match(/total invoiced[^=]*=\s*£?([\d,.]+)\s*\(£?([\d,.]+)\s*fee\s*\+\s*£?([\d,.]+)\s*recharged\)/i);
+  if (invBreakdownMatch) {
+    result.totalInvoiced = invBreakdownMatch[1].replace(/,/g, "");
+    result.feeInvoiced = invBreakdownMatch[2].replace(/,/g, "");
+    result.rechargedInvoiced = invBreakdownMatch[3].replace(/,/g, "");
+  }
+
+  const rechargedOnlyMatch = detail.match(/invoiced recharged expenses\s*\(£?([\d,.]+)\)\s*do not match job recharged expenses\s*\(£?([\d,.]+)\)/i);
+  if (rechargedOnlyMatch) {
+    result.rechargedInvoiced = rechargedOnlyMatch[1].replace(/,/g, "");
+    result.rechargedExpenses = rechargedOnlyMatch[2].replace(/,/g, "");
+    const budMatch = detail.match(/matches billable budget\s*\(£?([\d,.]+)\)/i);
+    if (budMatch && !result.revenue) result.revenue = budMatch[1].replace(/,/g, "");
+  }
 
   const diffMatch = detail.match(/difference of £?([\d,.]+)/i);
   if (diffMatch) result.diff = diffMatch[1].replace(/,/g, "");

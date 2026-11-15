@@ -697,7 +697,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
     while (cj < rows.length) {
       const next = rows[cj] || [];
       if (String(next[0] || "").trim() === client && String(next[1] || "").trim() === jobName &&
-        !String(next[32] ?? "").trim() && !String(next[37] ?? "").trim()) {
+        !String(next[32] ?? "").trim() && !String(next[17] ?? "").trim() && !String(next[37] ?? "").trim()) {
         childRows.push({ rowNum: cj + 1, row: next });
         cj++;
       } else break;
@@ -945,7 +945,9 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       }
 
       const intervalMonths = retDetectIntervalMonths(childDates);
-      const totalInvoiced = childRows.reduce((sum, cr) => sum + retParseMoney(cr.row[41]), 0) + retParseMoney(parentRow[41]);
+      const totalInvoiced =
+        childRows.reduce((sum, cr) => sum + Math.max(0, retParseMoney(cr.row[41]) - retParseMoney(cr.row[46])), 0) +
+        Math.max(0, retParseMoney(parentRow[41]) - retParseMoney(parentRow[46]));
       const diffDays = Math.round(Math.abs(newEnd.getTime() - (startDate || newEnd).getTime()) / 86400000);
       const durationMonths = Math.max(1, Math.round(diffDays / 30.4375));
       const totalContractValue = durationMonths * revenue;
@@ -1251,7 +1253,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
     while (cj < rows.length) {
       const next = rows[cj] || [];
       if (String(next[0] || "").trim() === client && String(next[1] || "").trim() === jobName &&
-        !String(next[32] ?? "").trim() && !String(next[37] ?? "").trim()) {
+        !String(next[32] ?? "").trim() && !String(next[17] ?? "").trim() && !String(next[37] ?? "").trim()) {
         childRows.push({ rowNum: cj + 1, row: next });
         cj++;
       } else break;
@@ -1739,7 +1741,7 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
     while (cj < rows.length) {
       const next = rows[cj] || [];
       if (String(next[0] || "").trim() === client && String(next[1] || "").trim() === jobName &&
-        !String(next[32] ?? "").trim() && !String(next[37] ?? "").trim()) {
+        !String(next[32] ?? "").trim() && !String(next[17] ?? "").trim() && !String(next[37] ?? "").trim()) {
         childRows.push({ rowNum: cj + 1, row: next });
         cj++;
       } else break;
@@ -2238,7 +2240,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
         while (srcChildIdx < rows.length) {
           const next = rows[srcChildIdx] || [];
           if (String(next[0] || "").trim() === srcClient && String(next[1] || "").trim() === srcJobName &&
-            !String(next[32] || "").trim() && !String(next[37] || "").trim()) {
+            !String(next[32] || "").trim() && !String(next[17] || "").trim() && !String(next[37] || "").trim()) {
             srcRowsToClearOriginal.push(srcChildIdx + 1);
             srcChildIdx++;
           } else break;
@@ -2431,11 +2433,11 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
 
     for (let j = actualParentRowNum; j < rows.length; j++) {
       const nextRow = rows[j] || [];
-      if (nextRow[37] || retParseMoney(nextRow[32]) > 0) break;
+      if (nextRow[37] || retParseMoney(nextRow[32]) > 0 || retParseMoney(nextRow[17]) > 0) break;
       if (fuzzy(nextRow[1]) === parentJobFuzzy) {
         const cRowNum = j + 1;
         existingChildRows.push({ rowNum: cRowNum, row: nextRow });
-        const amt = retParseMoney(nextRow[41]);
+        const amt = Math.max(0, retParseMoney(nextRow[41]) - retParseMoney(nextRow[46]));
         totalInvoiced += amt;
         const rowDate = retParseSheetDate(nextRow[43]);
         if (rowDate) {
@@ -4047,16 +4049,16 @@ export async function handleComputeRetainerSplitInvoicePreview(req, res, sheets)
     while (cj < rows.length) {
       const next = rows[cj] || [];
       if (String(next[0] || "").trim() === client && String(next[1] || "").trim() === jobName &&
-        !String(next[32] || "").trim() && !String(next[37] || "").trim()) {
+        !String(next[32] || "").trim() && !String(next[17] || "").trim() && !String(next[37] || "").trim()) {
         childRows.push({ rowNum: cj + 1, row: next });
         cj++;
       } else break;
     }
 
     const slotDefs = [
-      { amt: 41, ref: 42, sent: 43, days: 44, status: 45 },
-      { amt: 48, ref: 49, sent: 50, days: 51, status: 52 },
-      { amt: 55, ref: 56, sent: 57, days: 58, status: 59 },
+      { amt: 41, ref: 42, sent: 43, days: 44, status: 45, rech: 46 },
+      { amt: 48, ref: 49, sent: 50, days: 51, status: 52, rech: 53 },
+      { amt: 55, ref: 56, sent: 57, days: 58, status: 59, rech: 60 },
     ];
     const realSentDates = [];
     const allRetRows = [parentRow, ...childRows.map(cr => cr.row)];
@@ -4119,6 +4121,8 @@ export async function handleComputeRetainerSplitInvoicePreview(req, res, sheets)
       extraJobMonth: altSentDate.getMonth(),
       extraJobYear: altSentDate.getFullYear(),
       existingJobInfo,
+      currentParentRecharged: retParseMoney(parentRow[17]),
+      defaultCostMonth: `${months[altSentDate.getMonth()]}-${String(altSentDate.getFullYear()).slice(-2)}`,
     });
   } catch (err) {
     console.error("❌ compute_retainer_split_invoice_preview error:", err);
@@ -4131,6 +4135,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
     clientSheetId, masterSheetId, client, clientName, jobName, parentRowNum, missingRowNum,
     standardMonthlyAmount, altAmount, altSentDate, altInvoiceNo, altStatus, vatAmount, difference,
     extraJobName, extraJobMonth, extraJobYear, existingConfirmedRow,
+    splitMode = "extra_revenue", costMonth = "",
   } = req.body;
 
   if (!clientSheetId && clientName) {
@@ -4172,6 +4177,55 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
 
     const { defaultDaysToPay: rawDefaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
     const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay).replace(/[^\d.-]/g, ""), 10) || 30;
+    const parsedAltSentDate = retParseSheetDate(altSentDate);
+    const diffNum = Math.round((parseFloat(difference) || 0) * 100) / 100;
+
+    if (splitMode === "recharged_expense" && diffNum > 0) {
+      const fullInvoiceAmt = Math.round((parseFloat(altAmount) || ((parseFloat(standardMonthlyAmount) || 0) + diffNum)) * 100) / 100;
+      const updatedParentRech = Math.round((retParseMoney(parentRow[17]) + diffNum) * 100) / 100;
+      const cleanCostMonth = sanitizeFormulaInput(String(costMonth || "").trim());
+
+      const rechWriteData = [
+        { range: `Confirmed!AP${missingRowNum}`, values: [[fullInvoiceAmt]] },
+        { range: `Confirmed!AQ${missingRowNum}`, values: [[formatInvoiceRefForSheet(altInvoiceNo || "")]] },
+        { range: `Confirmed!AS${missingRowNum}`, values: [[defaultDaysToPay]] },
+        { range: `Confirmed!AT${missingRowNum}`, values: [[sanitizeFormulaInput(altStatus || "")]] },
+        { range: `Confirmed!AU${missingRowNum}`, values: [[diffNum]] },
+        { range: `Confirmed!R${parentRowNum}`, values: [[updatedParentRech]] },
+      ];
+      if (parsedAltSentDate) {
+        rechWriteData.push({ range: `Confirmed!AR${missingRowNum}`, values: [[retFmtDate(parsedAltSentDate)]] });
+      }
+      if (cleanCostMonth) {
+        rechWriteData.push({ range: `Confirmed!AV${missingRowNum}`, values: [[cleanCostMonth]] });
+      }
+
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: rechWriteData },
+      });
+
+      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+
+      (async () => {
+        let tenantClient = req.body.clientName || "";
+        if (!tenantClient) {
+          tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+        }
+        const endClient = client || "";
+        const jobIdentifier = endClient ? `"${endClient} - ${jobName || "Retainer"}"` : `"${jobName || "Retainer"}"`;
+
+        await logPmaActivity(sheets, {
+          automationCommanderSheetId: req.body.automationCommanderSheetId,
+          clientName: tenantClient,
+          category: "RETAINER",
+          action: "Retainer Recharged Expenses Recorded",
+          summary: `Recorded #${altInvoiceNo || "Invoice"} on ${jobIdentifier} with £${diffNum.toFixed(2)} as recharged expenses`,
+          details: { clientName: tenantClient, endClient, altInvoiceNo, difference: diffNum, fullInvoiceAmt, costMonth: cleanCostMonth }
+        });
+      })().catch(e => console.error("PMA log failed:", e));
+
+      return res.status(200).json({ success: true, mode: "recharged_expense", parentRowNum, missingRowNum });
+    }
 
     const writeData = [
       { range: `Confirmed!AP${missingRowNum}`, values: [[standardMonthlyAmount]] },
@@ -4179,7 +4233,6 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       { range: `Confirmed!AS${missingRowNum}`, values: [[defaultDaysToPay]] },
       { range: `Confirmed!AT${missingRowNum}`, values: [[sanitizeFormulaInput(altStatus || "")]] },
     ];
-    const parsedAltSentDate = retParseSheetDate(altSentDate);
     if (parsedAltSentDate) writeData.push({ range: `Confirmed!AR${missingRowNum}`, values: [[retFmtDate(parsedAltSentDate)]] });
 
     const monthStart = new Date(extraJobYear, extraJobMonth, 1);

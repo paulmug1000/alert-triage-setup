@@ -8,7 +8,7 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, sanitizeFormulaInput, getCanonicalAcSheetId, verifyUserAuthorizedForSheet } from "./userPermissions.js";
 import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces.js";
-import { matchesClientName, sanitizeSpreadsheetTerms } from "../utils/helpers.js";
+import { matchesClientName, sanitizeSpreadsheetTerms, isPlaceholderInvoice, parseSheetDate } from "../utils/helpers.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import {
   pullLivePLToSupabaseNative,
@@ -2646,6 +2646,7 @@ export async function handleEomGetPlCompData(req, res, sheets) {
     const rNonOpExp = outgoingsColA.findIndex(v => v.includes("Total non-operating expenses"));
     const rDep = outgoingsColA.findIndex(v => v.toLowerCase().includes("depreciation"));
     const depCategoryName = rDep !== -1 ? outgoingsColA[rDep] : "Depreciation expense";
+    const rRechRec = outgoingsColA.findIndex(v => v.toLowerCase() === "recharged expenses recovery");
 
     // Locate Depreciation total row in PLComp (column E)
     let plDepRow = -1;
@@ -2888,6 +2889,73 @@ export async function handleEomGetPlCompData(req, res, sheets) {
               allMatchIfExcluded,
               summaryText
             };
+          }
+        }
+
+        // Check for Recharged expenses recovery in Outgoings (applied to Cost of sales when E226 > 0%, Overheads when 0%)
+        if (rRechRec !== -1) {
+          const rawDeliveryPct = String(outgoingsData[rRechRec]?.[4] ?? "").trim();
+          const parsedDeliveryPct = rawDeliveryPct === ""
+            ? 100
+            : (parseFloat(rawDeliveryPct.replace(/[£$€,\s%]/g, "")) || 0);
+          const targetRechSectionKey = parsedDeliveryPct > 0 ? "delivery" : "nonDelivery";
+
+          if (def.key === targetRechSectionKey) {
+            const recValues = monthsList.map((m) => {
+              const outCol = findOutgoingsCol(m.header);
+              return outCol !== -1 ? Math.round(parseNumber(outgoingsData[rRechRec]?.[outCol]) * 100) / 100 : 0;
+            });
+
+            if (recValues.some(v => Math.abs(v) > 0.005)) {
+              const perMonth = monthsList.map((m, idx) => {
+                const plT = plTotals[idx];
+                const outT = outgoingsTotals[idx];
+                const rec = recValues[idx];
+                const outExcl = Math.round((outT - rec) * 100) / 100;
+                const matchesIfExcluded = Math.abs(plT - outExcl) < 0.05;
+                const remainingDiff = Math.round((plT - outExcl) * 100) / 100;
+                return {
+                  colLetter: m.colLetter,
+                  monthHeader: m.header,
+                  plTotal: plT,
+                  plTotalFormatted: formatCurrencyNum(plT),
+                  outgoingsTotal: outT,
+                  outgoingsTotalFormatted: formatCurrencyNum(outT),
+                  recovery: rec,
+                  recoveryFormatted: formatCurrencyNum(rec),
+                  outgoingsExclRec: outExcl,
+                  outgoingsExclRecFormatted: formatCurrencyNum(outExcl),
+                  diff: differences[idx],
+                  diffFormatted: formatCurrencyNum(differences[idx]),
+                  matchesIfExcluded,
+                  remainingDiff,
+                  remainingDiffFormatted: formatCurrencyNum(remainingDiff)
+                };
+              });
+
+              const recNonZeroMonths = perMonth.filter(pm => Math.abs(pm.recovery) > 0.005);
+              const matchingMonths = recNonZeroMonths.filter(pm => pm.matchesIfExcluded);
+              const nonMatchingMonths = recNonZeroMonths.filter(pm => !pm.matchesIfExcluded);
+              const allMatchIfExcluded = matchingMonths.length > 0 && nonMatchingMonths.length === 0;
+
+              const sectionTitleLower = def.key === "delivery" ? "cost of sales" : "overheads";
+              let summaryText = "";
+              if (allMatchIfExcluded) {
+                summaryText = `Recharged expenses recovery is deducted from ${sectionTitleLower} in Outgoings, whereas the P&L shows gross ${sectionTitleLower} before recharged expense recoveries. Excluding recharged expenses recovery makes the totals match across all displayed months.`;
+              } else if (matchingMonths.length > 0) {
+                const matchNames = matchingMonths.map(pm => pm.monthHeader).join(", ");
+                summaryText = `Recharged expenses recovery is deducted from ${sectionTitleLower} in Outgoings, whereas the P&L shows gross ${sectionTitleLower}. Excluding this recovery makes the totals match for ${matchNames}.`;
+              } else {
+                summaryText = `Recharged expenses recovery is included in ${sectionTitleLower} in Outgoings, whereas the P&L shows gross ${sectionTitleLower} before recharged expense recoveries. Excluding recharged expenses recovery adjusts the comparison as shown below.`;
+              }
+
+              sectionObj.rechargedRecoveryInfo = {
+                hasRechargedRecovery: true,
+                perMonth,
+                allMatchIfExcluded,
+                summaryText
+              };
+            }
           }
         }
 
@@ -6294,6 +6362,88 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
       }
     } catch (mErr) {
       console.warn("Could not read Monthly tab:", mErr.message);
+    }
+  }
+
+  // 2b. Add invoiced Confirmed recharged expenses (AU/BB/BI) for target monthKey so gross accounting totals reconcile
+  if (!isNaN(targetYear) && !isNaN(targetMonth)) {
+    try {
+      let rechClientSheetId = clientSheetId;
+      if (!rechClientSheetId && masterSheetId) {
+        try {
+          const c1Resp = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId: masterSheetId,
+            range: "KeyInfo!C1",
+            valueRenderOption: "FORMATTED_VALUE"
+          }));
+          rechClientSheetId = extractSheetIdFromUrl(c1Resp.data.values?.[0]?.[0] || "");
+        } catch (_) { }
+      }
+
+      if (rechClientSheetId) {
+        const confResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: rechClientSheetId,
+          range: "Confirmed!A2:BJ5000",
+          valueRenderOption: "UNFORMATTED_VALUE",
+          dateTimeRenderOption: "SERIAL_NUMBER"
+        }));
+        const confRows = confResp?.data?.values || [];
+        const rechSlots = [
+          { ref: 42, sent: 43, status: 45, rech: 46 },
+          { ref: 49, sent: 50, status: 52, rech: 53 },
+          { ref: 56, sent: 57, status: 59, rech: 60 },
+        ];
+        const parseMoneyCell = (v) => (typeof v === "number" ? v : (parseFloat(String(v || "").replace(/[£$€,\s]/g, "")) || 0));
+
+        let curClient = "";
+        let curJob = "";
+        for (let rIdx = 0; rIdx < confRows.length; rIdx++) {
+          const cr = confRows[rIdx] || [];
+          const cStr = String(cr[0] || "").trim();
+          const jStr = String(cr[1] || "").trim();
+          if (cStr) curClient = cStr;
+          if (jStr) curJob = jStr;
+          else if (cStr && !jStr) curJob = "";
+          if (!curClient) continue;
+
+          for (let sIdx = 0; sIdx < rechSlots.length; sIdx++) {
+            const slot = rechSlots[sIdx];
+            const rechAmt = parseMoneyCell(cr[slot.rech]);
+            if (rechAmt <= 0) continue;
+
+            const refStr = String(cr[slot.ref] || "").trim();
+            const rawStatus = cr[slot.status];
+            const stLower = String(rawStatus || "").trim().toLowerCase();
+            if (!refStr || isPlaceholderInvoice(refStr, rawStatus)) continue;
+            if (stLower.includes("draft") || stLower.includes("unsent") || stLower.includes("placeholder")) continue;
+
+            const sentVal = cr[slot.sent];
+            let dateMatches = false;
+            if (typeof sentVal === "number" && sentVal > 30000 && sentVal < 60000) {
+              const d = new Date(Math.round((sentVal - 25569) * 86400 * 1000));
+              dateMatches = d.getUTCFullYear() === targetYear && d.getUTCMonth() === targetMonth;
+            } else if (sentVal) {
+              const parsedD = parseSheetDate(sentVal);
+              if (parsedD && parsedD.getFullYear() === targetYear && parsedD.getMonth() === targetMonth) {
+                dateMatches = true;
+              } else if (matchesRevenueMonthKey_(sentVal, monthKey)) {
+                dateMatches = true;
+              }
+            }
+            if (!dateMatches) continue;
+
+            pulseItems.push({
+              id: `pulse-rech-${rIdx}-${sIdx}`,
+              clientName: curClient,
+              jobName: curJob ? `${curJob} (recharged expenses)` : "Recharged expenses",
+              type: "Recharged expenses",
+              amount: Math.round(rechAmt * 100) / 100
+            });
+          }
+        }
+      }
+    } catch (rechErr) {
+      console.warn("Could not read Confirmed recharged expenses:", rechErr.message);
     }
   }
 

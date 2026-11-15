@@ -22,6 +22,7 @@ import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
 import { isUserAuthorizedForClient, resolveMasterSheetIdByClientName } from "./userPermissions.js";
 import { clearAllClientsMemoryCache } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 
 export const TRACKER_SHEET_ID = "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co";
 export const REPORTING_CONTROL_SHEET_ID = "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s";
@@ -1554,7 +1555,7 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
 
   if (rechargedRow21Payload) {
     try {
-      const ctx = await resolveSupabaseSheetContext({ masterSheetId, clientName }).catch(() => null);
+      const ctx = await resolveSupabaseSheetContext({ spreadsheetId: masterSheetId, masterSheetId, clientName }).catch(() => null);
       let clientSheetId = ctx?.clientSheetId || "";
       if (!clientSheetId) {
         const c1Res = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "KeyInfo!C1" });

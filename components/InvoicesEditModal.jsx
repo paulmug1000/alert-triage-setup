@@ -408,7 +408,11 @@ export default function InvoicesEditModal({
             amount: parseFloat(amount) || 0,
             sentDate,
             daysToPay: parseInt(daysToPay) || 30,
-            status: status || ""
+            status: status || "",
+            ...(isConfirmedTab ? {
+              ofWhichRechgd: parseFloat(ofWhichRechgd) || 0,
+              costMonth: (parseFloat(ofWhichRechgd) || 0) > 0 ? costMonth : ""
+            } : {})
           }
         })
       });
@@ -431,12 +435,29 @@ export default function InvoicesEditModal({
           targetJob,
           targetRowNum: resData.targetRowNum,
           targetSlotNum: resData.targetSlotNum,
-          invoice: { invoiceNo, amount: parseFloat(amount) || 0, sentDate, daysToPay: parseInt(daysToPay) || 30, status },
+          invoice: {
+            invoiceNo,
+            amount: parseFloat(amount) || 0,
+            sentDate,
+            daysToPay: parseInt(daysToPay) || 30,
+            status,
+            ...(isConfirmedTab ? {
+              ofWhichRechgd: parseFloat(ofWhichRechgd) || 0,
+              costMonth: (parseFloat(ofWhichRechgd) || 0) > 0 ? costMonth : ""
+            } : {})
+          },
           resData
         });
       } else {
         // Fallback: clear invoice slot on current job
-        onUpdateInvoiceJobs(rowNum, slotNum, { ref: "", amount: "", sentDate: "", daysToPay: "", status: "" });
+        onUpdateInvoiceJobs(rowNum, slotNum, {
+          ref: "",
+          amount: "",
+          sentDate: "",
+          daysToPay: "",
+          status: "",
+          ...(isConfirmedTab ? { ofWhichRechgd: "", costMonth: "" } : {})
+        });
       }
 
       onClose();
@@ -453,6 +474,10 @@ export default function InvoicesEditModal({
     setSelectedTargetJob(targetJob);
     const invAmtNum = parseFloat(amount) || 0;
     const targetRevenue = parseFloat(String(targetJob.rows?.[0]?.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+    const targetRecharged = isConfirmedTab
+      ? (parseFloat(String(targetJob.rows?.[0]?.rechargedExpenses || "0").replace(/[£$€,\s]/g, "")) || 0)
+      : 0;
+    const targetBillable = Math.round((targetRevenue + targetRecharged) * 100) / 100;
 
     // Calculate current real invoiced total on target job
     let targetInvoicedTotal = 0;
@@ -465,12 +490,12 @@ export default function InvoicesEditModal({
     });
 
     const projectedTotal = Math.round((targetInvoicedTotal + invAmtNum) * 100) / 100;
-    if (targetRevenue > 0 && projectedTotal > targetRevenue) {
+    if (targetBillable > 0 && projectedTotal > targetBillable) {
       setRevenuePrompt({
         type: "move",
         targetJobName: targetJob.jobName,
         projectedTotal,
-        currentRevenue: targetRevenue,
+        currentRevenue: targetBillable,
         onConfirmYes: () => executeMove(targetJob, true, projectedTotal),
         onConfirmNo: () => executeMove(targetJob, false)
       });

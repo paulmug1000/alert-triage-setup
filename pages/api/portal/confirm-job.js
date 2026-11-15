@@ -98,7 +98,7 @@ export default async function handler(req, res) {
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetId,
-          range: `${confirmedSheetName}!A:BH`,
+          range: `${confirmedSheetName}!A:BJ`,
           valueRenderOption: "FORMATTED_VALUE",
         })
       ),
@@ -186,7 +186,7 @@ export default async function handler(req, res) {
     for (let r = allConfRows.length - 1; r >= 0; r--) {
       const rowData = allConfRows[r] || [];
       const hasDataA = rowData.slice(0, 39).some((v) => v !== undefined && String(v).trim() !== "");
-      const hasDataB = rowData.slice(41, 60).some((v) => v !== undefined && String(v).trim() !== "");
+      const hasDataB = rowData.slice(41, 62).some((v) => v !== undefined && String(v).trim() !== "");
       if (hasDataA || hasDataB) {
         lastJobRow = Math.max(lastJobRow, r + 1);
         break;
@@ -251,20 +251,21 @@ export default async function handler(req, res) {
         const sent = parentData[base + 2];
         const days = parentData[base + 3];
         const st = String(parentData[base + 4] || "").trim();
-        const desc = parentData[base + 5];
+        const rechgd = parentData[base + 5];
+        const costMonth = parentData[base + 6];
         if (ref && !isPlaceholderInvoice(ref, st)) {
-          initialRetainerInvoices.push({ amount: amt, ref, sendDate: sent, days, status: st, desc });
+          initialRetainerInvoices.push({ amount: amt, ref, sendDate: sent, days, status: st, ofWhichRechgd: rechgd, costMonth });
         }
       }
     }
 
-    // Parent row AP:BH (cols 42-60, index 41-59)
-    // For Retainers whose child rows are provisioned in background, keep parent AP:BH empty
-    const parentAP_BH = shouldProvisionRetainer ? new Array(19).fill("") : parentData.slice(41, 60);
-    while (parentAP_BH.length < 19) parentAP_BH.push("");
+    // Parent row AP:BJ (cols 42-62, index 41-61)
+    // For Retainers whose child rows are provisioned in background, keep parent AP:BJ empty
+    const parentAP_BJ = shouldProvisionRetainer ? new Array(21).fill("") : parentData.slice(41, 62);
+    while (parentAP_BJ.length < 21) parentAP_BJ.push("");
     confirmedBatchData.push({
-      range: `${confirmedSheetName}!AP${targetParentRow}:BH${targetParentRow}`,
-      values: [parentAP_BH],
+      range: `${confirmedSheetName}!AP${targetParentRow}:BJ${targetParentRow}`,
+      values: [parentAP_BJ],
     });
 
     // Parent row BX:CR (cols 76-96, index 75-95)
@@ -314,11 +315,11 @@ export default async function handler(req, res) {
         values: [[""]],
       });
 
-      const childAP_BH = childData.slice(41, 60);
-      while (childAP_BH.length < 19) childAP_BH.push("");
+      const childAP_BJ = childData.slice(41, 62);
+      while (childAP_BJ.length < 21) childAP_BJ.push("");
       confirmedBatchData.push({
-        range: `${confirmedSheetName}!AP${targetChildRow}:BH${targetChildRow}`,
-        values: [childAP_BH],
+        range: `${confirmedSheetName}!AP${targetChildRow}:BJ${targetChildRow}`,
+        values: [childAP_BJ],
       });
 
       const childBX_CR = childData.slice(75, 96);

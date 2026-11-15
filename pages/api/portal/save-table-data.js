@@ -99,7 +99,7 @@ export default async function handler(req, res) {
         }
         const isContractorRange = minRow >= 13 && maxRow <= 110;
         const isDividendRange = !isSenior && minRow >= 115 && maxRow <= 123;
-        const isExpenseRange = minRow >= 126 && maxRow <= 225;
+        const isExpenseRange = minRow >= 126 && maxRow <= 224;
         if (!isContractorRange && !isDividendRange && !isExpenseRange) {
           return res.status(403).json({ success: false, error: "This row is not within an editable section." });
         }

@@ -416,6 +416,10 @@ export default async function handler(req, res) {
         const jobName = getValueByHeader(row, colMap, ["job name", "job"]);
         const revenue = getValueByHeader(row, colMap, ["revenue (proj total / ongoing pm) - excl vat", "revenue"]);
         const directCosts = getValueByHeader(row, colMap, ["direct costs (proj total / ongoing pm) - excl vat", "direct costs"]);
+        const rechargedExpenses = jobType === "Confirmed"
+          ? (getValueByHeader(row, colMap, ["recharged expenses (excl vat)", "recharged expenses", "rechgd exp"]) ||
+             (row[17] !== undefined ? String(row[17]).trim() : ""))
+          : "";
 
         // Skip completely empty rows
         if (!client && !jobName) {
@@ -435,7 +439,8 @@ export default async function handler(req, res) {
         }
 
         const isParent = (revenue && String(revenue).trim() !== "" && Math.abs(parseMoney(revenue)) > 0.001) ||
-          (directCosts && String(directCosts).trim() !== "" && Math.abs(parseMoney(directCosts)) > 0.001);
+          (directCosts && String(directCosts).trim() !== "" && Math.abs(parseMoney(directCosts)) > 0.001) ||
+          (rechargedExpenses && String(rechargedExpenses).trim() !== "" && Math.abs(parseMoney(rechargedExpenses)) > 0.001);
 
         if (isParent) {
           const projectRetainer = getValueByHeader(row, colMap, ["project / retainer", "proj / ret"]) || "Project";
@@ -450,12 +455,17 @@ export default async function handler(req, res) {
             const nextJobName = getValueByHeader(nextRow, colMap, ["job name", "job"]);
             const nextRev = getValueByHeader(nextRow, colMap, ["revenue (proj total / ongoing pm) - excl vat", "revenue"]);
             const nextDC = getValueByHeader(nextRow, colMap, ["direct costs (proj total / ongoing pm) - excl vat", "direct costs"]);
+            const nextRech = jobType === "Confirmed"
+              ? (getValueByHeader(nextRow, colMap, ["recharged expenses (excl vat)", "recharged expenses", "rechgd exp"]) ||
+                 (nextRow[17] !== undefined ? String(nextRow[17]).trim() : ""))
+              : "";
 
             if (
               nextClient === client &&
               nextJobName === jobName &&
               (!nextRev || String(nextRev).trim() === "" || Math.abs(parseMoney(nextRev)) < 0.001) &&
-              (!nextDC || String(nextDC).trim() === "" || Math.abs(parseMoney(nextDC)) < 0.001)
+              (!nextDC || String(nextDC).trim() === "" || Math.abs(parseMoney(nextDC)) < 0.001) &&
+              (!nextRech || String(nextRech).trim() === "" || Math.abs(parseMoney(nextRech)) < 0.001)
             ) {
               childRows.push({ row: nextRow, rowNum: j + 1 });
               j++;
@@ -477,6 +487,8 @@ export default async function handler(req, res) {
             const dateH = [`inv ${slot} send date`, `inv. ${slot} send date`, `inv ${slot} date`, `inv ${slot} sent date`];
             const daysH = [`inv ${slot} days to pay`, `inv. ${slot} days to pay`, `inv ${slot} days`];
             const statusH = [`inv ${slot} status`, `inv. ${slot} status`, `invoice ${slot} status`, `inv ${slot} status?`, `inv ${slot} state`];
+            const rechgdH = [`inv ${slot} of which rechgd`, `inv. ${slot} of which rechgd`, `inv ${slot} recharged`, `inv ${slot} rechgd`];
+            const costMonthH = [`inv ${slot} cost month`, `inv. ${slot} cost month`];
 
             const defaultBase = slot === 1 ? 41 : slot === 2 ? 48 : 55;
             const amt = getValueByHeader(r, colMap, amtH) || (r[defaultBase] !== undefined ? String(r[defaultBase]).trim() : "");
@@ -484,8 +496,14 @@ export default async function handler(req, res) {
             const sendDateRaw = getValueByHeader(r, colMap, dateH) || (r[defaultBase + 2] !== undefined ? String(r[defaultBase + 2]).trim() : "");
             const days = getValueByHeader(r, colMap, daysH) || (r[defaultBase + 3] !== undefined ? String(r[defaultBase + 3]).trim() : "") || "30";
             const status = getValueByHeader(r, colMap, statusH) || (r[defaultBase + 4] !== undefined ? String(r[defaultBase + 4]).trim() : "");
+            const ofWhichRechgd = jobType === "Confirmed"
+              ? (getValueByHeader(r, colMap, rechgdH) || (r[defaultBase + 5] !== undefined ? String(r[defaultBase + 5]).trim() : ""))
+              : "";
+            const costMonth = jobType === "Confirmed"
+              ? (getValueByHeader(r, colMap, costMonthH) || (r[defaultBase + 6] !== undefined ? String(r[defaultBase + 6]).trim() : ""))
+              : "";
 
-            if (amt || ref || sendDateRaw) {
+            if (amt || ref || sendDateRaw || ofWhichRechgd) {
               return {
                 num: currentInvNum++,
                 ref,
@@ -493,6 +511,7 @@ export default async function handler(req, res) {
                 status: canonicalizeInvoiceStatus(status),
                 sendDate: formatDateVal(sendDateRaw),
                 days,
+                ...(jobType === "Confirmed" ? { ofWhichRechgd, costMonth } : {}),
               };
             }
             return null;
@@ -513,11 +532,13 @@ export default async function handler(req, res) {
           childRows.forEach((cr) => {
             if (isRetainer) {
               let childInvSum = 0;
+              let childRechgdSum = 0;
               for (let s = 1; s <= 3; s++) {
                 const inv = extractInv(cr.row, s);
                 if (inv) {
                   invoices.push({ ...inv, isChild: true, childRowNum: cr.rowNum });
-                  childInvSum += (Number(inv.amount) || 0);
+                  childInvSum += parseMoney(inv.amount);
+                  childRechgdSum += parseMoney(inv.ofWhichRechgd);
                 }
               }
 
@@ -533,7 +554,8 @@ export default async function handler(req, res) {
               const startMonth = parseDateToYMD(startRaw, false);
               const endMonth = parseDateToYMD(endRaw, true);
               const months = parseInt(monthsRaw, 10) || 1;
-              const revPm = parseMoney(revPmRaw) || (months > 0 ? invAmt / months : invAmt);
+              const childPureInvAmt = Math.max(0, invAmt - childRechgdSum);
+              const revPm = parseMoney(revPmRaw) || (months > 0 ? childPureInvAmt / months : childPureInvAmt);
               const incPm = parseMoney(incPmRaw) || revPm;
               const dcPm = parseMoney(dcPmRaw) || 0;
 
@@ -634,6 +656,7 @@ export default async function handler(req, res) {
             revNum,
             directCosts,
             dcNum,
+            rechargedExpenses,
             ...(isJobCosting ? {
               fixedVariable: row[7] !== undefined ? String(row[7]).trim() : "",
               jobRevenue: row[8] !== undefined ? String(row[8]).trim() : "",
@@ -642,12 +665,12 @@ export default async function handler(req, res) {
               equivContractorCosts: row[13] !== undefined ? String(row[13]).trim() : "",
               contractorCostsCheck: row[14] !== undefined ? String(row[14]).trim() : "",
               externalCosts: row[16] !== undefined ? String(row[16]).trim() : "",
-              rechargedExpenses: row[17] !== undefined ? String(row[17]).trim() : "",
               propSuccFeePct: row[19] !== undefined ? String(row[19]).trim() : "",
               propSuccFeeAmt: row[20] !== undefined ? String(row[20]).trim() : "",
               propSuccFeeRec: row[21] !== undefined ? String(row[21]).trim() : "",
               invNo: row[27] !== undefined ? String(row[27]).trim() : "",
             } : {}),
+            leftToInvoice: row[74] !== undefined ? String(row[74]).trim() : "",
             grossProfit: getValueByHeader(row, colMap, ["gross profit"]),
             grossMargin: getValueByHeader(row, colMap, ["margin", "gross profit margin"]),
             productLine: getValueByHeader(row, colMap, ["prod. line", "product line"]),
@@ -690,6 +713,10 @@ export default async function handler(req, res) {
             jobObj[`inv${slot}Days`] = inv.days;
             jobObj[`inv${slot}Status`] = inv.status;
             jobObj[`inv${slot}IsChild`] = !!inv.isChild;
+            if (jobType === "Confirmed") {
+              jobObj[`inv${slot}OfWhichRechgd`] = inv.ofWhichRechgd || "";
+              jobObj[`inv${slot}CostMonth`] = inv.costMonth || "";
+            }
           });
 
           // Flatten direct expenses directly onto jobObj (dirInv1Amount, etc.)
@@ -812,6 +839,7 @@ export default async function handler(req, res) {
           paymentTiming,
           deliveryPct,
           isDelivery: deliveryPct === "100%" || (parseFloat(deliveryPct) || 0) > 0,
+          isSystemRow: r === 224 || r === 225,
           allocations: {
             1: allocationsY1,
             2: allocationsY2,
@@ -833,8 +861,8 @@ export default async function handler(req, res) {
     const contractorsList = parseOutgoingsSection(12, 109);
     // Dividends: rows 118 to 121 (indices 117 to 120), strictly excluding summary/total rows as in original WebApp
     const dividendsList = parseOutgoingsSection(117, 120).filter((item) => !item.name.toLowerCase().includes("total"));
-    // Expenses: rows 126 to 225 (indices 125 to 224)
-    const expensesList = parseOutgoingsSection(125, 224);
+    // Expenses: rows 126 to 226 (indices 125 to 225; includes non-editable system rows 225 & 226 for reporting/deep-dive)
+    const expensesList = parseOutgoingsSection(125, 225);
 
     // Extract Transaction Breakdown (Row 300) and Actual VAT (Rows 304 & 305) from Outgoings
     // 0-indexed row indices: Row 300 -> 299, Row 304 -> 303, Row 305 -> 304

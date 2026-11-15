@@ -1,4 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
+import InvoiceCostMonthControl from "./InvoiceCostMonthControl";
+import { extractSplitMonths } from "../services/splitHelper";
 import Spinner from "./Spinner";
 import { stripCurrency, parseSheetDate, toSheetDateFormat, calculatePaymentDate } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
@@ -62,6 +64,10 @@ export default function InvoicesNewJobModal({
   const [jobName, setJobName] = useState(inv.job || "");
   const [projectCode, setProjectCode] = useState("");
   const [revenue, setRevenue] = useState(stripCurrency(inv.amount));
+  const [revenueManuallyEdited, setRevenueManuallyEdited] = useState(false);
+  const [hasRechargedExpenses, setHasRechargedExpenses] = useState(false);
+  const [ofWhichRechgd, setOfWhichRechgd] = useState("");
+  const [costMonth, setCostMonth] = useState("");
   const [directCosts, setDirectCosts] = useState("0");
   const [vatYesNo, setVatYesNo] = useState(inv.vatAmount > 0 ? "Yes" : "No");
   const [projectType, setProjectType] = useState("Project");
@@ -111,6 +117,20 @@ export default function InvoicesNewJobModal({
 
   const save = async () => {
     if (!jobName.trim()) { setError("Please enter a job name"); return; }
+    const grossAmt = parseFloat(inv.amount) || 0;
+    const rechNum = hasRechargedExpenses ? (Math.round((parseFloat(ofWhichRechgd) || 0) * 100) / 100) : 0;
+    if (hasRechargedExpenses && rechNum > grossAmt + 0.01) {
+      setError(`Of which recharged (£${rechNum.toFixed(2)}) cannot exceed invoice amount (£${grossAmt.toFixed(2)}).`);
+      return;
+    }
+    if (hasRechargedExpenses && rechNum > 0 && String(costMonth || "").trim().toLowerCase().startsWith("[split]")) {
+      const entries = extractSplitMonths(costMonth);
+      const splitSum = entries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+      if (Math.abs(splitSum - rechNum) > 0.02) {
+        setError(`Split cost months (£${splitSum.toFixed(2)}) must add up to recharged amount (£${rechNum.toFixed(2)}).`);
+        return;
+      }
+    }
     const isRetainerNoEnd = projectType === "Retainer" && noEndDate;
     if (projectType === "Retainer" && !isRetainerNoEnd && !endDate) {
       setError("Please enter an end date or tick 'No end date'");
@@ -130,11 +150,17 @@ export default function InvoicesNewJobModal({
           clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           jobName: jobName.trim(), projectCode: projectCode.trim(),
           revenue: parseFloat(revenue) || 0, directCosts: parseFloat(directCosts) || 0,
+          rechargedExpenses: hasRechargedExpenses && rechNum > 0 ? rechNum : 0,
           vatYesNo, projectType, startDate,
           endDate: isRetainerNoEnd ? "31-Dec-2050" : endDate,
           noEndDate: isRetainerNoEnd,
           daysToPay: safeDaysToPay,
-          invoice: { ...inv, daysToPay: safeDaysToPay },
+          invoice: {
+            ...inv,
+            daysToPay: safeDaysToPay,
+            ofWhichRechgd: hasRechargedExpenses && rechNum > 0 ? rechNum : "",
+            costMonth: hasRechargedExpenses && rechNum > 0 ? String(costMonth || "").trim() : "",
+          },
           automationCommanderSheetId: invoicesClient?.automationCommanderSheetId,
         }),
       });
@@ -198,8 +224,19 @@ export default function InvoicesNewJobModal({
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
-              <label style={labelStyle}>Revenue (£{isAdmin ? ", col AG" : ""})</label>
-              <input style={inputStyle} type="number" step="0.01" value={revenue} onChange={e => setRevenue(e.target.value)} />
+              <label style={labelStyle}>
+                {hasRechargedExpenses ? `Fee revenue (£${isAdmin ? ", col AG" : ""})` : `Revenue (£${isAdmin ? ", col AG" : ""})`}
+              </label>
+              <input
+                style={inputStyle}
+                type="number"
+                step="0.01"
+                value={revenue}
+                onChange={(e) => {
+                  setRevenueManuallyEdited(true);
+                  setRevenue(e.target.value);
+                }}
+              />
               <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
                 For retainers, enter the monthly amount
               </div>
@@ -287,6 +324,67 @@ export default function InvoicesNewJobModal({
               </div>
             )}
           </div>
+        </div>
+
+        {/* Recharged expenses option */}
+        <div style={{ marginTop: "12px", padding: "10px 12px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "6px" }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "12px", fontWeight: "600", color: "#0f172a", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={hasRechargedExpenses}
+              onChange={(e) => {
+                const checked = e.target.checked;
+                setHasRechargedExpenses(checked);
+                const gross = parseFloat(inv.amount) || 0;
+                if (!checked) {
+                  setOfWhichRechgd("");
+                  setCostMonth("");
+                  if (!revenueManuallyEdited) {
+                    setRevenue(stripCurrency(inv.amount));
+                  }
+                } else if (!revenueManuallyEdited) {
+                  const rech = parseFloat(ofWhichRechgd) || 0;
+                  setRevenue(String(Math.max(0, Math.round((gross - rech) * 100) / 100)));
+                }
+              }}
+            />
+            Recharged expenses?
+          </label>
+          {hasRechargedExpenses && (
+            <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div>
+                <label style={labelStyle}>
+                  Of which recharged (excl. VAT{isAdmin ? ", col R & invoice" : ""})
+                </label>
+                <input
+                  style={inputStyle}
+                  type="number"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={ofWhichRechgd}
+                  onChange={(e) => {
+                    const nextVal = e.target.value;
+                    setOfWhichRechgd(nextVal);
+                    if (!revenueManuallyEdited) {
+                      const gross = parseFloat(inv.amount) || 0;
+                      const rech = parseFloat(nextVal) || 0;
+                      setRevenue(String(Math.max(0, Math.round((gross - rech) * 100) / 100)));
+                    }
+                  }}
+                />
+              </div>
+              {(parseFloat(ofWhichRechgd) || 0) > 0 && (
+                <InvoiceCostMonthControl
+                  value={costMonth}
+                  onChange={setCostMonth}
+                  totalAmount={parseFloat(ofWhichRechgd) || 0}
+                  invoiceSentDate={inv.sentDate}
+                  jobStartDate={startDate}
+                  compact={true}
+                />
+              )}
+            </div>
+          )}
         </div>
 
         {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginTop: "12px" }}>{error}</div>}

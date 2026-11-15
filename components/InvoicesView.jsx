@@ -1042,17 +1042,41 @@ export default function InvoicesView({
                   rows: updatedJob.rows.map(r => ({ ...r, revenue: resData.updatedRevenue }))
                 };
               }
+              if (hasRow && resData?.updatedRechargedExpenses !== undefined) {
+                updatedJob = {
+                  ...updatedJob,
+                  rechargedExpenses: resData.updatedRechargedExpenses,
+                  rows: updatedJob.rows.map(r => ({ ...r, rechargedExpenses: resData.updatedRechargedExpenses }))
+                };
+              }
+              const placeholderSlotUpdates = hasRow && Array.isArray(resData?.placeholderAdjustment?.slotUpdates)
+                ? resData.placeholderAdjustment.slotUpdates
+                : [];
               const restored = hasRow ? resData?.restoredPlaceholderSlot : null;
               return {
                 ...updatedJob,
                 rows: updatedJob.rows.map(r => {
                   const matchesEditedRow = r.rowNum === rNum;
                   const matchesRestoredRow = restored && Number(r.rowNum) === Number(restored.rowNum);
-                  if (!matchesEditedRow && !matchesRestoredRow) return r;
+                  const rowPlaceholderUpdates = placeholderSlotUpdates.filter(u => Number(u.rowNum) === Number(r.rowNum));
+                  if (!matchesEditedRow && !matchesRestoredRow && rowPlaceholderUpdates.length === 0) return r;
                   return {
                     ...r,
                     invoiceSlots: r.invoiceSlots.map(sl => {
                       if (matchesEditedRow && sl.slotNum === sNum) return { ...sl, ...newData };
+                      const pUpd = rowPlaceholderUpdates.find(u => Number(u.slotNum) === Number(sl.slotNum));
+                      if (pUpd) {
+                        return {
+                          ...sl,
+                          amount: pUpd.amount ?? sl.amount,
+                          ref: pUpd.ref ?? sl.ref,
+                          sentDate: pUpd.sentDate ?? sl.sentDate,
+                          daysToPay: pUpd.daysToPay ?? sl.daysToPay,
+                          status: pUpd.status ?? sl.status,
+                          ofWhichRechgd: pUpd.ofWhichRechgd !== undefined ? pUpd.ofWhichRechgd : sl.ofWhichRechgd,
+                          costMonth: pUpd.costMonth !== undefined ? pUpd.costMonth : sl.costMonth
+                        };
+                      }
                       if (
                         matchesRestoredRow &&
                         Number(sl.slotNum) === Number(restored.slotNum || 1) &&

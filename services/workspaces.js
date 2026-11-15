@@ -19,6 +19,7 @@ import {
   classifyExpenseCategory,
   isJobCostingStyle,
   getJobCostingRowFormulasMap,
+  getJobCostingRowFormulasLetterMap,
   buildJobRowClearAndRestorePlan
 } from "../utils/helpers.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId } from "./userPermissions.js";
@@ -1059,14 +1060,17 @@ export async function handleGetDirectCostsJobs(req, res, sheets) {
     const buildRowData = (rowNum, row, isParent) => ({
       rowNum, isParent,
       client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+      rechargedExpenses: colVal(row, 17),
       revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
       projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+      leftToInvoice: colVal(row, 74),
       likelihood: null, copiedToConf: null,
       invoiceSlots: [1, 2, 3].map(n => {
         const base = n === 1 ? 41 : n === 2 ? 48 : 55;
         return {
           slotNum: n, amount: colVal(row, base), ref: colVal(row, base + 1), sentDate: colVal(row, base + 2),
-          daysToPay: colVal(row, base + 3), status: canonicalizeInvoiceStatus(colVal(row, base + 4)), highlighted: false
+          daysToPay: colVal(row, base + 3), status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
+          ofWhichRechgd: colVal(row, base + 5), costMonth: colVal(row, base + 6), highlighted: false
         };
       }),
       expenseSlots: [1, 2, 3].map(n => {
@@ -1227,14 +1231,17 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
     const buildRowData = (rowNum, row, isParent) => ({
       rowNum, isParent,
       client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+      rechargedExpenses: colVal(row, 17),
       revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
       projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+      leftToInvoice: colVal(row, 74),
       likelihood: null, copiedToConf: null,
       invoiceSlots: [1, 2, 3].map(n => {
         const base = n === 1 ? 41 : n === 2 ? 48 : 55;
         return {
           slotNum: n, amount: colVal(row, base), ref: colVal(row, base + 1), sentDate: colVal(row, base + 2),
-          daysToPay: colVal(row, base + 3), status: canonicalizeInvoiceStatus(colVal(row, base + 4)), highlighted: false
+          daysToPay: colVal(row, base + 3), status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
+          ofWhichRechgd: colVal(row, base + 5), costMonth: colVal(row, base + 6), highlighted: false
         };
       }),
       expenseSlots: [1, 2, 3].map(n => {
@@ -1253,6 +1260,7 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
       const row = rows[ri] || [];
       const client = String(row[0] || "").trim();
       const jobName = String(row[1] || "").trim();
+      const rechargedNum = parseFloat(String(row[17] || "").replace(/[£$€,\s]/g, "")) || 0;
       const revenueNum = parseFloat(String(row[32] || "").replace(/[£$€,\s]/g, "")) || 0;
       if (!client && !jobName) { ri++; continue; }
 
@@ -1263,10 +1271,11 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
         const next = rows[cj] || [];
         const nc = String(next[0] || "").trim();
         const nj = String(next[1] || "").trim();
+        const nRecharged = parseFloat(String(next[17] || "").replace(/[£$€,\s]/g, "")) || 0;
         const nRevenue = String(next[32] || "").trim();
         const nBudget = parseFloat(String(next[33] || "").replace(/[£$€,\s]/g, "")) || 0;
         const nStart = String(next[37] || "").trim();
-        if (nc === client && nj === jobName && !nRevenue && !nBudget && !nStart) {
+        if (nc === client && nj === jobName && !nRevenue && !nBudget && !nRecharged && !nStart) {
           jobRows.push(buildRowData(cj + 1, next, false));
           cj++;
         } else {
@@ -1283,7 +1292,7 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
           if (isReal) realInvoicedTotal += parseFloat(String(slot.amount || "").replace(/[£$€,\s]/g, "")) || 0;
         }
       }
-      const uninvoicedAmount = revenueNum - realInvoicedTotal;
+      const uninvoicedAmount = (revenueNum + rechargedNum) - realInvoicedTotal;
       const passesFilter = showAll || uninvoicedAmount > 0;
       if (passesFilter) {
         jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows, uninvoicedAmount });
@@ -1564,6 +1573,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
       projectRetainer: colVal(row, 35), prodLine: colVal(row, 36),
       startDate: colVal(row, 37), endDate: colVal(row, 38),
+      rechargedExpenses: currentTab === "Confirmed" ? colVal(row, 17) : "",
       ...(isJobCosting ? {
         fixedVariable: colVal(row, 7),
         jobRevenue: colVal(row, 8),
@@ -1572,7 +1582,6 @@ export async function handleGetAllClientJobs(req, res, sheets) {
         equivContractorCosts: colVal(row, 13),
         contractorCostsCheck: colVal(row, 14),
         externalCosts: colVal(row, 16),
-        rechargedExpenses: colVal(row, 17),
         propSuccFeePct: colVal(row, 19),
         propSuccFeeAmt: colVal(row, 20),
         propSuccFeeRec: colVal(row, 21),
@@ -1591,6 +1600,8 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           sentDate: colVal(row, base + 2),
           daysToPay: colVal(row, base + 3),
           status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
+          ofWhichRechgd: currentTab === "Confirmed" ? colVal(row, base + 5) : "",
+          costMonth: currentTab === "Confirmed" ? colVal(row, base + 6) : "",
           highlighted: false,
           note: getNote(currentTab, rowNum, base)
         };
@@ -1636,17 +1647,18 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           const next = rows[cj] || [];
           const nc = String(next[0] || "").trim();
           const nj = String(next[1] || "").trim();
+          const nRecharged = currentTab === "Confirmed" ? String(next[17] || "").trim() : "";
           const nRevenue = String(next[32] || "").trim();
           const nStart = String(next[37] || "").trim();
           const nEnd = String(next[38] || "").trim();
 
-          const hasParentIndicators = (nStart !== "" || nEnd !== "") || (nRevenue !== "" && parseFloat(String(nRevenue).replace(/[^0-9.-]/g, "")) > 0);
+          const hasParentIndicators = (nStart !== "" || nEnd !== "") || (nRevenue !== "" && parseFloat(String(nRevenue).replace(/[^0-9.-]/g, "")) > 0) || (nRecharged !== "" && parseFloat(String(nRecharged).replace(/[^0-9.-]/g, "")) > 0);
           if (hasParentIndicators) {
             break;
           }
 
           const clientMatches = !nc || nc.toLowerCase() === client.toLowerCase();
-          const jobMatches = (nj && nj.toLowerCase() === jobName.toLowerCase()) || (!nj && (next[41] || next[42] || next[75] || next[76]));
+          const jobMatches = (nj && nj.toLowerCase() === jobName.toLowerCase()) || (!nj && (next[41] || next[42] || (currentTab === "Confirmed" && (next[46] || next[47])) || next[75] || next[76]));
 
           if (clientMatches && jobMatches) {
             jobRows.push(buildRowData(cj + 1, next, false, currentTab));
@@ -1768,11 +1780,12 @@ export async function handleUpdateJobField(req, res, sheets) {
   const parsedRowNum = parseInt(cleanCellRef.replace(/[^0-9]/g, ""), 10);
   const colIdx0 = parsedColLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
   const JOB_COSTING_EDITABLE_COLS = new Set([5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29]);
+  const invProtectedStart = tabName === "Confirmed" ? 62 : 60;
   const isProtectedFormulaCol =
     (colIdx0 >= 5 && colIdx0 <= 29 && !JOB_COSTING_EDITABLE_COLS.has(colIdx0)) ||
     colIdx0 === 31 ||
     colIdx0 === 40 ||
-    (colIdx0 >= 60 && colIdx0 <= 74) ||
+    (colIdx0 >= invProtectedStart && colIdx0 <= 74) ||
     (colIdx0 >= 96 && colIdx0 <= 106);
   if (!Number.isFinite(parsedRowNum) || parsedRowNum < 2 || isProtectedFormulaCol) {
     return res.status(400).json({ success: false, error: "Cannot overwrite header row or protected formula columns." });
@@ -1791,7 +1804,9 @@ export async function handleUpdateJobField(req, res, sheets) {
     const isProvisioningRetainer =
       tabName === "Confirmed" && targetRow && targetCol === "AJ" && String(safeValue || "").trim().toLowerCase() === "retainer";
     const needsPlaceholderAdjust =
-      (tabName === "Confirmed" || tabName === "Pipeline") && targetRow && ["AG", "AH", "AL", "AM", "I", "K", "F", "G"].includes(targetCol);
+      (tabName === "Confirmed" || tabName === "Pipeline") &&
+      targetRow &&
+      (["AG", "AH", "AL", "AM", "I", "K", "F", "G"].includes(targetCol) || (tabName === "Confirmed" && targetCol === "R"));
 
     if (isProvisioningRetainer) {
       await sheets.spreadsheets.values.update({
@@ -1842,7 +1857,7 @@ export async function handleUpdateJobField(req, res, sheets) {
         },
       ];
       if (isJobCosting) {
-        const jcFormulas = getJobCostingRowFormulasMap(targetRow, {
+        const jcFormulas = getJobCostingRowFormulasLetterMap(tabName, targetRow, {
           hasExplicitContractorCosts: writeCol === "K" && String(safeValue || "").trim() !== ""
         });
         for (const [fCol, fStr] of Object.entries(jcFormulas)) {
@@ -1854,8 +1869,10 @@ export async function handleUpdateJobField(req, res, sheets) {
       }
       const adjustOpts = { preloadedGroup, preloadedTolerances, returnBatchDataOnly: true };
 
-      if (targetCol === "AG" || targetCol === "I") {
-        const revNum = parseFloat(String(safeValue || "").replace(/[£$€,\s]/g, "")) || 0;
+      if (targetCol === "AG" || targetCol === "I" || (tabName === "Confirmed" && targetCol === "R")) {
+        const revNum = (targetCol === "AG" || targetCol === "I")
+          ? (parseFloat(String(safeValue || "").replace(/[£$€,\s]/g, "")) || 0)
+          : (parseFloat(String(preloadedGroup?.parentRow?.[32] || "0").replace(/[£$€,\s]/g, "")) || 0);
         const invAdj = await adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRow], revNum, masterIdForTols, null, adjustOpts).catch(e => {
           console.warn("Job revenue placeholder adjust failed:", e.message);
           return null;
@@ -2021,11 +2038,12 @@ export async function handleUpdateJobFields(req, res, sheets) {
     const parsedColLetters = targetRef.replace(/[0-9]/g, "");
     const parsedRowNum = parseInt(targetRef.replace(/[^0-9]/g, ""), 10);
     const colIdx0 = parsedColLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+    const invProtectedStart = tabName === "Confirmed" ? 62 : 60;
     const isProtectedFormulaCol =
       (colIdx0 >= 5 && colIdx0 <= 29 && !JOB_COSTING_EDITABLE_COLS.has(colIdx0)) ||
       colIdx0 === 31 ||
       colIdx0 === 40 ||
-      (colIdx0 >= 60 && colIdx0 <= 74) ||
+      (colIdx0 >= invProtectedStart && colIdx0 <= 74) ||
       (colIdx0 >= 96 && colIdx0 <= 106);
     if (!Number.isFinite(parsedRowNum) || parsedRowNum < 2 || isProtectedFormulaCol) {
       return res.status(400).json({ success: false, error: `Cannot overwrite header row or protected formula column: ${targetRef}` });
@@ -2037,6 +2055,9 @@ export async function handleUpdateJobFields(req, res, sheets) {
     const targetRowNum = rowNum ? parseInt(rowNum, 10) : null;
     const typeUpdate = safeUpdates.find(u => (u.colLetter || "").toUpperCase() === "AJ" || (u.cellRef || "").toUpperCase().startsWith("AJ"));
     const revUpdate = safeUpdates.find(u => ["AG", "I"].includes((u.colLetter || "").toUpperCase()) || (u.cellRef || "").toUpperCase().startsWith("AG") || /^I\d+$/.test((u.cellRef || "").toUpperCase()));
+    const rechUpdate = tabName === "Confirmed"
+      ? safeUpdates.find(u => (u.colLetter || "").toUpperCase() === "R" || /^R\d+$/i.test(String(u.cellRef || "")))
+      : null;
     const costUpdate = safeUpdates.find(u => ["AH", "K"].includes((u.colLetter || "").toUpperCase()) || (u.cellRef || "").toUpperCase().startsWith("AH") || /^K\d+$/.test((u.cellRef || "").toUpperCase()));
     const startDateUpdate = safeUpdates.find(u => ["AL", "F"].includes((u.colLetter || "").toUpperCase()) || (u.cellRef || "").toUpperCase().startsWith("AL") || /^F\d+$/.test((u.cellRef || "").toUpperCase()));
     const endDateUpdate = safeUpdates.find(u => ["AM", "G"].includes((u.colLetter || "").toUpperCase()) || (u.cellRef || "").toUpperCase().startsWith("AM") || /^G\d+$/.test((u.cellRef || "").toUpperCase()));
@@ -2048,6 +2069,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
       Boolean(dateUpdate) &&
       !hasInvoices &&
       !revUpdate &&
+      !rechUpdate &&
       !costUpdate &&
       !typeUpdate;
 
@@ -2055,9 +2077,9 @@ export async function handleUpdateJobFields(req, res, sheets) {
       (tabName === "Confirmed" || tabName === "Pipeline") &&
       targetRowNum &&
       !isPureConfirmedRetainerDateEdit &&
-      (hasInvoices || revUpdate || costUpdate || dateUpdate || (tabName === "Confirmed" && req.body.isRetainer === undefined && !typeUpdate));
+      (hasInvoices || revUpdate || rechUpdate || costUpdate || dateUpdate || (tabName === "Confirmed" && req.body.isRetainer === undefined && !typeUpdate));
     const needsTolerancesPreload =
-      (tabName === "Confirmed" || tabName === "Pipeline") && targetRowNum && (hasInvoices || revUpdate || costUpdate || dateUpdate);
+      (tabName === "Confirmed" || tabName === "Pipeline") && targetRowNum && (hasInvoices || revUpdate || rechUpdate || costUpdate || dateUpdate);
 
     let preloadedGroup = null;
     let preloadedTolerances = null;
@@ -2142,7 +2164,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
       };
     });
     if (isJobCosting && targetRowNum) {
-      const jcFormulas = getJobCostingRowFormulasMap(targetRowNum, {
+      const jcFormulas = getJobCostingRowFormulasLetterMap(tabName, targetRowNum, {
         hasExplicitContractorCosts: Boolean(costUpdate && String(costUpdate.value || "").trim() !== "")
       });
       for (const [fCol, fStr] of Object.entries(jcFormulas)) {
@@ -2246,21 +2268,31 @@ export async function handleUpdateJobFields(req, res, sheets) {
 
       // BATCH INVOICES & AUTOMATIC PLACEHOLDER SYNC
       if (hasInvoices && targetRowNum) {
+        const parseMoneyField = (v) => parseFloat(String(v ?? "").replace(/[£$€,\s]/g, "")) || 0;
         const activeInvoices = invoices.filter(inv =>
           !inv.isDeleted && (
-            (inv.amount !== "" && parseFloat(inv.amount) > 0) ||
+            (inv.amount !== "" && parseMoneyField(inv.amount) > 0) ||
+            (inv.ofWhichRechgd !== "" && parseMoneyField(inv.ofWhichRechgd) > 0) ||
             (inv.ref && String(inv.ref).trim() !== "") ||
             inv.sentDate
           )
         );
 
         const effectiveRev = revUpdate
-          ? parseFloat(String(revUpdate.value || "").replace(/[£$€,\s]/g, "")) || 0
-          : (parseFloat(String(preloadedGroup?.parentRow?.[32] || "0").replace(/[£$€,\s]/g, "")) || 0);
+          ? parseMoneyField(revUpdate.value)
+          : parseMoneyField(preloadedGroup?.parentRow?.[32]);
+        const effectiveRechgd = tabName === "Confirmed"
+          ? (rechUpdate ? parseMoneyField(rechUpdate.value) : parseMoneyField(preloadedGroup?.parentRow?.[17]))
+          : 0;
+        const effectiveBillable = Math.round((effectiveRev + effectiveRechgd) * 100) / 100;
 
-        const totalInvoiced = activeInvoices.reduce((sum, inv) => sum + (parseFloat(inv.amount) || 0), 0);
-        const remainingUninvoiced = Math.max(0, Math.round((effectiveRev - totalInvoiced) * 100) / 100);
-        const needsAutoPlaceholder = !isExistingRetainer && remainingUninvoiced > 0.01 && effectiveRev > 0;
+        const totalInvoiced = activeInvoices.reduce((sum, inv) => sum + parseMoneyField(inv.amount), 0);
+        const remainingUninvoiced = Math.max(0, Math.round((effectiveBillable - totalInvoiced) * 100) / 100);
+        const needsAutoPlaceholder = !isExistingRetainer && remainingUninvoiced > 0.01 && effectiveBillable > 0;
+        const totalManualRechgd = activeInvoices.reduce((sum, inv) => sum + parseMoneyField(inv.ofWhichRechgd), 0);
+        const remainingRechgd = tabName === "Confirmed"
+          ? Math.max(0, Math.min(remainingUninvoiced, Math.round((effectiveRechgd - totalManualRechgd) * 100) / 100))
+          : 0;
 
         const totalSlotsNeeded = activeInvoices.length + (needsAutoPlaceholder ? 1 : 0);
         const rowsNeeded = Math.max(1, Math.ceil(totalSlotsNeeded / 3));
@@ -2286,10 +2318,11 @@ export async function handleUpdateJobFields(req, res, sheets) {
           }
         }
 
+        const isConfTab = tabName === "Confirmed";
         const slotCols = {
-          1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
-          2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
-          3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" }
+          1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
+          2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
+          3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH", rech: "BI", cm: "BJ" }
         };
 
         const daysToPayDefault = preloadedTolerances?.defaultDaysToPay || 30;
@@ -2299,31 +2332,52 @@ export async function handleUpdateJobFields(req, res, sheets) {
           for (let s = 1; s <= 3; s++) {
             const slotGlobalIdx = rowIdx * 3 + (s - 1);
             const cols = slotCols[s];
+            const writeRange = isConfTab
+              ? `${tabName}!${cols.a}${rNum}:${cols.cm}${rNum}`
+              : `${tabName}!${cols.a}${rNum}:${cols.st}${rNum}`;
             if (slotGlobalIdx < activeInvoices.length) {
               const inv = activeInvoices[slotGlobalIdx];
-              const amt = parseFloat(inv.amount) || 0;
+              const amt = parseMoneyField(inv.amount);
               // Manual invoices MUST have blank ref ("")!
               const ref = formatInvoiceRefForSheet(inv.ref || "");
               const sent = toSheetDateFormat(inv.sentDate) || "";
               const days = parseInt(inv.daysToPay, 10) || daysToPayDefault;
               const st = sanitizeFormulaInput(canonicalizeInvoiceStatus(inv.status) || "");
-              combinedBatchData.push({
-                range: `${tabName}!${cols.a}${rNum}:${cols.st}${rNum}`,
-                values: [[amt, ref, sent, days, st]]
-              });
+              if (isConfTab) {
+                const rechAmtNum = Math.round(parseMoneyField(inv.ofWhichRechgd) * 100) / 100;
+                const rechVal = rechAmtNum > 0 ? rechAmtNum : "";
+                const cmVal = rechAmtNum > 0 ? sanitizeFormulaInput(String(inv.costMonth || "").trim()) : "";
+                combinedBatchData.push({
+                  range: writeRange,
+                  values: [[amt, ref, sent, days, st, rechVal, cmVal]]
+                });
+              } else {
+                combinedBatchData.push({
+                  range: writeRange,
+                  values: [[amt, ref, sent, days, st]]
+                });
+              }
             } else if (needsAutoPlaceholder && slotGlobalIdx === activeInvoices.length) {
               // Write ONE automatic placeholder for the remaining gap
               const autoRef = generateAutoPlaceholderRef_("PLACE-INV");
               const sent = toSheetDateFormat(jobStartDate || new Date());
-              combinedBatchData.push({
-                range: `${tabName}!${cols.a}${rNum}:${cols.st}${rNum}`,
-                values: [[remainingUninvoiced, autoRef, sent, daysToPayDefault, ""]]
-              });
+              if (isConfTab) {
+                const rechVal = remainingRechgd > 0 ? remainingRechgd : "";
+                combinedBatchData.push({
+                  range: writeRange,
+                  values: [[remainingUninvoiced, autoRef, sent, daysToPayDefault, "", rechVal, ""]]
+                });
+              } else {
+                combinedBatchData.push({
+                  range: writeRange,
+                  values: [[remainingUninvoiced, autoRef, sent, daysToPayDefault, ""]]
+                });
+              }
             } else {
               // Clear unused slot
               combinedBatchData.push({
-                range: `${tabName}!${cols.a}${rNum}:${cols.st}${rNum}`,
-                values: [["", "", "", "", ""]]
+                range: writeRange,
+                values: [isConfTab ? ["", "", "", "", "", "", ""] : ["", "", "", "", ""]]
               });
             }
           }
@@ -2332,8 +2386,10 @@ export async function handleUpdateJobFields(req, res, sheets) {
 
       if ((tabName === "Confirmed" || tabName === "Pipeline") && targetRowNum) {
         const adjustOpts = { preloadedGroup, preloadedTolerances, returnBatchDataOnly: true };
-        if (revUpdate && !hasInvoices) {
-          const revNum = parseFloat(String(revUpdate.value || "").replace(/[£$€,\s]/g, "")) || 0;
+        if ((revUpdate || rechUpdate) && !hasInvoices) {
+          const revNum = revUpdate
+            ? parseFloat(String(revUpdate.value || "").replace(/[£$€,\s]/g, "")) || 0
+            : (parseFloat(String(preloadedGroup?.parentRow?.[32] || "0").replace(/[£$€,\s]/g, "")) || 0);
           const invAdj = await adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], revNum, resolvedMasterSheetId, null, adjustOpts).catch(e => {
             console.warn("Job fields revenue placeholder adjust failed:", e.message);
             return null;
@@ -2440,67 +2496,106 @@ export async function resetInvoiceSlotFormatting_(sheets, spreadsheetId, tabName
     const slotIdx = parseInt(slotNum, 10);
     const startCol = slotIdx === 1 ? 41 : slotIdx === 2 ? 48 : slotIdx === 3 ? 55 : -1;
     if (startCol < 0) return;
-    const endCol = startCol + 5;
+    const isConfTab = targetTab === "Confirmed";
+    const endCol = startCol + (isConfTab ? 7 : 5);
     const refCol = startCol + 1;
     const dateCol = startCol + 2;
 
+    const requests = [
+      {
+        repeatCell: {
+          range: {
+            sheetId: gid,
+            startRowIndex: rIdx,
+            endRowIndex: rIdx + 1,
+            startColumnIndex: startCol,
+            endColumnIndex: endCol,
+          },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: false, underline: false, italic: false, strikethrough: false },
+            },
+          },
+          fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.underline,userEnteredFormat.textFormat.italic,userEnteredFormat.textFormat.strikethrough",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: gid,
+            startRowIndex: rIdx,
+            endRowIndex: rIdx + 1,
+            startColumnIndex: refCol,
+            endColumnIndex: refCol + 1,
+          },
+          cell: {
+            userEnteredFormat: {
+              numberFormat: { type: "TEXT" },
+            },
+          },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: gid,
+            startRowIndex: rIdx,
+            endRowIndex: rIdx + 1,
+            startColumnIndex: dateCol,
+            endColumnIndex: dateCol + 1,
+          },
+          cell: {
+            userEnteredFormat: {
+              numberFormat: { type: "DATE", pattern: "d-mmm-yy" },
+            },
+          },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+    ];
+    if (isConfTab) {
+      requests.push(
+        {
+          repeatCell: {
+            range: {
+              sheetId: gid,
+              startRowIndex: rIdx,
+              endRowIndex: rIdx + 1,
+              startColumnIndex: startCol + 5,
+              endColumnIndex: startCol + 6,
+            },
+            cell: {
+              userEnteredFormat: {
+                numberFormat: { type: "CURRENCY", pattern: "[$£]#,##0.00" },
+              },
+            },
+            fields: "userEnteredFormat.numberFormat",
+          },
+        },
+        {
+          repeatCell: {
+            range: {
+              sheetId: gid,
+              startRowIndex: rIdx,
+              endRowIndex: rIdx + 1,
+              startColumnIndex: startCol + 6,
+              endColumnIndex: startCol + 7,
+            },
+            cell: {
+              userEnteredFormat: {
+                wrapStrategy: "CLIP",
+              },
+            },
+            fields: "userEnteredFormat.wrapStrategy",
+          },
+        }
+      );
+    }
+
     await withRetry(() => sheets.spreadsheets.batchUpdate({
       spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            repeatCell: {
-              range: {
-                sheetId: gid,
-                startRowIndex: rIdx,
-                endRowIndex: rIdx + 1,
-                startColumnIndex: startCol,
-                endColumnIndex: endCol,
-              },
-              cell: {
-                userEnteredFormat: {
-                  textFormat: { bold: false, underline: false, italic: false, strikethrough: false },
-                },
-              },
-              fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.underline,userEnteredFormat.textFormat.italic,userEnteredFormat.textFormat.strikethrough",
-            },
-          },
-          {
-            repeatCell: {
-              range: {
-                sheetId: gid,
-                startRowIndex: rIdx,
-                endRowIndex: rIdx + 1,
-                startColumnIndex: refCol,
-                endColumnIndex: refCol + 1,
-              },
-              cell: {
-                userEnteredFormat: {
-                  numberFormat: { type: "TEXT" },
-                },
-              },
-              fields: "userEnteredFormat.numberFormat",
-            },
-          },
-          {
-            repeatCell: {
-              range: {
-                sheetId: gid,
-                startRowIndex: rIdx,
-                endRowIndex: rIdx + 1,
-                startColumnIndex: dateCol,
-                endColumnIndex: dateCol + 1,
-              },
-              cell: {
-                userEnteredFormat: {
-                  numberFormat: { type: "DATE", pattern: "d-mmm-yy" },
-                },
-              },
-              fields: "userEnteredFormat.numberFormat",
-            },
-          },
-        ],
-      },
+      requestBody: { requests },
     }));
   } catch (err) {
     console.warn(`[resetInvoiceSlotFormatting_] Failed on ${tabName} row ${rowNum} slot ${slotNum}:`, err.message);
@@ -2595,10 +2690,11 @@ async function insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobClient, j
   for (let r = allRows.length - 1; r >= 0; r--) {
     const row = allRows[r] || [];
     const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+    const hasRech = targetTab === "Confirmed" && row[17] !== "" && row[17] != null;
     const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
-    const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+    const z3 = row.slice(41, targetTab === "Confirmed" ? 62 : 60).some(c => c !== "" && c != null);
     const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
-    if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+    if (z1 || z2 || z3 || z4 || hasRech) { trueLastRow = r + 1; break; }
   }
   if (trueLastRow < jobLastRow) trueLastRow = jobLastRow;
 
@@ -2937,17 +3033,18 @@ export async function resolveFullJobRowGroup_(sheets, sheetIdClean, targetTab, s
     }
   }
 
-  const norm = (s) => String(s || "").trim().toLowerCase();
   const isParentRowAt = (idx0) => {
     const r = allRows[idx0] || [];
+    const hasRech = targetTab === "Confirmed" && r[17] !== undefined && r[17] !== null && String(r[17]).trim() !== "";
     const hasRev = r[32] !== undefined && r[32] !== null && String(r[32]).trim() !== "";
     const hasDir = r[33] !== undefined && r[33] !== null && String(r[33]).trim() !== "";
     const hasStart = r[37] !== undefined && r[37] !== null && String(r[37]).trim() !== "";
-    return hasRev || hasDir || hasStart;
+    return hasRev || hasDir || hasStart || hasRech;
   };
   const rowHasAnySlotData = (idx0) => {
     const r = allRows[idx0] || [];
-    for (let c = 41; c <= 60; c++) {
+    const invEndCol = targetTab === "Confirmed" ? 61 : 59;
+    for (let c = 41; c <= invEndCol; c++) {
       if (r[c] !== undefined && r[c] !== null && String(r[c]).trim() !== "") return true;
     }
     for (let c = 75; c <= 95; c++) {
@@ -3270,19 +3367,22 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
 
     const { parentRowNum, allRowNums, parentRow, allRows } = group;
     const isRetainer = String(parentRow[35] || "").trim().toLowerCase().includes("retainer"); // AJ = 35
+    const isConfTab = targetTab === "Confirmed";
 
     const slotCols = {
-      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
-      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
-      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
+      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
+      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH", rech: "BI", cm: "BJ" },
     };
 
     let effectiveRev = typeof jobRevenue === "number" ? jobRevenue : parseFloat(String(jobRevenue ?? "").replace(/[£$€,\s]/g, ""));
     if (effectiveRev === undefined || effectiveRev === null || isNaN(effectiveRev)) {
       effectiveRev = parseFloat(String(parentRow[32] || "0").replace(/[£$€,\s]/g, "")) || 0; // AG = 32
     }
+    const parentRechgd = isConfTab ? (parseFloat(String(parentRow[17] || "0").replace(/[£$€,\s]/g, "")) || 0) : 0; // R = 17
+    const effectiveBillable = Math.round(((effectiveRev || 0) + parentRechgd) * 100) / 100;
 
-    if (targetTab === "Confirmed" && isRetainer) {
+    if (isConfTab && isRetainer) {
       const hasExplicitRevenue =
         jobRevenue !== undefined && jobRevenue !== null && String(jobRevenue).trim() !== "";
       if (!hasExplicitRevenue) {
@@ -3298,21 +3398,26 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
           const sent = String(rowArr[43] ?? "").trim();
           const days = String(rowArr[44] ?? "").trim();
           const st = String(rowArr[45] ?? "").trim();
+          const rech1 = parseFloat(String(rowArr[46] ?? "0").replace(/[£$€,\s]/g, "")) || 0;
+          const cm1 = String(rowArr[47] ?? "").trim();
+          const targetGross = Math.round((effectiveRev + rech1) * 100) / 100;
           const isPlaceholderRow = !ref || isAutoInvoicePlaceholderRef_(ref);
           const isSentOrPaid = ["sent", "paid"].includes(st.toLowerCase());
-          if (isPlaceholderRow && !isSentOrPaid && (amt > 0 || sent) && Math.abs(amt - effectiveRev) > 0.005) {
+          if (isPlaceholderRow && !isSentOrPaid && (amt > 0 || sent) && Math.abs(amt - targetGross) > 0.005) {
             batchData.push({
               range: `${targetTab}!AP${rNum}`,
-              values: [[effectiveRev]]
+              values: [[targetGross]]
             });
             slotUpdates.push({
               rowNum: rNum,
               slotNum: 1,
-              amount: String(effectiveRev),
+              amount: String(targetGross),
               ref,
               sentDate: sent,
               daysToPay: days,
-              status: st
+              status: st,
+              ofWhichRechgd: rech1 > 0 ? String(rech1) : "",
+              costMonth: cm1
             });
           }
         }
@@ -3335,6 +3440,7 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
     let realCount = 0;
     let manualPlaceholdersTotal = 0;
     let manualCount = 0;
+    let allocatedRechgdOnNonAuto = 0;
     const autoPlaceholders = [];
     const emptySlots = [];
     let parentEmptyCount = 0;
@@ -3348,23 +3454,27 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
         const sent = String(rowArr[base + 2] || "").trim();
         const days = String(rowArr[base + 3] || "").trim();
         const st = String(rowArr[base + 4] || "").trim();
+        const rech = isConfTab ? (parseFloat(String(rowArr[base + 5] || "0").replace(/[£$€,\s]/g, "")) || 0) : 0;
+        const cm = isConfTab ? String(rowArr[base + 6] || "").trim() : "";
 
-        const isEmpty = !ref && Math.abs(amt) < 0.005;
+        const isEmpty = !ref && Math.abs(amt) < 0.005 && Math.abs(rech) < 0.005;
         const isAuto = isAutoInvoicePlaceholderRef_(ref);
-        const isManualPlaceholder = !ref && Math.abs(amt) >= 0.005;
+        const isManualPlaceholder = !ref && (Math.abs(amt) >= 0.005 || Math.abs(rech) >= 0.005);
 
         if (isEmpty) {
-          emptySlots.push({ rowNum: rNum, slotNum: s, currentAmount: 0, isAuto: false, currentRef: "", currentSent: sent, currentDays: days });
+          emptySlots.push({ rowNum: rNum, slotNum: s, currentAmount: 0, isAuto: false, currentRef: "", currentSent: sent, currentDays: days, currentCostMonth: "" });
           if (rNum === parentRowNum) parentEmptyCount++;
         } else if (isAuto) {
-          const slotObj = { rowNum: rNum, slotNum: s, currentAmount: amt, isAuto: true, currentRef: ref, currentSent: sent, currentDays: days };
+          const slotObj = { rowNum: rNum, slotNum: s, currentAmount: amt, isAuto: true, currentRef: ref, currentSent: sent, currentDays: days, currentCostMonth: cm };
           autoPlaceholders.push(slotObj);
         } else if (isManualPlaceholder) {
           // Manual placeholders (amt > 0, blank Ref) are preserved untouched; their amounts and slot count reduce the remaining automatic gap
           manualPlaceholdersTotal += amt;
+          allocatedRechgdOnNonAuto += rech;
           manualCount++;
         } else {
           realInvoicedTotal += amt;
+          allocatedRechgdOnNonAuto += rech;
           realCount++;
         }
       }
@@ -3373,8 +3483,8 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
     // Order available slots identically to GAS: all existing automatic placeholders across parent + child rows FIRST, then empty slots
     const availableSlots = [...autoPlaceholders, ...emptySlots];
 
-    if (effectiveRev > 0) {
-      const remainingToInvoice = Math.max(0, Math.round((effectiveRev - realInvoicedTotal - manualPlaceholdersTotal) * 100) / 100);
+    if (effectiveBillable > 0) {
+      const remainingToInvoice = Math.max(0, Math.round((effectiveBillable - realInvoicedTotal - manualPlaceholdersTotal) * 100) / 100);
 
       if (remainingToInvoice > 0.01) {
         let tols = preloadedTolerances;
@@ -3392,15 +3502,27 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
         const startDate = rawStartDate ? parseSheetDate(rawStartDate) : new Date();
         const endDate = rawEndDate ? parseSheetDate(rawEndDate) : startDate;
 
+        const remainingRechgdToAllocate = isConfTab
+          ? Math.max(0, Math.min(remainingToInvoice, Math.round((parentRechgd - allocatedRechgdOnNonAuto) * 100) / 100))
+          : 0;
+        const remainingNonRechgd = Math.max(0, Math.round((remainingToInvoice - remainingRechgdToAllocate) * 100) / 100);
+
         const occupiedNonAutoCount = realCount + manualCount;
-        const allocations = calculateRevenueSplit(
-          remainingToInvoice,
-          tols.invoiceLogicMode || "50-50",
-          startDate,
-          endDate,
-          tols.retainerInvoiceDay || 28,
-          occupiedNonAutoCount
-        );
+        const allocations = remainingNonRechgd > 0
+          ? calculateRevenueSplit(
+            remainingNonRechgd,
+            tols.invoiceLogicMode || "50-50",
+            startDate,
+            endDate,
+            tols.retainerInvoiceDay || 28,
+            occupiedNonAutoCount
+          )
+          : [{ date: endDate || startDate, amt: 0 }];
+
+        if (remainingRechgdToAllocate > 0 && allocations.length > 0) {
+          allocations[allocations.length - 1].amt =
+            Math.round(((allocations[allocations.length - 1].amt || 0) + remainingRechgdToAllocate) * 100) / 100;
+        }
 
         // Bump past calculated placeholder dates to the 5th of the current month to match GAS runInvoiceSheetAudit_
         const now = new Date();
@@ -3418,7 +3540,7 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
         const batchData = [];
 
         // If we need more slots than available and all 3 parent slots are occupied, create a new child row just like GAS
-        if (allocations.length > availableSlots.length && parentEmptyCount === 0 && targetTab === "Confirmed") {
+        if (allocations.length > availableSlots.length && parentEmptyCount === 0 && isConfTab) {
           try {
             const childResult = await insertChildJobRow_(
               sheets,
@@ -3426,7 +3548,7 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
               group.lastRowNum,
               String(parentRow[0] || "").trim(),
               String(parentRow[1] || "").trim(),
-              { cachedAllRows: allRows, deferValueWrites: true }
+              { cachedAllRows: allRows, deferValueWrites: true, tabName: targetTab }
             );
             newChildRowNum = typeof childResult === "object" ? childResult.targetRowNum : childResult;
             if (typeof childResult === "object" && Array.isArray(childResult.valueUpdates)) {
@@ -3434,7 +3556,7 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
             }
             newChildRowCreated = true;
             for (let s = 1; s <= 3; s++) {
-              availableSlots.push({ rowNum: newChildRowNum, slotNum: s, currentAmount: 0, isAuto: false, currentRef: "", currentSent: "", currentDays: "" });
+              availableSlots.push({ rowNum: newChildRowNum, slotNum: s, currentAmount: 0, isAuto: false, currentRef: "", currentSent: "", currentDays: "", currentCostMonth: "" });
             }
           } catch (childErr) {
             console.warn("adjustJobInvoicePlaceholders_ child row creation skipped:", childErr.message);
@@ -3457,10 +3579,17 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
           const sentDate = toSheetDateFormat(allocations[k].date);
           const parsedExistingDays = parseInt(String(target.currentDays || "").replace(/[^\d-]/g, ""), 10);
           const effectiveDays = (!isNaN(parsedExistingDays) && parsedExistingDays > 0 && parsedExistingDays <= 365) ? parsedExistingDays : daysToPayVal;
+          const isFinalPlaceholder = k === slotsToUse - 1;
+          const rechVal = (isConfTab && isFinalPlaceholder && remainingRechgdToAllocate > 0) ? remainingRechgdToAllocate : "";
+          const cmVal = (isConfTab && isFinalPlaceholder && remainingRechgdToAllocate > 0 && target.isAuto) ? (target.currentCostMonth || "") : "";
 
           batchData.push({
-            range: `${targetTab}!${cols.a}${target.rowNum}:${cols.st}${target.rowNum}`,
-            values: [[amountToWrite, autoRef, sentDate, effectiveDays, ""]]
+            range: isConfTab
+              ? `${targetTab}!${cols.a}${target.rowNum}:${cols.cm}${target.rowNum}`
+              : `${targetTab}!${cols.a}${target.rowNum}:${cols.st}${target.rowNum}`,
+            values: [isConfTab
+              ? [amountToWrite, autoRef, sentDate, effectiveDays, "", rechVal, cmVal]
+              : [amountToWrite, autoRef, sentDate, effectiveDays, ""]]
           });
           slotUpdates.push({
             rowNum: target.rowNum,
@@ -3469,7 +3598,8 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
             ref: autoRef,
             sentDate,
             daysToPay: String(effectiveDays),
-            status: ""
+            status: "",
+            ...(isConfTab ? { ofWhichRechgd: rechVal !== "" ? String(rechVal) : "", costMonth: cmVal } : {})
           });
         }
 
@@ -3479,8 +3609,10 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
           if (extra.isAuto) {
             const extraCols = slotCols[extra.slotNum];
             batchData.push({
-              range: `${targetTab}!${extraCols.a}${extra.rowNum}:${extraCols.st}${extra.rowNum}`,
-              values: [["", "", "", "", ""]]
+              range: isConfTab
+                ? `${targetTab}!${extraCols.a}${extra.rowNum}:${extraCols.cm}${extra.rowNum}`
+                : `${targetTab}!${extraCols.a}${extra.rowNum}:${extraCols.st}${extra.rowNum}`,
+              values: [isConfTab ? ["", "", "", "", "", "", ""] : ["", "", "", "", ""]]
             });
             slotUpdates.push({
               rowNum: extra.rowNum,
@@ -3489,7 +3621,8 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
               ref: "",
               sentDate: "",
               daysToPay: "",
-              status: ""
+              status: "",
+              ...(isConfTab ? { ofWhichRechgd: "", costMonth: "" } : {})
             });
           }
         }
@@ -3522,8 +3655,10 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
         for (const p of autoPlaceholders) {
           const cols = slotCols[p.slotNum];
           batchData.push({
-            range: `${targetTab}!${cols.a}${p.rowNum}:${cols.st}${p.rowNum}`,
-            values: [["", "", "", "", ""]]
+            range: isConfTab
+              ? `${targetTab}!${cols.a}${p.rowNum}:${cols.cm}${p.rowNum}`
+              : `${targetTab}!${cols.a}${p.rowNum}:${cols.st}${p.rowNum}`,
+            values: [isConfTab ? ["", "", "", "", "", "", ""] : ["", "", "", "", ""]]
           });
           slotUpdates.push({
             rowNum: p.rowNum,
@@ -3532,7 +3667,8 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
             ref: "",
             sentDate: "",
             daysToPay: "",
-            status: ""
+            status: "",
+            ...(isConfTab ? { ofWhichRechgd: "", costMonth: "" } : {})
           });
         }
         if (batchData.length > 0) {
@@ -4403,11 +4539,10 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
     return res.status(400).json({ success: false, error: "Missing rowNum or slotNum" });
   }
   try {
-    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const slotCols = {
-      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
-      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
-      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
+      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
+      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH", rech: "BI", cm: "BJ" },
     };
 
     const effectiveClientName = (updateClientName && newClientName) ? newClientName : (jobClient || "");
@@ -4479,7 +4614,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       const [winResp, tols] = await Promise.all([
         sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
-          range: `Confirmed!A${winStart}:BH${winEnd}`,
+          range: `Confirmed!A${winStart}:BJ${winEnd}`,
           valueRenderOption: "UNFORMATTED_VALUE",
         }).catch(() => null),
         masterSheetId ? getToleranceValues(sheets, masterSheetId).catch(() => null) : Promise.resolve(null),
@@ -4508,7 +4643,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       if (!windowResolved) {
         const fullResp = await sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
-          range: "Confirmed!A1:BH5000",
+          range: "Confirmed!A1:BJ5000",
           valueRenderOption: "UNFORMATTED_VALUE",
         });
         allRows = fullResp.data.values || [];
@@ -4531,10 +4666,11 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       for (let r = allRows.length - 1; r >= 0; r--) {
         const row = allRows[r] || [];
         const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+        const hasRech = row[17] !== undefined && String(row[17]).trim() !== "";
         const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
-        const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+        const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
         const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
-        if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+        if (z1 || z2 || z3 || z4 || hasRech) { trueLastRow = r + 1; break; }
       }
 
       const jobVAT = allRows[actualJobLastRow - 1]?.[34] ?? "";
@@ -4753,21 +4889,23 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
     const parentRowIndex = matchingRowIndices.length > 0 ? matchingRowIndices[0] : (createNewRow ? targetRowNum : rowNum);
     let effectiveRevenue = undefined;
     if (req.body.updateJobRevenue && req.body.newJobRevenue !== undefined) {
-      effectiveRevenue = parseFloat(req.body.newJobRevenue) || 0;
+      const requestedBillable = parseFloat(req.body.newJobRevenue) || 0;
       const isJobCosting = isJobCostingStyle({ headers: allRows?.[0] || [] });
+      const rechargedExp = parseFloat(String(allRows?.[parentRowIndex - 1]?.[17] || "0").replace(/[£$€,\s]/g, "")) || 0;
+      const pureFeeRevenue = Math.max(0, Math.round((requestedBillable - rechargedExp) * 100) / 100);
       if (isJobCosting) {
-        const rechargedExp = parseFloat(String(allRows?.[parentRowIndex - 1]?.[17] || "0").replace(/[£$€,\s]/g, "")) || 0;
         allWriteData.push(
-          { range: `Confirmed!I${parentRowIndex}`, values: [[Math.max(0, effectiveRevenue - rechargedExp)]] },
-          { range: `Confirmed!AG${parentRowIndex}`, values: [[`=IF(ISBLANK(I${parentRowIndex}), "", I${parentRowIndex}+R${parentRowIndex})`]] }
+          { range: `Confirmed!I${parentRowIndex}`, values: [[pureFeeRevenue]] },
+          { range: `Confirmed!AG${parentRowIndex}`, values: [[`=if(I${parentRowIndex}=0,"",I${parentRowIndex})`]] }
         );
       } else {
         allWriteData.push({
           range: `Confirmed!AG${parentRowIndex}`,
-          values: [[effectiveRevenue]]
+          values: [[pureFeeRevenue]]
         });
       }
-      if (allRows[parentRowIndex - 1]) allRows[parentRowIndex - 1][32] = effectiveRevenue;
+      if (allRows[parentRowIndex - 1]) allRows[parentRowIndex - 1][32] = pureFeeRevenue;
+      effectiveRevenue = pureFeeRevenue;
     }
 
     const slotColsForSlot = slotCols[targetSlotNum];
@@ -4785,6 +4923,9 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
 
     const formattedSentStr = invoice.sentDate ? (toSheetDateFormat(invoice.sentDate) || "") : "";
     const formattedRefStr = formatInvoiceRefForSheet(invoice.invoiceNo || invoice.ref || "");
+    const hasAssignRech = invoice.ofWhichRechgd !== undefined;
+    const assignRechVal = hasAssignRech ? ((parseFloat(String(invoice.ofWhichRechgd || "").replace(/[£$€,\s]/g, "")) || 0) > 0 ? Math.round((parseFloat(String(invoice.ofWhichRechgd || "").replace(/[£$€,\s]/g, "")) || 0) * 100) / 100 : "") : undefined;
+    const assignCmVal = invoice.costMonth !== undefined ? (assignRechVal > 0 ? sanitizeFormulaInput(String(invoice.costMonth || "").trim()) : "") : undefined;
 
     allWriteData.push(
       { range: `Confirmed!${slotColsForSlot.a}${targetRowNum}`, values: [[invoice.amount || 0]] },
@@ -4792,6 +4933,12 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       { range: `Confirmed!${slotColsForSlot.days}${targetRowNum}`, values: [[daysToPay]] },
       { range: `Confirmed!${slotColsForSlot.st}${targetRowNum}`, values: [[sanitizeFormulaInput(invoice.status || "")]] },
     );
+    if (hasAssignRech) {
+      allWriteData.push({ range: `Confirmed!${slotColsForSlot.rech}${targetRowNum}`, values: [[assignRechVal]] });
+    }
+    if (assignCmVal !== undefined) {
+      allWriteData.push({ range: `Confirmed!${slotColsForSlot.cm}${targetRowNum}`, values: [[assignCmVal]] });
+    }
     if (formattedSentStr) {
       allWriteData.push({
         range: `Confirmed!${slotColsForSlot.sent}${targetRowNum}`,
@@ -4808,6 +4955,8 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       allRows[targetRowNum - 1][baseCol + 2] = formattedSentStr;
       allRows[targetRowNum - 1][baseCol + 3] = daysToPay;
       allRows[targetRowNum - 1][baseCol + 4] = invoice.status || "";
+      if (hasAssignRech) allRows[targetRowNum - 1][baseCol + 5] = assignRechVal;
+      if (assignCmVal !== undefined) allRows[targetRowNum - 1][baseCol + 6] = assignCmVal;
     }
 
     // Compute placeholder adjustments BEFORE flushing allWriteData so all cell updates happen in a SINGLE batchUpdate!
@@ -4894,7 +5043,8 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       targetRowNum,
       rowShifted: targetRowNum !== rowNum,
       placeholderAdjustment,
-      updatedRevenue: req.body.updateJobRevenue ? effectiveRevenue : undefined
+      updatedRevenue: req.body.updateJobRevenue ? effectiveRevenue : undefined,
+      updatedRechargedExpenses: req.body.updateJobRecharged ? effectiveRecharged : undefined
     });
   } catch (err) {
     console.error("❌ assign_invoice_to_job error:", err);
@@ -4925,10 +5075,11 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
       return res.status(400).json({ success: false, error: "Invalid tabName" });
     }
 
+    const isConfTab = targetTab === "Confirmed";
     const slotCols = {
-      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
-      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
-      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
+      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
+      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH", rech: "BI", cm: "BJ" },
     };
 
     const sSlotCols = slotCols[sourceSlotNum];
@@ -4955,7 +5106,7 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
         targetJobLastRow || targetRowNum,
         targetJobClient,
         targetJobName,
-        { deferValueWrites: true }
+        { deferValueWrites: true, tabName: targetTab }
       );
       const newRowNum = typeof childResult === "object" ? childResult.targetRowNum : childResult;
       if (childResult?.valueUpdates) deferredChildRowWrites = childResult.valueUpdates;
@@ -4972,10 +5123,25 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
     const invStatus = sanitizeFormulaInput(invoice.status ? canonicalizeInvoiceStatus(invoice.status) : "Sent");
     const formattedSentDate = invoice.sentDate ? (toSheetDateFormat(invoice.sentDate) || invoice.sentDate) : "";
 
+    const sBaseCol = sourceSlotNum === 1 ? 41 : sourceSlotNum === 2 ? 48 : 55;
+    const srcRowBefore = sourceGroup?.allRows?.[sourceRowNum - 1] || [];
+    const rawMovedRech = isConfTab
+      ? (invoice.ofWhichRechgd !== undefined ? invoice.ofWhichRechgd : srcRowBefore[sBaseCol + 5])
+      : "";
+    const movedRechNum = isConfTab
+      ? Math.round((parseFloat(String(rawMovedRech || "").replace(/[£$€,\s]/g, "")) || 0) * 100) / 100
+      : 0;
+    const movedRechVal = movedRechNum > 0 ? movedRechNum : "";
+    const movedCostMonth = (isConfTab && movedRechNum > 0)
+      ? sanitizeFormulaInput(String(invoice.costMonth !== undefined ? invoice.costMonth : (srcRowBefore[sBaseCol + 6] ?? "")).trim())
+      : "";
+
     let effectiveTargetRevenue = undefined;
     const sourceSlotWrite = {
-      range: `${targetTab}!${sSlotCols.a}${sourceRowNum}:${sSlotCols.st}${sourceRowNum}`,
-      values: [["", "", "", "", ""]],
+      range: isConfTab
+        ? `${targetTab}!${sSlotCols.a}${sourceRowNum}:${sSlotCols.cm}${sourceRowNum}`
+        : `${targetTab}!${sSlotCols.a}${sourceRowNum}:${sSlotCols.st}${sourceRowNum}`,
+      values: [isConfTab ? ["", "", "", "", "", "", ""] : ["", "", "", "", ""]],
     };
     const allWriteData = [
       ...deferredChildRowWrites,
@@ -4983,27 +5149,35 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
       sourceSlotWrite,
       // Write target slot
       {
-        range: `${targetTab}!${tSlotCols.a}${actualTargetRowNum}:${tSlotCols.st}${actualTargetRowNum}`,
-        values: [[invAmt, invRef, formattedSentDate, daysToPay, invStatus]],
+        range: isConfTab
+          ? `${targetTab}!${tSlotCols.a}${actualTargetRowNum}:${tSlotCols.cm}${actualTargetRowNum}`
+          : `${targetTab}!${tSlotCols.a}${actualTargetRowNum}:${tSlotCols.st}${actualTargetRowNum}`,
+        values: [isConfTab
+          ? [invAmt, invRef, formattedSentDate, daysToPay, invStatus, movedRechVal, movedCostMonth]
+          : [invAmt, invRef, formattedSentDate, daysToPay, invStatus]],
       },
     ];
 
     if (updateTargetRevenue && newTargetRevenue !== undefined) {
-      effectiveTargetRevenue = parseFloat(newTargetRevenue) || 0;
+      const requestedTargetBillable = parseFloat(newTargetRevenue) || 0;
       const revTargetRow = targetGroup?.parentRowNum || actualTargetRowNum;
       const isJobCosting = isJobCostingStyle({ headers: targetGroup?.allRows?.[0] || [] });
+      const rechargedExp = isConfTab
+        ? (parseFloat(String(targetGroup?.allRows?.[revTargetRow - 1]?.[17] || "0").replace(/[£$€,\s]/g, "")) || 0)
+        : 0;
+      const pureFeeRevenue = Math.max(0, Math.round((requestedTargetBillable - rechargedExp) * 100) / 100);
       if (isJobCosting) {
-        const rechargedExp = parseFloat(String(targetGroup?.allRows?.[revTargetRow - 1]?.[17] || "0").replace(/[£$€,\s]/g, "")) || 0;
         allWriteData.push(
-          { range: `${targetTab}!I${revTargetRow}`, values: [[Math.max(0, effectiveTargetRevenue - rechargedExp)]] },
-          { range: `${targetTab}!AG${revTargetRow}`, values: [[`=IF(ISBLANK(I${revTargetRow}), "", I${revTargetRow}+R${revTargetRow})`]] }
+          { range: `${targetTab}!I${revTargetRow}`, values: [[pureFeeRevenue]] },
+          { range: `${targetTab}!AG${revTargetRow}`, values: [[isConfTab ? `=if(I${revTargetRow}=0,"",I${revTargetRow})` : `=I${revTargetRow}`]] }
         );
       } else {
         allWriteData.push({
           range: `${targetTab}!AG${revTargetRow}`,
-          values: [[effectiveTargetRevenue]],
+          values: [[pureFeeRevenue]],
         });
       }
+      effectiveTargetRevenue = pureFeeRevenue;
     }
 
     const sourceRowSnapshot = sourceGroup?.allRows?.[sourceRowNum - 1]
@@ -5013,8 +5187,8 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
     // Update preloaded groups in-place so adjustJobInvoicePlaceholders_ computes in-memory and any structural
     // child-row insertions inside adjustJobInvoicePlaceholders_ run BEFORE values.batchUpdate!
     if (sourceGroup?.allRows?.[sourceRowNum - 1]) {
-      const sBaseCol = sourceSlotNum === 1 ? 41 : sourceSlotNum === 2 ? 48 : 55;
-      for (let k = 0; k < 5; k++) sourceGroup.allRows[sourceRowNum - 1][sBaseCol + k] = "";
+      const clearLen = isConfTab ? 7 : 5;
+      for (let k = 0; k < clearLen; k++) sourceGroup.allRows[sourceRowNum - 1][sBaseCol + k] = "";
     }
 
     let restoredSourceSlot = null;
@@ -5054,7 +5228,7 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
         if (restored) {
           restoredSourceSlot = { rowNum: Number(sourceRowNum), ...restored.slot };
           if (Number(sourceSlotNum) === 1) {
-            sourceSlotWrite.values = [restored.values];
+            sourceSlotWrite.values = [[...restored.values, "", ""]];
           } else {
             allWriteData.push({
               range: `${targetTab}!AP${sourceRowNum}:AT${sourceRowNum}`,
@@ -5070,8 +5244,10 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
     if (!createNewRow && targetGroup?.allRows) {
       if (!targetGroup.allRows[actualTargetRowNum - 1]) targetGroup.allRows[actualTargetRowNum - 1] = [];
       const tBaseCol = actualTargetSlotNum === 1 ? 41 : actualTargetSlotNum === 2 ? 48 : 55;
-      const tVals = [invAmt, invRef, formattedSentDate, daysToPay, invStatus];
-      for (let k = 0; k < 5; k++) targetGroup.allRows[actualTargetRowNum - 1][tBaseCol + k] = tVals[k];
+      const tVals = isConfTab
+        ? [invAmt, invRef, formattedSentDate, daysToPay, invStatus, movedRechVal, movedCostMonth]
+        : [invAmt, invRef, formattedSentDate, daysToPay, invStatus];
+      for (let k = 0; k < tVals.length; k++) targetGroup.allRows[actualTargetRowNum - 1][tBaseCol + k] = tVals[k];
       if (effectiveTargetRevenue !== undefined && targetGroup.allRows[targetGroup.parentRowNum - 1]) {
         targetGroup.allRows[targetGroup.parentRowNum - 1][32] = effectiveTargetRevenue;
       }
@@ -5182,12 +5358,13 @@ export async function handleVerifyInvoiceSlot(req, res, sheets) {
     const cleanTargetRef = String(invoiceRef).trim().toLowerCase();
     const parsedRowNum = rowNum ? parseInt(rowNum, 10) : null;
 
+    const isConfTab = targetTab === "Confirmed";
     const extractSlotMatchFromRow = (rowVals, liveRowNum) => {
       if (!rowVals) return null;
       const slots = [
-        { slotNum: 1, ref: String(rowVals[42] || "").trim(), amt: rowVals[41], sent: rowVals[43], status: rowVals[45] },
-        { slotNum: 2, ref: String(rowVals[49] || "").trim(), amt: rowVals[48], sent: rowVals[50], status: rowVals[52] },
-        { slotNum: 3, ref: String(rowVals[56] || "").trim(), amt: rowVals[55], sent: rowVals[57], status: rowVals[59] },
+        { slotNum: 1, base: 41, ref: String(rowVals[42] || "").trim(), amt: rowVals[41], sent: rowVals[43], status: rowVals[45] },
+        { slotNum: 2, base: 48, ref: String(rowVals[49] || "").trim(), amt: rowVals[48], sent: rowVals[50], status: rowVals[52] },
+        { slotNum: 3, base: 55, ref: String(rowVals[56] || "").trim(), amt: rowVals[55], sent: rowVals[57], status: rowVals[59] },
       ];
       const match = slots.find(s => s.ref.toLowerCase() === cleanTargetRef);
       if (!match) return null;
@@ -5202,18 +5379,21 @@ export async function handleVerifyInvoiceSlot(req, res, sheets) {
         liveAmount: match.amt || "",
         liveSentDate: match.sent || "",
         liveStatus: canonicalizeInvoiceStatus(match.status) || "",
+        liveOfWhichRechgd: isConfTab ? (rowVals[match.base + 5] || "") : "",
+        liveCostMonth: isConfTab ? String(rowVals[match.base + 6] || "").trim() : "",
         rowShifted: parsedRowNum ? liveRowNum !== parsedRowNum : false
       };
     };
 
     // 1. If rowNum provided as hint, check a local window (+/- 35 rows) first to avoid downloading 5,000 rows
+    const invEndLetter = isConfTab ? "BJ" : "BH";
     if (parsedRowNum && parsedRowNum > 0) {
       const winStart = Math.max(2, parsedRowNum - 35);
       const winEnd = parsedRowNum + 35;
       try {
         const checkResp = await sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
-          range: `${targetTab}!A${winStart}:BH${winEnd}`,
+          range: `${targetTab}!A${winStart}:${invEndLetter}${winEnd}`,
           valueRenderOption: "FORMATTED_VALUE"
         });
         const winRows = checkResp.data.values || [];
@@ -5237,7 +5417,7 @@ export async function handleVerifyInvoiceSlot(req, res, sheets) {
     // 2. Fallback: scan the tab if not found in the local window
     const scanResp = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetIdClean,
-      range: `${targetTab}!A1:BH5000`,
+      range: `${targetTab}!A1:${invEndLetter}5000`,
       valueRenderOption: "FORMATTED_VALUE"
     });
     const allRows = scanResp.data.values || [];
@@ -5622,10 +5802,11 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       }
     }
 
+    const isConfTab = targetTab === "Confirmed";
     const slotCols = {
-      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
-      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
-      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
+      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
+      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH", rech: "BI", cm: "BJ" },
     }[actualSlotNum];
     if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
 
@@ -5643,14 +5824,27 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       ? (toSheetDateFormat(invoice.sentDate) || invoice.sentDate)
       : "";
 
+    const hasRechFieldsUpdate = isConfTab && !deleteSlot && invoice && (invoice.ofWhichRechgd !== undefined || invoice.costMonth !== undefined);
+    const writeFull7Cols = isConfTab && (deleteSlot || hasRechFieldsUpdate);
+    const parsedRechNum = (!deleteSlot && hasRechFieldsUpdate)
+      ? Math.round((parseFloat(String(invoice.ofWhichRechgd || "").replace(/[£$€,\s]/g, "")) || 0) * 100) / 100
+      : 0;
+    const rechCellVal = parsedRechNum > 0 ? parsedRechNum : "";
+    const cmCellVal = (hasRechFieldsUpdate && parsedRechNum > 0 && invoice.costMonth !== undefined)
+      ? sanitizeFormulaInput(String(invoice.costMonth || "").trim())
+      : (hasRechFieldsUpdate && parsedRechNum > 0 && invoice.costMonth === undefined
+        ? (cachedAllRows?.[actualRowNum - 1]?.[(actualSlotNum === 1 ? 41 : actualSlotNum === 2 ? 48 : 55) + 6] ?? "")
+        : "");
+
     const values = deleteSlot
-      ? ["", "", "", "", ""]
+      ? (isConfTab ? ["", "", "", "", "", "", ""] : ["", "", "", "", ""])
       : [
         invoice.amount || 0,
         formatInvoiceRefForSheet(invoice.invoiceNo || ""),
         formattedSentDate,
         invoice.daysToPay || 30,
         sanitizeFormulaInput(sanitizedInvStatus),
+        ...(writeFull7Cols ? [rechCellVal, cmCellVal] : []),
       ];
 
     if (
@@ -5676,13 +5870,15 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
     if (cachedAllRows) {
       const baseCol = actualSlotNum === 1 ? 41 : actualSlotNum === 2 ? 48 : 55;
       if (!cachedAllRows[actualRowNum - 1]) cachedAllRows[actualRowNum - 1] = [];
-      for (let k = 0; k < 5; k++) {
+      for (let k = 0; k < values.length; k++) {
         cachedAllRows[actualRowNum - 1][baseCol + k] = values[k];
       }
     }
 
     const primarySlotWrite = {
-      range: `${targetTab}!${slotCols.a}${actualRowNum}:${slotCols.st}${actualRowNum}`,
+      range: writeFull7Cols
+        ? `${targetTab}!${slotCols.a}${actualRowNum}:${slotCols.cm}${actualRowNum}`
+        : `${targetTab}!${slotCols.a}${actualRowNum}:${slotCols.st}${actualRowNum}`,
       values: [values],
     };
     const allWriteData = [
@@ -5710,27 +5906,47 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       verifiedClient = cleanNewClientName;
     }
 
+    // Update recharged expenses (Col R) if requested before revenue/placeholder calculations
+    let effectiveRecharged = undefined;
+    if (isConfTab && req.body.updateJobRecharged && req.body.newJobRecharged !== undefined) {
+      const rechTargetRow = resolvedParentRowNum || actualRowNum;
+      const newRechNum = Math.max(0, Math.round((parseFloat(req.body.newJobRecharged) || 0) * 100) / 100);
+      const rechCellVal = newRechNum > 0 ? newRechNum : "";
+      allWriteData.push({
+        range: `Confirmed!R${rechTargetRow}`,
+        values: [[rechCellVal]],
+      });
+      if (cachedAllRows?.[rechTargetRow - 1]) {
+        cachedAllRows[rechTargetRow - 1][17] = rechCellVal;
+      }
+      effectiveRecharged = rechCellVal;
+    }
+
     // Update revenue if requested
     let effectiveRevenue = undefined;
     if (req.body.updateJobRevenue && req.body.newJobRevenue !== undefined) {
-      effectiveRevenue = parseFloat(req.body.newJobRevenue) || 0;
+      const requestedBillable = parseFloat(req.body.newJobRevenue) || 0;
       const revTargetRow = resolvedParentRowNum || actualRowNum;
       const isJobCosting = isJobCostingStyle({ headers: cachedAllRows?.[0] || [] });
+      const rechargedExp = isConfTab
+        ? (parseFloat(String(cachedAllRows?.[revTargetRow - 1]?.[17] || "0").replace(/[£$€,\s]/g, "")) || 0)
+        : 0;
+      const pureFeeRevenue = Math.max(0, Math.round((requestedBillable - rechargedExp) * 100) / 100);
       if (isJobCosting) {
-        const rechargedExp = parseFloat(String(cachedAllRows?.[revTargetRow - 1]?.[17] || "0").replace(/[£$€,\s]/g, "")) || 0;
         allWriteData.push(
-          { range: `${targetTab}!I${revTargetRow}`, values: [[Math.max(0, effectiveRevenue - rechargedExp)]] },
-          { range: `${targetTab}!AG${revTargetRow}`, values: [[`=IF(ISBLANK(I${revTargetRow}), "", I${revTargetRow}+R${revTargetRow})`]] }
+          { range: `${targetTab}!I${revTargetRow}`, values: [[pureFeeRevenue]] },
+          { range: `${targetTab}!AG${revTargetRow}`, values: [[isConfTab ? `=if(I${revTargetRow}=0,"",I${revTargetRow})` : `=I${revTargetRow}`]] }
         );
       } else {
         allWriteData.push({
           range: `${targetTab}!AG${revTargetRow}`,
-          values: [[effectiveRevenue]],
+          values: [[pureFeeRevenue]],
         });
       }
       if (cachedAllRows?.[revTargetRow - 1]) {
-        cachedAllRows[revTargetRow - 1][32] = effectiveRevenue;
+        cachedAllRows[revTargetRow - 1][32] = pureFeeRevenue;
       }
+      effectiveRevenue = pureFeeRevenue;
     }
 
     // Compute placeholder adjustments BEFORE flushing allWriteData so all writes execute in a SINGLE batchUpdate!
@@ -5774,7 +5990,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         if (restored) {
           restoredPlaceholderSlot = { rowNum: Number(actualRowNum), ...restored.slot };
           if (Number(actualSlotNum) === 1) {
-            primarySlotWrite.values = [restored.values];
+            primarySlotWrite.values = [[...restored.values, "", ""]];
           } else {
             allWriteData.push({
               range: `${targetTab}!AP${actualRowNum}:AT${actualRowNum}`,
@@ -5870,7 +6086,8 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       slotNum: actualSlotNum,
       restoredPlaceholderSlot,
       placeholderAdjustment,
-      updatedRevenue: req.body.updateJobRevenue ? effectiveRevenue : undefined
+      updatedRevenue: req.body.updateJobRevenue ? effectiveRevenue : undefined,
+      updatedRechargedExpenses: req.body.updateJobRecharged ? effectiveRecharged : undefined
     });
   } catch (err) {
     console.error("❌ update_invoice_slot error:", err);
@@ -5895,7 +6112,7 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
-          range: "Confirmed!A1:BH5000",
+          range: "Confirmed!A1:BJ5000",
           valueRenderOption: "UNFORMATTED_VALUE",
         })
       ),
@@ -5933,10 +6150,11 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
       const hasA = row[0] !== undefined && String(row[0]).trim() !== "";
       const hasB = row[1] !== undefined && String(row[1]).trim() !== "";
       const hasRev = row[32] !== undefined && String(row[32]).trim() !== "";
+      const hasRech = row[17] !== undefined && String(row[17]).trim() !== "";
       const hasDates = (row[37] !== undefined && String(row[37]).trim() !== "") || (row[38] !== undefined && String(row[38]).trim() !== "");
 
       let hasSlotData = false;
-      for (let c = 41; c <= 60; c++) {
+      for (let c = 41; c <= 61; c++) {
         if (row[c] !== undefined && String(row[c]).trim() !== "") { hasSlotData = true; break; }
       }
       if (!hasSlotData) {
@@ -5945,7 +6163,7 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
         }
       }
 
-      if (hasA || hasB || hasRev || hasDates || hasSlotData) {
+      if (hasA || hasB || hasRev || hasDates || hasSlotData || hasRech) {
         lastJobRow = i + 1; // 1-indexed
       }
     }
@@ -5954,7 +6172,7 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
     let newRow = Math.max(startRow, lastJobRow + 1);
     for (let r = lastJobRow; r < allRows.length; r++) {
       const row = allRows[r] || [];
-      const isBlank = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 48, 55, 75, 82, 89].every(idx => {
+      const isBlank = [0, 1, 2, 3, 4, 17, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 46, 47, 48, 55, 75, 82, 89].every(idx => {
         const v = row[idx];
         return v === undefined || v === null || String(v).trim() === "";
       });
@@ -6011,7 +6229,12 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
       : NO_END_DATE_SHEET_VALUE;
 
     const isJobCosting = isJobCostingStyle({ headers: allRows?.[0] || [] });
-    const parsedRev = parseFloat(revenue) || parseFloat(invoice.amount) || 0;
+    const rawRechgd = req.body.rechargedExpenses ?? invoice.ofWhichRechgd;
+    const parsedRechgd = Math.round((parseFloat(rawRechgd) || 0) * 100) / 100;
+    const invRechgd = Math.round((parseFloat(invoice.ofWhichRechgd ?? 0) || 0) * 100) / 100;
+    const parsedRev = (revenue !== undefined && revenue !== null && String(revenue).trim() !== "")
+      ? (parseFloat(revenue) || 0)
+      : Math.max(0, Math.round(((parseFloat(invoice.amount) || 0) - invRechgd) * 100) / 100);
     const parsedDir = parseFloat(directCosts) || 0;
     const resolvedStartStr = formatSheetDate(startDate || invoice.sentDate);
     const resolvedEndStr = isRetainer ? resolvedRetainerEndDate : formatSheetDate(endDate || invoice.dueDate);
@@ -6024,6 +6247,9 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
       { range: `Confirmed!AI${newRow}`, values: [[sanitizeFormulaInput(vatYesNo || (invoice.vatAmount > 0 ? "Yes" : "No"))]] },
       { range: `Confirmed!AJ${newRow}`, values: [[sanitizeFormulaInput(projectType || "Project")]] },
     ];
+    if (parsedRechgd > 0) {
+      updateData.push({ range: `Confirmed!R${newRow}`, values: [[parsedRechgd]] });
+    }
 
     if (isJobCosting) {
       updateData.push(
@@ -6034,7 +6260,7 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
       if (parsedDir > 0) {
         updateData.push({ range: `Confirmed!K${newRow}`, values: [[parsedDir]] });
       }
-      const jcFormulas = getJobCostingRowFormulasMap(newRow, { hasExplicitContractorCosts: parsedDir > 0 });
+      const jcFormulas = getJobCostingRowFormulasLetterMap("Confirmed", newRow, { hasExplicitContractorCosts: parsedDir > 0 });
       for (const [fCol, fStr] of Object.entries(jcFormulas)) {
         updateData.push({ range: `Confirmed!${fCol}${newRow}`, values: [[fStr]] });
       }
@@ -6053,7 +6279,7 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
         parentRowNum: newRow,
         client: invoice.client || "",
         jobName: jobName || invoice.job || "",
-        monthlyRevenue: parseFloat(revenue) || parseFloat(invoice.amount) || 0,
+        monthlyRevenue: parsedRev,
         vat: vatYesNo || (invoice.vatAmount > 0 ? "Yes" : "No"),
         startDate: formatSheetDate(startDate || invoice.sentDate),
         endDate: resolvedRetainerEndDate,
@@ -6066,6 +6292,8 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
             sentDate: formatSheetDate(invoice.sentDate),
             daysToPay: finalDaysToPay,
             status: canonicalizeInvoiceStatus(invoice.status) || "",
+            ofWhichRechgd: invRechgd > 0 ? invRechgd : "",
+            costMonth: invRechgd > 0 ? sanitizeFormulaInput(String(invoice.costMonth || "").trim()) : "",
           },
         ],
         confirmedTabTitle: "Confirmed",
@@ -6080,6 +6308,10 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
         { range: `Confirmed!AR${newRow}`, values: [[formatSheetDate(invoice.sentDate)]] },
         { range: `Confirmed!AS${newRow}`, values: [[finalDaysToPay]] },
         { range: `Confirmed!AT${newRow}`, values: [[sanitizeFormulaInput(canonicalizeInvoiceStatus(invoice.status) || "")]] },
+        ...(invRechgd > 0 ? [
+          { range: `Confirmed!AU${newRow}`, values: [[invRechgd]] },
+          { range: `Confirmed!AV${newRow}`, values: [[sanitizeFormulaInput(String(invoice.costMonth || "").trim())]] },
+        ] : []),
       );
     }
 
@@ -6208,17 +6440,20 @@ export async function handleAddNewJob(req, res, sheets) {
       s => s.properties?.title === targetTab || s.properties?.title === "Confirmed"
     ) || null;
 
+    const isConfTarget = targetTab === "Confirmed";
     // Step 1: Find the last row with active job data
     let lastJobRow = startRow - 1;
     for (let i = startRow - 1; i < allRows.length; i++) {
       const row = allRows[i] || [];
       const hasA = row[0] !== undefined && String(row[0]).trim() !== "";
       const hasB = row[1] !== undefined && String(row[1]).trim() !== "";
+      const hasRech = isConfTarget && row[17] !== undefined && String(row[17]).trim() !== "";
       const hasRev = row[32] !== undefined && String(row[32]).trim() !== "";
       const hasDates = (row[37] !== undefined && String(row[37]).trim() !== "") || (row[38] !== undefined && String(row[38]).trim() !== "");
 
       let hasSlotData = false;
-      for (let c = 41; c <= 60; c++) {
+      const maxInvCol = isConfTarget ? 61 : 59;
+      for (let c = 41; c <= maxInvCol; c++) {
         if (row[c] !== undefined && String(row[c]).trim() !== "") { hasSlotData = true; break; }
       }
       if (!hasSlotData) {
@@ -6227,16 +6462,19 @@ export async function handleAddNewJob(req, res, sheets) {
         }
       }
 
-      if (hasA || hasB || hasRev || hasDates || hasSlotData) {
+      if (hasA || hasB || hasRev || hasDates || hasSlotData || hasRech) {
         lastJobRow = i + 1; // 1-indexed
       }
     }
 
     // Step 2: Find the FIRST blank row beneath all existing jobs
     let targetRow = Math.max(startRow, lastJobRow + 1);
+    const blankCheckCols = isConfTarget
+      ? [0, 1, 2, 3, 4, 17, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 46, 47, 48, 55, 75, 82, 89]
+      : [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 48, 55, 75, 82, 89];
     for (let r = lastJobRow; r < allRows.length; r++) {
       const row = allRows[r] || [];
-      const isBlank = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 48, 55, 75, 82, 89].every(idx => {
+      const isBlank = blankCheckCols.every(idx => {
         const v = row[idx];
         return v === undefined || v === null || String(v).trim() === "";
       });
@@ -6268,6 +6506,11 @@ export async function handleAddNewJob(req, res, sheets) {
       { range: `${targetTab}!AK${targetRow}`, values: [[sanitizeFormulaInput(jobData.productLine || "")]] },
     ];
 
+    const parsedRechgd = isConfTarget ? (Math.round((parseFloat(jobData.rechargedExpenses) || 0) * 100) / 100) : 0;
+    if (isConfTarget && jobData.rechargedExpenses !== undefined && String(jobData.rechargedExpenses).trim() !== "") {
+      updateData.push({ range: `${targetTab}!R${targetRow}`, values: [[parsedRechgd]] });
+    }
+
     if (isJobCosting) {
       updateData.push(
         { range: `${targetTab}!F${targetRow}`, values: [[resolvedStartStr]] },
@@ -6287,9 +6530,6 @@ export async function handleAddNewJob(req, res, sheets) {
       if (jobData.externalCosts !== undefined && String(jobData.externalCosts).trim() !== "") {
         updateData.push({ range: `${targetTab}!Q${targetRow}`, values: [[parseFloat(jobData.externalCosts) || 0]] });
       }
-      if (jobData.rechargedExpenses !== undefined && String(jobData.rechargedExpenses).trim() !== "") {
-        updateData.push({ range: `${targetTab}!R${targetRow}`, values: [[parseFloat(jobData.rechargedExpenses) || 0]] });
-      }
       if (jobData.propSuccFeePct !== undefined && String(jobData.propSuccFeePct).trim() !== "") {
         let pVal = parseFloat(String(jobData.propSuccFeePct).replace(/%/g, ""));
         if (!isNaN(pVal)) {
@@ -6307,7 +6547,7 @@ export async function handleAddNewJob(req, res, sheets) {
       if (jobData.invNo !== undefined) {
         updateData.push({ range: `${targetTab}!AB${targetRow}`, values: [[sanitizeFormulaInput(jobData.invNo || "")]] });
       }
-      const jcFormulas = getJobCostingRowFormulasMap(targetRow, { hasExplicitContractorCosts: hasExplicitContractor });
+      const jcFormulas = getJobCostingRowFormulasLetterMap(targetTab, targetRow, { hasExplicitContractorCosts: hasExplicitContractor });
       for (const [fCol, fStr] of Object.entries(jcFormulas)) {
         updateData.push({ range: `${targetTab}!${fCol}${targetRow}`, values: [[fStr]] });
       }
@@ -6344,15 +6584,17 @@ export async function handleAddNewJob(req, res, sheets) {
 
     // Invoice Slots - skipped on parent row for Confirmed Retainers (handled on child rows in background)
     const invoiceSlotCols = {
-      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
-      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
-      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
+      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
+      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH", rech: "BI", cm: "BJ" },
     };
     const finalInvoicesList = [];
     let writtenInvoicesCount = 0;
     if (!isConfirmedRetainer && jobData.invoices && Array.isArray(jobData.invoices)) {
       jobData.invoices.forEach((inv, idx) => {
         const amt = parseFloat(inv.amount) || 0;
+        const rechAmt = isConfTarget ? (Math.round((parseFloat(inv.ofWhichRechgd) || 0) * 100) / 100) : 0;
+        const costMonth = (isConfTarget && rechAmt > 0) ? sanitizeFormulaInput(String(inv.costMonth || "").trim()) : "";
         const ref = formatInvoiceRefForSheet(inv.invoiceNo || "");
         const sent = formatSheetDate(inv.sentDate);
         let days = clientDefaultDays;
@@ -6364,20 +6606,26 @@ export async function handleAddNewJob(req, res, sheets) {
           }
         }
         const st = sanitizeFormulaInput(canonicalizeInvoiceStatus(inv.status) || "");
-        if (amt > 0 || ref || sent || st) {
+        if (amt > 0 || rechAmt > 0 || ref || sent || st) {
           writtenInvoicesCount++;
           const rowOffset = inv.rowOffset !== undefined ? inv.rowOffset : Math.floor(idx / 3);
           const slotNum = inv.slotNum || ((idx % 3) + 1);
-          finalInvoicesList.push({ rowOffset, slotNum, amt, ref, sent, days, st });
+          finalInvoicesList.push({ rowOffset, slotNum, amt, ref, sent, days, st, ofWhichRechgd: rechAmt, costMonth });
         }
       });
     }
 
-    if (!isConfirmedRetainer && writtenInvoicesCount === 0 && (parseFloat(jobData.revenue) || 0) > 0) {
-      const rev = parseFloat(jobData.revenue) || 0;
+    const billableRev = Math.round(((parseFloat(jobData.revenue ?? jobData.jobRevenue) || 0) + parsedRechgd) * 100) / 100;
+    if (!isConfirmedRetainer && writtenInvoicesCount === 0 && billableRev > 0) {
+      const feeRev = parseFloat(jobData.revenue ?? jobData.jobRevenue) || 0;
       const startDate = jobData.startDate ? parseSheetDate(jobData.startDate) : new Date();
       const endDate = jobData.endDate ? parseSheetDate(jobData.endDate) : startDate;
-      const allocations = calculateRevenueSplit(rev, tols?.invoiceLogicMode || "50-50", startDate, endDate, tols?.retainerInvoiceDay || 28, 0);
+      const allocations = feeRev > 0
+        ? calculateRevenueSplit(feeRev, tols?.invoiceLogicMode || "50-50", startDate, endDate, tols?.retainerInvoiceDay || 28, 0)
+        : [{ date: endDate || startDate, amt: 0 }];
+      if (parsedRechgd > 0 && allocations.length > 0) {
+        allocations[allocations.length - 1].amt = Math.round(((allocations[allocations.length - 1].amt || 0) + parsedRechgd) * 100) / 100;
+      }
 
       allocations.forEach((alloc, idx) => {
         writtenInvoicesCount++;
@@ -6385,7 +6633,18 @@ export async function handleAddNewJob(req, res, sheets) {
         const sent = toSheetDateFormat(alloc.date);
         const rowOffset = Math.floor(idx / 3);
         const slotNum = (idx % 3) + 1;
-        finalInvoicesList.push({ rowOffset, slotNum, amt: alloc.amt, ref: autoRef, sent, days: clientDefaultDays, st: "" });
+        const isLast = idx === allocations.length - 1;
+        finalInvoicesList.push({
+          rowOffset,
+          slotNum,
+          amt: alloc.amt,
+          ref: autoRef,
+          sent,
+          days: clientDefaultDays,
+          st: "",
+          ofWhichRechgd: (isConfTarget && isLast && parsedRechgd > 0) ? parsedRechgd : 0,
+          costMonth: "",
+        });
       });
     }
 
@@ -6463,7 +6722,11 @@ export async function handleAddNewJob(req, res, sheets) {
           { range: `${targetTab}!${sCols.ref}${rNum}`, values: [[inv.ref]] },
           { range: `${targetTab}!${sCols.sent}${rNum}`, values: [[inv.sent]] },
           { range: `${targetTab}!${sCols.days}${rNum}`, values: [[inv.days]] },
-          { range: `${targetTab}!${sCols.st}${rNum}`, values: [[inv.st]] }
+          { range: `${targetTab}!${sCols.st}${rNum}`, values: [[inv.st]] },
+          ...(isConfTarget && inv.ofWhichRechgd > 0 ? [
+            { range: `${targetTab}!${sCols.rech}${rNum}`, values: [[inv.ofWhichRechgd]] },
+            { range: `${targetTab}!${sCols.cm}${rNum}`, values: [[inv.costMonth || ""]] },
+          ] : []),
         );
       }
     }
@@ -6621,6 +6884,8 @@ export async function handleAddNewJob(req, res, sheets) {
           sentDate: inv?.sent || "",
           daysToPay: inv?.days !== undefined ? String(inv.days) : "",
           status: inv?.st ? canonicalizeInvoiceStatus(inv.st) : "",
+          ofWhichRechgd: isConfTarget && inv?.ofWhichRechgd > 0 ? `£${parseFloat(inv.ofWhichRechgd).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "",
+          costMonth: isConfTarget && inv?.ofWhichRechgd > 0 ? (inv?.costMonth || "") : "",
           highlighted: false,
           note: ""
         };
@@ -6654,6 +6919,7 @@ export async function handleAddNewJob(req, res, sheets) {
           dateConf: formattedDateConf,
           leadSrc: formattedLeadSrc,
           unevenSplit: sanitizeFormulaInput(jobData.unevenSplit || jobData.splitStr || ""),
+          rechargedExpenses: isConfTarget && parsedRechgd > 0 ? `£${parsedRechgd.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "",
           revenue: `£${formattedRev.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
           directCosts: `£${formattedDc.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
           vat: formattedVat,
@@ -6663,7 +6929,7 @@ export async function handleAddNewJob(req, res, sheets) {
           endDate: resolvedEndDate,
           likelihood: formattedLikelihood,
           copiedToConf: targetTab === "Pipeline" ? "" : null,
-          leftToInvoice: `£${Math.max(0, formattedRev - totalInvoicedAmt).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          leftToInvoice: `£${Math.max(0, (formattedRev + parsedRechgd) - totalInvoicedAmt).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
           costsOutstanding: `£${Math.max(0, formattedDc - totalExpensesAmt).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
           invoiceSlots,
           expenseSlots,
@@ -7463,7 +7729,7 @@ export async function handleDeleteDirectJob(req, res, sheets) {
       withRetry(() =>
         sheets.spreadsheets.values.batchGet({
           spreadsheetId: sheetIdClean,
-          ranges: [`${targetTab}!AP${minR}:BH${maxR}`, `${targetTab}!A1:M1`],
+          ranges: [`${targetTab}!AP${minR}:${targetTab === "Confirmed" ? "BJ" : "BH"}${maxR}`, `${targetTab}!A1:M1`],
           valueRenderOption: "UNFORMATTED_VALUE"
         })
       ).catch((e) => {

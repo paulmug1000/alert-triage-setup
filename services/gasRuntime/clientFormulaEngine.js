@@ -1,4 +1,4 @@
-//Version 1.07 - Preserve row-level formula/static overrides in A..AN on Confirmed and Pipeline during recalculateClientGrids
+//Version 1.08 - Parse MMM-YY as 1st of 20YY, support ISTEXT/FIND/SEARCH, fix N() for 2D arrays, REGEXEXTRACT multi-group & recharged active row detection
 // Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -131,8 +131,17 @@ function parseDateValueString(str) {
       return utcDateToSerial(yr, monIdx + 1, day);
     }
   }
-  // Match MMM-YY (e.g. "Nov-26" -> parsed by Google Sheets VALUE("Nov-26") in 2026 as Month=Nov, Day=26, Year=2026)
-  const mMonDay = s.match(/^([A-Za-z]{3})[-\/\s](\d{1,2})$/);
+  // Match exact hyphenated MMM-YY (e.g. "Feb-27" -> 1st of Feb 2027)
+  const mMonYr = s.match(/^([A-Za-z]{3})-(\d{2})$/);
+  if (mMonYr) {
+    const monStr = mMonYr[1].slice(0, 3).toLowerCase();
+    const monIdx = MONTH_NAMES_SHORT.findIndex((x) => x.toLowerCase() === monStr);
+    if (monIdx >= 0) {
+      const yr2 = parseInt(mMonYr[2], 10);
+      return utcDateToSerial(2000 + yr2, monIdx + 1, 1);
+    }
+  }
+  const mMonDay = s.match(/^([A-Za-z]{3})[\/\s](\d{1,2})$/);
   if (mMonDay) {
     const monStr = mMonDay[1].slice(0, 3).toLowerCase();
     const monIdx = MONTH_NAMES_SHORT.findIndex((x) => x.toLowerCase() === monStr);
@@ -1776,6 +1785,11 @@ export function recalculateClientGrids(grids, options = {}) {
         return mapArrayScalar(v, (x) => typeof x === "number" && Number.isFinite(x));
       }
 
+      case "ISTEXT": {
+        const v = evalAST(args[0], ctx);
+        return mapArrayScalar(v, (x) => typeof x === "string" && x !== "");
+      }
+
       case "AND": {
         for (const a of args) {
           const v = evalAST(a, ctx);
@@ -2738,11 +2752,13 @@ export function recalculateClientGrids(grids, options = {}) {
       }
 
       case "N": {
-        const v = evalScalar(args[0], ctx);
-        if (isSheetError(v)) throw toErrorObject(v);
-        if (typeof v === "number") return v;
-        if (typeof v === "boolean") return v ? 1 : 0;
-        return 0;
+        const v = evalAST(args[0], ctx);
+        return mapArrayScalar(v, (x) => {
+          if (isSheetError(x)) throw toErrorObject(x);
+          if (typeof x === "number") return x;
+          if (typeof x === "boolean") return x ? 1 : 0;
+          return 0;
+        });
       }
 
       case "TEXT": {
@@ -2845,16 +2861,72 @@ export function recalculateClientGrids(grids, options = {}) {
         return out;
       }
 
+      case "FIND": {
+        const findVal = evalAST(args[0], ctx);
+        const withinVal = evalAST(args[1], ctx);
+        const startPos = args.length >= 3 && args[2].type !== "EmptyArg" ? Math.trunc(toNumberStrict(evalScalar(args[2], ctx))) : 1;
+        if (startPos < 1) throw new SheetError("#VALUE!", "FIND starting_at must be >= 1");
+        return broadcastBinaryOp("FIND", findVal, withinVal, (f, w) => {
+          const needle = toStringVal(f);
+          const hay = toStringVal(w);
+          const idx = hay.indexOf(needle, startPos - 1);
+          if (idx === -1) throw new SheetError("#VALUE!", "FIND did not find substring");
+          return idx + 1;
+        });
+      }
+
+      case "SEARCH": {
+        const findVal = evalAST(args[0], ctx);
+        const withinVal = evalAST(args[1], ctx);
+        const startPos = args.length >= 3 && args[2].type !== "EmptyArg" ? Math.trunc(toNumberStrict(evalScalar(args[2], ctx))) : 1;
+        if (startPos < 1) throw new SheetError("#VALUE!", "SEARCH starting_at must be >= 1");
+        return broadcastBinaryOp("SEARCH", findVal, withinVal, (f, w) => {
+          const rawNeedle = toStringVal(f);
+          const hay = toStringVal(w).slice(startPos - 1);
+          if (!rawNeedle) return startPos;
+          if (!/[*?~]/.test(rawNeedle)) {
+            const idx = hay.toLowerCase().indexOf(rawNeedle.toLowerCase());
+            if (idx === -1) throw new SheetError("#VALUE!", "SEARCH did not find substring");
+            return idx + startPos;
+          }
+          let rx = "";
+          for (let i = 0; i < rawNeedle.length; i++) {
+            const ch = rawNeedle[i];
+            if (ch === "~" && i + 1 < rawNeedle.length) {
+              rx += rawNeedle[++i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            } else if (ch === "*") {
+              rx += ".*";
+            } else if (ch === "?") {
+              rx += ".";
+            } else {
+              rx += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            }
+          }
+          const m = hay.match(new RegExp(rx, "i"));
+          if (!m || m.index === undefined) throw new SheetError("#VALUE!", "SEARCH did not find pattern");
+          return m.index + startPos;
+        });
+      }
+
       case "REGEXEXTRACT": {
         const textVal = evalAST(args[0], ctx);
         const patVal = evalAST(args[1], ctx);
+        if (!Array.isArray(textVal) && !Array.isArray(patVal)) {
+          const s = toStringVal(textVal);
+          const { pattern, flags } = parseRe2Pattern(toStringVal(patVal), false);
+          const re = new RegExp(pattern, flags);
+          const m = s.match(re);
+          if (!m) throw new SheetError("#N/A", "Did not match REGEXEXTRACT");
+          if (m.length > 2) return [m.slice(1).map((g) => (g === undefined ? "" : g))];
+          return m.length === 2 ? (m[1] === undefined ? "" : m[1]) : m[0];
+        }
         return broadcastBinaryOp("REGEXEXTRACT", textVal, patVal, (t, p) => {
           const s = toStringVal(t);
           const { pattern, flags } = parseRe2Pattern(toStringVal(p), false);
           const re = new RegExp(pattern, flags);
           const m = s.match(re);
           if (!m) throw new SheetError("#N/A", "Did not match REGEXEXTRACT");
-          return m.length > 1 ? m[1] : m[0];
+          return m.length > 1 ? (m[1] === undefined ? "" : m[1]) : m[0];
         });
       }
 
@@ -3229,13 +3301,16 @@ function findLastActiveJobRow_(values, minDefault = 50) {
   for (let r = 1; r < values.length; r++) {
     const row = values[r];
     if (!Array.isArray(row)) continue;
-    // Check client name (A=0), job name (B=1), amount (AG=32), type (AJ=35), inv1 (AP=41)
+    // Check client name (A=0), job name (B=1), recharged expenses (R=17), amount (AG=32), type (AJ=35), inv1 (AP=41), inv2 (AW=48), inv3 (BD=55)
     if (
       (row[0] !== "" && row[0] !== null && row[0] !== undefined) ||
       (row[1] !== "" && row[1] !== null && row[1] !== undefined) ||
+      (row[17] !== "" && row[17] !== null && row[17] !== undefined && row[17] !== 0) ||
       (row[32] !== "" && row[32] !== null && row[32] !== undefined && row[32] !== 0) ||
       (row[35] !== "" && row[35] !== null && row[35] !== undefined) ||
-      (row[41] !== "" && row[41] !== null && row[41] !== null && row[41] !== undefined && row[41] !== 0)
+      (row[41] !== "" && row[41] !== null && row[41] !== undefined && row[41] !== 0) ||
+      (row[48] !== "" && row[48] !== null && row[48] !== undefined && row[48] !== 0) ||
+      (row[55] !== "" && row[55] !== null && row[55] !== undefined && row[55] !== 0)
     ) {
       last = r;
     }

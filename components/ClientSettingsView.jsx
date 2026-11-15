@@ -4325,6 +4325,86 @@ export default function ClientSettingsView({
                     </div>
                   </div>
 
+                  {/* Recharged expenses treatment (KeyInfo!C21:D21) */}
+                  <div style={{ marginBottom: "28px", background: "#FFFFFF", borderRadius: "10px", padding: "20px", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
+                    <div style={{ marginBottom: "16px", borderBottom: "1px solid #F1F5F9", paddingBottom: "12px" }}>
+                      <h4 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <span>Recharged expenses treatment</span>
+                        {renderAdminNote("KeyInfo!D21")}
+                      </h4>
+                      <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
+                        Choose where pass-through client expense costs sit in your accounts so profit and expense recovery align automatically.
+                      </p>
+                      {renderCellRef("KeyInfo!D21")}
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: "12px" }}>
+                      {[
+                        {
+                          value: "100%",
+                          title: "100% — Cost of sales (default)",
+                          desc: "Pass-through client expenses are coded to cost of sales in your accounting software, so recovery reduces cost of sales.",
+                        },
+                        {
+                          value: "0%",
+                          title: "0% — Overhead categories",
+                          desc: "Pass-through client expenses sit within overhead expense categories, so recovery reduces overheads.",
+                        },
+                      ].map((opt) => {
+                        const currentVal = (settings.accounting?.rechargedExpensesDeliveryPct || "100%") === "0%" ? "0%" : "100%";
+                        const isSelected = currentVal === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => {
+                              updateSettingsField((prev) => ({
+                                ...prev,
+                                accounting: {
+                                  ...prev.accounting,
+                                  rechargedExpensesDeliveryPct: opt.value,
+                                },
+                              }));
+                            }}
+                            style={{
+                              textAlign: "left",
+                              padding: "14px 16px",
+                              borderRadius: "8px",
+                              border: `1.5px solid ${isSelected ? "#0066CC" : "#E2E8F0"}`,
+                              background: isSelected ? "#EFF6FF" : "#F8FAFC",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "flex-start",
+                              gap: "10px",
+                              transition: "all 0.12s",
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: "16px",
+                                height: "16px",
+                                borderRadius: "50%",
+                                marginTop: "2px",
+                                flexShrink: 0,
+                                border: `2px solid ${isSelected ? "#0066CC" : "#94A3B8"}`,
+                                background: isSelected ? "#0066CC" : "#FFFFFF",
+                                boxShadow: isSelected ? "inset 0 0 0 3px #FFFFFF" : "none",
+                              }}
+                            />
+                            <div>
+                              <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", marginBottom: "4px" }}>
+                                {opt.title}
+                              </div>
+                              <div style={{ fontSize: "12px", color: "#475569", lineHeight: 1.45 }}>
+                                {opt.desc}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   {/* Invoice number formatting (InvAppList!F1) */}
                   <div style={{ marginBottom: "28px", background: "#FFFFFF", borderRadius: "10px", padding: "20px", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
                     <div style={{ marginBottom: "16px", borderBottom: "1px solid #F1F5F9", paddingBottom: "12px" }}>

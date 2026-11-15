@@ -90,6 +90,12 @@ export const MASTER_SHEET_SETTING_NOTES = {
       text: "13-Mar: Determine any profit-share payments from previous financial year that will be paid during first FY of dashboard"
     }
   ],
+  "KeyInfo!D21": [
+    {
+      source: "Outgoings!E225:E226",
+      text: "Controls Outgoings!E226 (=IF(KeyInfo!$D$21=\"\", 1, KeyInfo!$D$21)) and Outgoings!E225 (=E226). Set to 100% (1) when pass-through recharged expenses are coded to Cost of Sales in accounting software, or 0% (0) when they sit inside Overhead expense categories."
+    }
+  ],
   "main.jobTableStyle": [
     {
       source: "KeyInfo!D11",

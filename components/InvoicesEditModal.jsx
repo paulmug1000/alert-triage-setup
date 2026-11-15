@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
 import { stripCurrency, isPlaceholderInvoice, isDraftInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus, calculatePaymentDate, sanitizeSpreadsheetTerms } from "../utils/helpers";
+import InvoiceCostMonthControl from "./InvoiceCostMonthControl";
+import { extractSplitMonths } from "../services/splitHelper";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import DateInput from "./DateInput";
@@ -149,6 +151,10 @@ export default function InvoicesEditModal({
 
   // Revenue prompt state: { type: "save" | "move", projectedTotal, currentRevenue, onConfirm }
   const [revenuePrompt, setRevenuePrompt] = useState(null);
+  const isConfirmedTab = (tabName || editSlot?.tabName || "Confirmed") !== "Pipeline";
+  const [ofWhichRechgd, setOfWhichRechgd] = useState(() => (isConfirmedTab ? stripCurrency(slot.ofWhichRechgd) : ""));
+  const [costMonth, setCostMonth] = useState(() => (isConfirmedTab ? (slot.costMonth || "") : ""));
+  const [rechargedPrompt, setRechargedPrompt] = useState(null);
 
   const close = () => { if (!saving) onClose(); };
 
@@ -203,10 +209,50 @@ export default function InvoicesEditModal({
     return parseFloat(String(job.rows[0].revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
   }, [job]);
 
+  const jobRecharged = useMemo(() => {
+    if (!isConfirmedTab || !job) return 0;
+    return parseFloat(String(job.rows?.[0]?.rechargedExpenses ?? job.rechargedExpenses ?? "0").replace(/[£$€,\s]/g, "")) || 0;
+  }, [job, isConfirmedTab]);
+
+  const jobBillable = Math.round((jobRevenue + jobRecharged) * 100) / 100;
+
+  const otherSlotsStats = useMemo(() => {
+    if (!job?.rows || !isConfirmedTab) return { otherNonAutoRechgd: 0, otherNonAutoGross: 0 };
+    const parseMoney = (v) => parseFloat(String(v ?? "").replace(/[£$€,\s]/g, "")) || 0;
+    let otherNonAutoRechgd = 0;
+    let otherNonAutoGross = 0;
+    job.rows.forEach((r) => {
+      (r.invoiceSlots || []).forEach((sl) => {
+        if (Number(r.rowNum) === Number(rowNum) && Number(sl.slotNum) === Number(slotNum)) return;
+        const refStr = String(sl.ref || "").trim();
+        const amt = parseMoney(sl.amount);
+        const rech = parseMoney(sl.ofWhichRechgd);
+        const isAuto = refStr.toUpperCase().startsWith("PLACE-INV-");
+        const isEmpty = !refStr && Math.abs(amt) < 0.005 && Math.abs(rech) < 0.005;
+        if (!isAuto && !isEmpty) {
+          otherNonAutoRechgd += rech;
+          otherNonAutoGross += amt;
+        }
+      });
+    });
+    return {
+      otherNonAutoRechgd: Math.round(otherNonAutoRechgd * 100) / 100,
+      otherNonAutoGross: Math.round(otherNonAutoGross * 100) / 100,
+    };
+  }, [job, isConfirmedTab, rowNum, slotNum]);
+
   // Save changes to invoice slot
-  const executeSave = async (updateJobRevenue = false, newJobRevenue = undefined) => {
+  const executeSave = async (updateJobRevenue = false, newJobRevenue = undefined, updateJobRecharged = false, newJobRecharged = undefined) => {
     setSaving(true);
     setRevenuePrompt(null);
+    setRechargedPrompt(null);
+    const rechNum = isConfirmedTab ? (Math.round((parseFloat(ofWhichRechgd) || 0) * 100) / 100) : 0;
+    const rechPayload = isConfirmedTab
+      ? {
+          ofWhichRechgd: rechNum > 0 ? rechNum : "",
+          costMonth: rechNum > 0 ? String(costMonth || "").trim() : "",
+        }
+      : {};
     try {
       const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -218,9 +264,18 @@ export default function InvoicesEditModal({
           rowNum, slotNum,
           createNewRow: !!editSlot.createNewRow,
           jobClient, jobName,
-          invoice: { invoiceNo, amount: parseFloat(amount) || 0, sentDate, daysToPay: parseInt(daysToPay) || 30, status },
+          invoice: {
+            invoiceNo,
+            amount: parseFloat(amount) || 0,
+            sentDate,
+            daysToPay: parseInt(daysToPay) || 30,
+            status,
+            ...rechPayload,
+          },
           updateJobRevenue,
           newJobRevenue,
+          updateJobRecharged,
+          newJobRecharged,
           jobRowNums: job?.rows ? job.rows.map(r => r.rowNum) : [rowNum]
         }),
       });
@@ -238,7 +293,8 @@ export default function InvoicesEditModal({
         amount: parseFloat(amount) || 0,
         sentDate,
         daysToPay: parseInt(daysToPay) || 30,
-        status
+        status,
+        ...rechPayload,
       }, data);
       onClose();
     } catch (e) { console.error("update_invoice_slot save error:", e); }
@@ -248,13 +304,51 @@ export default function InvoicesEditModal({
   const handleSaveClick = () => {
     const newAmtNum = parseFloat(amount) || 0;
     const oldAmtNum = parseFloat(stripCurrency(slot.amount)) || 0;
-    if (jobRevenue > 0 && newAmtNum !== oldAmtNum) {
+    const ofWhichNum = isConfirmedTab ? (Math.round((parseFloat(ofWhichRechgd) || 0) * 100) / 100) : 0;
+
+    if (isConfirmedTab && ofWhichNum > 0) {
+      if (ofWhichNum > newAmtNum + 0.01) {
+        alert("Of which recharged cannot exceed the invoice gross amount.");
+        return;
+      }
+      if (String(costMonth || "").trim().toLowerCase().startsWith("[split]")) {
+        const splitEntries = extractSplitMonths(costMonth);
+        const splitSum = splitEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+        if (Math.abs(splitSum - ofWhichNum) > 0.02) {
+          alert(`Split cost months (£${splitSum.toFixed(2)}) must add up to the invoice recharged amount (£${ofWhichNum.toFixed(2)}).`);
+          return;
+        }
+      }
+    }
+
+    if (isConfirmedTab && job?.rows) {
+      const totalNonAutoRechgd = Math.round((otherSlotsStats.otherNonAutoRechgd + ofWhichNum) * 100) / 100;
+      const remainingBillableForAuto = Math.max(0, Math.round((jobBillable - (otherSlotsStats.otherNonAutoGross + newAmtNum)) * 100) / 100);
+      if (totalNonAutoRechgd > jobRecharged + 0.01 || (remainingBillableForAuto <= 0.01 && Math.abs(totalNonAutoRechgd - jobRecharged) > 0.01)) {
+        const deltaRech = Math.round((totalNonAutoRechgd - jobRecharged) * 100) / 100;
+        const canAdjustFee = deltaRech > 0 && jobRevenue >= deltaRech && (otherSlotsStats.otherNonAutoGross + newAmtNum) <= jobBillable + 0.01;
+        const adjustedFeeRevenue = canAdjustFee ? Math.round((jobRevenue - deltaRech) * 100) / 100 : null;
+        setRechargedPrompt({
+          currentRecharged: jobRecharged,
+          newRecharged: totalNonAutoRechgd,
+          adjustedFeeRevenue,
+          currentRevenue: jobRevenue,
+          onConfirmAdjustBoth: canAdjustFee
+            ? () => executeSave(true, Math.round((adjustedFeeRevenue + totalNonAutoRechgd) * 100) / 100, true, totalNonAutoRechgd)
+            : null,
+          onConfirmUpdateRechargedOnly: () => executeSave(false, undefined, true, totalNonAutoRechgd),
+        });
+        return;
+      }
+    }
+
+    if (jobBillable > 0 && newAmtNum !== oldAmtNum) {
       const projectedTotal = Math.round((jobRealInvoicedTotal - oldAmtNum + newAmtNum) * 100) / 100;
-      if (projectedTotal > jobRevenue) {
+      if (projectedTotal > jobBillable + 0.01) {
         setRevenuePrompt({
           type: "save",
           projectedTotal,
-          currentRevenue: jobRevenue,
+          currentRevenue: jobBillable,
           onConfirmYes: () => executeSave(true, projectedTotal),
           onConfirmNo: () => executeSave(false)
         });
@@ -484,6 +578,46 @@ export default function InvoicesEditModal({
           </div>
           <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
+
+        {/* RECHARGED EXPENSES TOTAL PROMPT MODAL */}
+        {rechargedPrompt && (
+          <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
+            <div style={{ fontSize: "13.5px", fontWeight: "600", color: "#0369a1", marginBottom: "6px" }}>
+              Update job recharged expenses to match?
+            </div>
+            <div style={{ fontSize: "12.5px", color: "#334155", lineHeight: "1.5", marginBottom: "12px" }}>
+              Saving this invoice gives total invoice recharged expenses of <strong>£{rechargedPrompt.newRecharged.toFixed(2)}</strong>, which does not match the job&apos;s current recharged expenses total of <strong>£{rechargedPrompt.currentRecharged.toFixed(2)}</strong>.
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", flexWrap: "wrap", gap: "8px" }}>
+              <button
+                type="button"
+                onClick={() => setRechargedPrompt(null)}
+                disabled={saving}
+                style={{ padding: "6px 12px", background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "5px", fontSize: "12px", cursor: "pointer", color: "#475569" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={rechargedPrompt.onConfirmUpdateRechargedOnly}
+                disabled={saving}
+                style={{ padding: "6px 12px", background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "5px", fontSize: "12px", fontWeight: "600", cursor: "pointer", color: "#334155" }}
+              >
+                Update job recharged to £{rechargedPrompt.newRecharged.toFixed(2)} (keep fee revenue at £{rechargedPrompt.currentRevenue.toFixed(2)})
+              </button>
+              {rechargedPrompt.onConfirmAdjustBoth && (
+                <button
+                  type="button"
+                  onClick={rechargedPrompt.onConfirmAdjustBoth}
+                  disabled={saving}
+                  style={{ padding: "6px 14px", background: "#0284c7", border: "none", borderRadius: "5px", fontSize: "12px", fontWeight: "600", color: "#ffffff", cursor: "pointer" }}
+                >
+                  Update recharged to £{rechargedPrompt.newRecharged.toFixed(2)} and fee revenue to £{rechargedPrompt.adjustedFeeRevenue.toFixed(2)}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* REVENUE INCREASE PROMPT MODAL */}
         {revenuePrompt && (
@@ -754,7 +888,7 @@ export default function InvoicesEditModal({
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                <span>This invoice is synced from accounting software. The invoice number, amount, and sent date are locked here to prevent sync conflicts{isPaid ? ", and days to pay is locked because the invoice is paid." : ", but days to pay remains editable."}</span>
+                <span>This invoice is synced from accounting software. The invoice number, amount, and sent date are locked here to prevent sync conflicts{isPaid ? (isConfirmedTab ? ", and days to pay is locked because the invoice is paid (recharged expenses remain editable)." : ", and days to pay is locked because the invoice is paid.") : (isConfirmedTab ? ", while days to pay and recharged expenses remain editable." : ", but days to pay remains editable.")}</span>
               </div>
             )}
             <div style={{ display: "grid", gap: "12px" }}>
@@ -884,6 +1018,41 @@ export default function InvoicesEditModal({
                 )}
               </div>
             </div>
+
+            {isConfirmedTab && (
+              <div style={{ marginTop: "14px", padding: "12px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
+                  <label style={{ ...labelStyle, marginBottom: 0, color: "#0f172a" }}>
+                    Of which recharged (excl. VAT)
+                  </label>
+                  <span style={{ fontSize: "11px", color: "#64748b" }}>
+                    Job recharged expenses: £{jobRecharged.toFixed(2)} · Other invoices: £{otherSlotsStats.otherNonAutoRechgd.toFixed(2)}
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={ofWhichRechgd}
+                  onChange={(e) => setOfWhichRechgd(e.target.value)}
+                  disabled={saving}
+                  placeholder="0.00"
+                  style={inputStyle}
+                />
+                {(parseFloat(ofWhichRechgd) || 0) > 0 && (
+                  <div style={{ marginTop: "10px" }}>
+                    <InvoiceCostMonthControl
+                      value={costMonth}
+                      onChange={setCostMonth}
+                      totalAmount={parseFloat(ofWhichRechgd) || 0}
+                      invoiceSentDate={sentDate}
+                      jobStartDate={job?.rows?.[0]?.startDate || ""}
+                      disabled={saving}
+                      compact={true}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
 
             {confirmingDelete ? (
               <div style={{ marginTop: "18px", padding: "14px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px" }}>

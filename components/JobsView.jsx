@@ -623,10 +623,12 @@ export const getJobExpenseItems = (job, isRetainer) => {
   return items;
 };
 
-export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevVal, currentCostVal, noEndDateRetainerMonths = 18, currentEndDateVal) => {
+export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevVal, currentCostVal, noEndDateRetainerMonths = 18, currentEndDateVal, currentRechVal) => {
   if (!job || !job.rows || job.rows.length === 0) {
     return {
       revenue: 0,
+      rechargedExpenses: 0,
+      totalBillable: 0,
       realInvoiced: 0,
       placeholderInvoiced: 0,
       draftInvoiced: 0,
@@ -648,6 +650,7 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
   const confirmed = isConfirmed !== undefined ? Boolean(isConfirmed) : (String(tabName).toLowerCase() === "confirmed");
 
   const rawRev = parseFloat(String(currentRevVal !== undefined ? currentRevVal : (parentRow.revenue || "0")).replace(/[£$€,\s]/g, "")) || 0;
+  const rawRech = confirmed ? (parseFloat(String(currentRechVal !== undefined ? currentRechVal : (parentRow.rechargedExpenses || job.rechargedExpenses || "0")).replace(/[£$€,\s]/g, "")) || 0) : 0;
   const rawCost = parseFloat(String(currentCostVal !== undefined ? currentCostVal : (parentRow.directCosts || "0")).replace(/[£$€,\s]/g, "")) || 0;
 
   let realInvoiced = 0;
@@ -793,7 +796,7 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
       expectedPriorRevenue = Math.min(expectedPriorRevenue, totalRevenue);
       expectedPriorCosts = Math.min(expectedPriorCosts, totalDirectCosts);
 
-      leftToInvoice = Math.max(0, expectedPriorRevenue - realInvoiced);
+      leftToInvoice = Math.max(0, expectedPriorRevenue + rawRech - realInvoiced);
       priorMonthsUninvoicedCount = rawRev > 0 ? Math.ceil(leftToInvoice / rawRev) : (leftToInvoice > 0 ? 1 : 0);
 
       costsLeftToReceive = Math.max(0, expectedPriorCosts - realCostsReceived);
@@ -803,11 +806,16 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
       costsLeftToReceive = 0;
     }
   } else {
-    leftToInvoice = totalRevenue > 0 ? Math.max(0, totalRevenue - realInvoiced) : 0;
+    leftToInvoice = (totalRevenue + rawRech) > 0 ? Math.max(0, (totalRevenue + rawRech) - realInvoiced) : 0;
     costsLeftToReceive = totalDirectCosts > 0 ? Math.max(0, totalDirectCosts - realCostsReceived) : 0;
   }
 
+  const totalRecharged = rawRech;
+  const totalBillable = totalRevenue + totalRecharged;
+
   return {
+    rechargedExpenses: totalRecharged,
+    totalBillable,
     revenue: totalRevenue,
     realInvoiced,
     placeholderInvoiced,
@@ -1036,6 +1044,7 @@ export default function JobsView({
 
   // Draft edits keyed by job identifier: { [jobKey]: { [field]: newValue } }
   const [draftEdits, setDraftEdits] = useState({});
+  const [rechargedToggleByKey, setRechargedToggleByKey] = useState({});
 
   // Loading / saving states
   const [savingJobKeys, setSavingJobKeys] = useState(() => new Set());
@@ -1492,7 +1501,8 @@ export default function JobsView({
       prodLine: { colLetter: "AK", fieldName: "Product Line" },
       startDate: { colLetter: "AL", fieldName: "Start Date", isDate: true },
       endDate: { colLetter: "AM", fieldName: "End Date", isDate: true },
-      likelihood: { colLetter: "AN", fieldName: "Likelihood" }
+      likelihood: { colLetter: "AN", fieldName: "Likelihood" },
+      ...(tabName === "Confirmed" ? { rechargedExpenses: { colLetter: "R", fieldName: "Recharged expenses" } } : {})
     };
 
     const updates = [];
@@ -2122,8 +2132,37 @@ export default function JobsView({
       prodLine: { colLetter: "AK", fieldName: "Product Line" },
       startDate: { colLetter: "AL", fieldName: "Start Date", isDate: true },
       endDate: { colLetter: "AM", fieldName: "End Date", isDate: true },
-      likelihood: { colLetter: "AN", fieldName: "Likelihood" }
+      likelihood: { colLetter: "AN", fieldName: "Likelihood" },
+      ...(tabName === "Confirmed" ? { rechargedExpenses: { colLetter: "R", fieldName: "Recharged expenses" } } : {})
     };
+
+    if (tabName === "Confirmed" && currentDraft.rechargedExpenses !== undefined) {
+      const parseAmt = (v) => parseFloat(String(v ?? "").replace(/[£$€,\s]/g, "")) || 0;
+      const newRechNum = Math.max(0, Math.round(parseAmt(currentDraft.rechargedExpenses) * 100) / 100);
+      const effRevNum = parseAmt(currentDraft.revenue !== undefined ? currentDraft.revenue : parentRow?.revenue);
+      let nonAutoRechgdSum = 0;
+      let nonAutoGrossSum = 0;
+      (job.rows || []).forEach((r) => {
+        (r.invoiceSlots || []).forEach((sl) => {
+          const refStr = String(sl.ref || "").trim();
+          const amt = parseAmt(sl.amount);
+          const rech = parseAmt(sl.ofWhichRechgd);
+          const isAuto = refStr.toUpperCase().startsWith("PLACE-INV-");
+          const isEmpty = !refStr && Math.abs(amt) < 0.005 && Math.abs(rech) < 0.005;
+          if (!isAuto && !isEmpty) {
+            nonAutoRechgdSum += rech;
+            nonAutoGrossSum += amt;
+          }
+        });
+      });
+      const remainingForAuto = (effRevNum + newRechNum) - nonAutoGrossSum;
+      if (nonAutoRechgdSum > newRechNum + 0.01 || (remainingForAuto <= 0.01 && Math.abs(nonAutoRechgdSum - newRechNum) > 0.01)) {
+        const msg = `Invoice 'of which recharged' amounts (${formatCurrency(nonAutoRechgdSum)}) must add up to total recharged expenses (${formatCurrency(newRechNum)}). Please adjust the invoices first.`;
+        setActionError(msg);
+        alert(msg);
+        return;
+      }
+    }
 
     const updates = [];
     Object.keys(currentDraft).forEach((fieldKey) => {
@@ -2570,7 +2609,7 @@ export default function JobsView({
 
     const FIELD_NAMES = {
       A: "Client", B: "Job Name", C: "Project Code", D: "Date Confirmed",
-      E: "Lead Source", AE: "Revenue Split", AG: "Revenue", AH: "Direct Costs",
+      E: "Lead Source", R: "Recharged expenses", AE: "Revenue Split", AG: "Revenue", AH: "Direct Costs",
       AI: "VAT", AJ: "Type", AK: "Product Line", AL: "Start Date",
       AM: "End Date", AN: "Likelihood", DD: "Copied to Confirmed"
     };
@@ -2585,6 +2624,7 @@ export default function JobsView({
           if (colLetter === "A") updated.client = newValue;
           if (colLetter === "B") updated.jobName = newValue;
           if (colLetter === "C") updated.projectCode = newValue;
+          if (colLetter === "R") updated.rechargedExpenses = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
           if (colLetter === "AG") updated.revenue = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
           if (colLetter === "AH") updated.directCosts = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
           if (colLetter === "AI") updated.vat = newValue;
@@ -3055,17 +3095,41 @@ export default function JobsView({
                     rows: updatedJob.rows.map(r => ({ ...r, revenue: resData.updatedRevenue }))
                   };
                 }
+                if (hasRow && resData?.updatedRechargedExpenses !== undefined) {
+                  updatedJob = {
+                    ...updatedJob,
+                    rechargedExpenses: resData.updatedRechargedExpenses,
+                    rows: updatedJob.rows.map(r => ({ ...r, rechargedExpenses: resData.updatedRechargedExpenses }))
+                  };
+                }
+                const placeholderSlotUpdates = hasRow && Array.isArray(resData?.placeholderAdjustment?.slotUpdates)
+                  ? resData.placeholderAdjustment.slotUpdates
+                  : [];
                 const restored = hasRow ? resData?.restoredPlaceholderSlot : null;
                 return {
                   ...updatedJob,
                   rows: updatedJob.rows.map((r) => {
                     const matchesEditedRow = r.rowNum === rNum;
                     const matchesRestoredRow = restored && Number(r.rowNum) === Number(restored.rowNum);
-                    if (!matchesEditedRow && !matchesRestoredRow) return r;
+                    const rowPlaceholderUpdates = placeholderSlotUpdates.filter((u) => Number(u.rowNum) === Number(r.rowNum));
+                    if (!matchesEditedRow && !matchesRestoredRow && rowPlaceholderUpdates.length === 0) return r;
                     return {
                       ...r,
                       invoiceSlots: r.invoiceSlots.map((sl) => {
                         if (matchesEditedRow && sl.slotNum === sNum) return { ...sl, ...newData };
+                        const pUpd = rowPlaceholderUpdates.find((u) => Number(u.slotNum) === Number(sl.slotNum));
+                        if (pUpd) {
+                          return {
+                            ...sl,
+                            amount: pUpd.amount ?? sl.amount,
+                            ref: pUpd.ref ?? sl.ref,
+                            sentDate: pUpd.sentDate ?? sl.sentDate,
+                            daysToPay: pUpd.daysToPay ?? sl.daysToPay,
+                            status: pUpd.status ?? sl.status,
+                            ofWhichRechgd: pUpd.ofWhichRechgd !== undefined ? pUpd.ofWhichRechgd : sl.ofWhichRechgd,
+                            costMonth: pUpd.costMonth !== undefined ? pUpd.costMonth : sl.costMonth,
+                          };
+                        }
                         if (
                           matchesRestoredRow &&
                           Number(sl.slotNum) === Number(restored.slotNum || 1) &&
@@ -3888,12 +3952,13 @@ export default function JobsView({
                           const prodLineVal = getJobFieldValue(job, "prodLine");
                           const vatVal = getJobFieldValue(job, "vat") || "Yes";
                           const projectCodeVal = getJobFieldValue(job, "projectCode");
+                          const rechVal = isConfirmed ? getJobFieldValue(job, "rechargedExpenses") : "";
                           const unevenSplitVal = getJobFieldValue(job, "unevenSplit") || parentRow.unevenSplit || "";
                           const leftToInvoiceVal = parentRow.leftToInvoice || "";
                           const costsOutstandingVal = parentRow.costsOutstanding || "";
 
                           // Calculate real revenue and direct cost metrics strictly excluding gap sweep placeholders
-                          const metrics = getJobFinancialMetrics(job, isRetainer, isConfirmed, revVal, directCostsVal, noEndDateRetainerMonths, endDateVal);
+                          const metrics = getJobFinancialMetrics(job, isRetainer, isConfirmed, revVal, directCostsVal, noEndDateRetainerMonths, endDateVal, rechVal);
 
                           // Distinct product line and lead source options including current value
                           const plOptions = Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort();
@@ -4094,7 +4159,12 @@ export default function JobsView({
                                       }}
                                     />
                                   </div>
-                                  {isConfirmed && metrics.revenue > 0 && (
+                                  {isConfirmed && metrics.rechargedExpenses > 0 && (
+                                    <div style={{ fontSize: "10.5px", fontWeight: "600", color: "#0369a1", marginTop: "2px", paddingLeft: "4px" }}>
+                                      + {formatCurrency(metrics.rechargedExpenses)} recharged
+                                    </div>
+                                  )}
+                                  {isConfirmed && (metrics.revenue > 0 || metrics.rechargedExpenses > 0) && (
                                     metrics.leftToInvoice > 0 ? (
                                       <div style={{ marginTop: "3px" }}>
                                         <span
@@ -4112,7 +4182,7 @@ export default function JobsView({
                                           title={
                                             isRetainer
                                               ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
-                                              : `Total revenue: ${formatCurrency(metrics.revenue)} · Real invoiced: ${formatCurrency(metrics.realInvoiced)} · Left to invoice: ${formatCurrency(metrics.leftToInvoice)}${metrics.draftInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.draftInvoiced)} in draft invoices` : ""}${metrics.placeholderInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders` : ""}`
+                                              : `${metrics.rechargedExpenses > 0 ? `Fee revenue: ${formatCurrency(metrics.revenue)} · Recharged expenses: ${formatCurrency(metrics.rechargedExpenses)} · Total billable: ${formatCurrency(metrics.totalBillable)}` : `Total revenue: ${formatCurrency(metrics.revenue)}`} · Real invoiced: ${formatCurrency(metrics.realInvoiced)} · Left to invoice: ${formatCurrency(metrics.leftToInvoice)}${metrics.draftInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.draftInvoiced)} in draft invoices` : ""}${metrics.placeholderInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders` : ""}`
                                           }
                                         >
                                           Left to inv: {formatCurrency(metrics.leftToInvoice)}
@@ -4133,7 +4203,7 @@ export default function JobsView({
                                               display: "inline-block",
                                               whiteSpace: "nowrap"
                                             }}
-                                            title={`Total revenue: ${formatCurrency(metrics.revenue)} · Real invoiced: ${formatCurrency(metrics.realInvoiced)}`}
+                                            title={`${metrics.rechargedExpenses > 0 ? `Fee revenue: ${formatCurrency(metrics.revenue)} · Recharged expenses: ${formatCurrency(metrics.rechargedExpenses)} · Total billable: ${formatCurrency(metrics.totalBillable)}` : `Total revenue: ${formatCurrency(metrics.revenue)}`} · Real invoiced: ${formatCurrency(metrics.realInvoiced)}`}
                                           >
                                             ✓ Invoiced
                                           </span>
@@ -4635,6 +4705,62 @@ export default function JobsView({
                                               )}
                                             </div>
 
+                                            {/* Recharged expenses (Confirmed only) */}
+                                            {isConfirmed && (() => {
+                                              const rechNum = parseFloat(String(rechVal || "0").replace(/[£$€,\s]/g, "")) || 0;
+                                              const isRechOpen = Boolean(rechargedToggleByKey[jobKey]) || rechNum > 0;
+                                              return (
+                                                <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+                                                    <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "11px", fontWeight: "700", color: "#334155", cursor: "pointer", margin: 0 }}>
+                                                      <input
+                                                        type="checkbox"
+                                                        checked={isRechOpen}
+                                                        onChange={(e) => {
+                                                          const checked = e.target.checked;
+                                                          setRechargedToggleByKey((prev) => ({ ...prev, [jobKey]: checked }));
+                                                          if (!checked) {
+                                                            handleDraftFieldChange(job, "rechargedExpenses", "");
+                                                          }
+                                                        }}
+                                                      />
+                                                      Recharged expenses?
+                                                    </label>
+                                                    {isRechOpen && (
+                                                      <span style={{ fontSize: "11px", color: "#475569", fontWeight: "600" }}>
+                                                        Total billable: {formatCurrency(metrics.totalBillable)}
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  {isRechOpen && (
+                                                    <div style={{ marginTop: "6px", display: "flex", alignItems: "center", gap: "8px" }}>
+                                                      <label style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", whiteSpace: "nowrap" }}>
+                                                        Recharged expenses (excl. VAT)
+                                                      </label>
+                                                      <input
+                                                        type="text"
+                                                        value={rechVal ?? ""}
+                                                        onChange={(e) => handleDraftFieldChange(job, "rechargedExpenses", e.target.value)}
+                                                        onKeyDown={(e) => handleFieldKeyDown(e, job, "rechargedExpenses")}
+                                                        placeholder="0.00"
+                                                        style={{
+                                                          width: "120px",
+                                                          padding: "4px 7px",
+                                                          borderRadius: "5px",
+                                                          border: isDirty && draftEdits[jobKey]?.rechargedExpenses !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                                                          fontSize: "12px",
+                                                          outline: "none",
+                                                          background: "#ffffff",
+                                                          textAlign: "right",
+                                                          boxSizing: "border-box"
+                                                        }}
+                                                      />
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              );
+                                            })()}
+
                                             {/* Uneven Revenue Split */}
                                             <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
                                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -4705,7 +4831,7 @@ export default function JobsView({
                                                 <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                                                   Invoices ({invoiceItems.length})
                                                 </div>
-                                                {isConfirmed && metrics.revenue > 0 && (
+                                                {isConfirmed && (metrics.revenue > 0 || metrics.rechargedExpenses > 0) && (
                                                   metrics.leftToInvoice > 0 ? (
                                                     <span
                                                       style={{
@@ -4723,7 +4849,7 @@ export default function JobsView({
                                                       title={
                                                         isRetainer
                                                           ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
-                                                          : `Total revenue: ${formatCurrency(metrics.revenue)} · Real invoiced: ${formatCurrency(metrics.realInvoiced)} · Left to invoice: ${formatCurrency(metrics.leftToInvoice)}${metrics.draftInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.draftInvoiced)} in draft invoices` : ""}${metrics.placeholderInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders` : ""}`
+                                                          : `${metrics.rechargedExpenses > 0 ? `Fee revenue: ${formatCurrency(metrics.revenue)} · Recharged expenses: ${formatCurrency(metrics.rechargedExpenses)} · Total billable: ${formatCurrency(metrics.totalBillable)}` : `Total revenue: ${formatCurrency(metrics.revenue)}`} · Real invoiced: ${formatCurrency(metrics.realInvoiced)} · Left to invoice: ${formatCurrency(metrics.leftToInvoice)}${metrics.draftInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.draftInvoiced)} in draft invoices` : ""}${metrics.placeholderInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders` : ""}`
                                                       }
                                                     >
                                                       <span>⚠️</span> Left to invoice: {formatCurrency(metrics.leftToInvoice)}
@@ -4743,7 +4869,7 @@ export default function JobsView({
                                                           alignItems: "center",
                                                           gap: "4px"
                                                         }}
-                                                        title={`Total revenue: ${formatCurrency(metrics.revenue)} · 100% invoiced (${formatCurrency(metrics.realInvoiced)})`}
+                                                        title={`${metrics.rechargedExpenses > 0 ? `Fee revenue: ${formatCurrency(metrics.revenue)} · Recharged expenses: ${formatCurrency(metrics.rechargedExpenses)} · Total billable: ${formatCurrency(metrics.totalBillable)}` : `Total revenue: ${formatCurrency(metrics.revenue)}`} · 100% invoiced (${formatCurrency(metrics.realInvoiced)})`}
                                                       >
                                                         <span>✓</span> Fully invoiced
                                                       </span>
@@ -4913,7 +5039,9 @@ export default function JobsView({
                                                         }}
                                                         title={
                                                           hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
-                                                            ? "Synced from accounting software. Click to view or edit days to pay."
+                                                            ? (isConfirmed
+                                                              ? "Synced from accounting software. Click to view or edit days to pay or recharged expenses."
+                                                              : "Synced from accounting software. Click to view or edit days to pay.")
                                                             : "Click to edit invoice"
                                                         }
                                                         onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
@@ -4964,6 +5092,15 @@ export default function JobsView({
                                                               {formatCurrency(slot.amount)}
                                                             </span>
                                                         </div>
+
+                                                        {isConfirmed && (parseFloat(String(slot.ofWhichRechgd || "0").replace(/[£$€,\s]/g, "")) || 0) > 0 && (
+                                                          <div style={{ fontSize: "10px", fontWeight: "600", color: "#0369a1" }}>
+                                                            incl. {formatCurrency(slot.ofWhichRechgd)} recharged
+                                                            {slot.costMonth
+                                                              ? ` (${String(slot.costMonth).trim().startsWith("[Split]") ? "split" : slot.costMonth})`
+                                                              : ""}
+                                                          </div>
+                                                        )}
 
                                                         {/* Progress bar (100% green if Paid) */}
                                                         {isPaid && (
@@ -5882,7 +6019,7 @@ export default function JobsView({
                                     <td
                                       key={`legacy_inv${s.slotNum}`}
                                       onClick={() => setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobClient: r.client || job.client, jobName: r.jobName || job.jobName, tabName: r.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"), job })}
-                                      title={isLocked ? "Synced from accounting software. Click to view or edit days to pay." : "Click to edit invoice slot"}
+                                      title={isLocked ? (jobsTab === "Confirmed" ? "Synced from accounting software. Click to view or edit days to pay or recharged expenses." : "Synced from accounting software. Click to view or edit days to pay.") : "Click to edit invoice slot"}
                                       style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer" }}
                                     >
                                       {!s.ref && !s.amount ? (

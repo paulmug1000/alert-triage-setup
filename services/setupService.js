@@ -1490,6 +1490,7 @@ export async function getMasterKeyInfoSettings(sheets, masterSheetId) {
   const rows = res.data.values || [];
 
   const getCell = (r, c) => (rows[r - 1] && rows[r - 1][c - 1] !== undefined ? String(rows[r - 1][c - 1]).trim() : "");
+  const rawRechDel = getCell(21, 4);
 
   return {
     startDate: getCell(2, 2),        // B2: Tracker start date
@@ -1503,6 +1504,7 @@ export async function getMasterKeyInfoSettings(sheets, masterSheetId) {
     directCostsMode: getCell(15, 2) === "Income" ? "Pass-through" : (getCell(8, 4) === "Pass-through" ? "Pass-through" : "Contractors"), // D8: Job direct costs treatment
     profitShare: getCell(11, 6),     // F11: Profit share %
     contractorMethod: getCell(20, 2),// B20: Cashflow contractors method
+    rechargedExpensesDeliveryPct: rawRechDel === "0" || rawRechDel === "0%" || rawRechDel === "0.0%" ? "0%" : "100%", // D21: Recharged expenses delivery %
     masterDeploymentUrl: getCell(29, 24) // X29: Master deployment URL
   };
 }
@@ -1528,6 +1530,15 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
   }
   if (settings.profitShare !== undefined) updates.push({ range: "KeyInfo!F11", values: [[sanitizeFormulaInput(String(settings.profitShare))]] });
   if (settings.contractorMethod !== undefined) updates.push({ range: "KeyInfo!B20", values: [[sanitizeFormulaInput(String(settings.contractorMethod))]] });
+  let rechargedRow21Payload = null;
+  if (settings.rechargedExpensesDeliveryPct !== undefined) {
+    const rawPct = String(settings.rechargedExpensesDeliveryPct ?? "").trim();
+    const numVal = rawPct === "0" || rawPct === "0%" || rawPct === "0.0%" ? 0 : 1;
+    const c21Note =
+      "Recharged expenses delivery % (100% = recharged expenses captured as CoS, 0% = captured within overhead categories)";
+    rechargedRow21Payload = { range: "KeyInfo!C21:D21", values: [[c21Note, numVal]] };
+    updates.push(rechargedRow21Payload);
+  }
 
   if (updates.length > 0) {
     await withRetry(() =>
@@ -1539,6 +1550,26 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
         }
       })
     );
+  }
+
+  if (rechargedRow21Payload) {
+    try {
+      const ctx = await resolveSupabaseSheetContext({ masterSheetId, clientName }).catch(() => null);
+      let clientSheetId = ctx?.clientSheetId || "";
+      if (!clientSheetId) {
+        const c1Res = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "KeyInfo!C1" });
+        const m = String(c1Res.data.values?.[0]?.[0] || "").match(/\/d\/([a-zA-Z0-9-_]+)/);
+        if (m) clientSheetId = m[1];
+      }
+      if (clientSheetId) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: clientSheetId,
+            requestBody: { valueInputOption: "USER_ENTERED", data: [rechargedRow21Payload] },
+          })
+        );
+      }
+    } catch (_) { }
   }
 
   // Auto-mark task p2_keyinfo_settings as completed

@@ -2312,7 +2312,7 @@ export const EOM_SEED_DATA = {
       "Check and update confirmed tab",
       "Check and update pipeline tab",
       "Check and update partner invoices",
-      "Add recharged expenses to column R of Confirmed tab (only include things that have actually been recharged on an invoice)",
+      "Add recharged expenses to Confirmed jobs and allocate 'of which recharged' on the relevant invoices (only include items actually recharged on an invoice)",
       "Update partner win fees in dashboard",
       "Send partners emails telling them the win fee amounts",
       "Create partner win fee accruals bills",

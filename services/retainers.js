@@ -3,7 +3,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter, sa
 import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { resolveClientNameBySheetId, getAllClients, resolveMasterSheetIdForClient_ } from "./workspaces.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, formatInvoiceRefForSheet, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, formatInvoiceRefForSheet, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay, isJobCostingStyle, getJobCostingRowFormulasLetterMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { get2TierCache, set2TierCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
@@ -79,10 +79,11 @@ export async function retFindTrueLastRow(sheets, spreadsheetId, allRows) {
   for (let r = rows.length - 1; r >= 0; r--) {
     const row = rows[r] || [];
     const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+    const hasRech = row[17] !== "" && row[17] != null;
     const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
-    const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+    const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
     const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
-    if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+    if (z1 || z2 || z3 || z4 || hasRech) { trueLastRow = r + 1; break; }
   }
   return trueLastRow;
 }
@@ -215,9 +216,9 @@ export function retFindRetainerJobs(rows, options) {
 }
 
 export const RET_INV_SLOTS = [
-  { amt: 41, ref: 42, sent: 43, days: 44, status: 45 },
-  { amt: 48, ref: 49, sent: 50, days: 51, status: 52 },
-  { amt: 55, ref: 56, sent: 57, days: 58, status: 59 },
+  { amt: 41, ref: 42, sent: 43, days: 44, status: 45, rech: 46, costMonth: 47 },
+  { amt: 48, ref: 49, sent: 50, days: 51, status: 52, rech: 53, costMonth: 54 },
+  { amt: 55, ref: 56, sent: 57, days: 58, status: 59, rech: 60, costMonth: 61 },
 ];
 
 export function retRowHasRealData(row) {
@@ -792,10 +793,11 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         if (trimSet.has(r + 1)) continue;
         const row = rows[r] || [];
         const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+        const hasRech = row[17] !== "" && row[17] != null;
         const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
-        const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+        const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
         const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
-        if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+        if (z1 || z2 || z3 || z4 || hasRech) { trueLastRow = r + 1; break; }
       }
 
       const blockStartIdx0 = trimRowNums[0] - 1;
@@ -1343,10 +1345,11 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
         if (trimSet.has(r + 1)) continue;
         const row = rows[r] || [];
         const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+        const hasRech = row[17] !== "" && row[17] != null;
         const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
-        const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+        const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
         const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
-        if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+        if (z1 || z2 || z3 || z4 || hasRech) { trueLastRow = r + 1; break; }
       }
 
       const blockStartIdx0 = trimRowNums[0] - 1;
@@ -1718,7 +1721,7 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetIdClean,
-      range: "Confirmed!A1:BH5000",
+      range: "Confirmed!A1:BJ5000",
       valueRenderOption: "UNFORMATTED_VALUE",
     });
     const rows = resp.data.values || [];
@@ -2188,7 +2191,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       if (dirCostVal > 0) {
         allWriteData.push({ range: `Confirmed!K${newParentRowNum}`, values: [[dirCostVal]] });
       }
-      const jcFormulas = getJobCostingRowFormulasMap(newParentRowNum, { hasExplicitContractorCosts: dirCostVal > 0 });
+      const jcFormulas = getJobCostingRowFormulasLetterMap("Confirmed", newParentRowNum, { hasExplicitContractorCosts: dirCostVal > 0 });
       for (const [fCol, fStr] of Object.entries(jcFormulas)) {
         allWriteData.push({ range: `Confirmed!${fCol}${newParentRowNum}`, values: [[fStr]] });
       }
@@ -2476,6 +2479,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
         }
       }
       const parsedSent = retParseSheetDate(sentRaw);
+      const rechNum = Math.round((retParseMoney(inv.ofWhichRechgd) || 0) * 100) / 100;
       realInvoicesToPlace.push({
         amount: amt,
         ref,
@@ -2483,12 +2487,13 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
         sentDateFormatted: parsedSent ? retFmtDate(parsedSent) : String(sentRaw || "").trim(),
         daysToPay: days,
         status: canonicalizeInvoiceStatus(status || "Sent") || "Sent",
-        desc: String(inv.desc ?? inv.description ?? "").trim(),
+        ofWhichRechgd: rechNum > 0 ? rechNum : "",
+        costMonth: rechNum > 0 ? sanitizeFormulaInput(String(inv.costMonth || "").trim()) : "",
       });
     };
 
     let parentHasInvoiceData = false;
-    for (let c = 41; c <= 59; c++) {
+    for (let c = 41; c <= 61; c++) {
       if (parentRow[c] !== undefined && parentRow[c] !== null && String(parentRow[c]).trim() !== "") {
         parentHasInvoiceData = true;
         break;
@@ -2500,8 +2505,10 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
       const sent = parentRow[s.sent];
       const days = parentRow[s.days];
       const status = String(parentRow[s.status] || "").trim();
+      const ofWhichRechgd = parentRow[s.rech];
+      const costMonth = String(parentRow[s.costMonth] || "").trim();
       if (amt > 0 || ref) {
-        addRealInvoice({ amount: amt, ref, sendDate: sent, days, status });
+        addRealInvoice({ amount: amt, ref, sendDate: sent, days, status, ofWhichRechgd, costMonth });
       }
     }
     if (Array.isArray(initialInvoices)) {
@@ -2711,8 +2718,8 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     }
     if (parentHasInvoiceData) {
       allWrites.push({
-        range: `${confirmedTabTitle}!AP${actualParentRowNum}:BH${actualParentRowNum}`,
-        values: [new Array(19).fill("")],
+        range: `${confirmedTabTitle}!AP${actualParentRowNum}:BJ${actualParentRowNum}`,
+        values: [new Array(21).fill("")],
       });
     }
 
@@ -2738,7 +2745,8 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
             matchedReal.sentDateFormatted || retFmtDate(newRowDates[m]),
             matchedReal.daysToPay,
             sanitizeFormulaInput(matchedReal.status),
-            matchedReal.desc ? sanitizeFormulaInput(matchedReal.desc) : "",
+            matchedReal.ofWhichRechgd || "",
+            matchedReal.ofWhichRechgd ? sanitizeFormulaInput(matchedReal.costMonth || "") : "",
           ]);
         } else {
           invBlock.push([
@@ -2746,6 +2754,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
             "",
             retFmtDate(newRowDates[m]),
             defaultDaysToPay,
+            "",
             "",
             "",
           ]);
@@ -2762,7 +2771,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
           values: aiBlock,
         },
         {
-          range: `${confirmedTabTitle}!AP${startWriteRow}:AU${endWriteRow}`,
+          range: `${confirmedTabTitle}!AP${startWriteRow}:AV${endWriteRow}`,
           values: invBlock,
         }
       );
@@ -2972,6 +2981,7 @@ export function buildRetainerChildRowsWritePlan({
         }
       }
       const parsedSent = retParseSheetDate(sentRaw);
+      const rechNum = Math.round((retParseMoney(inv.ofWhichRechgd) || 0) * 100) / 100;
       realInvoicesToPlace.push({
         amount: amt,
         ref,
@@ -2979,7 +2989,8 @@ export function buildRetainerChildRowsWritePlan({
         sentDateFormatted: parsedSent ? retFmtDate(parsedSent) : String(sentRaw || "").trim(),
         daysToPay: days,
         status: canonicalizeInvoiceStatus(status || "Sent") || "Sent",
-        desc: String(inv.desc ?? inv.description ?? "").trim(),
+        ofWhichRechgd: rechNum > 0 ? rechNum : "",
+        costMonth: rechNum > 0 ? sanitizeFormulaInput(String(inv.costMonth || "").trim()) : "",
       });
     }
   }
@@ -3029,9 +3040,10 @@ export function buildRetainerChildRowsWritePlan({
       : retFmtDate(newRowDates[m]);
     const rowDays = matchedReal ? matchedReal.daysToPay : resolvedDefaultDays;
     const rowStatus = matchedReal ? sanitizeFormulaInput(matchedReal.status) : "";
-    const rowDesc = matchedReal && matchedReal.desc ? sanitizeFormulaInput(matchedReal.desc) : "";
+    const rowRech = matchedReal && matchedReal.ofWhichRechgd ? matchedReal.ofWhichRechgd : "";
+    const rowCm = matchedReal && rowRech ? sanitizeFormulaInput(matchedReal.costMonth || "") : "";
 
-    invBlock.push([rowAmt, rowRef, rowSent, rowDays, rowStatus, rowDesc]);
+    invBlock.push([rowAmt, rowRef, rowSent, rowDays, rowStatus, rowRech, rowCm]);
 
     childRowsForUi.push({
       rowNum: rNum,
@@ -3062,9 +3074,11 @@ export function buildRetainerChildRowsWritePlan({
           daysToPay: String(rowDays),
           dueDate: "",
           status: rowStatus,
+          ofWhichRechgd: rowRech ? `£${Number(rowRech).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "",
+          costMonth: rowCm,
         },
-        { slotNum: 2, amount: "", invoiceNo: "", sentDate: "", daysToPay: "", dueDate: "", status: "" },
-        { slotNum: 3, amount: "", invoiceNo: "", sentDate: "", daysToPay: "", dueDate: "", status: "" },
+        { slotNum: 2, amount: "", invoiceNo: "", sentDate: "", daysToPay: "", dueDate: "", status: "", ofWhichRechgd: "", costMonth: "" },
+        { slotNum: 3, amount: "", invoiceNo: "", sentDate: "", daysToPay: "", dueDate: "", status: "", ofWhichRechgd: "", costMonth: "" },
       ],
       expenseSlots: [1, 2, 3].map(sNum => ({
         slotNum: sNum,
@@ -3089,7 +3103,7 @@ export function buildRetainerChildRowsWritePlan({
       values: aiBlock,
     },
     {
-      range: `${confirmedTabTitle}!AP${startWriteRow}:AU${endWriteRow}`,
+      range: `${confirmedTabTitle}!AP${startWriteRow}:AV${endWriteRow}`,
       values: invBlock,
     },
   ];
@@ -3438,10 +3452,11 @@ export async function handleTidyUpRetainers(req, res, sheets) {
     for (let r = allRows.length - 1; r >= 0; r--) {
       const row = allRows[r] || [];
       const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+      const hasRech = row[17] !== "" && row[17] != null;
       const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
-      const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+      const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
       const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
-      if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+      if (z1 || z2 || z3 || z4 || hasRech) { trueLastRow = r + 1; break; }
     }
 
     if (currentMaxRows - trueLastRow < 4) {
@@ -3501,10 +3516,11 @@ export async function handleTidyUpRetainers(req, res, sheets) {
     while (r < trueLastRow) {
       const row = allRows[r] || [];
       const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+      const hasRech = row[17] !== "" && row[17] != null;
       const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
-      const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+      const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
       const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
-      const hasData = z1 || z2 || z3 || z4;
+      const hasData = z1 || z2 || z3 || z4 || hasRech;
 
       if (!hasData) {
         blocks.push({ id: `b_${blockId++}`, type: "Blank", size: 1, originalStartIdx: r });

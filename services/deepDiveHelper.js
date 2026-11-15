@@ -1149,7 +1149,14 @@ export const CashDeepDiveEngine = {
         const allOutgoingsExpenses = keyData.outgoings?.expenses || [];
         const knownExpMap = new Map();
         allOutgoingsExpenses.forEach((e) => {
-          if (e.name && !e.name.toLowerCase().includes("depreciation") && e.name.toLowerCase() !== "hide") {
+          const eLower = e.name ? e.name.toLowerCase().trim() : "";
+          if (
+            e.name &&
+            !eLower.includes("depreciation") &&
+            eLower !== "hide" &&
+            eLower !== "recharged expenses (forecast)" &&
+            eLower !== "recharged expenses recovery"
+          ) {
             knownExpMap.set(normCat(e.name), e.name);
           }
         });
@@ -1390,9 +1397,10 @@ export const CashDeepDiveEngine = {
 
     const cacheItems = isContractor
       ? (keyData.outgoings.contractors || [])
-      : (keyData.outgoings.expenses || []).filter(
-        (e) => !e.name || !e.name.toLowerCase().includes("depreciation")
-      );
+      : (keyData.outgoings.expenses || []).filter((e) => {
+        const lower = e.name ? e.name.toLowerCase().trim() : "";
+        return !e.name || (!lower.includes("depreciation") && lower !== "recharged expenses recovery");
+      });
 
     let foundY = -1;
     let foundC = -1;
@@ -1421,7 +1429,8 @@ export const CashDeepDiveEngine = {
     cacheItems.forEach((row) => {
       if (!row.name || row.name.toLowerCase() === "hide") return;
 
-      const payTiming = String(row.paymentTiming || "Curr").toLowerCase();
+      const payTiming = String(row.paymentTiming !== undefined ? row.paymentTiming : "Curr").trim().toLowerCase();
+      if (payTiming !== "curr" && payTiming !== "next") return;
       let colToRead = foundC;
       let yearToRead = foundY;
 
@@ -2226,15 +2235,22 @@ export function buildDeepDiveData({
         }
         amt += monthAllocAmt;
 
-        // Synthesize a transaction entry for depreciation expenses if no actual one exists
+        // Synthesize a transaction entry for depreciation or recharged expenses system rows when no P&L txn exists
         const isMonthReconciled =
           Boolean(keyData.outgoings?.reconciledMonths?.[foundY]?.[foundC]) || mList.length > 0;
-        if (!matchedInMonth && eNorm.includes("depreciation") && isMonthReconciled && Math.abs(monthAllocAmt) >= 0.01) {
+        const isRechForecast = eNorm === "recharged expenses (forecast)";
+        const isRechRecovery = eNorm === "recharged expenses recovery";
+        if (!matchedInMonth && Math.abs(monthAllocAmt) >= 0.01 && ((eNorm.includes("depreciation") && isMonthReconciled) || isRechForecast || isRechRecovery)) {
           const lastDayOfMonth = new Date(currDate.getFullYear(), currDate.getMonth() + 1, 0);
+          const synthSupplier = isRechForecast
+            ? "Recharged expenses forecast (from Confirmed jobs)"
+            : isRechRecovery
+              ? "Recharged expenses offset (contra recovery)"
+              : "Depreciation (from P&L)";
           categoryTxns.push({
             date: DeepDiveEngine.formatShortDate(lastDayOfMonth),
-            supplier: "Depreciation (from P&L)",
-            ref: "P&L",
+            supplier: synthSupplier,
+            ref: (isRechForecast || isRechRecovery) ? "System" : "P&L",
             net: monthAllocAmt,
             vat: 0,
             gross: monthAllocAmt,
@@ -2251,7 +2267,7 @@ export function buildDeepDiveData({
         amount: Math.round(amt * 100) / 100,
         transactions: categoryTxns,
       };
-    }).filter((item) => item.amount > 0 || (item.transactions && item.transactions.length > 0));
+    }).filter((item) => Math.abs(item.amount) >= 0.01 || (item.transactions && item.transactions.length > 0));
 
     // For any category in transactionsByMonth that is NOT on Outgoings at all,
     // only include it if its category delivery classification matches isDel!
@@ -2697,7 +2713,9 @@ export function buildExpenseCategoryDeepDiveData({
     }
   });
 
-  if (items.length === 0 && targetNorm.includes("depreciation") && Math.abs(parsedCellVal) >= 0.01) {
+  const isRechForecast = targetNorm === "recharged expenses (forecast)";
+  const isRechRecovery = targetNorm === "recharged expenses recovery";
+  if (items.length === 0 && (targetNorm.includes("depreciation") || isRechForecast || isRechRecovery) && Math.abs(parsedCellVal) >= 0.01) {
     const hdrLabel = periodLabel || outgoingsData.headers?.[yearIndex]?.[monthIndex] || "";
     const hd = DeepDiveEngine.parseHeaderDate(hdrLabel);
     const monthEndStr = hd
@@ -2706,8 +2724,12 @@ export function buildExpenseCategoryDeepDiveData({
     items.push({
       isTransaction: true,
       date: monthEndStr,
-      supplier: "Depreciation (from P&L)",
-      ref: "P&L",
+      supplier: isRechForecast
+        ? "Recharged expenses forecast (from Confirmed jobs)"
+        : isRechRecovery
+          ? "Recharged expenses offset (contra recovery)"
+          : "Depreciation (from P&L)",
+      ref: (isRechForecast || isRechRecovery) ? "System" : "P&L",
       net: parsedCellVal,
       vat: 0,
       gross: parsedCellVal,

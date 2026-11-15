@@ -231,19 +231,25 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
     fy.monthCols = monthCols;
   });
 
-  // Parse Expense Rows (Rows 126 to 225, i.e. indices 0 to 99 in rowData)
+  // Parse Expense Rows (Rows 126 to 226, i.e. indices 0 to 100 in rowData; 225 & 226 are non-editable system rows)
   const expenses = [];
   let firstEmptyRow = null;
 
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 101; i++) {
     const sheetRow = 126 + i;
     const rValues = rowData[i]?.values || [];
     const category = String(rValues[0]?.formattedValue || "").trim();
     const vat = String(rValues[1]?.formattedValue || "").trim() || "No";
     const deliveryPct = String(rValues[4]?.formattedValue || "").trim() || "0%";
-    const isPopulated = category !== "";
+    const isHidden = category.toLowerCase() === "hide";
+    const isSystemRow =
+      sheetRow === 225 ||
+      sheetRow === 226 ||
+      /^recharged expenses\s*\((forecast|recovery)\)$/i.test(category) ||
+      category.toLowerCase() === "recharged expenses recovery";
+    const isPopulated = category !== "" && !isHidden;
 
-    if (!isPopulated && firstEmptyRow === null) {
+    if (category === "" && !isSystemRow && sheetRow <= 224 && firstEmptyRow === null) {
       firstEmptyRow = sheetRow;
     }
 
@@ -276,6 +282,7 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
       deliveryPct: deliveryPct || "0%",
       isDelivery,
       isPopulated,
+      isSystemRow,
       fyData,
     });
   }
@@ -318,7 +325,7 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
     fyConfigs,
     expenses,
     totals,
-    firstAvailableRow: firstEmptyRow || 225,
+    firstAvailableRow: firstEmptyRow || null,
     lastUpdated: new Date().toISOString(),
   };
 
@@ -351,8 +358,8 @@ export async function saveExpenseMetadata({
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
   const rowNum = parseInt(sheetRow, 10);
-  if (isNaN(rowNum) || rowNum < 126 || rowNum > 225) {
-    throw new Error(`Invalid expense sheet row: ${sheetRow}. Must be between 126 and 225.`);
+  if (isNaN(rowNum) || rowNum < 126 || rowNum > 224) {
+    throw new Error(`Invalid or system-managed expense row: ${sheetRow}. Editable rows are 126 to 224.`);
   }
 
   const cleanCategory = sanitizeFormulaInput(category || "");
@@ -413,8 +420,8 @@ export async function toggleExpenseDelivery({
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
   const rowNum = parseInt(sheetRow, 10);
-  if (isNaN(rowNum) || rowNum < 126 || rowNum > 225) {
-    throw new Error(`Invalid expense sheet row: ${sheetRow}. Must be between 126 and 225.`);
+  if (isNaN(rowNum) || rowNum < 126 || rowNum > 224) {
+    throw new Error(`Invalid or system-managed expense row: ${sheetRow}. Editable rows are 126 to 224.`);
   }
 
   const isDel = targetDelivery === true || targetDelivery === "100%" || targetDelivery === "delivery";
@@ -464,8 +471,8 @@ export async function saveExpenseAmount({
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
   const rowNum = parseInt(sheetRow, 10);
-  if (isNaN(rowNum) || rowNum < 126 || rowNum > 225) {
-    throw new Error(`Invalid expense sheet row: ${sheetRow}. Must be between 126 and 225.`);
+  if (isNaN(rowNum) || rowNum < 126 || rowNum > 224) {
+    throw new Error(`Invalid or system-managed expense row: ${sheetRow}. Editable rows are 126 to 224.`);
   }
 
   // Verify CR2 gate: if any target column belongs to a reconciled month, reject modification
@@ -609,8 +616,8 @@ export async function addExpenseCategory({
   // First fetch current data to find the first empty row
   const currentData = await fetchExpensesData(clientName, clientSheetId, true);
   const targetRow = currentData.firstAvailableRow;
-  if (!targetRow || targetRow > 225) {
-    throw new Error("No available empty rows in Outgoings expense range (rows 126-225).");
+  if (!targetRow || targetRow > 224) {
+    throw new Error("All editable expense rows (126-224) are currently full.");
   }
 
   const hasMonthlyAmounts = Boolean(monthlyAmounts && Object.keys(monthlyAmounts).length > 0);

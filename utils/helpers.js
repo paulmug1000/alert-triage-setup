@@ -2515,7 +2515,13 @@ export function isJobCostingStyle({ headers, keyInfoD11 } = {}) {
 /**
  * Returns 0-indexed column -> formula map for a JobCosting row on Confirmed or Pipeline.
  */
-export function getJobCostingRowFormulasMap(sheetName, rowNum) {
+export function getJobCostingRowFormulasMap(sheetNameOrRowNum, maybeRowNumOrOpts) {
+  let sheetName = "Confirmed";
+  let rowNum = sheetNameOrRowNum;
+  if (typeof sheetNameOrRowNum === "string") {
+    sheetName = sheetNameOrRowNum;
+    rowNum = maybeRowNumOrOpts;
+  }
   if (sheetName === "Confirmed") {
     return {
       10: `=M${rowNum}*KeyInfo!$D$13`,
@@ -2523,7 +2529,7 @@ export function getJobCostingRowFormulasMap(sheetName, rowNum) {
       13: `=M${rowNum}*KeyInfo!$D$13`,
       14: `=N${rowNum}-K${rowNum}`,
       20: `=(I${rowNum}-Q${rowNum})*T${rowNum}`,
-      32: `=if(I${rowNum}+R${rowNum}=0,"",I${rowNum}+R${rowNum})`,
+      32: `=if(I${rowNum}=0,"",I${rowNum})`,
       33: `=if(K${rowNum}+Q${rowNum}+U${rowNum}=0,"",K${rowNum}+Q${rowNum}+U${rowNum})`,
       37: `=F${rowNum}`,
       38: `=G${rowNum}`,
@@ -2537,6 +2543,42 @@ export function getJobCostingRowFormulasMap(sheetName, rowNum) {
     38: `=G${rowNum}`,
     40: `=if(AL${rowNum}>AM${rowNum},"Err","")`,
   };
+}
+
+const JOB_COSTING_COL_INDEX_TO_LETTER = {
+  10: "K",
+  12: "M",
+  13: "N",
+  14: "O",
+  20: "U",
+  32: "AG",
+  33: "AH",
+  37: "AL",
+  38: "AM",
+  40: "AO",
+};
+
+/**
+ * Returns the job-costing formula map keyed by A1 column letters instead of 0-based indices.
+ */
+export function getJobCostingRowFormulasLetterMap(sheetNameOrRowNum, maybeRowNumOrOpts, maybeOpts = {}) {
+  let sheetName = "Confirmed";
+  let rowNum = sheetNameOrRowNum;
+  let opts = (typeof maybeRowNumOrOpts === "object" && maybeRowNumOrOpts !== null) ? maybeRowNumOrOpts : maybeOpts;
+  if (typeof sheetNameOrRowNum === "string") {
+    sheetName = sheetNameOrRowNum;
+    rowNum = maybeRowNumOrOpts;
+    opts = (typeof maybeOpts === "object" && maybeOpts !== null) ? maybeOpts : {};
+  }
+  const indexMap = getJobCostingRowFormulasMap(sheetName, rowNum);
+  const letterMap = {};
+  for (const [colIdxStr, formula] of Object.entries(indexMap)) {
+    const colIdx = Number(colIdxStr);
+    if (opts?.hasExplicitContractorCosts && colIdx === 10) continue;
+    const letter = JOB_COSTING_COL_INDEX_TO_LETTER[colIdx];
+    if (letter) letterMap[letter] = formula;
+  }
+  return letterMap;
 }
 
 /**
@@ -2553,17 +2595,20 @@ export function buildJobRowClearAndRestorePlan({
   const restoreData = [];
   const shouldClearDD = includeCopiedCol || sheetName === "Pipeline";
 
+  const isConfirmed = sheetName === "Confirmed";
+  const invRangeSuffix = isConfirmed ? "BJ" : "BH";
+
   for (const r of rowNums) {
     if (!r || r < 2) continue;
     if (!isJobCosting) {
       clearRanges.push(
         `${sheetName}!A${r}:AM${r}`,
-        `${sheetName}!AP${r}:BH${r}`,
+        `${sheetName}!AP${r}:${invRangeSuffix}${r}`,
         `${sheetName}!BX${r}:CR${r}`
       );
       if (shouldClearDD) clearRanges.push(`${sheetName}!DD${r}`);
     } else {
-      if (sheetName === "Confirmed") {
+      if (isConfirmed) {
         clearRanges.push(
           `${sheetName}!A${r}:J${r}`,
           `${sheetName}!L${r}`,
@@ -2571,7 +2616,7 @@ export function buildJobRowClearAndRestorePlan({
           `${sheetName}!V${r}:AF${r}`,
           `${sheetName}!AI${r}:AK${r}`,
           `${sheetName}!AN${r}`,
-          `${sheetName}!AP${r}:BH${r}`,
+          `${sheetName}!AP${r}:BJ${r}`,
           `${sheetName}!BX${r}:CR${r}`
         );
       } else {
@@ -2585,7 +2630,7 @@ export function buildJobRowClearAndRestorePlan({
       }
       if (shouldClearDD) clearRanges.push(`${sheetName}!DD${r}`);
 
-      if (sheetName === "Confirmed") {
+      if (isConfirmed) {
         restoreData.push(
           { range: `${sheetName}!K${r}`, values: [[`=M${r}*KeyInfo!$D$13`]] },
           {
@@ -2597,7 +2642,7 @@ export function buildJobRowClearAndRestorePlan({
             range: `${sheetName}!AG${r}:AH${r}`,
             values: [
               [
-                `=if(I${r}+R${r}=0,"",I${r}+R${r})`,
+                `=if(I${r}=0,"",I${r})`,
                 `=if(K${r}+Q${r}+U${r}=0,"",K${r}+Q${r}+U${r})`,
               ],
             ],

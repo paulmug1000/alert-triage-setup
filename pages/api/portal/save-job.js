@@ -74,15 +74,18 @@ const parseExpenseStatus = (val) => {
 };
 
 /**
- * Finds the last row containing actual job data in cols 1-39 or 42-60.
+ * Finds the last row containing actual job data in cols 1-39 or invoice columns.
  */
 async function findLastJobRow(sheets, spreadsheetId, sheetName, minRow = 1, cachedRowsRef = null) {
+  const isConfirmed = sheetName === "Confirmed" || sheetName === "ConfCalcs";
+  const invEndCol = isConfirmed ? "BJ" : "BH";
+  const invSliceEnd = isConfirmed ? 62 : 60;
   let allRows = cachedRowsRef?.rows || null;
   if (!allRows) {
     const dataResp = await withRetry(() =>
       sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `${sheetName}!A:BH`,
+        range: `${sheetName}!A:${invEndCol}`,
         valueRenderOption: "FORMATTED_VALUE",
       })
     );
@@ -93,7 +96,7 @@ async function findLastJobRow(sheets, spreadsheetId, sheetName, minRow = 1, cach
   for (let r = allRows.length - 1; r >= 0; r--) {
     const rowData = allRows[r] || [];
     const hasDataA = rowData.slice(0, 39).some((v) => v !== undefined && String(v).trim() !== "");
-    const hasDataB = rowData.slice(41, 60).some((v) => v !== undefined && String(v).trim() !== "");
+    const hasDataB = rowData.slice(41, invSliceEnd).some((v) => v !== undefined && String(v).trim() !== "");
     if (hasDataA || hasDataB) {
       lastJobRow = Math.max(lastJobRow, r + 1);
       break;
@@ -107,12 +110,15 @@ async function findLastJobRow(sheets, spreadsheetId, sheetName, minRow = 1, cach
  * Matches the original GAS findAndMoveBlankRow logic 1:1.
  */
 async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, insertAfterRow, cachedRowsRef = null) {
+  const isConfirmed = sheetName === "Confirmed" || sheetName === "ConfCalcs";
+  const invEndCol = isConfirmed ? "BJ" : "BH";
+  const invSliceEnd = isConfirmed ? 62 : 60;
   let allRows = cachedRowsRef?.rows || null;
   if (!allRows) {
     const dataResp = await withRetry(() =>
       sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `${sheetName}!A:BH`,
+        range: `${sheetName}!A:${invEndCol}`,
         valueRenderOption: "FORMATTED_VALUE",
       })
     );
@@ -123,7 +129,7 @@ async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, in
   for (let r = allRows.length - 1; r >= 0; r--) {
     const rowData = allRows[r] || [];
     const hasDataA = rowData.slice(0, 39).some((v) => v !== undefined && String(v).trim() !== "");
-    const hasDataB = rowData.slice(41, 60).some((v) => v !== undefined && String(v).trim() !== "");
+    const hasDataB = rowData.slice(41, invSliceEnd).some((v) => v !== undefined && String(v).trim() !== "");
     if (hasDataA || hasDataB) {
       lastJobRow = Math.max(lastJobRow, r + 1);
       break;
@@ -135,7 +141,7 @@ async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, in
   for (let r = lastJobRow + 1; r <= allRows.length + 50; r++) {
     const rowData = r <= allRows.length ? allRows[r - 1] || [] : [];
     const isBlankA = !rowData.slice(0, 39).some((v) => v !== undefined && String(v).trim() !== "");
-    const isBlankB = !rowData.slice(41, 60).some((v) => v !== undefined && String(v).trim() !== "");
+    const isBlankB = !rowData.slice(41, invSliceEnd).some((v) => v !== undefined && String(v).trim() !== "");
     if (isBlankA && isBlankB) {
       blankRows.push(r);
       if (blankRows.length >= 2) break;
@@ -294,9 +300,6 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, o
       if (cols.externalCosts !== -1 && job.externalCosts !== undefined) {
         rowArray[cols.externalCosts] = parseMoney(job.externalCosts);
       }
-      if (cols.rechargedExpenses !== -1 && job.rechargedExpenses !== undefined) {
-        rowArray[cols.rechargedExpenses] = parseMoney(job.rechargedExpenses);
-      }
       if (cols.propSuccFeePct !== -1 && job.propSuccFeePct !== undefined) {
         const rawPct = String(job.propSuccFeePct ?? "").replace(/[%\s]/g, "");
         if (rawPct === "") {
@@ -328,6 +331,12 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, o
     if (cols.endDate !== -1 && resolvedEndDate !== undefined) rowArray[cols.endDate] = resolvedEndDate;
   }
 
+  // Recharged expenses (Confirmed only — Standard and JobCosting share Col R / idx 17)
+  if (cols.rechargedExpenses !== -1 && job.rechargedExpenses !== undefined) {
+    const rechVal = parseMoney(job.rechargedExpenses);
+    rowArray[cols.rechargedExpenses] = rechVal === 0 ? "" : rechVal;
+  }
+
   if (cols.likelihood !== -1 && job.likelihood !== undefined) {
     if (!(typeof rowArray[cols.likelihood] === "string" && rowArray[cols.likelihood].startsWith("="))) {
       rowArray[cols.likelihood] = parseText(job.likelihood);
@@ -345,6 +354,13 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, o
       if (invMap.sendDate !== -1) rowArray[invMap.sendDate] = formatDate(inv.sendDate);
       if (invMap.days !== -1) rowArray[invMap.days] = parseNumber(inv.days, 30);
       if (invMap.status !== -1) rowArray[invMap.status] = parseInvoiceStatus(inv.status);
+      if (invMap.rechgd !== -1 && inv.ofWhichRechgd !== undefined) {
+        const rv = parseMoney(inv.ofWhichRechgd);
+        rowArray[invMap.rechgd] = rv === 0 ? "" : rv;
+      }
+      if (invMap.costMonth !== -1 && inv.costMonth !== undefined) {
+        rowArray[invMap.costMonth] = parseText(inv.costMonth);
+      }
       if (invMap.desc !== -1 && inv.desc !== undefined) rowArray[invMap.desc] = parseText(inv.desc);
     } else {
       if (invMap.amount !== -1) rowArray[invMap.amount] = "";
@@ -352,6 +368,8 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, o
       if (invMap.sendDate !== -1) rowArray[invMap.sendDate] = "";
       if (invMap.days !== -1) rowArray[invMap.days] = "";
       if (invMap.status !== -1) rowArray[invMap.status] = "";
+      if (invMap.rechgd !== -1) rowArray[invMap.rechgd] = "";
+      if (invMap.costMonth !== -1) rowArray[invMap.costMonth] = "";
       if (invMap.desc !== -1) rowArray[invMap.desc] = "";
     }
   }
@@ -401,6 +419,8 @@ function applyChildRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, op
   if (cols.splitStr !== -1) rowArray[cols.splitStr] = "";
   if (cols.likelihood !== -1) rowArray[cols.likelihood] = "";
 
+  if (cols.rechargedExpenses !== -1) rowArray[cols.rechargedExpenses] = "";
+
   if (isJobCosting) {
     for (const c of [5, 6, 7, 8, 9, 11, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29, 31]) {
       rowArray[c] = "";
@@ -426,6 +446,13 @@ function applyChildRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, op
       if (invMap.sendDate !== -1) rowArray[invMap.sendDate] = formatDate(inv.sendDate);
       if (invMap.days !== -1) rowArray[invMap.days] = parseNumber(inv.days, 30);
       if (invMap.status !== -1) rowArray[invMap.status] = parseInvoiceStatus(inv.status);
+      if (invMap.rechgd !== -1 && inv.ofWhichRechgd !== undefined) {
+        const rv = parseMoney(inv.ofWhichRechgd);
+        rowArray[invMap.rechgd] = rv === 0 ? "" : rv;
+      }
+      if (invMap.costMonth !== -1 && inv.costMonth !== undefined) {
+        rowArray[invMap.costMonth] = parseText(inv.costMonth);
+      }
       if (invMap.desc !== -1 && inv.desc !== undefined) rowArray[invMap.desc] = parseText(inv.desc);
     } else {
       if (invMap.amount !== -1) rowArray[invMap.amount] = "";
@@ -433,6 +460,8 @@ function applyChildRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, op
       if (invMap.sendDate !== -1) rowArray[invMap.sendDate] = "";
       if (invMap.days !== -1) rowArray[invMap.days] = "";
       if (invMap.status !== -1) rowArray[invMap.status] = "";
+      if (invMap.rechgd !== -1) rowArray[invMap.rechgd] = "";
+      if (invMap.costMonth !== -1) rowArray[invMap.costMonth] = "";
       if (invMap.desc !== -1) rowArray[invMap.desc] = "";
     }
   }
@@ -570,7 +599,7 @@ export default async function handler(req, res) {
       jobRevenue: getColIdx(["job revenue"], -1),
       contractorCosts: getColIdx(["contractor costs"], -1),
       externalCosts: getColIdx(["external costs"], -1),
-      rechargedExpenses: getColIdx(["rechgd exp", "recharged expenses"], -1),
+      rechargedExpenses: isTargetConfirmed ? getColIdx(["recharged expenses (excl vat)", "rechgd exp", "recharged expenses"], 17) : -1,
       propSuccFeePct: getColIdx(["% prop succ fee"], -1),
       propSuccFeeRec: getColIdx(["prop succ. fee rec", "prop succ fee rec"], -1),
       invNo: getColIdx(["inv no"], -1),
@@ -592,7 +621,9 @@ export default async function handler(req, res) {
           sendDate: getColIdx(["inv 1 send date", "inv 1 date"], 43),
           days: getColIdx(["inv 1 days to pay", "inv 1 days"], 44),
           status: getColIdx(["inv 1 status"], 45),
-          desc: getColIdx(["inv 1 descr.", "inv 1 desc"], 46),
+          rechgd: isTargetConfirmed ? getColIdx(["inv 1 of which rechgd", "inv. 1 of which rechgd", "inv 1 recharged", "inv 1 rechgd"], 46) : -1,
+          costMonth: isTargetConfirmed ? getColIdx(["inv 1 cost month", "inv. 1 cost month"], 47) : -1,
+          desc: !isTargetConfirmed ? getColIdx(["inv 1 descr.", "inv 1 desc"], -1) : -1,
         },
         {
           amount: getColIdx(["project invoice 2 (excl vat)", "project invoice 2 (excl. vat)", "project invoice 2", "inv 2 amount"], 48),
@@ -600,7 +631,9 @@ export default async function handler(req, res) {
           sendDate: getColIdx(["inv 2 send date", "inv 2 date"], 50),
           days: getColIdx(["inv 2 days to pay", "inv 2 days"], 51),
           status: getColIdx(["inv 2 status"], 52),
-          desc: getColIdx(["inv 2 descr.", "inv 2 desc"], 53),
+          rechgd: isTargetConfirmed ? getColIdx(["inv 2 of which rechgd", "inv. 2 of which rechgd", "inv 2 recharged", "inv 2 rechgd"], 53) : -1,
+          costMonth: isTargetConfirmed ? getColIdx(["inv 2 cost month", "inv. 2 cost month"], 54) : -1,
+          desc: !isTargetConfirmed ? getColIdx(["inv 2 descr.", "inv 2 desc"], -1) : -1,
         },
         {
           amount: getColIdx(["project invoice 3 (excl vat)", "project invoice 3 (excl. vat)", "project invoice 3", "inv 3 amount"], 55),
@@ -608,7 +641,9 @@ export default async function handler(req, res) {
           sendDate: getColIdx(["inv 3 send date", "inv 3 date"], 57),
           days: getColIdx(["inv 3 days to pay", "inv 3 days"], 58),
           status: getColIdx(["inv 3 status"], 59),
-          desc: getColIdx(["inv 3 descr.", "inv 3 desc"], 60),
+          rechgd: isTargetConfirmed ? getColIdx(["inv 3 of which rechgd", "inv. 3 of which rechgd", "inv 3 recharged", "inv 3 rechgd"], 60) : -1,
+          costMonth: isTargetConfirmed ? getColIdx(["inv 3 cost month", "inv. 3 cost month"], 61) : -1,
+          desc: !isTargetConfirmed ? getColIdx(["inv 3 descr.", "inv 3 desc"], -1) : -1,
         },
       ],
 
@@ -731,10 +766,11 @@ export default async function handler(req, res) {
         const verifiedOldChildren = [];
         if (existingChildRows.length > 0) {
           try {
+            const oldEndCol = oldSheetName === "Confirmed" ? "BJ" : "BH";
             const oldInspectResp = await withRetry(() =>
               sheets.spreadsheets.values.get({
                 spreadsheetId: clientSheetId,
-                range: `${oldSheetName}!A${oldRow + 1}:BH${oldRow + existingChildRows.length}`,
+                range: `${oldSheetName}!A${oldRow + 1}:${oldEndCol}${oldRow + existingChildRows.length}`,
                 valueRenderOption: "FORMATTED_VALUE",
               })
             );
@@ -743,7 +779,8 @@ export default async function handler(req, res) {
               const r = oldNextRows[i] || [];
               const rRev = (r[cols.revenue] || "").trim();
               const rDc = (r[cols.directCosts] || "").trim();
-              if (rRev === "" && rDc === "") verifiedOldChildren.push(oldRow + 1 + i);
+              const rRech = oldSheetName === "Confirmed" ? String(r[17] || "").trim() : "";
+              if (rRev === "" && rDc === "" && rRech === "") verifiedOldChildren.push(oldRow + 1 + i);
               else break;
             }
           } catch (_) { }
@@ -826,11 +863,13 @@ export default async function handler(req, res) {
     }
 
     // 4. INVOICE AND EXPENSE PACKING LOGIC (1:1 with Original App)
+    const parseMoneyVal = (val) => parseFloat(String(val ?? "").replace(/[£$€,\s]/g, "")) || 0;
     const validInvoices = (job.invoices || []).filter(
       (inv) =>
         (inv.amount !== undefined && String(inv.amount).trim() !== "") ||
         (inv.ref !== undefined && String(inv.ref).trim() !== "") ||
-        (inv.sendDate !== undefined && String(inv.sendDate).trim() !== "")
+        (inv.sendDate !== undefined && String(inv.sendDate).trim() !== "") ||
+        (isTargetConfirmed && inv.ofWhichRechgd !== undefined && parseMoneyVal(inv.ofWhichRechgd) > 0)
     );
 
     const validExpenses = (job.directExpenses || []).filter(
@@ -852,6 +891,17 @@ export default async function handler(req, res) {
       isTargetConfirmed &&
       isRetainer &&
       (isNewJob || !wasPreviouslyRetainer || existingChildRows.length === 0);
+
+    if (isTargetConfirmed && !shouldProvisionRetainerSchedule && validInvoices.length > 0) {
+      const totalJobRechgd = parseMoneyVal(job.rechargedExpenses);
+      const sumInvRechgd = validInvoices.reduce((sum, inv) => sum + parseMoneyVal(inv.ofWhichRechgd), 0);
+      if ((totalJobRechgd > 0.005 || sumInvRechgd > 0.005) && Math.abs(sumInvRechgd - totalJobRechgd) > 0.01) {
+        return res.status(400).json({
+          success: false,
+          error: `Recharged expenses attached to invoices (£${sumInvRechgd.toFixed(2)}) must equal the job's recharged expenses total (£${totalJobRechgd.toFixed(2)}).`,
+        });
+      }
+    }
 
     const parentInvoices = {};
     const childInvoices = [];
@@ -947,8 +997,11 @@ export default async function handler(req, res) {
       deferredRestoreData.push(...excessPlan.restoreData);
     }
 
-    // 6. PREPARE PARENT ROW (segmented into safe bands: A:AM, AN, AP:BH, BX:CR)
-    // Preserves column AO (col 41) and calculation formulas in BI:BW (cols 61-75), CS:DC, and DD
+    const invBandEndCol = isTargetConfirmed ? "BJ" : "BH";
+    const invBandEndIdx = isTargetConfirmed ? 62 : 60;
+
+    // 6. PREPARE PARENT ROW (segmented into safe bands: A:AM, AN, AP:BJ/BH, BX:CR)
+    // Preserves column AO (col 41) and calculation formulas in BK/BI:BW, CS:DC, and DD
     const updatedParentRow = new Array(maxCols).fill("");
     for (let c = 0; c < maxCols; c++) {
       if (existingParentRow[c] !== undefined) {
@@ -972,8 +1025,8 @@ export default async function handler(req, res) {
         values: [[updatedParentRow[39] !== undefined ? updatedParentRow[39] : ""]],
       },
       {
-        range: `${sheetName}!AP${parentRow}:BH${parentRow}`,
-        values: [slicePad(updatedParentRow, 41, 60)],
+        range: `${sheetName}!AP${parentRow}:${invBandEndCol}${parentRow}`,
+        values: [slicePad(updatedParentRow, 41, invBandEndIdx)],
       },
       {
         range: `${sheetName}!BX${parentRow}:CR${parentRow}`,
@@ -1036,8 +1089,8 @@ export default async function handler(req, res) {
           values: [[""]],
         },
         {
-          range: `${sheetName}!AP${childRowNum}:BH${childRowNum}`,
-          values: [slicePad(updatedChildRow, 41, 60)],
+          range: `${sheetName}!AP${childRowNum}:${invBandEndCol}${childRowNum}`,
+          values: [slicePad(updatedChildRow, 41, invBandEndIdx)],
         },
         {
           range: `${sheetName}!BX${childRowNum}:CR${childRowNum}`,

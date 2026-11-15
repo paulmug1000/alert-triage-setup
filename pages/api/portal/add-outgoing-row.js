@@ -63,10 +63,10 @@ export default async function handler(req, res) {
       });
     }
 
-    // Determine row range in Outgoings tab
+    // Determine row range in Outgoings tab (rows 225 & 226 are reserved system rows)
     const isContractor = secLower.includes("contractor");
     const startRow = isContractor ? 13 : 126;
-    const endRow = isContractor ? 110 : 225;
+    const endRow = isContractor ? 110 : 224;
     const range = `Outgoings!A${startRow}:A${endRow}`;
 
     const checkResp = await withRetry(() =>

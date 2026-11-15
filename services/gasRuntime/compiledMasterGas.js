@@ -1310,6 +1310,7 @@ function writeToAutoLog(category, summary, details) {
 /**
  * PART 2: INTERNAL SHEET MANIPULATION FUNCTIONS
  *
+ * v3.09 (Protect Outgoings system rows 225-226 in pushOutgoingsToClientSheet, include Confirmed Col R recharged expenses in invoice slot capacity/fillFutureSlots, and widen Confirmed zone check to Col BJ)
  * v3.08 (Prevent block Client name updates in PushInvDetailsToConfirmed when linked invoices resolve to different accounting contacts, and fix UTF-8 currency mojibake in dialogs)
  * v3.07 (Read Monthly directly from the Client Sheet in getDashboardRevenueData_, with MthlyClient as fallback)
  * v3.06 (Read MthlyClient before Monthly in getDashboardRevenueData_ after Master Monthly tab deletion)
@@ -1502,8 +1503,26 @@ async function pushOutgoingsToClientSheet(isHeadless = false) {
     const nonOpIncRange = defineRange(nonOpIncBounds);
     const nonOpExpRange = defineRange(nonOpExpBounds);
     
-    // Depreciation Target (One row above Main Expense End)
-    const depreciationTargetRow = expenseRange.end - 1; 
+    // Depreciation Target (defaults to Row 224, above system rows 225-226 Recharged expenses)
+    let depreciationTargetRow = Math.min(224, (overheadsBounds.end + 1) - 3);
+    for (let i = overheadsBounds.start + 2; i < overheadsBounds.end; i++) {
+        const lbl = String(targetDataA[i] || "").trim().toLowerCase();
+        if (lbl.includes("depreciation")) {
+            depreciationTargetRow = i + 1;
+            break;
+        }
+    }
+    if (expenseRange) {
+        let maxExpEnd = Math.max(expenseRange.start, depreciationTargetRow);
+        for (let i = overheadsBounds.start + 2; i < overheadsBounds.end; i++) {
+            const lbl = String(targetDataA[i] || "").trim().toLowerCase();
+            if (lbl === "recharged expenses (forecast)" || lbl === "recharged expenses recovery") {
+                maxExpEnd = Math.min(maxExpEnd, i); // Keep strict ceiling above system row (1-indexed row - 1)
+            }
+        }
+        expenseRange.end = Math.min(expenseRange.end, Math.max(maxExpEnd, depreciationTargetRow));
+        expenseRange.height = Math.max(0, expenseRange.end - expenseRange.start + 1);
+    }
 
     // Read Headers
     const targetMonthHeaders = targetSheet.getRange(1, 1, 1, targetSheet.getLastColumn()).getValues()[0];
@@ -1659,7 +1678,8 @@ async function pushOutgoingsToClientSheet(isHeadless = false) {
           }
       });
       targetCatsOverhead.forEach((cat, idx) => {
-          if (cat && cat !== expectedDepreciationName && !mainDataMap.has(cat)) mainRangeValues[idx][0] = 0;
+          const catLower = String(cat || "").trim().toLowerCase();
+          if (cat && cat !== expectedDepreciationName && !catLower.startsWith("recharged expenses") && !mainDataMap.has(cat)) mainRangeValues[idx][0] = 0;
       });
       targetSheet.getRange(expenseRange.start, targetColumn, expenseRange.height, 1).setValues(mainRangeValues);
       targetSheet.getRange(expenseRange.start, targetColumn, expenseRange.height, 1).setBackground(null);
@@ -2189,12 +2209,15 @@ function findSlotWithTolerance(invoiceData, confirmedData, headerMap, toleranceM
 
   const invoiceNoToFind = invoiceData.invoiceNo ? String(invoiceData.invoiceNo).toUpperCase().trim() : "";
   const jobNameIdx = headerMap['Job name'];
+  const rechIdx = headerMap['Recharged expenses (excl VAT)'] !== undefined ? headerMap['Recharged expenses (excl VAT)'] : 17;
 
   // Helper to resolve parent metadata and all rows in a parent+child job group
   const resolveJobGroupContext_ = (rowIdx) => {
     const r = confirmedData[rowIdx];
     let effRevRaw = parseFloat(String(r[revenueIdx]).replace(/,/g, '')) || 0;
+    let effRechRaw = parseFloat(String(r[rechIdx]).replace(/,/g, '')) || 0;
     let effRev = Math.round(effRevRaw * 100);
+    let effRech = Math.round(effRechRaw * 100);
     let effStart = new Date(r[startIdx]);
     let effEnd = new Date(r[endIdx]);
     let effType = (typeIdx !== undefined && r[typeIdx]) ? String(r[typeIdx]).trim().toLowerCase() : "";
@@ -2203,17 +2226,19 @@ function findSlotWithTolerance(invoiceData, confirmedData, headerMap, toleranceM
     const thisJobName = (jobNameIdx !== undefined && r[jobNameIdx]) ? String(r[jobNameIdx]).trim().toLowerCase() : "";
     const thisClient = r[clientIndex] ? r[clientIndex].toString().trim().toLowerCase() : sourceClient;
 
-    if (effRev === 0 && jobNameIdx !== undefined && thisJobName) {
+    if (effRev === 0 && effRech === 0 && jobNameIdx !== undefined && thisJobName) {
       for (let p = rowIdx - 1; p >= 1; p--) {
         const pRow = confirmedData[p];
         const pClient = pRow[clientIndex] ? pRow[clientIndex].toString().trim().toLowerCase() : '';
         const pJobName = pRow[jobNameIdx] ? String(pRow[jobNameIdx]).trim().toLowerCase() : "";
         const pRevRaw = parseFloat(String(pRow[revenueIdx]).replace(/,/g, '')) || 0;
+        const pRechRaw = parseFloat(String(pRow[rechIdx]).replace(/,/g, '')) || 0;
         const pType = (typeIdx !== undefined && pRow[typeIdx]) ? String(pRow[typeIdx]).trim().toLowerCase() : "";
         if (pClient !== thisClient || pJobName !== thisJobName) break;
-        if (pRevRaw > 0) {
+        if (pRevRaw > 0 || pRechRaw > 0) {
           parentIdx = p;
           effRev = Math.round(pRevRaw * 100);
+          effRech = Math.round(pRechRaw * 100);
           effStart = new Date(pRow[startIdx]);
           effEnd = new Date(pRow[endIdx]);
           effType = pType;
@@ -2234,9 +2259,10 @@ function findSlotWithTolerance(invoiceData, confirmedData, headerMap, toleranceM
         const cClient = cRow[clientIndex] ? cRow[clientIndex].toString().trim().toLowerCase() : '';
         const cJobName = cRow[jobNameIdx] ? String(cRow[jobNameIdx]).trim().toLowerCase() : "";
         const cRevRaw = parseFloat(String(cRow[revenueIdx]).replace(/,/g, '')) || 0;
+        const cRechRaw = parseFloat(String(cRow[rechIdx]).replace(/,/g, '')) || 0;
         const cStart = cRow[startIdx];
         if (cClient !== thisClient || cJobName !== thisJobName) break;
-        if (cRevRaw > 0 || (cStart && String(cStart).trim() !== "")) break;
+        if (cRevRaw > 0 || cRechRaw > 0 || (cStart && String(cStart).trim() !== "")) break;
         groupRows.push({ row: cRow, rowIdx: c });
       }
     } else if (effType.includes("retainer") && jobNameIdx !== undefined && thisJobName) {
@@ -2250,9 +2276,10 @@ function findSlotWithTolerance(invoiceData, confirmedData, headerMap, toleranceM
         const cClient = cRow[clientIndex] ? cRow[clientIndex].toString().trim().toLowerCase() : '';
         const cJobName = cRow[jobNameIdx] ? String(cRow[jobNameIdx]).trim().toLowerCase() : "";
         const cRevRaw = parseFloat(String(cRow[revenueIdx]).replace(/,/g, '')) || 0;
+        const cRechRaw = parseFloat(String(cRow[rechIdx]).replace(/,/g, '')) || 0;
         const cStart = cRow[startIdx];
         if (cClient !== thisClient || cJobName !== thisJobName) break;
-        if (cRevRaw > 0 || (cStart && String(cStart).trim() !== "")) break;
+        if (cRevRaw > 0 || cRechRaw > 0 || (cStart && String(cStart).trim() !== "")) break;
 
         if (c === rowIdx) childOffset = cIdx;
         const cDateRaw = slot1DateIdx !== undefined ? cRow[slot1DateIdx] : null;
@@ -2282,7 +2309,7 @@ function findSlotWithTolerance(invoiceData, confirmedData, headerMap, toleranceM
 
     return {
       parentIdx: parentIdx,
-      effectiveJobRev: effRev,
+      effectiveJobRev: effRev + effRech,
       effectiveJobStart: effStart,
       effectiveJobEnd: effEnd,
       isRetainer: effType.includes("retainer"),
@@ -2449,10 +2476,11 @@ function fillFutureSlots(confirmedData, changeLog, row, currentSlot, matchType, 
    const rowData = confirmedData[rowIndex];
    
    const revenueIdx = headerMap['Revenue (Proj total / Ongoing pm) - excl VAT'];
+   const rechIdx = headerMap['Recharged expenses (excl VAT)'] !== undefined ? headerMap['Recharged expenses (excl VAT)'] : 17;
    const startIdx = headerMap['Start date'];
    const endIdx = headerMap['End date'];
    
-   const jobRev = parseFloat(rowData[revenueIdx]) || 0;
+   const jobRev = (parseFloat(String(rowData[revenueIdx] || '').replace(/[£$€,]/g, '')) || 0) + (parseFloat(String(rowData[rechIdx] || '').replace(/[£$€,]/g, '')) || 0);
    const usedNow = calculateUsedAmount(rowData, headerMap); 
    const remaining = jobRev - usedNow; 
    
@@ -4777,9 +4805,9 @@ function findAndMoveBlankRowForJob_(sheet, lastJobRow, parentClient, parentJob, 
   let trueLastRow = 0;
   for (let r = data.length - 1; r >= 0; r--) {
     const row = data[r];
-    const z1 = row.slice(0, 5).some(c => c !== "" && c !== null);
+    const z1 = row.slice(0, 5).some(c => c !== "" && c !== null) || (row[17] !== "" && row[17] !== null);
     const z2 = row.slice(32, 39).some(c => c !== "" && c !== null);
-    const z3 = row.slice(41, 60).some(c => c !== "" && c !== null);
+    const z3 = row.slice(41, 62).some(c => c !== "" && c !== null);
     const z4 = row.slice(75, 96).some(c => c !== "" && c !== null);
     if (z1 || z2 || z3 || z4) {
       trueLastRow = r + 1;
@@ -5601,6 +5629,7 @@ async function processPartPaidInvoices(ss, alertSheet) {
 /**
  * PART 3: QUICKBOOKS, "STARTER", AND "YEAR 0" FUNCTIONS
  *
+ * v2.76 (Include Confirmed Col R recharged expenses and AP:BJ invoice columns in StarterPushInvToConfirmed zone check)
  * v2.75 (Expand syncYear0DataToClientSheet_ range from A1:BR205 to A1:BZ205 to preserve column BT annual salary overrides)
  * v2.74 (Add syncYear0DataToClientSheet_ to sync Year0Data to the Client Sheet after getYear0PLfromXero / getYear0PLfromQB)
  * v2.73 (Validate realmId across all QuickBooks callers, sanitize paymentIds query parameters, and apply sanitizeSheetCell_ / sanitizeSheetMatrix_ to Starter and invoice push routines)
@@ -6779,9 +6808,9 @@ async function StarterPushInvToConfirmed() {
       // Find the true last row with content using the bottom-up Zone Check
       for (let i = allTargetData.length - 1; i >= 0; i--) {
         const row = allTargetData[i];
-        const z1 = row.slice(0, 5).some(c => c !== "" && c !== null && c !== undefined);
+        const z1 = row.slice(0, 5).some(c => c !== "" && c !== null && c !== undefined) || (row.length > 17 && row[17] !== "" && row[17] !== null && row[17] !== undefined);
         const z2 = row.length > 32 && row.slice(32, 39).some(c => c !== "" && c !== null && c !== undefined);
-        const z3 = row.length > 41 && row.slice(41, 60).some(c => c !== "" && c !== null && c !== undefined);
+        const z3 = row.length > 41 && row.slice(41, 62).some(c => c !== "" && c !== null && c !== undefined);
         const z4 = row.length > 75 && row.slice(75, 96).some(c => c !== "" && c !== null && c !== undefined);
         if (z1 || z2 || z3 || z4) {
           lastRowWithContent = i + 1;
@@ -7317,6 +7346,7 @@ async function logMyQuickBooksTaxCodesWithIDs() {
  * ==      CRM TASKS (CRMComp) LOGIC      ==
  * =========================================
  *
+ * v3.16 (Use pure fee revenue I formula for Confirmed JobCosting Col AG, widen Confirmed AP:BJ slot clears and Col R/AP:BJ zone checks while keeping Pipeline at AP:BH)
  * v3.15 (Protect Confirmed Client name from CRM overwrite when real non-placeholder invoices are linked to the job block)
  * v3.14 (Strict 1-to-1 column resolution for DataChgAlert discrepancy rules based on JobCosting layout, and prevent discrepancy exclusion rules from stripping revenue on new row creation and Pipeline copy)
  * v3.13 (Ensure _copyPipelineJobToConfirmed bounds targetDayVal to month length and pass retainerDay and defaultDays in processInstantConfirmedJobs_)
@@ -7445,7 +7475,7 @@ function ensureJobCostingRowFormulas_(sheet, rowNum, isConfirmed, headers, force
         14: `=M${rowNum}*KeyInfo!$D$13`,
         15: `=N${rowNum}-K${rowNum}`,
         21: `=(I${rowNum}-Q${rowNum})*T${rowNum}`,
-        33: `=if(I${rowNum}+R${rowNum}=0,"",I${rowNum}+R${rowNum})`,
+        33: `=if(I${rowNum}=0,"",I${rowNum})`,
         34: `=if(K${rowNum}+Q${rowNum}+U${rowNum}=0,"",K${rowNum}+Q${rowNum}+U${rowNum})`,
         38: `=F${rowNum}`,
         39: `=G${rowNum}`,
@@ -7483,9 +7513,10 @@ function ensureJobCostingRowFormulas_(sheet, rowNum, isConfirmed, headers, force
 }
 
 function clearJobRowPreservingFormulas_(sheet, targetRow, isConfirmed, headers) {
+  const invClearCols = isConfirmed ? 21 : 19;
   if (!isJobCostingSheet_(headers)) {
     sheet.getRange(targetRow, 1, 1, 39).clearContent();
-    sheet.getRange(targetRow, 42, 1, 19).clearContent();
+    sheet.getRange(targetRow, 42, 1, invClearCols).clearContent();
     sheet.getRange(targetRow, 76, 1, 20).clearContent();
     return;
   }
@@ -7500,7 +7531,7 @@ function clearJobRowPreservingFormulas_(sheet, targetRow, isConfirmed, headers) 
   }
   sheet.getRange(targetRow, 35, 1, 3).clearContent();   // AI..AK
   sheet.getRange(targetRow, 40, 1, 1).clearContent();   // AN
-  sheet.getRange(targetRow, 42, 1, 19).clearContent();  // AP..BH
+  sheet.getRange(targetRow, 42, 1, invClearCols).clearContent();  // AP..BJ (Confirmed) / AP..BH (Pipeline)
   sheet.getRange(targetRow, 76, 1, 20).clearContent();  // BX..CR
   if (!isConfirmed && sheet.getLastColumn() >= 108) {
     sheet.getRange(targetRow, 108, 1, 1).clearContent(); // DD
@@ -7796,14 +7827,15 @@ async function updateCheckedRows(isHeadless, expectedStageName) {
   
   // Find next available row
   let trueLastRow = 0;
+  const isConfSource = sourceSheetName === 'Confirmed';
   const rowsToRead = Math.min(Math.max(1, sourceSheet.getLastRow() + 1), sourceSheet.getMaxRows());
   const allSourceData = sourceSheet.getRange(1, 1, rowsToRead, 96).getValues();
   for (let i = allSourceData.length - 1; i >= 0; i--) {
     const row = allSourceData[i];
-    // ZONE CHECK: A:E (0-4), AG:AM (32-38), AP:BH (41-59), BX:CR (75-95)
-    const z1 = row.slice(0, 5).some(c => c !== "" && c !== null);
+    // ZONE CHECK: A:E (0-4) [+ R on Confirmed], AG:AM (32-38), AP:BJ/BH (41-61/59), BX:CR (75-95)
+    const z1 = row.slice(0, 5).some(c => c !== "" && c !== null) || (isConfSource && row[17] !== "" && row[17] !== null);
     const z2 = row.slice(32, 39).some(c => c !== "" && c !== null);
-    const z3 = row.slice(41, 60).some(c => c !== "" && c !== null);
+    const z3 = row.slice(41, isConfSource ? 62 : 60).some(c => c !== "" && c !== null);
     const z4 = row.slice(75, 96).some(c => c !== "" && c !== null);
     if (z1 || z2 || z3 || z4) { 
       trueLastRow = i + 1; 
@@ -8290,14 +8322,15 @@ async function updateCheckedRowsRight(isHeadless, expectedStageName) {
   // Find next available row
   let trueLastRow = 0;
   // EXPANDED to 96 columns to accommodate the Zone 4 check
+  const isConfSource = sourceSheetName === 'Confirmed';
   const rowsToRead = Math.min(Math.max(1, sourceSheet.getLastRow() + 1), sourceSheet.getMaxRows());
   const allSourceData = sourceSheet.getRange(1, 1, rowsToRead, 96).getValues();
   for (let i = allSourceData.length - 1; i >= 0; i--) {
     const row = allSourceData[i];
-    // ZONE CHECK: A:E (0-4), AG:AM (32-38), AP:BH (41-59), BX:CR (75-95)
-    const z1 = row.slice(0, 5).some(c => c !== "" && c !== null);
+    // ZONE CHECK: A:E (0-4) [+ R on Confirmed], AG:AM (32-38), AP:BJ/BH (41-61/59), BX:CR (75-95)
+    const z1 = row.slice(0, 5).some(c => c !== "" && c !== null) || (isConfSource && row[17] !== "" && row[17] !== null);
     const z2 = row.slice(32, 39).some(c => c !== "" && c !== null);
-    const z3 = row.slice(41, 60).some(c => c !== "" && c !== null);
+    const z3 = row.slice(41, isConfSource ? 62 : 60).some(c => c !== "" && c !== null);
     const z4 = row.slice(75, 96).some(c => c !== "" && c !== null);
     if (z1 || z2 || z3 || z4) { 
       trueLastRow = i + 1; 
@@ -8735,9 +8768,9 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
   for (let i = allData.length - 1; i >= 0; i--) {
     const row = allData[i];
     // ZONE CHECK: A:E (0-4), AG:AM (32-38), AP:BH (41-59), BX:CR (75-95)
-    const z1 = row.slice(0, 5).some(c => c !== "" && c !== null);
+    const z1 = row.slice(0, 5).some(c => c !== "" && c !== null) || (row[17] !== "" && row[17] !== null);
     const z2 = row.slice(32, 39).some(c => c !== "" && c !== null);
-    const z3 = row.slice(41, 60).some(c => c !== "" && c !== null);
+    const z3 = row.slice(41, 62).some(c => c !== "" && c !== null);
     const z4 = row.slice(75, 96).some(c => c !== "" && c !== null);
     if (z1 || z2 || z3 || z4) { 
       lastRowWithContent = i + 1; 
@@ -14174,6 +14207,7 @@ async function getBrokerExcelAccessToken_() {
 /**
  * ----------------------------------------------------------------
  * 7_COST_SYNC
+ * v3.50 (Guard Outgoings system rows 225-226 Recharged expenses forecast/recovery from bill matching, gap audits, overdue rolls, depreciation fallback row target, and P&L category quarantine)
  * v3.49 (Use fetchXeroWithRetry_ across Xero cost/account/P&L fetches, throw on non-200 Bills/BankTransactions/ManualJournals responses instead of truncating pagination, and fix £ mojibake)
  * v3.48 (Apply Net of Credit scaling to Xero and QuickBooks bills in fetchXeroCostTransactions_ and fetchQBCostTransactions_, resolve payment date from actual cash payments rather than credit note allocation date, and self-heal credit-cleared part-payment balance tranches in Outgoings and Confirmed)
  * v3.47 (Read client name from KeyInfo!B1 in autoReconcileBankFeedsBeforeBreakdown_ with B3 fallback, and add defense-in-depth deduplication matching unreconciled items against actual expenseRows to prevent double-counting)
@@ -14984,8 +15018,8 @@ function findOutgoingsMatch_(data, headers, notes, appData, tolerance, searchSta
     const endRowIndex = (searchEnd > 0 && searchEnd <= data.length) ? searchEnd - 1 : data.length - 1;
 
     for (let r = startRowIndex; r <= endRowIndex; r++) {
-        const rowDesc = String(data[r][0]).toLowerCase();
-        if (!rowDesc) continue;
+        const rowDesc = String(data[r][0]).trim().toLowerCase();
+        if (!rowDesc || r + 1 === 225 || r + 1 === 226 || rowDesc === "recharged expenses (forecast)" || rowDesc === "recharged expenses recovery") continue;
 
         if (isFuzzyMatch_(appData.desc, rowDesc)) {
             const recTiming = String(data[r][2] || "curr").toLowerCase();
@@ -15911,6 +15945,8 @@ async function auditAllOutgoingsGaps(isHeadless, writeToSheet = false) {
       };
 
       for (let r = 0; r < maxRow; r++) {
+        const rowNameLower = String(values[r][0] || "").trim().toLowerCase();
+        if ((r + 1) === 225 || (r + 1) === 226 || rowNameLower === "recharged expenses (forecast)" || rowNameLower === "recharged expenses recovery") continue;
         const recTiming = String(values[r][2] || "Curr");
         const payTiming = String(values[r][3] || "Curr");
         const inContractorZone = hasContractorSection && r > startRowIdx && r < endRowIdx;
@@ -17955,6 +17991,8 @@ async function updateOverdueExpensesInOutgoings(ss, alertSheet) {
   const logs = [];
 
   for (let r = 0; r < notes.length; r++) {
+      const rowNameLower = String(values[r][0] || "").trim().toLowerCase();
+      if ((r + 1) === 225 || (r + 1) === 226 || rowNameLower === "recharged expenses (forecast)" || rowNameLower === "recharged expenses recovery") continue;
       const recTiming = String(values[r][2] || "Curr");
       const payTiming = String(values[r][3] || "Curr");
 
@@ -18298,7 +18336,7 @@ async function syncExpenseTransactionBreakdownToClientSheet_(isHeadless = false,
         }
       }
       if (depreciationTargetRow === -1) {
-        depreciationTargetRow = otherExpEndRow - 2;
+        depreciationTargetRow = Math.min(224, otherExpEndRow - 3);
       }
     }
 
@@ -19950,7 +19988,8 @@ async function checkAndQuarantineUnmappedPLCategories_(ss, knownNormCats = null,
             const outVals = outgoingsSheet.getRange("A120:A235").getValues();
             outVals.forEach(r => {
               const c = String(r[0] || "").trim();
-              if (c && !c.toLowerCase().startsWith("total") && !c.toLowerCase().startsWith("---")) {
+              const cl = c.toLowerCase();
+              if (c && !cl.startsWith("total") && !cl.startsWith("---") && cl !== "recharged expenses (forecast)" && cl !== "recharged expenses recovery") {
                 const norm = c.replace(/^\d+\s*[-–]\s*/, "").toLowerCase().trim();
                 knownMappedNormSet.add(norm);
                 knownMappedNormSet.add(c.toLowerCase());

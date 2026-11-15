@@ -1,6 +1,6 @@
 /**
  * Sheet Value & Date/Display Conversion Utilities
- * Version: 1.02 — Parse USER_ENTERED currency/comma-formatted numbers in normalizeCellForStorage & format string currency cells in formatCellForDisplay
+ * Version: 1.03 — Support Confirmed recharged expenses currency & Inv N cost month date/split formatting, and Outgoings rows 225-226
  *
  * Bridges Google Sheets' internal UNFORMATTED_VALUE representation (used by
  * master_sheet_grids.values_grid and masterFormulaEngine.js) with:
@@ -109,7 +109,7 @@ const CRM_COMP_PCT_COLS = new Set([7, 30, 47, 100, 123, 142, 157, 209]);
 const CRM_LIST_PCT_COLS = new Set([7, 34, 85, 110, 131]);
 
 const CONF_PIPE_CALCS_DATE_COLS = new Set([
-  3, 37, 38, 43, 50, 57, 78, 85, 92, 146, 147, 156, 158, 160, 164, 165, 174, 175, 176, 178, 179, 180,
+  3, 37, 38, 43, 47, 50, 54, 57, 61, 78, 85, 92, 146, 147, 156, 158, 160, 164, 165, 174, 175, 176, 178, 179, 180,
   182, 183, 184, 187, 188, 190, 191, 193, 194, 198, 199, 200, 201, 202, 205, 206, 207, 208, 209,
   212, 213, 214, 215, 216, 218, 219,
 ]);
@@ -158,6 +158,7 @@ function isExplicitDateHeader_(hRaw) {
   }
   if (/^(inv|exp|cost)\s*\d+\s*(send|sent|rec|paid|pay|due)?\s*date$/i.test(h)) return true;
   if (/^(inv|exp|cost)\s*\d+\s*(send|sent|paid)$/i.test(h)) return true;
+  if (/^inv\s*\d+\s*cost\s*month$/i.test(h)) return true;
   return false;
 }
 
@@ -370,7 +371,7 @@ export function dateToSerial(dt) {
   return daySerial + msInDay / 86400000;
 }
 
-const CONF_PIPE_CURRENCY_COLS = new Set([32, 33, 41, 48, 55, 74, 76, 83, 90, 106]);
+const CONF_PIPE_CURRENCY_COLS = new Set([17, 32, 33, 41, 46, 48, 53, 55, 60, 74, 76, 83, 90, 106]);
 
 function formatWholeCurrency_(val) {
   const rounded = Math.sign(val) * Math.round(Math.abs(val) + 1e-7);
@@ -502,7 +503,7 @@ export function formatCellForDisplay(sheetRole, tabName, row0, col0, val, fullGr
       return formatWholeCurrency_(val);
     }
     if (tabName === "Outgoings" && col0 >= 6 && row0 >= 5 && row0 <= 295) {
-      if (row0 >= 125 && row0 <= 224 && col0 >= 36 && col0 <= 47) {
+      if (row0 >= 125 && row0 <= 225 && col0 >= 36 && col0 <= 47) {
         return formatTwoDecCurrency_(val);
       }
       return formatWholeCurrency_(val);
@@ -544,6 +545,14 @@ function formatSerialForCell_(sheetRole, tabName, row0, col0, serial) {
     (tabName === "TimeComp" && row0 === 3 && col0 >= 1)
   ) {
     return `${mShort} ${yy}`;
+  }
+
+  if (
+    (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
+    row0 >= 1 &&
+    (col0 === 47 || col0 === 54 || col0 === 61)
+  ) {
+    return `${mShort}-${yy}`;
   }
 
   return `${day}-${mShort}-${yy}`;

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import Spinner from "../Spinner";
 import { PortalTableSkeleton } from "../Skeleton";
 import SplitMonthCard from "../SplitMonthCard";
+import InvoiceCostMonthControl from "../InvoiceCostMonthControl";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 import {
   downloadCsv,
@@ -27,7 +28,7 @@ import {
   generateRenewalJobName,
   calculateRenewalDates
 } from "../../utils/helpers";
-import { parseSplitString, formatSplitString } from "../../services/splitHelper";
+import { parseSplitString, formatSplitString, extractSplitMonths } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
 import CrmSyncBadge, { CrmSyncIcon } from "../CrmSyncBadge";
 import PlaceholderPill, {
@@ -124,6 +125,8 @@ export default function PortalJobsView({
       const targetInvoices = Array.isArray(targetJob.invoices) ? [...targetJob.invoices] : [];
       targetInvoices.push({
         amount: inv.amount || "",
+        ofWhichRechgd: inv.ofWhichRechgd || "",
+        costMonth: inv.costMonth || "",
         ref: inv.ref || "",
         sendDate: inv.sendDate || "",
         days: inv.days || "30",
@@ -526,14 +529,126 @@ export default function PortalJobsView({
     };
   };
 
+  const isRechargedActiveForJob = (jobObj) => {
+    if (!jobObj || jobObj.type === "Pipeline") return false;
+    if (jobObj.hasRechargedExpenses !== undefined) return Boolean(jobObj.hasRechargedExpenses);
+    const hasJobRech = (parseMoney(jobObj.rechargedExpenses, thousandsSeparator) || 0) > 0.001;
+    const hasInvRech = (jobObj.invoices || []).some((inv) => (parseMoney(inv.ofWhichRechgd, thousandsSeparator) || 0) > 0.001);
+    return hasJobRech || hasInvRech;
+  };
+
+  const applyRechargedSmartAllocation = (prevJob, rawRechValue = prevJob?.rechargedExpenses) => {
+    if (!prevJob || prevJob.type === "Pipeline") return prevJob;
+    const targetRech = Math.max(0, Math.round((parseMoney(rawRechValue, thousandsSeparator) || 0) * 100) / 100);
+    const invs = [...(prevJob.invoices || [])];
+    if (invs.length === 0) return prevJob;
+
+    const currentSum = invs.reduce(
+      (s, inv) => s + Math.max(0, parseMoney(inv.ofWhichRechgd, thousandsSeparator) || 0),
+      0
+    );
+    const delta = Math.round((targetRech - currentSum) * 100) / 100;
+    if (Math.abs(delta) < 0.01) return prevJob;
+
+    const isSlotEligible = (inv, requirePlaceholder) => {
+      const ph = isPlaceholderInvoice(inv.ref, inv.status);
+      const locked = Boolean(hasAccounting && !ph && inv.ref && String(inv.ref).trim() !== "");
+      const st = String(inv.status || "").trim().toLowerCase();
+      const nonEditable =
+        st === "paid" ||
+        st === "part-paid (paid)" ||
+        st === "part-paid (balance)" ||
+        st === "sent" ||
+        st === "submitted" ||
+        st === "draft" ||
+        st === "authorised";
+      if (locked || nonEditable) return false;
+      return requirePlaceholder ? ph : true;
+    };
+
+    let targetIdx = -1;
+    for (let i = invs.length - 1; i >= 0; i--) {
+      if (isSlotEligible(invs[i], true)) {
+        targetIdx = i;
+        break;
+      }
+    }
+    if (targetIdx === -1) {
+      for (let i = invs.length - 1; i >= 0; i--) {
+        if (isSlotEligible(invs[i], false)) {
+          targetIdx = i;
+          break;
+        }
+      }
+    }
+    if (targetIdx === -1) return prevJob;
+
+    const curInv = invs[targetIdx];
+    const curOfWhich = Math.max(0, parseMoney(curInv.ofWhichRechgd, thousandsSeparator) || 0);
+    const curGross = Math.max(0, parseMoney(curInv.amount, thousandsSeparator) || 0);
+    const nextOfWhich = Math.max(0, Math.round((curOfWhich + delta) * 100) / 100);
+    const applied = Math.round((nextOfWhich - curOfWhich) * 100) / 100;
+    if (Math.abs(applied) < 0.01) return prevJob;
+    const nextGross = Math.max(nextOfWhich, Math.round((curGross + applied) * 100) / 100);
+
+    invs[targetIdx] = {
+      ...curInv,
+      ofWhichRechgd: nextOfWhich > 0 ? String(nextOfWhich) : "",
+      ...(nextOfWhich <= 0 ? { costMonth: "" } : {}),
+      amount: nextGross > 0 ? String(nextGross) : curInv.amount,
+    };
+    return { ...prevJob, invoices: invs };
+  };
+
+  const toggleRechargedExpenses = (checked) => {
+    setEditingJob((prev) => {
+      if (!prev) return prev;
+      if (checked) {
+        return { ...prev, hasRechargedExpenses: true };
+      }
+      const cleanedInvoices = (prev.invoices || []).map((inv) => {
+        const ph = isPlaceholderInvoice(inv.ref, inv.status);
+        const locked = Boolean(hasAccounting && !ph && inv.ref && String(inv.ref).trim() !== "");
+        const st = String(inv.status || "").trim().toLowerCase();
+        const paid = st === "paid" || st === "part-paid (paid)" || st === "part-paid (balance)";
+        const prevRech = Math.max(0, parseMoney(inv.ofWhichRechgd, thousandsSeparator) || 0);
+        const curAmt = Math.max(0, parseMoney(inv.amount, thousandsSeparator) || 0);
+        let nextAmount = inv.amount;
+        if (!locked && !paid && ph && prevRech > 0 && curAmt >= prevRech) {
+          const reduced = Math.round((curAmt - prevRech) * 100) / 100;
+          nextAmount = reduced > 0 ? String(reduced) : "";
+        }
+        return {
+          ...inv,
+          amount: nextAmount,
+          ofWhichRechgd: "",
+          costMonth: "",
+        };
+      });
+      return {
+        ...prev,
+        hasRechargedExpenses: false,
+        rechargedExpenses: "",
+        invoices: cleanedInvoices,
+      };
+    });
+  };
+
   const updateJobCostingField = (patch) => {
     setEditingJob((prev) => {
       if (!prev) return prev;
       const next = { ...prev, ...patch };
       const totals = computeJobCostingTotals(next);
+      const rawPureFee = next.jobRevenue !== undefined ? next.jobRevenue : (prev.revenue ?? "");
+      const parsedPureFee = parseMoney(rawPureFee, thousandsSeparator);
+      const formattedPureFee =
+        String(rawPureFee ?? "").trim() !== "" && !isNaN(parsedPureFee)
+          ? formatMoney(parsedPureFee, 0, currencySymbol, thousandsSeparator)
+          : String(rawPureFee ?? "");
       return {
         ...next,
-        revenue: totals.totalRevFormatted,
+        jobRevenue: next.jobRevenue !== undefined ? next.jobRevenue : prev.revenue,
+        revenue: formattedPureFee,
         directCosts: totals.totalDcFormatted,
       };
     });
@@ -620,9 +735,11 @@ export default function PortalJobsView({
           ...inv,
           num: i + 1,
           amount: normalizeAmount(inv.amount),
+          ofWhichRechgd: normalizeAmount(inv.ofWhichRechgd),
+          costMonth: inv.costMonth || "",
           status: inv.status || "",
         }))
-        : [{ num: 1, amount: "", ref: "", sendDate: "", days: "30", status: "" }],
+        : [{ num: 1, amount: "", ofWhichRechgd: "", costMonth: "", ref: "", sendDate: "", days: "30", status: "" }],
       directExpenses: Array.isArray(job.directExpenses) && job.directExpenses.length > 0
         ? job.directExpenses.map((exp, i) => ({
           ...exp,
@@ -836,7 +953,7 @@ export default function PortalJobsView({
       ...prev,
       invoices: [
         ...(prev.invoices || []),
-        { num: (prev.invoices?.length || 0) + 1, amount: "", ref: "", sendDate: "", days: "30", status: "" },
+        { num: (prev.invoices?.length || 0) + 1, amount: "", ofWhichRechgd: "", costMonth: "", ref: "", sendDate: "", days: "30", status: "" },
       ],
     }));
   };
@@ -988,10 +1105,44 @@ export default function PortalJobsView({
     // Over-allocation & under-allocation checks
     const parsedRev = parseMoney(editingJob.revenue);
     const jobRevenue = isNaN(parsedRev) ? 0 : parsedRev;
+    const isConfirmedForRech = editingJob.type === "Confirmed";
+    const rechActiveOnSave = isConfirmedForRech && isRechargedActiveForJob(editingJob);
+    const parsedRech = rechActiveOnSave ? parseMoney(editingJob.rechargedExpenses, thousandsSeparator) : 0;
+    const jobRecharged = Math.max(0, isNaN(parsedRech) ? 0 : parsedRech);
+    const totalBillable = jobRevenue + jobRecharged;
+
     const totalInvoices = (editingJob.invoices || []).reduce((acc, inv) => {
       const amt = parseMoney(inv.amount);
       return acc + (isNaN(amt) ? 0 : amt);
     }, 0);
+
+    if (isConfirmedForRech) {
+      let totalRechAllocated = 0;
+      for (let i = 0; i < (editingJob.invoices || []).length; i++) {
+        const inv = editingJob.invoices[i];
+        const invAmt = Math.max(0, parseMoney(inv.amount, thousandsSeparator) || 0);
+        const invRech = rechActiveOnSave ? Math.max(0, parseMoney(inv.ofWhichRechgd, thousandsSeparator) || 0) : 0;
+        totalRechAllocated += invRech;
+        if (invRech > invAmt + 0.01) {
+          setSaveError(`Recharged amount on invoice ${i + 1} (${formatGBP(invRech)}) cannot exceed the invoice total (${formatGBP(invAmt)}).`);
+          return;
+        }
+        const costMonthStr = String(inv.costMonth || "").trim();
+        if (invRech > 0 && costMonthStr.toLowerCase().startsWith("[split]")) {
+          const splitEntries = extractSplitMonths(costMonthStr);
+          const hasAllNumbers = splitEntries.length > 0 && splitEntries.every((e) => e.val !== null && !isNaN(e.val));
+          const splitSum = splitEntries.reduce((s, e) => s + (e.val || 0), 0);
+          if (splitEntries.length === 0 || (hasAllNumbers && Math.abs(splitSum - invRech) > 0.02)) {
+            setSaveError(`Split cost months on invoice ${i + 1} (${formatGBP(splitSum)}) must equal its recharged amount (${formatGBP(invRech)}).`);
+            return;
+          }
+        }
+      }
+      if ((jobRecharged > 0.001 || totalRechAllocated > 0.001) && Math.abs(totalRechAllocated - jobRecharged) > 0.01) {
+        setSaveError(`Recharged amounts across invoices (${formatGBP(totalRechAllocated)}) must equal total recharged expenses (${formatGBP(jobRecharged)}) before saving.`);
+        return;
+      }
+    }
 
     const parsedDc = parseMoney(editingJob.directCosts);
     const jobDirectCosts = isNaN(parsedDc) ? 0 : parsedDc;
@@ -1006,8 +1157,9 @@ export default function PortalJobsView({
     const isTargetConfirmedJob = String(editingJob?.type || "").toLowerCase() === "confirmed" || isLikelihood100;
 
     // Over-allocation check (invoices) - skip for Retainers where parent revenue is the monthly fee
-    if (!isRetainerJob && totalInvoices > jobRevenue + 0.01) {
-      setSaveError(`Total invoices (${formatGBP(totalInvoices)}) exceed job revenue (${formatGBP(jobRevenue)}). Please adjust the job revenue or your manual placeholders before saving.`);
+    if (!isRetainerJob && totalInvoices > totalBillable + 0.01) {
+      const targetDesc = jobRecharged > 0 ? `total billable (${formatGBP(totalBillable)})` : `job revenue (${formatGBP(jobRevenue)})`;
+      setSaveError(`Total invoices (${formatGBP(totalInvoices)}) exceed ${targetDesc}. Please adjust the job revenue, recharged expenses, or your manual placeholders before saving.`);
       return;
     }
 
@@ -1019,7 +1171,7 @@ export default function PortalJobsView({
 
     // Under-allocation warning check (skip invoice gap for Confirmed Retainers as child rows & monthly invoices are created automatically)
     if (!bypassUnderAllocationWarning) {
-      const invGap = (!isRetainerJob || !isTargetConfirmedJob) && jobRevenue > totalInvoices + 0.01 ? jobRevenue - totalInvoices : 0;
+      const invGap = (!isRetainerJob || !isTargetConfirmedJob) && totalBillable > totalInvoices + 0.01 ? totalBillable - totalInvoices : 0;
       const expGap = !isRetainerJob && jobDirectCosts > totalExpenses + 0.01 ? jobDirectCosts - totalExpenses : 0;
 
       if (invGap > 0 || expGap > 0) {
@@ -1064,8 +1216,16 @@ export default function PortalJobsView({
       ? NO_END_DATE_SHEET_VALUE
       : editingJob.endDate;
 
+    const sanitizedInvoicesForSave = (editingJob.invoices || []).map((inv) => ({
+      ...inv,
+      ofWhichRechgd: rechActiveOnSave ? (inv.ofWhichRechgd || "") : "",
+      costMonth: rechActiveOnSave && (parseMoney(inv.ofWhichRechgd, thousandsSeparator) || 0) > 0 ? (inv.costMonth || "") : "",
+    }));
+
     const jobToSave = {
       ...editingJob,
+      rechargedExpenses: rechActiveOnSave ? (editingJob.rechargedExpenses || "") : "",
+      invoices: sanitizedInvoicesForSave,
       endDate: resolvedEndDateForSave,
       noEndDate: Boolean(isRetainerSaving && editingJob.noEndDate),
       splitStr: splitStrResult,
@@ -1585,7 +1745,12 @@ export default function PortalJobsView({
 
                       {/* Revenue */}
                       <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0047AB", fontSize: "14px" }}>
-                        {formatGBP(job.revenue)}
+                        <div>{formatGBP(job.revenue)}</div>
+                        {isConfirmed && (parseMoney(job.rechargedExpenses, thousandsSeparator) || 0) > 0 && (
+                          <div style={{ fontSize: "11px", fontWeight: 600, color: "#64748b", marginTop: "2px" }}>
+                            + {formatGBP(job.rechargedExpenses)} recharged
+                          </div>
+                        )}
                       </td>
 
                       {/* Direct Costs */}
@@ -1864,17 +2029,22 @@ export default function PortalJobsView({
                           const newType = e.target.value;
                           if (newType === "Confirmed") {
                             setEditingJob({ ...editingJob, type: "Confirmed", likelihood: "100%" });
-                          } else if (newType === "Pipeline") {
-                            setEditingJob({
-                              ...editingJob,
-                              type: "Pipeline",
-                              likelihood: (editingJob.likelihood === "100%" || !editingJob.likelihood) ? "50%" : editingJob.likelihood,
-                            });
                           } else {
+                            const cleanedInvoices = (editingJob.invoices || []).map((inv) => ({
+                              ...inv,
+                              ofWhichRechgd: "",
+                              costMonth: "",
+                            }));
                             setEditingJob({
                               ...editingJob,
-                              type: "",
-                              likelihood: "",
+                              type: newType,
+                              likelihood:
+                                newType === "Pipeline"
+                                  ? ((editingJob.likelihood === "100%" || !editingJob.likelihood) ? "50%" : editingJob.likelihood)
+                                  : "",
+                              hasRechargedExpenses: false,
+                              rechargedExpenses: "",
+                              invoices: cleanedInvoices,
                             });
                           }
                         }}
@@ -1932,12 +2102,55 @@ export default function PortalJobsView({
                     </div>
                   </div>
 
+                  {/* Recharged expenses toggle (Confirmed jobs only) */}
+                  {editingJob.type === "Confirmed" && (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "6px 10px",
+                        borderRadius: "6px",
+                        background: isRechargedActiveForJob(editingJob) ? "#eff6ff" : "#f8fafc",
+                        border: `1px solid ${isRechargedActiveForJob(editingJob) ? "#bfdbfe" : "#e2e8f0"}`,
+                      }}
+                    >
+                      <label
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "7px",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          color: "#1e293b",
+                          cursor: isReadOnly ? "default" : "pointer",
+                          margin: 0,
+                          userSelect: "none",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isRechargedActiveForJob(editingJob)}
+                          disabled={isReadOnly}
+                          onChange={(e) => toggleRechargedExpenses(e.target.checked)}
+                          style={{ cursor: isReadOnly ? "default" : "pointer" }}
+                        />
+                        <span>Recharged expenses?</span>
+                      </label>
+                      <span style={{ fontSize: "11px", color: "#64748b" }}>
+                        Pass-through client costs added to invoices (excluded from fee revenue)
+                      </span>
+                    </div>
+                  )}
+
                   {/* Row 3: Revenue | Direct Costs | VAT | Date Confirmed */}
                   {Boolean(editingJob.isJobCosting || isClientJobCosting) ? (() => {
                     const jcTotals = computeJobCostingTotals(editingJob);
+                    const rechActive = isRechargedActiveForJob(editingJob);
+                    const showRechRow = editingJob.type === "Confirmed" && rechActive;
                     return (
                       <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "0.85rem" }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
+                        <div style={{ display: "grid", gridTemplateColumns: showRechRow ? "2fr 2fr 2fr 1fr 2fr" : "2fr 1fr 2fr", gap: "0.75rem" }}>
                           <div title={crmLockedTooltip}>
                             <label style={formLabelStyle}>Job revenue (excl. VAT) *</label>
                             <input
@@ -1953,28 +2166,32 @@ export default function PortalJobsView({
                               For retainers, enter the monthly amount
                             </div>
                           </div>
-                          <div title={crmLockedTooltip}>
-                            <label style={formLabelStyle}>Recharged expenses</label>
-                            <input
-                              type="text"
-                              disabled={isReadOnly || isEditingCrmDeal}
-                              title={crmLockedTooltip}
-                              value={editingJob.rechargedExpenses || ""}
-                              placeholder={`${currencySymbol}0`}
-                              onChange={(e) => updateJobCostingField({ rechargedExpenses: e.target.value })}
-                              style={getCrmInputStyle(false)}
-                            />
-                          </div>
-                          <div>
-                            <label style={formLabelStyle}>Total revenue (excl. VAT)</label>
-                            <input
-                              type="text"
-                              readOnly
-                              disabled
-                              value={jcTotals.totalRevFormatted}
-                              style={{ ...formInputStyle, background: "#f1f5f9", color: "#334155", fontWeight: 600, cursor: "not-allowed" }}
-                            />
-                          </div>
+                          {showRechRow && (
+                            <>
+                              <div>
+                                <label style={formLabelStyle}>Recharged expenses (excl. VAT)</label>
+                                <input
+                                  type="text"
+                                  disabled={isReadOnly}
+                                  value={editingJob.rechargedExpenses || ""}
+                                  placeholder={`${currencySymbol}0`}
+                                  onChange={(e) => updateJobCostingField({ rechargedExpenses: e.target.value })}
+                                  onBlur={(e) => setEditingJob((prev) => applyRechargedSmartAllocation(prev, e.target.value))}
+                                  style={formInputStyle}
+                                />
+                              </div>
+                              <div>
+                                <label style={formLabelStyle}>Total billable (excl. VAT)</label>
+                                <input
+                                  type="text"
+                                  readOnly
+                                  disabled
+                                  value={jcTotals.totalRevFormatted}
+                                  style={{ ...formInputStyle, background: "#f1f5f9", color: "#334155", fontWeight: 600, cursor: "not-allowed" }}
+                                />
+                              </div>
+                            </>
+                          )}
                           <div title={crmLockedTooltip}>
                             <label style={formLabelStyle}>VAT? *</label>
                             <select
@@ -2081,63 +2298,95 @@ export default function PortalJobsView({
                         </div>
                       </div>
                     );
-                  })() : (
-                  <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
-                    <div title={crmLockedTooltip}>
-                      <label style={formLabelStyle}>Revenue (excl. VAT) *</label>
-                      <input
-                        type="text"
-                        required
-                        disabled={isReadOnly || isEditingCrmDeal}
-                        title={crmLockedTooltip}
-                        value={editingJob.revenue || ""}
-                        onChange={(e) => setEditingJob({ ...editingJob, revenue: e.target.value })}
-                        style={getCrmInputStyle(false)}
-                      />
-                      <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
-                        For retainers, enter the monthly amount
+                  })() : (() => {
+                    const stdRechActive = editingJob.type === "Confirmed" && isRechargedActiveForJob(editingJob);
+                    const stdRevNum = parseMoney(editingJob.revenue, thousandsSeparator) || 0;
+                    const stdRechNum = stdRechActive ? (parseMoney(editingJob.rechargedExpenses, thousandsSeparator) || 0) : 0;
+                    const stdTotalBillable = formatMoney(stdRevNum + stdRechNum, 0, currencySymbol, thousandsSeparator);
+                    return (
+                    <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: stdRechActive ? "2fr 2fr 2fr 2fr 1fr 2fr" : "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
+                      <div title={crmLockedTooltip}>
+                        <label style={formLabelStyle}>Revenue (excl. VAT) *</label>
+                        <input
+                          type="text"
+                          required
+                          disabled={isReadOnly || isEditingCrmDeal}
+                          title={crmLockedTooltip}
+                          value={editingJob.revenue || ""}
+                          onChange={(e) => setEditingJob({ ...editingJob, revenue: e.target.value })}
+                          style={getCrmInputStyle(false)}
+                        />
+                        <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+                          For retainers, enter the monthly amount
+                        </div>
+                      </div>
+                      {stdRechActive && (
+                        <>
+                          <div>
+                            <label style={formLabelStyle}>Recharged expenses (excl. VAT)</label>
+                            <input
+                              type="text"
+                              disabled={isReadOnly}
+                              value={editingJob.rechargedExpenses || ""}
+                              placeholder={`${currencySymbol}0`}
+                              onChange={(e) => setEditingJob({ ...editingJob, rechargedExpenses: e.target.value })}
+                              onBlur={(e) => setEditingJob((prev) => applyRechargedSmartAllocation(prev, e.target.value))}
+                              style={formInputStyle}
+                            />
+                          </div>
+                          <div>
+                            <label style={formLabelStyle}>Total billable (excl. VAT)</label>
+                            <input
+                              type="text"
+                              readOnly
+                              disabled
+                              value={stdTotalBillable}
+                              style={{ ...formInputStyle, background: "#f1f5f9", color: "#334155", fontWeight: 600, cursor: "not-allowed" }}
+                            />
+                          </div>
+                        </>
+                      )}
+                      <div title={crmLockedTooltip}>
+                        <label style={formLabelStyle}>Direct costs (excl. VAT) *</label>
+                        <input
+                          type="text"
+                          required
+                          disabled={isReadOnly || isEditingCrmDeal}
+                          title={crmLockedTooltip}
+                          value={editingJob.directCosts || ""}
+                          onChange={(e) => setEditingJob({ ...editingJob, directCosts: e.target.value })}
+                          style={getCrmInputStyle(false)}
+                        />
+                      </div>
+                      <div title={crmLockedTooltip}>
+                        <label style={formLabelStyle}>VAT? *</label>
+                        <select
+                          value={editingJob.vat || "Yes"}
+                          disabled={isReadOnly || isEditingCrmDeal}
+                          title={crmLockedTooltip}
+                          onChange={(e) => setEditingJob({ ...editingJob, vat: e.target.value })}
+                          style={getCrmInputStyle(true)}
+                        >
+                          <option value="Yes">Yes</option>
+                          <option value="No">No</option>
+                        </select>
+                      </div>
+                      <div title={crmLockedTooltip}>
+                        <label style={formLabelStyle}>
+                          {editingJob.type === "Pipeline" ? "Date added" : "Date confirmed"}
+                        </label>
+                        <input
+                          type="date"
+                          disabled={isReadOnly || isEditingCrmDeal}
+                          title={crmLockedTooltip}
+                          value={editingJob.dateConfirmed || ""}
+                          onChange={(e) => setEditingJob({ ...editingJob, dateConfirmed: e.target.value })}
+                          style={getCrmInputStyle(false)}
+                        />
                       </div>
                     </div>
-                    <div title={crmLockedTooltip}>
-                      <label style={formLabelStyle}>Direct Costs (excl. VAT) *</label>
-                      <input
-                        type="text"
-                        required
-                        disabled={isReadOnly || isEditingCrmDeal}
-                        title={crmLockedTooltip}
-                        value={editingJob.directCosts || ""}
-                        onChange={(e) => setEditingJob({ ...editingJob, directCosts: e.target.value })}
-                        style={getCrmInputStyle(false)}
-                      />
-                    </div>
-                    <div title={crmLockedTooltip}>
-                      <label style={formLabelStyle}>VAT? *</label>
-                      <select
-                        value={editingJob.vat || "Yes"}
-                        disabled={isReadOnly || isEditingCrmDeal}
-                        title={crmLockedTooltip}
-                        onChange={(e) => setEditingJob({ ...editingJob, vat: e.target.value })}
-                        style={getCrmInputStyle(true)}
-                      >
-                        <option value="Yes">Yes</option>
-                        <option value="No">No</option>
-                      </select>
-                    </div>
-                    <div title={crmLockedTooltip}>
-                      <label style={formLabelStyle}>
-                        {editingJob.type === "Pipeline" ? "Date Added" : "Date Confirmed"}
-                      </label>
-                      <input
-                        type="date"
-                        disabled={isReadOnly || isEditingCrmDeal}
-                        title={crmLockedTooltip}
-                        value={editingJob.dateConfirmed || ""}
-                        onChange={(e) => setEditingJob({ ...editingJob, dateConfirmed: e.target.value })}
-                        style={getCrmInputStyle(false)}
-                      />
-                    </div>
-                  </div>
-                  )}
+                    );
+                  })()}
 
                   {/* Row 4: Start Date | End Date | Product Line | Lead Source */}
                   <div className="modal-form-row modal-form-row-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
@@ -2443,8 +2692,31 @@ export default function PortalJobsView({
                         marginBottom: "0.6rem",
                       }}
                     >
-                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB", display: "flex", alignItems: "center", gap: "8px" }}>
+                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                         <span>Invoices</span>
+                        {editingJob.type === "Confirmed" && isRechargedActiveForJob(editingJob) && (() => {
+                          const targetRech = Math.max(0, parseMoney(editingJob.rechargedExpenses, thousandsSeparator) || 0);
+                          const allocRech = (editingJob.invoices || []).reduce(
+                            (s, item) => s + Math.max(0, parseMoney(item.ofWhichRechgd, thousandsSeparator) || 0),
+                            0
+                          );
+                          const rechMatched = Math.abs(allocRech - targetRech) <= 0.01;
+                          return (
+                            <span
+                              style={{
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                padding: "2px 8px",
+                                borderRadius: "10px",
+                                background: rechMatched ? "#dcfce7" : "#fef3c7",
+                                color: rechMatched ? "#166534" : "#92400e",
+                                border: rechMatched ? "1px solid #bbf7d0" : "1px solid #fde68a",
+                              }}
+                            >
+                              Recharged allocated: {currencySymbol}{formatSummaryNum(allocRech)} / {currencySymbol}{formatSummaryNum(targetRech)}
+                            </span>
+                          );
+                        })()}
                         {hasAccounting && (
                           <span
                             title="Invoices are syncing with your accounting software."
@@ -2639,6 +2911,44 @@ export default function PortalJobsView({
                                   </div>
                                 </div>
                               )}
+                              {editingJob.type === "Confirmed" && isRechargedActiveForJob(editingJob) && (() => {
+                                const compIdx = inv.receivedTranches?.[0]?.originalIndex ?? inv.balanceTranche?.originalIndex;
+                                if (compIdx === undefined) return null;
+                                const compSlot = (editingJob.invoices || [])[compIdx] || {};
+                                const compOfWhichNum = Math.max(0, parseMoney(compSlot.ofWhichRechgd, thousandsSeparator) || 0);
+                                return (
+                                  <div style={{ borderTop: "1px dashed #cbd5e1", paddingTop: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                      <label style={{ fontSize: "10px", color: "#475569", fontWeight: 600, whiteSpace: "nowrap" }}>
+                                        Of which recharged ({currencySymbol}):
+                                      </label>
+                                      <input
+                                        type="text"
+                                        placeholder="0"
+                                        value={compSlot.ofWhichRechgd || ""}
+                                        onChange={(e) => updateInvoice(compIdx, "ofWhichRechgd", e.target.value)}
+                                        disabled={isReadOnly}
+                                        style={{ ...formInputStyle, width: "95px", padding: "2px 6px", fontSize: "11px", fontWeight: 600 }}
+                                      />
+                                    </div>
+                                    {(compOfWhichNum > 0 || Boolean(compSlot.costMonth)) && (
+                                      <div>
+                                        <div style={{ fontSize: "10px", color: "#475569", fontWeight: 600, marginBottom: "3px" }}>Cost month</div>
+                                        <InvoiceCostMonthControl
+                                          value={compSlot.costMonth || ""}
+                                          onChange={(nextVal) => updateInvoice(compIdx, "costMonth", nextVal)}
+                                          totalAmount={compOfWhichNum}
+                                          invoiceSentDate={inv.receivedTranches?.[0]?.sendDate || compSlot.sendDate || ""}
+                                          jobStartDate={editingJob.startDate || ""}
+                                          currencySymbol={currencySymbol}
+                                          disabled={isReadOnly}
+                                          compact
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </div>
                           );
                         }
@@ -2919,6 +3229,48 @@ export default function PortalJobsView({
                                   </div>
                                 </div>
                               )}
+
+                              {editingJob.type === "Confirmed" && isRechargedActiveForJob(editingJob) && (() => {
+                                const ofWhichNum = Math.max(0, parseMoney(inv.ofWhichRechgd, thousandsSeparator) || 0);
+                                return (
+                                  <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px dashed #cbd5e1", display: "flex", flexDirection: "column", gap: "6px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                      <label style={{ fontSize: "10px", color: "#475569", fontWeight: 600, whiteSpace: "nowrap" }}>
+                                        Of which recharged ({currencySymbol}):
+                                      </label>
+                                      <input
+                                        type="text"
+                                        placeholder="0"
+                                        value={inv.ofWhichRechgd || ""}
+                                        onChange={(e) => updateInvoice(idx, "ofWhichRechgd", e.target.value)}
+                                        disabled={isReadOnly}
+                                        style={{
+                                          ...formInputStyle,
+                                          width: "95px",
+                                          padding: "2px 6px",
+                                          fontSize: "11px",
+                                          fontWeight: 600,
+                                        }}
+                                      />
+                                    </div>
+                                    {(ofWhichNum > 0 || Boolean(inv.costMonth)) && (
+                                      <div>
+                                        <div style={{ fontSize: "10px", color: "#475569", fontWeight: 600, marginBottom: "3px" }}>Cost month</div>
+                                        <InvoiceCostMonthControl
+                                          value={inv.costMonth || ""}
+                                          onChange={(nextVal) => updateInvoice(idx, "costMonth", nextVal)}
+                                          totalAmount={ofWhichNum}
+                                          invoiceSentDate={inv.sendDate || ""}
+                                          jobStartDate={editingJob.startDate || ""}
+                                          currencySymbol={currencySymbol}
+                                          disabled={isReadOnly}
+                                          compact
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </div>
                           </div>
                         );

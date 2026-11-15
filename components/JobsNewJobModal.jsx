@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import Spinner from "./Spinner";
 import SplitMonthCard from "./SplitMonthCard";
-import { formatSplitString } from "../services/splitHelper";
+import InvoiceCostMonthControl from "./InvoiceCostMonthControl";
+import { formatSplitString, extractSplitMonths } from "../services/splitHelper";
 import DateInput from "./DateInput";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -9,7 +10,8 @@ import {
   EXPENSE_STATUS_OPTIONS,
   canonicalizeInvoiceStatus,
   canonicalizeExpenseStatus,
-  calculatePaymentDate
+  calculatePaymentDate,
+  formatCurrency
 } from "../utils/helpers";
 import {
   generateManualPlaceholderInvoiceRef,
@@ -43,6 +45,13 @@ export default function JobsNewJobModal({
   const [status, setStatus] = useState(initialJobData?.status || "");
   const [likelihood, setLikelihood] = useState(initialJobData?.likelihood !== undefined ? String(initialJobData.likelihood) : (initialJobData?.status === "Confirmed" ? "100" : (initialJobData?.status === "Pipeline" ? "50" : "")));
   const [revenue, setRevenue] = useState(initialJobData?.revenue !== undefined ? String(initialJobData.revenue) : "");
+  const [hasRechargedExpenses, setHasRechargedExpenses] = useState(() => {
+    const r = parseFloat(String(initialJobData?.rechargedExpenses ?? "").replace(/[£$€,\s]/g, "")) || 0;
+    return initialJobData?.status === "Confirmed" && r > 0;
+  });
+  const [rechargedExpenses, setRechargedExpenses] = useState(
+    initialJobData?.rechargedExpenses !== undefined ? String(initialJobData.rechargedExpenses) : ""
+  );
   const [directCosts, setDirectCosts] = useState(initialJobData?.directCosts !== undefined ? String(initialJobData.directCosts) : "0");
   const [vat, setVat] = useState(initialJobData?.vat || "Yes");
   const [dateConfirmed, setDateConfirmed] = useState(initialJobData?.dateConfirmed || todayISO);
@@ -66,11 +75,13 @@ export default function JobsNewJobModal({
         amount: inv.amount !== undefined ? String(inv.amount) : "",
         sentDate: inv.sentDate || "",
         daysToPay: inv.daysToPay !== undefined ? inv.daysToPay : 30,
-        status: inv.status || ""
+        status: inv.status || "",
+        ofWhichRechgd: inv.ofWhichRechgd !== undefined ? String(inv.ofWhichRechgd) : "",
+        costMonth: inv.costMonth || ""
       }));
     }
     return [
-      { id: `inv_${Date.now()}_0`, invoiceNo: "", amount: "", sentDate: "", daysToPay: 30, status: "" }
+      { id: `inv_${Date.now()}_0`, invoiceNo: "", amount: "", sentDate: "", daysToPay: 30, status: "", ofWhichRechgd: "", costMonth: "" }
     ];
   });
 
@@ -134,6 +145,53 @@ export default function JobsNewJobModal({
     setInvoices(prev => prev.map((inv, idx) => idx === index ? { ...inv, [field]: val } : inv));
   };
 
+  const applySmartRechargedAllocation = (nextRechTotalStr, nextEnabled, currentInvoices) => {
+    const parseMoney = (v) => parseFloat(String(v ?? "").replace(/[£$€,\s]/g, "")) || 0;
+    const revNum = Math.max(0, parseMoney(revenue));
+    const targetRech = nextEnabled ? Math.max(0, Math.round(parseMoney(nextRechTotalStr) * 100) / 100) : 0;
+    const list = (currentInvoices || invoices).map((inv) => ({ ...inv }));
+    if (list.length === 0) return list;
+
+    const currentSum = list.reduce((s, inv) => s + parseMoney(inv.ofWhichRechgd), 0);
+    const delta = Math.round((targetRech - currentSum) * 100) / 100;
+    if (Math.abs(delta) < 0.01) return list;
+
+    const editableIndices = list
+      .map((inv, idx) => ({ inv, idx }))
+      .filter(({ inv }) => !["sent", "paid"].includes(String(inv.status || "").trim().toLowerCase()));
+    const targetIdx = editableIndices.length > 0 ? editableIndices[editableIndices.length - 1].idx : list.length - 1;
+    const targetInv = list[targetIdx];
+    const oldRech = parseMoney(targetInv.ofWhichRechgd);
+    const nextInvRech = Math.max(0, Math.round((oldRech + delta) * 100) / 100);
+
+    const prevOtherGross = list.reduce((s, inv, i) => (i === targetIdx ? s : s + parseMoney(inv.amount)), 0);
+    const oldTargetAmt = parseMoney(targetInv.amount);
+    const targetWasEmpty = targetInv.amount === "" || oldTargetAmt === 0;
+    const oldBillableEstimate = Math.round((revNum + currentSum) * 100) / 100;
+    const newBillableTotal = Math.round((revNum + targetRech) * 100) / 100;
+    const targetTrackedBillable = Math.abs((prevOtherGross + oldTargetAmt) - oldBillableEstimate) <= 0.05;
+
+    let nextAmtStr = targetInv.amount;
+    if (targetWasEmpty && nextInvRech > 0) {
+      const fill = Math.max(nextInvRech, Math.round((newBillableTotal - prevOtherGross) * 100) / 100);
+      nextAmtStr = fill > 0 ? String(fill) : String(nextInvRech);
+    } else if (targetTrackedBillable) {
+      const nextFill = Math.max(0, Math.round((newBillableTotal - prevOtherGross) * 100) / 100);
+      nextAmtStr = nextFill > 0 ? String(nextFill) : (targetInv.invoiceNo ? "0" : "");
+    } else {
+      const nextGross = Math.max(0, Math.round((oldTargetAmt + (nextInvRech - oldRech)) * 100) / 100);
+      nextAmtStr = nextGross > 0 ? String(nextGross) : "";
+    }
+
+    list[targetIdx] = {
+      ...targetInv,
+      amount: nextAmtStr,
+      ofWhichRechgd: nextInvRech > 0 ? String(nextInvRech) : "",
+      costMonth: nextInvRech > 0 ? (targetInv.costMonth || "") : "",
+    };
+    return list;
+  };
+
   const handleAddNewInvoice = () => {
     setInvoices(prev => [
       ...prev,
@@ -143,7 +201,9 @@ export default function JobsNewJobModal({
         amount: "",
         sentDate: "",
         daysToPay: clientDefaultDays || 30,
-        status: ""
+        status: "",
+        ofWhichRechgd: "",
+        costMonth: ""
       }
     ]);
   };
@@ -178,8 +238,13 @@ export default function JobsNewJobModal({
 
   // Compute active counts for badges
   const invoiceActiveCount = useMemo(() => {
-    return invoices.filter(i => (i.invoiceNo && i.invoiceNo.trim()) || (i.amount !== "" && parseFloat(i.amount) > 0) || i.sentDate).length;
-  }, [invoices]);
+    return invoices.filter(i =>
+      (i.invoiceNo && i.invoiceNo.trim()) ||
+      (i.amount !== "" && parseFloat(i.amount) > 0) ||
+      (status === "Confirmed" && hasRechargedExpenses && (parseFloat(String(i.ofWhichRechgd ?? "").replace(/[£$€,\s]/g, "")) || 0) > 0) ||
+      i.sentDate
+    ).length;
+  }, [invoices, status, hasRechargedExpenses]);
 
   const expenseActiveCount = useMemo(() => {
     return expenses.filter(e => (e.description && e.description.trim()) || (e.amount !== "" && parseFloat(e.amount) > 0) || e.date).length;
@@ -281,12 +346,17 @@ export default function JobsNewJobModal({
     setStatus(newStatus);
     if (newStatus === "Confirmed") {
       setLikelihood("100");
-    } else if (newStatus === "Pipeline") {
-      if (likelihood === "100" || !likelihood) {
-        setLikelihood("50");
-      }
     } else {
-      setLikelihood("");
+      setHasRechargedExpenses(false);
+      setRechargedExpenses("");
+      setInvoices((prev) => prev.map((inv) => ({ ...inv, ofWhichRechgd: "", costMonth: "" })));
+      if (newStatus === "Pipeline") {
+        if (likelihood === "100" || !likelihood) {
+          setLikelihood("50");
+        }
+      } else {
+        setLikelihood("");
+      }
     }
   };
 
@@ -341,18 +411,30 @@ export default function JobsNewJobModal({
       splitStrResult = formatSplitString(splitMonths, vLocked, eSplit);
     }
 
+    const parseMoneyVal = (v) => parseFloat(String(v ?? "").replace(/[£$€,\s]/g, "")) || 0;
+    const isConfirmedJob = status === "Confirmed";
+    const parsedRechTotal = isConfirmedJob && hasRechargedExpenses
+      ? Math.max(0, Math.round(parseMoneyVal(rechargedExpenses) * 100) / 100)
+      : 0;
+
     // Filter active invoices to submit
     const activeInvoices = invoices.filter(inv =>
       (inv.invoiceNo && inv.invoiceNo.trim()) ||
       (inv.amount !== "" && !isNaN(parseFloat(inv.amount)) && parseFloat(inv.amount) > 0) ||
+      (isConfirmedJob && hasRechargedExpenses && parseMoneyVal(inv.ofWhichRechgd) > 0) ||
       inv.sentDate
     ).map((inv, idx) => {
       const invNo = (inv.invoiceNo || "").trim();
+      const amt = parseFloat(inv.amount) || 0;
+      const ofWhich = isConfirmedJob && hasRechargedExpenses
+        ? Math.max(0, Math.round(parseMoneyVal(inv.ofWhichRechgd) * 100) / 100)
+        : 0;
+      const costMonth = isConfirmedJob && ofWhich > 0 ? String(inv.costMonth || "").trim() : "";
       return {
         slotNum: (idx % 3) + 1,
         rowOffset: Math.floor(idx / 3),
         invoiceNo: invNo,
-        amount: parseFloat(inv.amount) || 0,
+        amount: amt,
         sentDate: inv.sentDate || "",
         daysToPay: (() => {
           const s = String(inv.daysToPay || "").trim();
@@ -360,9 +442,34 @@ export default function JobsNewJobModal({
           const p = parseInt(s.replace(/[^\d-]/g, ""), 10);
           return !isNaN(p) && p >= 0 && p <= 365 ? p : (clientDefaultDays || 30);
         })(),
-        status: (inv.status || "").trim()
+        status: (inv.status || "").trim(),
+        ...(isConfirmedJob ? { ofWhichRechgd: ofWhich > 0 ? ofWhich : "", costMonth } : {})
       };
     });
+
+    if (isConfirmedJob) {
+      for (const ai of activeInvoices) {
+        if ((ai.ofWhichRechgd || 0) > (ai.amount || 0) + 0.01) {
+          setError("Invoice recharged expenses cannot exceed the invoice gross amount.");
+          return;
+        }
+        if (String(ai.costMonth || "").toLowerCase().startsWith("[split]")) {
+          const splitObj = extractSplitMonths(ai.costMonth) || {};
+          const splitSum = Object.values(splitObj).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+          if (Math.abs(splitSum - (ai.ofWhichRechgd || 0)) > 0.02) {
+            setError("Invoice cost month split must add up to the invoice recharged amount.");
+            return;
+          }
+        }
+      }
+      if (activeInvoices.length > 0 && projectRetainer !== "Retainer") {
+        const invRechSum = Math.round(activeInvoices.reduce((s, ai) => s + (Number(ai.ofWhichRechgd) || 0), 0) * 100) / 100;
+        if (Math.abs(invRechSum - parsedRechTotal) > 0.01) {
+          setError(`Invoice recharged amounts (£${invRechSum.toFixed(2)}) must add up to total job recharged expenses (£${parsedRechTotal.toFixed(2)}).`);
+          return;
+        }
+      }
+    }
 
     // Filter active expenses to submit
     const activeExpenses = expenses.filter(exp =>
@@ -406,6 +513,7 @@ export default function JobsNewJobModal({
             status,
             likelihood: status === "Pipeline" ? likelihood : "",
             revenue: revenue === "" ? 0 : parseFloat(revenue) || 0,
+            ...(isConfirmedJob ? { rechargedExpenses: parsedRechTotal > 0 ? parsedRechTotal : "" } : {}),
             directCosts: directCosts === "" ? 0 : parseFloat(directCosts) || 0,
             vat,
             dateConfirmed,
@@ -763,6 +871,58 @@ export default function JobsNewJobModal({
               </div>
             </div>
 
+            {status === "Confirmed" && (() => {
+              const rechNum = hasRechargedExpenses ? (parseFloat(String(rechargedExpenses || "").replace(/[£$€,\s]/g, "")) || 0) : 0;
+              const totBillable = Math.round(((parseFloat(String(revenue || "").replace(/[£$€,\s]/g, "")) || 0) + rechNum) * 100) / 100;
+              return (
+                <div style={{ padding: "10px 12px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: "7px", fontSize: "12px", fontWeight: "700", color: "#334155", cursor: "pointer", margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={hasRechargedExpenses}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setHasRechargedExpenses(checked);
+                          if (!checked) {
+                            setRechargedExpenses("");
+                            setInvoices((prev) => applySmartRechargedAllocation("", false, prev).map((inv) => ({ ...inv, ofWhichRechgd: "", costMonth: "" })));
+                          }
+                        }}
+                      />
+                      Recharged expenses?
+                    </label>
+                    {hasRechargedExpenses && (
+                      <span style={{ fontSize: "12px", color: "#475569", fontWeight: "600" }}>
+                        Total billable (excl. VAT): {formatCurrency(totBillable)}
+                      </span>
+                    )}
+                  </div>
+                  {hasRechargedExpenses && (
+                    <div style={{ marginTop: "8px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                        <label style={{ ...labelStyle, marginBottom: 0 }}>
+                          Recharged expenses (excl. VAT)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          style={{ ...inputStyle, width: "160px", textAlign: "right" }}
+                          value={rechargedExpenses}
+                          onChange={(e) => setRechargedExpenses(e.target.value)}
+                          onBlur={(e) => setInvoices((prev) => applySmartRechargedAllocation(e.target.value, true, prev))}
+                          placeholder="0.00"
+                        />
+                      </div>
+                      <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                        Added to total billable invoices without inflating recognised fee revenue.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Row 4: Start Date | End Date | Product Line | Lead Source */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
               <div>
@@ -1090,24 +1250,40 @@ export default function JobsNewJobModal({
                             <div>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
                                 <label style={{ ...labelStyle, marginBottom: 0 }}>Amount (£)</label>
-                                {revenue && index === 0 && !inv.amount && (
-                                  <button
-                                    type="button"
-                                    onClick={() => updateInvoice(0, "amount", revenue)}
-                                    style={{
-                                      background: "none",
-                                      border: "none",
-                                      color: "#16a34a",
-                                      fontSize: "10px",
-                                      fontWeight: "500",
-                                      cursor: "pointer",
-                                      padding: 0,
-                                      textDecoration: "underline"
-                                    }}
-                                  >
-                                    Use rev (£{revenue})
-                                  </button>
-                                )}
+                                {(() => {
+                                  const feeRevNum = parseFloat(String(revenue || "").replace(/[£$€,\s]/g, "")) || 0;
+                                  const rechNum = status === "Confirmed" && hasRechargedExpenses
+                                    ? (parseFloat(String(rechargedExpenses || "").replace(/[£$€,\s]/g, "")) || 0)
+                                    : 0;
+                                  const billableTarget = Math.round((feeRevNum + rechNum) * 100) / 100;
+                                  if (!(billableTarget > 0 && index === 0 && !inv.amount)) return null;
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setInvoices(prev => prev.map((it, idx) => idx === 0 ? {
+                                          ...it,
+                                          amount: String(billableTarget),
+                                          ...(status === "Confirmed" && hasRechargedExpenses && prev.length === 1 && !it.ofWhichRechgd && rechNum > 0
+                                            ? { ofWhichRechgd: String(rechNum) }
+                                            : {})
+                                        } : it));
+                                      }}
+                                      style={{
+                                        background: "none",
+                                        border: "none",
+                                        color: "#16a34a",
+                                        fontSize: "10px",
+                                        fontWeight: "500",
+                                        cursor: "pointer",
+                                        padding: 0,
+                                        textDecoration: "underline"
+                                      }}
+                                    >
+                                      {hasRechargedExpenses && status === "Confirmed" ? `Use total (£${billableTarget})` : `Use rev (£${billableTarget})`}
+                                    </button>
+                                  );
+                                })()}
                               </div>
                               <input
                                 type="number"
@@ -1160,6 +1336,44 @@ export default function JobsNewJobModal({
                               </select>
                             </div>
                           </div>
+
+                          {status === "Confirmed" && hasRechargedExpenses && (() => {
+                            const invRechVal = parseFloat(String(inv.ofWhichRechgd ?? "").replace(/[£$€,\s]/g, "")) || 0;
+                            return (
+                              <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px dashed #e2e8f0", display: "flex", flexDirection: "column", gap: "8px" }}>
+                                <div style={{ maxWidth: "220px" }}>
+                                  <label style={labelStyle}>Of which recharged (excl. VAT)</label>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    style={inputStyle}
+                                    value={inv.ofWhichRechgd || ""}
+                                    onChange={e => {
+                                      const v = e.target.value;
+                                      const parsedV = parseFloat(String(v).replace(/[£$€,\s]/g, "")) || 0;
+                                      setInvoices(prev => prev.map((it, idx) => idx === index ? {
+                                        ...it,
+                                        ofWhichRechgd: v,
+                                        ...(parsedV <= 0 ? { costMonth: "" } : {})
+                                      } : it));
+                                    }}
+                                    placeholder="0.00"
+                                  />
+                                </div>
+                                {invRechVal > 0 && (
+                                  <InvoiceCostMonthControl
+                                    costMonth={inv.costMonth || ""}
+                                    onChange={(nextCm) => updateInvoice(index, "costMonth", nextCm)}
+                                    rechargedAmount={invRechVal}
+                                    sentDate={inv.sentDate}
+                                    startDate={startDate}
+                                    endDate={endDate}
+                                    compact
+                                  />
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })

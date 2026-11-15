@@ -344,8 +344,8 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
         fyConfigs,
         defaultFyIndex,
         headerRow: matrix[0] || [],
-        outgoingRows: matrix.slice(125, 225), // rows 126 to 225 (editable)
-        totalRows: matrix.slice(225, 228), // rows 226 to 228 (summary/totals, non-editable)
+        outgoingRows: matrix.slice(125, 224), // rows 126 to 224 (editable)
+        totalRows: matrix.slice(224, 228), // rows 225 to 228 (system & summary/totals, non-editable)
         mainRows: matrix.slice(125, 228), // rows 126 to 228 (kept for backwards compatibility)
       });
     }
@@ -478,7 +478,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
 
   // Validate allowed ranges:
   // Contractors: A13:F110, G13:R110, V13:AG110, AK13:AV110
-  // Outgoings: A126:F225, G126:R225, V126:AG225, AK126:AV225
+  // Outgoings: A126:F224, G126:R224, V126:AG224, AK126:AV224
   // Budget: custom via isBudgetCellEditable
   const isAllowedCol =
     (colIndex >= 0 && colIndex <= 5) ||   // A:F
@@ -490,7 +490,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
   if (screenTab === "contractors") {
     isAllowed = rowNum >= 13 && rowNum <= 110 && isAllowedCol;
   } else if (screenTab === "outgoings") {
-    isAllowed = rowNum >= 126 && rowNum <= 225 && isAllowedCol;
+    isAllowed = rowNum >= 126 && rowNum <= 224 && isAllowedCol;
   } else if (screenTab === "budget") {
     isAllowed = isBudgetCellEditable(rowNum, colIndex);
   }

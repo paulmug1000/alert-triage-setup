@@ -470,27 +470,31 @@ export default function ExpensesView({
   const renderExpenseRow = (exp) => {
     const months = exp.fyData?.[currentFy?.id]?.months || [];
     const fyTotal = exp.fyData?.[currentFy?.id]?.total || "£0";
+    const isSystemRow = Boolean(exp.isSystemRow);
+    const canDragRow = isAdmin && !isSystemRow;
 
     return (
       <tr
         key={exp.sheetRow}
-        draggable={isAdmin}
-        onDragStart={(e) => handleDragStart(e, exp)}
+        draggable={canDragRow}
+        onDragStart={(e) => {
+          if (canDragRow) handleDragStart(e, exp);
+        }}
         onDragEnd={() => {
           setDraggingRow(null);
           setDragOverSection(null);
         }}
         style={{
-          background: "#ffffff",
+          background: isSystemRow ? "#f8fafc" : "#ffffff",
           borderBottom: "1px solid #f1f5f9",
           transition: "background 0.1s",
-          cursor: isAdmin ? "grab" : "default",
+          cursor: canDragRow ? "grab" : "default",
           opacity: draggingRow?.sheetRow === exp.sheetRow ? 0.4 : 1,
         }}
       >
         {/* Drag / Move Control */}
         <td style={{ padding: "8px 10px", width: "40px", textAlign: "center" }}>
-          {isAdmin && (
+          {isAdmin && !isSystemRow && (
             <button
               type="button"
               onClick={() => handleMoveDelivery(exp, !exp.isDelivery)}
@@ -508,7 +512,7 @@ export default function ExpensesView({
                 alignItems: "center",
                 justifyContent: "center",
               }}
-              title={exp.isDelivery ? "Click to move to non-delivery" : "Click to move to Delivery"}
+              title={exp.isDelivery ? "Click to move to non-delivery" : "Click to move to delivery"}
             >
               {savingRowAction === `move-${exp.sheetRow}` ? <Spinner size={10} color="#2563eb" /> : (exp.isDelivery ? "↓" : "↑")}
             </button>
@@ -518,19 +522,40 @@ export default function ExpensesView({
         {/* Category Name (Col A) */}
         <td style={{ padding: "8px 12px", textAlign: "left", fontWeight: 600, color: "#1e293b", minWidth: "220px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-            <span
-              onClick={() => {
-                if (isAdmin) {
-                  setEditingCategory(exp);
-                  setCategoryNameInput(exp.category);
-                }
-              }}
-              style={{ cursor: isAdmin ? "pointer" : "default" }}
-              title={isAdmin ? "Click to edit category name" : undefined}
-            >
-              {exp.category}
-            </span>
-            {isAdmin && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span
+                onClick={() => {
+                  if (isAdmin && !isSystemRow) {
+                    setEditingCategory(exp);
+                    setCategoryNameInput(exp.category);
+                  }
+                }}
+                style={{ cursor: isAdmin && !isSystemRow ? "pointer" : "default" }}
+                title={isAdmin && !isSystemRow ? "Click to edit category name" : undefined}
+              >
+                {exp.category}
+              </span>
+              {isSystemRow && (
+                <span
+                  title={
+                    isSysAdmin
+                      ? `System row (Row ${exp.sheetRow}) — controlled automatically from Confirmed recharged expenses and Client settings`
+                      : "Calculated automatically from recharged expenses on confirmed jobs"
+                  }
+                  style={{
+                    fontSize: "10px",
+                    fontWeight: 600,
+                    color: "#475569",
+                    background: "#e2e8f0",
+                    borderRadius: "4px",
+                    padding: "1px 6px",
+                  }}
+                >
+                  Auto
+                </span>
+              )}
+            </div>
+            {isAdmin && !isSystemRow && (
               <button
                 type="button"
                 onClick={() => {
@@ -555,7 +580,7 @@ export default function ExpensesView({
 
         {/* VAT? Chooser (Col B) */}
         <td style={{ padding: "8px 10px", textAlign: "center", width: "80px" }}>
-          {isAdmin ? (
+          {isAdmin && !isSystemRow ? (
             <select
               value={exp.vat}
               onChange={(e) => handleToggleVat(exp, e.target.value)}
@@ -591,14 +616,12 @@ export default function ExpensesView({
         {/* 12 Months Columns */}
         {months.map((m) => {
           const isLocked = Boolean(m.isReconciled);
+          const canEditCell = isAdmin && !isLocked && !isSystemRow;
           return (
             <td
               key={m.colLetter}
               onClick={() => {
-                if (isAdmin) {
-                  if (isLocked) {
-                    return;
-                  }
+                if (canEditCell) {
                   setEditingCell({
                     sheetRow: exp.sheetRow,
                     colLetter: m.colLetter,
@@ -616,24 +639,26 @@ export default function ExpensesView({
                 position: "relative",
                 padding: "8px 10px",
                 textAlign: "right",
-                color: isLocked ? "#64748b" : "#0f172a",
-                fontWeight: isLocked ? 400 : 500,
+                color: isLocked || isSystemRow ? "#64748b" : "#0f172a",
+                fontWeight: isLocked || isSystemRow ? 400 : 500,
                 background: isLocked ? "#f8fafc" : "transparent",
-                cursor: isAdmin ? (isLocked ? "not-allowed" : "pointer") : "default",
+                cursor: isAdmin ? (canEditCell ? "pointer" : "not-allowed") : "default",
                 transition: "background 0.1s",
               }}
               onMouseEnter={(e) => {
-                if (isAdmin && !isLocked) e.currentTarget.style.background = "#eff6ff";
+                if (canEditCell) e.currentTarget.style.background = "#eff6ff";
               }}
               onMouseLeave={(e) => {
-                if (isAdmin) e.currentTarget.style.background = isLocked ? "#f8fafc" : "transparent";
+                if (canEditCell) e.currentTarget.style.background = isLocked ? "#f8fafc" : "transparent";
               }}
               title={
-                isLocked
-                  ? `${m.monthLabel} is reconciled (locked)`
-                  : isAdmin
-                    ? `Click to edit ${m.monthLabel} amount & note`
-                    : undefined
+                isSystemRow
+                  ? "Calculated automatically (read-only)"
+                  : isLocked
+                    ? `${m.monthLabel} is reconciled (locked)`
+                    : isAdmin
+                      ? `Click to edit ${m.monthLabel} amount & note`
+                      : undefined
               }
             >
               <CellNoteIndicator note={m.note} />

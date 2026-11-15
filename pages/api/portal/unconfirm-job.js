@@ -244,9 +244,10 @@ export default async function handler(req, res) {
       }
     }
 
-    // Parent row A:AM (cols 1-39, index 0-38)
+    // Parent row A:AM (cols 1-39, index 0-38) — strip Col R recharged expenses (Confirmed-only)
     let parentA_AM = parentData.slice(0, 39);
     while (parentA_AM.length < 39) parentA_AM.push("");
+    parentA_AM[17] = "";
     parentA_AM = rewriteRowFormulasToTargetRow(
       parentA_AM,
       cRow,
@@ -270,9 +271,13 @@ export default async function handler(req, res) {
       values: [[sanitizeFormulaInput(targetLikelihood)]],
     });
 
-    // Parent row AP:BH (cols 42-60, index 41-59)
+    // Parent row AP:BH (cols 42-60, index 41-59) — clear Confirmed recharged/cost-month offsets (slots 1 & 2)
     const parentAP_BH = parentData.slice(41, 60);
     while (parentAP_BH.length < 19) parentAP_BH.push("");
+    parentAP_BH[5] = "";
+    parentAP_BH[6] = "";
+    parentAP_BH[12] = "";
+    parentAP_BH[13] = "";
     pipelineBatchData.push({
       range: `${pipelineSheetName}!AP${pipelineRow}:BH${pipelineRow}`,
       values: [parentAP_BH],
@@ -303,6 +308,7 @@ export default async function handler(req, res) {
       childA_AM[0] = parentClient;
       childA_AM[1] = parentJobName;
       childA_AM[3] = "";
+      childA_AM[17] = "";
       if (isJobCosting) {
         for (const c of [5, 6, 7, 8, 9, 11, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29, 31]) {
           childA_AM[c] = "";
@@ -332,6 +338,10 @@ export default async function handler(req, res) {
 
       const childAP_BH = childData.slice(41, 60);
       while (childAP_BH.length < 19) childAP_BH.push("");
+      childAP_BH[5] = "";
+      childAP_BH[6] = "";
+      childAP_BH[12] = "";
+      childAP_BH[13] = "";
       pipelineBatchData.push({
         range: `${pipelineSheetName}!AP${targetChildRow}:BH${targetChildRow}`,
         values: [childAP_BH],

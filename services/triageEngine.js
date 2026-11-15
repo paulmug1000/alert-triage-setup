@@ -6446,7 +6446,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         console.log(`  Fetching Confirmed tab to find invoice #${invoiceNo}...`);
         const invConfirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: alert.clientId,
-          range: "Confirmed!A1:BH5000",
+          range: "Confirmed!A1:BJ5000",
         }));
         invConfirmedRows = invConfirmedResp.data.values || [];
       }
@@ -6708,7 +6708,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const rJob = String(r[1] || "").trim().toLowerCase();
             if (!rClient && !rJob) break;
             if (rClient !== jcLower || rJob !== jnLower) break;
-            if (String(r[32] || "").trim()) break;
+            if (String(r[17] || "").trim() || String(r[32] || "").trim()) break;
             allJobRows.push({ row: r, rowNum: ri + 1 });
           }
           for (const { rowNum } of allJobRows) {
@@ -6726,7 +6726,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const rJob = String(r[1] || "").trim().toLowerCase();
             if (!rClient && !rJob) break;
             if (rClient !== jcLower || rJob !== jnLower) break;
-            if (String(r[32] || "").trim()) break;
+            if (String(r[17] || "").trim() || String(r[32] || "").trim()) break;
             allJobRows.push({ row: r, rowNum: ri + 1 });
           }
           for (const { rowNum } of allJobRows) {
@@ -6795,7 +6795,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               continue;
             }
             if (rClient.toLowerCase() !== parentClientLower || rJob.toLowerCase() !== parentJobLower) break;
-            if (String(r[32] || "").trim()) break;
+            if (String(r[17] || "").trim() || String(r[32] || "").trim()) break;
             clientWriteRows.push(ri + 1);
           }
           for (const rNum of clientWriteRows) {
@@ -7134,7 +7134,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const nStart = String(nextRow[37] || "").trim();
           const nType = String(nextRow[35] || "").trim();
 
-          const isExplicitChild = (nc.toLowerCase() === client.toLowerCase() && nj.toLowerCase() === jobName.toLowerCase()) && !nRev && !nCode && !nStart && !nType;
+          const isExplicitChild = (nc.toLowerCase() === client.toLowerCase() && nj.toLowerCase() === jobName.toLowerCase()) && !nRev && !String(nextRow[17] || "").trim() && !nCode && !nStart && !nType;
           const isInheritedChild = (!nc && !nj) && nextRow.some(cell => String(cell || "").trim() !== "");
           if (isExplicitChild || isInheritedChild) {
             jobRows.push({ row: nextRow, sheetRow: cjNext + 1, isParent: false });
@@ -7195,6 +7195,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         }
 
         const revParsed = parseFloat(revRaw.replace(/[£$€,\s]/g, "")) || 0;
+        const rechargedParsed = parseFloat(String(row[17] || "").replace(/[£$€,\s]/g, "")) || 0;
         let jobRevenue = revParsed;
         if (isRetainer) {
           let contractMonths = jobRows.length;
@@ -7207,11 +7208,12 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
           jobRevenue = revParsed > 0 ? revParsed * contractMonths : 0;
         }
-        if (jobRevenue === 0 && (totalRealInvoiced + totalPlaceholderAmts) > 0) {
-          jobRevenue = totalRealInvoiced + totalPlaceholderAmts;
-        }
+        const totalBillable = jobRevenue + rechargedParsed;
+        const effectiveBillable = (totalBillable === 0 && (totalRealInvoiced + totalPlaceholderAmts) > 0)
+          ? (totalRealInvoiced + totalPlaceholderAmts)
+          : totalBillable;
 
-        const uninvoicedRevenue = jobRevenue - totalRealInvoiced;
+        const uninvoicedRevenue = effectiveBillable - totalRealInvoiced;
 
         // Universal gate: exclude any job that does not have uninvoiced revenue (real invoices fully cover revenue)
         if (uninvoicedRevenue <= 0.01) {
@@ -8425,6 +8427,15 @@ export async function handleAcceptOption(req, res, sheets) {
         const numVal = (v) => String(v ?? "").replace(/[£,]/g, "").trim();
 
         const isJobCosting = isJobCostingStyle({ headers: allRows[0] || [] });
+        const confRechargedPairs = writeTab === "Confirmed"
+          ? [
+              ["R", numVal(d.rechargedExpenses)],
+              ["AU", numVal(d.inv1OfWhichRechgd)],
+              ["AV", strVal(d.inv1CostMonth)],
+              ["BB", numVal(d.inv2OfWhichRechgd)],
+              ["BC", strVal(d.inv2CostMonth)],
+            ]
+          : [];
         const fieldMap = isJobCosting
           ? [
               ["A", strVal(d.clientName)],
@@ -8448,6 +8459,7 @@ export async function handleAcceptOption(req, res, sheets) {
               ["AY", strVal(d.inv2SentDate || "")],
               ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
               ["BA", strVal(d.inv2Status || "")],
+              ...confRechargedPairs,
             ]
           : [
               ["A", strVal(d.clientName)],
@@ -8472,6 +8484,7 @@ export async function handleAcceptOption(req, res, sheets) {
               ["AY", strVal(d.inv2SentDate || "")],
               ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
               ["BA", strVal(d.inv2Status || "")],
+              ...confRechargedPairs,
             ];
 
         for (const [col, val] of fieldMap) {
@@ -10192,7 +10205,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         // Read Confirmed tab
         const retConfirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetIdClean,
-          range: "Confirmed!A1:BH5000",
+          range: "Confirmed!A1:BJ5000",
         }));
         const retConfirmedRows = retConfirmedResp.data.values || [];
 
@@ -10571,7 +10584,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         // Read Confirmed tab
         const delConfirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetIdClean,
-          range: "Confirmed!A1:BH5000",
+          range: "Confirmed!A1:BJ5000",
         }));
         const delConfirmedRows = delConfirmedResp.data.values || [];
         const retainerChecks = [];

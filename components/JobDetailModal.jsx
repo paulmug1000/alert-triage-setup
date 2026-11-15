@@ -5,6 +5,8 @@ import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import RetainerChangeSendDatesModal from "./RetainerChangeSendDatesModal";
+import InvoiceCostMonthControl from "./InvoiceCostMonthControl";
+import { extractSplitMonths } from "../services/splitHelper";
 import CellNoteModal from "./CellNoteModal";
 import NoteIndicatorButton from "./NoteIndicatorButton";
 import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef, generateManualPlaceholderInvoiceRef } from "./PlaceholderPill";
@@ -197,6 +199,7 @@ export default function JobDetailModal({
   const [retainerChangeSendDates, setRetainerChangeSendDates] = useState(null);
   const [draftInvoices, setDraftInvoices] = useState([]);
   const [invoicesModified, setInvoicesModified] = useState(false);
+  const [hasRechargedExpenses, setHasRechargedExpenses] = useState(false);
 
   // Combine global map and fallback loaded map
   const activeClientsMap = useMemo(() => {
@@ -469,6 +472,7 @@ export default function JobDetailModal({
 
   // Initialize draft invoices from job.rows whenever job loads
   useEffect(() => {
+    setHasRechargedExpenses(false);
     if (!job || !job.rows) {
       setDraftInvoices([]);
       setInvoicesModified(false);
@@ -479,7 +483,8 @@ export default function JobDetailModal({
       (r.invoiceSlots || []).forEach((s) => {
         const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
         const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
-        const hasData = hasRef || hasAmt;
+        const hasRech = Boolean(s.ofWhichRechgd && parseFloat(String(s.ofWhichRechgd).replace(/[£$€,\s]/g, "")) > 0);
+        const hasData = hasRef || hasAmt || hasRech;
         if (hasData) {
           const isAuto = isAutoPlaceholder(s.ref);
           const isPlace = isPlaceholderInvoice(s.ref, s.status);
@@ -494,6 +499,8 @@ export default function JobDetailModal({
               sentDate: s.sentDate || "",
               daysToPay: s.daysToPay || 30,
               status: s.status || "",
+              ofWhichRechgd: s.ofWhichRechgd !== undefined && s.ofWhichRechgd !== "" ? String(stripCurrency(s.ofWhichRechgd)) : "",
+              costMonth: s.costMonth || "",
               isReal,
               isManual: !isReal,
               note: s.note || "",
@@ -545,20 +552,22 @@ export default function JobDetailModal({
   };
 
   const handleDraftFieldChange = (fieldKey, val) => {
-    if (isJobLocked) return;
+    if (isJobLocked && !(isConfirmed && !isReadOnly && fieldKey === "rechargedExpenses")) return;
     setDraftEdits((prev) => ({ ...prev, [fieldKey]: val }));
   };
 
   const handleDiscardChanges = () => {
-    if (isJobLocked) return;
+    if (isJobLocked && !(isConfirmed && !isReadOnly)) return;
     setDraftEdits({});
+    setHasRechargedExpenses(false);
     if (job && job.rows) {
       const items = [];
       job.rows.forEach((r) => {
         (r.invoiceSlots || []).forEach((s) => {
           const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
           const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
-          if ((hasRef || hasAmt) && !isAutoPlaceholder(s.ref)) {
+          const hasRech = Boolean(s.ofWhichRechgd && parseFloat(String(s.ofWhichRechgd).replace(/[£$€,\s]/g, "")) > 0);
+          if ((hasRef || hasAmt || hasRech) && !isAutoPlaceholder(s.ref)) {
             const isPlace = isPlaceholderInvoice(s.ref, s.status);
             const isReal = Boolean(hasRef && !isPlace);
             items.push({
@@ -570,6 +579,8 @@ export default function JobDetailModal({
               sentDate: s.sentDate || "",
               daysToPay: s.daysToPay || 30,
               status: s.status || "",
+              ofWhichRechgd: s.ofWhichRechgd !== undefined && s.ofWhichRechgd !== "" ? String(stripCurrency(s.ofWhichRechgd)) : "",
+              costMonth: s.costMonth || "",
               isReal,
               isManual: !isReal,
               note: s.note || "",
@@ -591,6 +602,7 @@ export default function JobDetailModal({
   const typeVal = getJobFieldValue("projectRetainer") || "Project";
   const isRetainer = String(typeVal).toLowerCase().includes("retainer");
   const revVal = getJobFieldValue("revenue");
+  const rechVal = isConfirmed ? getJobFieldValue("rechargedExpenses") : "";
   const directCostsVal = getJobFieldValue("directCosts");
   const startDateVal = getJobFieldValue("startDate");
   const endDateVal = getJobFieldValue("endDate");
@@ -614,22 +626,124 @@ export default function JobDetailModal({
     revVal,
     directCostsVal,
     noEndDateRetainerMonths,
-    endDateVal
+    endDateVal,
+    rechVal
   );
 
   // Active draft invoices (excluding deleted items)
   const activeDraftInvoices = (draftInvoices || []).filter((inv) => !inv.isDeleted);
 
-  // Active revenue number
+  // Active fee revenue, recharged expenses & total billable
   const activeRevenueNum = Math.max(0, parseFloat(stripCurrency(revVal)) || 0);
+  const activeRechargedNum = isConfirmed ? Math.max(0, Math.round((parseFloat(stripCurrency(rechVal)) || 0) * 100) / 100) : 0;
+  const activeBillableNum = Math.round((activeRevenueNum + activeRechargedNum) * 100) / 100;
 
   // Sum of invoiced amounts in draft (for project jobs)
   const draftInvoicedSum = activeDraftInvoices.reduce((acc, inv) => {
     return acc + (parseFloat(stripCurrency(inv.amount)) || 0);
   }, 0);
 
-  // Left to invoice amount based on current draft state
-  const leftToInvoiceAmount = Math.max(0, Math.round((activeRevenueNum - draftInvoicedSum) * 100) / 100);
+  // Left to invoice amount based on current draft state (total billable - invoiced)
+  const leftToInvoiceAmount = Math.max(0, Math.round((activeBillableNum - draftInvoicedSum) * 100) / 100);
+  const draftRechargedSum = Math.round(activeDraftInvoices.reduce((acc, inv) => {
+    return acc + (parseFloat(stripCurrency(inv.ofWhichRechgd)) || 0);
+  }, 0) * 100) / 100;
+  const hasAutoPlaceholderPreview = !isRetainer && leftToInvoiceAmount > 0.01 && activeBillableNum > 0;
+  const autoPlaceholderRechgd = (isConfirmed && hasAutoPlaceholderPreview)
+    ? Math.max(0, Math.min(leftToInvoiceAmount, Math.round((activeRechargedNum - draftRechargedSum) * 100) / 100))
+    : 0;
+  const showRechargedControls = isConfirmed && (hasRechargedExpenses || activeRechargedNum > 0 || draftRechargedSum > 0);
+
+  const applySmartRechargedToDraftInvoices = (nextRechStr) => {
+    if (!isConfirmed || isRetainer) return;
+    const parseMoney = (v) => parseFloat(String(stripCurrency(v) ?? "").replace(/[£$€,\s]/g, "")) || 0;
+    const targetRech = Math.max(0, Math.round(parseMoney(nextRechStr) * 100) / 100);
+    const activeEntries = (draftInvoices || []).filter((inv) => !inv.isDeleted);
+    if (activeEntries.length === 0) return;
+
+    const currentSum = Math.round(activeEntries.reduce((s, inv) => s + parseMoney(inv.ofWhichRechgd), 0) * 100) / 100;
+    const delta = Math.round((targetRech - currentSum) * 100) / 100;
+    if (Math.abs(delta) < 0.01) return;
+
+    const hasEditableManual = activeEntries.some((inv) => !inv.isReal && !["sent", "paid"].includes(String(inv.status || "").trim().toLowerCase()));
+    const newBillable = Math.round((activeRevenueNum + targetRech) * 100) / 100;
+    const newRemaining = Math.max(0, Math.round((newBillable - draftInvoicedSum) * 100) / 100);
+    // If all draft invoices are synced/sent/paid and remaining uninvoiced covers a positive addition, leave existing invoices untouched so the automatic placeholder absorbs it
+    if (!hasEditableManual && delta > 0 && newRemaining >= delta - 0.01) {
+      return;
+    }
+
+    const oldBillable = Math.round((activeRevenueNum + currentSum) * 100) / 100;
+    const working = (draftInvoices || []).map((inv) => ({ ...inv }));
+    if (delta > 0) {
+      let targetArrIdx = -1;
+      for (let i = working.length - 1; i >= 0; i--) {
+        const inv = working[i];
+        if (!inv.isDeleted && !inv.isReal && !["sent", "paid"].includes(String(inv.status || "").trim().toLowerCase())) {
+          targetArrIdx = i;
+          break;
+        }
+      }
+      if (targetArrIdx === -1) {
+        for (let i = working.length - 1; i >= 0; i--) {
+          if (!working[i].isDeleted) { targetArrIdx = i; break; }
+        }
+      }
+      if (targetArrIdx === -1) return;
+      const targetInv = working[targetArrIdx];
+      const oldRech = parseMoney(targetInv.ofWhichRechgd);
+      const nextInvRech = Math.round((oldRech + delta) * 100) / 100;
+      let nextAmtStr = targetInv.amount;
+      if (!targetInv.isReal && !isJobLocked && !["sent", "paid"].includes(String(targetInv.status || "").trim().toLowerCase())) {
+        const prevOtherGross = working.reduce((s, inv, idx) => (inv.isDeleted || idx === targetArrIdx ? s : s + parseMoney(inv.amount)), 0);
+        const oldTargetAmt = parseMoney(targetInv.amount);
+        const trackedBillable = Math.abs((prevOtherGross + oldTargetAmt) - oldBillable) <= 0.05;
+        if (trackedBillable) {
+          const fill = Math.max(0, Math.round((newBillable - prevOtherGross) * 100) / 100);
+          nextAmtStr = fill > 0 ? String(fill) : "";
+        } else {
+          const nextGross = Math.max(0, Math.round((oldTargetAmt + delta) * 100) / 100);
+          nextAmtStr = nextGross > 0 ? String(nextGross) : "";
+        }
+      }
+      working[targetArrIdx] = {
+        ...targetInv,
+        amount: nextAmtStr,
+        ofWhichRechgd: nextInvRech > 0 ? String(nextInvRech) : "",
+        costMonth: nextInvRech > 0 ? (targetInv.costMonth || "") : ""
+      };
+    } else {
+      let toRemove = Math.abs(delta);
+      const passes = [
+        (inv) => !inv.isDeleted && !inv.isReal && !["sent", "paid"].includes(String(inv.status || "").trim().toLowerCase()),
+        (inv) => !inv.isDeleted
+      ];
+      for (const pred of passes) {
+        for (let i = working.length - 1; i >= 0 && toRemove >= 0.01; i--) {
+          const inv = working[i];
+          if (!pred(inv)) continue;
+          const oldRech = parseMoney(inv.ofWhichRechgd);
+          if (oldRech <= 0) continue;
+          const take = Math.min(oldRech, toRemove);
+          const nextInvRech = Math.max(0, Math.round((oldRech - take) * 100) / 100);
+          let nextAmtStr = inv.amount;
+          if (!inv.isReal && !isJobLocked && !["sent", "paid"].includes(String(inv.status || "").trim().toLowerCase())) {
+            const nextGross = Math.max(0, Math.round((parseMoney(inv.amount) - take) * 100) / 100);
+            nextAmtStr = nextGross > 0 ? String(nextGross) : "";
+          }
+          working[i] = {
+            ...inv,
+            amount: nextAmtStr,
+            ofWhichRechgd: nextInvRech > 0 ? String(nextInvRech) : "",
+            costMonth: nextInvRech > 0 ? (inv.costMonth || "") : ""
+          };
+          toRemove = Math.round((toRemove - take) * 100) / 100;
+        }
+      }
+    }
+    setDraftInvoices(working);
+    setInvoicesModified(true);
+  };
 
   const handleAddDraftInvoice = (initialData = {}) => {
     if (isJobLocked) return;
@@ -641,6 +755,8 @@ export default function JobDetailModal({
       sentDate: defaultSent,
       daysToPay: initialData.daysToPay || 30,
       status: initialData.status || "",
+      ofWhichRechgd: initialData.ofWhichRechgd !== undefined ? String(initialData.ofWhichRechgd) : "",
+      costMonth: initialData.costMonth || "",
       isReal: false,
       isManual: true,
       note: initialData.note || "",
@@ -652,9 +768,16 @@ export default function JobDetailModal({
   };
 
   const handleUpdateDraftInvoice = (id, field, val) => {
-    if (isJobLocked) return;
+    if (isJobLocked && !(isConfirmed && !isReadOnly && (field === "ofWhichRechgd" || field === "costMonth"))) return;
     setDraftInvoices((prev) =>
-      prev.map((inv) => (inv.id === id ? { ...inv, [field]: val } : inv))
+      prev.map((inv) => {
+        if (inv.id !== id) return inv;
+        const nextInv = { ...inv, [field]: val };
+        if (field === "ofWhichRechgd" && (parseFloat(stripCurrency(val)) || 0) <= 0) {
+          nextInv.costMonth = "";
+        }
+        return nextInv;
+      })
     );
     setInvoicesModified(true);
   };
@@ -1014,7 +1137,7 @@ export default function JobDetailModal({
 
   // Save changes handler
   const handleSaveJob = async () => {
-    if (isJobLocked) return;
+    if (isJobLocked && !(isConfirmed && !isReadOnly)) return;
     const { clientSheetId, client } = resolvedClientInfo;
     if (!job || !isDirty || !clientSheetId) return;
 
@@ -1025,6 +1148,7 @@ export default function JobDetailModal({
       projectCode: { colLetter: "C", fieldName: "Project Code" },
       dateConf: { colLetter: "D", fieldName: tabName === "Pipeline" ? "Date Added" : "Date Confirmed", isDate: true },
       leadSrc: { colLetter: "E", fieldName: "Lead Source" },
+      ...(isConfirmed ? { rechargedExpenses: { colLetter: "R", fieldName: "Recharged Expenses" } } : {}),
       revenue: { colLetter: "AG", fieldName: "Revenue" },
       directCosts: { colLetter: "AH", fieldName: "Direct Costs" },
       vat: { colLetter: "AI", fieldName: "VAT" },
@@ -1037,6 +1161,7 @@ export default function JobDetailModal({
 
     const updates = [];
     Object.keys(draftEdits).forEach((f) => {
+      if (isJobLocked && f !== "rechargedExpenses") return;
       const meta = FIELD_MAP[f];
       if (!meta) return;
       let val = draftEdits[f];
@@ -1062,9 +1187,34 @@ export default function JobDetailModal({
       }
     });
 
-    if (updates.length === 0 && !invoicesModified) return;
+    if (isConfirmed && !isRetainer) {
+      for (const inv of activeDraftInvoices) {
+        const gAmt = parseFloat(stripCurrency(inv.amount)) || 0;
+        const rAmt = parseFloat(stripCurrency(inv.ofWhichRechgd)) || 0;
+        if (rAmt > gAmt + 0.01) {
+          alert("Invoice recharged expenses cannot exceed the invoice gross amount.");
+          return;
+        }
+        if (String(inv.costMonth || "").toLowerCase().startsWith("[split]")) {
+          const splitObj = extractSplitMonths(inv.costMonth) || {};
+          const splitSum = Object.values(splitObj).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+          if (Math.abs(splitSum - rAmt) > 0.02) {
+            alert("Invoice cost month split must add up to the invoice recharged amount.");
+            return;
+          }
+        }
+      }
+      const totalCoveredRech = Math.round((draftRechargedSum + autoPlaceholderRechgd) * 100) / 100;
+      if (draftRechargedSum > activeRechargedNum + 0.01 || Math.abs(totalCoveredRech - activeRechargedNum) > 0.01) {
+        alert(`Invoice recharged amounts (£${totalCoveredRech.toFixed(2)}) must add up to total job recharged expenses (£${activeRechargedNum.toFixed(2)}) before saving.`);
+        return;
+      }
+    }
 
-    const savedInvoicesModified = invoicesModified;
+    const shouldSyncInvoices = Boolean(invoicesModified || (isConfirmed && !isRetainer && draftEdits.rechargedExpenses !== undefined));
+    if (updates.length === 0 && !shouldSyncInvoices) return;
+
+    const savedInvoicesModified = shouldSyncInvoices;
     const wasExistingRetainer = String(parentRow?.projectRetainer || "").toLowerCase().includes("retainer");
     const savedChangedToRetainer = !wasExistingRetainer && isRetainer;
     setSaving(true);
@@ -1115,9 +1265,10 @@ export default function JobDetailModal({
         const updatedRows = filteredRows.map((r, rIdx) => {
           const nextRow = { ...r };
           Object.keys(draftEdits).forEach((f) => {
+            if (isJobLocked && f !== "rechargedExpenses") return;
             let nextVal = draftEdits[f];
             if (FIELD_MAP[f]?.isDate && nextVal) nextVal = toSheetDateFormat(nextVal);
-            if ((f === "revenue" || f === "directCosts") && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
+            if ((f === "revenue" || f === "directCosts" || f === "rechargedExpenses") && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
               nextVal = formatCurrency(nextVal);
             }
             if (rIdx === 0 || f === "client" || f === "jobName") nextRow[f] = nextVal;
@@ -1166,6 +1317,10 @@ export default function JobDetailModal({
           draftEdits.revenue !== undefined && draftEdits.revenue !== "" && draftEdits.revenue !== null
             ? formatCurrency(draftEdits.revenue)
             : (draftEdits.revenue !== undefined ? "" : prev.revenue);
+        const nextHeaderRecharged =
+          draftEdits.rechargedExpenses !== undefined && draftEdits.rechargedExpenses !== "" && draftEdits.rechargedExpenses !== null
+            ? formatCurrency(draftEdits.rechargedExpenses)
+            : (draftEdits.rechargedExpenses !== undefined ? "" : prev.rechargedExpenses);
 
         return {
           ...prev,
@@ -1173,6 +1328,7 @@ export default function JobDetailModal({
           jobName: draftEdits.jobName || prev.jobName,
           projectCode: draftEdits.projectCode !== undefined ? draftEdits.projectCode : prev.projectCode,
           revenue: nextHeaderRevenue,
+          rechargedExpenses: nextHeaderRecharged,
           rows: finalRows
         };
       });
@@ -1380,6 +1536,14 @@ export default function JobDetailModal({
                     : "";
                 updated.revenue = fmtRev;
                 updated.rows = updated.rows.map((r, idx) => (idx === 0 ? { ...r, revenue: fmtRev } : r));
+              }
+              if (resData?.updatedRechargedExpenses !== undefined) {
+                const fmtRech =
+                  resData.updatedRechargedExpenses !== "" && resData.updatedRechargedExpenses !== null
+                    ? formatCurrency(resData.updatedRechargedExpenses)
+                    : "";
+                updated.rechargedExpenses = fmtRech;
+                updated.rows = updated.rows.map((r, idx) => (idx === 0 ? { ...r, rechargedExpenses: fmtRech } : r));
               }
               const rs = resData?.restoredPlaceholderSlot;
               return {
@@ -2246,6 +2410,68 @@ export default function JobDetailModal({
                         </select>
                       </div>
 
+                      {/* Recharged expenses (Confirmed only) */}
+                      {isConfirmed && (() => {
+                        const rechNum = activeRechargedNum;
+                        const isRechOpen = hasRechargedExpenses || rechNum > 0 || activeDraftInvoices.some((i) => (parseFloat(stripCurrency(i.ofWhichRechgd)) || 0) > 0);
+                        return (
+                          <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                              <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "11px", fontWeight: "700", color: "#334155", cursor: isReadOnly ? "not-allowed" : "pointer", margin: 0 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isRechOpen}
+                                  disabled={isReadOnly}
+                                  onChange={(e) => {
+                                    const checked = e.target.checked;
+                                    setHasRechargedExpenses(checked);
+                                    if (!checked) {
+                                      handleDraftFieldChange("rechargedExpenses", "");
+                                      if (!isRetainer) {
+                                        applySmartRechargedToDraftInvoices("");
+                                      }
+                                    }
+                                  }}
+                                />
+                                Recharged expenses?
+                              </label>
+                              {isRechOpen && (
+                                <span style={{ fontSize: "11px", color: "#475569", fontWeight: "600" }}>
+                                  Total billable (excl. VAT): {formatCurrency(activeBillableNum)}
+                                </span>
+                              )}
+                            </div>
+                            {isRechOpen && (
+                              <div style={{ marginTop: "6px", display: "flex", alignItems: "center", gap: "8px" }}>
+                                <label style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", whiteSpace: "nowrap" }}>
+                                  Recharged expenses (excl. VAT)
+                                </label>
+                                <input
+                                  type="text"
+                                  value={rechVal ?? ""}
+                                  onChange={(e) => handleDraftFieldChange("rechargedExpenses", e.target.value)}
+                                  onBlur={(e) => !isRetainer && applySmartRechargedToDraftInvoices(e.target.value)}
+                                  disabled={isReadOnly}
+                                  placeholder="0.00"
+                                  style={{
+                                    width: "130px",
+                                    padding: "5px 7px",
+                                    borderRadius: "5px",
+                                    border: draftEdits.rechargedExpenses !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                                    fontSize: "12px",
+                                    outline: "none",
+                                    background: isReadOnly ? "#f8fafc" : "#ffffff",
+                                    color: isReadOnly ? "#64748b" : "#0f172a",
+                                    textAlign: "right",
+                                    boxSizing: "border-box"
+                                  }}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                       {/* Revenue Split */}
                       <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -2312,7 +2538,7 @@ export default function JobDetailModal({
                       <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                         Invoices ({isRetainer ? invoiceItems.length : activeDraftInvoices.length})
                       </div>
-                      {activeRevenueNum > 0 && (
+                      {activeBillableNum > 0 && (
                         leftToInvoiceAmount <= 0.01 ? (
                           <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
                             ✓ 100% invoiced
@@ -2535,9 +2761,16 @@ export default function JobDetailModal({
                                   </div>
 
                                   {hasData ? (
-                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
-                                      {formatCurrency(slot.amount)}
-                                    </span>
+                                    <div style={{ textAlign: "right" }}>
+                                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                                        {formatCurrency(slot.amount)}
+                                      </span>
+                                      {isConfirmed && (parseFloat(stripCurrency(slot.ofWhichRechgd)) || 0) > 0 && (
+                                        <div style={{ fontSize: "10px", color: "#0369a1", fontWeight: "600" }}>
+                                          incl. {formatCurrency(slot.ofWhichRechgd)} recharged
+                                        </div>
+                                      )}
+                                    </div>
                                   ) : (
                                     <span style={{ fontSize: "11px", color: "#94a3b8" }}>
                                       Click to add
@@ -2678,9 +2911,16 @@ export default function JobDetailModal({
                                       </svg>
                                     )}
                                   </div>
-                                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
-                                    {formatCurrency(inv.amount)}
-                                  </span>
+                                  <div style={{ textAlign: "right" }}>
+                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                                      {formatCurrency(inv.amount)}
+                                    </span>
+                                    {!showRechargedControls && (parseFloat(stripCurrency(inv.ofWhichRechgd)) || 0) > 0 && (
+                                      <div style={{ fontSize: "10px", color: "#0369a1", fontWeight: "600" }}>
+                                        incl. {formatCurrency(inv.ofWhichRechgd)} recharged
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b" }}>
                                   <span>{inv.sentDate ? `Sent: ${toSheetDateFormat(inv.sentDate)}` : "No sent date"}</span>
@@ -2690,6 +2930,60 @@ export default function JobDetailModal({
                                       : `Terms: ${inv.daysToPay || 30}d`}
                                   </span>
                                 </div>
+                                {showRechargedControls && (() => {
+                                  const invRechVal = parseFloat(stripCurrency(inv.ofWhichRechgd)) || 0;
+                                  return (
+                                    <div
+                                      onClick={(e) => e.stopPropagation()}
+                                      style={{
+                                        marginTop: "6px",
+                                        paddingTop: "6px",
+                                        borderTop: "1px dashed #cbd5e1",
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        gap: "6px",
+                                        cursor: "default"
+                                      }}
+                                    >
+                                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                                        <label style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", margin: 0 }}>
+                                          Of which recharged (excl. VAT)
+                                        </label>
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          value={inv.ofWhichRechgd ?? ""}
+                                          onChange={(e) => handleUpdateDraftInvoice(inv.id, "ofWhichRechgd", e.target.value)}
+                                          disabled={isReadOnly}
+                                          placeholder="0.00"
+                                          style={{
+                                            width: "110px",
+                                            padding: "4px 6px",
+                                            borderRadius: "5px",
+                                            border: "1px solid #cbd5e1",
+                                            fontSize: "11px",
+                                            textAlign: "right",
+                                            background: isReadOnly ? "#f8fafc" : "#ffffff",
+                                            color: isReadOnly ? "#64748b" : "#0f172a",
+                                            boxSizing: "border-box"
+                                          }}
+                                        />
+                                      </div>
+                                      {invRechVal > 0 && (
+                                        <InvoiceCostMonthControl
+                                          costMonth={inv.costMonth || ""}
+                                          onChange={(cm) => handleUpdateDraftInvoice(inv.id, "costMonth", cm)}
+                                          rechargedAmount={invRechVal}
+                                          sentDate={inv.sentDate}
+                                          startDate={startDateVal}
+                                          endDate={endDateVal}
+                                          disabled={isReadOnly}
+                                          compact
+                                        />
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             );
                           }
@@ -2753,7 +3047,7 @@ export default function JobDetailModal({
                                     <label style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", margin: 0 }}>
                                       Amount (£)
                                     </label>
-                                    {activeRevenueNum > 0 && !inv.amount && leftToInvoiceAmount > 0 && (
+                                    {activeBillableNum > 0 && !inv.amount && leftToInvoiceAmount > 0 && (
                                       <button
                                         type="button"
                                         onClick={() => handleUpdateDraftInvoice(inv.id, "amount", String(leftToInvoiceAmount))}
@@ -2847,12 +3141,56 @@ export default function JobDetailModal({
                                   Expected payment: <strong style={{ color: "#0f172a" }}>{expectedDue}</strong>
                                 </div>
                               )}
+
+                              {showRechargedControls && (() => {
+                                const invRechVal = parseFloat(stripCurrency(inv.ofWhichRechgd)) || 0;
+                                return (
+                                  <div style={{ marginTop: "4px", paddingTop: "8px", borderTop: "1px dashed #e2e8f0", display: "flex", flexDirection: "column", gap: "6px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                                      <label style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", margin: 0 }}>
+                                        Of which recharged (excl. VAT)
+                                      </label>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        value={inv.ofWhichRechgd ?? ""}
+                                        onChange={(e) => handleUpdateDraftInvoice(inv.id, "ofWhichRechgd", e.target.value)}
+                                        disabled={isReadOnly}
+                                        placeholder="0.00"
+                                        style={{
+                                          width: "120px",
+                                          padding: "5px 7px",
+                                          borderRadius: "5px",
+                                          border: "1px solid #cbd5e1",
+                                          fontSize: "12px",
+                                          textAlign: "right",
+                                          background: isReadOnly ? "#f8fafc" : "#ffffff",
+                                          color: isReadOnly ? "#64748b" : "#0f172a",
+                                          boxSizing: "border-box"
+                                        }}
+                                      />
+                                    </div>
+                                    {invRechVal > 0 && (
+                                      <InvoiceCostMonthControl
+                                        costMonth={inv.costMonth || ""}
+                                        onChange={(cm) => handleUpdateDraftInvoice(inv.id, "costMonth", cm)}
+                                        rechargedAmount={invRechVal}
+                                        sentDate={inv.sentDate}
+                                        startDate={startDateVal}
+                                        endDate={endDateVal}
+                                        disabled={isReadOnly}
+                                        compact
+                                      />
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </div>
                           );
                         })}
 
                         {/* Automatic placeholder preview card (only if remaining uninvoiced) */}
-                        {leftToInvoiceAmount > 0.01 && activeRevenueNum > 0 && (
+                        {leftToInvoiceAmount > 0.01 && activeBillableNum > 0 && (
                           <div
                             style={{
                               padding: "10px 12px",
@@ -2867,21 +3205,29 @@ export default function JobDetailModal({
                             }}
                           >
                             <div>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px", flexWrap: "wrap" }}>
                                 <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
                                   Automatic placeholder
                                 </span>
                                 <span style={{ fontSize: "12px", fontWeight: "700", color: "#92400e" }}>
                                   {formatCurrency(leftToInvoiceAmount)}
                                 </span>
+                                {autoPlaceholderRechgd > 0 && (
+                                  <span style={{ fontSize: "10px", color: "#0369a1", fontWeight: "600" }}>
+                                    (incl. {formatCurrency(autoPlaceholderRechgd)} recharged)
+                                  </span>
+                                )}
                               </div>
                               <div style={{ fontSize: "10px", color: "#78350f" }}>
-                                Created on save to match remaining revenue
+                                Created on save to match remaining billable amount
                               </div>
                             </div>
                             <button
                               type="button"
-                              onClick={() => handleAddDraftInvoice({ amount: leftToInvoiceAmount })}
+                              onClick={() => handleAddDraftInvoice({
+                                amount: leftToInvoiceAmount,
+                                ...(autoPlaceholderRechgd > 0 ? { ofWhichRechgd: autoPlaceholderRechgd } : {})
+                              })}
                               disabled={isJobLocked}
                               style={{
                                 padding: "5px 9px",
@@ -3280,7 +3626,7 @@ export default function JobDetailModal({
             </div>
 
             <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-              {!isJobLocked && isDirty && (
+              {(!isJobLocked || (isConfirmed && !isReadOnly)) && isDirty && (
                 <button
                   type="button"
                   onClick={handleDiscardChanges}
@@ -3300,7 +3646,7 @@ export default function JobDetailModal({
                 </button>
               )}
 
-              {!isJobLocked && (isDirty || saving || recentlySaved) && (
+              {(!isJobLocked || (isConfirmed && !isReadOnly)) && (isDirty || saving || recentlySaved) && (
                 <button
                   type="button"
                   onClick={handleSaveJob}

@@ -140,8 +140,16 @@ export default function PortalOutgoingsView({
     if (!outgoingsData) return [];
     let list = [];
     if (category === "contractors") list = outgoingsData.contractors || [];
-    else if (category === "expenses") list = outgoingsData.expenses || [];
-    else if (category === "dividends") list = outgoingsData.dividends || [];
+    else if (category === "expenses") {
+      list = (outgoingsData.expenses || []).filter(
+        (item) =>
+          !item.isSystemRow &&
+          item.rowNumber !== 225 &&
+          item.rowNumber !== 226 &&
+          !/^recharged expenses\s*\((forecast|recovery)\)$/i.test(String(item.name || "").trim()) &&
+          String(item.name || "").trim().toLowerCase() !== "recharged expenses recovery"
+      );
+    } else if (category === "dividends") list = outgoingsData.dividends || [];
 
     if (category === "dividends") {
       list = list.filter((item) => !String(item.name || "").toLowerCase().includes("total"));

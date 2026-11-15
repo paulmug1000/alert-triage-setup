@@ -21,6 +21,7 @@ import { sanitizeFormulaInput } from "./userPermissions.js";
 import { clearAllClientsMemoryCache } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { del2TierCache, invalidatePmaClientCache } from "./cacheService.js";
 import { getSupabaseAdmin } from "./supabaseClient.js";
 import {
   refreshNativeChartOfAccounts,
@@ -134,7 +135,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const sheets = await getSheetsClient();
 
   const masterRanges = [
-    "KeyInfo!A1:F20",      // [0] Main, Customisation, Date Adjust
+    "KeyInfo!A1:F21",      // [0] Main, Customisation, Date Adjust, Recharged expenses delivery % (C21:D21)
     "KeyInfo!Q1:Q10",      // [1] Q4 tool, Q8 CRM, Q9 drives
     "KeyInfo!X11:X41",     // [2] CRM connection parameters
     "KeyInfo!A120:B141",   // [3] KPI Colouring rules
@@ -462,6 +463,10 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
         .filter(d => d.name && !d.name.toLowerCase().includes("non-cash bank accounts") && !d.name.endsWith(":")),
       contractorsManual: (keyATContr || []).map(r => String(r[0] || "").trim()).filter(Boolean),
       passThroughManual: (keyATPass || []).map(r => String(r[0] || "").trim()).filter(Boolean),
+      rechargedExpensesDeliveryPct: (() => {
+        const raw = String(keyA1F20[20]?.[3] ?? "").trim();
+        return raw === "0" || raw === "0%" || raw === "0.0%" ? "0%" : "100%";
+      })(),
       chartOfAccounts,
       plCategories,
       sheetRemainingCategories,
@@ -826,6 +831,22 @@ export async function saveClientSettings({
     if (settings.accounting.expenseStatusMapping !== undefined) {
       addMasterCell("JnlAppList!F2", settings.accounting.expenseStatusMapping);
     }
+    if (settings.accounting.rechargedExpensesDeliveryPct !== undefined) {
+      const rawPct = String(settings.accounting.rechargedExpensesDeliveryPct ?? "").trim();
+      const numVal = rawPct === "0" || rawPct === "0%" || rawPct === "0.0%" ? 0 : 1;
+      const c21Note =
+        "Recharged expenses delivery % (100% = recharged expenses captured as CoS, 0% = captured within overhead categories)";
+      masterUpdates.push({
+        range: "KeyInfo!C21:D21",
+        values: [[c21Note, numVal]],
+      });
+      if (clientSheetId) {
+        clientUpdates.push({
+          range: "KeyInfo!C21:D21",
+          values: [[c21Note, numVal]],
+        });
+      }
+    }
   }
 
   // 4. CRM (KeyInfo & CRMList)
@@ -976,7 +997,7 @@ export async function saveClientSettings({
                 { range: "Confirmed!K2", values: [["=M2*KeyInfo!$D$13"]] },
                 { range: "Confirmed!M2:O2", values: [["=I2/KeyInfo!$D$12", "=M2*KeyInfo!$D$13", "=N2-K2"]] },
                 { range: "Confirmed!U2", values: [["=(I2-Q2)*T2"]] },
-                { range: "Confirmed!AG2:AH2", values: [['=if(I2+R2=0,"",I2+R2)', '=if(K2+Q2+U2=0,"",K2+Q2+U2)']] },
+                { range: "Confirmed!AG2:AH2", values: [['=if(I2=0,"",I2)', '=if(K2+Q2+U2=0,"",K2+Q2+U2)']] },
                 { range: "Confirmed!AL2:AM2", values: [["=F2", "=G2"]] },
                 { range: "Confirmed!AO2", values: [['=if(AL2>AM2,"Err","")']] }
               );
@@ -1182,6 +1203,16 @@ export async function saveClientSettings({
         await redisClient.del(`pulse:portal:payload:${clientSheetId}`);
         await redisClient.del(`pulse:portal:performance:${clientSheetId}`);
       }
+    } catch {}
+  }
+  if (clientSheetId) {
+    try {
+      await del2TierCache(`pma_expenses_${clientSheetId}*`);
+      await invalidatePmaClientCache(clientSheetId, masterSheetId, ["outgoings", "views", "cash", "jobs"]);
+    } catch {}
+  }
+  if (redisClient?.isOpen) {
+    try {
       if (settings.customisation) {
         const cleanKey = String(clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
         const setupKey = `pulse:setup:${cleanKey}`;

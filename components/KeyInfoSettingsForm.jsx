@@ -17,6 +17,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
   const [directCostsMode, setDirectCostsMode] = useState("Contractors");
   const [profitShare, setProfitShare] = useState("0%");
   const [contractorMethod, setContractorMethod] = useState("Notes metadata");
+  const [rechargedExpensesDeliveryPct, setRechargedExpensesDeliveryPct] = useState("100%");
 
   useEffect(() => {
     if (!masterSheetId) return;
@@ -39,6 +40,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
           if (s.directCostsMode) setDirectCostsMode(s.revenueFocus === "Income" ? "Pass-through" : s.directCostsMode);
           if (s.profitShare) setProfitShare(s.profitShare);
           if (s.contractorMethod) setContractorMethod(s.contractorMethod);
+          if (s.rechargedExpensesDeliveryPct) setRechargedExpensesDeliveryPct(s.rechargedExpensesDeliveryPct);
         }
       })
       .catch((err) => {
@@ -76,7 +78,8 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
             revenueFocus,
             directCostsMode: revenueFocus === "Income" ? "Pass-through" : directCostsMode,
             profitShare,
-            contractorMethod
+            contractorMethod,
+            rechargedExpensesDeliveryPct
           }
         })
       });
@@ -271,6 +274,21 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
           >
             <option value="Notes metadata">Notes metadata (Default)</option>
             <option value="Cell value">{isAdmin ? "Cell value" : "Direct value"}</option>
+          </select>
+        </div>
+
+        {/* Recharged expenses handling */}
+        <div>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+            Recharged expenses handling{isAdmin ? " (D21)" : ""}
+          </label>
+          <select
+            value={rechargedExpensesDeliveryPct}
+            onChange={(e) => setRechargedExpensesDeliveryPct(e.target.value)}
+            style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", boxSizing: "border-box" }}
+          >
+            <option value="100%">100% — Cost of sales (default)</option>
+            <option value="0%">0% — Overhead categories</option>
           </select>
         </div>
       </div>

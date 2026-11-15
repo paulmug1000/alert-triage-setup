@@ -412,9 +412,12 @@ function findLastActiveClientJobRow_(values, minDefault = 50) {
     if (
       (row[0] !== "" && row[0] !== null && row[0] !== undefined) ||
       (row[1] !== "" && row[1] !== null && row[1] !== undefined) ||
+      (row[17] !== "" && row[17] !== null && row[17] !== undefined && row[17] !== 0) ||
       (row[32] !== "" && row[32] !== null && row[32] !== undefined && row[32] !== 0) ||
       (row[35] !== "" && row[35] !== null && row[35] !== undefined) ||
-      (row[41] !== "" && row[41] !== null && row[41] !== undefined && row[41] !== 0)
+      (row[41] !== "" && row[41] !== null && row[41] !== undefined && row[41] !== 0) ||
+      (row[48] !== "" && row[48] !== null && row[48] !== undefined && row[48] !== 0) ||
+      (row[55] !== "" && row[55] !== null && row[55] !== undefined && row[55] !== 0)
     ) {
       last = r;
     }
@@ -1562,21 +1565,32 @@ function doesClientRangeNeedFormulaFlush_(parsed, clientName = "") {
   }
 
   if (parsed.tabName === "Outgoings") {
-    // Columns A..E (0..4) in Outgoings contain only static category metadata (no formulas)
-    if (parsed.endCol0 !== null && parsed.endCol0 !== undefined && parsed.endCol0 <= 4) {
-      return false;
-    }
     const sR = parsed.startRow0 ?? 0;
     const eR = parsed.endRow0 ?? 999;
+    // Rows 225..226 in Col E (E225:E226) contain formulas (=E226 and =IF(KeyInfo!$D$21=..., 1, ...)),
+    // while Columns A..D contain static labels/dropdowns.
+    const touchesRechargedRows = sR <= 227 && eR >= 224;
+    if (parsed.endCol0 !== null && parsed.endCol0 !== undefined && parsed.endCol0 <= 4) {
+      return Boolean(
+        sR <= 225 &&
+        eR >= 224 &&
+        parsed.endCol0 >= 4 &&
+        (!sourceTabs || sourceTabs.has("KeyInfo") || sourceTabs.has("Outgoings"))
+      );
+    }
     // In Outgoings, Rows 12..110 (direct costs), Rows 118..121 (Dividends in lieu of salary),
-    // and Rows 126..228 (Expenses & Expense Totals) only depend on Outgoings and KeyInfo,
+    // and Rows 126..224 (Expenses) only depend on Outgoings and KeyInfo,
     // which are already evaluated in Step 1.
-    // Only Rows 6..9 (0-indexed 5..8, Salaries/Performance), Row 111 (0-indexed 110, Making up CoS from Dashboard),
-    // and Rows 233+ (0-indexed >= 232, Bonus & Grand Total Overheads) depend on other tabs.
+    // Rows 225..228 (Recharged expenses rows & Overheads subtotals) depend on Confirmed, KeyInfo & Performance.
+    // Rows 6..9 (Salaries/Performance), Row 111 (Making up CoS from Dashboard),
+    // and Rows 233+ (Bonus & Grand Total Overheads) depend on other tabs.
     const touchesRow111 = sR <= 110 && eR >= 110;
     const touchesBottomSummaries = eR >= 232 || sR >= 232;
     const touchesStaffSummaries = sR <= 8 && eR >= 5 && Boolean(sourceTabs && (sourceTabs.has("Salaries") || sourceTabs.has("KeyInfo")));
-    return touchesRow111 || touchesBottomSummaries || touchesStaffSummaries;
+    const touchesRechargedDeps =
+      touchesRechargedRows &&
+      (!sourceTabs || sourceTabs.has("Confirmed") || sourceTabs.has("KeyInfo") || sourceTabs.has("Outgoings"));
+    return touchesRow111 || touchesBottomSummaries || touchesStaffSummaries || touchesRechargedDeps;
   }
 
   if (parsed.tabName === "NBtoFind") {

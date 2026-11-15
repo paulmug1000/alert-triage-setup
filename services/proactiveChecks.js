@@ -112,7 +112,7 @@ export function collectJobRows_(data, parentIdx) {
     const rj = String(r[1] || "").trim().toLowerCase();
     if (!rc || !rj) break;
     if (rc !== parentClient || rj !== parentJob) break;
-    if (r[32] || r[37] || r[38]) break;
+    if (r[17] || r[32] || r[37] || r[38]) break;
     rows.push({ row: r, sheetRow: ri + 1, isParent: false });
   }
   return rows;
@@ -173,7 +173,7 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
     let confData = sharedData?.confirmedData;
     if (!confData) {
       try {
-        const confResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Confirmed!A1:BH5000" });
+        const confResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Confirmed!A1:BJ5000" });
         confData = confResp.data.values || [];
       } catch (e) { confData = []; }
     }
@@ -898,12 +898,14 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
     let r = 1;
     while (r < data.length) {
       const row = data[r];
-      const revenue = row[32], startVal = row[37], endVal = row[38];
+      const revenue = row[32], rechargedRaw = row[17], startVal = row[37], endVal = row[38];
 
-      if (!revenue || !startVal) { r++; continue; }
+      if ((!revenue && !rechargedRaw) || !startVal) { r++; continue; }
 
-      const revenueAmt = parseFloat(String(revenue).replace(/[£$€,\s]/g, "")) || 0;
-      if (revenueAmt <= 0) { r += collectJobRows_(data, r).length; continue; }
+      const revenueAmt = parseFloat(String(revenue || "").replace(/[£$€,\s]/g, "")) || 0;
+      const rechargedAmt = parseFloat(String(rechargedRaw || "").replace(/[£$€,\s]/g, "")) || 0;
+      const billableAmt = Math.round((revenueAmt + rechargedAmt) * 100) / 100;
+      if (billableAmt <= 0) { r += collectJobRows_(data, r).length; continue; }
 
       const startDate = parseConfirmedDate_(startVal);
       if (!startDate || startDate > oneMonthAgo) { r += collectJobRows_(data, r).length; continue; }
@@ -961,14 +963,14 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
         const formattedEndDate = endDate ? fmtDate(endDate) : (endVal ? String(endVal).trim() : "");
         alerts.push({
           alertType: "uninvoiced_new_job",
-          alertKey: `uninvoiced_new_job|${clientName}|${jobClient || ""}|${stableKey}|rev:${revenueAmt.toFixed(2)}`,
+          alertKey: `uninvoiced_new_job|${clientName}|${jobClient || ""}|${stableKey}|rev:${billableAmt.toFixed(2)}`,
           legacyAlertKey: `uninvoiced_new_job|${clientName}|${jobClient || ""}|${stableKey}`,
           stableJobKey: stableKey,
           heading: "Job started over a month ago with no invoices sent",
-          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job started ${fmtDate(startDate)}${formattedEndDate ? `, ends ${formattedEndDate}` : ""} (over a month ago) but no real invoices have been recorded yet. All invoice slots are empty or contain manual placeholders.`,
-          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate), endDate: formattedEndDate,
+          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job started ${fmtDate(startDate)}${formattedEndDate ? `, ends ${formattedEndDate}` : ""} (over a month ago)${rechargedAmt > 0 ? ` with £${billableAmt.toFixed(2)} billable (£${revenueAmt.toFixed(2)} fee + £${rechargedAmt.toFixed(2)} recharged)` : ""} but no real invoices have been recorded yet. All invoice slots are empty or contain manual placeholders.`,
+          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), startDate: fmtDate(startDate), endDate: formattedEndDate,
           jobType: resolvedJobType, isRetainer: isRetainerJob,
-          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate), endDate: formattedEndDate, stableJobKey: stableKey, jobType: resolvedJobType, isRetainer: isRetainerJob },
+          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), feeRevenue: String(revenueAmt), rechargedExpenses: String(rechargedAmt), startDate: fmtDate(startDate), endDate: formattedEndDate, stableJobKey: stableKey, jobType: resolvedJobType, isRetainer: isRetainerJob },
         });
       }
       r += jobRows.length;
@@ -992,11 +994,12 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
     while (r < data.length) {
       const row = data[r];
       const revenue = row[32];
+      const rechargedRaw = row[17];
       const jobType = String(row[35] || "").toLowerCase();
       const startVal = row[37];
       const endVal = row[38];
 
-      if (!revenue || !startVal || !endVal) { r++; continue; }
+      if ((!revenue && !rechargedRaw) || !startVal || !endVal) { r++; continue; }
       if (jobType.includes("retainer")) { r += collectJobRows_(data, r).length; continue; }
 
       const endDate = parseConfirmedDate_(endVal);
@@ -1007,7 +1010,9 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
       const projectCode = String(row[2] || "").trim();
       if (!jobName) { r++; continue; }
 
-      const revenueAmt = parseFloat(String(revenue).replace(/[£$€,\s]/g, "")) || 0;
+      const revenueAmt = parseFloat(String(revenue || "").replace(/[£$€,\s]/g, "")) || 0;
+      const rechargedAmt = parseFloat(String(rechargedRaw || "").replace(/[£$€,\s]/g, "")) || 0;
+      const billableAmt = Math.round((revenueAmt + rechargedAmt) * 100) / 100;
       const jobRows = collectJobRows_(data, r);
 
       let totalRealInvoiced = 0, draftCount = 0, draftTotal = 0;
@@ -1018,19 +1023,20 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
         draftTotal += slotResult.draftTotal;
       }
 
-      const uninvoiced = revenueAmt - totalRealInvoiced;
+      const uninvoiced = billableAmt - totalRealInvoiced;
       if (uninvoiced > TOLERANCE) {
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
         const draftNote = draftCount > 0 ? ` Note: ${draftCount} invoice(s) totalling £${draftTotal.toFixed(2)} have a reference but are still Draft (not yet sent) - these are not counted as invoiced.` : "";
+        const billableBreakdown = rechargedAmt > 0 ? `billable = £${billableAmt.toFixed(2)} (£${revenueAmt.toFixed(2)} fee + £${rechargedAmt.toFixed(2)} recharged)` : `revenue = £${revenueAmt.toFixed(2)}`;
         alerts.push({
           alertType: "uninvoiced_revenue",
-          alertKey: `uninvoiced_revenue|${clientName}|${jobClient || ""}|${stableKey}|uninv:${uninvoiced.toFixed(2)}|rev:${revenueAmt.toFixed(2)}|drafts:${draftCount}`,
+          alertKey: `uninvoiced_revenue|${clientName}|${jobClient || ""}|${stableKey}|uninv:${uninvoiced.toFixed(2)}|rev:${billableAmt.toFixed(2)}|drafts:${draftCount}`,
           legacyAlertKey: `uninvoiced_revenue|${clientName}|${jobClient || ""}|${stableKey}`,
           stableJobKey: stableKey,
           heading: "Completed job has uninvoiced revenue",
-          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, revenue = £${revenueAmt.toFixed(2)}, real sent/paid invoiced (excl. placeholders and drafts) = £${totalRealInvoiced.toFixed(2)} - £${uninvoiced.toFixed(2)} uninvoiced.${draftNote}`,
-          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)),
-          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)), stableJobKey: stableKey },
+          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, ${billableBreakdown}, real sent/paid invoiced (excl. placeholders and drafts) = £${totalRealInvoiced.toFixed(2)} - £${uninvoiced.toFixed(2)} uninvoiced.${draftNote}`,
+          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)),
+          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(billableAmt), feeRevenue: String(revenueAmt), rechargedExpenses: String(rechargedAmt), endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)), stableJobKey: stableKey },
         });
       }
       r += jobRows.length;
@@ -1060,7 +1066,7 @@ export async function checkDeletedInvoices_(clientName, clientSheetId, masterShe
     let confData = sharedData?.confirmedData;
     if (!confData) {
       try {
-        const confResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Confirmed!A1:BH5000" });
+        const confResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Confirmed!A1:BJ5000" });
         confData = confResp.data.values || [];
       } catch (e) { return alerts; }
     }
@@ -2150,7 +2156,9 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
  */
 export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, clientSheetId, categoryName, targetSheetRow) {
   if (!masterSheetId || !clientSheetId || !categoryName || !targetSheetRow) return;
+  if (Number(targetSheetRow) === 225 || Number(targetSheetRow) === 226) return;
   const normClean = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+  if (normClean === "recharged expenses (forecast)" || normClean === "recharged expenses recovery") return;
 
   // Helper to parse header labels into standardized 'YYYY-MM'
   function parseHeaderToMonthKey(str) {
@@ -2379,6 +2387,7 @@ export async function ensureCategoryInOutgoings_(sheets, clientSheetId, category
   if (!clientSheetId || !categoryName) return null;
   const cleanName = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim();
   const normClean = cleanName.toLowerCase();
+  if (normClean === "recharged expenses (forecast)" || normClean === "recharged expenses recovery") return null;
 
   const MIN_CATEGORY_ROW = 126;
   const MAX_CATEGORY_ROW = 223; // Fixed: Last usable row of the Other expenses section is Row 223
@@ -2398,7 +2407,17 @@ export async function ensureCategoryInOutgoings_(sheets, clientSheetId, category
     const raw = String(rows[r - 124]?.[0] || "").trim();
     const lower = raw.toLowerCase();
 
-    if (raw && !raw.startsWith("#") && !lower.includes("#n/a") && !lower.startsWith("total") && !lower.startsWith("---") && !lower.startsWith("===") && lower !== "other expenses") {
+    if (
+      raw &&
+      !raw.startsWith("#") &&
+      !lower.includes("#n/a") &&
+      !lower.startsWith("total") &&
+      !lower.startsWith("---") &&
+      !lower.startsWith("===") &&
+      lower !== "other expenses" &&
+      lower !== "recharged expenses (forecast)" &&
+      lower !== "recharged expenses recovery"
+    ) {
       const norm = raw.replace(/^\d+\s*[-–]\s*/, "").toLowerCase().trim();
       existingCats.add(norm);
       populatedCategoryRows.push(r);

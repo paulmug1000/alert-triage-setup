@@ -2146,12 +2146,35 @@ export async function updateGoogleSlidesPresentationNative({
         const maxR = Math.min(slideRows, matchedTableDef.rowCount);
         const maxC = Math.min(slideCols, matchedTableDef.colCount);
 
+        // Google Slides omits covered subordinate cells from tableRows[].tableCells[]
+        // and uses sparse coordinates in cell.location; map head cells by actual (rowIndex, columnIndex).
+        const headCellMap = new Map();
+        const coveredSubordinateSet = new Set();
+        (tblEl.table.tableRows || []).forEach((tRow, rIdx) => {
+          (tRow.tableCells || []).forEach((cell) => {
+            const cellR = cell.location?.rowIndex ?? rIdx;
+            const cellC = cell.location?.columnIndex ?? 0;
+            const rSpan = cell.rowSpan ?? 1;
+            const cSpan = cell.columnSpan ?? 1;
+            headCellMap.set(`${cellR}:${cellC}`, cell);
+            for (let dr = 0; dr < rSpan; dr++) {
+              for (let dc = 0; dc < cSpan; dc++) {
+                if (dr > 0 || dc > 0) {
+                  coveredSubordinateSet.add(`${cellR + dr}:${cellC + dc}`);
+                }
+              }
+            }
+          });
+        });
+
         for (let r = 0; r < maxR; r++) {
           for (let c = 0; c < maxC; c++) {
             const cellDef = matchedTableDef.rows[r]?.[c];
             if (!cellDef) continue;
+            if (coveredSubordinateSet.has(`${r}:${c}`)) continue;
 
-            const existingCell = tblEl.table.tableRows?.[r]?.tableCells?.[c];
+            const existingCell = headCellMap.get(`${r}:${c}`);
+            if (!existingCell) continue;
             const existingText = (existingCell?.text?.textElements || [])
               .map((te) => te.textRun?.content || "")
               .join("")

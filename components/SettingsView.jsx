@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import Skeleton from "./Skeleton";
 import ClientSettingsView from "./ClientSettingsView";
+import ClientRegistryCard from "./ClientRegistryCard";
 import UserManagementCard from "./UserManagementCard";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
@@ -387,6 +388,13 @@ export default function SettingsView({
         />
       ) : (
         <>
+
+          {effectiveIsAdmin && (
+            <ClientRegistryCard
+              automationCommanderSheetId={automationCommanderSheetId}
+              onClientsChanged={onClientsChanged}
+            />
+          )}
 
           {/* Notifications / Preferences Section (All Users) */}
           <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>

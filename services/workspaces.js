@@ -82,11 +82,11 @@ export async function getClientWebAppUrl(sheets, clientName, acId = DEFAULT_AC_S
       const sb = getSupabaseAdmin();
       const { data: row, error } = await sb
         .from("clients")
-        .select("master_gas_webapp_url")
+        .select("master_deployment_url, web_app_url")
         .eq("client_name", clientName)
         .maybeSingle();
-      if (!error && row?.master_gas_webapp_url) {
-        return String(row.master_gas_webapp_url).trim();
+      if (!error && (row?.master_deployment_url || row?.web_app_url)) {
+        return String(row.master_deployment_url || row.web_app_url).trim();
       }
     } catch (_) {}
   }

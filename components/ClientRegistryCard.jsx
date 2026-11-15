@@ -1,0 +1,831 @@
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import Spinner from "./Spinner";
+
+const STATUS_OPTIONS = [
+  { value: "live", label: "Live" },
+  { value: "setup", label: "Setup" },
+  { value: "paused", label: "Paused" },
+  { value: "archived", label: "Archived" },
+];
+
+const ENGINE_MODE_OPTIONS = [
+  { value: "supabase", label: "Supabase" },
+  { value: "sheet", label: "Sheet" },
+  { value: "shadow", label: "Shadow" },
+];
+
+const TEMPLATE_FIELDS = [
+  { key: "clientTemplateId", label: "Client template sheet ID" },
+  { key: "masterTemplateId", label: "Master template sheet ID" },
+  { key: "reconTemplateId", label: "Recon template sheet ID" },
+  { key: "clientTemplateScriptId", label: "Client template script ID" },
+  { key: "masterTemplateScriptId", label: "Master template script ID" },
+  { key: "reconTemplateScriptId", label: "Recon template script ID" },
+];
+
+const EMPTY_TEMPLATES = {
+  clientTemplateId: "",
+  masterTemplateId: "",
+  reconTemplateId: "",
+  clientTemplateScriptId: "",
+  masterTemplateScriptId: "",
+  reconTemplateScriptId: "",
+};
+
+const COLUMNS = [
+  { key: "tracker_row_index", label: "#", type: "number", width: 54, stickyLeft: 0 },
+  { key: "client_name", label: "Client name", type: "text", width: 190, stickyLeft: 54, placeholder: "Required client name" },
+  { key: "short_code", label: "Code", type: "text", width: 72, placeholder: "e.g. ELV" },
+  { key: "service_type", label: "Service", type: "text", width: 96, placeholder: "e.g. Retainer" },
+  { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS, width: 105 },
+  { key: "master_mode", label: "Master mode", type: "select", options: ENGINE_MODE_OPTIONS, width: 115 },
+  { key: "client_mode", label: "Portal mode", type: "select", options: ENGINE_MODE_OPTIONS, width: 115 },
+  { key: "version_in_use", label: "Version", type: "text", width: 85, placeholder: "e.g. v2.80" },
+  { key: "client_sheet_url", label: "Client sheet URL", type: "url", width: 210, placeholder: "https://docs.google.com/..." },
+  { key: "master_sheet_url", label: "Master sheet URL", type: "url", width: 210, placeholder: "https://docs.google.com/..." },
+  { key: "recon_sheet_url", label: "Recon sheet URL", type: "url", width: 210, placeholder: "https://docs.google.com/..." },
+  { key: "backup_sheet_url", label: "Backup sheet URL", type: "url", width: 200, placeholder: "https://docs.google.com/..." },
+  { key: "drive_folder_id", label: "Drive folder ID", type: "folder", width: 175, placeholder: "Folder ID or URL" },
+  { key: "reports_folder_id", label: "Reports folder ID", type: "folder", width: 175, placeholder: "Folder ID or URL" },
+  { key: "client_script_id", label: "Client script ID", type: "mono", width: 200, placeholder: "Apps Script ID" },
+  { key: "master_script_id", label: "Master script ID", type: "mono", width: 200, placeholder: "Apps Script ID" },
+  { key: "recon_script_id", label: "Recon script ID", type: "mono", width: 200, placeholder: "Apps Script ID" },
+  { key: "master_deployment_url", label: "Master deployment URL", type: "url", width: 220, placeholder: "https://script.google.com/..." },
+];
+
+function getRowKey(row) {
+  return row._rowKey || row.id;
+}
+
+function normalizeEditableRow(raw = {}) {
+  const rowKey = raw._rowKey || raw.id || `__new_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  return {
+    _rowKey: rowKey,
+    _isNew: Boolean(raw._isNew),
+    id: raw.id || null,
+    tracker_row_index: raw.tracker_row_index ?? "",
+    client_name: raw.client_name || "",
+    short_code: raw.short_code || "",
+    service_type: raw.service_type || "",
+    status: raw.status || "live",
+    master_mode: raw.master_mode || "sheet",
+    client_mode: raw.client_mode || "sheet",
+    version_in_use: raw.version_in_use || "",
+    client_sheet_url: raw.client_sheet_url || "",
+    master_sheet_url: raw.master_sheet_url || "",
+    recon_sheet_url: raw.recon_sheet_url || "",
+    backup_sheet_url: raw.backup_sheet_url || "",
+    drive_folder_id: raw.drive_folder_id || "",
+    reports_folder_id: raw.reports_folder_id || "",
+    client_script_id: raw.client_script_id || "",
+    master_script_id: raw.master_script_id || "",
+    recon_script_id: raw.recon_script_id || "",
+    master_deployment_url: raw.master_deployment_url || "",
+    web_app_url: raw.web_app_url || "",
+    webapp_version: raw.webapp_version || "",
+  };
+}
+
+function rowsEqual(a, b) {
+  if (!a || !b) return false;
+  for (const col of COLUMNS) {
+    if (String(a[col.key] ?? "") !== String(b[col.key] ?? "")) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function buildExternalUrl(val, colType) {
+  const clean = String(val || "").trim();
+  if (!clean) return "";
+  if (/^https?:\/\//i.test(clean)) return clean;
+  if (colType === "folder") return `https://drive.google.com/drive/folders/${clean}`;
+  return "";
+}
+
+const inputBaseStyle = {
+  width: "100%",
+  padding: "5px 7px",
+  borderRadius: "5px",
+  border: "1px solid #cbd5e1",
+  fontSize: "12px",
+  color: "#0f172a",
+  background: "#ffffff",
+  boxSizing: "border-box",
+};
+
+const btnSecondaryStyle = {
+  padding: "6px 11px",
+  borderRadius: "6px",
+  border: "1px solid #cbd5e1",
+  background: "#ffffff",
+  color: "#334155",
+  fontSize: "12px",
+  fontWeight: "600",
+  cursor: "pointer",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "6px",
+};
+
+export default function ClientRegistryCard({ automationCommanderSheetId, onClientsChanged }) {
+  const [rows, setRows] = useState([]);
+  const [originalMap, setOriginalMap] = useState({});
+  const [templates, setTemplates] = useState(EMPTY_TEMPLATES);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [savingTemplates, setSavingTemplates] = useState(false);
+
+  const [loading, setLoading] = useState(true);
+  const [savingRowKeys, setSavingRowKeys] = useState({});
+  const [savingBatch, setSavingBatch] = useState(false);
+  const [deletingKey, setDeletingKey] = useState("");
+  const [confirmDeleteKey, setConfirmDeleteKey] = useState("");
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const loadRegistry = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/pma/control-plane", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "list_clients_registry",
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to load clients registry.");
+      }
+      const normalized = (data.clients || []).map(c => normalizeEditableRow(c));
+      const orig = {};
+      normalized.forEach(r => {
+        orig[getRowKey(r)] = { ...r };
+      });
+      setRows(normalized);
+      setOriginalMap(orig);
+      if (data.templates) {
+        setTemplates({ ...EMPTY_TEMPLATES, ...data.templates });
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [automationCommanderSheetId]);
+
+  useEffect(() => {
+    loadRegistry();
+  }, [loadRegistry]);
+
+  const dirtyRows = useMemo(() => {
+    return rows.filter(r => {
+      if (r._isNew) return true;
+      const orig = originalMap[getRowKey(r)];
+      return !rowsEqual(r, orig);
+    });
+  }, [rows, originalMap]);
+
+  const dirtyKeySet = useMemo(() => new Set(dirtyRows.map(getRowKey)), [dirtyRows]);
+
+  const liveCount = useMemo(
+    () => rows.filter(r => !r._isNew && r.status === "live").length,
+    [rows]
+  );
+
+  const filteredRows = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return rows.filter(r => {
+      if (r._isNew) return true;
+      if (statusFilter !== "all" && r.status !== statusFilter) {
+        return false;
+      }
+      if (!q) return true;
+      const haystack = [
+        r.client_name,
+        r.short_code,
+        r.service_type,
+        r.client_script_id,
+        r.master_script_id,
+        r.recon_script_id,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [rows, searchQuery, statusFilter]);
+
+  const handleFieldChange = (rowKey, field, value) => {
+    setRows(prev =>
+      prev.map(r => (getRowKey(r) === rowKey ? { ...r, [field]: value } : r))
+    );
+  };
+
+  const handleAddRow = () => {
+    setError("");
+    setNotice("");
+    const newRow = normalizeEditableRow({ _isNew: true, status: "live", master_mode: "sheet", client_mode: "sheet" });
+    setRows(prev => [newRow, ...prev]);
+  };
+
+  const handleUndoRow = (rowKey) => {
+    const orig = originalMap[rowKey];
+    if (!orig) {
+      setRows(prev => prev.filter(r => getRowKey(r) !== rowKey));
+      return;
+    }
+    setRows(prev => prev.map(r => (getRowKey(r) === rowKey ? { ...orig } : r)));
+  };
+
+  const handleSaveRow = async (row) => {
+    const rowKey = getRowKey(row);
+    if (!String(row.client_name || "").trim()) {
+      setError("Client name is required before saving.");
+      return;
+    }
+    setSavingRowKeys(prev => ({ ...prev, [rowKey]: true }));
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch("/api/pma/control-plane", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_client_registry_row",
+          automationCommanderSheetId,
+          row,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to save client row.");
+      }
+      const saved = normalizeEditableRow(data.client);
+      const savedKey = getRowKey(saved);
+      setRows(prev => prev.map(r => (getRowKey(r) === rowKey ? saved : r)));
+      setOriginalMap(prev => {
+        const next = { ...prev };
+        delete next[rowKey];
+        next[savedKey] = { ...saved };
+        return next;
+      });
+      setNotice(`Saved changes for ${saved.client_name}.`);
+      onClientsChanged?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingRowKeys(prev => {
+        const next = { ...prev };
+        delete next[rowKey];
+        return next;
+      });
+    }
+  };
+
+  const handleSaveAll = async () => {
+    if (dirtyRows.length === 0) return;
+    const missingName = dirtyRows.find(r => !String(r.client_name || "").trim());
+    if (missingName) {
+      setError("Every modified or new row must have a client name before saving.");
+      return;
+    }
+    setSavingBatch(true);
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch("/api/pma/control-plane", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_client_registry_batch",
+          automationCommanderSheetId,
+          rows: dirtyRows,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to save batch changes.");
+      }
+      await loadRegistry();
+      setNotice(`Saved ${dirtyRows.length} client record${dirtyRows.length === 1 ? "" : "s"}.`);
+      onClientsChanged?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingBatch(false);
+    }
+  };
+
+  const handleDeleteRow = async (row) => {
+    const rowKey = getRowKey(row);
+    if (row._isNew || !row.id) {
+      setRows(prev => prev.filter(r => getRowKey(r) !== rowKey));
+      setConfirmDeleteKey("");
+      return;
+    }
+    setDeletingKey(rowKey);
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch("/api/pma/control-plane", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "delete_client_registry_row",
+          automationCommanderSheetId,
+          id: row.id,
+          clientName: row.client_name,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to delete client row.");
+      }
+      setRows(prev => prev.filter(r => getRowKey(r) !== rowKey));
+      setOriginalMap(prev => {
+        const next = { ...prev };
+        delete next[rowKey];
+        return next;
+      });
+      setConfirmDeleteKey("");
+      setNotice(`Removed ${row.client_name} from the client registry.`);
+      onClientsChanged?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingKey("");
+    }
+  };
+
+  const handleSaveTemplates = async (e) => {
+    e.preventDefault();
+    setSavingTemplates(true);
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch("/api/pma/control-plane", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_provisioning_templates",
+          automationCommanderSheetId,
+          templates,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to save provisioning templates.");
+      }
+      if (data.templates) {
+        setTemplates({ ...EMPTY_TEMPLATES, ...data.templates });
+      }
+      setNotice("Provisioning template IDs saved.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingTemplates(false);
+    }
+  };
+
+  const renderCellInput = (row, col) => {
+    const rowKey = getRowKey(row);
+    const val = row[col.key] ?? "";
+
+    if (col.type === "select") {
+      return (
+        <select
+          value={val}
+          onChange={(e) => handleFieldChange(rowKey, col.key, e.target.value)}
+          style={{ ...inputBaseStyle, padding: "5px 6px" }}
+        >
+          {col.options.map(opt => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      );
+    }
+
+    const externalUrl = (col.type === "url" || col.type === "folder") ? buildExternalUrl(val, col.type) : "";
+
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+        <input
+          type={col.type === "number" ? "number" : "text"}
+          value={val}
+          placeholder={col.placeholder || ""}
+          onChange={(e) => handleFieldChange(rowKey, col.key, e.target.value)}
+          style={{
+            ...inputBaseStyle,
+            fontFamily: col.type === "mono" ? "ui-monospace, SFMono-Regular, Menlo, monospace" : "inherit",
+            fontWeight: col.key === "client_name" ? "600" : "400",
+            textAlign: col.type === "number" ? "center" : "left",
+          }}
+        />
+        {externalUrl && (
+          <a
+            href={externalUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              fontSize: "11px",
+              fontWeight: "600",
+              color: "#0047AB",
+              textDecoration: "none",
+              padding: "3px 5px",
+              borderRadius: "4px",
+              background: "#eff6ff",
+              border: "1px solid #bfdbfe",
+              flexShrink: 0,
+            }}
+            title={`Open ${col.label.toLowerCase()}`}
+          >
+            Open
+          </a>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+      {/* Header Row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap", marginBottom: "12px" }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "4px" }}>
+            <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>Clients</h3>
+            <span style={{ fontSize: "11px", fontWeight: "600", padding: "2px 8px", borderRadius: "999px", background: "#f1f5f9", color: "#334155", border: "1px solid #e2e8f0" }}>
+              {rows.length} total
+            </span>
+            <span style={{ fontSize: "11px", fontWeight: "600", padding: "2px 8px", borderRadius: "999px", background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
+              {liveCount} live
+            </span>
+          </div>
+          <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+            Manage client registry records, engine modes, spreadsheet links, and Apps Script IDs stored in Supabase.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => setShowTemplates(v => !v)}
+            style={{
+              ...btnSecondaryStyle,
+              background: showTemplates ? "#eff6ff" : "#ffffff",
+              borderColor: showTemplates ? "#93c5fd" : "#cbd5e1",
+              color: showTemplates ? "#1d4ed8" : "#334155",
+            }}
+          >
+            Provisioning templates
+          </button>
+          <button
+            type="button"
+            onClick={handleAddRow}
+            style={{
+              ...btnSecondaryStyle,
+              background: "#0047AB",
+              borderColor: "#0047AB",
+              color: "#ffffff",
+            }}
+          >
+            Add client row
+          </button>
+          {dirtyRows.length > 0 && (
+            <button
+              type="button"
+              onClick={handleSaveAll}
+              disabled={savingBatch}
+              style={{
+                ...btnSecondaryStyle,
+                background: "#16a34a",
+                borderColor: "#16a34a",
+                color: "#ffffff",
+                cursor: savingBatch ? "wait" : "pointer",
+              }}
+            >
+              {savingBatch ? <Spinner size={12} color="#ffffff" /> : null}
+              Save all changes ({dirtyRows.length})
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={loadRegistry}
+            disabled={loading}
+            style={{ ...btnSecondaryStyle, cursor: loading ? "wait" : "pointer" }}
+          >
+            {loading ? <Spinner size={12} color="#334155" /> : null}
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Provisioning Templates Panel */}
+      {showTemplates && (
+        <form
+          onSubmit={handleSaveTemplates}
+          style={{
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            borderRadius: "8px",
+            padding: "12px 14px",
+            marginBottom: "14px",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
+            <div>
+              <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>Provisioning template IDs</div>
+              <div style={{ fontSize: "11.5px", color: "#64748b" }}>
+                Template spreadsheet and Apps Script IDs used when onboarding new clients in Supabase mode.
+              </div>
+            </div>
+            <button
+              type="submit"
+              disabled={savingTemplates}
+              style={{
+                ...btnSecondaryStyle,
+                background: "#0047AB",
+                borderColor: "#0047AB",
+                color: "#ffffff",
+                cursor: savingTemplates ? "wait" : "pointer",
+              }}
+            >
+              {savingTemplates ? <Spinner size={12} color="#ffffff" /> : null}
+              Save templates
+            </button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "10px" }}>
+            {TEMPLATE_FIELDS.map(tf => (
+              <div key={tf.key}>
+                <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#334155", marginBottom: "4px" }}>
+                  {tf.label}
+                </label>
+                <input
+                  type="text"
+                  value={templates[tf.key] || ""}
+                  onChange={(e) => setTemplates(prev => ({ ...prev, [tf.key]: e.target.value }))}
+                  style={{ ...inputBaseStyle, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+                />
+              </div>
+            ))}
+          </div>
+        </form>
+      )}
+
+      {/* Search & Filter Bar */}
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "12px" }}>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Filter by client name, short code, or script ID..."
+          style={{ ...inputBaseStyle, maxWidth: "320px", padding: "6px 10px", fontSize: "12.5px" }}
+        />
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          style={{ ...inputBaseStyle, width: "auto", padding: "6px 10px", fontSize: "12.5px" }}
+        >
+          <option value="all">All statuses</option>
+          {STATUS_OPTIONS.map(s => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        {notice && (
+          <span style={{ fontSize: "12px", fontWeight: "600", color: "#166534" }}>{notice}</span>
+        )}
+        {error && (
+          <span style={{ fontSize: "12px", fontWeight: "600", color: "#dc2626" }}>{error}</span>
+        )}
+      </div>
+
+      {/* Inline Editable Table */}
+      {loading && rows.length === 0 ? (
+        <div style={{ padding: "20px", textAlign: "center", fontSize: "12.5px", color: "#64748b", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
+          <Spinner size={14} color="#0047AB" /> Loading clients...
+        </div>
+      ) : (
+        <div style={{ border: "1px solid #e2e8f0", borderRadius: "8px", overflowX: "auto", overflowY: "auto", maxHeight: "540px", position: "relative" }}>
+          <table style={{ width: "max-content", minWidth: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: "12px" }}>
+            <thead>
+              <tr>
+                {COLUMNS.map(col => (
+                  <th
+                    key={col.key}
+                    style={{
+                      position: "sticky",
+                      top: 0,
+                      left: col.stickyLeft !== undefined ? col.stickyLeft : undefined,
+                      zIndex: col.stickyLeft !== undefined ? 4 : 2,
+                      background: "#f8fafc",
+                      color: "#334155",
+                      fontWeight: "700",
+                      fontSize: "11.5px",
+                      textAlign: "left",
+                      padding: "8px 8px",
+                      borderBottom: "1px solid #cbd5e1",
+                      borderRight: col.key === "client_name" ? "2px solid #cbd5e1" : "1px solid #e2e8f0",
+                      minWidth: col.width,
+                      width: col.width,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {col.label}
+                  </th>
+                ))}
+                <th
+                  style={{
+                    position: "sticky",
+                    top: 0,
+                    right: 0,
+                    zIndex: 4,
+                    background: "#f8fafc",
+                    color: "#334155",
+                    fontWeight: "700",
+                    fontSize: "11.5px",
+                    textAlign: "left",
+                    padding: "8px 10px",
+                    borderBottom: "1px solid #cbd5e1",
+                    borderLeft: "2px solid #cbd5e1",
+                    minWidth: 165,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRows.length === 0 ? (
+                <tr>
+                  <td colSpan={COLUMNS.length + 1} style={{ padding: "20px", textAlign: "center", color: "#64748b" }}>
+                    No matching clients found.
+                  </td>
+                </tr>
+              ) : (
+                filteredRows.map(row => {
+                  const rowKey = getRowKey(row);
+                  const isDirty = dirtyKeySet.has(rowKey);
+                  const isRowSaving = Boolean(savingRowKeys[rowKey]);
+                  const isConfirmingDel = confirmDeleteKey === rowKey;
+                  const rowBg = row._isNew ? "#f0fdf4" : isDirty ? "#fffbeb" : "#ffffff";
+
+                  return (
+                    <tr key={rowKey} style={{ background: rowBg }}>
+                      {COLUMNS.map(col => (
+                        <td
+                          key={col.key}
+                          style={{
+                            position: col.stickyLeft !== undefined ? "sticky" : undefined,
+                            left: col.stickyLeft !== undefined ? col.stickyLeft : undefined,
+                            zIndex: col.stickyLeft !== undefined ? 1 : undefined,
+                            background: rowBg,
+                            padding: "6px 6px",
+                            borderBottom: "1px solid #e2e8f0",
+                            borderRight: col.key === "client_name" ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
+                            minWidth: col.width,
+                            width: col.width,
+                            verticalAlign: "middle",
+                          }}
+                        >
+                          {renderCellInput(row, col)}
+                        </td>
+                      ))}
+                      <td
+                        style={{
+                          position: "sticky",
+                          right: 0,
+                          zIndex: 1,
+                          background: rowBg,
+                          padding: "6px 10px",
+                          borderBottom: "1px solid #e2e8f0",
+                          borderLeft: "2px solid #cbd5e1",
+                          whiteSpace: "nowrap",
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleSaveRow(row)}
+                            disabled={(!isDirty && !row._isNew) || isRowSaving}
+                            style={{
+                              padding: "4px 9px",
+                              borderRadius: "5px",
+                              border: "1px solid",
+                              borderColor: (isDirty || row._isNew) ? "#0047AB" : "#cbd5e1",
+                              background: (isDirty || row._isNew) ? "#0047AB" : "#f8fafc",
+                              color: (isDirty || row._isNew) ? "#ffffff" : "#94a3b8",
+                              fontSize: "11.5px",
+                              fontWeight: "600",
+                              cursor: (!isDirty && !row._isNew) ? "default" : isRowSaving ? "wait" : "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                            }}
+                          >
+                            {isRowSaving ? <Spinner size={10} color="#ffffff" /> : null}
+                            Save
+                          </button>
+
+                          {isDirty && (
+                            <button
+                              type="button"
+                              onClick={() => handleUndoRow(rowKey)}
+                              style={{
+                                padding: "4px 7px",
+                                borderRadius: "5px",
+                                border: "1px solid #cbd5e1",
+                                background: "#ffffff",
+                                color: "#475569",
+                                fontSize: "11.5px",
+                                fontWeight: "600",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Undo
+                            </button>
+                          )}
+
+                          {isConfirmingDel ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRow(row)}
+                                disabled={deletingKey === rowKey}
+                                style={{
+                                  padding: "4px 7px",
+                                  borderRadius: "5px",
+                                  border: "1px solid #dc2626",
+                                  background: "#dc2626",
+                                  color: "#ffffff",
+                                  fontSize: "11.5px",
+                                  fontWeight: "600",
+                                  cursor: deletingKey === rowKey ? "wait" : "pointer",
+                                }}
+                              >
+                                Confirm
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteKey("")}
+                                style={{
+                                  padding: "4px 7px",
+                                  borderRadius: "5px",
+                                  border: "1px solid #cbd5e1",
+                                  background: "#ffffff",
+                                  color: "#475569",
+                                  fontSize: "11.5px",
+                                  fontWeight: "600",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (row._isNew) {
+                                  handleDeleteRow(row);
+                                } else {
+                                  setConfirmDeleteKey(rowKey);
+                                }
+                              }}
+                              style={{
+                                padding: "4px 7px",
+                                borderRadius: "5px",
+                                border: "1px solid #fecaca",
+                                background: "#fff1f2",
+                                color: "#be123c",
+                                fontSize: "11.5px",
+                                fontWeight: "600",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}

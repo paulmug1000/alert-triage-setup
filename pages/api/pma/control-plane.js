@@ -23,7 +23,7 @@ function extractDriveFolderId_(val) {
   return match ? match[1] : str;
 }
 
-function buildClientRegistryPayload_(raw = {}) {
+function buildClientRegistryPayload_(raw = {}, { isUpdate = false } = {}) {
   const clientName = String(raw.client_name || "").trim();
   if (!clientName) {
     throw new Error("Client name is required.");
@@ -36,30 +36,15 @@ function buildClientRegistryPayload_(raw = {}) {
   const rawStatus = String(raw.status || "live").trim().toLowerCase();
   const status = VALID_CLIENT_STATUSES.has(rawStatus) ? rawStatus : "live";
 
-  const rawMasterMode = String(raw.master_mode || "sheet").trim().toLowerCase();
-  const masterMode = VALID_ENGINE_MODES.has(rawMasterMode) ? rawMasterMode : "sheet";
-
-  const rawClientMode = String(raw.client_mode || "sheet").trim().toLowerCase();
-  const clientMode = VALID_ENGINE_MODES.has(rawClientMode) ? rawClientMode : "sheet";
-
   const clientSheetUrl = String(raw.client_sheet_url || "").trim();
   const masterSheetUrl = String(raw.master_sheet_url || "").trim();
   const reconSheetUrl = String(raw.recon_sheet_url || "").trim();
   const backupSheetUrl = String(raw.backup_sheet_url || "").trim();
 
-  const parsedRowIndex = parseInt(String(raw.tracker_row_index ?? "").trim(), 10);
-  const trackerRowIndex = Number.isFinite(parsedRowIndex) ? parsedRowIndex : null;
-
-  const shortCodeRaw = String(raw.short_code || "").trim();
-
-  return {
+  const payload = {
     client_name: clientName,
     normalized_key: normalizedKey,
-    short_code: shortCodeRaw || null,
-    service_type: String(raw.service_type || "").trim(),
     status,
-    master_mode: masterMode,
-    client_mode: clientMode,
     version_in_use: String(raw.version_in_use || "").trim(),
     webapp_version: String(raw.webapp_version || "").trim(),
     client_sheet_url: clientSheetUrl,
@@ -76,15 +61,29 @@ function buildClientRegistryPayload_(raw = {}) {
     recon_script_id: String(raw.recon_script_id || "").trim(),
     master_deployment_url: String(raw.master_deployment_url || "").trim(),
     web_app_url: String(raw.web_app_url || "").trim(),
-    tracker_row_index: trackerRowIndex,
   };
+
+  if (!isUpdate) {
+    const rawMasterMode = String(raw.master_mode || "sheet").trim().toLowerCase();
+    const rawClientMode = String(raw.client_mode || "sheet").trim().toLowerCase();
+    const parsedRowIndex = parseInt(String(raw.tracker_row_index ?? "").trim(), 10);
+    const shortCodeRaw = String(raw.short_code || "").trim();
+
+    payload.short_code = shortCodeRaw || null;
+    payload.service_type = String(raw.service_type || "").trim();
+    payload.master_mode = VALID_ENGINE_MODES.has(rawMasterMode) ? rawMasterMode : "sheet";
+    payload.client_mode = VALID_ENGINE_MODES.has(rawClientMode) ? rawClientMode : "sheet";
+    payload.tracker_row_index = Number.isFinite(parsedRowIndex) ? parsedRowIndex : null;
+  }
+
+  return payload;
 }
 
 async function upsertClientRegistryRecord_(sb, rawRow) {
-  const payload = buildClientRegistryPayload_(rawRow);
   const existingId = rawRow?.id && !String(rawRow.id).startsWith("__new_") ? String(rawRow.id).trim() : null;
 
   if (existingId) {
+    const payload = buildClientRegistryPayload_(rawRow, { isUpdate: true });
     const { data, error } = await sb
       .from("clients")
       .update(payload)
@@ -95,6 +94,7 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
     return data;
   }
 
+  const payload = buildClientRegistryPayload_(rawRow, { isUpdate: false });
   const { data, error } = await sb
     .from("clients")
     .upsert(payload, { onConflict: "normalized_key" })

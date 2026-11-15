@@ -8,11 +8,11 @@ const STATUS_OPTIONS = [
   { value: "archived", label: "Archived" },
 ];
 
-const ENGINE_MODE_OPTIONS = [
-  { value: "supabase", label: "Supabase" },
-  { value: "sheet", label: "Sheet" },
-  { value: "shadow", label: "Shadow" },
-];
+const MODE_LABELS = {
+  supabase: { label: "Supabase", bg: "#dcfce7", color: "#166534", border: "#bbf7d0" },
+  sheet: { label: "Sheet", bg: "#f1f5f9", color: "#334155", border: "#cbd5e1" },
+  shadow: { label: "Shadow", bg: "#fef3c7", color: "#92400e", border: "#fde68a" },
+};
 
 const TEMPLATE_FIELDS = [
   { key: "clientTemplateId", label: "Client template sheet ID" },
@@ -33,13 +33,10 @@ const EMPTY_TEMPLATES = {
 };
 
 const COLUMNS = [
-  { key: "tracker_row_index", label: "#", type: "number", width: 54, stickyLeft: 0 },
-  { key: "client_name", label: "Client name", type: "text", width: 190, stickyLeft: 54, placeholder: "Required client name" },
-  { key: "short_code", label: "Code", type: "text", width: 72, placeholder: "e.g. ELV" },
-  { key: "service_type", label: "Service", type: "text", width: 96, placeholder: "e.g. Retainer" },
+  { key: "client_name", label: "Client name", type: "text", width: 195, stickyLeft: 0, placeholder: "Required client name" },
   { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS, width: 105 },
-  { key: "master_mode", label: "Master mode", type: "select", options: ENGINE_MODE_OPTIONS, width: 115 },
-  { key: "client_mode", label: "Portal mode", type: "select", options: ENGINE_MODE_OPTIONS, width: 115 },
+  { key: "master_mode", label: "Master mode", type: "readonly_mode", width: 105 },
+  { key: "client_mode", label: "Portal mode", type: "readonly_mode", width: 105 },
   { key: "version_in_use", label: "Version", type: "text", width: 85, placeholder: "e.g. v2.80" },
   { key: "client_sheet_url", label: "Client sheet URL", type: "url", width: 210, placeholder: "https://docs.google.com/..." },
   { key: "master_sheet_url", label: "Master sheet URL", type: "url", width: 210, placeholder: "https://docs.google.com/..." },
@@ -54,19 +51,14 @@ const COLUMNS = [
 ];
 
 function getRowKey(row) {
-  return row._rowKey || row.id;
+  return row.id || row.normalized_key || row.client_name;
 }
 
 function normalizeEditableRow(raw = {}) {
-  const rowKey = raw._rowKey || raw.id || `__new_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   return {
-    _rowKey: rowKey,
-    _isNew: Boolean(raw._isNew),
     id: raw.id || null,
-    tracker_row_index: raw.tracker_row_index ?? "",
+    normalized_key: raw.normalized_key || "",
     client_name: raw.client_name || "",
-    short_code: raw.short_code || "",
-    service_type: raw.service_type || "",
     status: raw.status || "live",
     master_mode: raw.master_mode || "sheet",
     client_mode: raw.client_mode || "sheet",
@@ -89,6 +81,7 @@ function normalizeEditableRow(raw = {}) {
 function rowsEqual(a, b) {
   if (!a || !b) return false;
   for (const col of COLUMNS) {
+    if (col.type === "readonly_mode") continue;
     if (String(a[col.key] ?? "") !== String(b[col.key] ?? "")) {
       return false;
     }
@@ -185,32 +178,25 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
   }, [loadRegistry]);
 
   const dirtyRows = useMemo(() => {
-    return rows.filter(r => {
-      if (r._isNew) return true;
-      const orig = originalMap[getRowKey(r)];
-      return !rowsEqual(r, orig);
-    });
+    return rows.filter(r => !rowsEqual(r, originalMap[getRowKey(r)]));
   }, [rows, originalMap]);
 
   const dirtyKeySet = useMemo(() => new Set(dirtyRows.map(getRowKey)), [dirtyRows]);
 
   const liveCount = useMemo(
-    () => rows.filter(r => !r._isNew && r.status === "live").length,
+    () => rows.filter(r => r.status === "live").length,
     [rows]
   );
 
   const filteredRows = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return rows.filter(r => {
-      if (r._isNew) return true;
       if (statusFilter !== "all" && r.status !== statusFilter) {
         return false;
       }
       if (!q) return true;
       const haystack = [
         r.client_name,
-        r.short_code,
-        r.service_type,
         r.client_script_id,
         r.master_script_id,
         r.recon_script_id,
@@ -227,19 +213,9 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
     );
   };
 
-  const handleAddRow = () => {
-    setError("");
-    setNotice("");
-    const newRow = normalizeEditableRow({ _isNew: true, status: "live", master_mode: "sheet", client_mode: "sheet" });
-    setRows(prev => [newRow, ...prev]);
-  };
-
   const handleUndoRow = (rowKey) => {
     const orig = originalMap[rowKey];
-    if (!orig) {
-      setRows(prev => prev.filter(r => getRowKey(r) !== rowKey));
-      return;
-    }
+    if (!orig) return;
     setRows(prev => prev.map(r => (getRowKey(r) === rowKey ? { ...orig } : r)));
   };
 
@@ -292,7 +268,7 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
     if (dirtyRows.length === 0) return;
     const missingName = dirtyRows.find(r => !String(r.client_name || "").trim());
     if (missingName) {
-      setError("Every modified or new row must have a client name before saving.");
+      setError("Every modified row must have a client name before saving.");
       return;
     }
     setSavingBatch(true);
@@ -324,11 +300,6 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
 
   const handleDeleteRow = async (row) => {
     const rowKey = getRowKey(row);
-    if (row._isNew || !row.id) {
-      setRows(prev => prev.filter(r => getRowKey(r) !== rowKey));
-      setConfirmDeleteKey("");
-      return;
-    }
     setDeletingKey(rowKey);
     setError("");
     setNotice("");
@@ -397,6 +368,33 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
     const rowKey = getRowKey(row);
     const val = row[col.key] ?? "";
 
+    if (col.type === "readonly_mode") {
+      const styleMeta = MODE_LABELS[String(val).toLowerCase()] || {
+        label: val || "Sheet",
+        bg: "#f1f5f9",
+        color: "#334155",
+        border: "#cbd5e1",
+      };
+      return (
+        <span
+          title="Managed via the DB screen"
+          style={{
+            display: "inline-block",
+            fontSize: "11px",
+            fontWeight: "600",
+            padding: "3px 8px",
+            borderRadius: "999px",
+            background: styleMeta.bg,
+            color: styleMeta.color,
+            border: `1px solid ${styleMeta.border}`,
+            cursor: "default",
+          }}
+        >
+          {styleMeta.label}
+        </span>
+      );
+    }
+
     if (col.type === "select") {
       return (
         <select
@@ -418,7 +416,7 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
     return (
       <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
         <input
-          type={col.type === "number" ? "number" : "text"}
+          type="text"
           value={val}
           placeholder={col.placeholder || ""}
           onChange={(e) => handleFieldChange(rowKey, col.key, e.target.value)}
@@ -426,7 +424,6 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
             ...inputBaseStyle,
             fontFamily: col.type === "mono" ? "ui-monospace, SFMono-Regular, Menlo, monospace" : "inherit",
             fontWeight: col.key === "client_name" ? "600" : "400",
-            textAlign: col.type === "number" ? "center" : "left",
           }}
         />
         {externalUrl && (
@@ -469,7 +466,7 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
             </span>
           </div>
           <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
-            Manage client registry records, engine modes, spreadsheet links, and Apps Script IDs stored in Supabase.
+            Manage client status, spreadsheet links, and Apps Script IDs stored in Supabase. Engine modes are managed via the DB screen, and new clients are onboarded via Setup.
           </p>
         </div>
 
@@ -485,18 +482,6 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
             }}
           >
             Provisioning templates
-          </button>
-          <button
-            type="button"
-            onClick={handleAddRow}
-            style={{
-              ...btnSecondaryStyle,
-              background: "#0047AB",
-              borderColor: "#0047AB",
-              color: "#ffffff",
-            }}
-          >
-            Add client row
           </button>
           {dirtyRows.length > 0 && (
             <button
@@ -585,7 +570,7 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Filter by client name, short code, or script ID..."
+          placeholder="Filter by client name or script ID..."
           style={{ ...inputBaseStyle, maxWidth: "320px", padding: "6px 10px", fontSize: "12.5px" }}
         />
         <select
@@ -677,7 +662,7 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
                   const isDirty = dirtyKeySet.has(rowKey);
                   const isRowSaving = Boolean(savingRowKeys[rowKey]);
                   const isConfirmingDel = confirmDeleteKey === rowKey;
-                  const rowBg = row._isNew ? "#f0fdf4" : isDirty ? "#fffbeb" : "#ffffff";
+                  const rowBg = isDirty ? "#fffbeb" : "#ffffff";
 
                   return (
                     <tr key={rowKey} style={{ background: rowBg }}>
@@ -695,6 +680,7 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
                             minWidth: col.width,
                             width: col.width,
                             verticalAlign: "middle",
+                            textAlign: col.type === "readonly_mode" ? "center" : "left",
                           }}
                         >
                           {renderCellInput(row, col)}
@@ -717,17 +703,17 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
                           <button
                             type="button"
                             onClick={() => handleSaveRow(row)}
-                            disabled={(!isDirty && !row._isNew) || isRowSaving}
+                            disabled={!isDirty || isRowSaving}
                             style={{
                               padding: "4px 9px",
                               borderRadius: "5px",
                               border: "1px solid",
-                              borderColor: (isDirty || row._isNew) ? "#0047AB" : "#cbd5e1",
-                              background: (isDirty || row._isNew) ? "#0047AB" : "#f8fafc",
-                              color: (isDirty || row._isNew) ? "#ffffff" : "#94a3b8",
+                              borderColor: isDirty ? "#0047AB" : "#cbd5e1",
+                              background: isDirty ? "#0047AB" : "#f8fafc",
+                              color: isDirty ? "#ffffff" : "#94a3b8",
                               fontSize: "11.5px",
                               fontWeight: "600",
-                              cursor: (!isDirty && !row._isNew) ? "default" : isRowSaving ? "wait" : "pointer",
+                              cursor: !isDirty ? "default" : isRowSaving ? "wait" : "pointer",
                               display: "inline-flex",
                               alignItems: "center",
                               gap: "4px",
@@ -795,13 +781,7 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
                           ) : (
                             <button
                               type="button"
-                              onClick={() => {
-                                if (row._isNew) {
-                                  handleDeleteRow(row);
-                                } else {
-                                  setConfirmDeleteKey(rowKey);
-                                }
-                              }}
+                              onClick={() => setConfirmDeleteKey(rowKey)}
                               style={{
                                 padding: "4px 7px",
                                 borderRadius: "5px",

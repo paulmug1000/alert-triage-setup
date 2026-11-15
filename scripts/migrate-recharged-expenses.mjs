@@ -86,6 +86,16 @@ function isZeroPct(val) {
   return s === "0" || s === "0%" || s === "0.0%";
 }
 
+function resolveSheetCurrencySymbol(b17Raw, d4Raw) {
+  const b17 = String(b17Raw ?? "").trim().toUpperCase();
+  if (b17 === "USD") return "$";
+  if (b17 === "EUR") return "€";
+  if (b17 === "GBP") return "£";
+  const d4 = String(d4Raw ?? "").trim();
+  if (d4 === "$" || d4 === "€" || d4 === "£") return d4;
+  return "£";
+}
+
 function mergeKeyInfoD6(existing) {
   const raw = String(existing || "").trim();
   const parts = raw ? raw.split(",").map((p) => p.trim()).filter(Boolean) : [];
@@ -554,6 +564,8 @@ async function applyClientMigration(rawSheets, virtSheets, client) {
     `Confirmed!AG2:AG${maxConfRow}`,
     `Confirmed!BW2:BW${bwCheckEnd}`,
     `ConfCalcs!EQ2:EQ${confCalcsMaxRows}`,
+    "KeyInfo!B17",
+    "KeyInfo!D4",
   ];
 
   // Read existing raw & (when enabled) Supabase virtual state before mutating
@@ -567,7 +579,7 @@ async function applyClientMigration(rawSheets, virtSheets, client) {
     masterId
       ? rawSheets.spreadsheets.values.batchGet({
           spreadsheetId: masterId,
-          ranges: ["KeyInfo!D6", "KeyInfo!D11", "KeyInfo!D21"],
+          ranges: ["KeyInfo!D6", "KeyInfo!D11", "KeyInfo!D21", "KeyInfo!B17", "KeyInfo!D4"],
           valueRenderOption: "FORMULA",
           _bypassSupabaseVirtualSheet: true,
         })
@@ -626,6 +638,10 @@ async function applyClientMigration(rawSheets, virtSheets, client) {
 
   const preservedD21 = isZeroPct(mD21Raw !== undefined && mD21Raw !== "" ? mD21Raw : cD21Raw) ? 0 : 1;
   const jobTableStyle = (mD11 || cD11).toLowerCase();
+  const currencySym = resolveSheetCurrencySymbol(
+    cVr[8]?.values?.[0]?.[0] || mVr[3]?.values?.[0]?.[0],
+    cVr[9]?.values?.[0]?.[0] || mVr[4]?.values?.[0]?.[0]
+  );
 
   // 1. Master KeyInfo values
   const masterValueUpdates = [];
@@ -669,7 +685,8 @@ async function applyClientMigration(rawSheets, virtSheets, client) {
     },
   };
 
-  const currencyFmt = { type: "CURRENCY", pattern: "[$£]#,##0.00" };
+  const currencyFmt = { type: "CURRENCY", pattern: `[$${currencySym}]#,##0.00` };
+  const outCurrencyFmt = { type: "CURRENCY", pattern: `[$${currencySym}]#,##0` };
   const costMonthDateFmt = { type: "DATE", pattern: 'mmm"-"yy' };
 
   const clientFormatRequests = [
@@ -804,7 +821,7 @@ async function applyClientMigration(rawSheets, virtSheets, client) {
     {
       repeatCell: {
         range: { sheetId: outSheetId, startRowIndex: 224, endRowIndex: 226, startColumnIndex: 6, endColumnIndex: 50 },
-        cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "£#,##0" } } },
+        cell: { userEnteredFormat: { numberFormat: outCurrencyFmt } },
         fields: "userEnteredFormat.numberFormat",
       },
     }

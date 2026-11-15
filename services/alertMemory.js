@@ -785,6 +785,10 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     }
   }
 
+  if (fingerprintHash && (targetStatus === "accepted" || targetStatus === "ignored" || targetStatus === "task" || targetStatus === "superseded" || targetStatus === "task_resolved")) {
+    await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, targetStatus);
+  }
+
   const response = await withRetry(() => sheets.spreadsheets.values.append({
     spreadsheetId: automationCommanderSheetId,
     range: `${ALERT_MEMORY_TAB}!A:L`,
@@ -803,8 +807,10 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
   console.log(`  📝 DEBUG: Appended alert ${fingerprintHash} to ${updatedRange || ALERT_MEMORY_TAB} with status "${targetStatus}"`);
   await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, targetStatus);
   let constructedRow = null;
+  let resolvedRowIndex = null;
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
     const actualRowIndex = parseAppendedStartRow_(updatedRange, cache);
+    resolvedRowIndex = actualRowIndex;
     constructedRow = {
       ...payload,
       rowIndex: actualRowIndex,
@@ -828,8 +834,24 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
       cache.push(constructedRow);
     }
   });
+  if (resolvedRowIndex == null) {
+    resolvedRowIndex = parseAppendedStartRow_(updatedRange, _alertMemoryMemoryCache);
+  }
+  if (isSupabaseConfigured() && fingerprintHash && resolvedRowIndex != null) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        await sb
+          .from("alert_memory")
+          .update({ sheet_row_index: resolvedRowIndex })
+          .eq("fingerprint_hash", fingerprintHash);
+      }
+    } catch (sbIdxErr) {
+      console.warn("⚠️ Supabase appendAlertMemoryRow sheet_row_index backfill warning:", sbIdxErr.message);
+    }
+  }
   if (!constructedRow) {
-    const fallbackRowIndex = parseAppendedStartRow_(updatedRange, null);
+    const fallbackRowIndex = resolvedRowIndex != null ? resolvedRowIndex : parseAppendedStartRow_(updatedRange, null);
     constructedRow = {
       ...payload,
       rowIndex: fallbackRowIndex,
@@ -942,26 +964,31 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
     };
   });
 
+  let sbRowsByHash = {};
   if (isSupabaseConfigured()) {
     try {
       const sb = getSupabaseAdmin();
       if (sb) {
         const sbRows = normalizedItems
           .filter(x => x.rowObj.fingerprintHash)
-          .map(({ rowObj }) => ({
-            fingerprint_hash: rowObj.fingerprintHash,
-            alert_type: rowObj.alertType,
-            client_name: rowObj.clientName,
-            alert_summary: rowObj.alertSummary,
-            cached_options_json: rowObj.cachedOptionsJSON,
-            status: rowObj.status,
-            ignore_reason: rowObj.ignoreReason,
-            first_seen: rowObj.firstSeen,
-            last_seen: rowObj.lastSeen,
-            last_rechecked: rowObj.lastRechecked,
-            data_snapshot: rowObj.dataSnapshot,
-            category: rowObj.category,
-          }));
+          .map(({ rowObj }) => {
+            const row = {
+              fingerprint_hash: rowObj.fingerprintHash,
+              alert_type: rowObj.alertType,
+              client_name: rowObj.clientName,
+              alert_summary: rowObj.alertSummary,
+              cached_options_json: rowObj.cachedOptionsJSON,
+              status: rowObj.status,
+              ignore_reason: rowObj.ignoreReason,
+              first_seen: rowObj.firstSeen,
+              last_seen: rowObj.lastSeen,
+              last_rechecked: rowObj.lastRechecked,
+              data_snapshot: rowObj.dataSnapshot,
+              category: rowObj.category,
+            };
+            sbRowsByHash[rowObj.fingerprintHash] = row;
+            return row;
+          });
         if (sbRows.length > 0) {
           await sb.from("alert_memory").upsert(sbRows, { onConflict: "fingerprint_hash" });
           await syncPmaTaskRowsToSupabase_(sb, sbRows);
@@ -970,6 +997,18 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
     } catch (sbErr) {
       console.warn("⚠️ Supabase appendAlertMemoryRowsBatch warning:", sbErr.message);
     }
+  }
+
+  const handledStatusByHashEarly = {};
+  for (const item of normalizedItems) {
+    const fp = item.rowObj.fingerprintHash;
+    const st = item.rowObj.status;
+    if (fp && st && st !== "cached" && st !== "pending_automation") {
+      handledStatusByHashEarly[fp] = st;
+    }
+  }
+  if (Object.keys(handledStatusByHashEarly).length > 0) {
+    await updateHandledAlertHashesBatch(automationCommanderSheetId, handledStatusByHashEarly);
   }
 
   const response = await withRetry(() => sheets.spreadsheets.values.append({
@@ -1005,15 +1044,37 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
       return fullRow;
     });
   });
+  if (constructedRows.length === 0) {
+    let nextRowIndex = parseAppendedStartRow_(updatedRange, _alertMemoryMemoryCache);
+    constructedRows = normalizedItems.map(({ rowObj }) => ({ ...rowObj, rowIndex: nextRowIndex++ }));
+  }
+  if (isSupabaseConfigured() && constructedRows.length > 0) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        const sbRowsWithIndex = constructedRows
+          .filter(r => r.fingerprintHash && r.rowIndex != null && sbRowsByHash[r.fingerprintHash])
+          .map(r => ({
+            ...sbRowsByHash[r.fingerprintHash],
+            sheet_row_index: r.rowIndex,
+          }));
+        if (sbRowsWithIndex.length > 0) {
+          await sb.from("alert_memory").upsert(sbRowsWithIndex, { onConflict: "fingerprint_hash" });
+        }
+      }
+    } catch (sbIdxErr) {
+      console.warn("⚠️ Supabase appendAlertMemoryRowsBatch sheet_row_index backfill warning:", sbIdxErr.message);
+    }
+  }
   return constructedRows;
 }
 
 export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, updates) {
-  const { preserveHandledStatus, ...cleanUpdates } = updates || {};
+  const { preserveHandledStatus, _previousFingerprintHash, ...cleanUpdates } = updates || {};
   let effectiveStatus = cleanUpdates.status;
   if (preserveHandledStatus && (effectiveStatus === "cached" || effectiveStatus === "pending_automation") && cleanUpdates.fingerprintHash) {
     const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId, false);
-    const existingHandled = handledMap[cleanUpdates.fingerprintHash];
+    const existingHandled = handledMap[cleanUpdates.fingerprintHash] || (_previousFingerprintHash ? handledMap[_previousFingerprintHash] : undefined);
     if (existingHandled === "accepted" || existingHandled === "ignored" || existingHandled === "task") {
       console.log(`  🛡️ [updateAlertMemoryRow] Preserving handled status "${existingHandled}" for ${cleanUpdates.fingerprintHash} (row ${rowIndex}) instead of overwriting to "${effectiveStatus}"`);
       effectiveStatus = existingHandled;
@@ -1038,48 +1099,18 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     cleanUpdates.dataSnapshot || "",
     targetCategory,
   ];
-  if (isSupabaseConfigured() && cleanUpdates.fingerprintHash) {
-    try {
-      const sb = getSupabaseAdmin();
-      if (sb) {
-        const sbRow = {
-          fingerprint_hash: cleanUpdates.fingerprintHash,
-          alert_type: cleanUpdates.alertType || "",
-          client_name: cleanUpdates.clientName || "",
-          alert_summary: cleanUpdates.alertSummary || "",
-          cached_options_json: compressedOptions || "",
-          status: effectiveStatus || "cached",
-          ignore_reason: cleanUpdates.ignoreReason || "",
-          first_seen: firstSeenVal,
-          last_seen: now,
-          last_rechecked: lastRecheckedVal,
-          data_snapshot: cleanUpdates.dataSnapshot || "",
-          category: targetCategory,
-          sheet_row_index: rowIndex,
-        };
-        await sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" });
-        await syncPmaTaskRowsToSupabase_(sb, [sbRow]);
-      }
-    } catch (sbErr) {
-      console.warn("⚠️ Supabase updateAlertMemoryRow warning:", sbErr.message);
-    }
-  }
 
-  await withRetry(() => sheets.spreadsheets.values.update({
-    spreadsheetId: automationCommanderSheetId,
-    range: `${ALERT_MEMORY_TAB}!A${rowIndex}:L${rowIndex}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [values] },
-  }));
-  if (cleanUpdates.fingerprintHash) {
-    await updateHandledAlertHash(automationCommanderSheetId, cleanUpdates.fingerprintHash, effectiveStatus);
-  }
+  // Update in-memory and Redis caches immediately (before slow Supabase/Sheets network I/O)
+  let detectedOldHash = _previousFingerprintHash || (_alertMemoryMemoryCache ? (_alertMemoryMemoryCache.find(r => r.rowIndex === rowIndex)?.fingerprintHash || "") : "");
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
     let idx = cache.findIndex(r => r.rowIndex === rowIndex);
     if (idx === -1 && cleanUpdates.fingerprintHash) {
       idx = cache.findIndex(r => r.fingerprintHash === cleanUpdates.fingerprintHash);
     }
     if (idx !== -1) {
+      if (!detectedOldHash && cache[idx]?.fingerprintHash) {
+        detectedOldHash = cache[idx].fingerprintHash;
+      }
       cache[idx] = {
         ...cache[idx],
         ...cleanUpdates,
@@ -1093,6 +1124,64 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
       };
     }
   });
+  const oldHash = (detectedOldHash && cleanUpdates.fingerprintHash && detectedOldHash !== cleanUpdates.fingerprintHash) ? detectedOldHash : "";
+  const oldStatus = effectiveStatus === "cached" ? "superseded" : effectiveStatus;
+  if (cleanUpdates.fingerprintHash || oldHash) {
+    const statusByHash = {};
+    if (cleanUpdates.fingerprintHash) statusByHash[cleanUpdates.fingerprintHash] = effectiveStatus;
+    if (oldHash) statusByHash[oldHash] = oldStatus;
+    await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
+  }
+
+  if (isSupabaseConfigured() && (cleanUpdates.fingerprintHash || oldHash)) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        if (cleanUpdates.fingerprintHash) {
+          const sbRow = {
+            fingerprint_hash: cleanUpdates.fingerprintHash,
+            alert_type: cleanUpdates.alertType || "",
+            client_name: cleanUpdates.clientName || "",
+            alert_summary: cleanUpdates.alertSummary || "",
+            cached_options_json: compressedOptions || "",
+            status: effectiveStatus || "cached",
+            ignore_reason: cleanUpdates.ignoreReason || "",
+            first_seen: firstSeenVal,
+            last_seen: now,
+            last_rechecked: lastRecheckedVal,
+            data_snapshot: cleanUpdates.dataSnapshot || "",
+            category: targetCategory,
+            sheet_row_index: rowIndex,
+          };
+          await sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" });
+          await syncPmaTaskRowsToSupabase_(sb, [sbRow]);
+        }
+        if (oldHash) {
+          await sb
+            .from("alert_memory")
+            .update({
+              status: oldStatus || "superseded",
+              ignore_reason: cleanUpdates.ignoreReason || "",
+              last_seen: now,
+              last_rechecked: lastRecheckedVal,
+            })
+            .eq("fingerprint_hash", oldHash);
+          if (effectiveStatus !== "task") {
+            await sb.from("pma_tasks").delete().eq("fingerprint_hash", oldHash);
+          }
+        }
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase updateAlertMemoryRow warning:", sbErr.message);
+    }
+  }
+
+  await withRetry(() => sheets.spreadsheets.values.update({
+    spreadsheetId: automationCommanderSheetId,
+    range: `${ALERT_MEMORY_TAB}!A${rowIndex}:L${rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [values] },
+  }));
 }
 
 export async function updateAlertMemoryRowsBatch(sheets, automationCommanderSheetId, updateItems) {
@@ -1100,10 +1189,10 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
   const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId, false);
   const now = new Date().toISOString();
   const normalizedUpdateItems = updateItems.map(({ rowIndex, updates }) => {
-    const { preserveHandledStatus, ...cleanUpdates } = updates || {};
+    const { preserveHandledStatus, _previousFingerprintHash, ...cleanUpdates } = updates || {};
     let effectiveStatus = cleanUpdates.status;
     if ((preserveHandledStatus || effectiveStatus === "cached" || effectiveStatus === "pending_automation") && cleanUpdates.fingerprintHash) {
-      const existingHandled = handledMap[cleanUpdates.fingerprintHash];
+      const existingHandled = handledMap[cleanUpdates.fingerprintHash] || (_previousFingerprintHash ? handledMap[_previousFingerprintHash] : undefined);
       if ((effectiveStatus === "cached" || effectiveStatus === "pending_automation") && (existingHandled === "accepted" || existingHandled === "ignored" || existingHandled === "task")) {
         console.log(`  🛡️ [updateAlertMemoryRowsBatch] Preserving handled status "${existingHandled}" for ${cleanUpdates.fingerprintHash} (row ${rowIndex}) instead of overwriting to "${effectiveStatus}"`);
         effectiveStatus = existingHandled;
@@ -1111,6 +1200,7 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
     }
     return {
       rowIndex,
+      previousFingerprintHash: _previousFingerprintHash || "",
       updates: {
         ...cleanUpdates,
         status: effectiveStatus,
@@ -1140,6 +1230,44 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
     };
   });
 
+  // Update in-memory and Redis caches immediately (before slow Supabase/Sheets network I/O)
+  const oldHashToStatus = {};
+  const statusByHash = {};
+  for (const item of normalizedUpdateItems) {
+    const newHash = item.updates?.fingerprintHash;
+    if (newHash) {
+      statusByHash[newHash] = item.updates.status;
+    }
+    if (item.previousFingerprintHash && newHash && item.previousFingerprintHash !== newHash) {
+      oldHashToStatus[item.previousFingerprintHash] = item.updates.status === "cached" ? "superseded" : item.updates.status;
+    }
+  }
+  await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
+    for (const item of normalizedUpdateItems) {
+      let idx = cache.findIndex(r => r.rowIndex === item.rowIndex);
+      if (idx === -1 && item.updates?.fingerprintHash) {
+        idx = cache.findIndex(r => r.fingerprintHash === item.updates.fingerprintHash);
+      }
+      if (idx !== -1) {
+        const cachedOldHash = cache[idx]?.fingerprintHash;
+        if (cachedOldHash && item.updates?.fingerprintHash && cachedOldHash !== item.updates.fingerprintHash) {
+          oldHashToStatus[cachedOldHash] = item.updates.status === "cached" ? "superseded" : item.updates.status;
+        }
+        const compressedOpts = compressOptionsJSON_(item.updates?.cachedOptionsJSON);
+        cache[idx] = {
+          ...cache[idx],
+          ...item.updates,
+          cachedOptionsJSON: compressedOpts !== undefined ? compressedOpts : cache[idx].cachedOptionsJSON,
+          firstSeen: item.updates?.firstSeen || cache[idx].firstSeen || now,
+          lastSeen: now,
+          lastRechecked: item.updates?.lastRechecked || now,
+          rowIndex: item.rowIndex,
+        };
+      }
+    }
+  });
+  await updateHandledAlertHashesBatch(automationCommanderSheetId, { ...statusByHash, ...oldHashToStatus });
+
   if (isSupabaseConfigured()) {
     try {
       const sb = getSupabaseAdmin();
@@ -1165,6 +1293,23 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
           await sb.from("alert_memory").upsert(sbRows, { onConflict: "fingerprint_hash" });
           await syncPmaTaskRowsToSupabase_(sb, sbRows);
         }
+        const oldHashesByStatus = {};
+        const oldHashesToRemoveFromTasks = [];
+        for (const [oldHash, oldSt] of Object.entries(oldHashToStatus)) {
+          const stKey = oldSt || "superseded";
+          if (!oldHashesByStatus[stKey]) oldHashesByStatus[stKey] = [];
+          oldHashesByStatus[stKey].push(oldHash);
+          if (stKey !== "task") oldHashesToRemoveFromTasks.push(oldHash);
+        }
+        for (const [stKey, hashes] of Object.entries(oldHashesByStatus)) {
+          await sb
+            .from("alert_memory")
+            .update({ status: stKey, last_seen: now, last_rechecked: now })
+            .in("fingerprint_hash", hashes);
+        }
+        if (oldHashesToRemoveFromTasks.length > 0) {
+          await sb.from("pma_tasks").delete().in("fingerprint_hash", oldHashesToRemoveFromTasks);
+        }
       }
     } catch (sbErr) {
       console.warn("⚠️ Supabase updateAlertMemoryRowsBatch warning:", sbErr.message);
@@ -1178,33 +1323,6 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
       data,
     },
   }));
-  const statusByHash = {};
-  for (const item of normalizedUpdateItems) {
-    if (item.updates?.fingerprintHash) {
-      statusByHash[item.updates.fingerprintHash] = item.updates.status;
-    }
-  }
-  await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
-  await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
-    for (const item of normalizedUpdateItems) {
-      let idx = cache.findIndex(r => r.rowIndex === item.rowIndex);
-      if (idx === -1 && item.updates?.fingerprintHash) {
-        idx = cache.findIndex(r => r.fingerprintHash === item.updates.fingerprintHash);
-      }
-      if (idx !== -1) {
-        const compressedOpts = compressOptionsJSON_(item.updates?.cachedOptionsJSON);
-        cache[idx] = {
-          ...cache[idx],
-          ...item.updates,
-          cachedOptionsJSON: compressedOpts !== undefined ? compressedOpts : cache[idx].cachedOptionsJSON,
-          firstSeen: item.updates?.firstSeen || cache[idx].firstSeen || now,
-          lastSeen: now,
-          lastRechecked: item.updates?.lastRechecked || now,
-          rowIndex: item.rowIndex,
-        };
-      }
-    }
-  });
 }
 
 export async function compactAlertMemory(sheets, automationCommanderSheetId, options = {}) {

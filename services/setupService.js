@@ -834,8 +834,64 @@ function normalizeSetupPhases(phases = []) {
   });
 }
 
+const SETUP_PROCESS_TEMPLATE_CONFIG_KEY = "setup_process_template";
+
+function parseSetupTemplateSheetRows_(rows = []) {
+  const phasesMap = new Map();
+  DEFAULT_SETUP_PHASES.forEach((p, idx) => {
+    phasesMap.set(p.id, { ...p, order: idx + 1 });
+  });
+
+  const tasks = [];
+  rows.forEach((r, idx) => {
+    const phaseId = String(r[0] || "").trim();
+    const phaseTitle = String(r[1] || "").trim();
+    const phaseDesc = String(r[2] || "").trim();
+    const phaseOrder = Number(r[3]) || (phasesMap.size + 1);
+
+    if (phaseId) {
+      if (!phasesMap.has(phaseId)) {
+        phasesMap.set(phaseId, {
+          id: phaseId,
+          title: phaseTitle || phaseId,
+          description: phaseDesc || "",
+          order: phaseOrder
+        });
+      } else {
+        const existing = phasesMap.get(phaseId);
+        if (phaseTitle) existing.title = phaseTitle;
+        if (phaseDesc) existing.description = phaseDesc;
+        if (r[3] !== undefined && r[3] !== "") existing.order = Number(r[3]);
+      }
+    }
+
+    const taskId = String(r[4] || "").trim();
+    const taskTitle = String(r[5] || "").trim();
+    if (taskId && taskTitle) {
+      const taskOrder = Number(r[6]) !== undefined && !isNaN(Number(r[6])) ? Number(r[6]) : ((idx + 1) * 10);
+      const autoCompletable = String(r[7] || "").toUpperCase() === "TRUE";
+      const description = String(r[8] || "").trim();
+      const active = r[9] === undefined || String(r[9] || "").toUpperCase() !== "FALSE";
+
+      tasks.push({
+        id: taskId,
+        phaseId,
+        title: taskTitle,
+        order: taskOrder,
+        autoCompletable,
+        description,
+        active
+      });
+    }
+  });
+
+  const phases = normalizeSetupPhases(Array.from(phasesMap.values()).sort((a, b) => a.order - b.order));
+  tasks.sort((a, b) => a.order - b.order);
+  return { phases, tasks };
+}
+
 /**
- * Returns full setup process template (Phases & Tasks catalog) with Redis caching.
+ * Returns full setup process template (Phases & Tasks catalog) with Redis & Supabase persistence.
  */
 export async function getSetupProcessTemplate(sheets, forceRefresh = false) {
   const cacheKey = "pulse:setup:process_template";
@@ -856,139 +912,144 @@ export async function getSetupProcessTemplate(sheets, forceRefresh = false) {
     }
   }
 
-  await ensureClientSetupTabs(sheets);
+  const sb = getSupabaseAdmin();
+  if (sb) {
+    try {
+      const { data: cfgRow } = await sb
+        .from("system_config")
+        .select("value")
+        .eq("key", SETUP_PROCESS_TEMPLATE_CONFIG_KEY)
+        .maybeSingle();
+      if (cfgRow?.value?.phases?.length && cfgRow?.value?.tasks?.length) {
+        const templateData = {
+          phases: normalizeSetupPhases(cfgRow.value.phases),
+          tasks: cfgRow.value.tasks.slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+        };
+        await redisClient.set(cacheKey, JSON.stringify(templateData), { EX: 86400 }).catch(() => { });
+        return templateData;
+      }
+    } catch (sbErr) {
+      console.warn("Supabase setup_process_template read warning:", sbErr.message);
+    }
+  }
+
   const acId = DEFAULT_AC_SHEET_ID;
+  let templateData = null;
 
   try {
-    const res = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: acId,
-        range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L200`
-      })
-    );
-
-    const rows = res.data.values || [];
-    if (rows.length === 0) {
-      const seeded = await seedDefaultSetupProcessTemplate(sheets);
-      return seeded;
+    const activeSheets = sheets || (await getSheetsClient().catch(() => null));
+    if (activeSheets && acId) {
+      await ensureClientSetupTabs(activeSheets);
+      const res = await withRetry(() =>
+        activeSheets.spreadsheets.values.get({
+          spreadsheetId: acId,
+          range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L200`
+        })
+      );
+      const rows = res.data.values || [];
+      if (rows.length > 0) {
+        templateData = parseSetupTemplateSheetRows_(rows);
+      }
     }
-
-    const phasesMap = new Map();
-    DEFAULT_SETUP_PHASES.forEach((p, idx) => {
-      phasesMap.set(p.id, { ...p, order: idx + 1 });
-    });
-
-    const tasks = [];
-
-    rows.forEach((r, idx) => {
-      const phaseId = String(r[0] || "").trim();
-      const phaseTitle = String(r[1] || "").trim();
-      const phaseDesc = String(r[2] || "").trim();
-      const phaseOrder = Number(r[3]) || (phasesMap.size + 1);
-
-      if (phaseId) {
-        if (!phasesMap.has(phaseId)) {
-          phasesMap.set(phaseId, {
-            id: phaseId,
-            title: phaseTitle || phaseId,
-            description: phaseDesc || "",
-            order: phaseOrder
-          });
-        } else {
-          const existing = phasesMap.get(phaseId);
-          if (phaseTitle) existing.title = phaseTitle;
-          if (phaseDesc) existing.description = phaseDesc;
-          if (r[3] !== undefined && r[3] !== "") existing.order = Number(r[3]);
-        }
-      }
-
-      const taskId = String(r[4] || "").trim();
-      const taskTitle = String(r[5] || "").trim();
-      if (taskId && taskTitle) {
-        const taskOrder = Number(r[6]) !== undefined && !isNaN(Number(r[6])) ? Number(r[6]) : ((idx + 1) * 10);
-        const autoCompletable = String(r[7] || "").toUpperCase() === "TRUE";
-        const description = String(r[8] || "").trim();
-        const active = r[9] === undefined || String(r[9] || "").toUpperCase() !== "FALSE";
-
-        tasks.push({
-          id: taskId,
-          phaseId,
-          title: taskTitle,
-          order: taskOrder,
-          autoCompletable,
-          description,
-          active
-        });
-      }
-    });
-
-    const phases = normalizeSetupPhases(Array.from(phasesMap.values()).sort((a, b) => a.order - b.order));
-    tasks.sort((a, b) => a.order - b.order);
-
-    const templateData = { phases, tasks };
-    await redisClient.set(cacheKey, JSON.stringify(templateData), { EX: 86400 }).catch(() => { });
-    return templateData;
   } catch (err) {
-    console.error("Error reading setup process template from sheet:", err.message);
-    return {
-      phases: DEFAULT_SETUP_PHASES,
+    console.warn("Setup process template AC sheet seed fallback:", err.message);
+  }
+
+  if (!templateData || !templateData.tasks?.length) {
+    templateData = {
+      phases: normalizeSetupPhases(DEFAULT_SETUP_PHASES),
       tasks: DEFAULT_SETUP_TASKS_CATALOG.map((t, idx) => ({ ...t, order: (idx + 1) * 10, active: true, description: "" }))
     };
   }
+
+  if (sb) {
+    try {
+      await sb.from("system_config").upsert({
+        key: SETUP_PROCESS_TEMPLATE_CONFIG_KEY,
+        value: {
+          phases: templateData.phases,
+          tasks: templateData.tasks,
+          seededAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        },
+        description: "Client onboarding setup phases and task checklist catalog",
+        updated_by: "System (Migration Seed)"
+      });
+    } catch (_) { }
+  }
+
+  await redisClient.set(cacheKey, JSON.stringify(templateData), { EX: 86400 }).catch(() => { });
+  return templateData;
 }
 
 /**
- * Saves setup process template changes to Automation Commander and updates Redis cache.
+ * Saves setup process template changes to Supabase system_config (and AC sheet in legacy mode) and updates Redis cache.
  */
 export async function saveSetupProcessTemplate(sheets, { phases, tasks }, userEmail = "admin@pulse") {
-  await ensureClientSetupTabs(sheets);
   const acId = DEFAULT_AC_SHEET_ID;
   const now = new Date().toISOString();
 
   const phaseMap = new Map((phases || DEFAULT_SETUP_PHASES).map((p, idx) => [p.id, { ...p, order: p.order || (idx + 1) }]));
+  const templateData = {
+    phases: normalizeSetupPhases(Array.from(phaseMap.values()).sort((a, b) => a.order - b.order)),
+    tasks: (tasks || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+  };
 
-  const rows = (tasks || []).map((t, idx) => {
-    const phase = phaseMap.get(t.phaseId) || { id: t.phaseId, title: t.phaseId, description: "", order: 1 };
-    const taskOrder = t.order !== undefined && !isNaN(Number(t.order)) ? Number(t.order) : ((idx + 1) * 10);
-    return [
-      phase.id || "",
-      phase.title || "",
-      phase.description || "",
-      phase.order || 1,
-      t.id,
-      t.title,
-      taskOrder,
-      t.autoCompletable ? "TRUE" : "FALSE",
-      t.description || "",
-      t.active !== false ? "TRUE" : "FALSE",
-      now,
-      userEmail
-    ];
-  });
-
-  // Clear existing rows
-  await withRetry(() =>
-    sheets.spreadsheets.values.clear({
-      spreadsheetId: acId,
-      range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L300`
-    })
-  );
-
-  if (rows.length > 0) {
-    await withRetry(() =>
-      sheets.spreadsheets.values.update({
-        spreadsheetId: acId,
-        range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L${rows.length + 1}`,
-        valueInputOption: "RAW",
-        requestBody: { values: rows }
-      })
-    );
+  const sb = getSupabaseAdmin();
+  if (sb) {
+    await sb.from("system_config").upsert({
+      key: SETUP_PROCESS_TEMPLATE_CONFIG_KEY,
+      value: {
+        phases: templateData.phases,
+        tasks: templateData.tasks,
+        updatedAt: now,
+        updatedBy: userEmail
+      },
+      description: "Client onboarding setup phases and task checklist catalog",
+      updated_by: userEmail || "admin@pulse"
+    });
   }
 
-  const templateData = {
-    phases: Array.from(phaseMap.values()).sort((a, b) => a.order - b.order),
-    tasks: tasks.slice().sort((a, b) => a.order - b.order)
-  };
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (!supaControlPlane && sheets && acId) {
+    await ensureClientSetupTabs(sheets);
+    const rows = (tasks || []).map((t, idx) => {
+      const phase = phaseMap.get(t.phaseId) || { id: t.phaseId, title: t.phaseId, description: "", order: 1 };
+      const taskOrder = t.order !== undefined && !isNaN(Number(t.order)) ? Number(t.order) : ((idx + 1) * 10);
+      return [
+        phase.id || "",
+        phase.title || "",
+        phase.description || "",
+        phase.order || 1,
+        t.id,
+        t.title,
+        taskOrder,
+        t.autoCompletable ? "TRUE" : "FALSE",
+        t.description || "",
+        t.active !== false ? "TRUE" : "FALSE",
+        now,
+        userEmail
+      ];
+    });
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.clear({
+        spreadsheetId: acId,
+        range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L300`
+      })
+    );
+
+    if (rows.length > 0) {
+      await withRetry(() =>
+        sheets.spreadsheets.values.update({
+          spreadsheetId: acId,
+          range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L${rows.length + 1}`,
+          valueInputOption: "RAW",
+          requestBody: { values: rows }
+        })
+      );
+    }
+  }
 
   await redisClient.set("pulse:setup:process_template", JSON.stringify(templateData), { EX: 86400 }).catch(() => { });
 
@@ -1007,7 +1068,7 @@ export async function saveSetupProcessTemplate(sheets, { phases, tasks }, userEm
     client: "Global",
     category: "Setup",
     action: "edit_setup_process",
-    summary: `Updated setup process template: ${tasks.length} steps configured across ${phases.length} phases`,
+    summary: `Updated setup process template: ${(tasks || []).length} steps configured across ${(phases || []).length} phases`,
     user: userEmail
   }).catch(() => { });
 
@@ -1034,40 +1095,185 @@ export async function seedDefaultSetupProcessTemplate(sheets, userEmail = "Syste
  * Returns setup overview for all clients (for the Setup screen main table).
  */
 export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoingsClients = []) {
-  await ensureClientSetupTabs(sheets);
-
   const acId = DEFAULT_AC_SHEET_ID;
-  let overviewRows = [];
-  try {
-    const res = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: acId,
-        range: `${CLIENT_SETUP_OVERVIEW_TAB}!A2:L500`
-      })
-    );
-    overviewRows = res.data.values || [];
-  } catch (err) {
-    console.warn("Warning reading ClientSetupOverview:", err.message);
+  const overviewMap = new Map();
+  const sb = getSupabaseAdmin();
+
+  const clientMetaMap = new Map();
+
+  if (sb) {
+    try {
+      const [{ data: stateRows }, { data: dbClients }] = await Promise.all([
+        sb.from("client_setup_state").select("client_name, normalized_key, setup_status, accounting_tool, crm_tool, overview_data"),
+        sb.from("clients").select("id, client_name, normalized_key, client_sheet_url, master_sheet_url, recon_sheet_url, drive_folder_id, metadata"),
+      ]);
+      for (const c of (dbClients || [])) {
+        if (c.normalized_key) clientMetaMap.set(c.normalized_key, c);
+        if (c.client_name) clientMetaMap.set(c.client_name.trim().toLowerCase(), c);
+      }
+      for (const s of (stateRows || [])) {
+        const name = String(s.client_name || "").trim();
+        if (!name) continue;
+        const ov = (s.overview_data && typeof s.overview_data === "object") ? s.overview_data : {};
+        const cRow = clientMetaMap.get(s.normalized_key) || clientMetaMap.get(name.toLowerCase()) || {};
+        overviewMap.set(name.toLowerCase(), {
+          clientName: name,
+          status: String(s.setup_status || ov.status || "LIVE").trim(),
+          progressPercent: Number(ov.progressPercent ?? 100),
+          completedTasks: Number(ov.completedTasks ?? 34),
+          totalTasks: Number(ov.totalTasks ?? 34),
+          startedAt: ov.startedAt || "",
+          completedAt: ov.completedAt || "",
+          driveFolderUrl: ov.driveFolderUrl || (cRow.drive_folder_id ? `https://drive.google.com/drive/folders/${cRow.drive_folder_id}` : ""),
+          clientSheetUrl: ov.clientSheetUrl || cRow.client_sheet_url || "",
+          masterSheetUrl: ov.masterSheetUrl || cRow.master_sheet_url || "",
+          reconSheetUrl: ov.reconSheetUrl || cRow.recon_sheet_url || "",
+          backupSheetUrl: ov.backupSheetUrl || "",
+          accountingTool: s.accounting_tool || "",
+          crmTool: s.crm_tool || "",
+        });
+      }
+    } catch (sbErr) {
+      console.warn("Warning reading Supabase client_setup_state:", sbErr.message);
+    }
   }
 
-  const overviewMap = new Map();
-  for (const r of overviewRows) {
-    const name = String(r[0] || "").trim();
-    if (name) {
-      overviewMap.set(name.toLowerCase(), {
-        clientName: name,
-        status: String(r[1] || "LIVE").trim(),
-        progressPercent: parseInt(String(r[2] || "100").replace(/[^0-9]/g, ""), 10) || 100,
-        completedTasks: parseInt(String(r[3] || "34"), 10) || 34,
-        totalTasks: parseInt(String(r[4] || "34"), 10) || 34,
-        startedAt: r[5] || "",
-        completedAt: r[6] || "",
-        driveFolderUrl: r[7] || "",
-        clientSheetUrl: r[8] || "",
-        masterSheetUrl: r[9] || "",
-        reconSheetUrl: r[10] || "",
-        backupSheetUrl: r[11] || ""
-      });
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (overviewMap.size === 0 && sheets && acId) {
+    if (!supaControlPlane) {
+      await ensureClientSetupTabs(sheets);
+    }
+    try {
+      const [overviewRes, tasksRes] = await Promise.all([
+        withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: acId,
+            range: `${CLIENT_SETUP_OVERVIEW_TAB}!A2:L500`
+          })
+        ),
+        sb
+          ? withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: acId,
+              range: `${CLIENT_SETUP_TASKS_TAB}!A2:H5000`
+            })
+          ).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+
+      const tasksByClientKey = new Map();
+      const tasksClientNames = new Map();
+      for (const r of (tasksRes?.data?.values || [])) {
+        const cName = String(r[0] || "").trim();
+        const taskId = String(r[2] || "").trim();
+        if (!cName || !taskId) continue;
+        const cKey = normalizeKey(cName);
+        if (!tasksByClientKey.has(cKey)) tasksByClientKey.set(cKey, {});
+        if (!tasksClientNames.has(cKey)) tasksClientNames.set(cKey, cName);
+        const isComp = String(r[4] || "").toUpperCase() === "TRUE";
+        tasksByClientKey.get(cKey)[taskId] = {
+          phaseId: String(r[1] || "").trim(),
+          isCompleted: isComp,
+          status: isComp ? "completed" : "pending",
+          completedAt: r[5] || "",
+          completedBy: r[6] || "",
+          metadata: r[7] || "",
+        };
+      }
+
+      const seedRows = [];
+      const seededKeys = new Set();
+      for (const r of (overviewRes.data.values || [])) {
+        const name = String(r[0] || "").trim();
+        if (name) {
+          const pctRaw = parseInt(String(r[2] ?? "").replace(/[^0-9]/g, ""), 10);
+          const compRaw = parseInt(String(r[3] ?? ""), 10);
+          const totalRaw = parseInt(String(r[4] ?? ""), 10);
+          const entry = {
+            clientName: name,
+            status: String(r[1] || "LIVE").trim(),
+            progressPercent: Number.isNaN(pctRaw) ? 100 : pctRaw,
+            completedTasks: Number.isNaN(compRaw) ? 34 : compRaw,
+            totalTasks: Number.isNaN(totalRaw) ? 34 : totalRaw,
+            startedAt: r[5] || "",
+            completedAt: r[6] || "",
+            driveFolderUrl: r[7] || "",
+            clientSheetUrl: r[8] || "",
+            masterSheetUrl: r[9] || "",
+            reconSheetUrl: r[10] || "",
+            backupSheetUrl: r[11] || ""
+          };
+          overviewMap.set(name.toLowerCase(), entry);
+
+          const norm = normalizeKey(name);
+          seededKeys.add(norm);
+          const cRow = clientMetaMap.get(norm) || clientMetaMap.get(name.toLowerCase()) || {};
+          seedRows.push({
+            client_id: cRow.id || null,
+            client_name: name,
+            normalized_key: norm,
+            setup_status: entry.status,
+            accounting_tool: cRow.metadata?.accountingTool || "None",
+            crm_tool: cRow.metadata?.crmTool || "None",
+            crm_drives: cRow.metadata?.crmDrives || "NA",
+            tasks_map: tasksByClientKey.get(norm) || {},
+            overview_data: {
+              status: entry.status,
+              progressPercent: entry.progressPercent,
+              completedTasks: entry.completedTasks,
+              totalTasks: entry.totalTasks,
+              startedAt: entry.startedAt,
+              completedAt: entry.completedAt,
+              driveFolderUrl: entry.driveFolderUrl,
+              clientSheetUrl: entry.clientSheetUrl,
+              masterSheetUrl: entry.masterSheetUrl,
+              reconSheetUrl: entry.reconSheetUrl,
+              backupSheetUrl: entry.backupSheetUrl,
+            },
+          });
+        }
+      }
+
+      for (const [cKey, tMap] of tasksByClientKey.entries()) {
+        if (seededKeys.has(cKey)) continue;
+        const origName = tasksClientNames.get(cKey) || cKey;
+        const cRow = clientMetaMap.get(cKey) || clientMetaMap.get(origName.toLowerCase()) || {};
+        const name = cRow.client_name || origName;
+        seedRows.push({
+          client_id: cRow.id || null,
+          client_name: name,
+          normalized_key: cKey,
+          setup_status: "LIVE",
+          accounting_tool: cRow.metadata?.accountingTool || "None",
+          crm_tool: cRow.metadata?.crmTool || "None",
+          crm_drives: cRow.metadata?.crmDrives || "NA",
+          tasks_map: tMap,
+          overview_data: {
+            status: "LIVE",
+            progressPercent: 100,
+            completedTasks: 34,
+            totalTasks: 34,
+            driveFolderUrl: cRow.drive_folder_id ? `https://drive.google.com/drive/folders/${cRow.drive_folder_id}` : "",
+            clientSheetUrl: cRow.client_sheet_url || "",
+            masterSheetUrl: cRow.master_sheet_url || "",
+            reconSheetUrl: cRow.recon_sheet_url || "",
+            backupSheetUrl: "",
+          },
+        });
+      }
+
+      if (sb && seedRows.length > 0) {
+        try {
+          const { error: upsertErr } = await sb.from("client_setup_state").upsert(seedRows, { onConflict: "normalized_key" });
+          if (upsertErr) {
+            console.warn("Warning seeding client_setup_state:", upsertErr.message);
+          }
+        } catch (seedErr) {
+          console.warn("Warning seeding client_setup_state from ClientSetupOverview:", seedErr.message);
+        }
+      }
+    } catch (err) {
+      console.warn("Warning reading ClientSetupOverview:", err.message);
     }
   }
 
@@ -1085,11 +1291,10 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
       if (raw) cached = JSON.parse(raw);
     } catch { }
 
-    const setupMode = cached?.setupMode === true;
-    const accountingTool = cached?.accountingTool || "None";
-    const crmTool = cached?.crmTool || "None";
-
     const overview = overviewMap.get(c.clientName.toLowerCase());
+    const setupMode = cached?.setupMode === true || String(overview?.status || "").toUpperCase() === "IN_PROGRESS";
+    const accountingTool = cached?.accountingTool || overview?.accountingTool || "None";
+    const crmTool = cached?.crmTool || overview?.crmTool || "None";
 
     const status = setupMode ? "IN_PROGRESS" : (overview?.status || "LIVE");
     const progressPercent = overview ? overview.progressPercent : (setupMode ? 15 : 100);
@@ -1107,7 +1312,7 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
       status,
       progressPercent,
       completedTasks,
-      totalTasks: 34,
+      totalTasks: overview?.totalTasks || 34,
       accountingTool,
       crmTool,
       updatedAt: cached?.updatedAt || overview?.startedAt || ""
@@ -1129,12 +1334,12 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
  */
 export async function getClientChecklistState(sheets, clientName, masterSheetId) {
   if (!clientName) throw new Error("Missing clientName");
-  await ensureClientSetupTabs(sheets);
 
   const acId = DEFAULT_AC_SHEET_ID;
   const checklistRedisKey = getChecklistRedisKey(clientName);
 
   let taskStatusMap = new Map();
+  let foundInRedisOrSupabase = false;
 
   // Try Redis first
   try {
@@ -1143,14 +1348,16 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         parsed.forEach(t => taskStatusMap.set(t.taskId, t));
+        foundInRedisOrSupabase = true;
       }
     }
   } catch (err) {
     console.warn("Redis checklist cache read error:", err.message);
   }
 
-  // If not cached, try Supabase client_setup_state when active
-  if (taskStatusMap.size === 0 && (await isSupabaseControlPlaneActive())) {
+  // If not cached, try Supabase client_setup_state
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (!foundInRedisOrSupabase && isSupabaseConfigured()) {
     try {
       const sb = getSupabaseAdmin();
       const norm = normalizeKey(clientName);
@@ -1159,28 +1366,34 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
         .select("tasks_map")
         .eq("normalized_key", norm)
         .maybeSingle();
-      if (!error && row?.tasks_map && typeof row.tasks_map === "object") {
-        for (const [tId, tVal] of Object.entries(row.tasks_map)) {
-          if (tId && tVal && typeof tVal === "object") {
-            const isComp = tVal.isCompleted !== undefined
-              ? Boolean(tVal.isCompleted)
-              : String(tVal.status || "").toUpperCase() === "TRUE" || String(tVal.status || "").toLowerCase() === "completed";
-            taskStatusMap.set(tId, {
-              taskId: tId,
-              phaseId: tVal.phaseId || "",
-              isCompleted: isComp,
-              completedAt: tVal.completedAt || "",
-              completedBy: tVal.completedBy || "",
-              metadata: tVal.metadata || tVal.notes || "",
-            });
+      if (!error && row) {
+        foundInRedisOrSupabase = true;
+        if (row.tasks_map && typeof row.tasks_map === "object") {
+          for (const [tId, tVal] of Object.entries(row.tasks_map)) {
+            if (tId && tVal && typeof tVal === "object") {
+              const isComp = tVal.isCompleted !== undefined
+                ? Boolean(tVal.isCompleted)
+                : String(tVal.status || "").toUpperCase() === "TRUE" || String(tVal.status || "").toLowerCase() === "completed";
+              taskStatusMap.set(tId, {
+                taskId: tId,
+                phaseId: tVal.phaseId || "",
+                isCompleted: isComp,
+                completedAt: tVal.completedAt || "",
+                completedBy: tVal.completedBy || "",
+                metadata: tVal.metadata || tVal.notes || "",
+              });
+            }
           }
         }
       }
     } catch (_) { }
   }
 
-  // If not cached, query ClientSetupTasks tab on AC
-  if (taskStatusMap.size === 0) {
+  // If still not found in Redis or Supabase, read ClientSetupTasks tab on AC once and backfill Supabase
+  if (!foundInRedisOrSupabase && sheets && acId) {
+    if (!supaControlPlane) {
+      await ensureClientSetupTabs(sheets);
+    }
     try {
       const res = await withRetry(() =>
         sheets.spreadsheets.values.get({
@@ -1190,18 +1403,51 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
       );
       const rows = res.data.values || [];
       const clientRows = rows.filter(r => String(r[0] || "").trim().toLowerCase() === clientName.toLowerCase());
+      const seedTasksMap = {};
 
       for (const r of clientRows) {
         const taskId = String(r[2] || "").trim();
         if (taskId) {
+          const isComp = String(r[4] || "").toUpperCase() === "TRUE";
           taskStatusMap.set(taskId, {
             taskId,
             phaseId: r[1] || "",
-            isCompleted: String(r[4] || "").toUpperCase() === "TRUE",
+            isCompleted: isComp,
             completedAt: r[5] || "",
             completedBy: r[6] || "",
             metadata: r[7] || ""
           });
+          seedTasksMap[taskId] = {
+            phaseId: String(r[1] || "").trim(),
+            isCompleted: isComp,
+            status: isComp ? "completed" : "pending",
+            completedAt: r[5] || "",
+            completedBy: r[6] || "",
+            metadata: r[7] || ""
+          };
+        }
+      }
+
+      if (isSupabaseConfigured() && Object.keys(seedTasksMap).length > 0) {
+        try {
+          const sb = getSupabaseAdmin();
+          const norm = normalizeKey(clientName);
+          const { data: existingState } = await sb
+            .from("client_setup_state")
+            .select("tasks_map")
+            .eq("normalized_key", norm)
+            .maybeSingle();
+          const mergedTasks = {
+            ...seedTasksMap,
+            ...(existingState?.tasks_map && typeof existingState.tasks_map === "object" ? existingState.tasks_map : {}),
+          };
+          await sb.from("client_setup_state").upsert({
+            client_name: clientName,
+            normalized_key: norm,
+            tasks_map: mergedTasks,
+          }, { onConflict: "normalized_key" });
+        } catch (seedErr) {
+          console.warn("Warning seeding client_setup_state tasks_map:", seedErr.message);
         }
       }
     } catch (err) {
@@ -1296,7 +1542,6 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
  */
 export async function updateClientChecklistTask(sheets, { clientName, taskId, isCompleted, metadata, userEmail }) {
   if (!clientName || !taskId) throw new Error("Missing clientName or taskId");
-  await ensureClientSetupTabs(sheets);
 
   const acId = DEFAULT_AC_SHEET_ID;
   const now = new Date().toISOString();
@@ -1305,51 +1550,7 @@ export async function updateClientChecklistTask(sheets, { clientName, taskId, is
   const phaseId = catalogItem?.phaseId || "";
   const taskTitle = catalogItem?.title || taskId;
 
-  // 1. Read existing rows in ClientSetupTasks
-  const res = await withRetry(() =>
-    sheets.spreadsheets.values.get({
-      spreadsheetId: acId,
-      range: `${CLIENT_SETUP_TASKS_TAB}!A2:H5000`
-    })
-  );
-  const rows = res.data.values || [];
-  const existingIdx = rows.findIndex(
-    r => String(r[0] || "").trim().toLowerCase() === clientName.toLowerCase() && String(r[2] || "").trim() === taskId
-  );
-
-  const newRowValues = [
-    sanitizeFormulaInput(String(clientName || "")),
-    sanitizeFormulaInput(String(phaseId || "")),
-    sanitizeFormulaInput(String(taskId || "")),
-    sanitizeFormulaInput(String(taskTitle || "")),
-    isCompleted ? "TRUE" : "FALSE",
-    isCompleted ? now : "",
-    sanitizeFormulaInput(String(userEmail || "Admin")),
-    sanitizeFormulaInput(String(metadata || ""))
-  ];
-
-  if (existingIdx === -1) {
-    await withRetry(() =>
-      sheets.spreadsheets.values.append({
-        spreadsheetId: acId,
-        range: `${CLIENT_SETUP_TASKS_TAB}!A:H`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [newRowValues] }
-      })
-    );
-  } else {
-    const rowNum = existingIdx + 2;
-    await withRetry(() =>
-      sheets.spreadsheets.values.update({
-        spreadsheetId: acId,
-        range: `${CLIENT_SETUP_TASKS_TAB}!A${rowNum}:H${rowNum}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [newRowValues] }
-      })
-    );
-  }
-
-  // 1b. Dual-write to Supabase client_setup_state
+  // 1. Primary write to Supabase client_setup_state
   if (isSupabaseConfigured()) {
     try {
       const sb = getSupabaseAdmin();
@@ -1380,6 +1581,54 @@ export async function updateClientChecklistTask(sheets, { clientName, taskId, is
     }
   }
 
+  // 1b. Legacy Automation Commander fallback mirror (only when AC control plane is active)
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (!supaControlPlane && sheets && acId) {
+    await ensureClientSetupTabs(sheets);
+    const res = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: acId,
+        range: `${CLIENT_SETUP_TASKS_TAB}!A2:H5000`
+      })
+    );
+    const rows = res.data.values || [];
+    const existingIdx = rows.findIndex(
+      r => String(r[0] || "").trim().toLowerCase() === clientName.toLowerCase() && String(r[2] || "").trim() === taskId
+    );
+
+    const newRowValues = [
+      sanitizeFormulaInput(String(clientName || "")),
+      sanitizeFormulaInput(String(phaseId || "")),
+      sanitizeFormulaInput(String(taskId || "")),
+      sanitizeFormulaInput(String(taskTitle || "")),
+      isCompleted ? "TRUE" : "FALSE",
+      isCompleted ? now : "",
+      sanitizeFormulaInput(String(userEmail || "Admin")),
+      sanitizeFormulaInput(String(metadata || ""))
+    ];
+
+    if (existingIdx === -1) {
+      await withRetry(() =>
+        sheets.spreadsheets.values.append({
+          spreadsheetId: acId,
+          range: `${CLIENT_SETUP_TASKS_TAB}!A:H`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [newRowValues] }
+        })
+      );
+    } else {
+      const rowNum = existingIdx + 2;
+      await withRetry(() =>
+        sheets.spreadsheets.values.update({
+          spreadsheetId: acId,
+          range: `${CLIENT_SETUP_TASKS_TAB}!A${rowNum}:H${rowNum}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [newRowValues] }
+        })
+      );
+    }
+  }
+
   // 2. Invalidate checklist cache
   await redisClient.del(getChecklistRedisKey(clientName)).catch(() => { });
 
@@ -1407,7 +1656,7 @@ export async function updateClientChecklistTask(sheets, { clientName, taskId, is
 }
 
 /**
- * Updates status, progress percent, completed tasks, or completedAt in ClientSetupOverview.
+ * Updates status, progress percent, completed tasks, or completedAt in Supabase client_setup_state (and AC in legacy mode).
  */
 export async function updateClientSetupOverviewRow(sheets, { clientName, status, progressPercent, completedTasks, completedAt }) {
   if (!clientName) return;
@@ -1433,14 +1682,25 @@ export async function updateClientSetupOverviewRow(sheets, { clientName, status,
       };
       if (status !== undefined) {
         upsertPayload.setup_status = status;
-        await sb
+        const { data: existingClient } = await sb
           .from("clients")
-          .update({ setup_mode: status === "IN_PROGRESS" })
-          .eq("normalized_key", norm);
+          .select("metadata")
+          .eq("normalized_key", norm)
+          .maybeSingle();
+        if (existingClient) {
+          await sb
+            .from("clients")
+            .update({ metadata: { ...(existingClient.metadata || {}), setupMode: status === "IN_PROGRESS" } })
+            .eq("normalized_key", norm);
+        }
       }
       await sb.from("client_setup_state").upsert(upsertPayload, { onConflict: "normalized_key" });
     } catch (_) { }
   }
+
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (supaControlPlane || !sheets) return;
+
   await ensureClientSetupTabs(sheets);
   const acId = DEFAULT_AC_SHEET_ID;
   try {
@@ -1627,54 +1887,145 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
   return await getMasterKeyInfoSettings(sheets, masterSheetId);
 }
 
+const CLIENT_PROVISIONING_TEMPLATES_KEY = "client_provisioning_templates";
+
 /**
- * Saves Script IDs directly into Columns R, S, T of the Client Version Tracker sheet.
+ * Loads or seeds the client/master/recon template URLs and Apps Script IDs
+ * from Supabase `system_config` (`client_provisioning_templates`), seeding on first read
+ * from Row 3 of the legacy Clients Version Tracker sheet (`Clients!A3:T3`).
+ */
+export async function getProvisioningTemplates(sheets) {
+  const sb = getSupabaseAdmin();
+  if (sb) {
+    try {
+      const { data: cfgRow } = await sb
+        .from("system_config")
+        .select("value")
+        .eq("key", CLIENT_PROVISIONING_TEMPLATES_KEY)
+        .maybeSingle();
+      const val = cfgRow?.value;
+      if (val && typeof val === "object" && (val.clientTemplateId || val.clientTemplateUrl) && (val.masterTemplateId || val.masterTemplateUrl) && (val.reconTemplateId || val.reconTemplateUrl)) {
+        return {
+          clientTemplateUrl: val.clientTemplateUrl || "",
+          masterTemplateUrl: val.masterTemplateUrl || "",
+          reconTemplateUrl: val.reconTemplateUrl || "",
+          clientTemplateId: val.clientTemplateId || extractSheetIdFromUrl(val.clientTemplateUrl),
+          masterTemplateId: val.masterTemplateId || extractSheetIdFromUrl(val.masterTemplateUrl),
+          reconTemplateId: val.reconTemplateId || extractSheetIdFromUrl(val.reconTemplateUrl),
+          clientTemplateScriptId: val.clientTemplateScriptId || "",
+          masterTemplateScriptId: val.masterTemplateScriptId || "",
+          reconTemplateScriptId: val.reconTemplateScriptId || "",
+        };
+      }
+    } catch (sbErr) {
+      console.warn("[getProvisioningTemplates] Supabase read warning:", sbErr.message);
+    }
+  }
+
+  const activeSheets = sheets || (await getSheetsClient().catch(() => null));
+  if (!activeSheets) {
+    throw new Error("Could not load client provisioning templates from Supabase or Google Sheets.");
+  }
+
+  const templateRowRes = await withRetry(() =>
+    activeSheets.spreadsheets.values.get({
+      spreadsheetId: TRACKER_SHEET_ID,
+      range: "Clients!A3:T3"
+    })
+  );
+  const templateRow = (templateRowRes.data.values || [[]])[0] || [];
+  const clientTemplateUrl = String(templateRow[11] || "").trim(); // Col L
+  const masterTemplateUrl = String(templateRow[12] || "").trim(); // Col M
+  const reconTemplateUrl = String(templateRow[13] || "").trim();  // Col N
+
+  const clientTemplateId = extractSheetIdFromUrl(clientTemplateUrl);
+  const masterTemplateId = extractSheetIdFromUrl(masterTemplateUrl);
+  const reconTemplateId = extractSheetIdFromUrl(reconTemplateUrl);
+
+  const result = {
+    clientTemplateUrl,
+    masterTemplateUrl,
+    reconTemplateUrl,
+    clientTemplateId,
+    masterTemplateId,
+    reconTemplateId,
+    clientTemplateScriptId: String(templateRow[17] || "").trim(), // Col R
+    masterTemplateScriptId: String(templateRow[18] || "").trim(), // Col S
+    reconTemplateScriptId: String(templateRow[19] || "").trim(),  // Col T
+  };
+
+  if (sb && clientTemplateId && masterTemplateId && reconTemplateId) {
+    const nowIso = new Date().toISOString();
+    try {
+      await sb.from("system_config").upsert({
+        key: CLIENT_PROVISIONING_TEMPLATES_KEY,
+        value: {
+          ...result,
+          seededAt: nowIso,
+          updatedAt: nowIso,
+        },
+        description: "Client, Master, and Recon Google Sheet template URLs and Script IDs seeded from Tracker row 3",
+        updated_by: "System (Migration Seed)",
+      });
+    } catch (_) { }
+  }
+
+  return result;
+}
+
+/**
+ * Saves Script IDs to Supabase `public.clients` (primary) and legacy Clients Version Tracker (non-Supabase control plane mode).
  */
 export async function saveScriptIdsToTracker(sheets, { clientName, clientScriptId, masterScriptId, reconScriptId, userEmail }) {
   if (!clientName) throw new Error("Missing clientName");
 
-  const trackerRes = await withRetry(() =>
-    sheets.spreadsheets.values.get({
-      spreadsheetId: TRACKER_SHEET_ID,
-      range: "Clients!A1:A100"
-    })
-  );
-  const rows = trackerRes.data.values || [];
-  const targetRowIdx = rows.findIndex(r => String(r[0] || "").trim().toLowerCase() === clientName.toLowerCase());
-
-  if (targetRowIdx === -1) {
-    throw new Error(`Client "${clientName}" not found in Column A of Clients tracker sheet.`);
-  }
-
-  const rowNum = targetRowIdx + 1;
-
-  await withRetry(() =>
-    sheets.spreadsheets.values.update({
-      spreadsheetId: TRACKER_SHEET_ID,
-      range: `Clients!R${rowNum}:T${rowNum}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [[
-          sanitizeFormulaInput(String(clientScriptId || "")),
-          sanitizeFormulaInput(String(masterScriptId || "")),
-          sanitizeFormulaInput(String(reconScriptId || ""))
-        ]]
-      }
-    })
-  );
+  const norm = normalizeKey(clientName);
+  let rowNum = null;
 
   if (isSupabaseConfigured()) {
+    const sb = getSupabaseAdmin();
+    await sb
+      .from("clients")
+      .update({
+        client_script_id: String(clientScriptId || ""),
+        master_script_id: String(masterScriptId || ""),
+        recon_script_id: String(reconScriptId || ""),
+      })
+      .eq("normalized_key", norm);
+  }
+
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (!supaControlPlane && sheets) {
     try {
-      const sb = getSupabaseAdmin();
-      await sb
-        .from("clients")
-        .update({
-          client_script_id: String(clientScriptId || ""),
-          master_script_id: String(masterScriptId || ""),
-          recon_script_id: String(reconScriptId || ""),
+      const trackerRes = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: TRACKER_SHEET_ID,
+          range: "Clients!A1:A100"
         })
-        .eq("normalized_key", normalizeKey(clientName));
-    } catch (_) { }
+      );
+      const rows = trackerRes.data.values || [];
+      const targetRowIdx = rows.findIndex(r => String(r[0] || "").trim().toLowerCase() === clientName.toLowerCase());
+
+      if (targetRowIdx !== -1) {
+        rowNum = targetRowIdx + 1;
+        await withRetry(() =>
+          sheets.spreadsheets.values.update({
+            spreadsheetId: TRACKER_SHEET_ID,
+            range: `Clients!R${rowNum}:T${rowNum}`,
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: [[
+                sanitizeFormulaInput(String(clientScriptId || "")),
+                sanitizeFormulaInput(String(masterScriptId || "")),
+                sanitizeFormulaInput(String(reconScriptId || ""))
+              ]]
+            }
+          })
+        );
+      }
+    } catch (trackerErr) {
+      console.warn("[saveScriptIdsToTracker] Legacy tracker update note:", trackerErr.message);
+    }
   }
 
   // Auto-mark task p1_script_ids as complete
@@ -1688,7 +2039,9 @@ export async function saveScriptIdsToTracker(sheets, { clientName, clientScriptI
 
   logPmaActivity({
     action: "setup_script_ids_saved",
-    details: `Saved Script IDs into Client Version Tracker row ${rowNum} for ${clientName}`,
+    details: rowNum
+      ? `Saved Script IDs into Supabase and Client Version Tracker row ${rowNum} for ${clientName}`
+      : `Saved Script IDs for ${clientName}`,
     clientName,
     userEmail: userEmail || "Admin"
   }).catch(() => { });
@@ -1697,7 +2050,8 @@ export async function saveScriptIdsToTracker(sheets, { clientName, clientScriptI
 }
 
 /**
- * Saves Master Sheet Deployment URL to KeyInfo!X29 and Column W of Client Version Tracker.
+ * Saves Master Sheet Deployment URL to KeyInfo!X29, Supabase `public.clients` (`master_deployment_url`),
+ * and (in legacy mode) Column W of Client Version Tracker.
  */
 export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, deploymentUrl, userEmail }) {
   if (!clientName || !deploymentUrl) throw new Error("Missing clientName or deploymentUrl");
@@ -1708,7 +2062,7 @@ export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, dep
   }
 
   // 1. Write to Master Sheet KeyInfo!X29
-  if (masterSheetId) {
+  if (masterSheetId && sheets) {
     await withRetry(() =>
       sheets.spreadsheets.values.update({
         spreadsheetId: masterSheetId,
@@ -1719,36 +2073,46 @@ export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, dep
     );
   }
 
-  // 2. Write to Column W of Clients Version Tracker
-  const trackerRes = await withRetry(() =>
-    sheets.spreadsheets.values.get({
-      spreadsheetId: TRACKER_SHEET_ID,
-      range: "Clients!A1:A100"
-    })
-  );
-  const rows = trackerRes.data.values || [];
-  const targetRowIdx = rows.findIndex(r => String(r[0] || "").trim().toLowerCase() === clientName.toLowerCase());
-
-  if (targetRowIdx !== -1) {
-    const rowNum = targetRowIdx + 1;
-    await withRetry(() =>
-      sheets.spreadsheets.values.update({
-        spreadsheetId: TRACKER_SHEET_ID,
-        range: `Clients!W${rowNum}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[trimmedUrl]] }
-      })
-    );
-  }
-
+  // 2. Write to Supabase public.clients (primary)
   if (isSupabaseConfigured()) {
     try {
       const sb = getSupabaseAdmin();
       await sb
         .from("clients")
-        .update({ master_gas_webapp_url: trimmedUrl })
+        .update({ master_deployment_url: trimmedUrl })
         .eq("normalized_key", normalizeKey(clientName));
-    } catch (_) { }
+    } catch (sbErr) {
+      console.warn("[saveDeploymentUrl] Supabase update warning:", sbErr.message);
+    }
+  }
+
+  // 2b. Legacy mirror to Column W of Clients Version Tracker when not on Supabase control plane
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (!supaControlPlane && sheets) {
+    try {
+      const trackerRes = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: TRACKER_SHEET_ID,
+          range: "Clients!A1:A100"
+        })
+      );
+      const rows = trackerRes.data.values || [];
+      const targetRowIdx = rows.findIndex(r => String(r[0] || "").trim().toLowerCase() === clientName.toLowerCase());
+
+      if (targetRowIdx !== -1) {
+        const rowNum = targetRowIdx + 1;
+        await withRetry(() =>
+          sheets.spreadsheets.values.update({
+            spreadsheetId: TRACKER_SHEET_ID,
+            range: `Clients!W${rowNum}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [[trimmedUrl]] }
+          })
+        );
+      }
+    } catch (trackerErr) {
+      console.warn("[saveDeploymentUrl] Legacy tracker update note:", trackerErr.message);
+    }
   }
 
   // 3. Mark task p1_gas_deployment as complete
@@ -1826,28 +2190,19 @@ export async function provisionNewClientSystem({
   const cleanClientName = sanitizeFormulaInput(clientName.trim());
   const drive = await getDriveClient();
   const sheets = await getSheetsClient();
-  await ensureClientSetupTabs(sheets);
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (!supaControlPlane) {
+    await ensureClientSetupTabs(sheets);
+  }
 
   console.log(`🚀 Starting Provisioning for new client: "${cleanClientName}"...`);
 
-  // 1. Get Template IDs from Row 3 of Clients Tracker sheet
-  const templateRowRes = await withRetry(() =>
-    sheets.spreadsheets.values.get({
-      spreadsheetId: TRACKER_SHEET_ID,
-      range: "Clients!A3:N3"
-    })
-  );
-  const templateRow = (templateRowRes.data.values || [[]])[0];
-  const clientTemplateUrl = templateRow[11] || ""; // Col L
-  const masterTemplateUrl = templateRow[12] || ""; // Col M
-  const reconTemplateUrl = templateRow[13] || "";  // Col N
-
-  const clientTemplateId = extractSheetIdFromUrl(clientTemplateUrl);
-  const masterTemplateId = extractSheetIdFromUrl(masterTemplateUrl);
-  const reconTemplateId = extractSheetIdFromUrl(reconTemplateUrl);
+  // 1. Get Template IDs from Supabase `system_config` (`client_provisioning_templates`) with Tracker fallback
+  const templates = await getProvisioningTemplates(sheets);
+  const { clientTemplateId, masterTemplateId, reconTemplateId } = templates;
 
   if (!clientTemplateId || !masterTemplateId || !reconTemplateId) {
-    throw new Error("Missing template URLs in Row 3 of Clients Version Tracker (Columns L, M, N).");
+    throw new Error("Missing client provisioning template IDs in Supabase system_config (`client_provisioning_templates`) or Clients Version Tracker Row 3.");
   }
 
   // 2. Use Existing Folder or Create Destination Folder in Google Drive
@@ -1995,143 +2350,159 @@ export async function provisionNewClientSystem({
     ).catch(e => console.warn("Client KeyInfo update note:", e.message))
   ]);
 
-  // 6. Enroll in Clients Version Tracker
-  console.log(`  📝 Enrolling into Clients Version Tracker...`);
-  try {
-    const aRes = await sheets.spreadsheets.values.get({
-      spreadsheetId: TRACKER_SHEET_ID,
-      range: "Clients!A1:A100"
-    });
-    const aVals = aRes.data.values || [];
-    let targetRow = -1;
-    for (let i = 4; i < aVals.length; i++) {
-      if (!aVals[i] || !aVals[i][0] || aVals[i][0].trim() === "") {
-        targetRow = i + 1;
-        break;
+  // 6. Enroll in Clients Version Tracker (Legacy sheet control plane only)
+  if (!supaControlPlane) {
+    console.log(`  📝 Enrolling into Clients Version Tracker...`);
+    try {
+      const aRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: TRACKER_SHEET_ID,
+        range: "Clients!A1:A100"
+      });
+      const aVals = aRes.data.values || [];
+      let targetRow = -1;
+      for (let i = 4; i < aVals.length; i++) {
+        if (!aVals[i] || !aVals[i][0] || aVals[i][0].trim() === "") {
+          targetRow = i + 1;
+          break;
+        }
       }
-    }
-    if (targetRow === -1) targetRow = aVals.length + 1;
+      if (targetRow === -1) targetRow = aVals.length + 1;
 
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: TRACKER_SHEET_ID,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data: [
-          { range: `Clients!A${targetRow}`, values: [[cleanClientName]] },
-          { range: `Clients!L${targetRow}`, values: [[clientUrl]] },
-          { range: `Clients!M${targetRow}`, values: [[masterUrl]] },
-          { range: `Clients!N${targetRow}`, values: [[reconUrl]] },
-          { range: `Clients!Y${targetRow}`, values: [[backupUrl]] }
-        ]
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: TRACKER_SHEET_ID,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: [
+            { range: `Clients!A${targetRow}`, values: [[cleanClientName]] },
+            { range: `Clients!L${targetRow}`, values: [[clientUrl]] },
+            { range: `Clients!M${targetRow}`, values: [[masterUrl]] },
+            { range: `Clients!N${targetRow}`, values: [[reconUrl]] },
+            { range: `Clients!Y${targetRow}`, values: [[backupUrl]] }
+          ]
+        }
+      });
+    } catch (trackerErr) {
+      console.warn("Tracker enrollment note:", trackerErr.message);
+    }
+
+    // 7. Enroll in Automation Commander (AutoUpdates!A:A)
+    console.log(`  🤖 Enrolling into Automation Commander AutoUpdates...`);
+    try {
+      const acRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: DEFAULT_AC_SHEET_ID,
+        range: "AutoUpdates!A1:A500"
+      });
+      const acNames = (acRes.data.values || []).map(r => String(r[0] || "").trim().toLowerCase());
+      if (!acNames.includes(cleanClientName.toLowerCase())) {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: DEFAULT_AC_SHEET_ID,
+          range: "AutoUpdates!A:M",
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [[
+              cleanClientName, "", "", "", "", "", "", "", "", "", "",
+              clientUrl, masterUrl
+            ]]
+          }
+        });
       }
-    });
-  } catch (trackerErr) {
-    console.warn("Tracker enrollment note:", trackerErr.message);
+    } catch (acErr) {
+      console.warn("AC AutoUpdates enrollment note:", acErr.message);
+    }
+
+    // 8. Enroll in Reporting Control (RepControl!A:A)
+    console.log(`  📊 Enrolling into Reporting Control...`);
+    try {
+      const repRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+        range: "RepControl!A1:A500"
+      });
+      const repNames = (repRes.data.values || []).map(r => String(r[0] || "").trim().toLowerCase());
+      if (!repNames.includes(cleanClientName.toLowerCase())) {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+          range: "RepControl!A:A",
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [[cleanClientName]] }
+        });
+      }
+    } catch (repErr) {
+      console.warn("Reporting Control enrollment note:", repErr.message);
+    }
   }
 
-  // 7. Enroll in Automation Commander (AutoUpdates!A:A)
-  console.log(`  🤖 Enrolling into Automation Commander AutoUpdates...`);
-  try {
-    const acRes = await sheets.spreadsheets.values.get({
-      spreadsheetId: DEFAULT_AC_SHEET_ID,
-      range: "AutoUpdates!A1:A500"
-    });
-    const acNames = (acRes.data.values || []).map(r => String(r[0] || "").trim().toLowerCase());
-    if (!acNames.includes(cleanClientName.toLowerCase())) {
+  // 9. Seed Overview & Initial Tasks (AC Sheet in legacy mode, plus Supabase below and Default EoM Tasks always)
+  const now = new Date().toISOString();
+  const autoDoneTaskIds = new Set([
+    "p1_drive_folder",
+    "p1_duplicate_templates",
+    "p2_select_tools",
+    "p4_ac_enrollment",
+    "p4_rep_control",
+    "p4_eom_jobs"
+  ]);
+  const template = await getSetupProcessTemplate(sheets).catch(() => null);
+  const catalogTasks = (template?.tasks || DEFAULT_SETUP_TASKS_CATALOG).filter(t => t.active !== false);
+  const initialTasksMap = {};
+  for (const t of catalogTasks) {
+    const isAutoDone = autoDoneTaskIds.has(t.id);
+    initialTasksMap[t.id] = {
+      phaseId: t.phaseId || "",
+      isCompleted: isAutoDone,
+      status: isAutoDone ? "completed" : "pending",
+      completedAt: isAutoDone ? now : "",
+      completedBy: isAutoDone ? "Provisioning Engine" : "",
+      metadata: isAutoDone ? "Automated upon creation" : ""
+    };
+  }
+
+  if (!supaControlPlane) {
+    console.log(`  🎯 Seeding ClientSetupOverview & ClientSetupTasks...`);
+    try {
       await sheets.spreadsheets.values.append({
         spreadsheetId: DEFAULT_AC_SHEET_ID,
-        range: "AutoUpdates!A:M",
+        range: `${CLIENT_SETUP_OVERVIEW_TAB}!A:L`,
         valueInputOption: "USER_ENTERED",
         requestBody: {
           values: [[
-            cleanClientName, "", "", "", "", "", "", "", "", "", "",
-            clientUrl, masterUrl
+            cleanClientName, "IN_PROGRESS", "15%", "5", "34", now, "",
+            folderUrl, clientUrl, masterUrl, reconUrl, backupUrl
           ]]
         }
       });
-    }
-  } catch (acErr) {
-    console.warn("AC AutoUpdates enrollment note:", acErr.message);
-  }
 
-  // 8. Enroll in Reporting Control (RepControl!A:A)
-  console.log(`  📊 Enrolling into Reporting Control...`);
-  try {
-    const repRes = await sheets.spreadsheets.values.get({
-      spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-      range: "RepControl!A1:A500"
-    });
-    const repNames = (repRes.data.values || []).map(r => String(r[0] || "").trim().toLowerCase());
-    if (!repNames.includes(cleanClientName.toLowerCase())) {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-        range: "RepControl!A:A",
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[cleanClientName]] }
+      const initialTaskRows = catalogTasks.map(t => {
+        const isAutoDone = autoDoneTaskIds.has(t.id);
+        return [
+          cleanClientName,
+          t.phaseId,
+          t.id,
+          t.title,
+          isAutoDone ? "TRUE" : "FALSE",
+          isAutoDone ? now : "",
+          isAutoDone ? "Provisioning Engine" : "",
+          isAutoDone ? "Automated upon creation" : ""
+        ];
       });
+
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: DEFAULT_AC_SHEET_ID,
+        range: `${CLIENT_SETUP_TASKS_TAB}!A:H`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: initialTaskRows }
+      });
+    } catch (seedErr) {
+      console.warn("Setup tabs seed note:", seedErr.message);
     }
-  } catch (repErr) {
-    console.warn("Reporting Control enrollment note:", repErr.message);
   }
 
-  // 9. Seed Overview & Tasks in Automation Commander
-  console.log(`  🎯 Seeding ClientSetupOverview & ClientSetupTasks...`);
-  const now = new Date().toISOString();
+  // 9b. Seed Default EoM Tasks for this client into Supabase EoM state (and EomClientTasks if legacy)
+  console.log(`  📋 Seeding Default EoM tasks for "${cleanClientName}"...`);
   try {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: DEFAULT_AC_SHEET_ID,
-      range: `${CLIENT_SETUP_OVERVIEW_TAB}!A:L`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [[
-          cleanClientName, "IN_PROGRESS", "15%", "5", "34", now, "",
-          folderUrl, clientUrl, masterUrl, reconUrl, backupUrl
-        ]]
-      }
-    });
-
-    const template = await getSetupProcessTemplate(sheets).catch(() => null);
-    const catalogTasks = (template?.tasks || DEFAULT_SETUP_TASKS_CATALOG).filter(t => t.active !== false);
-
-    const initialTaskRows = catalogTasks.map(t => {
-      const isAutoDone = [
-        "p1_drive_folder",
-        "p1_duplicate_templates",
-        "p2_select_tools",
-        "p4_ac_enrollment",
-        "p4_rep_control",
-        "p4_eom_jobs"
-      ].includes(t.id);
-
-      return [
-        cleanClientName,
-        t.phaseId,
-        t.id,
-        t.title,
-        isAutoDone ? "TRUE" : "FALSE",
-        isAutoDone ? now : "",
-        isAutoDone ? "Provisioning Engine" : "",
-        isAutoDone ? "Automated upon creation" : ""
-      ];
-    });
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: DEFAULT_AC_SHEET_ID,
-      range: `${CLIENT_SETUP_TASKS_TAB}!A:H`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: initialTaskRows }
-    });
-
-    // 9b. Seed Default EoM Tasks for this client into EomClientTasks
-    console.log(`  📋 Seeding Default EoM tasks for "${cleanClientName}"...`);
-    try {
-      const { applyDefaultEomTasksToClient_ } = await import("./eomTools");
-      await applyDefaultEomTasksToClient_(sheets, DEFAULT_AC_SHEET_ID, cleanClientName);
-    } catch (eomSeedErr) {
-      console.warn("EoM default tasks seed note:", eomSeedErr.message);
-    }
-  } catch (seedErr) {
-    console.warn("Setup tabs seed note:", seedErr.message);
+    const { applyDefaultEomTasksToClient_ } = await import("./eomTools");
+    await applyDefaultEomTasksToClient_(sheets, DEFAULT_AC_SHEET_ID, cleanClientName);
+  } catch (eomSeedErr) {
+    console.warn("EoM default tasks seed note:", eomSeedErr.message);
   }
 
   // 10. Persist to Redis & Supabase
@@ -2159,30 +2530,37 @@ export async function provisionNewClientSystem({
     try {
       const sb = getSupabaseAdmin();
       const norm = normalizeKey(cleanClientName);
-      const { data: insertedClient } = await sb
+      const { data: insertedClient, error: clientUpsertErr } = await sb
         .from("clients")
         .upsert({
           client_name: cleanClientName,
           normalized_key: norm,
-          client_mode: "sheets",
+          status: "live",
+          client_mode: "sheet",
+          master_mode: "supabase",
           client_sheet_id: clientCopy.data.id,
           client_sheet_url: clientUrl,
           master_sheet_id: masterCopy.data.id,
           master_sheet_url: masterUrl,
           recon_sheet_id: reconCopy.data.id,
           recon_sheet_url: reconUrl,
-          backup_sheet_id: backupCopy.data.id,
           backup_sheet_url: backupUrl,
           drive_folder_id: folderId,
-          drive_folder_url: folderUrl,
-          accounting_tool: accountingTool || "None",
-          crm_tool: crmTool || "None",
-          crm_drives: crmDrives || "NA",
-          setup_mode: true,
-          is_active: true,
+          metadata: {
+            setupMode: true,
+            folderUrl,
+            backupSheetId: backupCopy.data.id,
+            accountingTool: accountingTool || "None",
+            crmTool: crmTool || "None",
+            crmDrives: crmDrives || "NA",
+          },
         }, { onConflict: "normalized_key" })
         .select("id")
         .maybeSingle();
+
+      if (clientUpsertErr) {
+        console.warn("⚠️ Supabase clients upsert warning:", clientUpsertErr.message);
+      }
 
       await sb.from("client_setup_state").upsert({
         client_id: insertedClient?.id || null,
@@ -2192,12 +2570,17 @@ export async function provisionNewClientSystem({
         accounting_tool: accountingTool || "None",
         crm_tool: crmTool || "None",
         crm_drives: crmDrives || "NA",
+        tasks_map: initialTasksMap,
         overview_data: {
-          folderUrl,
-          clientUrl,
-          masterUrl,
-          reconUrl,
-          backupUrl,
+          status: "IN_PROGRESS",
+          progressPercent: 15,
+          completedTasks: 5,
+          totalTasks: catalogTasks.length || 34,
+          driveFolderUrl: folderUrl,
+          clientSheetUrl: clientUrl,
+          masterSheetUrl: masterUrl,
+          reconSheetUrl: reconUrl,
+          backupSheetUrl: backupUrl,
           startedAt: now,
         },
       }, { onConflict: "normalized_key" });

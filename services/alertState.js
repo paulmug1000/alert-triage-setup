@@ -3,7 +3,7 @@ import { getSheetsClient, extractSheetIdFromUrl, sanitizeFormulaInput } from "./
 import {
   readAlertMemory, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow, appendAlertMemoryRowsBatch,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
-  extractCrmComparisonSnapshot, deleteAlertMemoryRows, updateHandledAlertHash,
+  extractCrmComparisonSnapshot, deleteAlertMemoryRows, updateHandledAlertHash, updateHandledAlertHashesBatch,
   readHandledAlertHashes
 } from "./alertMemory.js";
 import { createHash } from "crypto";
@@ -176,6 +176,8 @@ export function applyAlertRemovalToTriageData(data, targetIds, allowedClientChec
   for (const pa of (data.proactiveAlerts || [])) {
     const isTarget = canRemove(pa) && (
       (pa.alertKey && targetSet.has(pa.alertKey))
+      || (pa.legacyAlertKey && targetSet.has(pa.legacyAlertKey))
+      || (pa.metadata?.legacyAlertKey && targetSet.has(pa.metadata.legacyAlertKey))
       || (pa.fingerprintHash && targetSet.has(pa.fingerprintHash))
       || (pa.rowIndex != null && targetSet.has(String(pa.rowIndex)))
     );
@@ -615,9 +617,12 @@ export async function handleUpdateSessionFlags(req, res) {
 }
 
 export async function handleResolveNoActionFlag(req, res, sheets) {
-  const { sessionId, clientName, flagType, fingerprintHash, automationCommanderSheetId: acIdResolve } = req.body;
+  const { sessionId, clientName, flagType, fingerprintHash, preserveTaskStatus, automationCommanderSheetId: acIdResolve } = req.body;
   if (!sessionId || !clientName || !flagType) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
+    const targetIds = fingerprintHash ? [fingerprintHash] : [`${clientName}___${flagType}`];
+    const canRemoveFlagClient = (cName) => !cName || matchesClientName(cName, clientName);
+
     const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
     if (!sessionData) return res.status(200).json({ success: true, notFound: true });
     const parsed = JSON.parse(sessionData);
@@ -625,23 +630,45 @@ export async function handleResolveNoActionFlag(req, res, sheets) {
     const resolvedId = fingerprintHash || flagType;
     const key = `${clientName}___${resolvedId}`;
     if (!parsed.resolvedNoActionFlags.includes(key)) parsed.resolvedNoActionFlags.push(key);
+    applyAlertRemovalToTriageData(parsed, targetIds, canRemoveFlagClient);
     await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
+
+    try {
+      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+      if (preRaw) {
+        const pre = JSON.parse(preRaw);
+        const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds, canRemoveFlagClient);
+        if (removedCount > 0) {
+          await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+        }
+      }
+    } catch (preErr) {
+      console.warn("⚠️ Failed updating PRECOMPUTED_KEY in handleResolveNoActionFlag:", preErr.message);
+    }
 
     if (acIdResolve) {
       try {
         const acIdClean = extractSheetIdFromUrl(acIdResolve) || acIdResolve;
-        const memoryRows = await readAlertMemory(sheets, acIdClean);
+        const [memoryRows, handledMap] = await Promise.all([
+          readAlertMemory(sheets, acIdClean),
+          readHandledAlertHashes(sheets, acIdClean, false),
+        ]);
         const toAccept = memoryRows.filter(r => {
           if (r.clientName !== clientName || r.alertType !== flagType || (r.status !== "cached" && r.status !== "pending_automation")) return false;
+          if (preserveTaskStatus && (r.status === "task" || (r.fingerprintHash && handledMap?.[r.fingerprintHash] === "task"))) return false;
           if (fingerprintHash) return r.fingerprintHash === fingerprintHash;
           return true;
         });
         for (const row of toAccept) {
+          if (preserveTaskStatus && row.fingerprintHash && handledMap?.[row.fingerprintHash] === "task") continue;
           await updateAlertMemoryRow(sheets, acIdClean, row.rowIndex, { ...row, status: "accepted" });
         }
-        invalidatePrecomputedMemoryCache();
+        if (!preserveTaskStatus && fingerprintHash && handledMap?.[fingerprintHash] !== "task") {
+          await updateHandledAlertHash(acIdClean, fingerprintHash, "accepted");
+        }
       } catch (amErr) { }
     }
+    invalidatePrecomputedMemoryCache();
 
     const flagCat = (() => {
       const t = String(flagType || "").toLowerCase();
@@ -669,11 +696,16 @@ export async function handleResolveNoActionFlag(req, res, sheets) {
 }
 
 export async function handleBulkResolveNoActionFlags(req, res, sheets) {
-  const { sessionId, clientName, flags = [], clearedFlagKeys = [], automationCommanderSheetId: acIdResolve } = req.body;
+  const { sessionId, clientName, flags = [], clearedFlagKeys = [], preserveTaskStatus, automationCommanderSheetId: acIdResolve } = req.body;
   if (!sessionId || !clientName) return res.status(400).json({ success: false, error: "Missing required fields" });
   if (!Array.isArray(flags) || flags.length === 0) return res.status(200).json({ success: true, count: 0 });
 
   try {
+    const flagTargetIds = flags
+      .map(f => f?.fingerprintHash || (f?.flagType ? `${clientName}___${f.flagType}` : null))
+      .filter(Boolean);
+    const canRemoveFlagClient = (cName) => !cName || matchesClientName(cName, clientName);
+
     const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
     if (sessionData) {
       const parsed = JSON.parse(sessionData);
@@ -685,6 +717,10 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
         if (!parsed.resolvedNoActionFlags.includes(key)) {
           parsed.resolvedNoActionFlags.push(key);
         }
+      }
+
+      if (flagTargetIds.length > 0) {
+        applyAlertRemovalToTriageData(parsed, flagTargetIds, canRemoveFlagClient);
       }
 
       if (clearedFlagKeys.length > 0) {
@@ -716,37 +752,41 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
       await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
     }
 
-    if (clearedFlagKeys.length > 0) {
+    if (clearedFlagKeys.length > 0 || flagTargetIds.length > 0) {
       try {
         const keysToZero = new Set(clearedFlagKeys);
         const precomputed = await redisClient.get(PRECOMPUTED_KEY);
         if (precomputed) {
           const parsed = JSON.parse(precomputed);
-          parsed.alerts = (parsed.alerts || []).filter(a => { if (a.clientName !== clientName) return true; return !keysToZero.has(a.flagType || a.type); });
-          if (parsed.noActionAlerts) {
-            parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
-              if (na.clientName && na.clientName !== clientName) return true;
-              const precompTargetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
-              if (!na.clientName && na.clientId !== precompTargetClientId) return true;
-              return !keysToZero.has(na.flagType);
-            });
+          if (flagTargetIds.length > 0) {
+            applyAlertRemovalToTriageData(parsed, flagTargetIds, canRemoveFlagClient);
           }
-          if (parsed.clientsWithFlags) {
-            parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
-              if (c.clientName !== clientName) return c;
-              const updatedFlags = { ...c.flags };
-              keysToZero.forEach(k => { updatedFlags[k] = false; });
-              return { ...c, flags: updatedFlags };
-            });
+          if (keysToZero.size > 0) {
+            parsed.alerts = (parsed.alerts || []).filter(a => { if (a.clientName !== clientName) return true; return !keysToZero.has(a.flagType || a.type); });
+            if (parsed.noActionAlerts) {
+              parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
+                if (na.clientName && na.clientName !== clientName) return true;
+                const precompTargetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
+                if (!na.clientName && na.clientId !== precompTargetClientId) return true;
+                return !keysToZero.has(na.flagType);
+              });
+            }
+            if (parsed.clientsWithFlags) {
+              parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
+                if (c.clientName !== clientName) return c;
+                const updatedFlags = { ...c.flags };
+                keysToZero.forEach(k => { updatedFlags[k] = false; });
+                return { ...c, flags: updatedFlags };
+              });
+            }
+            if (parsed.noActionAnalysisResults) {
+              const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
+              richFlags.forEach(flagType => { if (keysToZero.has(flagType)) delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`]; });
+            }
           }
           parsed.totalAlerts = (parsed.alerts || []).length;
           parsed.noActionCount = (parsed.noActionAlerts || []).length;
-          if (parsed.noActionAnalysisResults) {
-            const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
-            richFlags.forEach(flagType => { if (keysToZero.has(flagType)) delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`]; });
-          }
           await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 86400 * 7 });
-          invalidatePrecomputedMemoryCache();
         }
       } catch (preErr) {
         console.warn("⚠️ Failed updating PRECOMPUTED_KEY in handleBulkResolveNoActionFlags:", preErr.message);
@@ -756,13 +796,17 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
     if (acIdResolve) {
       try {
         const acIdClean = extractSheetIdFromUrl(acIdResolve) || acIdResolve;
-        const memoryRows = await readAlertMemory(sheets, acIdClean);
+        const [memoryRows, handledMap] = await Promise.all([
+          readAlertMemory(sheets, acIdClean),
+          readHandledAlertHashes(sheets, acIdClean, false),
+        ]);
         const hashesSet = new Set(flags.map(f => f.fingerprintHash).filter(Boolean));
         const flagTypesSet = new Set(flags.map(f => f.flagType).filter(Boolean));
         const clearedSet = new Set(clearedFlagKeys || []);
 
         const toAccept = memoryRows.filter(r => {
           if (r.clientName !== clientName || (r.status !== "cached" && r.status !== "pending_automation")) return false;
+          if (preserveTaskStatus && (r.status === "task" || (r.fingerprintHash && handledMap?.[r.fingerprintHash] === "task"))) return false;
           if (r.fingerprintHash && hashesSet.has(r.fingerprintHash)) return true;
           if (!r.fingerprintHash && flagTypesSet.has(r.alertType)) return true;
           if (clearedSet.has(r.alertType)) return true;
@@ -776,11 +820,23 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
           }));
           await updateAlertMemoryRowsBatch(sheets, acIdClean, updateItems);
         }
-        invalidatePrecomputedMemoryCache();
+        if (!preserveTaskStatus && hashesSet.size > 0) {
+          const matchedHashes = new Set(toAccept.map(r => r.fingerprintHash).filter(Boolean));
+          const extraHandled = {};
+          for (const h of hashesSet) {
+            if (!matchedHashes.has(h) && handledMap?.[h] !== "task") {
+              extraHandled[h] = "accepted";
+            }
+          }
+          if (Object.keys(extraHandled).length > 0) {
+            await updateHandledAlertHashesBatch(acIdClean, extraHandled);
+          }
+        }
       } catch (amErr) {
         console.warn("⚠️ AlertMemory update error in handleBulkResolveNoActionFlags:", amErr.message);
       }
     }
+    invalidatePrecomputedMemoryCache();
 
     logPmaActivity(sheets, {
       automationCommanderSheetId: acIdResolve,
@@ -898,7 +954,7 @@ export async function handleIgnoreAlert(req, res, sheets) {
 }
 
 export async function handleBulkIgnoreAlerts(req, res, sheets) {
-  const { alerts: alertsToIgnore, ignoreReason, automationCommanderSheetId: acId } = req.body;
+  const { alerts: alertsToIgnore, ignoreReason, sessionId, automationCommanderSheetId: acId } = req.body;
   if (!alertsToIgnore?.length || !acId) return res.status(400).json({ success: false, error: "Missing alerts or acId" });
   const sessionUser = getSessionUser(req, res);
   try {
@@ -906,12 +962,25 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
     const memoryRows = await readAlertMemory(sheets, acId);
     const rowsToAppend = [];
     const rowsToUpdate = [];
+    const targetIdsToRemove = [];
 
     for (const alert of alertsToIgnore) {
       if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && (!alert?.clientName || !isUserAuthorizedForClient(sessionUser, alert.clientName))) {
         return res.status(403).json({ success: false, error: "Forbidden: Not authorized for one or more alerts in batch." });
       }
       const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+      if (fingerprintHash) targetIdsToRemove.push(fingerprintHash);
+      if (alert.id) targetIdsToRemove.push(alert.id);
+      if (alert.sheetName && alert.rowNumber != null) {
+        targetIdsToRemove.push(`${alert.sheetName}-${alert.rowNumber}`);
+        if (alert.flagType || alert.type) {
+          targetIdsToRemove.push(`${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`);
+        }
+      }
+      if (alert.alertKey) targetIdsToRemove.push(alert.alertKey);
+      if (alert.legacyAlertKey) targetIdsToRemove.push(alert.legacyAlertKey);
+      if (alert.rowIndex != null) targetIdsToRemove.push(String(alert.rowIndex));
+
       const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
       if (memoryRow && !req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && (!memoryRow.clientName || !isUserAuthorizedForClient(sessionUser, memoryRow.clientName))) {
         return res.status(403).json({ success: false, error: "Forbidden: Target AlertMemory row belongs to an unauthorized client." });
@@ -942,6 +1011,32 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
     }
     if (rowsToAppend.length > 0) {
       await appendAlertMemoryRowsBatch(sheets, acId, rowsToAppend);
+    }
+
+    if (targetIdsToRemove.length > 0) {
+      const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
+      if (sessionId) {
+        try {
+          const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+          if (sessionData) {
+            const parsed = JSON.parse(sessionData);
+            const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIdsToRemove, canRemoveClient);
+            if (removedCount > 0) {
+              await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
+            }
+          }
+        } catch (e) { }
+      }
+      try {
+        const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+        if (preRaw) {
+          const pre = JSON.parse(preRaw);
+          const { removedCount } = applyAlertRemovalToTriageData(pre, targetIdsToRemove, canRemoveClient);
+          if (removedCount > 0) {
+            await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+          }
+        }
+      } catch (e) { }
     }
     invalidatePrecomputedMemoryCache();
 
@@ -979,30 +1074,50 @@ function findMatchingProactiveMemoryCandidates_(memoryRows, {
   sessionUser,
   isSystemAuthorized,
 }) {
+  const effectiveAlertKey = alertKey || alertData?.alertKey || "";
+  const rawLegacyKey = alertData?.legacyAlertKey || alertData?.metadata?.legacyAlertKey || "";
+  const legacyFingerprintHash = rawLegacyKey
+    ? createHash("sha256").update(rawLegacyKey).digest("hex").substring(0, 16)
+    : null;
+  const targetAlertType = alertData?.alertType || (effectiveAlertKey ? effectiveAlertKey.split("|")[0] : "");
+  const targetStableJobKey = alertData?.stableJobKey || alertData?.metadata?.stableJobKey || "";
+
+  const matchesDateAndRowGuards = (s) => {
+    const targetEndDate = alertData?.endDate || alertData?.metadata?.endDate;
+    const snapEndDate = s.endDate || s.metadata?.endDate;
+    if (targetEndDate && snapEndDate && String(targetEndDate).trim() !== String(snapEndDate).trim()) return false;
+    const targetStartDate = alertData?.startDate || alertData?.metadata?.startDate;
+    const snapStartDate = s.startDate || s.metadata?.startDate;
+    if (targetStartDate && snapStartDate && String(targetStartDate).trim() !== String(snapStartDate).trim()) return false;
+    const targetRow = alertData?.confirmedRow ?? alertData?.metadata?.confirmedRow;
+    const snapRow = s.confirmedRow ?? s.metadata?.confirmedRow;
+    if (targetRow != null && snapRow != null && Number(targetRow) !== Number(snapRow)) return false;
+    return true;
+  };
+
   const candidateMatches = memoryRows.filter(r => {
     if (clientName && r.clientName !== clientName) return false;
     if (!isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, r.clientName)) return false;
-    if (rowIndex != null && r.rowIndex === Number(rowIndex)) return true;
-    if (r.fingerprintHash === fingerprintHash) return true;
+    if (fingerprintHash && r.fingerprintHash === fingerprintHash) return true;
+    if (legacyFingerprintHash && r.fingerprintHash === legacyFingerprintHash) return true;
     try {
       const s = JSON.parse(r.dataSnapshot || "{}");
       const snapKey = s.alertKey || "";
-      const snapLegacy = s.legacyAlertKey || "";
-      if (snapKey === alertKey || snapLegacy === alertKey) return true;
-      if (alertData?.legacyAlertKey && (snapKey === alertData.legacyAlertKey || snapLegacy === alertData.legacyAlertKey)) {
-        const targetEndDate = alertData?.endDate || alertData?.metadata?.endDate;
-        const snapEndDate = s.endDate || s.metadata?.endDate;
-        if (targetEndDate && snapEndDate && String(targetEndDate).trim() !== String(snapEndDate).trim()) return false;
-        const targetStartDate = alertData?.startDate || alertData?.metadata?.startDate;
-        const snapStartDate = s.startDate || s.metadata?.startDate;
-        if (targetStartDate && snapStartDate && String(targetStartDate).trim() !== String(snapStartDate).trim()) return false;
-        const targetRow = alertData?.confirmedRow ?? alertData?.metadata?.confirmedRow;
-        const snapRow = s.confirmedRow ?? s.metadata?.confirmedRow;
-        if (targetRow != null && snapRow != null && Number(targetRow) !== Number(snapRow)) return false;
+      const snapLegacy = s.legacyAlertKey || s.metadata?.legacyAlertKey || "";
+      if (effectiveAlertKey && (snapKey === effectiveAlertKey || snapLegacy === effectiveAlertKey)) return true;
+      if (rawLegacyKey && (snapKey === rawLegacyKey || snapLegacy === rawLegacyKey)) {
+        if (matchesDateAndRowGuards(s)) return true;
+      }
+      if (targetStableJobKey && (s.stableJobKey === targetStableJobKey || s.metadata?.stableJobKey === targetStableJobKey) && (!targetAlertType || r.alertType === targetAlertType)) {
+        if (matchesDateAndRowGuards(s)) return true;
+      }
+      if (effectiveAlertKey && (effectiveAlertKey.startsWith("autolog_error|") || effectiveAlertKey.startsWith("infinite_loop|")) && snapKey.startsWith(effectiveAlertKey + "|")) {
         return true;
       }
-      if ((alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|")) && snapKey.startsWith(alertKey + "|")) return true;
-    } catch (e) { return false; }
+    } catch (e) { }
+    if (rowIndex != null && r.rowIndex === Number(rowIndex) && r.category === "proactive" && (!targetAlertType || !r.alertType || r.alertType === targetAlertType || r.alertType === "proactive")) {
+      return true;
+    }
     return false;
   });
 
@@ -1013,15 +1128,29 @@ function findMatchingProactiveMemoryCandidates_(memoryRows, {
       if (s === "auto_resolved") return 2;
       return 1; // superseded
     };
+    const isExactMatch = (r) => {
+      if (fingerprintHash && r.fingerprintHash === fingerprintHash) return 1;
+      if (effectiveAlertKey) {
+        try {
+          const s = JSON.parse(r.dataSnapshot || "{}");
+          if (s.alertKey === effectiveAlertKey) return 1;
+        } catch (e) { }
+      }
+      return 0;
+    };
     candidateMatches.sort((a, b) => {
+      const exactDiff = isExactMatch(b) - isExactMatch(a);
+      if (exactDiff !== 0) return exactDiff;
+      if (legacyFingerprintHash) {
+        const aLeg = a.fingerprintHash === legacyFingerprintHash ? 1 : 0;
+        const bLeg = b.fingerprintHash === legacyFingerprintHash ? 1 : 0;
+        if (aLeg !== bLeg) return bLeg - aLeg;
+      }
       if (rowIndex != null) {
         const aMatch = a.rowIndex === Number(rowIndex) ? 1 : 0;
         const bMatch = b.rowIndex === Number(rowIndex) ? 1 : 0;
         if (aMatch !== bMatch) return bMatch - aMatch;
       }
-      const aHashMatch = a.fingerprintHash === fingerprintHash ? 1 : 0;
-      const bHashMatch = b.fingerprintHash === fingerprintHash ? 1 : 0;
-      if (aHashMatch !== bHashMatch) return bHashMatch - aHashMatch;
       const sp = statusPriority(b.status) - statusPriority(a.status);
       if (sp !== 0) return sp;
       return (b.rowIndex || 0) - (a.rowIndex || 0);
@@ -1032,22 +1161,44 @@ function findMatchingProactiveMemoryCandidates_(memoryRows, {
 }
 
 async function removeResolvedProactiveFromCaches_({ sessionId, targetIds, canRemoveClient }) {
-  if (sessionId) {
+  const activeSessionRedisKey = sessionId ? `triage_alerts:${sessionId}` : null;
+  if (activeSessionRedisKey) {
     try {
-      const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+      const sessionData = await redisClient.get(activeSessionRedisKey);
       if (sessionData) {
         const parsed = JSON.parse(sessionData);
-        applyAlertRemovalToTriageData(parsed, targetIds, canRemoveClient);
-        await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
+        const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, canRemoveClient);
+        if (removedCount > 0) {
+          await redisClient.set(activeSessionRedisKey, JSON.stringify(parsed), { EX: 86400 * 7 });
+        }
       }
     } catch (e) { }
   }
   try {
+    if (redisClient?.isOpen) {
+      const allSessionKeys = await redisClient.keys("triage_alerts:*").catch(() => []);
+      for (const sKey of allSessionKeys) {
+        if (sKey === activeSessionRedisKey) continue;
+        try {
+          const sData = await redisClient.get(sKey);
+          if (!sData) continue;
+          const parsed = JSON.parse(sData);
+          const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, canRemoveClient);
+          if (removedCount > 0) {
+            await redisClient.set(sKey, JSON.stringify(parsed), { EX: 86400 * 7 });
+          }
+        } catch (_) { }
+      }
+    }
+  } catch (e) { }
+  try {
     const preRaw = await redisClient.get(PRECOMPUTED_KEY);
     if (preRaw) {
       const pre = JSON.parse(preRaw);
-      applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
-      await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+      const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
+      if (removedCount > 0) {
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+      }
     }
   } catch (e) { }
   invalidatePrecomputedMemoryCache();
@@ -1064,7 +1215,8 @@ function getProactiveActivityCategory_(alertKey) {
 
 export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
   const { alertKey, clientName, sessionId, automationCommanderSheetId: acId, alertData, rowIndex } = req.body;
-  if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
+  const effectiveAlertKey = alertKey || alertData?.alertKey || "";
+  if (!effectiveAlertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
   const sessionUser = getSessionUser(req);
   if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
     if (!clientName || !isUserAuthorizedForClient(sessionUser, clientName)) {
@@ -1072,11 +1224,14 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
     }
   }
   try {
-    const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
+    const fingerprintHash = createHash("sha256").update(effectiveAlertKey).digest("hex").substring(0, 16);
+    const rawLegacyKey = alertData?.legacyAlertKey || alertData?.metadata?.legacyAlertKey || "";
+    const legacyFingerprintHash = rawLegacyKey ? createHash("sha256").update(rawLegacyKey).digest("hex").substring(0, 16) : null;
+
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const candidateMatches = findMatchingProactiveMemoryCandidates_(memoryRows, {
-      alertKey,
+      alertKey: effectiveAlertKey,
       fingerprintHash,
       clientName,
       rowIndex,
@@ -1084,6 +1239,28 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
       sessionUser,
       isSystemAuthorized: req.isSystemAuthorized,
     });
+
+    const targetIdsSet = new Set([effectiveAlertKey, fingerprintHash]);
+    if (rawLegacyKey) targetIdsSet.add(rawLegacyKey);
+    if (legacyFingerprintHash) targetIdsSet.add(legacyFingerprintHash);
+    if (rowIndex != null) targetIdsSet.add(String(rowIndex));
+
+    const hashesToMark = new Set([fingerprintHash]);
+    if (legacyFingerprintHash) hashesToMark.add(legacyFingerprintHash);
+
+    for (const c of candidateMatches) {
+      if (c.fingerprintHash) {
+        targetIdsSet.add(c.fingerprintHash);
+        hashesToMark.add(c.fingerprintHash);
+      }
+      if (c.rowIndex != null) targetIdsSet.add(String(c.rowIndex));
+      try {
+        const s = JSON.parse(c.dataSnapshot || "{}");
+        if (s.alertKey) targetIdsSet.add(s.alertKey);
+        if (s.legacyAlertKey) targetIdsSet.add(s.legacyAlertKey);
+        if (s.metadata?.legacyAlertKey) targetIdsSet.add(s.metadata.legacyAlertKey);
+      } catch (_) { }
+    }
 
     if (candidateMatches.length > 0) {
       const primaryRow = candidateMatches[0];
@@ -1093,6 +1270,7 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
 
       // Supersede duplicates first so primaryRow remains authoritative in Supabase and cache
       for (const dup of candidateMatches.slice(1)) {
+        if (dup.rowIndex === primaryRow.rowIndex) continue;
         await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
           ...dup,
           status: "superseded"
@@ -1101,6 +1279,7 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
 
       await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, {
         ...primaryRow,
+        _previousFingerprintHash: primaryRow.fingerprintHash,
         fingerprintHash,
         status: "accepted",
         clientName: clientName || primaryRow.clientName || "",
@@ -1109,22 +1288,25 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
     } else {
       const snapStr = alertData ? JSON.stringify(alertData) : "";
       await appendAlertMemoryRow(sheets, acId, {
-        fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",
+        fingerprintHash, alertType: alertData?.alertType || effectiveAlertKey.split("|")[0] || "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",
         cachedOptionsJSON: "", status: "accepted", ignoreReason: "", dataSnapshot: snapStr
       });
     }
 
+    for (const h of hashesToMark) {
+      await updateHandledAlertHash(acId, h, "accepted");
+    }
+
     const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
-    const targetIds = [alertKey, fingerprintHash, ...(rowIndex != null ? [String(rowIndex)] : [])];
-    await removeResolvedProactiveFromCaches_({ sessionId, targetIds, canRemoveClient });
+    await removeResolvedProactiveFromCaches_({ sessionId, targetIds: Array.from(targetIdsSet), canRemoveClient });
 
     logPmaActivity(sheets, {
       automationCommanderSheetId: acId,
       clientName: clientName || "",
-      category: getProactiveActivityCategory_(alertKey),
+      category: getProactiveActivityCategory_(effectiveAlertKey),
       action: "Proactive Alert Acknowledged",
-      summary: `Acknowledged proactive alert (${alertKey}) for ${clientName || "Client"}`,
-      details: { alertKey, clientName }
+      summary: `Acknowledged proactive alert (${effectiveAlertKey}) for ${clientName || "Client"}`,
+      details: { alertKey: effectiveAlertKey, clientName }
     });
 
     return res.status(200).json({ success: true });
@@ -1135,7 +1317,8 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
 
 export async function handleResolveProactiveAlert(req, res, sheets) {
   const { alertKey, clientName, sessionId, resolution, automationCommanderSheetId: acId, alertData, rowIndex } = req.body;
-  if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
+  const effectiveAlertKey = alertKey || alertData?.alertKey || "";
+  if (!effectiveAlertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
   const sessionUser = getSessionUser(req);
   if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
     if (!clientName || !isUserAuthorizedForClient(sessionUser, clientName)) {
@@ -1143,11 +1326,14 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
     }
   }
   try {
-    const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
+    const fingerprintHash = createHash("sha256").update(effectiveAlertKey).digest("hex").substring(0, 16);
+    const rawLegacyKey = alertData?.legacyAlertKey || alertData?.metadata?.legacyAlertKey || "";
+    const legacyFingerprintHash = rawLegacyKey ? createHash("sha256").update(rawLegacyKey).digest("hex").substring(0, 16) : null;
+
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const candidateMatches = findMatchingProactiveMemoryCandidates_(memoryRows, {
-      alertKey,
+      alertKey: effectiveAlertKey,
       fingerprintHash,
       clientName,
       rowIndex,
@@ -1155,6 +1341,28 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
       sessionUser,
       isSystemAuthorized: req.isSystemAuthorized,
     });
+
+    const targetIdsSet = new Set([effectiveAlertKey, fingerprintHash]);
+    if (rawLegacyKey) targetIdsSet.add(rawLegacyKey);
+    if (legacyFingerprintHash) targetIdsSet.add(legacyFingerprintHash);
+    if (rowIndex != null) targetIdsSet.add(String(rowIndex));
+
+    const hashesToMark = new Set([fingerprintHash]);
+    if (legacyFingerprintHash) hashesToMark.add(legacyFingerprintHash);
+
+    for (const c of candidateMatches) {
+      if (c.fingerprintHash) {
+        targetIdsSet.add(c.fingerprintHash);
+        hashesToMark.add(c.fingerprintHash);
+      }
+      if (c.rowIndex != null) targetIdsSet.add(String(c.rowIndex));
+      try {
+        const s = JSON.parse(c.dataSnapshot || "{}");
+        if (s.alertKey) targetIdsSet.add(s.alertKey);
+        if (s.legacyAlertKey) targetIdsSet.add(s.legacyAlertKey);
+        if (s.metadata?.legacyAlertKey) targetIdsSet.add(s.metadata.legacyAlertKey);
+      } catch (_) { }
+    }
 
     if (candidateMatches.length > 0) {
       const primaryRow = candidateMatches[0];
@@ -1165,6 +1373,7 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
 
       // Supersede duplicates first so primaryRow remains authoritative in Supabase and cache
       for (const dup of candidateMatches.slice(1)) {
+        if (dup.rowIndex === primaryRow.rowIndex) continue;
         await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
           ...dup,
           status: "superseded"
@@ -1173,6 +1382,7 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
 
       await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, {
         ...primaryRow,
+        _previousFingerprintHash: primaryRow.fingerprintHash,
         fingerprintHash,
         status: "accepted",
         clientName: clientName || primaryRow.clientName || "",
@@ -1181,22 +1391,25 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
     } else {
       const snapObj = alertData ? { ...alertData, resolution } : { resolution };
       await appendAlertMemoryRow(sheets, acId, {
-        fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: resolution || "Resolved proactive alert",
+        fingerprintHash, alertType: alertData?.alertType || effectiveAlertKey.split("|")[0] || "proactive", clientName: clientName || "", alertSummary: resolution || "Resolved proactive alert",
         cachedOptionsJSON: "", status: "accepted", ignoreReason: "", dataSnapshot: JSON.stringify(snapObj)
       });
     }
 
+    for (const h of hashesToMark) {
+      await updateHandledAlertHash(acId, h, "accepted");
+    }
+
     const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
-    const targetIds = [alertKey, fingerprintHash, ...(rowIndex != null ? [String(rowIndex)] : [])];
-    await removeResolvedProactiveFromCaches_({ sessionId, targetIds, canRemoveClient });
+    await removeResolvedProactiveFromCaches_({ sessionId, targetIds: Array.from(targetIdsSet), canRemoveClient });
 
     logPmaActivity(sheets, {
       automationCommanderSheetId: acId,
       clientName: clientName || "",
-      category: getProactiveActivityCategory_(alertKey),
+      category: getProactiveActivityCategory_(effectiveAlertKey),
       action: "Proactive Alert Resolved",
-      summary: `Resolved proactive alert (${alertKey}) for ${clientName || "Client"}: ${resolution || "Resolved"}`,
-      details: { alertKey, resolution, clientName }
+      summary: `Resolved proactive alert (${effectiveAlertKey}) for ${clientName || "Client"}: ${resolution || "Resolved"}`,
+      details: { alertKey: effectiveAlertKey, resolution, clientName }
     });
 
     return res.status(200).json({ success: true });
@@ -1206,58 +1419,108 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
 }
 
 export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
-  const { alertKeys, clientName, sessionId, automationCommanderSheetId: acId } = req.body;
-  if (!alertKeys || !alertKeys.length || !acId) return res.status(400).json({ success: false, error: "Missing alertKeys or automationCommanderSheetId" });
+  const { alertKeys = [], alerts: rawAlerts = [], clientName, sessionId, automationCommanderSheetId: acId } = req.body;
+  const itemsToProcess = [];
+  const seenKeys = new Set();
+  if (Array.isArray(rawAlerts) && rawAlerts.length > 0) {
+    for (const a of rawAlerts) {
+      if (!a) continue;
+      const k = a.alertKey || "";
+      if (k) seenKeys.add(k);
+      itemsToProcess.push({
+        alertKey: k,
+        alertData: a,
+        rowIndex: a.rowIndex ?? null,
+        clientName: a.clientName || clientName || "",
+      });
+    }
+  }
+  if (Array.isArray(alertKeys)) {
+    for (const k of alertKeys) {
+      if (!k || seenKeys.has(k)) continue;
+      seenKeys.add(k);
+      itemsToProcess.push({
+        alertKey: k,
+        alertData: null,
+        rowIndex: null,
+        clientName: clientName || "",
+      });
+    }
+  }
+
+  if (itemsToProcess.length === 0 || !acId) {
+    return res.status(400).json({ success: false, error: "Missing alertKeys or automationCommanderSheetId" });
+  }
   const sessionUser = getSessionUser(req);
   if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
-    if (!clientName || !isUserAuthorizedForClient(sessionUser, clientName)) {
-      return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
+    for (const item of itemsToProcess) {
+      const targetClient = item.clientName || clientName;
+      if (!targetClient || !isUserAuthorizedForClient(sessionUser, targetClient)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
+      }
     }
   }
   try {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
-    const hashesToRemove = [];
+    const hashesToRemoveSet = new Set();
+    const hashesToMarkHandled = {};
     const updateBatchItems = [];
     const appendItems = [];
+    const queuedRowIndices = new Set();
 
-    for (const alertKey of alertKeys) {
-      const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
-      hashesToRemove.push(alertKey, fingerprintHash);
-      const candidateMatches = memoryRows.filter(r => {
-        if (clientName && r.clientName !== clientName) return false;
-        if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, r.clientName)) return false;
-        if (r.fingerprintHash === fingerprintHash) return true;
-        if (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|")) {
-          try {
-            const s = JSON.parse(r.dataSnapshot || "{}");
-            const k = s.alertKey || s.legacyAlertKey || "";
-            if (k === alertKey) return true;
-            if (k.startsWith(alertKey + "|")) return true;
-          } catch (e) { return false; }
-        }
-        return false;
+    for (const item of itemsToProcess) {
+      const effectiveAlertKey = item.alertKey || item.alertData?.alertKey || "";
+      const fingerprintHash = effectiveAlertKey ? createHash("sha256").update(effectiveAlertKey).digest("hex").substring(0, 16) : (item.alertData?.fingerprintHash || "");
+      const rawLegacyKey = item.alertData?.legacyAlertKey || item.alertData?.metadata?.legacyAlertKey || "";
+      const legacyFingerprintHash = rawLegacyKey ? createHash("sha256").update(rawLegacyKey).digest("hex").substring(0, 16) : null;
+
+      if (effectiveAlertKey) hashesToRemoveSet.add(effectiveAlertKey);
+      if (rawLegacyKey) hashesToRemoveSet.add(rawLegacyKey);
+      if (fingerprintHash) {
+        hashesToRemoveSet.add(fingerprintHash);
+        hashesToMarkHandled[fingerprintHash] = "accepted";
+      }
+      if (legacyFingerprintHash) {
+        hashesToRemoveSet.add(legacyFingerprintHash);
+        hashesToMarkHandled[legacyFingerprintHash] = "accepted";
+      }
+      if (item.rowIndex != null) hashesToRemoveSet.add(String(item.rowIndex));
+
+      const candidateMatches = findMatchingProactiveMemoryCandidates_(memoryRows, {
+        alertKey: effectiveAlertKey,
+        fingerprintHash,
+        clientName: item.clientName || clientName,
+        rowIndex: item.rowIndex,
+        alertData: item.alertData,
+        sessionUser,
+        isSystemAuthorized: req.isSystemAuthorized,
       });
 
-      if (candidateMatches.length > 0) {
-        const statusPriority = (s) => {
-          if (s === "cached" || s === "pending_automation" || s === "task") return 4;
-          if (s === "accepted" || s === "ignored") return 3;
-          if (s === "auto_resolved") return 2;
-          return 1; // superseded
-        };
-        candidateMatches.sort((a, b) => {
-          const aHashMatch = a.fingerprintHash === fingerprintHash ? 1 : 0;
-          const bHashMatch = b.fingerprintHash === fingerprintHash ? 1 : 0;
-          if (aHashMatch !== bHashMatch) return bHashMatch - aHashMatch;
-          const sp = statusPriority(b.status) - statusPriority(a.status);
-          if (sp !== 0) return sp;
-          return (b.rowIndex || 0) - (a.rowIndex || 0);
-        });
+      for (const c of candidateMatches) {
+        if (c.fingerprintHash) {
+          hashesToRemoveSet.add(c.fingerprintHash);
+          hashesToMarkHandled[c.fingerprintHash] = "accepted";
+        }
+        if (c.rowIndex != null) hashesToRemoveSet.add(String(c.rowIndex));
+        try {
+          const s = JSON.parse(c.dataSnapshot || "{}");
+          if (s.alertKey) hashesToRemoveSet.add(s.alertKey);
+          if (s.legacyAlertKey) hashesToRemoveSet.add(s.legacyAlertKey);
+          if (s.metadata?.legacyAlertKey) hashesToRemoveSet.add(s.metadata.legacyAlertKey);
+        } catch (_) { }
+      }
 
+      if (candidateMatches.length > 0) {
         const primaryRow = candidateMatches[0];
+        let snap = {};
+        try { snap = JSON.parse(primaryRow.dataSnapshot || "{}"); } catch (e) { }
+        if (item.alertData) snap = { ...snap, ...item.alertData };
+
         // Supersede duplicates first so primaryRow remains authoritative
         for (const dup of candidateMatches.slice(1)) {
+          if (dup.rowIndex === primaryRow.rowIndex || queuedRowIndices.has(dup.rowIndex)) continue;
+          queuedRowIndices.add(dup.rowIndex);
           updateBatchItems.push({
             rowIndex: dup.rowIndex,
             updates: {
@@ -1266,19 +1529,30 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
             }
           });
         }
-        updateBatchItems.push({
-          rowIndex: primaryRow.rowIndex,
-          updates: {
-            ...primaryRow,
-            fingerprintHash,
-            status: "accepted",
-            clientName: clientName || primaryRow.clientName || ""
-          }
-        });
-      } else {
+        if (!queuedRowIndices.has(primaryRow.rowIndex)) {
+          queuedRowIndices.add(primaryRow.rowIndex);
+          updateBatchItems.push({
+            rowIndex: primaryRow.rowIndex,
+            updates: {
+              ...primaryRow,
+              _previousFingerprintHash: primaryRow.fingerprintHash,
+              fingerprintHash: fingerprintHash || primaryRow.fingerprintHash,
+              status: "accepted",
+              clientName: item.clientName || clientName || primaryRow.clientName || "",
+              ...(item.alertData ? { dataSnapshot: JSON.stringify(snap) } : {}),
+            }
+          });
+        }
+      } else if (fingerprintHash) {
         appendItems.push({
-          fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",
-          cachedOptionsJSON: "", status: "accepted", ignoreReason: ""
+          fingerprintHash,
+          alertType: item.alertData?.alertType || (effectiveAlertKey ? effectiveAlertKey.split("|")[0] : "") || "proactive",
+          clientName: item.clientName || clientName || "",
+          alertSummary: "Acknowledged proactive alert",
+          cachedOptionsJSON: "",
+          status: "accepted",
+          ignoreReason: "",
+          dataSnapshot: item.alertData ? JSON.stringify(item.alertData) : "",
         });
       }
     }
@@ -1289,38 +1563,23 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
     if (appendItems.length > 0) {
       await appendAlertMemoryRowsBatch(sheets, acId, appendItems);
     }
+    if (Object.keys(hashesToMarkHandled).length > 0) {
+      await updateHandledAlertHashesBatch(acId, hashesToMarkHandled);
+    }
 
     const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
-    if (sessionId) {
-      try {
-        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
-        if (sessionData) {
-          const parsed = JSON.parse(sessionData);
-          applyAlertRemovalToTriageData(parsed, hashesToRemove, canRemoveClient);
-          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
-        }
-      } catch (e) { }
-    }
-    try {
-      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-      if (preRaw) {
-        const pre = JSON.parse(preRaw);
-        applyAlertRemovalToTriageData(pre, hashesToRemove, canRemoveClient);
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-      }
-    } catch (e) { }
-    invalidatePrecomputedMemoryCache();
+    await removeResolvedProactiveFromCaches_({ sessionId, targetIds: Array.from(hashesToRemoveSet), canRemoveClient });
 
     logPmaActivity(sheets, {
       automationCommanderSheetId: acId,
       clientName: clientName || "",
       category: "TRIAGE",
       action: "Proactive Alerts Acknowledged",
-      summary: `Acknowledged ${alertKeys.length} proactive alerts for ${clientName || "Client"}`,
-      details: { alertKeysCount: alertKeys.length, clientName }
+      summary: `Acknowledged ${itemsToProcess.length} proactive alerts for ${clientName || "Client"}`,
+      details: { alertKeysCount: itemsToProcess.length, clientName }
     });
 
-    return res.status(200).json({ success: true, count: alertKeys.length });
+    return res.status(200).json({ success: true, count: itemsToProcess.length });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -1404,7 +1663,11 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
   if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const all = await readAlertMemory(sheets, acId);
+    const [all, handledMap] = await Promise.all([
+      readAlertMemory(sheets, acId),
+      readHandledAlertHashes(sheets, acId, false),
+    ]);
+    const PROACTIVE_HANDLED_STATUSES = new Set(["accepted", "ignored", "task", "task_resolved", "superseded"]);
     const metaFields = [
       "jobName", "endClientName", "confirmedRow", "revenue", "startDate", "endDate",
       "frequencyDays", "lastInvoiceDate", "expectedByDate", "timestamp", "sequenceType", "summary", "jobInfo", "detailsSnippet",
@@ -1420,7 +1683,11 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
     ];
 
     let active = all
-      .filter(r => r.category === "proactive" && r.status === "cached" && KNOWN_PROACTIVE_ALERT_TYPES.has(r.alertType))
+      .filter(r => {
+        if (r.category !== "proactive" || r.status !== "cached" || !KNOWN_PROACTIVE_ALERT_TYPES.has(r.alertType)) return false;
+        if (r.fingerprintHash && PROACTIVE_HANDLED_STATUSES.has(handledMap?.[r.fingerprintHash])) return false;
+        return true;
+      })
       .map(r => {
         let alert = {};
         try { alert = JSON.parse(r.dataSnapshot || "{}"); } catch (e) { alert = {}; }
@@ -1428,6 +1695,7 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
         for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
         return {
           ...alert,
+          fingerprintHash: r.fingerprintHash,
           rowIndex: r.rowIndex,
           clientName: alert.clientName || r.clientName,
           alertType: alert.alertType || r.alertType,
@@ -1435,6 +1703,20 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
           firstSeen: r.firstSeen,
           lastSeen: r.lastSeen
         };
+      })
+      .filter(a => {
+        if (!handledMap) return true;
+        if (a.fingerprintHash && PROACTIVE_HANDLED_STATUSES.has(handledMap[a.fingerprintHash])) return false;
+        if (a.alertKey) {
+          const keyHash = createHash("sha256").update(a.alertKey).digest("hex").substring(0, 16);
+          if (PROACTIVE_HANDLED_STATUSES.has(handledMap[keyHash])) return false;
+        }
+        const legKey = a.legacyAlertKey || a.metadata?.legacyAlertKey;
+        if (legKey) {
+          const legHash = createHash("sha256").update(legKey).digest("hex").substring(0, 16);
+          if (PROACTIVE_HANDLED_STATUSES.has(handledMap[legHash])) return false;
+        }
+        return true;
       });
 
     // Precedence rule: "uninvoiced_revenue" takes precedence over "uninvoiced_new_job" for the same job

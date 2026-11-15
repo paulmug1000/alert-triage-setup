@@ -35,9 +35,11 @@ import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemL
 import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId } from "./userPermissions.js";
-import { getSupabaseAdmin } from "./supabaseClient.js";
+import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import { runNativeMasterSync, ensureFreshMasterComparisons } from "./masterSyncEngine.js";
+import { logClaudeUsage_ } from "./systemConfig.js";
+export { logClaudeUsage_ };
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -568,6 +570,102 @@ export function isValidFrequency(freq) {
 }
 
 export async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  const sb = getSupabaseAdmin();
+
+  if (supaControlPlane && sb) {
+    try {
+      const [{ data: dbClients, error: cErr }, { data: schedRows }, { data: dcaRows }] = await Promise.all([
+        sb
+          .from("clients")
+          .select("client_name, status, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url, client_script_id, auto_updates_row_index")
+          .order("client_name", { ascending: true }),
+        sb.from("sync_schedules").select("*"),
+        sb
+          .from("master_sheet_grids")
+          .select("client_name, values_grid")
+          .eq("sheet_role", "master")
+          .eq("tab_name", "DataChgAlert"),
+      ]);
+
+      if (!cErr && Array.isArray(dbClients) && dbClients.length > 0) {
+        const schedByClient = new Map();
+        for (const s of (schedRows || [])) {
+          if (s.client_name) schedByClient.set(String(s.client_name).trim().toLowerCase(), s);
+        }
+        const dcaByClient = new Map();
+        for (const d of (dcaRows || [])) {
+          if (d.client_name && Array.isArray(d.values_grid)) {
+            dcaByClient.set(String(d.client_name).trim().toLowerCase(), d.values_grid);
+          }
+        }
+
+        const rows = [];
+        const clientRows = [];
+
+        for (const c of dbClients) {
+          const st = String(c.status || "live").trim().toLowerCase();
+          if (st === "inactive" || st === "archived") continue;
+
+          const clientName = String(c.client_name || "").trim();
+          const clientSheetUrl = c.client_sheet_url || (c.client_sheet_id ? `https://docs.google.com/spreadsheets/d/${c.client_sheet_id}` : "");
+          const masterSheetUrl = c.master_sheet_url || (c.master_sheet_id ? `https://docs.google.com/spreadsheets/d/${c.master_sheet_id}` : "");
+          const clientId = extractSheetIdFromUrl(clientSheetUrl || c.client_sheet_id) || String(c.client_sheet_id || "").trim();
+          const masterId = extractSheetIdFromUrl(masterSheetUrl || c.master_sheet_id) || String(c.master_sheet_id || "").trim();
+
+          if (!clientName || !clientId || !masterId) continue;
+
+          const cKey = clientName.toLowerCase();
+          const sched = schedByClient.get(cKey) || {};
+          const dcaGrid = dcaByClient.get(cKey) || null;
+
+          const invFreq = (dcaGrid ? String(dcaGrid[1]?.[24] ?? "").trim() : "") || String(sched.inv_freq || "").trim();
+          const crmFreq = (dcaGrid ? String(dcaGrid[2]?.[24] ?? "").trim() : "") || String(sched.crm_freq || "").trim();
+          const expFreq = (dcaGrid ? String(dcaGrid[3]?.[24] ?? "").trim() : "") || String(sched.exp_freq || "").trim();
+          const webAppUrl = String(c.master_deployment_url || c.web_app_url || "").trim();
+
+          const rowIndex = rows.length;
+          const syntheticRow = new Array(36).fill("");
+          syntheticRow[0] = clientName;
+          syntheticRow[10] = String(c.client_script_id || "").trim();
+          syntheticRow[11] = String(clientSheetUrl);
+          syntheticRow[12] = String(masterSheetUrl);
+          syntheticRow[13] = webAppUrl;
+          syntheticRow[14] = invFreq;
+          syntheticRow[15] = crmFreq;
+          syntheticRow[16] = expFreq;
+          syntheticRow[24] = sched.last_inv_run || "";
+          syntheticRow[29] = sched.last_crm_run || "";
+          syntheticRow[34] = sched.last_exp_run || "";
+          rows.push(syntheticRow);
+
+          clientRows.push({
+            rowIndex,
+            sheetRowNum: Number(c.auto_updates_row_index) || (rowIndex + 3),
+            clientName,
+            clientSheetId: clientId,
+            masterSheetId: masterId,
+            clientSheetUrl: String(clientSheetUrl),
+            masterSheetUrl: String(masterSheetUrl),
+            scriptId: String(c.client_script_id || "").trim(),
+            hasWebAppUrl: !!webAppUrl,
+            invFreq,
+            crmFreq,
+            expFreq,
+            invAutoLastRunMs: parseAutomationTime_(sched.last_inv_run),
+            crmAutoLastRunMs: parseAutomationTime_(sched.last_crm_run),
+            expAutoLastRunMs: parseAutomationTime_(sched.last_exp_run),
+          });
+        }
+
+        console.log(`📊 Loaded ${clientRows.length} active client row(s) from Supabase control plane`);
+        return { rows, clientRows };
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ readAutoUpdatesClientRows_ Supabase fallback warning:", sbErr.message);
+    }
+  }
+
   const mainResponse = await withRetry(() => sheets.spreadsheets.values.get({
     spreadsheetId: automationCommanderSheetId,
     range: "AutoUpdates!A2:AJ1000",
@@ -1510,26 +1608,53 @@ export async function handleRehashAlertMemory(req, res, sheets) {
 }
 
 export async function handleRehashIgnoredAlerts(req, res, sheets) {
-  const { automationCommanderSheetId: acId } = req.body;
-  if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const { automationCommanderSheetId: rawAcId } = req.body || {};
+  const acId = rawAcId || getCanonicalAcSheetId();
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  const sb = getSupabaseAdmin();
+  if (!acId && !supaControlPlane) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
   try {
     const memoryRows = await readAlertMemory(sheets, acId);
     const ignoredRows = memoryRows.filter(r => r.status === "ignored");
     if (ignoredRows.length === 0) return res.status(200).json({ success: true, updated: 0, message: "No ignored rows to update" });
 
-    // Get all clients so we can read their comparison tabs
-    const flagResp = await sheets.spreadsheets.values.get({
-      spreadsheetId: acId,
-      range: "AutoUpdates!A2:M100",
-      valueRenderOption: "UNFORMATTED_VALUE",
-    });
-    const clientRows = (flagResp.data.values || []).slice(1).filter(r => r[0] && r[11] && r[12]);
+    // Get all clients so we can read their comparison tabs (Supabase primary, AC sheet fallback)
+    let clientTargets = [];
+    if (supaControlPlane && sb) {
+      const { data: dbClients } = await sb
+        .from("clients")
+        .select("client_name, status, client_sheet_id, master_sheet_id")
+        .order("client_name", { ascending: true });
+      clientTargets = (dbClients || [])
+        .filter((c) => {
+          const st = String(c.status || "live").trim().toLowerCase();
+          return c.client_name && st !== "inactive" && st !== "archived" && (c.client_sheet_id || c.master_sheet_id);
+        })
+        .map((c) => ({
+          clientName: String(c.client_name).trim(),
+          clientSheetId: extractSheetIdFromUrl(c.client_sheet_id) || String(c.client_sheet_id || "").trim(),
+        }));
+    }
+
+    if (clientTargets.length === 0 && sheets && acId) {
+      const flagResp = await sheets.spreadsheets.values.get({
+        spreadsheetId: acId,
+        range: "AutoUpdates!A2:M100",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      clientTargets = (flagResp.data.values || [])
+        .slice(1)
+        .filter(r => r[0] && r[11] && r[12])
+        .map(r => ({
+          clientName: String(r[0] || "").trim(),
+          clientSheetId: extractSheetIdFromUrl(String(r[11] || "")) || String(r[11] || ""),
+        }));
+    }
 
     // Build map of alertSummary → fresh fingerprint by reading each client's InvComp
     const freshHashByInvNo = {}; // invoiceNo → { hash, clientName }
-    for (const cr of clientRows) {
-      const clientName = String(cr[0] || "").trim();
-      const clientSheetId = extractSheetIdFromUrl(String(cr[11] || "")) || String(cr[11] || "");
+    for (const cr of clientTargets) {
+      const { clientName, clientSheetId } = cr;
       if (!clientSheetId) continue;
       try {
         const alerts = await readInvCompAlerts(sheets, clientSheetId);
@@ -2009,7 +2134,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
               const metadata = { ...(alertObj.metadata || {}) };
               for (const f of metaFields) { if (alertObj[f] !== undefined) metadata[f] = alertObj[f]; }
               newProactiveFromMemory.push({
-                ...alertObj, rowIndex: row.rowIndex, clientName: alertObj.clientName || row.clientName, alertType: alertObj.alertType || row.alertType, metadata, firstSeen: row.firstSeen, lastSeen: row.lastSeen
+                ...alertObj, fingerprintHash: row.fingerprintHash, rowIndex: row.rowIndex, clientName: alertObj.clientName || row.clientName, alertType: alertObj.alertType || row.alertType, metadata, firstSeen: row.firstSeen, lastSeen: row.lastSeen
               });
               if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
                 newClientMeta.set(row.clientName, {
@@ -2557,17 +2682,23 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
     console.log(`run_flag_sweep: processing clients ${startIdx + 1} to ${Math.min(startIdx + CHUNK_SIZE, clientRows.length)} of ${clientRows.length}`);
 
-    const freqResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: acIdSweep,
-      range: "AutoUpdates!O2:Q1000",
-    });
-    const freqRows = freqResponse.data.values || [];
+    const supaControlPlaneSweep = await isSupabaseControlPlaneActive().catch(() => false);
+    let freqRows = null;
+    if (!supaControlPlaneSweep && sheets && acIdSweep) {
+      const freqResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: acIdSweep,
+        range: "AutoUpdates!O2:Q1000",
+      });
+      freqRows = freqResponse.data.values || [];
+    }
 
     const sweepItems = [];
 
     for (const client of clientChunk) {
       try {
-        const freqRow = freqRows[client.rowIndex] || [];
+        const freqRow = Array.isArray(freqRows)
+          ? (freqRows[client.rowIndex] || [])
+          : [client.invFreq, client.crmFreq, client.expFreq];
         let hasInvoice = isValidFrequency(freqRow[0]);
         let hasCRM = isValidFrequency(freqRow[1]);
         let hasExpense = isValidFrequency(freqRow[2]);
@@ -11852,34 +11983,6 @@ async function markCategoryChecked_(sheets, automationCommanderSheetId, category
       requestBody: { values: [[category, (entry && entry.frequencyMinutes) || SWEEP_SCHEDULE_DEFAULTS[category] || 30, nowISO]] },
     }));
   }
-}
-
-async function ensureClaudeUsageTab_(sheets, automationCommanderSheetId) {
-  return; // Safe stub to prevent crashes if this was also orphaned
-}
-
-// Log a Claude API call directly to ClaudeUsage tab
-export async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens, source) {
-  if (!automationCommanderSheetId) return;
-  const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
-  await ensureClaudeUsageTab_(sheets, acIdClean);
-  const costUsd = ((inputTokens || 0) / 1000000 * 3) + ((outputTokens || 0) / 1000000 * 15);
-  await withRetry(() => sheets.spreadsheets.values.append({
-    spreadsheetId: acIdClean,
-    range: "ClaudeUsage!A:F",
-    valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [[
-        new Date().toISOString(),
-        sanitizeFormulaInput(String(source || "precompute")),
-        sanitizeFormulaInput(String(clientName || "")),
-        sanitizeFormulaInput(String(alertType || "")),
-        (inputTokens || 0) + (outputTokens || 0),
-        costUsd.toFixed(6),
-      ]],
-    },
-  }));
-  console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} - ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
 }
 
 export async function handleCheckOutgoingsCell(req, res, sheets) {

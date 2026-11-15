@@ -36,13 +36,52 @@ export function useTriageEngine({
     return (clients || []).filter(c => isUserAuthorizedForClient(user, c.clientName));
   }, [user]);
 
+  const dismissedProactiveKeysRef = useRef(new Set());
+
+  const markProactiveAlertDismissed = useCallback((alertOrKey, rowIndex = null) => {
+    const set = dismissedProactiveKeysRef.current;
+    if (!alertOrKey && rowIndex == null) return;
+    if (typeof alertOrKey === "string") {
+      if (alertOrKey) set.add(`k:${alertOrKey}`);
+      if (rowIndex != null) set.add(`row:${rowIndex}`);
+      return;
+    }
+    const obj = alertOrKey || {};
+    if (obj.alertKey) set.add(`k:${obj.alertKey}`);
+    const leg = obj.legacyAlertKey || obj.metadata?.legacyAlertKey;
+    if (leg) set.add(`lk:${leg}`);
+    if (obj.fingerprintHash) set.add(`fp:${obj.fingerprintHash}`);
+    const rIdx = obj.rowIndex ?? rowIndex;
+    if (rIdx != null) {
+      const cName = obj.clientName || obj.metadata?.endClientName || obj.metadata?.clientName || "";
+      if (cName) set.add(`row:${cName}:::${rIdx}`);
+      set.add(`row:${rIdx}`);
+    }
+  }, []);
+
+  const isProactiveAlertDismissed = useCallback((alert) => {
+    const set = dismissedProactiveKeysRef.current;
+    if (!alert || set.size === 0) return false;
+    if (alert.alertKey && (set.has(`k:${alert.alertKey}`) || set.has(`lk:${alert.alertKey}`))) return true;
+    const leg = alert.legacyAlertKey || alert.metadata?.legacyAlertKey;
+    if (leg && (set.has(`k:${leg}`) || set.has(`lk:${leg}`))) return true;
+    if (alert.fingerprintHash && set.has(`fp:${alert.fingerprintHash}`)) return true;
+    if (alert.rowIndex != null) {
+      const cName = alert.clientName || alert.metadata?.endClientName || alert.metadata?.clientName || "";
+      if (cName && set.has(`row:${cName}:::${alert.rowIndex}`)) return true;
+      if (set.has(`row:${alert.rowIndex}`)) return true;
+    }
+    return false;
+  }, []);
+
   const scopeProactive = useCallback((alerts) => {
+    const active = (alerts || []).filter(a => !isProactiveAlertDismissed(a));
     // Only Admin is an internal staff role able to see all clients and admin-only proactive types
-    if (!user || user.isAdmin || user.role === "Admin") return alerts || [];
-    return (alerts || []).filter(
+    if (!user || user.isAdmin || user.role === "Admin") return active;
+    return active.filter(
       a => isUserAuthorizedForClient(user, a.clientName) && !ADMIN_ONLY_PROACTIVE_TYPES.has(a.alertType)
     );
-  }, [user]);
+  }, [user, isProactiveAlertDismissed]);
 
   const [clientsWithFlags, setClientsWithFlags] = useState(() => {
     if (typeof window !== "undefined") {
@@ -59,6 +98,7 @@ export function useTriageEngine({
     const curEmail = user?.email || "";
     if (prevUserEmailRef.current === curEmail) return;
     prevUserEmailRef.current = curEmail;
+    dismissedProactiveKeysRef.current = new Set();
     setSessionId("");
     setClientsWithFlags([]);
     setProactiveAlerts([]);
@@ -281,6 +321,7 @@ export function useTriageEngine({
 
   const refreshTriage = async (forceProactive = false) => {
     const isForced = forceProactive === true;
+    dismissedProactiveKeysRef.current = new Set();
     try {
       setIsLoading(true);
       setRefreshStatus("Initializing background refresh...");
@@ -518,10 +559,14 @@ export function useTriageEngine({
         na => (na.clientName && na.clientName === client.clientName) || na.clientId === client.masterSheetId
       );
 
-      if (data.proactiveAlerts) {
-        setProactiveAlerts(data.proactiveAlerts);
+      const scopedProactive = data.proactiveAlerts ? scopeProactive(data.proactiveAlerts) : null;
+      if (scopedProactive) {
+        setProactiveAlerts(scopedProactive);
         const pCounts = {};
-        data.proactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
+        scopedProactive.forEach(a => {
+          const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+          if (cName) pCounts[cName] = (pCounts[cName] || 0) + 1;
+        });
         setProactiveCountsByClient(pCounts);
         setProactiveLoadedAt(Date.now());
       }
@@ -539,6 +584,9 @@ export function useTriageEngine({
           .filter(key => key.startsWith(client.clientName + "___"))
           .map(key => key.slice(client.clientName.length + 3))
       );
+      if (selectedClient?.clientName === client.clientName && resolvedNoActionFlags?.size > 0) {
+        resolvedNoActionFlags.forEach(k => restoredResolved.add(k));
+      }
       setResolvedNoActionFlags(restoredResolved);
 
       const precomputedForClient = {};
@@ -562,9 +610,14 @@ export function useTriageEngine({
       setNoActionAnalysis(precomputedForClient);
 
       if (filteredAlerts.length === 0) {
-        const clientProactive = (data.proactiveAlerts || []).filter(a => a.clientName === client.clientName);
+        const proactiveSource = scopedProactive || scopeProactive(proactiveAlerts || []);
+        const clientProactive = proactiveSource.filter(a => a.clientName === client.clientName);
         const noActionAllDone = filteredNoAction.length === 0 ||
-          filteredNoAction.every(na => restoredResolved.has(na.fingerprintHash || na.flagType));
+          filteredNoAction.every(na =>
+            (na.fingerprintHash && restoredResolved.has(na.fingerprintHash))
+            || restoredResolved.has(`${na.flagType}-${na.flagDetail || ""}`)
+            || restoredResolved.has(na.flagType)
+          );
         if (noActionAllDone && clientProactive.length === 0) {
           console.log(`  → No unprocessed alerts, all no-action flags resolved, and no proactive alerts, auto-clearing`);
           handlePostClear([], restoredResolved, client);
@@ -1119,6 +1172,7 @@ export function useTriageEngine({
           action: "ignore_alert",
           alert,
           ignoreReason,
+          sessionId,
           automationCommanderSheetId,
         }),
       });
@@ -1141,7 +1195,11 @@ export function useTriageEngine({
         fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
+          body: JSON.stringify({
+            action: "remove_alert",
+            sessionId,
+            alertIds: [alertId, uniqueId, alert.fingerprintHash].filter(Boolean),
+          }),
         }).catch(() => { });
       }
 
@@ -1191,8 +1249,17 @@ export function useTriageEngine({
       });
       const data = await response.json();
       if (data.success) {
-        setProactiveAlerts(data.alerts || []);
-        setProactiveCountsByClient(data.countsByClient || {});
+        const scopedProactive = scopeProactive(data.alerts || []);
+        const pCounts = {};
+        scopedProactive.forEach(a => {
+          const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+          if (cName) pCounts[cName] = (pCounts[cName] || 0) + 1;
+        });
+        setProactiveAlerts(scopedProactive);
+        setProactiveCountsByClient(pCounts);
+        try {
+          localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(scopedProactive));
+        } catch { }
       }
       setProactiveLoadedAt(Date.now());
     } catch (err) {
@@ -1228,6 +1295,7 @@ export function useTriageEngine({
     refreshTriage, startTriage, reloadFromCache, selectClient, selectAlert, acceptOption,
     allNoActionResolved, autoClearFlags, handlePostClear, groupedAlerts, liveAlertCount,
     computeAlertCheckCount, analyzeNoActionFlag, ignoreAlert, loadProactiveAlerts, checkExistingTask,
+    markProactiveAlertDismissed,
     setScreen, isLoading, existingTaskBanner, setExistingTaskBanner
   };
 }

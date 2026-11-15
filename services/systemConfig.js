@@ -133,48 +133,185 @@ export async function markCategoryChecked_(sheets, automationCommanderSheetId, c
   }
 }
 
-export async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens, source) {
-  if (!automationCommanderSheetId) return;
-  const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
-  await ensureClaudeUsageTab_(sheets, acIdClean);
-  const costUsd = ((inputTokens || 0) / 1000000 * 3) + ((outputTokens || 0) / 1000000 * 15);
-  await withRetry(() => sheets.spreadsheets.values.append({
-    spreadsheetId: acIdClean,
-    range: "ClaudeUsage!A:F",
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[
-        new Date().toISOString(),
-        source || "precompute",
-        clientName || "",
-        alertType || "",
-        (inputTokens || 0) + (outputTokens || 0),
-        costUsd.toFixed(6),
-      ]],
+const CLAUDE_USAGE_STATE_KEY = "claude_usage_state";
+const MAX_CLAUDE_USAGE_ROWS = 2000;
+
+function parseClaudeUsageConfigRows_(cfgRows = []) {
+  const cfgMap = {};
+  for (const row of cfgRows) {
+    if (row[0] && row[1] !== undefined) cfgMap[String(row[0]).trim()] = String(row[1]).trim();
+  }
+  return {
+    hourlyLimit: parseInt(cfgMap["hourly_limit"] || "10", 10) || 10,
+    dailyLimit: parseInt(cfgMap["daily_limit"] || "30", 10) || 30,
+    anomalyThreshold: parseInt(cfgMap["anomaly_threshold"] || "15", 10) || 15,
+  };
+}
+
+function mapClaudeUsageSheetRows_(usageRows = []) {
+  const mapped = [];
+  for (const row of usageRows) {
+    if (!row?.[0]) continue;
+    mapped.push({
+      ts: String(row[0]),
+      action: String(row[1] ?? ""),
+      client: String(row[2] ?? ""),
+      alertType: String(row[3] ?? ""),
+      tokens: row[4] !== undefined && row[4] !== "" ? Number(row[4]) || row[4] : 0,
+      cost: String(row[5] ?? "0"),
+    });
+  }
+  return mapped.slice(-MAX_CLAUDE_USAGE_ROWS);
+}
+
+async function readClaudeUsageFromAcSheet_(sheets, acId) {
+  const acIdClean = extractSheetIdFromUrl(acId) || acId || getCanonicalAcSheetId();
+  if (!acIdClean) {
+    return {
+      config: { hourlyLimit: 10, dailyLimit: 30, anomalyThreshold: 15 },
+      usageRows: [],
+    };
+  }
+  const activeSheets = sheets || (await getSheetsClient().catch(() => null));
+  if (!activeSheets) {
+    return {
+      config: { hourlyLimit: 10, dailyLimit: 30, anomalyThreshold: 15 },
+      usageRows: [],
+    };
+  }
+  const [cfgResp, usageResp] = await Promise.all([
+    withRetry(() => activeSheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!A1:B6" })),
+    withRetry(() => activeSheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!A8:F2000" })),
+  ]);
+  return {
+    config: parseClaudeUsageConfigRows_(cfgResp.data.values || []),
+    usageRows: mapClaudeUsageSheetRows_(usageResp.data.values || []),
+  };
+}
+
+export async function getOrSeedClaudeUsageState_(sheets, automationCommanderSheetId) {
+  const sb = getSupabaseAdmin();
+  if (!sb) {
+    return await readClaudeUsageFromAcSheet_(sheets, automationCommanderSheetId);
+  }
+  try {
+    const { data: existing } = await sb
+      .from("system_config")
+      .select("value")
+      .eq("key", CLAUDE_USAGE_STATE_KEY)
+      .maybeSingle();
+
+    if (existing?.value && typeof existing.value === "object" && existing.value.config) {
+      const cfg = existing.value.config;
+      return {
+        config: {
+          hourlyLimit: parseInt(cfg.hourlyLimit ?? 10, 10) || 10,
+          dailyLimit: parseInt(cfg.dailyLimit ?? 30, 10) || 30,
+          anomalyThreshold: parseInt(cfg.anomalyThreshold ?? 15, 10) || 15,
+        },
+        usageRows: Array.isArray(existing.value.usageRows) ? existing.value.usageRows : [],
+        seededAt: existing.value.seededAt || null,
+        updatedAt: existing.value.updatedAt || null,
+      };
+    }
+  } catch (err) {
+    console.warn("[getOrSeedClaudeUsageState_] Read error:", err.message);
+  }
+
+  let seeded;
+  try {
+    seeded = await readClaudeUsageFromAcSheet_(sheets, automationCommanderSheetId);
+  } catch (sheetErr) {
+    console.warn("[getOrSeedClaudeUsageState_] AC sheet seed fallback:", sheetErr.message);
+    seeded = {
+      config: { hourlyLimit: 10, dailyLimit: 30, anomalyThreshold: 15 },
+      usageRows: [],
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+  const payload = {
+    config: seeded.config,
+    usageRows: seeded.usageRows,
+    seededAt: nowIso,
+    updatedAt: nowIso,
+  };
+  await sb.from("system_config").upsert({
+    key: CLAUDE_USAGE_STATE_KEY,
+    value: payload,
+    description: "Claude API budget limits and usage telemetry migrated from ClaudeUsage tab",
+    updated_by: "System (Migration Seed)",
+  });
+  return payload;
+}
+
+async function saveClaudeUsageState_(sb, state) {
+  if (!sb) return;
+  await sb.from("system_config").upsert({
+    key: CLAUDE_USAGE_STATE_KEY,
+    value: {
+      config: state.config,
+      usageRows: (state.usageRows || []).slice(-MAX_CLAUDE_USAGE_ROWS),
+      seededAt: state.seededAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     },
-  }));
+    description: "Claude API budget limits and usage telemetry migrated from ClaudeUsage tab",
+    updated_by: "System (Claude Usage)",
+  });
+}
+
+export async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens, source) {
+  const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId || getCanonicalAcSheetId();
+  const costUsd = ((inputTokens || 0) / 1000000 * 3) + ((outputTokens || 0) / 1000000 * 15);
+  const entry = {
+    ts: new Date().toISOString(),
+    action: String(source || "precompute"),
+    client: String(clientName || ""),
+    alertType: String(alertType || ""),
+    tokens: (inputTokens || 0) + (outputTokens || 0),
+    cost: costUsd.toFixed(6),
+  };
+
+  const sb = getSupabaseAdmin();
+  if (sb) {
+    const state = await getOrSeedClaudeUsageState_(sheets, acIdClean);
+    state.usageRows = [...(state.usageRows || []), entry].slice(-MAX_CLAUDE_USAGE_ROWS);
+    await saveClaudeUsageState_(sb, state);
+  }
+
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (!supaControlPlane && sheets && acIdClean) {
+    await ensureClaudeUsageTab_(sheets, acIdClean);
+    await withRetry(() => sheets.spreadsheets.values.append({
+      spreadsheetId: acIdClean,
+      range: "ClaudeUsage!A:F",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [[
+          entry.ts,
+          entry.action,
+          entry.client,
+          entry.alertType,
+          entry.tokens,
+          entry.cost,
+        ]],
+      },
+    }));
+  }
   console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} - ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
 }
 
 export async function handleGetClaudeSettings(req, res, sheets) {
-  const { automationCommanderSheetId: acId } = req.body;
-  if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const { automationCommanderSheetId: acId } = req.body || {};
+  const acIdClean = extractSheetIdFromUrl(acId) || acId || getCanonicalAcSheetId();
+  if (!isSupabaseConfigured() && !acIdClean) {
+    return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  }
   try {
-    const acIdClean = extractSheetIdFromUrl(acId) || acId;
-    await ensureClaudeUsageTab_(sheets, acIdClean);
-    const [cfgResp, usageResp] = await Promise.all([
-      sheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!A1:B6" }),
-      sheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!A8:F2000" }),
-    ]);
-    const cfg = cfgResp.data.values || [];
-    const cfgMap = {};
-    for (const row of cfg) { if (row[0] && row[1] !== undefined) cfgMap[String(row[0]).trim()] = String(row[1]).trim(); }
+    const state = await getOrSeedClaudeUsageState_(sheets, acIdClean);
+    const { hourlyLimit, dailyLimit, anomalyThreshold } = state.config;
+    const usageRows = state.usageRows || [];
 
-    const hourlyLimit = parseInt(cfgMap["hourly_limit"] || "10");
-    const dailyLimit = parseInt(cfgMap["daily_limit"] || "30");
-    const anomalyThreshold = parseInt(cfgMap["anomaly_threshold"] || "15");
-
-    const usageRows = (usageResp.data.values || []).filter(r => r[0]);
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
     const curHour = now.getUTCHours();
@@ -184,15 +321,22 @@ export async function handleGetClaudeSettings(req, res, sheets) {
     const recentRows = [];
 
     for (const row of usageRows) {
-      const ts = row[0] ? new Date(row[0]) : null;
+      const ts = row?.ts ? new Date(row.ts) : null;
       if (!ts || isNaN(ts)) continue;
-      const cost = parseFloat(row[5] || "0") || 0;
+      const cost = parseFloat(row.cost || "0") || 0;
       if (ts >= weekAgo) { weeklyCalls++; weeklyCost += cost; }
       if (ts.toISOString().slice(0, 10) === todayStr) {
         todayCalls++; todayCost += cost;
         if (ts.getUTCHours() === curHour) { hourCalls++; hourCost += cost; }
       }
-      recentRows.push({ ts: row[0], action: row[1], client: row[2], alertType: row[3], tokens: row[4], cost: row[5] });
+      recentRows.push({
+        ts: row.ts,
+        action: row.action,
+        client: row.client,
+        alertType: row.alertType,
+        tokens: row.tokens,
+        cost: row.cost,
+      });
     }
     recentRows.sort((a, b) => new Date(b.ts) - new Date(a.ts));
 
@@ -213,17 +357,35 @@ export async function handleGetClaudeSettings(req, res, sheets) {
 }
 
 export async function handleSaveClaudeSettings(req, res, sheets) {
-  const { automationCommanderSheetId: acId, hourlyLimit, dailyLimit, anomalyThreshold } = req.body;
-  if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const { automationCommanderSheetId: acId, hourlyLimit, dailyLimit, anomalyThreshold } = req.body || {};
+  const acIdClean = extractSheetIdFromUrl(acId) || acId || getCanonicalAcSheetId();
+  if (!isSupabaseConfigured() && !acIdClean) {
+    return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  }
   try {
-    const acIdClean = extractSheetIdFromUrl(acId) || acId;
-    await ensureClaudeUsageTab_(sheets, acIdClean);
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: acIdClean,
-      range: "ClaudeUsage!B2:B4",
-      valueInputOption: "RAW",
-      requestBody: { values: [[parseInt(hourlyLimit) || 10], [parseInt(dailyLimit) || 30], [parseInt(anomalyThreshold) || 15]] },
-    });
+    const nextConfig = {
+      hourlyLimit: parseInt(hourlyLimit, 10) || 10,
+      dailyLimit: parseInt(dailyLimit, 10) || 30,
+      anomalyThreshold: parseInt(anomalyThreshold, 10) || 15,
+    };
+
+    const sb = getSupabaseAdmin();
+    if (sb) {
+      const state = await getOrSeedClaudeUsageState_(sheets, acIdClean);
+      state.config = nextConfig;
+      await saveClaudeUsageState_(sb, state);
+    }
+
+    const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+    if (!supaControlPlane && sheets && acIdClean) {
+      await ensureClaudeUsageTab_(sheets, acIdClean);
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: acIdClean,
+        range: "ClaudeUsage!B2:B4",
+        valueInputOption: "RAW",
+        requestBody: { values: [[nextConfig.hourlyLimit], [nextConfig.dailyLimit], [nextConfig.anomalyThreshold]] },
+      });
+    }
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ save_claude_settings error:", err);
@@ -232,26 +394,21 @@ export async function handleSaveClaudeSettings(req, res, sheets) {
 }
 
 export async function handleCheckClaudeBudget(req, res, sheets) {
-  const { automationCommanderSheetId: acId } = req.body;
-  if (!acId) return res.status(200).json({ allowed: true });
+  const { automationCommanderSheetId: acId } = req.body || {};
+  const acIdClean = extractSheetIdFromUrl(acId) || acId || getCanonicalAcSheetId();
+  if (!isSupabaseConfigured() && !acIdClean) return res.status(200).json({ allowed: true });
   try {
-    const acIdClean = extractSheetIdFromUrl(acId) || acId;
-    await ensureClaudeUsageTab_(sheets, acIdClean);
-    const [cfgResp, usageResp] = await Promise.all([
-      sheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!B2:B4" }),
-      sheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!A8:A2000" }),
-    ]);
-    const cfgVals = cfgResp.data.values || [];
-    const hourlyLimit = parseInt(cfgVals[0]?.[0] || "10");
-    const dailyLimit = parseInt(cfgVals[1]?.[0] || "30");
+    const state = await getOrSeedClaudeUsageState_(sheets, acIdClean);
+    const hourlyLimit = state.config?.hourlyLimit || 10;
+    const dailyLimit = state.config?.dailyLimit || 30;
 
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
     const curHour = now.getUTCHours();
     let hourCalls = 0, dayCalls = 0;
 
-    for (const row of (usageResp.data.values || [])) {
-      const ts = row[0] ? new Date(row[0]) : null;
+    for (const row of (state.usageRows || [])) {
+      const ts = row?.ts ? new Date(row.ts) : null;
       if (!ts || isNaN(ts)) continue;
       if (ts.toISOString().slice(0, 10) === todayStr) {
         dayCalls++;

@@ -1,7 +1,7 @@
 import { waitUntil } from "@vercel/functions";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
-import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { memoryCache } from "./cacheService.js";
 import { seedEomControlPlaneFromSheets } from "./controlPlaneMigrationService.js";
 import { logPmaActivity } from "./pmaLogger.js";
@@ -1598,18 +1598,48 @@ export async function handleEomReorderTemplates(req, res, sheets) {
 }
 
 export async function handleEomLoadBankAccounts(req, res, sheets) {
-  const { automationCommanderSheetId } = req.body;
-  if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const { automationCommanderSheetId: rawAcId } = req.body || {};
+  const automationCommanderSheetId = rawAcId || getCanonicalAcSheetId();
+  const sb = getSupabaseAdmin();
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (!automationCommanderSheetId && !supaControlPlane) {
+    return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  }
   try {
-    await ensureEomTabs_(sheets, automationCommanderSheetId);
-    const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:N500" });
+    if (!supaControlPlane && sheets && automationCommanderSheetId) {
+      await ensureEomTabs_(sheets, automationCommanderSheetId);
+    }
+
     const sessionUser = getSessionUser(req);
     const isSysAdmin = !sessionUser || sessionUser.isAdmin || sessionUser.role === "Admin";
-    const clients = (clientResp.data.values || [])
-      .map(r => ({ clientName: String(r[0] || "").trim(), clientSheetUrl: r[11] }))
-      .filter(c => c.clientName && c.clientSheetUrl)
-      .filter(c => c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name")
-      .filter(c => isSysAdmin || isUserAuthorizedForClient(sessionUser, c.clientName));
+    let clients = [];
+
+    if (supaControlPlane && sb) {
+      const { data: dbClients } = await sb
+        .from("clients")
+        .select("client_name, status, client_sheet_id, client_sheet_url, client_mode")
+        .order("client_name", { ascending: true });
+      clients = (dbClients || [])
+        .filter((c) => {
+          const st = String(c.status || "live").trim().toLowerCase();
+          return c.client_name && st !== "inactive" && st !== "archived" && (c.client_sheet_id || c.client_sheet_url || c.client_mode === "supabase");
+        })
+        .map((c) => ({
+          clientName: String(c.client_name).trim(),
+          clientSheetUrl: c.client_sheet_url || c.client_sheet_id || "",
+          clientMode: String(c.client_mode || "sheet").trim().toLowerCase(),
+        }))
+        .filter((c) => isSysAdmin || isUserAuthorizedForClient(sessionUser, c.clientName));
+    }
+
+    if (clients.length === 0 && sheets && automationCommanderSheetId) {
+      const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:N500" });
+      clients = (clientResp.data.values || [])
+        .map(r => ({ clientName: String(r[0] || "").trim(), clientSheetUrl: r[11], clientMode: "sheet" }))
+        .filter(c => c.clientName && c.clientSheetUrl)
+        .filter(c => c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name")
+        .filter(c => isSysAdmin || isUserAuthorizedForClient(sessionUser, c.clientName));
+    }
 
     const loadedAt = new Date().toISOString();
     const newRows = [];
@@ -1617,9 +1647,27 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
     const failedClients = [];
     for (const c of clients) {
       try {
-        const clientSheetId = extractSheetIdFromUrl(c.clientSheetUrl) || String(c.clientSheetUrl).trim();
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "KeyInfo!H12:H21" });
-        const accountNames = (resp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+        let accountNames = [];
+        if (c.clientMode === "supabase" && sb) {
+          const { data: kiGrid } = await sb
+            .from("master_sheet_grids")
+            .select("values_grid")
+            .eq("client_name", c.clientName)
+            .eq("sheet_role", "client")
+            .eq("tab_name", "KeyInfo")
+            .maybeSingle();
+          if (Array.isArray(kiGrid?.values_grid)) {
+            accountNames = kiGrid.values_grid
+              .slice(11, 21)
+              .map(r => String(r?.[7] || "").trim())
+              .filter(Boolean);
+          }
+        }
+        if (accountNames.length === 0 && sheets && c.clientSheetUrl) {
+          const clientSheetId = extractSheetIdFromUrl(c.clientSheetUrl) || String(c.clientSheetUrl).trim();
+          const resp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "KeyInfo!H12:H21" });
+          accountNames = (resp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+        }
         newMap[c.clientName] = accountNames;
         accountNames.forEach(name => newRows.push([c.clientName, name, loadedAt]));
       } catch (clientErr) {
@@ -1628,6 +1676,7 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
     }
 
     const mirrorSheets = async () => {
+      if (supaControlPlane || !sheets || !automationCommanderSheetId) return;
       const existingResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2:C50000" });
       const existingRows = existingResp.data.values || [];
       const existingRowCount = existingRows.length;
@@ -1663,10 +1712,12 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
       return gp;
     }, sessionUser?.email || "System");
 
-    if (updatedSb) {
-      scheduleBg_(mirrorSheets());
-    } else {
-      await mirrorSheets();
+    if (!supaControlPlane) {
+      if (updatedSb) {
+        scheduleBg_(mirrorSheets());
+      } else {
+        await mirrorSheets();
+      }
     }
 
     return res.status(200).json({ success: true, clientsProcessed: clients.length, accountsLoaded: newRows.length, failedClients });
@@ -6477,6 +6528,86 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
   return { accountingItems, pulseItems };
 }
 
+const EOM_REVENUE_CHECKS_STATE_KEY = "eom_revenue_checks_state";
+
+function makeRevCheckKey_(clientName, monthKey) {
+  return `${String(clientName || "").trim()}::${String(monthKey || "").trim()}`;
+}
+
+export async function getOrSeedEomRevenueChecksState_(sheets, automationCommanderSheetId) {
+  const sb = getSupabaseAdmin();
+  if (sb) {
+    try {
+      const { data: existing } = await sb
+        .from("system_config")
+        .select("value")
+        .eq("key", EOM_REVENUE_CHECKS_STATE_KEY)
+        .maybeSingle();
+
+      if (existing?.value && typeof existing.value === "object" && existing.value.checks && typeof existing.value.checks === "object") {
+        return {
+          checks: { ...existing.value.checks },
+          seededAt: existing.value.seededAt || null,
+          updatedAt: existing.value.updatedAt || null,
+        };
+      }
+    } catch (err) {
+      console.warn("[getOrSeedEomRevenueChecksState_] Read error:", err.message);
+    }
+  }
+
+  const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId || getCanonicalAcSheetId();
+  const checks = {};
+  if (acIdClean) {
+    try {
+      const activeSheets = sheets || (await getSheetsClient().catch(() => null));
+      if (activeSheets) {
+        await ensureEomRevenueChecksTab_(activeSheets, acIdClean);
+        const resp = await withRetry(() => activeSheets.spreadsheets.values.get({
+          spreadsheetId: acIdClean,
+          range: "EomRevenueChecks!A2:L2000",
+        }));
+        for (const match of (resp.data.values || [])) {
+          if (!match?.[0] || !match?.[1]) continue;
+          let comparisonData = {};
+          let notes = {};
+          try { comparisonData = JSON.parse(match[8] || "{}"); } catch (e) { }
+          try { notes = JSON.parse(match[9] || "{}"); } catch (e) { }
+          const rec = {
+            clientName: String(match[0]),
+            monthKey: String(match[1]),
+            comparedAt: String(match[2] || ""),
+            totalPulseRevenue: parseFloat(match[3]) || 0,
+            totalAccountingRevenue: parseFloat(match[4]) || 0,
+            totalVariance: parseFloat(match[5]) || 0,
+            matchedCount: parseInt(match[6], 10) || 0,
+            discrepancyCount: parseInt(match[7], 10) || 0,
+            comparisonData,
+            notes,
+            updatedBy: String(match[10] || ""),
+            targetMonthLabel: String(match[11] || ""),
+          };
+          checks[makeRevCheckKey_(rec.clientName, rec.monthKey)] = rec;
+        }
+      }
+    } catch (sheetErr) {
+      console.warn("[getOrSeedEomRevenueChecksState_] AC sheet seed fallback:", sheetErr.message);
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  const payload = { checks, seededAt: nowIso, updatedAt: nowIso };
+  if (sb) {
+    await sb.from("system_config").upsert({
+      key: EOM_REVENUE_CHECKS_STATE_KEY,
+      value: payload,
+      description: "EOM revenue comparison checks migrated from EomRevenueChecks tab",
+      updated_by: "System (Migration Seed)",
+    });
+  }
+  return payload;
+}
+
 async function saveRevenueCheckToStore_(sheets, automationCommanderSheetId, clientName, monthKey, resultPayload, userEmail) {
   const cacheKey = `pulse:eom:revcheck:${clientName}:${monthKey}`;
   if (redisClient?.isOpen) {
@@ -6487,50 +6618,87 @@ async function saveRevenueCheckToStore_(sheets, automationCommanderSheetId, clie
     }
   }
 
-  try {
-    await ensureEomRevenueChecksTab_(sheets, automationCommanderSheetId);
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "EomRevenueChecks!A2:L2000"
-    }));
-    const rows = resp.data.values || [];
-    const existingIdx = rows.findIndex(r => r[0] === clientName && r[1] === monthKey);
-    const nowIso = new Date().toISOString();
-    const compDataJson = JSON.stringify(resultPayload.comparisonData || {});
-    const notesJson = JSON.stringify(resultPayload.notes || {});
-    const rowValues = [
-      clientName,
-      monthKey,
-      nowIso,
-      resultPayload.totalPulseRevenue || 0,
-      resultPayload.totalAccountingRevenue || 0,
-      resultPayload.totalVariance || 0,
-      resultPayload.matchedCount || 0,
-      resultPayload.discrepancyCount || 0,
-      compDataJson,
-      notesJson,
-      userEmail || "System",
-      resultPayload.targetMonthLabel || ""
-    ];
-
-    if (existingIdx === -1) {
-      await withRetry(() => sheets.spreadsheets.values.append({
-        spreadsheetId: automationCommanderSheetId,
-        range: "EomRevenueChecks!A:L",
-        valueInputOption: "RAW",
-        requestBody: { values: [rowValues] }
-      }));
-    } else {
-      const sheetRow = existingIdx + 2;
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId,
-        range: `EomRevenueChecks!A${sheetRow}:L${sheetRow}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [rowValues] }
-      }));
+  const nowIso = new Date().toISOString();
+  const sb = getSupabaseAdmin();
+  if (sb) {
+    try {
+      const state = await getOrSeedEomRevenueChecksState_(sheets, automationCommanderSheetId);
+      const record = {
+        clientName,
+        monthKey,
+        comparedAt: nowIso,
+        totalPulseRevenue: resultPayload.totalPulseRevenue || 0,
+        totalAccountingRevenue: resultPayload.totalAccountingRevenue || 0,
+        totalVariance: resultPayload.totalVariance || 0,
+        matchedCount: resultPayload.matchedCount || 0,
+        discrepancyCount: resultPayload.discrepancyCount || 0,
+        comparisonData: resultPayload.comparisonData || {},
+        notes: resultPayload.notes || {},
+        updatedBy: userEmail || "System",
+        targetMonthLabel: resultPayload.targetMonthLabel || "",
+      };
+      state.checks[makeRevCheckKey_(clientName, monthKey)] = record;
+      await sb.from("system_config").upsert({
+        key: EOM_REVENUE_CHECKS_STATE_KEY,
+        value: {
+          checks: state.checks,
+          seededAt: state.seededAt || nowIso,
+          updatedAt: nowIso,
+        },
+        description: "EOM revenue comparison checks migrated from EomRevenueChecks tab",
+        updated_by: userEmail || "System (EOM)",
+      });
+    } catch (sbErr) {
+      console.error("Failed to persist revenue check to Supabase system_config:", sbErr.message);
     }
-  } catch (err) {
-    console.error("Failed to persist revenue check to Automation Commander:", err.message);
+  }
+
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  if (!supaControlPlane && sheets && automationCommanderSheetId) {
+    try {
+      await ensureEomRevenueChecksTab_(sheets, automationCommanderSheetId);
+      const resp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: automationCommanderSheetId,
+        range: "EomRevenueChecks!A2:L2000"
+      }));
+      const rows = resp.data.values || [];
+      const existingIdx = rows.findIndex(r => r[0] === clientName && r[1] === monthKey);
+      const compDataJson = JSON.stringify(resultPayload.comparisonData || {});
+      const notesJson = JSON.stringify(resultPayload.notes || {});
+      const rowValues = [
+        clientName,
+        monthKey,
+        nowIso,
+        resultPayload.totalPulseRevenue || 0,
+        resultPayload.totalAccountingRevenue || 0,
+        resultPayload.totalVariance || 0,
+        resultPayload.matchedCount || 0,
+        resultPayload.discrepancyCount || 0,
+        compDataJson,
+        notesJson,
+        userEmail || "System",
+        resultPayload.targetMonthLabel || ""
+      ];
+
+      if (existingIdx === -1) {
+        await withRetry(() => sheets.spreadsheets.values.append({
+          spreadsheetId: automationCommanderSheetId,
+          range: "EomRevenueChecks!A:L",
+          valueInputOption: "RAW",
+          requestBody: { values: [rowValues] }
+        }));
+      } else {
+        const sheetRow = existingIdx + 2;
+        await withRetry(() => sheets.spreadsheets.values.update({
+          spreadsheetId: automationCommanderSheetId,
+          range: `EomRevenueChecks!A${sheetRow}:L${sheetRow}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [rowValues] }
+        }));
+      }
+    } catch (err) {
+      console.error("Failed to persist revenue check to Automation Commander:", err.message);
+    }
   }
 }
 
@@ -6548,6 +6716,20 @@ async function getRevenueCheckFromStore_(sheets, automationCommanderSheetId, cli
   }
 
   try {
+    const sb = getSupabaseAdmin();
+    if (sb) {
+      const state = await getOrSeedEomRevenueChecksState_(sheets, automationCommanderSheetId);
+      const match = state.checks?.[makeRevCheckKey_(clientName, monthKey)] || null;
+      if (match) {
+        if (redisClient?.isOpen) {
+          redisClient.set(cacheKey, JSON.stringify(match), { EX: 86400 * 60 }).catch(() => { });
+        }
+        return match;
+      }
+      return null;
+    }
+
+    if (!sheets || !automationCommanderSheetId) return null;
     await ensureEomRevenueChecksTab_(sheets, automationCommanderSheetId);
     const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
@@ -6713,7 +6895,9 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
   }
   clientName = String(clientName || "").trim();
   const automationCommanderSheetId = getCanonicalAcSheetId();
-  if (!clientName || !monthKey || !automationCommanderSheetId) {
+  const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+  const sb = getSupabaseAdmin();
+  if (!clientName || !monthKey || (!automationCommanderSheetId && !supaControlPlane)) {
     return res.status(400).json({ success: false, error: "Missing clientName or monthKey" });
   }
 
@@ -6723,25 +6907,54 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
   }
 
   try {
-    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!A2:N500"
-    }));
-    const rows = clientResp.data.values || [];
-    const clientRow = rows.find(r => matchesClientName(r[0], clientName));
-    if (!clientRow) {
+    let clientSheetId = "";
+    let masterSheetId = "";
+    let webAppUrl = "";
+    let resolvedName = clientName;
+
+    if (supaControlPlane && sb) {
+      const { data: dbClients } = await sb
+        .from("clients")
+        .select("client_name, status, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url");
+      const matched = (dbClients || []).find(
+        (c) =>
+          c.client_name &&
+          !["inactive", "archived"].includes(String(c.status || "live").trim().toLowerCase()) &&
+          matchesClientName(c.client_name, clientName)
+      );
+      if (matched) {
+        resolvedName = String(matched.client_name).trim();
+        clientSheetId = extractSheetIdFromUrl(matched.client_sheet_url || matched.client_sheet_id) || String(matched.client_sheet_id || "").trim();
+        masterSheetId = extractSheetIdFromUrl(matched.master_sheet_url || matched.master_sheet_id) || String(matched.master_sheet_id || "").trim();
+        webAppUrl = String(matched.master_deployment_url || matched.web_app_url || "").trim();
+      }
+    }
+
+    if (!masterSheetId && sheets && automationCommanderSheetId) {
+      const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: automationCommanderSheetId,
+        range: "AutoUpdates!A2:N500"
+      }));
+      const rows = clientResp.data.values || [];
+      const clientRow = rows.find(r => matchesClientName(r[0], clientName));
+      if (!clientRow) {
+        return res.status(404).json({ success: false, error: `Client "${clientName}" not found.` });
+      }
+      resolvedName = String(clientRow[0] || clientName).trim();
+      clientSheetId = extractSheetIdFromUrl(clientRow[11]);
+      masterSheetId = extractSheetIdFromUrl(clientRow[12]);
+      webAppUrl = String(clientRow[13] || "").trim();
+    }
+
+    if (!masterSheetId) {
       return res.status(404).json({ success: false, error: `Client "${clientName}" not found.` });
     }
-    const clientSheetUrl = clientRow[11];
-    const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
-    const masterSheetUrl = clientRow[12];
-    const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
-    const webAppUrl = String(clientRow[13] || "").trim();
-    const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+
+    const supaCtx = await resolveSupabaseSheetContext({ clientName: resolvedName, spreadsheetId: masterSheetId });
     const isSupabaseMaster = Boolean(supaCtx && supaCtx.masterMode === "supabase");
 
     if (!masterSheetId || (!webAppUrl && !isSupabaseMaster)) {
-      return res.status(400).json({ success: false, error: `Accounting sync service is not configured for "${clientName}".` });
+      return res.status(400).json({ success: false, error: `Accounting sync service is not configured for "${resolvedName}".` });
     }
     if (!isSupabaseMaster && !isValidGoogleScriptUrl(webAppUrl)) {
       return res.status(400).json({ success: false, error: "Invalid accounting sync service endpoint." });
@@ -6751,7 +6964,7 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
     let lastError = null;
 
     if (isSupabaseMaster) {
-      gasData = await runNativeRevenueComparison(sheets, supaCtx.clientName || clientName, monthKey);
+      gasData = await runNativeRevenueComparison(sheets, supaCtx.clientName || resolvedName, monthKey);
     } else {
       const candidateSecrets = Array.from(new Set([
         (process.env.AGENT_TRIGGER_SECRET || "").replace(/^["']|["']$/g, "").trim(),

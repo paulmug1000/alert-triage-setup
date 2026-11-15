@@ -20,7 +20,7 @@ export default function CreateTaskModal() {
     sessionId, selectedClient, clientAlerts, setClientAlerts, setProcessedAlerts,
     setClientsWithFlags, allNoActionResolved, resolvedNoActionFlags, setResolvedNoActionFlags, setScreen,
     handlePostClear, proactiveAlerts, setProactiveAlerts, setProactiveCountsByClient, clientNoActionAlerts,
-    setCurrentClientAlertIndex
+    setCurrentClientAlertIndex, markProactiveAlertDismissed
   } = useTriage();
 
   const { automationCommanderSheetId, user } = useAppGlobals();
@@ -44,7 +44,7 @@ export default function CreateTaskModal() {
       const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "create_task", alert: taskModalAlert, taskNote: taskModalNote, snoozedUntil, automationCommanderSheetId,
+          action: "create_task", alert: taskModalAlert, taskNote: taskModalNote, snoozedUntil, sessionId, automationCommanderSheetId,
           isProactive: taskModalIsProactive, proactiveAlertKey: taskModalIsProactive ? taskModalAlert.alertKey : undefined,
           isInfo,
         }),
@@ -99,6 +99,7 @@ export default function CreateTaskModal() {
               clientName: selectedClient.clientName,
               flagType: na.flagType,
               fingerprintHash: na.fingerprintHash,
+              preserveTaskStatus: true,
               automationCommanderSheetId,
             }),
           }).catch(() => {});
@@ -141,7 +142,8 @@ export default function CreateTaskModal() {
         
         // Fire-and-forget backend removal
         if (sessionId) {
-          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "remove_alert", sessionId, alertId }) }).catch(() => {});
+          const alertIds = [alertId, uniqueId, taskModalAlert.fingerprintHash, taskModalAlert.id].filter(Boolean);
+          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "remove_alert", sessionId, alertIds }) }).catch(() => {});
         }
 
         // Multi-key filter to remove from clientAlerts immediately
@@ -204,27 +206,22 @@ export default function CreateTaskModal() {
           return false;
         };
 
+        markProactiveAlertDismissed?.(taskModalAlert, taskModalAlert?.rowIndex);
+
         if (sessionId) {
+          const alertIds = [
+            taskModalAlert.alertKey,
+            taskModalAlert.legacyAlertKey,
+            taskModalAlert.metadata?.legacyAlertKey,
+            taskModalAlert.fingerprintHash,
+            taskModalAlert.rowIndex != null ? String(taskModalAlert.rowIndex) : null,
+          ].filter(Boolean);
           fetch("/api/triage", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "remove_alert", sessionId, alertId: taskModalAlert.alertKey || (taskModalAlert.rowIndex != null ? String(taskModalAlert.rowIndex) : "") })
+            body: JSON.stringify({ action: "remove_alert", sessionId, alertIds })
           }).catch(() => {});
         }
 
-        if (automationCommanderSheetId) {
-          fetch("/api/triage", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "acknowledge_proactive_alert",
-              alertKey: taskModalAlert.alertKey,
-              clientName: taskModalAlert.clientName || selectedClient?.clientName,
-              automationCommanderSheetId,
-              sessionId,
-              alertData: taskModalAlert
-            })
-          }).catch(() => {});
-        }
-        
         const remainingProactiveForClient = (proactiveAlerts || []).filter(a => {
           if (isAlertMatch(a)) return false;
           return (a.clientName || a.metadata?.clientName || a.metadata?.endClientName) === selectedClient?.clientName;
@@ -235,6 +232,9 @@ export default function CreateTaskModal() {
           const counts = {};
           remaining.forEach(a => { const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName; if (cName) counts[cName] = (counts[cName] || 0) + 1; });
           setProactiveCountsByClient(counts);
+          try {
+            localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(remaining));
+          } catch { }
           return remaining;
         });
 

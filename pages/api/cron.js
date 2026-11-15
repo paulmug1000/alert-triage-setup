@@ -14,6 +14,8 @@ import { redisClient } from "../../services/redisClient";
 import { getCanonicalAcSheetId } from "../../services/userPermissions";
 import { runDailyAutoBackupSweep } from "../../services/supabaseBackupService";
 import { dispatchDueNativeMasterSyncs } from "../../services/masterSyncEngine";
+import { getSheetsClient } from "../../services/sheetsClient";
+import { sendDailyAlertsSummary, checkAndNotifyTabErrors } from "../../services/dailyAlertsNotifier";
 
 export const config = {
   maxDuration: 300,
@@ -178,6 +180,93 @@ export default async function handler(req, res) {
         } catch (tabErr) {
           console.warn("⚠️ CRON: Non-fatal error in auto_provision_recon_tabs:", tabErr.message);
         }
+      }
+
+      // Lazy-load Google Sheets client once for any remaining sheet-mode checks below
+      const sheets = await getSheetsClient().catch(() => null);
+
+      // Check Confirmed/Pipeline (ErrorCheck!B3:B4) across active clients and notify once per incident window
+      try {
+        const tabErrRes = await checkAndNotifyTabErrors({
+          sheets,
+          automationCommanderSheetId: acId,
+        });
+        if (tabErrRes?.emailed) {
+          console.log(
+            `📧 CRON: Sent tab error notification email for ${tabErrRes.errorDetails?.length || 0} client(s) across ${tabErrRes.checked} checked.`
+          );
+        }
+      } catch (tabErrCheckErr) {
+        console.warn("⚠️ CRON: Non-fatal error in checkAndNotifyTabErrors:", tabErrCheckErr.message);
+      }
+
+      // Send 5:00 AM UK daily alerts email digest once per UK calendar day
+      try {
+        const ukParts = new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Europe/London",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          hourCycle: "h23",
+        }).formatToParts(new Date());
+        const ukMap = Object.fromEntries(ukParts.map((p) => [p.type, p.value]));
+        const ukDateStr = `${ukMap.year}-${ukMap.month}-${ukMap.day}`;
+        const ukHour = Number(ukMap.hour);
+
+        if (ukHour >= 5) {
+          const sbDaily = getSupabaseAdmin();
+          let alreadySentToday = false;
+
+          if (sbDaily) {
+            const { data: stateRow } = await sbDaily
+              .from("system_config")
+              .select("value")
+              .eq("key", "daily_alerts_email_state")
+              .maybeSingle();
+            if (stateRow?.value?.lastSentDate === ukDateStr) {
+              alreadySentToday = true;
+            }
+          }
+
+          if (!alreadySentToday) {
+            let lockAcquired = true;
+            const dailyLockKey = `pulse:cron:daily_alerts_lock:${ukDateStr}`;
+            if (redisClient?.isOpen) {
+              try {
+                const locked = await redisClient.set(dailyLockKey, triggerSource, { NX: true, EX: 300 });
+                if (!locked) lockAcquired = false;
+              } catch (_) { }
+            }
+
+            if (lockAcquired) {
+              const digestRes = await sendDailyAlertsSummary({
+                sheets,
+                automationCommanderSheetId: acId,
+              });
+              console.log(
+                `📧 CRON: Daily alerts digest processed (sent: ${digestRes?.sentCount || 0}, skippedZero: ${digestRes?.skippedCount || 0})`
+              );
+
+              if (sbDaily && digestRes?.success) {
+                await sbDaily.from("system_config").upsert({
+                  key: "daily_alerts_email_state",
+                  value: {
+                    lastSentDate: ukDateStr,
+                    lastSentAt: new Date().toISOString(),
+                    sentCount: digestRes.sentCount || 0,
+                    skippedCount: digestRes.skippedCount || 0,
+                    source: triggerSource,
+                  },
+                  description: "Tracks once-per-day 05:00 UK daily alerts summary email delivery",
+                  updated_by: "System (Cron)",
+                });
+              }
+            }
+          }
+        }
+      } catch (dailyErr) {
+        console.warn("⚠️ CRON: Non-fatal error in daily alerts summary email:", dailyErr.message);
       }
 
       // Run automated daily Supabase workbook snapshot sweep (once per UK calendar day)

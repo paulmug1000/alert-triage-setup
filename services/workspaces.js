@@ -338,10 +338,102 @@ export async function handleGetAllClients(req, res, sheets) {
   }
 }
 
+const ASSIGNED_EXPENSES_STATE_KEY = "assigned_expenses_state";
+const ASSIGNED_EXPENSES_REDIS_KEY = "pulse:assigned_expenses:state";
+
+function buildAssignedByClientMap_(entries = []) {
+  const assignedByClient = {};
+  for (const item of entries) {
+    if (!item?.clientName || !item?.appId) continue;
+    if (!assignedByClient[item.clientName]) assignedByClient[item.clientName] = [];
+    assignedByClient[item.clientName].push(item.appId);
+  }
+  return assignedByClient;
+}
+
+export async function getOrSeedAssignedExpensesState_(sheets, automationCommanderSheetId) {
+  const aeAcId =
+    extractSheetIdFromUrl(automationCommanderSheetId) ||
+    automationCommanderSheetId ||
+    process.env.AUTOMATION_COMMANDER_SHEET_ID ||
+    DEFAULT_AC_SHEET_ID;
+  const sb = getSupabaseAdmin();
+
+  if (sb) {
+    try {
+      const { data: existing } = await sb
+        .from("system_config")
+        .select("value")
+        .eq("key", ASSIGNED_EXPENSES_STATE_KEY)
+        .maybeSingle();
+
+      if (existing?.value && Array.isArray(existing.value.entries)) {
+        return {
+          entries: existing.value.entries,
+          seededAt: existing.value.seededAt || null,
+          updatedAt: existing.value.updatedAt || null,
+        };
+      }
+    } catch (err) {
+      console.warn("[getOrSeedAssignedExpensesState_] Read error:", err.message);
+    }
+  }
+
+  let entries = [];
+  if (aeAcId) {
+    try {
+      const activeSheets = sheets || (await getSheetsClient().catch(() => null));
+      if (activeSheets) {
+        const resp = await withRetry(() =>
+          activeSheets.spreadsheets.values.get({
+            spreadsheetId: aeAcId,
+            range: "AssignedExpenses!A2:F5000",
+          })
+        );
+        entries = (resp.data.values || [])
+          .filter((r) => r?.[0] && r?.[1])
+          .map((r) => ({
+            clientName: String(r[0]).trim(),
+            appId: String(r[1]).trim(),
+            assignedAt: r[2] ? String(r[2]) : "",
+          }));
+      }
+    } catch (sheetErr) {
+      console.warn("[getOrSeedAssignedExpensesState_] AC sheet seed fallback:", sheetErr.message);
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  const state = { entries, seededAt: nowIso, updatedAt: nowIso };
+  if (sb) {
+    await sb.from("system_config").upsert({
+      key: ASSIGNED_EXPENSES_STATE_KEY,
+      value: state,
+      description: "Assigned expense tracking migrated from AssignedExpenses tab",
+      updated_by: "System (Migration Seed)",
+    });
+  }
+  return state;
+}
+
+async function saveAssignedExpensesState_(sb, entries, seededAt) {
+  if (!sb) return;
+  await sb.from("system_config").upsert({
+    key: ASSIGNED_EXPENSES_STATE_KEY,
+    value: {
+      entries: Array.isArray(entries) ? entries : [],
+      seededAt: seededAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    description: "Assigned expense tracking migrated from AssignedExpenses tab",
+    updated_by: "System (Workspaces)",
+  });
+}
+
 export async function handleGetAssignedExpenses(req, res, sheets) {
   const aeAcId = process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
   const { bypassCache } = req.body || {};
-  const cacheKey = `pulse:assigned_expenses:${aeAcId}`;
+  const legacyCacheKey = `pulse:assigned_expenses:${aeAcId}`;
   const now = Date.now();
 
   try {
@@ -363,7 +455,7 @@ export async function handleGetAssignedExpenses(req, res, sheets) {
 
     if (!bypassCache && redisClient?.isOpen) {
       try {
-        const cached = await redisClient.get(cacheKey);
+        const cached = await redisClient.get(ASSIGNED_EXPENSES_REDIS_KEY);
         if (cached) {
           const parsed = JSON.parse(cached);
           _assignedExpensesMemoryCache = parsed;
@@ -375,18 +467,13 @@ export async function handleGetAssignedExpenses(req, res, sheets) {
       }
     }
 
-    await ensureAssignedExpensesTab_(sheets, aeAcId);
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: aeAcId, range: "AssignedExpenses!A2:C50000" }));
-    const assignedByClient = {};
-    (resp.data.values || []).forEach(r => {
-      if (!r[0] || !r[1]) return;
-      if (!assignedByClient[r[0]]) assignedByClient[r[0]] = [];
-      assignedByClient[r[0]].push(r[1]);
-    });
+    const state = await getOrSeedAssignedExpensesState_(sheets, aeAcId);
+    const assignedByClient = buildAssignedByClientMap_(state.entries || []);
 
     if (redisClient?.isOpen) {
       try {
-        await redisClient.set(cacheKey, JSON.stringify(assignedByClient), { EX: 300 });
+        await redisClient.set(ASSIGNED_EXPENSES_REDIS_KEY, JSON.stringify(assignedByClient), { EX: 300 });
+        await redisClient.del(legacyCacheKey).catch(() => { });
       } catch (e) {
         console.warn("⚠️ Redis set assigned expenses cache error:", e.message);
       }
@@ -402,21 +489,40 @@ export async function handleGetAssignedExpenses(req, res, sheets) {
 }
 
 export async function handleMarkExpenseAssigned(req, res, sheets) {
-  const { automationCommanderSheetId: aeAcId, clientName: aeClientName, appId: aeAppId } = req.body;
-  if (!aeAcId || !aeClientName || !aeAppId) {
+  const { automationCommanderSheetId: aeAcId, clientName: aeClientName, appId: aeAppId } = req.body || {};
+  const sb = getSupabaseAdmin();
+  if ((!sb && !aeAcId) || !aeClientName || !aeAppId) {
     return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId, clientName, or appId" });
   }
   try {
     _assignedExpensesMemoryCache = null;
     _assignedExpensesCachedAt = 0;
     if (redisClient?.isOpen) {
-      redisClient.del(`pulse:assigned_expenses:${aeAcId}`).catch(() => { });
+      redisClient.del(ASSIGNED_EXPENSES_REDIS_KEY).catch(() => { });
+      if (aeAcId) redisClient.del(`pulse:assigned_expenses:${aeAcId}`).catch(() => { });
     }
-    await ensureAssignedExpensesTab_(sheets, aeAcId);
-    await withRetry(() => sheets.spreadsheets.values.append({
-      spreadsheetId: aeAcId, range: "AssignedExpenses!A:C", valueInputOption: "RAW",
-      requestBody: { values: [[aeClientName, aeAppId, new Date().toISOString()]] },
-    }));
+
+    const clientClean = String(aeClientName).trim();
+    const appIdClean = String(aeAppId).trim();
+    const assignedAt = new Date().toISOString();
+
+    if (sb) {
+      const state = await getOrSeedAssignedExpensesState_(sheets, aeAcId);
+      const entries = [...(state.entries || [])];
+      if (!entries.some((e) => e.clientName === clientClean && e.appId === appIdClean)) {
+        entries.push({ clientName: clientClean, appId: appIdClean, assignedAt });
+        await saveAssignedExpensesState_(sb, entries, state.seededAt);
+      }
+    }
+
+    const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+    if (!supaControlPlane && aeAcId && sheets) {
+      await ensureAssignedExpensesTab_(sheets, aeAcId);
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: aeAcId, range: "AssignedExpenses!A:C", valueInputOption: "RAW",
+        requestBody: { values: [[clientClean, appIdClean, assignedAt]] },
+      }));
+    }
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ mark_expense_assigned error:", err);
@@ -425,25 +531,50 @@ export async function handleMarkExpenseAssigned(req, res, sheets) {
 }
 
 export async function handlePruneAssignedExpenses(req, res, sheets) {
-  const { automationCommanderSheetId: aeAcId, clientName: aeClientName, validAppIds } = req.body;
-  if (!aeAcId || !aeClientName || !Array.isArray(validAppIds)) {
+  const { automationCommanderSheetId: aeAcId, clientName: aeClientName, validAppIds } = req.body || {};
+  const sb = getSupabaseAdmin();
+  if ((!sb && !aeAcId) || !aeClientName || !Array.isArray(validAppIds)) {
     return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId, clientName, or validAppIds" });
   }
   try {
-    await ensureAssignedExpensesTab_(sheets, aeAcId);
-    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: aeAcId, range: "AssignedExpenses!A2:C50000" });
-    const rows = resp.data.values || [];
-    const validSet = new Set(validAppIds);
-    const keptRows = rows.filter(r => !(r[0] === aeClientName) || validSet.has(r[1]));
-    if (keptRows.length !== rows.length) {
-      await sheets.spreadsheets.values.clear({ spreadsheetId: aeAcId, range: `AssignedExpenses!A2:C${rows.length + 1}` });
-      if (keptRows.length > 0) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId: aeAcId, range: "AssignedExpenses!A2", valueInputOption: "RAW", requestBody: { values: keptRows },
-        });
+    const clientClean = String(aeClientName).trim();
+    const validSet = new Set(validAppIds.map((id) => String(id).trim()));
+    let removed = 0;
+
+    if (sb) {
+      const state = await getOrSeedAssignedExpensesState_(sheets, aeAcId);
+      const entries = state.entries || [];
+      const keptEntries = entries.filter((e) => e.clientName !== clientClean || validSet.has(e.appId));
+      removed = entries.length - keptEntries.length;
+      if (removed > 0) {
+        await saveAssignedExpensesState_(sb, keptEntries, state.seededAt);
+        _assignedExpensesMemoryCache = null;
+        _assignedExpensesCachedAt = 0;
+        if (redisClient?.isOpen) {
+          redisClient.del(ASSIGNED_EXPENSES_REDIS_KEY).catch(() => { });
+          if (aeAcId) redisClient.del(`pulse:assigned_expenses:${aeAcId}`).catch(() => { });
+        }
       }
     }
-    return res.status(200).json({ success: true, removed: rows.length - keptRows.length });
+
+    const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
+    if (!supaControlPlane && aeAcId && sheets) {
+      await ensureAssignedExpensesTab_(sheets, aeAcId);
+      const resp = await sheets.spreadsheets.values.get({ spreadsheetId: aeAcId, range: "AssignedExpenses!A2:C50000" });
+      const rows = resp.data.values || [];
+      const keptRows = rows.filter(r => !(r[0] === clientClean) || validSet.has(String(r[1] || "").trim()));
+      if (keptRows.length !== rows.length) {
+        await sheets.spreadsheets.values.clear({ spreadsheetId: aeAcId, range: `AssignedExpenses!A2:C${rows.length + 1}` });
+        if (keptRows.length > 0) {
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: aeAcId, range: "AssignedExpenses!A2", valueInputOption: "RAW", requestBody: { values: keptRows },
+          });
+        }
+      }
+      if (!sb) removed = rows.length - keptRows.length;
+    }
+
+    return res.status(200).json({ success: true, removed });
   } catch (err) {
     console.error("❌ prune_assigned_expenses error:", err);
     return res.status(500).json({ success: false, error: err.message });

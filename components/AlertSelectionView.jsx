@@ -124,7 +124,7 @@ export default function AlertSelectionView({
     acceptError, setAcceptError, selectAlert, resolvedNoActionFlags, setResolvedNoActionFlags,
     setClientsWithFlags, sessionId, autoClearFlags, handlePostClear, noActionAnalysis,
     noActionAnalysisLoading, analyzeNoActionFlag, setProcessedAlerts, allNoActionResolved,
-    loadProactiveAlerts, isLoading, selectingClient
+    loadProactiveAlerts, isLoading, selectingClient, markProactiveAlertDismissed
   } = useTriage();
 
   const clientHasManager = useMemo(() => {
@@ -201,6 +201,8 @@ export default function AlertSelectionView({
     setExitingAlertKeys(prev => new Set([...prev, activeKey]));
 
     const alertData = proactiveAlerts.find(a => a.alertKey === alertKey || (rowIndex != null && a.rowIndex === rowIndex)) || null;
+    markProactiveAlertDismissed?.(alertData || alertKey, rowIndex);
+
     fetch("/api/triage", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -223,10 +225,18 @@ export default function AlertSelectionView({
     });
 
     if (sessionId) {
+      const alertIdsToRemove = [
+        alertKey,
+        alertData?.alertKey,
+        alertData?.legacyAlertKey,
+        alertData?.metadata?.legacyAlertKey,
+        alertData?.fingerprintHash,
+        rowIndex != null ? String(rowIndex) : null,
+      ].filter(Boolean);
       fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
+        body: JSON.stringify({ action: "remove_alert", sessionId, alertIds: alertIdsToRemove }),
       }).catch(() => { });
     }
 
@@ -250,6 +260,9 @@ export default function AlertSelectionView({
           if (cName) counts[cName] = (counts[cName] || 0) + 1;
         });
         setProactiveCountsByClient(counts);
+        try {
+          localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(remaining));
+        } catch { }
 
         const remainingClientProactive = remaining.filter(a => a.clientName === selectedClient?.clientName);
         const remainingProactiveCount = remainingClientProactive.length;
@@ -264,6 +277,10 @@ export default function AlertSelectionView({
 
   /** Optimistically removes a resolved/deleted proactive alert and syncs counts and local cache. */
   const removeResolvedProactiveAlert = (alertKey, rowIndex) => {
+    const resolvedAlertData = proactiveAlerts.find(a =>
+      (rowIndex != null && a.rowIndex === rowIndex) || (alertKey && a.alertKey === alertKey)
+    ) || null;
+    markProactiveAlertDismissed?.(resolvedAlertData || alertKey, rowIndex);
     setProactiveAlerts(prev => {
       const remaining = prev.filter(a => {
         if (rowIndex != null && a.rowIndex != null) return a.rowIndex !== rowIndex;
@@ -663,7 +680,7 @@ export default function AlertSelectionView({
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "bulk_ignore_alerts", alerts, ignoreReason: bulkIgnoreReason, automationCommanderSheetId }),
+        body: JSON.stringify({ action: "bulk_ignore_alerts", alerts, ignoreReason: bulkIgnoreReason, sessionId, automationCommanderSheetId }),
       });
       const data = await res.json();
       if (!data.success) { setAcceptError(data.error || "Bulk ignore failed"); return; }
@@ -673,7 +690,7 @@ export default function AlertSelectionView({
 
       if (sessionId) {
         setProcessedAlerts(prev => new Set([...prev, ...hashesToRemove]));
-        const alertIds = alerts.map(a => `${a.sheetName}-${a.rowNumber}`);
+        const alertIds = alerts.flatMap(a => [`${a.sheetName}-${a.rowNumber}`, a.fingerprintHash, a.id].filter(Boolean));
         fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -733,7 +750,7 @@ export default function AlertSelectionView({
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "bulk_create_tasks", alerts, taskNote: bulkTaskNote, snoozedUntil, automationCommanderSheetId }),
+        body: JSON.stringify({ action: "bulk_create_tasks", alerts, taskNote: bulkTaskNote, snoozedUntil, sessionId, automationCommanderSheetId }),
       });
       const data = await res.json();
       if (!data.success) { setAcceptError(data.error || "Bulk task creation failed"); return; }
@@ -743,7 +760,7 @@ export default function AlertSelectionView({
 
       if (sessionId) {
         setProcessedAlerts(prev => new Set([...prev, ...hashesToRemove]));
-        const alertIds = alerts.map(a => `${a.sheetName}-${a.rowNumber}`);
+        const alertIds = alerts.flatMap(a => [`${a.sheetName}-${a.rowNumber}`, a.fingerprintHash, a.id].filter(Boolean));
         fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -854,6 +871,7 @@ export default function AlertSelectionView({
             clientName: selectedClient.clientName,
             flags: flagItems,
             clearedFlagKeys: Array.from(typesToClear),
+            preserveTaskStatus: true,
             automationCommanderSheetId,
           }),
         }).catch(err => console.error("Failed to bulk resolve flags:", err));
@@ -899,6 +917,7 @@ export default function AlertSelectionView({
             alert: alertPayload,
             taskNote: infoBulkTaskNote,
             snoozedUntil,
+            sessionId,
             automationCommanderSheetId,
             isProactive: false,
             isInfo: true,
@@ -956,6 +975,7 @@ export default function AlertSelectionView({
             clientName: selectedClient.clientName,
             flags: flagItems,
             clearedFlagKeys: Array.from(typesToClear),
+            preserveTaskStatus: true,
             automationCommanderSheetId,
           }),
         }).catch(err => console.error("Failed to bulk resolve flags:", err));
@@ -989,18 +1009,19 @@ export default function AlertSelectionView({
   const bulkAcknowledgeProactive = async () => {
     const alerts = proactiveAlerts.filter(a => proactiveBulkSelected.has(a.rowIndex));
     if (!alerts.length) return;
-    const alertKeys = alerts.map(a => a.alertKey);
+    const alertKeys = alerts.map(a => a.alertKey).filter(Boolean);
     const activeKeys = alerts.map(a => a.alertKey || (a.rowIndex != null ? `row-${a.rowIndex}` : null)).filter(Boolean);
     try {
       setProactiveBulkSubmitting(true);
       if (typeof document !== "undefined" && document.activeElement) {
         document.activeElement.blur();
       }
+      alerts.forEach(a => markProactiveAlertDismissed?.(a, a.rowIndex));
       setExitingAlertKeys(prev => new Set([...prev, ...activeKeys]));
 
       fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "bulk_acknowledge_proactive_alerts", alertKeys, clientName: selectedClient?.clientName, automationCommanderSheetId, sessionId }),
+        body: JSON.stringify({ action: "bulk_acknowledge_proactive_alerts", alertKeys, alerts, clientName: selectedClient?.clientName, automationCommanderSheetId, sessionId }),
       }).then(res => res.json()).catch(err => console.error("Failed to bulk acknowledge proactive alerts:", err));
 
       await new Promise(r => setTimeout(r, 320));
@@ -1020,6 +1041,9 @@ export default function AlertSelectionView({
       });
       setProactiveCountsByClient(counts);
       setProactiveAlerts(remaining);
+      try {
+        localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(remaining));
+      } catch { }
       const remainingClientProactive = remaining.filter(a => a.clientName === selectedClient?.clientName);
       const remainingProactiveCount = remainingClientProactive.length;
 
@@ -1050,6 +1074,7 @@ export default function AlertSelectionView({
       let successCount = 0;
       const successfulRowIndexes = new Set();
       const successfulKeys = new Set();
+      const removeIdsSet = new Set();
       for (const alert of alerts) {
         const res = await fetch("/api/triage", {
           method: "POST",
@@ -1059,6 +1084,7 @@ export default function AlertSelectionView({
             alert: alert,
             taskNote: proactiveBulkTaskNote,
             snoozedUntil,
+            sessionId,
             automationCommanderSheetId,
             isProactive: true,
             proactiveAlertKey: alert.alertKey,
@@ -1067,9 +1093,22 @@ export default function AlertSelectionView({
         const data = await res.json();
         if (data.success) {
           successCount++;
-          if (alert.rowIndex != null) successfulRowIndexes.add(String(alert.rowIndex));
-          if (alert.alertKey) successfulKeys.add(alert.alertKey);
-          if (alert.fingerprintHash) successfulKeys.add(alert.fingerprintHash);
+          markProactiveAlertDismissed?.(alert, alert.rowIndex);
+          if (alert.rowIndex != null) {
+            successfulRowIndexes.add(String(alert.rowIndex));
+            removeIdsSet.add(String(alert.rowIndex));
+          }
+          if (alert.alertKey) {
+            successfulKeys.add(alert.alertKey);
+            removeIdsSet.add(alert.alertKey);
+          }
+          if (alert.fingerprintHash) {
+            successfulKeys.add(alert.fingerprintHash);
+            removeIdsSet.add(alert.fingerprintHash);
+          }
+          const legKey = alert.legacyAlertKey || alert.metadata?.legacyAlertKey;
+          if (legKey) removeIdsSet.add(legKey);
+          if (data.fingerprintHash) removeIdsSet.add(data.fingerprintHash);
         }
       }
 
@@ -1078,28 +1117,14 @@ export default function AlertSelectionView({
         return;
       }
 
-      if (sessionId && successfulKeys.size > 0) {
+      if (sessionId && removeIdsSet.size > 0) {
         fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "remove_alert",
             sessionId,
-            alertIds: Array.from(successfulKeys)
-          }),
-        }).catch(() => { });
-      }
-
-      if (automationCommanderSheetId && successfulKeys.size > 0) {
-        fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "bulk_acknowledge_proactive_alerts",
-            alertKeys: Array.from(successfulKeys),
-            clientName: selectedClient?.clientName,
-            automationCommanderSheetId,
-            sessionId
+            alertIds: Array.from(removeIdsSet)
           }),
         }).catch(() => { });
       }
@@ -1120,6 +1145,9 @@ export default function AlertSelectionView({
       });
       setProactiveCountsByClient(counts);
       setProactiveAlerts(remaining);
+      try {
+        localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(remaining));
+      } catch { }
       const remainingClientProactive = remaining.filter(a => a.clientName === selectedClient?.clientName);
       const remainingProactiveCount = remainingClientProactive.length;
 
@@ -3417,10 +3445,7 @@ export default function AlertSelectionView({
           isOpen={Boolean(viewingJobTarget)}
           target={viewingJobTarget}
           isAdmin={isAdmin}
-          onClose={() => {
-            setViewingJobTarget(null);
-            loadProactiveAlerts();
-          }}
+          onClose={() => setViewingJobTarget(null)}
         />
       )}
 

@@ -33,21 +33,20 @@ const EMPTY_TEMPLATES = {
 };
 
 const COLUMNS = [
-  { key: "client_name", label: "Client name", type: "text", width: 195, stickyLeft: 0, placeholder: "Required client name" },
-  { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS, width: 105 },
-  { key: "master_mode", label: "Master mode", type: "readonly_mode", width: 105 },
-  { key: "client_mode", label: "Portal mode", type: "readonly_mode", width: 105 },
-  { key: "version_in_use", label: "Version", type: "text", width: 85, placeholder: "e.g. v2.80" },
-  { key: "client_sheet_url", label: "Client sheet URL", type: "url", width: 210, placeholder: "https://docs.google.com/..." },
-  { key: "master_sheet_url", label: "Master sheet URL", type: "url", width: 210, placeholder: "https://docs.google.com/..." },
-  { key: "recon_sheet_url", label: "Recon sheet URL", type: "url", width: 210, placeholder: "https://docs.google.com/..." },
-  { key: "backup_sheet_url", label: "Backup sheet URL", type: "url", width: 200, placeholder: "https://docs.google.com/..." },
-  { key: "drive_folder_id", label: "Drive folder ID", type: "folder", width: 175, placeholder: "Folder ID or URL" },
-  { key: "reports_folder_id", label: "Reports folder ID", type: "folder", width: 175, placeholder: "Folder ID or URL" },
-  { key: "client_script_id", label: "Client script ID", type: "mono", width: 200, placeholder: "Apps Script ID" },
-  { key: "master_script_id", label: "Master script ID", type: "mono", width: 200, placeholder: "Apps Script ID" },
-  { key: "recon_script_id", label: "Recon script ID", type: "mono", width: 200, placeholder: "Apps Script ID" },
-  { key: "master_deployment_url", label: "Master deployment URL", type: "url", width: 220, placeholder: "https://script.google.com/..." },
+  { key: "client_name", label: "Client name", type: "text", width: 170, stickyLeft: 0, placeholder: "Required client name" },
+  { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS, width: 96 },
+  { key: "master_mode", label: "Master mode", type: "readonly_mode", width: 92 },
+  { key: "client_mode", label: "Portal mode", type: "readonly_mode", width: 92 },
+  { key: "client_sheet_url", label: "Client sheet URL", type: "url", width: 125, placeholder: "https://docs.google.com/..." },
+  { key: "master_sheet_url", label: "Master sheet URL", type: "url", width: 125, placeholder: "https://docs.google.com/..." },
+  { key: "recon_sheet_url", label: "Recon sheet URL", type: "url", width: 125, placeholder: "https://docs.google.com/..." },
+  { key: "backup_sheet_url", label: "Backup sheet URL", type: "url", width: 125, placeholder: "https://docs.google.com/..." },
+  { key: "drive_folder_id", label: "Drive folder ID", type: "folder", width: 120, placeholder: "Folder ID or URL" },
+  { key: "reports_folder_id", label: "Reports folder ID", type: "folder", width: 120, placeholder: "Folder ID or URL" },
+  { key: "client_script_id", label: "Client script ID", type: "mono", width: 115, placeholder: "Apps Script ID" },
+  { key: "master_script_id", label: "Master script ID", type: "mono", width: 115, placeholder: "Apps Script ID" },
+  { key: "recon_script_id", label: "Recon script ID", type: "mono", width: 115, placeholder: "Apps Script ID" },
+  { key: "master_deployment_url", label: "Master deployment URL", type: "url", width: 125, placeholder: "https://script.google.com/..." },
 ];
 
 function getRowKey(row) {
@@ -414,14 +413,17 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
     const externalUrl = (col.type === "url" || col.type === "folder") ? buildExternalUrl(val, col.type) : "";
 
     return (
-      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "4px", maxWidth: col.width }}>
         <input
           type="text"
           value={val}
+          title={val || undefined}
           placeholder={col.placeholder || ""}
           onChange={(e) => handleFieldChange(rowKey, col.key, e.target.value)}
           style={{
             ...inputBaseStyle,
+            minWidth: 0,
+            flex: 1,
             fontFamily: col.type === "mono" ? "ui-monospace, SFMono-Regular, Menlo, monospace" : "inherit",
             fontWeight: col.key === "client_name" ? "600" : "400",
           }}
@@ -432,11 +434,11 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
             target="_blank"
             rel="noopener noreferrer"
             style={{
-              fontSize: "11px",
+              fontSize: "10.5px",
               fontWeight: "600",
               color: "#0047AB",
               textDecoration: "none",
-              padding: "3px 5px",
+              padding: "3px 4px",
               borderRadius: "4px",
               background: "#eff6ff",
               border: "1px solid #bfdbfe",

@@ -45,7 +45,6 @@ function buildClientRegistryPayload_(raw = {}, { isUpdate = false } = {}) {
     client_name: clientName,
     normalized_key: normalizedKey,
     status,
-    version_in_use: String(raw.version_in_use || "").trim(),
     webapp_version: String(raw.webapp_version || "").trim(),
     client_sheet_url: clientSheetUrl,
     master_sheet_url: masterSheetUrl,
@@ -71,12 +70,59 @@ function buildClientRegistryPayload_(raw = {}, { isUpdate = false } = {}) {
 
     payload.short_code = shortCodeRaw || null;
     payload.service_type = String(raw.service_type || "").trim();
+    payload.version_in_use = String(raw.version_in_use || "").trim();
     payload.master_mode = VALID_ENGINE_MODES.has(rawMasterMode) ? rawMasterMode : "sheet";
     payload.client_mode = VALID_ENGINE_MODES.has(rawClientMode) ? rawClientMode : "sheet";
     payload.tracker_row_index = Number.isFinite(parsedRowIndex) ? parsedRowIndex : null;
   }
 
   return payload;
+}
+
+async function syncReportsFolderToEomConfig_(sb, savedClients, actorEmail = "Admin") {
+  if (!Array.isArray(savedClients) || savedClients.length === 0) return;
+  try {
+    const { data: cfgRow, error } = await sb
+      .from("system_config")
+      .select("value")
+      .eq("key", "eom_reporting_control_state")
+      .maybeSingle();
+    if (error || !cfgRow?.value || typeof cfgRow.value !== "object") return;
+
+    const state = { ...cfgRow.value };
+    const configsByClient = { ...(state.configsByClient || {}) };
+    let changed = false;
+
+    for (const c of savedClients) {
+      if (!c?.client_name) continue;
+      const existingKey =
+        Object.keys(configsByClient).find(k => k.trim().toLowerCase() === c.client_name.trim().toLowerCase()) ||
+        c.client_name;
+      const targetUrl = c.reports_folder_id
+        ? `https://drive.google.com/drive/folders/${c.reports_folder_id}`
+        : "";
+      const prevConf = configsByClient[existingKey] || {};
+      if (String(prevConf.folderUrl || "") !== targetUrl) {
+        configsByClient[existingKey] = {
+          ...prevConf,
+          folderUrl: targetUrl,
+          updatedAt: new Date().toISOString(),
+        };
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      state.configsByClient = configsByClient;
+      await sb.from("system_config").upsert({
+        key: "eom_reporting_control_state",
+        value: state,
+        updated_by: actorEmail || "Admin",
+      });
+    }
+  } catch (err) {
+    console.warn("syncReportsFolderToEomConfig_ warning:", err.message);
+  }
 }
 
 async function upsertClientRegistryRecord_(sb, rawRow) {
@@ -349,6 +395,7 @@ export default async function handler(req, res) {
       }
       const sb = getSupabaseAdmin();
       const saved = await upsertClientRegistryRecord_(sb, row);
+      await syncReportsFolderToEomConfig_(sb, [saved], sessionUser.email || "Admin");
       await invalidateClientsCache_(automationCommanderSheetId);
       const sheets = await getSheetsClient().catch(() => null);
       await logPmaActivity(sheets, {
@@ -356,13 +403,12 @@ export default async function handler(req, res) {
         clientName: saved.client_name,
         category: "SYSTEM",
         action: "CLIENT_REGISTRY_SAVED",
-        summary: `Saved client registry record for "${saved.client_name}" (status: ${saved.status}, master: ${saved.master_mode}, portal: ${saved.client_mode})`,
+        summary: `Saved client registry record for "${saved.client_name}" (status: ${saved.status})`,
         details: {
           clientId: saved.id,
           status: saved.status,
-          masterMode: saved.master_mode,
-          clientMode: saved.client_mode,
-          versionInUse: saved.version_in_use,
+          driveFolderId: saved.drive_folder_id,
+          reportsFolderId: saved.reports_folder_id,
         },
         userEmail: sessionUser.email || "Admin",
       }).catch(() => {});
@@ -383,6 +429,7 @@ export default async function handler(req, res) {
         const saved = await upsertClientRegistryRecord_(sb, row);
         savedClients.push(saved);
       }
+      await syncReportsFolderToEomConfig_(sb, savedClients, sessionUser.email || "Admin");
       await invalidateClientsCache_(automationCommanderSheetId);
       const sheets = await getSheetsClient().catch(() => null);
       await logPmaActivity(sheets, {

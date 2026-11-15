@@ -327,7 +327,7 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
     withRetry(() =>
       sheets.spreadsheets.values.get({
         spreadsheetId: TRACKER_SHEET_ID,
-        range: "Clients!A5:AN500",
+        range: "Clients!A5:BA500",
       })
     ).catch(() => ({ data: { values: [] } })),
     withRetry(() =>
@@ -353,6 +353,9 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
     const clientUrl = String(row[11] || "").trim();
     const masterUrl = String(row[12] || "").trim();
     const reconUrl = String(row[13] || "").trim();
+    const mgmtReportsRaw = String(row[52] || "").trim();
+    const reportsFolderMatch = mgmtReportsRaw.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    const reportsFolderId = reportsFolderMatch ? reportsFolderMatch[1] : mgmtReportsRaw;
 
     clientsByKey.set(normKey, {
       client_name: clientName,
@@ -373,6 +376,7 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
       webapp_version: String(row[20] || "").trim(),
       master_deployment_url: String(row[22] || "").trim(),
       backup_sheet_url: String(row[24] || "").trim(),
+      reports_folder_id: reportsFolderId,
       tracker_row_index: idx + 5,
       status: "live",
       master_mode: "sheet",

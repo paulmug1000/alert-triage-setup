@@ -18,7 +18,8 @@ import {
   isNoEndDateSentinel,
   isJobCostingStyle,
   getJobCostingRowFormulasMap,
-  buildJobRowClearAndRestorePlan
+  buildJobRowClearAndRestorePlan,
+  normalizeLikelihoodInput
 } from "../../../utils/helpers.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
@@ -339,7 +340,7 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, o
 
   if (cols.likelihood !== -1 && job.likelihood !== undefined) {
     if (!(typeof rowArray[cols.likelihood] === "string" && rowArray[cols.likelihood].startsWith("="))) {
-      rowArray[cols.likelihood] = parseText(job.likelihood);
+      rowArray[cols.likelihood] = normalizeLikelihoodInput(parseText(job.likelihood));
     }
   }
   if (cols.prodTime !== -1 && job.prodTime !== undefined) rowArray[cols.prodTime] = parseNumber(job.prodTime);
@@ -525,8 +526,9 @@ export default async function handler(req, res) {
     const verifiedClientName = auth.clientName;
 
     // 1. Determine target sheet name and sheet metadata (including rowGroups to avoid a second metadata fetch later)
-    const parsedLikelihoodNum = parseFloat(String(job.likelihood || "").replace(/[%,\s]/g, ""));
-    const isLikelihood100 = !isNaN(parsedLikelihoodNum) && (parsedLikelihoodNum >= 100 || (parsedLikelihoodNum === 1 && String(job.likelihood).includes("1")));
+    const rawLikelihoodStr = String(job.likelihood || "").trim();
+    const parsedLikelihoodNum = parseFloat(rawLikelihoodStr.replace(/[%,\s]/g, ""));
+    const isLikelihood100 = !isNaN(parsedLikelihoodNum) && (parsedLikelihoodNum >= 100 || (!rawLikelihoodStr.includes("%") && rawLikelihoodStr === "1"));
     const isTargetConfirmed = String(job.type || "").toLowerCase() === "confirmed" || isLikelihood100;
     const metaResp = await withRetry(() =>
       sheets.spreadsheets.get({

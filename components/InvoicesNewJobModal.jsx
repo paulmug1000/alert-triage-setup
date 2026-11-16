@@ -63,12 +63,14 @@ export default function InvoicesNewJobModal({
 
   const [jobName, setJobName] = useState(inv.job || "");
   const [projectCode, setProjectCode] = useState("");
-  const [revenue, setRevenue] = useState(stripCurrency(inv.amount));
+  const [revenue, setRevenue] = useState(
+    stripCurrency(inv.amount) ? (parseFloat(stripCurrency(inv.amount)) || 0).toFixed(2) : ""
+  );
   const [revenueManuallyEdited, setRevenueManuallyEdited] = useState(false);
   const [hasRechargedExpenses, setHasRechargedExpenses] = useState(false);
   const [ofWhichRechgd, setOfWhichRechgd] = useState("");
   const [costMonth, setCostMonth] = useState("");
-  const [directCosts, setDirectCosts] = useState("0");
+  const [directCosts, setDirectCosts] = useState("0.00");
   const [vatYesNo, setVatYesNo] = useState(inv.vatAmount > 0 ? "Yes" : "No");
   const [projectType, setProjectType] = useState("Project");
   const [startDate, setStartDate] = useState(initialStartDate);
@@ -236,6 +238,10 @@ export default function InvoicesNewJobModal({
                   setRevenueManuallyEdited(true);
                   setRevenue(e.target.value);
                 }}
+                onBlur={(e) => {
+                  const s = String(e.target.value ?? "").trim();
+                  if (s !== "" && !isNaN(parseFloat(s))) setRevenue(parseFloat(s).toFixed(2));
+                }}
               />
               <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
                 For retainers, enter the monthly amount
@@ -243,7 +249,17 @@ export default function InvoicesNewJobModal({
             </div>
             <div>
               <label style={labelStyle}>Direct costs (£{isAdmin ? ", col AH" : ""})</label>
-              <input style={inputStyle} type="number" step="0.01" value={directCosts} onChange={e => setDirectCosts(e.target.value)} />
+              <input
+                style={inputStyle}
+                type="number"
+                step="0.01"
+                value={directCosts}
+                onChange={e => setDirectCosts(e.target.value)}
+                onBlur={(e) => {
+                  const s = String(e.target.value ?? "").trim();
+                  if (s !== "" && !isNaN(parseFloat(s))) setDirectCosts(parseFloat(s).toFixed(2));
+                }}
+              />
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
@@ -340,11 +356,11 @@ export default function InvoicesNewJobModal({
                   setOfWhichRechgd("");
                   setCostMonth("");
                   if (!revenueManuallyEdited) {
-                    setRevenue(stripCurrency(inv.amount));
+                    setRevenue((parseFloat(stripCurrency(inv.amount)) || 0).toFixed(2));
                   }
                 } else if (!revenueManuallyEdited) {
                   const rech = parseFloat(ofWhichRechgd) || 0;
-                  setRevenue(String(Math.max(0, Math.round((gross - rech) * 100) / 100)));
+                  setRevenue(Math.max(0, Math.round((gross - rech) * 100) / 100).toFixed(2));
                 }
               }}
             />
@@ -368,7 +384,7 @@ export default function InvoicesNewJobModal({
                     if (!revenueManuallyEdited) {
                       const gross = parseFloat(inv.amount) || 0;
                       const rech = parseFloat(nextVal) || 0;
-                      setRevenue(String(Math.max(0, Math.round((gross - rech) * 100) / 100)));
+                      setRevenue(Math.max(0, Math.round((gross - rech) * 100) / 100).toFixed(2));
                     }
                   }}
                 />

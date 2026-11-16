@@ -6,7 +6,7 @@ import {
   getJobExpenseItems,
   getJobFinancialMetrics
 } from "./JobsView";
-import { isPlaceholderInvoice, isPlaceholderExpense, cleanUserFacingText, getRetainerRowMonthLabel } from "../utils/helpers";
+import { isPlaceholderInvoice, isPlaceholderExpense, cleanUserFacingText, getRetainerRowMonthLabel, formatLikelihood } from "../utils/helpers";
 
 const fmtGBP = (val) => {
   const num = typeof val === "number" ? val : (parseFloat(String(val || "0").replace(/[£$€,\s]/g, "")) || 0);
@@ -529,10 +529,10 @@ export default function JobMatchCard({
           <strong style={{ color: "#111827" }}>{endDateVal || "(blank)"}</strong>
         </div>
 
-        {!isConfirmed && likelihoodVal !== null && likelihoodVal !== undefined && (
+        {!isConfirmed && likelihoodVal !== null && likelihoodVal !== undefined && String(likelihoodVal).trim() !== "" && (
           <div>
             <span style={{ color: "#64748b", fontWeight: "500" }}>Likelihood: </span>
-            <strong style={{ color: "#0284c7" }}>{likelihoodVal}%</strong>
+            <strong style={{ color: "#0284c7" }}>{formatLikelihood(likelihoodVal)}</strong>
           </div>
         )}
 

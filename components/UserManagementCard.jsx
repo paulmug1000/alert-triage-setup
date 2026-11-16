@@ -51,6 +51,7 @@ export default function UserManagementCard({
 }) {
   const [users, setUsers] = useState([]);
   const [clientNames, setClientNames] = useState([]);
+  const [clientStatusMap, setClientStatusMap] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -90,6 +91,9 @@ export default function UserManagementCard({
       setUsers(data.users || []);
       if (Array.isArray(data.clientNames)) {
         setClientNames(data.clientNames);
+      }
+      if (data.clientStatusMap && typeof data.clientStatusMap === "object") {
+        setClientStatusMap(data.clientStatusMap);
       }
     } catch (err) {
       setError(err.message);
@@ -277,11 +281,28 @@ export default function UserManagementCard({
     });
   }, [users, roleFilter, searchQuery]);
 
+  const getInactiveAssignmentTag = useCallback((cName) => {
+    if (!cName || clientNames.includes(cName)) return "";
+    const status = String(clientStatusMap[cName] || "").trim().toLowerCase();
+    if (status === "archived") return "Archived";
+    if (status === "suspended") return "Suspended";
+    if (status === "inactive") return "Inactive";
+    return "Not in active list";
+  }, [clientNames, clientStatusMap]);
+
+  const editableClientOptions = useMemo(() => {
+    const activeSet = new Set(clientNames);
+    const inactiveAssigned = formClients
+      .filter(c => c && !activeSet.has(c))
+      .sort((a, b) => a.localeCompare(b));
+    return [...inactiveAssigned, ...clientNames];
+  }, [clientNames, formClients]);
+
   const filteredClientOptions = useMemo(() => {
-    if (!clientSearch.trim()) return clientNames;
+    if (!clientSearch.trim()) return editableClientOptions;
     const q = clientSearch.trim().toLowerCase();
-    return clientNames.filter(c => c.toLowerCase().includes(q));
-  }, [clientNames, clientSearch]);
+    return editableClientOptions.filter(c => c.toLowerCase().includes(q));
+  }, [editableClientOptions, clientSearch]);
 
   return (
     <div
@@ -640,6 +661,65 @@ export default function UserManagementCard({
                 </div>
               </div>
 
+              {formClients.length > 0 && (
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 6,
+                    marginBottom: 8,
+                    padding: "8px 10px",
+                    background: "white",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 8,
+                  }}
+                >
+                  {formClients.map(cName => {
+                    const inactiveTag = getInactiveAssignmentTag(cName);
+                    return (
+                      <span
+                        key={cName}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "3px 8px",
+                          borderRadius: 999,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          background: inactiveTag ? "#fef3c7" : "#eff6ff",
+                          color: inactiveTag ? "#92400e" : "#1d4ed8",
+                          border: `1px solid ${inactiveTag ? "#fde68a" : "#bfdbfe"}`,
+                        }}
+                      >
+                        <span>
+                          {cName}
+                          {inactiveTag ? ` (${inactiveTag})` : ""}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleClient(cName)}
+                          title={`Remove ${cName}`}
+                          aria-label={`Remove ${cName}`}
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            color: "inherit",
+                            cursor: "pointer",
+                            padding: 0,
+                            lineHeight: 1,
+                            fontSize: 13,
+                            fontWeight: 700,
+                          }}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+
               <div
                 style={{
                   maxHeight: 165,
@@ -655,9 +735,11 @@ export default function UserManagementCard({
               >
                 {filteredClientOptions.map(cName => {
                   const checked = formClients.includes(cName);
+                  const inactiveTag = getInactiveAssignmentTag(cName);
                   return (
                     <label
                       key={cName}
+                      title={inactiveTag ? `${cName} (${inactiveTag})` : cName}
                       style={{
                         display: "flex",
                         alignItems: "center",
@@ -666,8 +748,8 @@ export default function UserManagementCard({
                         padding: "4px 6px",
                         borderRadius: 6,
                         cursor: "pointer",
-                        background: checked ? "#eff6ff" : "transparent",
-                        color: checked ? "#1d4ed8" : "#334155",
+                        background: inactiveTag ? "#fffbeb" : checked ? "#eff6ff" : "transparent",
+                        color: inactiveTag ? "#92400e" : checked ? "#1d4ed8" : "#334155",
                         fontWeight: checked ? 600 : 400,
                       }}
                     >
@@ -678,6 +760,7 @@ export default function UserManagementCard({
                       />
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {cName}
+                        {inactiveTag ? ` (${inactiveTag})` : ""}
                       </span>
                     </label>
                   );
@@ -802,8 +885,8 @@ export default function UserManagementCard({
                 const assignedList = u.assignedClients === "*"
                   ? ["*"]
                   : Array.isArray(u.assignedClients)
-                  ? u.assignedClients
-                  : [];
+                    ? u.assignedClients
+                    : [];
 
                 return (
                   <tr key={u.email} style={{ borderBottom: "1px solid #f1f5f9" }}>
@@ -834,20 +917,26 @@ export default function UserManagementCard({
                         <span style={{ fontSize: 11, color: "#94a3b8" }}>None assigned</span>
                       ) : (
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                          {assignedList.slice(0, 4).map(c => (
-                            <span
-                              key={c}
-                              style={{
-                                background: "#f1f5f9",
-                                color: "#334155",
-                                padding: "2px 6px",
-                                borderRadius: 4,
-                                fontSize: 11,
-                              }}
-                            >
-                              {c}
-                            </span>
-                          ))}
+                          {assignedList.slice(0, 4).map(c => {
+                            const inactiveTag = getInactiveAssignmentTag(c);
+                            return (
+                              <span
+                                key={c}
+                                title={inactiveTag ? `${c} (${inactiveTag})` : c}
+                                style={{
+                                  background: inactiveTag ? "#fef3c7" : "#f1f5f9",
+                                  color: inactiveTag ? "#92400e" : "#334155",
+                                  border: inactiveTag ? "1px solid #fde68a" : "none",
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                  fontSize: 11,
+                                }}
+                              >
+                                {c}
+                                {inactiveTag ? ` (${inactiveTag})` : ""}
+                              </span>
+                            );
+                          })}
                           {assignedList.length > 4 && (
                             <span
                               title={assignedList.slice(4).join(", ")}

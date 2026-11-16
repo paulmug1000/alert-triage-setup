@@ -5,7 +5,7 @@
  */
 
 import crypto from "crypto";
-import { buildExcelAuthUrl } from "../../../../services/excelIntegrationService.js";
+import { buildExcelAuthUrl, discoverSharePointTenantId } from "../../../../services/excelIntegrationService.js";
 import { getSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet, matchesClientName } from "../../../../services/userPermissions.js";
@@ -62,6 +62,8 @@ export default async function handler(req, res) {
     const redirectUri = `${proto}://${host}/api/integrations/excel/callback`;
 
     const nonce = crypto.randomBytes(16).toString("hex");
+    const pendingUrl = (req.query?.url || req.body?.url || "").trim();
+    const azureTenantId = pendingUrl ? await discoverSharePointTenantId(pendingUrl) : "";
 
     const statePayload = {
       nonce,
@@ -70,7 +72,8 @@ export default async function handler(req, res) {
       masterSheetId: masterSheetId || "",
       clientSheetId: clientSheetId || "",
       redirectBack: sanitizedRedirectBack,
-      url: (req.query?.url || req.body?.url || "").trim()
+      url: pendingUrl,
+      azureTenantId
     };
 
     const stateToken = createSignedOAuthState(statePayload);
@@ -82,7 +85,8 @@ export default async function handler(req, res) {
 
     const authUrl = buildExcelAuthUrl({
       redirectUri,
-      state: stateToken
+      state: stateToken,
+      tenantId: azureTenantId || "common"
     });
 
     return res.redirect(authUrl);

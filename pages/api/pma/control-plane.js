@@ -144,9 +144,27 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
     const payload = buildClientRegistryPayload_(rawRow, { isUpdate: true });
     const { data: existingRow } = await sb
       .from("clients")
-      .select("id, metadata")
+      .select("id, metadata, client_sheet_id, master_sheet_id, recon_sheet_id, client_mode, master_mode")
       .eq("id", existingId)
       .maybeSingle();
+
+    if (existingRow) {
+      if (!payload.client_sheet_id) {
+        if (existingRow.client_mode === "supabase" || String(existingRow.client_sheet_id || "").startsWith("sb-")) {
+          payload.client_sheet_id = existingRow.client_sheet_id || `sb-client-${payload.normalized_key}`;
+        }
+      }
+      if (!payload.master_sheet_id) {
+        if (existingRow.master_mode === "supabase" || String(existingRow.master_sheet_id || "").startsWith("sb-")) {
+          payload.master_sheet_id = existingRow.master_sheet_id || `sb-master-${payload.normalized_key}`;
+        }
+      }
+      if (!payload.recon_sheet_id) {
+        if (existingRow.master_mode === "supabase" || String(existingRow.recon_sheet_id || "").startsWith("sb-")) {
+          payload.recon_sheet_id = existingRow.recon_sheet_id || `sb-recon-${payload.normalized_key}`;
+        }
+      }
+    }
 
     const nextMetadata = { ...(existingRow?.metadata || {}) };
     if (payload.status === "suspended") {
@@ -432,15 +450,27 @@ export default async function handler(req, res) {
 
     if (action === "list_users") {
       const sheets = await getSheetsClient();
-      const [users, clientsRes] = await Promise.all([
+      const sb = isSupabaseConfigured() ? getSupabaseAdmin() : null;
+      const [users, clientsRes, sbClientsRes] = await Promise.all([
         getAllUsers(sheets, automationCommanderSheetId, true),
         getAllClients(sheets, sessionUser, false, automationCommanderSheetId).catch(() => ({ clientsArray: [] })),
+        sb
+          ? sb.from("clients").select("client_name, status, metadata").order("client_name", { ascending: true })
+          : Promise.resolve({ data: [] }),
       ]);
       const clientNames = (clientsRes?.clientsArray || []).map(c => c.clientName).filter(Boolean).sort();
+      const clientStatusMap = {};
+      for (const row of sbClientsRes?.data || []) {
+        const name = String(row?.client_name || "").trim();
+        if (!name) continue;
+        const normalized = normalizeClientStatusFromDb_(row);
+        clientStatusMap[name] = String(normalized?.status || "live").trim().toLowerCase();
+      }
       return res.status(200).json({
         success: true,
         users,
         clientNames,
+        clientStatusMap,
       });
     }
 

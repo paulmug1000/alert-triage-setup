@@ -558,9 +558,9 @@ export default function ViewsScreen({
 
       {/* Main Container Area */}
       {selectedClient && (
-        <div style={{ background: "#ffffff", borderRadius: "12px", border: "1px solid #e2e8f0", boxShadow: "0 2px 8px rgba(0,0,0,0.04)", overflow: "hidden" }}>
+        <div style={{ background: "#ffffff", borderRadius: "12px", border: "1px solid #e2e8f0", boxShadow: "0 2px 8px rgba(0,0,0,0.04)", overflow: "visible" }}>
           {/* View Content Display */}
-          <div className="pma-views-content-inner" style={{ padding: "20px" }}>
+          <div className="pma-views-content-inner">
             {activeTab === "fyPerformance" && (
               <PerformanceFYView
                 key={selectedClient.clientSheetId || "fyPerformance"}
@@ -686,6 +686,22 @@ export default function ViewsScreen({
           </div>
         </div>
       )}
+
+      <style jsx>{`
+        .pma-views-content-inner {
+          padding: 20px 48px;
+        }
+        @media (orientation: landscape) and (max-width: 1024px) {
+          .pma-views-content-inner {
+            padding: 20px 40px;
+          }
+        }
+        @media (max-width: 768px) and (orientation: portrait) {
+          .pma-views-content-inner {
+            padding: 14px;
+          }
+        }
+      `}</style>
     </div>
   );
 }

@@ -20,7 +20,9 @@ import {
   isJobCostingStyle,
   getJobCostingRowFormulasMap,
   getJobCostingRowFormulasLetterMap,
-  buildJobRowClearAndRestorePlan
+  buildJobRowClearAndRestorePlan,
+  formatLikelihood,
+  normalizeLikelihoodInput
 } from "../utils/helpers.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, unwrapSheetId } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
@@ -1781,7 +1783,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
             propSuccFeeRec: colVal(row, 21),
             invNo: colVal(row, 27),
           } : {}),
-          likelihood: currentTab === "Pipeline" ? colVal(row, 39) : (colVal(row, 39) || "100%"),
+          likelihood: currentTab === "Pipeline" ? formatLikelihood(colVal(row, 39)) : (formatLikelihood(colVal(row, 39)) || "100%"),
           copiedToConf: currentTab === "Pipeline" ? colVal(row, pipelineCopiedColIdx) : null,
           leftToInvoice: colVal(row, 74),
           costsOutstanding: colVal(row, 106),
@@ -1993,7 +1995,9 @@ export async function handleUpdateJobField(req, res, sheets) {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const targetCol = (colLetter || cellRef.replace(/[0-9]/g, "")).toUpperCase();
     const targetRow = parseInt(rowNum || cellRef.replace(/[^0-9]/g, ""), 10);
-    const normalizedVal = ((targetCol === "AM" || targetCol === "G") && isNoEndDateSentinel(value)) ? NO_END_DATE_SHEET_VALUE : value;
+    const normalizedVal = ((targetCol === "AM" || targetCol === "G") && isNoEndDateSentinel(value))
+      ? NO_END_DATE_SHEET_VALUE
+      : (targetCol === "AN" ? normalizeLikelihoodInput(value) : value);
     const safeValue = sanitizeFormulaInput(normalizedVal);
 
     // If Revenue (AG/I), Direct Costs (AH/K), Dates (AL/F, AM/G), or Type (AJ) change, synchronize placeholders or provision retainer rows
@@ -2182,7 +2186,7 @@ export async function handleUpdateJobField(req, res, sheets) {
       jobIdentifier = `Row ${targetRow || cellRef}`;
     }
 
-    const displayLogVal = targetCol === "AM" ? formatJobEndDateDisplay(normalizedVal, "") : value;
+    const displayLogVal = targetCol === "AM" ? formatJobEndDateDisplay(normalizedVal, "") : normalizedVal;
     const valStr = displayLogVal !== "" && displayLogVal !== null && displayLogVal !== undefined ? ` to "${displayLogVal}"` : " (cleared)";
     const summary = `Updated ${resolvedFieldName} for ${jobIdentifier}${valStr}`;
 
@@ -2332,6 +2336,8 @@ export async function handleUpdateJobFields(req, res, sheets) {
       let v = u.value;
       if ((colUp === "AM" || colUp === "G") && (isNoEndDateSentinel(v) || (isSettingRetainer && !String(v || "").trim()))) {
         v = NO_END_DATE_SHEET_VALUE;
+      } else if (colUp === "AN") {
+        v = normalizeLikelihoodInput(v);
       }
       const rawCellRef = String(u.cellRef || `${u.colLetter}${u.rowNum || rowNum}`).trim().toUpperCase();
       const uRowNum = parseInt(rawCellRef.replace(/[^0-9]/g, ""), 10);
@@ -6782,10 +6788,9 @@ export async function handleAddNewJob(req, res, sheets) {
     }
 
     if (targetTab === "Pipeline" && jobData.likelihood !== undefined && jobData.likelihood !== null && jobData.likelihood !== "") {
-      let lNum = parseFloat(jobData.likelihood);
-      if (!isNaN(lNum)) {
-        if (lNum > 1) lNum = lNum / 100;
-        updateData.push({ range: `${targetTab}!AN${targetRow}`, values: [[lNum]] });
+      const normalizedL = normalizeLikelihoodInput(jobData.likelihood);
+      if (normalizedL) {
+        updateData.push({ range: `${targetTab}!AN${targetRow}`, values: [[normalizedL]] });
       }
     }
 
@@ -7075,7 +7080,7 @@ export async function handleAddNewJob(req, res, sheets) {
     const formattedClient = sanitizeFormulaInput(jobData.client || "");
     const formattedJobName = sanitizeFormulaInput(jobData.jobName || "");
     const formattedLikelihood = targetTab === "Pipeline"
-      ? `${Math.round((parseFloat(jobData.likelihood) > 1 ? parseFloat(jobData.likelihood) : (parseFloat(jobData.likelihood) || 0.5) * 100))}%`
+      ? (normalizeLikelihoodInput(jobData.likelihood) || "50%")
       : "100%";
 
     const totalInvoicedAmt = finalInvoicesList.reduce((sum, i) => sum + (parseFloat(i.amt) || 0), 0);

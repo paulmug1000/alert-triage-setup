@@ -1704,12 +1704,12 @@ export default function ScenariosView({
 
                       {/* Revenue */}
                       <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "#0f172a" }}>
-                        {formatMoney(job.revenue || job.revNum, 0, currencySymbol, thousandsSeparator)}
+                        {formatMoney(job.revenue || job.revNum, 2, currencySymbol, thousandsSeparator)}
                       </td>
 
                       {/* Direct Costs */}
                       <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "#0f172a" }}>
-                        {formatMoney(job.directCosts || job.dcNum, 0, currencySymbol, thousandsSeparator)}
+                        {formatMoney(job.directCosts || job.dcNum, 2, currencySymbol, thousandsSeparator)}
                       </td>
                     </tr>
                   );

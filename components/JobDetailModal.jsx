@@ -35,7 +35,9 @@ import {
   stripCurrency,
   INVOICE_STATUS_OPTIONS,
   canonicalizeInvoiceStatus,
-  sanitizeSpreadsheetTerms
+  sanitizeSpreadsheetTerms,
+  formatLikelihood,
+  normalizeLikelihoodInput
 } from "../utils/helpers";
 import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -548,7 +550,14 @@ export default function JobDetailModal({
 
   const getJobFieldValue = (fieldKey) => {
     if (draftEdits[fieldKey] !== undefined) return draftEdits[fieldKey];
-    return parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
+    const raw = parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
+    if ((fieldKey === "revenue" || fieldKey === "directCosts") && raw !== "" && raw !== null && raw !== undefined) {
+      return formatCurrency(raw);
+    }
+    if (fieldKey === "likelihood" && raw !== "" && raw !== null && raw !== undefined) {
+      return formatLikelihood(raw);
+    }
+    return raw;
   };
 
   const handleDraftFieldChange = (fieldKey, val) => {
@@ -1166,6 +1175,7 @@ export default function JobDetailModal({
       if (!meta) return;
       let val = draftEdits[f];
       if (meta.isDate && val) val = toSheetDateFormat(val);
+      if (f === "likelihood" && val !== "" && val !== null && val !== undefined) val = normalizeLikelihoodInput(val);
       updates.push({
         colLetter: meta.colLetter,
         rowNum: parentRowNum,
@@ -1270,6 +1280,9 @@ export default function JobDetailModal({
             if (FIELD_MAP[f]?.isDate && nextVal) nextVal = toSheetDateFormat(nextVal);
             if ((f === "revenue" || f === "directCosts" || f === "rechargedExpenses") && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
               nextVal = formatCurrency(nextVal);
+            }
+            if (f === "likelihood" && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
+              nextVal = normalizeLikelihoodInput(nextVal);
             }
             if (rIdx === 0 || f === "client" || f === "jobName") nextRow[f] = nextVal;
           });
@@ -2076,6 +2089,12 @@ export default function JobDetailModal({
                         type="text"
                         value={revVal}
                         onChange={(e) => handleDraftFieldChange("revenue", e.target.value)}
+                        onBlur={(e) => {
+                          if (draftEdits.revenue !== undefined) {
+                            const fmt = formatCurrency(e.target.value);
+                            if (fmt && fmt !== draftEdits.revenue) handleDraftFieldChange("revenue", fmt);
+                          }
+                        }}
                         disabled={isJobLocked}
                         readOnly={isJobLocked}
                         title={lockTooltip}
@@ -2113,6 +2132,12 @@ export default function JobDetailModal({
                         type="text"
                         value={directCostsVal}
                         onChange={(e) => handleDraftFieldChange("directCosts", e.target.value)}
+                        onBlur={(e) => {
+                          if (draftEdits.directCosts !== undefined) {
+                            const fmt = formatCurrency(e.target.value);
+                            if (fmt && fmt !== draftEdits.directCosts) handleDraftFieldChange("directCosts", fmt);
+                          }
+                        }}
                         disabled={isJobLocked}
                         readOnly={isJobLocked}
                         title={lockTooltip}
@@ -2253,6 +2278,12 @@ export default function JobDetailModal({
                           type="text"
                           value={likelihoodVal !== undefined && likelihoodVal !== "" ? likelihoodVal : ""}
                           onChange={(e) => handleDraftFieldChange("likelihood", e.target.value)}
+                          onBlur={(e) => {
+                            if (draftEdits.likelihood !== undefined) {
+                              const fmt = normalizeLikelihoodInput(e.target.value);
+                              if (fmt && fmt !== draftEdits.likelihood) handleDraftFieldChange("likelihood", fmt);
+                            }
+                          }}
                           disabled={isJobLocked}
                           readOnly={isJobLocked}
                           title={isJobLocked ? lockTooltip : undefined}

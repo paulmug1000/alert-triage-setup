@@ -11,7 +11,8 @@ import {
   canonicalizeInvoiceStatus,
   canonicalizeExpenseStatus,
   calculatePaymentDate,
-  formatCurrency
+  formatCurrency,
+  normalizeLikelihoodInput
 } from "../utils/helpers";
 import {
   generateManualPlaceholderInvoiceRef,
@@ -43,8 +44,16 @@ export default function JobsNewJobModal({
   const [projectCode, setProjectCode] = useState(initialJobData?.projectCode || "");
   const [projectRetainer, setProjectRetainer] = useState(initialJobData?.projectRetainer || "Project");
   const [status, setStatus] = useState(initialJobData?.status || "");
-  const [likelihood, setLikelihood] = useState(initialJobData?.likelihood !== undefined ? String(initialJobData.likelihood) : (initialJobData?.status === "Confirmed" ? "100" : (initialJobData?.status === "Pipeline" ? "50" : "")));
-  const [revenue, setRevenue] = useState(initialJobData?.revenue !== undefined ? String(initialJobData.revenue) : "");
+  const [likelihood, setLikelihood] = useState(
+    initialJobData?.likelihood !== undefined
+      ? normalizeLikelihoodInput(initialJobData.likelihood)
+      : (initialJobData?.status === "Confirmed" ? "100%" : (initialJobData?.status === "Pipeline" ? "50%" : ""))
+  );
+  const [revenue, setRevenue] = useState(
+    initialJobData?.revenue !== undefined && initialJobData?.revenue !== ""
+      ? (parseFloat(initialJobData.revenue) || 0).toFixed(2)
+      : ""
+  );
   const [hasRechargedExpenses, setHasRechargedExpenses] = useState(() => {
     const r = parseFloat(String(initialJobData?.rechargedExpenses ?? "").replace(/[£$€,\s]/g, "")) || 0;
     return initialJobData?.status === "Confirmed" && r > 0;
@@ -52,7 +61,11 @@ export default function JobsNewJobModal({
   const [rechargedExpenses, setRechargedExpenses] = useState(
     initialJobData?.rechargedExpenses !== undefined ? String(initialJobData.rechargedExpenses) : ""
   );
-  const [directCosts, setDirectCosts] = useState(initialJobData?.directCosts !== undefined ? String(initialJobData.directCosts) : "0");
+  const [directCosts, setDirectCosts] = useState(
+    initialJobData?.directCosts !== undefined && initialJobData?.directCosts !== ""
+      ? (parseFloat(initialJobData.directCosts) || 0).toFixed(2)
+      : "0.00"
+  );
   const [vat, setVat] = useState(initialJobData?.vat || "Yes");
   const [dateConfirmed, setDateConfirmed] = useState(initialJobData?.dateConfirmed || todayISO);
   const [startDate, setStartDate] = useState(initialJobData?.startDate || "");
@@ -345,14 +358,14 @@ export default function JobsNewJobModal({
   const handleStatusChange = (newStatus) => {
     setStatus(newStatus);
     if (newStatus === "Confirmed") {
-      setLikelihood("100");
+      setLikelihood("100%");
     } else {
       setHasRechargedExpenses(false);
       setRechargedExpenses("");
       setInvoices((prev) => prev.map((inv) => ({ ...inv, ofWhichRechgd: "", costMonth: "" })));
       if (newStatus === "Pipeline") {
-        if (likelihood === "100" || !likelihood) {
-          setLikelihood("50");
+        if (likelihood === "100%" || likelihood === "100" || !likelihood) {
+          setLikelihood("50%");
         }
       } else {
         setLikelihood("");
@@ -511,7 +524,7 @@ export default function JobsNewJobModal({
             projectCode: projectCode.trim(),
             projectRetainer,
             status,
-            likelihood: status === "Pipeline" ? likelihood : "",
+            likelihood: status === "Pipeline" ? normalizeLikelihoodInput(likelihood) : "",
             revenue: revenue === "" ? 0 : parseFloat(revenue) || 0,
             ...(isConfirmedJob ? { rechargedExpenses: parsedRechTotal > 0 ? parsedRechTotal : "" } : {}),
             directCosts: directCosts === "" ? 0 : parseFloat(directCosts) || 0,
@@ -763,20 +776,23 @@ export default function JobsNewJobModal({
               <div>
                 <label style={labelStyle}>% Likelihood</label>
                 <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="1"
+                  type="text"
                   style={{
                     ...inputStyle,
                     backgroundColor: status === "Confirmed" ? "#f1f5f9" : "#ffffff",
                     cursor: status === "Confirmed" ? "not-allowed" : "text",
                     opacity: status === "Confirmed" ? 0.75 : 1
                   }}
-                  value={status === "Confirmed" ? 100 : likelihood}
+                  value={status === "Confirmed" ? "100%" : likelihood}
                   disabled={status === "Confirmed"}
                   onChange={(e) => setLikelihood(e.target.value)}
-                  placeholder="e.g. 50"
+                  onBlur={(e) => {
+                    if (status !== "Confirmed") {
+                      const fmt = normalizeLikelihoodInput(e.target.value);
+                      if (fmt) setLikelihood(fmt);
+                    }
+                  }}
+                  placeholder="e.g. 50%"
                 />
               </div>
 
@@ -804,6 +820,10 @@ export default function JobsNewJobModal({
                   style={inputStyle}
                   value={revenue}
                   onChange={(e) => setRevenue(e.target.value)}
+                  onBlur={(e) => {
+                    const s = String(e.target.value ?? "").trim();
+                    if (s !== "" && !isNaN(parseFloat(s))) setRevenue(parseFloat(s).toFixed(2));
+                  }}
                   placeholder="0.00"
                   required
                 />
@@ -818,7 +838,7 @@ export default function JobsNewJobModal({
                   {totalExpenseSum > 0 && parseFloat(directCosts) !== totalExpenseSum && (
                     <button
                       type="button"
-                      onClick={() => setDirectCosts(String(totalExpenseSum))}
+                      onClick={() => setDirectCosts(totalExpenseSum.toFixed(2))}
                       style={{
                         background: "none",
                         border: "none",
@@ -831,7 +851,7 @@ export default function JobsNewJobModal({
                       }}
                       title="Sync with entered expenses sum"
                     >
-                      Use sum (£{totalExpenseSum})
+                      Use sum (£{totalExpenseSum.toFixed(2)})
                     </button>
                   )}
                 </div>
@@ -841,6 +861,10 @@ export default function JobsNewJobModal({
                   style={inputStyle}
                   value={directCosts}
                   onChange={(e) => setDirectCosts(e.target.value)}
+                  onBlur={(e) => {
+                    const s = String(e.target.value ?? "").trim();
+                    if (s !== "" && !isNaN(parseFloat(s))) setDirectCosts(parseFloat(s).toFixed(2));
+                  }}
                   placeholder="0.00"
                 />
               </div>

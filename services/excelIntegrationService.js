@@ -15,8 +15,9 @@ import { getSheetsClient, withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { detectCandidateHeaderRow, suggestCrmColumnMapping } from "./googleSheetService.js";
 
-const MS_AUTH_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
-const MS_TOKEN_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+const MS_OAUTH_BASE = "https://login.microsoftonline.com";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EXCEL_EXT_RE = /\.(xlsx|xlsm|xlsb|xls)$/i;
 
 export const EXCEL_SCOPES = [
   "offline_access",
@@ -25,16 +26,53 @@ export const EXCEL_SCOPES = [
   "User.Read"
 ];
 
+function resolveOAuthTenant(tenantId) {
+  const clean = String(tenantId || "").trim();
+  if (!clean) return "common";
+  if (clean === "common" || clean === "organizations" || clean === "consumers" || UUID_RE.test(clean)) {
+    return clean;
+  }
+  throw new Error("Invalid Microsoft Entra tenantId format.");
+}
+
+/**
+ * Discovers the Microsoft Entra tenant ID (GUID) for a *.sharepoint.com URL
+ * via SharePoint's unauthenticated Bearer realm challenge so B2B guests
+ * authenticate against the resource SharePoint tenant rather than their home tenant.
+ * Returns "" if not a SharePoint Online URL or discovery fails.
+ */
+export async function discoverSharePointTenantId(sharingUrl) {
+  if (!sharingUrl) return "";
+  try {
+    const u = new URL(String(sharingUrl).trim());
+    if (u.protocol !== "https:" || !/^[A-Za-z0-9-]+\.sharepoint\.com$/i.test(u.hostname)) {
+      return "";
+    }
+    const res = await fetch(`https://${u.hostname}/_vti_bin/client.svc`, {
+      method: "GET",
+      headers: { Authorization: "Bearer" },
+      signal: AbortSignal.timeout(2500)
+    });
+    const authHeader = res.headers.get("www-authenticate") || "";
+    const match = authHeader.match(/realm="([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i);
+    return match ? match[1] : "";
+  } catch (err) {
+    console.warn("SharePoint tenant discovery note:", err.message);
+    return "";
+  }
+}
+
 /**
  * Builds the Microsoft OAuth initiation URL for connecting Excel CRM.
  */
-export function buildExcelAuthUrl({ redirectUri, state }) {
+export function buildExcelAuthUrl({ redirectUri, state, tenantId = "common" }) {
   const clientId = process.env.EXCEL_AZURE_CLIENT_ID || process.env.AZURE_CLIENT_ID;
   if (!clientId) {
     throw new Error("Missing EXCEL_AZURE_CLIENT_ID or AZURE_CLIENT_ID environment variable");
   }
 
-  const url = new URL(MS_AUTH_ENDPOINT);
+  const tenant = resolveOAuthTenant(tenantId);
+  const url = new URL(`${MS_OAUTH_BASE}/${tenant}/oauth2/v2.0/authorize`);
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("response_type", "code");
@@ -49,7 +87,7 @@ export function buildExcelAuthUrl({ redirectUri, state }) {
 /**
  * Exchanges authorization code for Microsoft OAuth access and refresh tokens.
  */
-export async function exchangeExcelCodeForTokens({ code, redirectUri }) {
+export async function exchangeExcelCodeForTokens({ code, redirectUri, tenantId = "common" }) {
   const clientId = process.env.EXCEL_AZURE_CLIENT_ID || process.env.AZURE_CLIENT_ID;
   const clientSecret = process.env.EXCEL_AZURE_CLIENT_SECRET || process.env.AZURE_CLIENT_SECRET;
 
@@ -57,6 +95,7 @@ export async function exchangeExcelCodeForTokens({ code, redirectUri }) {
     throw new Error("Missing EXCEL_AZURE_CLIENT_ID or AZURE_CLIENT_SECRET in environment");
   }
 
+  const tenant = resolveOAuthTenant(tenantId);
   const body = new URLSearchParams({
     client_id: clientId,
     client_secret: clientSecret,
@@ -65,7 +104,7 @@ export async function exchangeExcelCodeForTokens({ code, redirectUri }) {
     grant_type: "authorization_code"
   });
 
-  const res = await fetch(MS_TOKEN_ENDPOINT, {
+  const res = await fetch(`${MS_OAUTH_BASE}/${tenant}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString()
@@ -87,7 +126,7 @@ export async function exchangeExcelCodeForTokens({ code, redirectUri }) {
 /**
  * Refreshes an expired Microsoft OAuth access token using a stored refresh token.
  */
-export async function refreshExcelTokens(refreshToken) {
+export async function refreshExcelTokens(refreshToken, tenantId = "common") {
   const clientId = process.env.EXCEL_AZURE_CLIENT_ID || process.env.AZURE_CLIENT_ID;
   const clientSecret = process.env.EXCEL_AZURE_CLIENT_SECRET || process.env.AZURE_CLIENT_SECRET;
 
@@ -99,6 +138,7 @@ export async function refreshExcelTokens(refreshToken) {
     throw new Error("No refresh token provided to refreshExcelTokens");
   }
 
+  const tenant = resolveOAuthTenant(tenantId);
   const body = new URLSearchParams({
     client_id: clientId,
     client_secret: clientSecret,
@@ -106,7 +146,7 @@ export async function refreshExcelTokens(refreshToken) {
     grant_type: "refresh_token"
   });
 
-  const res = await fetch(MS_TOKEN_ENDPOINT, {
+  const res = await fetch(`${MS_OAUTH_BASE}/${tenant}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString()
@@ -119,6 +159,7 @@ export async function refreshExcelTokens(refreshToken) {
 
   return {
     accessToken: data.access_token,
+    refreshToken: data.refresh_token || null,
     expiresIn: data.expires_in || 3600
   };
 }
@@ -164,61 +205,165 @@ export async function getAzureClientCredentialsToken(tenantId, clientId, clientS
   return data.access_token;
 }
 
+function parseExcelUrlHints(cleanUrl) {
+  try {
+    const u = new URL(cleanUrl);
+    const pathname = u.pathname || "";
+    const isDocViewerUrl = /_layouts\/\d+\/Doc\.aspx/i.test(pathname) || /^\/:[a-z]:\/r\//i.test(pathname);
+    const isSharingLink = /^\/:[a-z]:\/[sg]\//i.test(pathname) || u.hostname.toLowerCase() === "1drv.ms";
+    const rawSourceDoc = (u.searchParams.get("sourcedoc") || "").replace(/[{}]/g, "").trim();
+    const sourcedocGuid = UUID_RE.test(rawSourceDoc) ? rawSourceDoc : "";
+    const queryFileName = (u.searchParams.get("file") || "").trim();
+    const lastSegment = decodeURIComponent(pathname.split("/").filter(Boolean).pop() || "");
+    const pathFileName = EXCEL_EXT_RE.test(lastSegment) ? lastSegment : "";
+    const fileName = queryFileName || pathFileName;
+    const siteMatch = pathname.match(/\/(sites|teams)\/([^/]+)/i);
+    return {
+      url: u,
+      hostname: u.hostname,
+      pathname,
+      isDocViewerUrl,
+      isSharingLink,
+      sourcedocGuid,
+      fileName,
+      siteMatch: siteMatch ? { prefix: siteMatch[1].toLowerCase(), name: siteMatch[2] } : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isAccessDeniedGraphResponse(res, data) {
+  const errMsg = (data?.error?.message || "").toLowerCase();
+  return (
+    res.status === 403 ||
+    res.status === 401 ||
+    data?.error?.code === "accessDenied" ||
+    errMsg.includes("access denied") ||
+    errMsg.includes("permission") ||
+    errMsg.includes("unauthorized")
+  );
+}
+
+async function fetchGraphJson(url, token) {
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
+async function resolveViaSharesEndpoint(urlStr, token) {
+  const base64Val = Buffer.from(urlStr).toString("base64");
+  const encodedShare = "u!" + base64Val.replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
+  const { res, data } = await fetchGraphJson(
+    `https://graph.microsoft.com/v1.0/shares/${encodedShare}/driveItem?$select=id,name,parentReference`,
+    token
+  );
+  if (res.ok && data.id && data.parentReference?.driveId) {
+    return {
+      item: {
+        fileId: data.id,
+        driveId: data.parentReference.driveId,
+        name: data.name
+      },
+      accessDenied: false
+    };
+  }
+  return {
+    item: null,
+    accessDenied: isAccessDeniedGraphResponse(res, data)
+  };
+}
+
+async function findDriveItemInDrive({ driveId, fileName, sourcedocGuid, token }) {
+  const safeDriveId = assertSafeGraphId(driveId, "driveId");
+  let accessDenied = false;
+
+  if (sourcedocGuid) {
+    const { res, data } = await fetchGraphJson(
+      `https://graph.microsoft.com/v1.0/drives/${safeDriveId}/items/${encodeURIComponent(sourcedocGuid)}?$select=id,name,parentReference`,
+      token
+    );
+    if (res.ok && data.id) {
+      return {
+        item: {
+          fileId: data.id,
+          driveId: data.parentReference?.driveId || driveId,
+          name: data.name
+        },
+        accessDenied: false
+      };
+    }
+    if (isAccessDeniedGraphResponse(res, data)) {
+      accessDenied = true;
+    }
+  }
+
+  if (fileName) {
+    const escapedQuery = fileName.replace(/'/g, "''");
+    const { res, data } = await fetchGraphJson(
+      `https://graph.microsoft.com/v1.0/drives/${safeDriveId}/root/search(q='${encodeURIComponent(escapedQuery)}')?$select=id,name,parentReference,sharepointIds`,
+      token
+    );
+    if (res.ok && Array.isArray(data.value)) {
+      const normalizedGuid = sourcedocGuid ? sourcedocGuid.toLowerCase() : "";
+      const guidMatch = normalizedGuid
+        ? data.value.find(
+            (it) => (it.sharepointIds?.listItemUniqueId || "").replace(/[{}]/g, "").toLowerCase() === normalizedGuid
+          )
+        : null;
+      const nameMatch = data.value.find((it) => (it.name || "").toLowerCase() === fileName.toLowerCase());
+      const matchItem = guidMatch || nameMatch;
+      if (matchItem) {
+        return {
+          item: {
+            fileId: matchItem.id,
+            driveId: matchItem.parentReference?.driveId || driveId,
+            name: matchItem.name
+          },
+          accessDenied: false
+        };
+      }
+    } else if (isAccessDeniedGraphResponse(res, data)) {
+      accessDenied = true;
+    }
+  }
+
+  return { item: null, accessDenied };
+}
+
 /**
  * Resolves a SharePoint or OneDrive web sharing URL into a Drive ID and File (DriveItem) ID
- * via Microsoft Graph API shares endpoint with intelligent fallbacks.
+ * via Microsoft Graph API shares endpoint with intelligent fallbacks (including Doc.aspx viewer URLs).
  */
 export async function resolveSharePointDriveItem({ sharingUrl, token }) {
   if (!sharingUrl) throw new Error("Missing sharingUrl to resolve");
   if (!token) throw new Error("Missing access token to resolve sharing URL");
 
   const cleanUrl = sharingUrl.trim();
+  const hints = parseExcelUrlHints(cleanUrl);
   let isAccessDenied = false;
 
   // Strategy 1: Microsoft Graph /shares endpoint with original URL
+  // Note: /shares often rejects _layouts/15/Doc.aspx viewer URLs with 403 even when the user has access,
+  // so only treat /shares accessDenied as authoritative when the URL is not a Doc.aspx viewer URL.
   try {
-    const base64Val = Buffer.from(cleanUrl).toString("base64");
-    const encodedShare = "u!" + base64Val.replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
-
-    const res = await fetch(`https://graph.microsoft.com/v1.0/shares/${encodedShare}/driveItem?$select=id,name,parentReference`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const data = await res.json();
-    if (res.ok && data.id && data.parentReference?.driveId) {
-      return {
-        fileId: data.id,
-        driveId: data.parentReference.driveId,
-        name: data.name
-      };
-    }
-    const errMsg = (data.error?.message || "").toLowerCase();
-    if (res.status === 403 || data.error?.code === "accessDenied" || errMsg.includes("access denied") || errMsg.includes("permission")) {
+    const attempt1 = await resolveViaSharesEndpoint(cleanUrl, token);
+    if (attempt1.item) return attempt1.item;
+    if (attempt1.accessDenied && !hints?.isDocViewerUrl) {
       isAccessDenied = true;
     }
   } catch (err) {
     console.warn("Shares endpoint attempt 1 note:", err.message);
   }
 
-  // Strategy 2: If URL had query string, try /shares without query string
-  if (cleanUrl.includes("?")) {
+  // Strategy 2: If URL had query string (and is not a Doc.aspx viewer URL relying on ?sourcedoc=), try /shares without query string
+  if (cleanUrl.includes("?") && !hints?.isDocViewerUrl) {
     try {
-      const strippedUrl = cleanUrl.split("?")[0];
-      const base64Val = Buffer.from(strippedUrl).toString("base64");
-      const encodedShare = "u!" + base64Val.replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
-
-      const res = await fetch(`https://graph.microsoft.com/v1.0/shares/${encodedShare}/driveItem?$select=id,name,parentReference`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const data = await res.json();
-      if (res.ok && data.id && data.parentReference?.driveId) {
-        return {
-          fileId: data.id,
-          driveId: data.parentReference.driveId,
-          name: data.name
-        };
-      }
-      const errMsg = (data.error?.message || "").toLowerCase();
-      if (res.status === 403 || data.error?.code === "accessDenied" || errMsg.includes("access denied") || errMsg.includes("permission")) {
+      const attempt2 = await resolveViaSharesEndpoint(cleanUrl.split("?")[0], token);
+      if (attempt2.item) return attempt2.item;
+      if (attempt2.accessDenied) {
         isAccessDenied = true;
       }
     } catch (err) {
@@ -229,89 +374,93 @@ export async function resolveSharePointDriveItem({ sharingUrl, token }) {
   // Strategy 3: Personal OneDrive (-my.sharepoint.com/personal/)
   if (cleanUrl.includes("-my.sharepoint.com/personal/")) {
     try {
-      const driveRes = await fetch("https://graph.microsoft.com/v1.0/me/drive?$select=id,name", {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const driveData = await driveRes.json();
+      const { res: driveRes, data: driveData } = await fetchGraphJson(
+        "https://graph.microsoft.com/v1.0/me/drive?$select=id,name",
+        token
+      );
       if (driveRes.ok && driveData.id) {
         const myDriveId = assertSafeGraphId(driveData.id, "driveId");
         const urlWithoutQuery = cleanUrl.split("?")[0];
         const match = urlWithoutQuery.match(/\/Documents\/(.+)$/i);
         if (match && match[1]) {
           const relativePath = decodeURIComponent(match[1]);
-          const itemRes = await fetch(`https://graph.microsoft.com/v1.0/drives/${myDriveId}/root:/${encodeURIComponent(relativePath)}?$select=id,name,parentReference`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          const itemData = await itemRes.json();
+          const { res: itemRes, data: itemData } = await fetchGraphJson(
+            `https://graph.microsoft.com/v1.0/drives/${myDriveId}/root:/${encodeURIComponent(relativePath)}?$select=id,name,parentReference`,
+            token
+          );
           if (itemRes.ok && itemData.id) {
             return {
               fileId: itemData.id,
-              driveId: itemData.parentReference?.driveId || myDriveId,
+              driveId: itemData.parentReference?.driveId || driveData.id,
               name: itemData.name
             };
           }
-          const itemErrMsg = (itemData.error?.message || "").toLowerCase();
-          if (itemRes.status === 403 || itemData.error?.code === "accessDenied" || itemErrMsg.includes("access denied") || itemErrMsg.includes("permission")) {
+          if (isAccessDeniedGraphResponse(itemRes, itemData)) {
             isAccessDenied = true;
           }
         }
 
-        // Search by file name within user's drive
-        const fileName = decodeURIComponent(urlWithoutQuery.split("/").pop());
-        if (fileName && fileName.endsWith(".xlsx")) {
-          const searchRes = await fetch(`https://graph.microsoft.com/v1.0/drives/${myDriveId}/root/search(q='${encodeURIComponent(fileName)}')?$select=id,name,parentReference`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          const searchData = await searchRes.json();
-          const matchItem = (searchData.value || []).find(it => it.name.toLowerCase() === fileName.toLowerCase());
-          if (matchItem) {
-            return {
-              fileId: matchItem.id,
-              driveId: matchItem.parentReference?.driveId || myDriveId,
-              name: matchItem.name
-            };
-          }
-        }
+        const found = await findDriveItemInDrive({
+          driveId: driveData.id,
+          fileName: hints?.fileName || "",
+          sourcedocGuid: hints?.sourcedocGuid || "",
+          token
+        });
+        if (found.item) return found.item;
+        if (found.accessDenied) isAccessDenied = true;
+      } else if (isAccessDeniedGraphResponse(driveRes, driveData)) {
+        isAccessDenied = true;
       }
     } catch (meDriveErr) {
       console.warn("me/drive fallback note:", meDriveErr.message);
     }
   }
 
-  // Strategy 4: SharePoint team site (/sites/{siteName}/...)
-  if (cleanUrl.includes("/sites/")) {
+  // Strategy 4: SharePoint team or root site (handles /sites/{name}, /teams/{name}, and Doc.aspx?sourcedoc=...&file=...)
+  if (hints && /^[A-Za-z0-9.-]+\.sharepoint\.com$/i.test(hints.hostname) && !hints.hostname.toLowerCase().includes("-my.sharepoint.com")) {
     try {
-      const u = new URL(cleanUrl);
-      const siteMatch = u.pathname.match(/\/sites\/([^/]+)/);
-      if (siteMatch && siteMatch[1] && /^[A-Za-z0-9.-]+\.sharepoint\.com$/i.test(u.hostname)) {
-        const siteName = encodeURIComponent(siteMatch[1]);
-        const siteRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${u.hostname}:/sites/${siteName}?$select=id,name`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const siteData = await siteRes.json();
-        if (siteRes.ok && siteData.id) {
-          const safeSiteId = assertSafeGraphId(siteData.id, "siteId");
-          const fileName = decodeURIComponent(u.pathname.split("/").pop());
-          if (fileName && fileName.endsWith(".xlsx")) {
-            const searchRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${safeSiteId}/drive/root/search(q='${encodeURIComponent(fileName)}')?$select=id,name,parentReference`, {
-              headers: { Authorization: `Bearer ${token}` }
-            });
-            const searchData = await searchRes.json();
-            const matchItem = (searchData.value || []).find(it => it.name.toLowerCase() === fileName.toLowerCase());
-            if (matchItem) {
-              return {
-                fileId: matchItem.id,
-                driveId: matchItem.parentReference?.driveId,
-                name: matchItem.name
-              };
-            }
+      const siteLookupUrl = hints.siteMatch
+        ? `https://graph.microsoft.com/v1.0/sites/${hints.hostname}:/${hints.siteMatch.prefix}/${encodeURIComponent(hints.siteMatch.name)}?$select=id,name`
+        : `https://graph.microsoft.com/v1.0/sites/${hints.hostname}?$select=id,name`;
+
+      const { res: siteRes, data: siteData } = await fetchGraphJson(siteLookupUrl, token);
+      if (siteRes.ok && siteData.id) {
+        const safeSiteId = assertSafeGraphId(siteData.id, "siteId");
+
+        // Enumerate all document libraries on the site so non-default libraries are searched too
+        const { res: drivesRes, data: drivesData } = await fetchGraphJson(
+          `https://graph.microsoft.com/v1.0/sites/${safeSiteId}/drives?$select=id,name,webUrl`,
+          token
+        );
+        let drives = drivesRes.ok && Array.isArray(drivesData.value) ? drivesData.value : [];
+        if (drives.length === 0) {
+          if (isAccessDeniedGraphResponse(drivesRes, drivesData)) {
+            isAccessDenied = true;
           }
-        } else {
-          const siteErrMsg = (siteData.error?.message || "").toLowerCase();
-          if (siteRes.status === 403 || siteData.error?.code === "accessDenied" || siteErrMsg.includes("access denied") || siteErrMsg.includes("permission")) {
+          const { res: defaultDriveRes, data: defaultDriveData } = await fetchGraphJson(
+            `https://graph.microsoft.com/v1.0/sites/${safeSiteId}/drive?$select=id,name`,
+            token
+          );
+          if (defaultDriveRes.ok && defaultDriveData.id) {
+            drives = [defaultDriveData];
+          } else if (isAccessDeniedGraphResponse(defaultDriveRes, defaultDriveData)) {
             isAccessDenied = true;
           }
         }
+
+        for (const drive of drives) {
+          if (!drive?.id) continue;
+          const found = await findDriveItemInDrive({
+            driveId: drive.id,
+            fileName: hints.fileName,
+            sourcedocGuid: hints.sourcedocGuid,
+            token
+          });
+          if (found.item) return found.item;
+          if (found.accessDenied) isAccessDenied = true;
+        }
+      } else if (isAccessDeniedGraphResponse(siteRes, siteData)) {
+        isAccessDenied = true;
       }
     } catch (siteErr) {
       console.warn("SharePoint site search fallback note:", siteErr.message);
@@ -528,8 +677,8 @@ export async function linkExcelToClient({
         crmTool: "Excel",
         excel: {
           ...(prev.excel || {}),
-          driveId: String(driveId || "").trim(),
-          fileId: String(fileId || "").trim(),
+          driveId: String(resolvedDriveId || "").trim(),
+          fileId: String(resolvedFileId || "").trim(),
           sheetName: String(sheetName || "").trim(),
           range: cleanRange,
           columnRow: rowNumStr,
@@ -545,8 +694,8 @@ export async function linkExcelToClient({
 
   return {
     success: true,
-    driveId,
-    fileId,
+    driveId: resolvedDriveId,
+    fileId: resolvedFileId,
     sheetName,
     rangeAddress: cleanRange,
     headerRowNum: rowNumStr,

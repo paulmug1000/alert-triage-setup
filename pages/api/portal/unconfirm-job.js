@@ -9,7 +9,9 @@ import {
   isPlaceholderExpense,
   isJobCostingStyle,
   buildJobRowClearAndRestorePlan,
-  rewriteRowFormulasToTargetRow
+  rewriteRowFormulasToTargetRow,
+  normalizeLikelihoodInput,
+  formatLikelihood
 } from "../../../utils/helpers.js";
 
 function colToLetter(colIndex) {
@@ -231,16 +233,13 @@ export default async function handler(req, res) {
     // Determine parent likelihood
     let targetLikelihood = "50%";
     if (req.body?.likelihood !== undefined && String(req.body.likelihood).trim() !== "") {
-      let lVal = String(req.body.likelihood).trim();
-      if (!lVal.endsWith("%") && !isNaN(parseFloat(lVal))) {
-        lVal = `${lVal}%`;
-      }
-      targetLikelihood = lVal;
+      const normalized = normalizeLikelihoodInput(req.body.likelihood);
+      if (normalized) targetLikelihood = normalized;
     } else if (isExistingJob) {
       const existingRow = allPipelineRows[pipelineRow - 1] || [];
       const currLikelihood = String(existingRow[39] || "");
       if (!currLikelihood.includes("100") && currLikelihood !== "1" && currLikelihood !== "") {
-        targetLikelihood = currLikelihood;
+        targetLikelihood = formatLikelihood(currLikelihood) || "50%";
       }
     }
 

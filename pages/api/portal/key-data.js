@@ -3,7 +3,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl, getSheetTitles } fro
 import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
-import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense, isJobCostingStyle } from "../../../utils/helpers.js";
+import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense, isJobCostingStyle, formatLikelihood } from "../../../utils/helpers.js";
 import { getClients } from "../../../services/workspaces.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s L1 fresh window
@@ -692,7 +692,7 @@ export default async function handler(req, res) {
               const startDateRaw = getValueByHeader(row, colMap, ["start date", "start month"]);
               const endDateRaw = getValueByHeader(row, colMap, ["end date", "end month"]);
               const likelihoodRaw = getValueByHeader(row, colMap, ["% likel.", "% likelihood", "% likely", "likelihood"]);
-              const likelihood = likelihoodRaw || (jobType === "Confirmed" ? "100%" : "50%");
+              const likelihood = likelihoodRaw ? formatLikelihood(likelihoodRaw) : (jobType === "Confirmed" ? "100%" : "50%");
               const revNum = parseMoney(revenue);
               const dcNum = parseMoney(directCosts);
               const parsedLikel = parseFloat(String(likelihood).replace("%", ""));

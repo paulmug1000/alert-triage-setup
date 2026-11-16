@@ -32,7 +32,9 @@ import {
   stripCurrency,
   generateDuplicateJobName,
   generateRenewalJobName,
-  calculateRenewalDates
+  calculateRenewalDates,
+  formatLikelihood,
+  normalizeLikelihoodInput
 } from "../utils/helpers";
 
 const SHEET_DATE_TS_CACHE = new Map();
@@ -1546,7 +1548,14 @@ export default function JobsView({
     if (draftEdits[jobKey] && draftEdits[jobKey][fieldKey] !== undefined) {
       return draftEdits[jobKey][fieldKey];
     }
-    return parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
+    const raw = parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
+    if ((fieldKey === "revenue" || fieldKey === "directCosts") && raw !== "" && raw !== null && raw !== undefined) {
+      return formatCurrency(raw);
+    }
+    if (fieldKey === "likelihood" && raw !== "" && raw !== null && raw !== undefined) {
+      return formatLikelihood(raw);
+    }
+    return raw;
   };
 
   // Helper to extract parsed Date Confirmed timestamp for a job on Confirmed tab
@@ -1655,6 +1664,8 @@ export default function JobsView({
       let val = currentDraft[fieldKey];
       if (meta.isDate && val) {
         val = toSheetDateFormat(val);
+      } else if (fieldKey === "likelihood") {
+        val = normalizeLikelihoodInput(val);
       }
       updates.push({
         colLetter: meta.colLetter,
@@ -1813,7 +1824,8 @@ export default function JobsView({
       }
 
       const currentDraft = draftEdits[jobKey] || {};
-      const targetLikelihood = optionalLikelihood || currentDraft.likelihood;
+      const rawTargetLikelihood = optionalLikelihood || currentDraft.likelihood;
+      const targetLikelihood = rawTargetLikelihood ? normalizeLikelihoodInput(rawTargetLikelihood) : "";
 
       const payload = {
         clientSheetId: jobsClient.clientSheetId,
@@ -2170,9 +2182,9 @@ export default function JobsView({
       jobName: newJobName,
       projectRetainer: isRetainer ? "Retainer" : "Project",
       status: "Confirmed",
-      likelihood: "100",
-      revenue: numRevenue !== "" ? numRevenue : "0",
-      directCosts: numDirectCosts !== "" ? numDirectCosts : "0",
+      likelihood: "100%",
+      revenue: numRevenue !== "" ? (parseFloat(numRevenue) || 0).toFixed(2) : "0.00",
+      directCosts: numDirectCosts !== "" ? (parseFloat(numDirectCosts) || 0).toFixed(2) : "0.00",
       startDate: toInputDateFormat(startDateVal),
       endDate: hasNoEndDate ? "" : toInputDateFormat(endDateVal),
       noEndDate: hasNoEndDate,
@@ -2213,9 +2225,9 @@ export default function JobsView({
       jobName: renewalName,
       projectRetainer: "Retainer",
       status: "Pipeline",
-      likelihood: "50",
-      revenue: numRevenue !== "" ? numRevenue : "0",
-      directCosts: numDirectCosts !== "" ? numDirectCosts : "0",
+      likelihood: "50%",
+      revenue: numRevenue !== "" ? (parseFloat(numRevenue) || 0).toFixed(2) : "0.00",
+      directCosts: numDirectCosts !== "" ? (parseFloat(numDirectCosts) || 0).toFixed(2) : "0.00",
       startDate: dates.startDateISO,
       endDate: dates.endDateISO,
       noEndDate: false,
@@ -2313,6 +2325,8 @@ export default function JobsView({
       let val = currentDraft[fieldKey];
       if (meta.isDate && val) {
         val = toSheetDateFormat(val);
+      } else if (fieldKey === "likelihood") {
+        val = normalizeLikelihoodInput(val);
       }
       updates.push({
         colLetter: meta.colLetter,
@@ -2391,6 +2405,9 @@ export default function JobsView({
               if (FIELD_MAP[f]?.isDate && nextVal) nextVal = toSheetDateFormat(nextVal);
               if ((f === "revenue" || f === "directCosts") && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
                 nextVal = formatCurrency(nextVal);
+              }
+              if (f === "likelihood" && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
+                nextVal = normalizeLikelihoodInput(nextVal);
               }
               if (rIdx === 0 || f === "client" || f === "jobName") {
                 nextRow[f] = nextVal;
@@ -2760,6 +2777,7 @@ export default function JobsView({
   };
 
   const handleLegacyInlineUpdate = async (colLetter, rowNum, newValue) => {
+    const effectiveValue = colLetter === "AN" ? normalizeLikelihoodInput(newValue) : newValue;
     let targetEndClient = "";
     let targetJobName = "";
     if (jobsData) {
@@ -2797,7 +2815,7 @@ export default function JobsView({
           if (colLetter === "AJ") updated.projectRetainer = newValue;
           if (colLetter === "AL") updated.startDate = newValue;
           if (colLetter === "AM") updated.endDate = newValue;
-          if (colLetter === "AN") updated.likelihood = newValue;
+          if (colLetter === "AN") updated.likelihood = effectiveValue;
           if (colLetter === "DD") updated.copiedToConf = newValue;
           if (colLetter === "D") updated.dateConf = newValue;
           if (colLetter === "E") updated.leadSrc = newValue;
@@ -2822,7 +2840,7 @@ export default function JobsView({
           fieldName,
           endClientName: targetEndClient,
           jobName: targetJobName,
-          value: newValue
+          value: effectiveValue
         })
       });
       const inlineData = await inlineRes.json().catch(() => ({}));
@@ -4342,6 +4360,12 @@ export default function JobsView({
                                       onBlur={(e) => {
                                         e.target.style.background = "transparent";
                                         e.target.style.borderColor = isDirty && draftEdits[jobKey]?.revenue !== undefined ? "#f59e0b" : "transparent";
+                                        if (draftEdits[jobKey]?.revenue !== undefined) {
+                                          const fmt = formatCurrency(e.target.value);
+                                          if (fmt && fmt !== draftEdits[jobKey].revenue) {
+                                            handleDraftFieldChange(job, "revenue", fmt);
+                                          }
+                                        }
                                       }}
                                     />
                                   </div>
@@ -4426,6 +4450,12 @@ export default function JobsView({
                                     onBlur={(e) => {
                                       e.target.style.background = "transparent";
                                       e.target.style.borderColor = isDirty && draftEdits[jobKey]?.directCosts !== undefined ? "#f59e0b" : "transparent";
+                                      if (draftEdits[jobKey]?.directCosts !== undefined) {
+                                        const fmt = formatCurrency(e.target.value);
+                                        if (fmt && fmt !== draftEdits[jobKey].directCosts) {
+                                          handleDraftFieldChange(job, "directCosts", fmt);
+                                        }
+                                      }
                                     }}
                                   />
                                   {isConfirmed && metrics.directCosts > 0 && (
@@ -4599,6 +4629,12 @@ export default function JobsView({
                                     onBlur={(e) => {
                                       e.target.style.background = isConfirmed && (draftEdits[jobKey]?.likelihood === undefined || draftEdits[jobKey]?.likelihood === "100%") ? "#f0fdf4" : "transparent";
                                       e.target.style.borderColor = isDirty && draftEdits[jobKey]?.likelihood !== undefined ? "#f59e0b" : "transparent";
+                                      if (draftEdits[jobKey]?.likelihood !== undefined) {
+                                        const fmt = normalizeLikelihoodInput(e.target.value);
+                                        if (fmt && fmt !== draftEdits[jobKey].likelihood) {
+                                          handleDraftFieldChange(job, "likelihood", fmt);
+                                        }
+                                      }
                                     }}
                                   />
                                 </td>
@@ -4759,6 +4795,14 @@ export default function JobsView({
                                                 type="text"
                                                 value={likelihoodVal !== undefined && likelihoodVal !== "" ? likelihoodVal : (isConfirmed ? "100%" : "")}
                                                 onChange={(e) => handleDraftFieldChange(job, "likelihood", e.target.value)}
+                                                onBlur={(e) => {
+                                                  if (draftEdits[jobKey]?.likelihood !== undefined) {
+                                                    const fmt = normalizeLikelihoodInput(e.target.value);
+                                                    if (fmt && fmt !== draftEdits[jobKey].likelihood) {
+                                                      handleDraftFieldChange(job, "likelihood", fmt);
+                                                    }
+                                                  }
+                                                }}
                                                 onKeyDown={(e) => handleFieldKeyDown(e, job, "likelihood")}
                                                 placeholder={isConfirmed ? "100%" : "50%"}
                                                 title={isConfirmed ? "Confirmed (100%). Change to <100% and save to unconfirm." : "Pipeline likelihood. Change to 100% and save to confirm."}
@@ -6227,7 +6271,7 @@ export default function JobsView({
                                 {jobsTab === "Pipeline" && (
                                   <>
                                     <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                      {showFields && <LegacyEditableCell value={r.likelihood} colLetter="AN" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} title={crmWarningTitle} />}
+                                      {showFields && <LegacyEditableCell value={r.likelihood ? formatLikelihood(r.likelihood) : ""} colLetter="AN" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} title={crmWarningTitle} />}
                                     </td>
                                     <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                       {showFields && (

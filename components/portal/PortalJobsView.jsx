@@ -27,7 +27,9 @@ import {
   isNoEndDateSentinel,
   generateDuplicateJobName,
   generateRenewalJobName,
-  calculateRenewalDates
+  calculateRenewalDates,
+  formatLikelihood,
+  normalizeLikelihoodInput
 } from "../../utils/helpers";
 import { parseSplitString, formatSplitString, extractSplitMonths } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
@@ -492,7 +494,7 @@ export default function PortalJobsView({
   }, [filteredJobs, currentPage, pageSize]);
 
   const formatGBP = (val) => {
-    return formatMoney(val, 0, currencySymbol, thousandsSeparator);
+    return formatMoney(val, 2, currencySymbol, thousandsSeparator);
   };
 
   const normalizeAmount = (val) => {
@@ -500,7 +502,7 @@ export default function PortalJobsView({
     const s = String(val).trim();
     if (!s || s === "—" || s === "-") return "";
     const num = parseMoney(s, thousandsSeparator);
-    return formatMoney(num, 0, currencySymbol, thousandsSeparator);
+    return formatMoney(num, 2, currencySymbol, thousandsSeparator);
   };
 
   const isClientJobCosting = Boolean(data?.isJobCosting);
@@ -554,10 +556,10 @@ export default function PortalJobsView({
       extCostsNum,
       propSuccFeeAmt,
       totalDcNum,
-      totalRevFormatted: formatMoney(Math.round(totalRevNum), 0, currencySymbol, thousandsSeparator),
-      equivContractorFormatted: formatMoney(Math.round(equivContractorCosts), 0, currencySymbol, thousandsSeparator),
-      propSuccFeeAmtFormatted: formatMoney(Math.round(propSuccFeeAmt), 0, currencySymbol, thousandsSeparator),
-      totalDcFormatted: formatMoney(Math.round(totalDcNum), 0, currencySymbol, thousandsSeparator),
+      totalRevFormatted: formatMoney(totalRevNum, 2, currencySymbol, thousandsSeparator),
+      equivContractorFormatted: formatMoney(equivContractorCosts, 2, currencySymbol, thousandsSeparator),
+      propSuccFeeAmtFormatted: formatMoney(propSuccFeeAmt, 2, currencySymbol, thousandsSeparator),
+      totalDcFormatted: formatMoney(totalDcNum, 2, currencySymbol, thousandsSeparator),
     };
   };
 
@@ -675,7 +677,7 @@ export default function PortalJobsView({
       const parsedPureFee = parseMoney(rawPureFee, thousandsSeparator);
       const formattedPureFee =
         String(rawPureFee ?? "").trim() !== "" && !isNaN(parsedPureFee)
-          ? formatMoney(parsedPureFee, 0, currencySymbol, thousandsSeparator)
+          ? formatMoney(parsedPureFee, 2, currencySymbol, thousandsSeparator)
           : String(rawPureFee ?? "");
       return {
         ...next,
@@ -701,10 +703,10 @@ export default function PortalJobsView({
       jobName: "",
       projectRetainer: "Project",
       likelihood: "",
-      revenue: `${currencySymbol}0`,
-      directCosts: `${currencySymbol}0`,
+      revenue: formatMoney(0, 2, currencySymbol, thousandsSeparator),
+      directCosts: formatMoney(0, 2, currencySymbol, thousandsSeparator),
       isJobCosting: isClientJobCosting,
-      jobRevenue: `${currencySymbol}0`,
+      jobRevenue: formatMoney(0, 2, currencySymbol, thousandsSeparator),
       rechargedExpenses: "",
       fixedVariable: "Fixed",
       contractorCosts: "",
@@ -748,6 +750,7 @@ export default function PortalJobsView({
     const jobIsJobCosting = Boolean(job?.isJobCosting || isClientJobCosting);
     setEditingJob({
       ...job,
+      likelihood: job?.likelihood ? formatLikelihood(job.likelihood) : (String(job?.type || "").toLowerCase() === "confirmed" ? "100%" : "50%"),
       isJobCosting: jobIsJobCosting,
       jobRevenue: normalizeAmount(job?.jobRevenue || job?.revenue),
       rechargedExpenses: normalizeAmount(job?.rechargedExpenses),
@@ -1184,8 +1187,9 @@ export default function PortalJobsView({
     }, 0);
 
     const isRetainerJob = String(editingJob?.projectRetainer || "").toLowerCase() === "retainer";
-    const parsedLikelihoodNum = parseFloat(String(editingJob?.likelihood || "").replace(/[%,\s]/g, ""));
-    const isLikelihood100 = !isNaN(parsedLikelihoodNum) && (parsedLikelihoodNum >= 100 || (parsedLikelihoodNum === 1 && String(editingJob?.likelihood).includes("1")));
+    const rawLikelihoodStr = String(editingJob?.likelihood || "").trim();
+    const parsedLikelihoodNum = parseFloat(rawLikelihoodStr.replace(/[%,\s]/g, ""));
+    const isLikelihood100 = !isNaN(parsedLikelihoodNum) && (parsedLikelihoodNum >= 100 || (!rawLikelihoodStr.includes("%") && rawLikelihoodStr === "1"));
     const isTargetConfirmedJob = String(editingJob?.type || "").toLowerCase() === "confirmed" || isLikelihood100;
 
     // Over-allocation check (invoices) - skip for Retainers where parent revenue is the monthly fee
@@ -1254,8 +1258,15 @@ export default function PortalJobsView({
       costMonth: rechActiveOnSave && (parseMoney(inv.ofWhichRechgd, thousandsSeparator) || 0) > 0 ? (inv.costMonth || "") : "",
     }));
 
+    const normalizedLikelihoodForSave = isTargetConfirmedJob
+      ? "100%"
+      : (normalizeLikelihoodInput(editingJob.likelihood) || "50%");
+
     const jobToSave = {
       ...editingJob,
+      likelihood: normalizedLikelihoodForSave,
+      revenue: normalizeAmount(editingJob.revenue) || editingJob.revenue,
+      directCosts: normalizeAmount(editingJob.directCosts) || editingJob.directCosts,
       rechargedExpenses: rechActiveOnSave ? (editingJob.rechargedExpenses || "") : "",
       invoices: sanitizedInvoicesForSave,
       endDate: resolvedEndDateForSave,
@@ -1335,9 +1346,9 @@ export default function PortalJobsView({
       j.client || "",
       j.jobName || "",
       j.projectRetainer || "",
-      j.revenue || "",
-      j.directCosts || "",
-      j.likelihood || "",
+      j.revenue ? formatGBP(j.revenue) : "",
+      j.directCosts ? formatGBP(j.directCosts) : "",
+      formatLikelihood(j.likelihood) || "",
       formatDateDdMmmYy(j.startDate),
       formatDateDdMmmYy(j.endDate),
       j.productLine || "",
@@ -1814,7 +1825,7 @@ export default function PortalJobsView({
                             color: isConfirmed ? "#166534" : "#b45309",
                           }}
                         >
-                          {job.likelihood || (isConfirmed ? "100%" : "50%")}
+                          {formatLikelihood(job.likelihood) || (isConfirmed ? "100%" : "50%")}
                         </span>
                       </td>
                     </tr>
@@ -2098,7 +2109,7 @@ export default function PortalJobsView({
                       <label style={formLabelStyle}>% Likelihood</label>
                       <input
                         type="text"
-                        value={editingJob.likelihood || (editingJob.type === "Confirmed" ? "100%" : "50%")}
+                        value={editingJob.type === "Confirmed" ? "100%" : (editingJob.likelihood !== undefined ? editingJob.likelihood : "50%")}
                         disabled={isReadOnly || isEditingCrmDeal || editingJob.type === "Confirmed"}
                         title={crmLockedTooltip}
                         onChange={(e) => {
@@ -2113,6 +2124,25 @@ export default function PortalJobsView({
                             setEditingJob({ ...editingJob, likelihood: "100%", type: "Confirmed" });
                           } else {
                             setEditingJob({ ...editingJob, likelihood: val });
+                          }
+                        }}
+                        onBlur={(e) => {
+                          if (isEditingCrmDeal || editingJob.type === "Confirmed") return;
+                          const raw = String(e.target.value || "").trim();
+                          if (!raw) {
+                            setEditingJob((prev) => prev ? { ...prev, likelihood: "50%" } : prev);
+                            return;
+                          }
+                          const normalized = normalizeLikelihoodInput(raw);
+                          const num = parseFloat(String(normalized).replace(/[%,\s]/g, ""));
+                          if (!isNaN(num) && num >= 100) {
+                            if (isEditingCrmPipelineDeal) {
+                              setSaveError(`CRM pipeline deals cannot be manually promoted to confirmed. This must be updated directly in ${crmDisplayName}.`);
+                              return;
+                            }
+                            setEditingJob((prev) => prev ? { ...prev, likelihood: "100%", type: "Confirmed" } : prev);
+                          } else {
+                            setEditingJob((prev) => prev ? { ...prev, likelihood: normalized } : prev);
                           }
                         }}
                         style={{
@@ -2194,6 +2224,10 @@ export default function PortalJobsView({
                               title={crmLockedTooltip}
                               value={editingJob.jobRevenue ?? editingJob.revenue ?? ""}
                               onChange={(e) => updateJobCostingField({ jobRevenue: e.target.value })}
+                              onBlur={(e) => {
+                                const fmt = normalizeAmount(e.target.value);
+                                if (fmt) updateJobCostingField({ jobRevenue: fmt });
+                              }}
                               style={getCrmInputStyle(false)}
                             />
                             <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
@@ -2336,7 +2370,7 @@ export default function PortalJobsView({
                     const stdRechActive = editingJob.type === "Confirmed" && isRechargedActiveForJob(editingJob);
                     const stdRevNum = parseMoney(editingJob.revenue, thousandsSeparator) || 0;
                     const stdRechNum = stdRechActive ? (parseMoney(editingJob.rechargedExpenses, thousandsSeparator) || 0) : 0;
-                    const stdTotalBillable = formatMoney(stdRevNum + stdRechNum, 0, currencySymbol, thousandsSeparator);
+                    const stdTotalBillable = formatMoney(stdRevNum + stdRechNum, 2, currencySymbol, thousandsSeparator);
                     return (
                     <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: stdRechActive ? "2fr 2fr 2fr 2fr 1fr 2fr" : "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
                       <div title={crmLockedTooltip}>
@@ -2348,6 +2382,10 @@ export default function PortalJobsView({
                           title={crmLockedTooltip}
                           value={editingJob.revenue || ""}
                           onChange={(e) => setEditingJob({ ...editingJob, revenue: e.target.value })}
+                          onBlur={(e) => {
+                            const fmt = normalizeAmount(e.target.value);
+                            if (fmt) setEditingJob((prev) => prev ? { ...prev, revenue: fmt } : prev);
+                          }}
                           style={getCrmInputStyle(false)}
                         />
                         <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
@@ -2362,7 +2400,7 @@ export default function PortalJobsView({
                               type="text"
                               disabled={isReadOnly}
                               value={editingJob.rechargedExpenses || ""}
-                              placeholder={`${currencySymbol}0`}
+                              placeholder={`${currencySymbol}0.00`}
                               onChange={(e) => setEditingJob({ ...editingJob, rechargedExpenses: e.target.value })}
                               onBlur={(e) => setEditingJob((prev) => applyRechargedSmartAllocation(prev, e.target.value))}
                               style={formInputStyle}
@@ -2389,6 +2427,10 @@ export default function PortalJobsView({
                           title={crmLockedTooltip}
                           value={editingJob.directCosts || ""}
                           onChange={(e) => setEditingJob({ ...editingJob, directCosts: e.target.value })}
+                          onBlur={(e) => {
+                            const fmt = normalizeAmount(e.target.value);
+                            if (fmt) setEditingJob((prev) => prev ? { ...prev, directCosts: fmt } : prev);
+                          }}
                           style={getCrmInputStyle(false)}
                         />
                       </div>

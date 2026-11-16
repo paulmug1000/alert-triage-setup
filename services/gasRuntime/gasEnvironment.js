@@ -438,7 +438,9 @@ async function resolveBrokerTokenInProcess(ctx, toolRaw) {
               return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn || 1800 };
             }
             const refreshFn = normalizedTool === "xero" ? refreshXeroTokens : OAUTH_REFRESHERS[normalizedTool];
-            const refreshed = await refreshFn(refreshTokenToUse);
+            const refreshed = normalizedTool === "excel"
+              ? await refreshExcelTokens(refreshTokenToUse, record.metadata?.azureTenantId)
+              : await refreshFn(refreshTokenToUse);
             await updateRefreshedTokens({ clientKey: record.clientKey, tool: normalizedTool, tokens: refreshed });
             const defaultExp = normalizedTool === "xero" || normalizedTool === "hubspot" ? 1800 : 3600;
             return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn || defaultExp };

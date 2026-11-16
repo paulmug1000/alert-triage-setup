@@ -2350,8 +2350,23 @@ export function formatLikelihood(val) {
   if (s.endsWith("%")) return s;
   const num = parseFloat(s);
   if (isNaN(num)) return s;
-  const pct = num <= 1 ? Math.round(num * 100) : Math.round(num);
-  return `${pct}%`;
+  const pct = num <= 1 ? num * 100 : num;
+  const rounded = Math.round(pct * 100) / 100;
+  return `${rounded}%`;
+}
+
+export function normalizeLikelihoodInput(val) {
+  if (val === null || val === undefined) return "";
+  const s = String(val).trim();
+  if (!s) return "";
+  if (s.startsWith("=")) return s;
+  const hasPct = s.includes("%");
+  const clean = s.replace(/[%,\s]/g, "");
+  const num = parseFloat(clean);
+  if (isNaN(num)) return s;
+  const pct = !hasPct && num > 0 && num < 1 && clean.includes(".") ? num * 100 : num;
+  const rounded = Math.round(pct * 100) / 100;
+  return `${rounded}%`;
 }
 
 export function isLikelihoodZero(val) {

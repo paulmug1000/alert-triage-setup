@@ -73,10 +73,13 @@ export default async function handler(req, res) {
     const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
     const redirectUri = `${proto}://${host}/api/integrations/excel/callback`;
 
+    const azureTenantId = statePayload?.azureTenantId || "";
+
     // 3. Exchange authorization code for tokens
     const tokens = await exchangeExcelCodeForTokens({
       code,
-      redirectUri
+      redirectUri,
+      tenantId: azureTenantId || "common"
     });
 
     // 4. Fetch user profile from Microsoft Graph
@@ -111,9 +114,13 @@ export default async function handler(req, res) {
         const separator = returnUrl.includes("?") ? "&" : "?";
         const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
         const pendingUrl = `&url=${encodeURIComponent(statePayload.url)}`;
-        const helpfulMsg = accessErr.message || (userEmail
-          ? `Your Microsoft 365 account (${userEmail}) does not have permission to access the specified Excel spreadsheet on SharePoint/OneDrive. Please ensure the file is shared with ${userEmail} or sign in with an account that has access.`
-          : `The Microsoft 365 account you signed in with does not have permission to access the specified Excel spreadsheet.`);
+        const helpfulMsg = accessErr.message
+          ? (userEmail && !accessErr.message.includes(userEmail)
+              ? `${accessErr.message} (Signed-in Microsoft 365 account: ${userEmail})`
+              : accessErr.message)
+          : (userEmail
+              ? `Your Microsoft 365 account (${userEmail}) does not have permission to access the specified Excel spreadsheet on SharePoint/OneDrive. Please ensure the file is shared with ${userEmail} or sign in with an account that has access.`
+              : `The Microsoft 365 account you signed in with does not have permission to access the specified Excel spreadsheet.`);
         return res.redirect(`${returnUrl}${separator}integration=excel&status=error&error=file_access_denied&message=${encodeURIComponent(helpfulMsg)}${clientParam}${pendingUrl}`);
       }
     }
@@ -130,6 +137,7 @@ export default async function handler(req, res) {
         displayName,
         accountName: accountLabel,
         tenantName: accountLabel,
+        azureTenantId,
         url: statePayload?.url || "",
         driveId: inspectData?.driveId || "",
         fileId: inspectData?.fileId || ""

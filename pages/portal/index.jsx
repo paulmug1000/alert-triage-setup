@@ -899,39 +899,65 @@ export default function PortalPage({
     await logout();
   };
 
-  // Fetch detailed setup status only when the client is in setupMode or an admin is previewing setup
+  const lastSetupStatusClientRef = useRef(null);
+
+  // Fetch detailed setup status (immediately for setupMode/preview, and lazily in background for live clients to populate profile menu tool indicators)
   useEffect(() => {
     if (!selectedClient?.clientName) {
+      lastSetupStatusClientRef.current = null;
       setSetupStatus(null);
       return;
     }
 
-    if (!selectedClient.setupMode && !isPreviewSetup) {
-      setSetupStatus((prev) => (prev?.setupMode === false ? prev : { setupMode: false }));
-      setLoadingSetupStatus(false);
-      return;
-    }
-
     if (selectedClient.setupStatus && !isPreviewSetup) {
+      lastSetupStatusClientRef.current = selectedClient.clientName;
       setSetupStatus(selectedClient.setupStatus);
       setLoadingSetupStatus(false);
       return;
     }
 
-    let isMounted = true;
-    setLoadingSetupStatus(true);
-    fetch(`/api/setup/status?clientName=${encodeURIComponent(selectedClient.clientName)}&masterSheetId=${encodeURIComponent(selectedClient.masterSheetId || "")}&clientSheetId=${encodeURIComponent(selectedClient.clientSheetId || "")}`)
-      .then(r => r.json())
-      .then(d => {
-        if (isMounted && d.success && d.status) {
-          setSetupStatus(d.status);
-        }
-      })
-      .catch(e => console.error("Setup status check note:", e))
-      .finally(() => {
-        if (isMounted) setLoadingSetupStatus(false);
-      });
+    const isLiveOnly = !selectedClient.setupMode && !isPreviewSetup;
+    const clientChanged = lastSetupStatusClientRef.current !== selectedClient.clientName;
+    lastSetupStatusClientRef.current = selectedClient.clientName;
 
+    if (isLiveOnly) {
+      setSetupStatus((prev) => (!clientChanged && prev?.setupMode === false ? prev : { setupMode: false }));
+      setLoadingSetupStatus(false);
+    } else {
+      setLoadingSetupStatus(true);
+    }
+
+    let isMounted = true;
+    const targetClientName = selectedClient.clientName;
+    const targetMasterSheetId = selectedClient.masterSheetId || "";
+    const targetClientSheetId = selectedClient.clientSheetId || "";
+
+    const fetchSetupStatus = () => {
+      fetch(`/api/setup/status?clientName=${encodeURIComponent(targetClientName)}&masterSheetId=${encodeURIComponent(targetMasterSheetId)}&clientSheetId=${encodeURIComponent(targetClientSheetId)}`)
+        .then(r => r.json())
+        .then(d => {
+          if (isMounted && d.success && d.status) {
+            setSetupStatus(d.status);
+          }
+        })
+        .catch(e => console.error("Setup status check note:", e))
+        .finally(() => {
+          if (isMounted && !isLiveOnly) {
+            setLoadingSetupStatus(false);
+          }
+        });
+    };
+
+    if (isLiveOnly) {
+      // Defer slightly on live clients so initial dashboard payload/paint is never contested
+      const timerId = setTimeout(fetchSetupStatus, 350);
+      return () => {
+        isMounted = false;
+        clearTimeout(timerId);
+      };
+    }
+
+    fetchSetupStatus();
     return () => { isMounted = false; };
   }, [selectedClient?.clientName, selectedClient?.masterSheetId, selectedClient?.clientSheetId, selectedClient?.setupMode, selectedClient?.setupStatus, isPreviewSetup]);
 

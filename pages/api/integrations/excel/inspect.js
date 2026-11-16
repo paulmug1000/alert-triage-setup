@@ -55,7 +55,7 @@ export default async function handler(req, res) {
           try {
             const { refreshExcelTokens } = await import("../../../../services/excelIntegrationService.js");
             const { updateRefreshedTokens } = await import("../../../../services/vaultService.js");
-            const refreshed = await refreshExcelTokens(grant.tokens.refreshToken);
+            const refreshed = await refreshExcelTokens(grant.tokens.refreshToken, grant.metadata?.azureTenantId);
             await updateRefreshedTokens({
               clientKey,
               tool: "excel",

@@ -627,7 +627,10 @@ export default async function handler(req, res) {
               if (latestExpiresIn >= 300) {
                 return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
               }
-              const refreshed = await refreshExcelTokens(latest?.tokens?.refreshToken || record.tokens.refreshToken);
+              const refreshed = await refreshExcelTokens(
+                latest?.tokens?.refreshToken || record.tokens.refreshToken,
+                latest?.metadata?.azureTenantId || record.metadata?.azureTenantId
+              );
               await updateRefreshedTokens({
                 clientKey: record.clientKey,
                 tool: "excel",

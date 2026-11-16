@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import Spinner from "../Spinner";
+import DeferredSearchInput from "../DeferredSearchInput";
 
 export default function CompanyChooser({
   clients = [],
@@ -115,11 +116,13 @@ export default function CompanyChooser({
           {/* Optional search filter if more than 4 clients */}
           {clients.length > 4 && (
             <div style={{ marginBottom: "1.5rem" }}>
-              <input
+              <DeferredSearchInput
                 type="text"
                 placeholder="Search company..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
+                showClearButton
+                spinnerColor="#0047AB"
                 style={{
                   width: "100%",
                   padding: "0.75rem 1rem",

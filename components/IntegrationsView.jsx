@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaIntegrationsSkeleton } from "./Skeleton";
 import GoogleSheetLinkModal from "./integrations/GoogleSheetLinkModal";
 import ExcelLinkModal from "./integrations/ExcelLinkModal";
@@ -1006,11 +1007,12 @@ export default function IntegrationsView({
         >
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: "260px" }}>
             <span style={{ fontSize: "15px" }}>🔍</span>
-            <input
+            <DeferredSearchInput
               type="text"
               placeholder={isAdmin ? "Search clients by name, accounting tool, CRM, or sheet ID..." : "Search clients by name, accounting tool, or CRM..."}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
+              wrapperStyle={{ flex: 1 }}
               style={{
                 width: "100%",
                 padding: "7px 12px",

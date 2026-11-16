@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import { stripCurrency, isPlaceholderInvoice, isDraftInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus, calculatePaymentDate, sanitizeSpreadsheetTerms } from "../utils/helpers";
 import InvoiceCostMonthControl from "./InvoiceCostMonthControl";
 import { extractSplitMonths } from "../services/splitHelper";
@@ -695,11 +696,12 @@ export default function InvoicesEditModal({
             </div>
 
             <div style={{ marginBottom: "12px" }}>
-              <input
+              <DeferredSearchInput
                 type="text"
                 placeholder="Search jobs by name, client, or code..."
                 value={jobSearch}
                 onChange={e => setJobSearch(e.target.value)}
+                showClearButton
                 style={{ ...inputStyle, padding: "8px 12px" }}
                 autoFocus
               />

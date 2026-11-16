@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaJobsTableSkeleton } from "./Skeleton";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
@@ -34,12 +35,21 @@ import {
   calculateRenewalDates
 } from "../utils/helpers";
 
-export const parseSheetDate = (dStr) => {
+const SHEET_DATE_TS_CACHE = new Map();
+const SHEET_MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+const parseSheetDateToTs = (dStr) => {
   if (!dStr) return null;
-  if (isNoEndDateSentinel(dStr)) return new Date(2050, 11, 31);
-  if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
+  if (isNoEndDateSentinel(dStr)) return new Date(2050, 11, 31).getTime();
+  if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr.getTime();
   const s = String(dStr).trim();
-  const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  if (!s) return null;
+
+  if (SHEET_DATE_TS_CACHE.has(s)) {
+    return SHEET_DATE_TS_CACHE.get(s);
+  }
+
+  let ts = null;
 
   // 1. ISO format: YYYY-MM-DD
   const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
@@ -47,41 +57,58 @@ export const parseSheetDate = (dStr) => {
     const yr = parseInt(isoMatch[1], 10);
     const mIdx = parseInt(isoMatch[2], 10) - 1;
     const day = parseInt(isoMatch[3], 10);
-    return new Date(yr, mIdx, day);
-  }
-
-  // 2. DD-Mon-YY or DD-Mon-YYYY
-  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-  if (m) {
-    const mIdx = months[m[2].toLowerCase()];
-    if (mIdx !== undefined) {
-      let yr = parseInt(m[3], 10);
-      if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
-      return new Date(yr, mIdx, parseInt(m[1], 10));
+    const d = new Date(yr, mIdx, day);
+    ts = isNaN(d.getTime()) ? null : d.getTime();
+  } else {
+    // 2. DD-Mon-YY or DD-Mon-YYYY
+    const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+    if (m) {
+      const mIdx = SHEET_MONTHS_MAP[m[2].toLowerCase()];
+      if (mIdx !== undefined) {
+        let yr = parseInt(m[3], 10);
+        if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+        const d = new Date(yr, mIdx, parseInt(m[1], 10));
+        ts = isNaN(d.getTime()) ? null : d.getTime();
+      }
+    } else {
+      // 3. Mon-YY or Mon-YYYY
+      const myMatch = s.match(/^([A-Za-z]{3})[-/\s](\d{2,4})$/);
+      if (myMatch) {
+        const mIdx = SHEET_MONTHS_MAP[myMatch[1].toLowerCase()];
+        if (mIdx !== undefined) {
+          let yr = parseInt(myMatch[2], 10);
+          if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+          const d = new Date(yr, mIdx, 1);
+          ts = isNaN(d.getTime()) ? null : d.getTime();
+        }
+      } else {
+        // 4. DD/MM/YYYY, DD-MM-YYYY, or DD.MM.YYYY
+        const slashMatch = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
+        if (slashMatch) {
+          let yr = parseInt(slashMatch[3], 10);
+          if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+          const d = new Date(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
+          ts = isNaN(d.getTime()) ? null : d.getTime();
+        } else {
+          const d = new Date(s);
+          ts = isNaN(d.getTime()) ? null : d.getTime();
+        }
+      }
     }
   }
 
-  // 3. Mon-YY or Mon-YYYY
-  const myMatch = s.match(/^([A-Za-z]{3})[-/\s](\d{2,4})$/);
-  if (myMatch) {
-    const mIdx = months[myMatch[1].toLowerCase()];
-    if (mIdx !== undefined) {
-      let yr = parseInt(myMatch[2], 10);
-      if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
-      return new Date(yr, mIdx, 1);
-    }
+  if (SHEET_DATE_TS_CACHE.size > 5000) {
+    SHEET_DATE_TS_CACHE.clear();
   }
+  SHEET_DATE_TS_CACHE.set(s, ts);
+  return ts;
+};
 
-  // 4. DD/MM/YYYY, DD-MM-YYYY, or DD.MM.YYYY
-  const slashMatch = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
-  if (slashMatch) {
-    let yr = parseInt(slashMatch[3], 10);
-    if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
-    return new Date(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
-  }
-
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
+export const parseSheetDate = (dStr) => {
+  if (!dStr) return null;
+  if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
+  const ts = parseSheetDateToTs(dStr);
+  return ts === null ? null : new Date(ts);
 };
 
 export const addMonths = (baseDate, n) => {
@@ -255,22 +282,14 @@ export const getStatusPill = (status) => {
   return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
 };
 
-/**
- * Searches across ALL parts of a job, including:
- * - Client name, job name, project code, product line, lead source, type, dates, likelihood
- * - Revenues, direct costs, VAT, left to invoice, costs outstanding, row numbers, notes
- * - All invoice slots (references / invoice numbers, amounts, dates, days to pay, status, notes)
- * - All expense slots (descriptions, transaction IDs / expense IDs, amounts, dates, VAT, status, notes)
- * - In-flight draft edits (unsaved values)
- */
-export const isJobMatchSearch = (job, query, draftEdits = {}) => {
-  if (!query || !query.trim()) return true;
-  if (!job) return false;
+const JOB_BASE_SEARCH_TEXT_CACHE = new WeakMap();
 
-  const q = query.toLowerCase().trim();
-  const searchTokens = q.split(/\s+/).filter(Boolean);
+const getJobBaseSearchText = (job) => {
+  if (!job || typeof job !== "object") return "";
+  const cached = JOB_BASE_SEARCH_TEXT_CACHE.get(job);
+  if (cached !== undefined) return cached;
+
   const parts = [];
-
   const add = (val) => {
     if (val !== null && val !== undefined) {
       const s = String(val).trim();
@@ -286,13 +305,6 @@ export const isJobMatchSearch = (job, query, draftEdits = {}) => {
   add(job.tabName);
   add(job.note);
   add(job.id);
-
-  // In-memory draft edits for this job if any
-  const jobKey = job.id || (job.rows?.[0] ? `${(job.tabName || job.rows[0].tabName || "").toLowerCase()}_${job.rows[0].rowNum}` : null);
-  if (jobKey && draftEdits[jobKey]) {
-    const draft = draftEdits[jobKey];
-    Object.values(draft).forEach(add);
-  }
 
   // Iterate over all rows and nested invoice/expense slots
   if (Array.isArray(job.rows)) {
@@ -325,7 +337,43 @@ export const isJobMatchSearch = (job, query, draftEdits = {}) => {
     });
   }
 
-  const combinedText = parts.join(" ");
+  const combined = parts.join(" ");
+  JOB_BASE_SEARCH_TEXT_CACHE.set(job, combined);
+  return combined;
+};
+
+/**
+ * Searches across ALL parts of a job, including:
+ * - Client name, job name, project code, product line, lead source, type, dates, likelihood
+ * - Revenues, direct costs, VAT, left to invoice, costs outstanding, row numbers, notes
+ * - All invoice slots (references / invoice numbers, amounts, dates, days to pay, status, notes)
+ * - All expense slots (descriptions, transaction IDs / expense IDs, amounts, dates, VAT, status, notes)
+ * - In-flight draft edits (unsaved values)
+ */
+export const isJobMatchSearch = (job, query, draftEdits = {}) => {
+  if (!query || !query.trim()) return true;
+  if (!job) return false;
+
+  const q = query.toLowerCase().trim();
+  const searchTokens = q.split(/\s+/).filter(Boolean);
+  let combinedText = getJobBaseSearchText(job);
+
+  // In-memory draft edits for this job if any
+  if (draftEdits) {
+    const jobKey = job.id || (job.rows?.[0] ? `${(job.tabName || job.rows[0].tabName || "").toLowerCase()}_${job.rows[0].rowNum}` : null);
+    if (jobKey && draftEdits[jobKey]) {
+      const draftParts = [];
+      Object.values(draftEdits[jobKey]).forEach((val) => {
+        if (val !== null && val !== undefined) {
+          const s = String(val).trim();
+          if (s) draftParts.push(s.toLowerCase());
+        }
+      });
+      if (draftParts.length > 0) {
+        combinedText = combinedText ? `${combinedText} ${draftParts.join(" ")}` : draftParts.join(" ");
+      }
+    }
+  }
 
   // Direct substring match or all search tokens present
   if (combinedText.includes(q)) return true;
@@ -364,25 +412,44 @@ export const textMatchesQuery = (text, query) => {
   return s.includes(q) || tokens.some((t) => s.includes(t));
 };
 
+const HIGHLIGHT_REGEX_CACHE = new Map();
+
+const getHighlightMatchers = (query) => {
+  const q = query.trim();
+  if (!q) return null;
+  let cached = HIGHLIGHT_REGEX_CACHE.get(q);
+  if (!cached) {
+    const rawTokens = q.split(/\s+/).filter(Boolean);
+    if (rawTokens.length === 0) return null;
+    const escapedTokens = rawTokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const lowerTokenSet = new Set(rawTokens.map((t) => t.toLowerCase()));
+    cached = {
+      regex: new RegExp(`(${escapedTokens.join("|")})`, "gi"),
+      lowerTokenSet,
+    };
+    if (HIGHLIGHT_REGEX_CACHE.size > 200) {
+      HIGHLIGHT_REGEX_CACHE.clear();
+    }
+    HIGHLIGHT_REGEX_CACHE.set(q, cached);
+  }
+  return cached;
+};
+
 export const HighlightText = ({ text, query }) => {
   const str = text !== null && text !== undefined ? String(text) : "";
   if (!str || !query || !query.trim()) return <>{str}</>;
 
-  const q = query.trim();
-  const tokens = q
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  if (tokens.length === 0) return <>{str}</>;
+  const matchers = getHighlightMatchers(query);
+  if (!matchers) return <>{str}</>;
 
-  const regex = new RegExp(`(${tokens.join("|")})`, "gi");
+  const { regex, lowerTokenSet } = matchers;
   const parts = str.split(regex);
 
   return (
     <>
       {parts.map((part, i) => {
         if (!part) return null;
-        const isMatch = tokens.some((t) => t.toLowerCase() === part.toLowerCase());
+        const isMatch = lowerTokenSet.has(part.toLowerCase());
         return isMatch ? (
           <mark
             key={i}
@@ -623,6 +690,8 @@ export const getJobExpenseItems = (job, isRetainer) => {
   return items;
 };
 
+const JOB_METRICS_CACHE = new WeakMap();
+
 export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevVal, currentCostVal, noEndDateRetainerMonths = 18, currentEndDateVal, currentRechVal) => {
   if (!job || !job.rows || job.rows.length === 0) {
     return {
@@ -643,6 +712,24 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
       isRetainer: false,
       isConfirmed: false
     };
+  }
+
+  const canUseMetricsCache =
+    currentRevVal === undefined &&
+    currentCostVal === undefined &&
+    currentEndDateVal === undefined &&
+    currentRechVal === undefined;
+
+  let cacheMap = null;
+  let cacheKey = null;
+  if (canUseMetricsCache && typeof job === "object") {
+    const nowForKey = new Date();
+    const dayKey = `${nowForKey.getFullYear()}-${nowForKey.getMonth()}-${nowForKey.getDate()}`;
+    cacheKey = `${Boolean(isRetainer)}_${isConfirmed === undefined ? "auto" : Boolean(isConfirmed)}_${noEndDateRetainerMonths}_${dayKey}`;
+    cacheMap = JOB_METRICS_CACHE.get(job);
+    if (cacheMap && cacheMap.has(cacheKey)) {
+      return cacheMap.get(cacheKey);
+    }
   }
 
   const parentRow = job.rows[0];
@@ -813,7 +900,7 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
   const totalRecharged = rawRech;
   const totalBillable = totalRevenue + totalRecharged;
 
-  return {
+  const result = {
     rechargedExpenses: totalRecharged,
     totalBillable,
     revenue: totalRevenue,
@@ -831,7 +918,53 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
     isRetainer,
     isConfirmed: confirmed
   };
+
+  if (canUseMetricsCache && cacheKey) {
+    if (!cacheMap) {
+      cacheMap = new Map();
+      JOB_METRICS_CACHE.set(job, cacheMap);
+    }
+    cacheMap.set(cacheKey, result);
+  }
+
+  return result;
 };
+
+const pendingTextareaResizes = new Set();
+let resizeBatchScheduled = false;
+
+function scheduleTextareaResize(el) {
+  if (!el) return;
+  pendingTextareaResizes.add(el);
+  if (!resizeBatchScheduled) {
+    resizeBatchScheduled = true;
+    const flush = () => {
+      resizeBatchScheduled = false;
+      const elements = Array.from(pendingTextareaResizes);
+      pendingTextareaResizes.clear();
+      const connected = [];
+      for (let i = 0; i < elements.length; i++) {
+        const node = elements[i];
+        if (node && node.isConnected) {
+          node.style.height = "auto";
+          connected.push(node);
+        }
+      }
+      const heights = new Array(connected.length);
+      for (let i = 0; i < connected.length; i++) {
+        heights[i] = Math.max(26, connected[i].scrollHeight);
+      }
+      for (let i = 0; i < connected.length; i++) {
+        connected[i].style.height = `${heights[i]}px`;
+      }
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(flush);
+    } else {
+      Promise.resolve().then(flush);
+    }
+  }
+}
 
 function AutoResizeTextarea({
   value,
@@ -845,10 +978,17 @@ function AutoResizeTextarea({
   const textareaRef = useRef(null);
 
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = `${Math.max(26, textareaRef.current.scrollHeight)}px`;
+    const el = textareaRef.current;
+    if (!el) return;
+    const str = value !== null && value !== undefined ? String(value) : "";
+    if (!str.includes("\n") && str.length <= 18) {
+      el.style.height = "26px";
+      return undefined;
     }
+    scheduleTextareaResize(el);
+    return () => {
+      pendingTextareaResizes.delete(el);
+    };
   }, [value]);
 
   return (
@@ -887,6 +1027,7 @@ function AutoResizeTextarea({
         lineHeight: "1.35",
         display: "block",
         minHeight: "26px",
+        fieldSizing: "content",
         ...style
       }}
       onFocus={(e) => {
@@ -1035,6 +1176,8 @@ export default function JobsView({
   const [filterType, setFilterType] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [showZeroPercentJobs, setShowZeroPercentJobs] = useState(false);
+  const [visibleJobsCount, setVisibleJobsCount] = useState(80);
+  const loadMoreJobsSentinelRef = useRef(null);
 
   // Set of expanded job IDs in modern view
   const [expandedJobIds, setExpandedJobIds] = useState(() => new Set());
@@ -1406,14 +1549,14 @@ export default function JobsView({
     return parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
   };
 
-  // Helper to extract parsed Date Confirmed for a job on Confirmed tab
-  const getJobDateConf = (job) => {
+  // Helper to extract parsed Date Confirmed timestamp for a job on Confirmed tab
+  const getJobDateConfTs = (job) => {
     if (!job) return null;
     const tab = String(job.tabName || job.status || job.rows?.[0]?.tabName || "Confirmed").toLowerCase();
     const isConfirmed = tab === "confirmed" || (!tab.includes("pipeline") && !tab.includes("pipe"));
     if (!isConfirmed) return null;
     const rawVal = getJobFieldValue(job, "dateConf") || job.dateConf || job.rows?.[0]?.dateConf;
-    return rawVal ? parseSheetDate(rawVal) : null;
+    return rawVal ? parseSheetDateToTs(rawVal) : null;
   };
 
   // Check if at least one confirmed job has a non-empty Date Confirmed
@@ -2310,30 +2453,52 @@ export default function JobsView({
     }
   };
 
-  // Filtered and sorted jobs list
-  const processedJobs = useMemo(() => {
-    if (!jobsData || !Array.isArray(jobsData)) return [];
-    let list = [...jobsData];
+  // Base matched jobs and filter pill counts computed in a single pass
+  const { baseMatchedJobs, counts } = useMemo(() => {
+    if (!jobsData || !Array.isArray(jobsData)) {
+      return { baseMatchedJobs: [], counts: { all: 0, confirmed: 0, pipeline: 0 } };
+    }
+    const hasSearch = Boolean(searchQuery.trim());
+    const matched = [];
+    let conf = 0;
+    let pipe = 0;
 
-    // Exclude any jobs that have been deleted in this session (scoped by row + client + jobName so reused rows for new jobs are never suppressed)
-    list = list.filter((j) => {
+    for (let i = 0; i < jobsData.length; i++) {
+      const j = jobsData[i];
       const jTab = (j.tabName || j.rows?.[0]?.tabName || "").toLowerCase();
       const jRowNum = Number(j.rows?.[0]?.rowNum);
       const jClient = String(j.rows?.[0]?.client || j.client || "").trim().toLowerCase();
       const jName = String(j.rows?.[0]?.jobName || j.jobName || "").trim().toLowerCase();
       const sig = `${jRowNum}:${jClient}:${jName}`;
-      if (recentlyDeletedJobKeysRef.current.has(sig)) return false;
-      if (jTab && jRowNum && recentlyDeletedJobRowsRef.current.get(jTab)?.has(sig)) return false;
-      return true;
-    });
+      if (recentlyDeletedJobKeysRef.current.has(sig)) continue;
+      if (jTab && jRowNum && recentlyDeletedJobRowsRef.current.get(jTab)?.has(sig)) continue;
 
-    // Exclude pipeline jobs that have been copied to confirmed tab (Column DD == "Yes")
-    list = list.filter((j) => !isJobCopiedToConfirmed(j));
+      // Exclude pipeline jobs copied to confirmed tab (Column DD == "Yes")
+      if (isJobCopiedToConfirmed(j)) continue;
 
-    // Exclude 0% likelihood pipeline jobs unless showZeroPercentJobs is true
-    if (!showZeroPercentJobs) {
-      list = list.filter((j) => !isJobZeroPercent(j));
+      const isPipe = isPipelineJob(j);
+
+      // Exclude 0% likelihood pipeline jobs unless showZeroPercentJobs is true
+      if (isPipe && !showZeroPercentJobs && isJobZeroPercent(j)) continue;
+
+      // Filter by search query across ALL parts of the job (using cached base search string)
+      if (hasSearch && !isJobMatchSearch(j, searchQuery, draftEdits)) continue;
+
+      matched.push(j);
+      if (isPipe) pipe++;
+      else conf++;
     }
+
+    return {
+      baseMatchedJobs: matched,
+      counts: { all: conf + pipe, confirmed: conf, pipeline: pipe }
+    };
+  }, [jobsData, showZeroPercentJobs, draftEdits, searchQuery]);
+
+  // Filtered and sorted jobs list
+  const processedJobs = useMemo(() => {
+    if (!baseMatchedJobs.length) return [];
+    let list = baseMatchedJobs;
 
     // 1. Filter by Confirmed / Pipeline in modern view
     if (effectiveViewMode === "modern") {
@@ -2347,28 +2512,28 @@ export default function JobsView({
           const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "").toLowerCase();
           return tab === "pipeline" || tab.includes("pipe");
         });
+      } else {
+        list = [...list];
       }
     } else {
       // In legacy view, filter by jobsTab ("Confirmed" or "Pipeline" or "All")
       if (jobsTab && jobsTab.toLowerCase() !== "all") {
+        const targetTabLower = jobsTab.toLowerCase();
         list = list.filter((j) => {
           const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "Confirmed").toLowerCase();
-          return tab === jobsTab.toLowerCase();
+          return tab === targetTabLower;
         });
+      } else {
+        list = [...list];
       }
     }
 
-    // Filter by search query across ALL parts of the job (client, job name, project code, invoice numbers, expense IDs, expense descriptions, etc.)
-    if (searchQuery.trim()) {
-      list = list.filter((j) => isJobMatchSearch(j, searchQuery, draftEdits));
-    }
-
     // 2. Sort jobs (always using persisted row values, never unsaved draftEdits; blank dates always sort last)
-    const compareDatesBlankLast = (da, db, asc) => {
-      if (!da && !db) return 0;
-      if (!da) return 1;
-      if (!db) return -1;
-      return asc ? da.getTime() - db.getTime() : db.getTime() - da.getTime();
+    const compareDateTsBlankLast = (tsA, tsB, asc) => {
+      if (tsA === null && tsB === null) return 0;
+      if (tsA === null) return 1;
+      if (tsB === null) return -1;
+      return asc ? tsA - tsB : tsB - tsA;
     };
     const parseMoneyVal = (v) => parseFloat(String(v || "0").replace(/[£$€,\s]/g, "")) || 0;
 
@@ -2383,26 +2548,26 @@ export default function JobsView({
           const sA = String(a.tabName || rowA.tabName || "Confirmed").trim();
           const sB = String(b.tabName || rowB.tabName || "Confirmed").trim();
           const cmp = jobsSortBy === "statusAsc" ? sA.localeCompare(sB) : sB.localeCompare(sA);
-          return cmp !== 0 ? cmp : compareDatesBlankLast(parseSheetDate(rowA.startDate), parseSheetDate(rowB.startDate), false);
+          return cmp !== 0 ? cmp : compareDateTsBlankLast(parseSheetDateToTs(rowA.startDate), parseSheetDateToTs(rowB.startDate), false);
         }
         case "startDateAsc": {
-          const cmp = compareDatesBlankLast(parseSheetDate(rowA.startDate), parseSheetDate(rowB.startDate), true);
+          const cmp = compareDateTsBlankLast(parseSheetDateToTs(rowA.startDate), parseSheetDateToTs(rowB.startDate), true);
           return cmp !== 0 ? cmp : tieRow();
         }
         case "endDateDesc": {
-          const cmp = compareDatesBlankLast(parseSheetDate(rowA.endDate), parseSheetDate(rowB.endDate), false);
+          const cmp = compareDateTsBlankLast(parseSheetDateToTs(rowA.endDate), parseSheetDateToTs(rowB.endDate), false);
           return cmp !== 0 ? cmp : tieRow();
         }
         case "endDateAsc": {
-          const cmp = compareDatesBlankLast(parseSheetDate(rowA.endDate), parseSheetDate(rowB.endDate), true);
+          const cmp = compareDateTsBlankLast(parseSheetDateToTs(rowA.endDate), parseSheetDateToTs(rowB.endDate), true);
           return cmp !== 0 ? cmp : tieRow();
         }
         case "dateConfDesc": {
-          const cmp = compareDatesBlankLast(getJobDateConf(a), getJobDateConf(b), false);
+          const cmp = compareDateTsBlankLast(getJobDateConfTs(a), getJobDateConfTs(b), false);
           return cmp !== 0 ? cmp : tieRow();
         }
         case "dateConfAsc": {
-          const cmp = compareDatesBlankLast(getJobDateConf(a), getJobDateConf(b), true);
+          const cmp = compareDateTsBlankLast(getJobDateConfTs(a), getJobDateConfTs(b), true);
           return cmp !== 0 ? cmp : tieRow();
         }
         case "revDesc": {
@@ -2489,47 +2654,49 @@ export default function JobsView({
         }
         case "startDateDesc":
         default: {
-          const cmp = compareDatesBlankLast(parseSheetDate(rowA.startDate), parseSheetDate(rowB.startDate), false);
+          const cmp = compareDateTsBlankLast(parseSheetDateToTs(rowA.startDate), parseSheetDateToTs(rowB.startDate), false);
           return cmp !== 0 ? cmp : tieRow();
         }
       }
     });
-  }, [jobsData, effectiveViewMode, filterType, jobsTab, searchQuery, jobsSortBy, showZeroPercentJobs, draftEdits]);
+  }, [baseMatchedJobs, effectiveViewMode, filterType, jobsTab, jobsSortBy]);
 
-  // Counts for filter pills
-  const counts = useMemo(() => {
-    if (!jobsData || !Array.isArray(jobsData)) return { all: 0, confirmed: 0, pipeline: 0 };
-    let conf = 0;
-    let pipe = 0;
-    jobsData.forEach((j) => {
-      const jTab = (j.tabName || j.rows?.[0]?.tabName || "").toLowerCase();
-      const jRowNum = Number(j.rows?.[0]?.rowNum);
-      const jClient = String(j.rows?.[0]?.client || j.client || "").trim().toLowerCase();
-      const jName = String(j.rows?.[0]?.jobName || j.jobName || "").trim().toLowerCase();
-      const sig = `${jRowNum}:${jClient}:${jName}`;
-      if (recentlyDeletedJobKeysRef.current.has(sig)) return;
-      if (jTab && jRowNum && recentlyDeletedJobRowsRef.current.get(jTab)?.has(sig)) return;
+  // Reset progressive render window when filter, tab, client, or search changes
+  useEffect(() => {
+    setVisibleJobsCount(80);
+  }, [searchQuery, filterType, jobsTab, effectiveViewMode, jobsClientSheetId]);
 
-      // Exclude pipeline jobs copied to confirmed tab
-      if (isJobCopiedToConfirmed(j)) return;
-
-      const isPipe = isPipelineJob(j);
-
-      // Exclude 0% likelihood pipeline jobs unless showZeroPercentJobs is true
-      if (isPipe && !showZeroPercentJobs && isJobZeroPercent(j)) {
-        return;
+  const visibleJobs = useMemo(() => {
+    if (processedJobs.length <= visibleJobsCount) return processedJobs;
+    let limit = visibleJobsCount;
+    if (expandedJobIds.size > 0 || recentlySavedKeys.size > 0) {
+      for (let i = limit; i < processedJobs.length; i++) {
+        const k = getJobKey(processedJobs[i]);
+        if (expandedJobIds.has(k) || recentlySavedKeys.has(k)) {
+          limit = i + 1;
+        }
       }
+    }
+    return processedJobs.slice(0, limit);
+  }, [processedJobs, visibleJobsCount, expandedJobIds, recentlySavedKeys]);
 
-      // If search query is active, only count matching jobs
-      if (searchQuery.trim() && !isJobMatchSearch(j, searchQuery, draftEdits)) {
-        return;
-      }
+  const hasMoreVisibleJobs = visibleJobs.length < processedJobs.length;
 
-      if (isPipe) pipe++;
-      else conf++;
-    });
-    return { all: conf + pipe, confirmed: conf, pipeline: pipe };
-  }, [jobsData, showZeroPercentJobs, draftEdits, searchQuery]);
+  useEffect(() => {
+    if (!hasMoreVisibleJobs) return undefined;
+    const node = loadMoreJobsSentinelRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisibleJobsCount((prev) => prev + 80);
+        }
+      },
+      { rootMargin: "300px" }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMoreVisibleJobs, visibleJobs.length]);
 
   // Number of unsaved dirty jobs
   const dirtyCount = Object.keys(draftEdits).length;
@@ -2751,11 +2918,12 @@ export default function JobsView({
               </div>
 
               <div style={{ marginBottom: "12px" }}>
-                <input
+                <DeferredSearchInput
                   type="text"
                   placeholder="Search destination jobs by client or job name..."
                   value={deleteJobMoveSearch}
                   onChange={(e) => setDeleteJobMoveSearch(e.target.value)}
+                  showClearButton
                   style={{
                     width: "100%",
                     padding: "8px 12px",
@@ -3757,18 +3925,16 @@ export default function JobsView({
                         <line x1="13" y1="13" x2="18" y2="18" />
                       </svg>
                     </span>
-                    <input
+                    <DeferredSearchInput
+                      bare
                       type="text"
                       placeholder="Search jobs by client, job name, project code, invoice number, expense ID, or description..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Escape") setSearchQuery("");
-                      }}
                       style={{
                         width: "100%",
                         boxSizing: "border-box",
-                        padding: "8px 36px 8px 36px",
+                        padding: "8px 120px 8px 36px",
                         borderRadius: "7px",
                         border: "1px solid #cbd5e1",
                         fontSize: "13px",
@@ -3787,49 +3953,59 @@ export default function JobsView({
                         e.target.style.borderColor = "#cbd5e1";
                         e.target.style.boxShadow = "none";
                       }}
+                      renderRight={({ localValue, isFiltering, clear }) => {
+                        if (!localValue && !isFiltering) return null;
+                        return (
+                          <div
+                            style={{
+                              position: "absolute",
+                              right: "10px",
+                              top: "50%",
+                              transform: "translateY(-50%)",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px"
+                            }}
+                          >
+                            {isFiltering && (
+                              <Spinner size={13} color="#3b82f6" style={{ marginRight: 0 }} />
+                            )}
+                            {searchQuery ? (
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  color: "#64748b",
+                                  background: "#e2e8f0",
+                                  padding: "1px 7px",
+                                  borderRadius: "10px",
+                                  fontWeight: "500"
+                                }}
+                              >
+                                {processedJobs.length} {processedJobs.length === 1 ? "match" : "matches"}
+                              </span>
+                            ) : null}
+                            {localValue ? (
+                              <button
+                                type="button"
+                                onClick={clear}
+                                style={{
+                                  background: "none",
+                                  border: "none",
+                                  color: "#94a3b8",
+                                  cursor: "pointer",
+                                  fontSize: "14px",
+                                  lineHeight: 1,
+                                  padding: 0
+                                }}
+                                title="Clear search"
+                              >
+                                ✕
+                              </button>
+                            ) : null}
+                          </div>
+                        );
+                      }}
                     />
-                    {searchQuery ? (
-                      <div
-                        style={{
-                          position: "absolute",
-                          right: "10px",
-                          top: "50%",
-                          transform: "translateY(-50%)",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "8px"
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: "11px",
-                            color: "#64748b",
-                            background: "#e2e8f0",
-                            padding: "1px 7px",
-                            borderRadius: "10px",
-                            fontWeight: "500"
-                          }}
-                        >
-                          {processedJobs.length} {processedJobs.length === 1 ? "match" : "matches"}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setSearchQuery("")}
-                          style={{
-                            background: "none",
-                            border: "none",
-                            color: "#94a3b8",
-                            cursor: "pointer",
-                            fontSize: "14px",
-                            lineHeight: 1,
-                            padding: 0
-                          }}
-                          title="Clear search"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ) : null}
                   </div>
                 </div>
 
@@ -3920,7 +4096,7 @@ export default function JobsView({
                         </tr>
                       </thead>
                       <tbody>
-                        {processedJobs.map((job) => {
+                        {visibleJobs.map((job) => {
                           const jobKey = getJobKey(job);
                           const isExpanded = expandedJobIds.has(jobKey);
                           const isDirty = isJobDirty(jobKey);
@@ -3956,12 +4132,23 @@ export default function JobsView({
                           const leftToInvoiceVal = parentRow.leftToInvoice || "";
                           const costsOutstandingVal = parentRow.costsOutstanding || "";
 
-                          // Calculate real revenue and direct cost metrics strictly excluding gap sweep placeholders
-                          const metrics = getJobFinancialMetrics(job, isRetainer, isConfirmed, revVal, directCostsVal, noEndDateRetainerMonths, endDateVal, rechVal);
+                          const jobDraft = isDirty ? draftEdits[jobKey] : null;
+                          const hasFinancialDraft = Boolean(
+                            jobDraft &&
+                            (jobDraft.revenue !== undefined ||
+                              jobDraft.directCosts !== undefined ||
+                              jobDraft.endDate !== undefined ||
+                              jobDraft.rechargedExpenses !== undefined)
+                          );
 
-                          // Distinct product line and lead source options including current value
-                          const plOptions = Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort();
-                          const lsOptions = Array.from(new Set([...(leadSources || []), leadSrcVal].filter(Boolean))).sort();
+                          // Calculate real revenue and direct cost metrics strictly excluding gap sweep placeholders (cached when unedited)
+                          const metrics = hasFinancialDraft
+                            ? getJobFinancialMetrics(job, isRetainer, isConfirmed, revVal, directCostsVal, noEndDateRetainerMonths, endDateVal, rechVal)
+                            : getJobFinancialMetrics(job, isRetainer, isConfirmed, undefined, undefined, noEndDateRetainerMonths);
+
+                          // Distinct product line and lead source options (computed only when row is expanded)
+                          const plOptions = isExpanded ? Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort() : [];
+                          const lsOptions = isExpanded ? Array.from(new Set([...(leadSources || []), leadSrcVal].filter(Boolean))).sort() : [];
                           const nestedMatches = searchQuery.trim() ? getJobNestedMatches(job, searchQuery) : [];
 
                           return (
@@ -5774,6 +5961,49 @@ export default function JobsView({
                             </React.Fragment>
                           );
                         })}
+                        {hasMoreVisibleJobs && (
+                          <tr ref={loadMoreJobsSentinelRef}>
+                            <td colSpan={12} style={{ padding: "14px 16px", textAlign: "center", background: "#f8fafc", borderTop: "1px solid #e2e8f0" }}>
+                              <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", flexWrap: "wrap", justifyContent: "center" }}>
+                                <span style={{ fontSize: "12.5px", color: "#64748b" }}>
+                                  Showing {visibleJobs.length} of {processedJobs.length} jobs
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setVisibleJobsCount((prev) => prev + 80)}
+                                  style={{
+                                    padding: "5px 12px",
+                                    borderRadius: "6px",
+                                    border: "1px solid #cbd5e1",
+                                    background: "#ffffff",
+                                    color: "#1e293b",
+                                    fontSize: "12px",
+                                    fontWeight: "600",
+                                    cursor: "pointer"
+                                  }}
+                                >
+                                  Show {Math.min(80, processedJobs.length - visibleJobs.length)} more
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setVisibleJobsCount(processedJobs.length)}
+                                  style={{
+                                    padding: "5px 12px",
+                                    borderRadius: "6px",
+                                    border: "1px solid #cbd5e1",
+                                    background: "#ffffff",
+                                    color: "#2563eb",
+                                    fontSize: "12px",
+                                    fontWeight: "600",
+                                    cursor: "pointer"
+                                  }}
+                                >
+                                  Show all {processedJobs.length}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -5897,7 +6127,7 @@ export default function JobsView({
                         </tr>
                       </thead>
                       <tbody>
-                        {processedJobs.flatMap((job, jobIdx) => {
+                        {visibleJobs.flatMap((job, jobIdx) => {
                           const isRetainer = String(job.rows[0]?.projectRetainer || "").toLowerCase().includes("retainer");
                           const isExpanded = jobsExpanded.has(job.rows[0]?.rowNum);
                           const isJobFromCrm = isCrmDeal(job, crmTool, crmDrives);
@@ -6089,6 +6319,49 @@ export default function JobsView({
                             );
                           });
                         })}
+                        {hasMoreVisibleJobs && (
+                          <tr ref={loadMoreJobsSentinelRef}>
+                            <td colSpan={jobsTab === "Pipeline" ? 25 : 23} style={{ padding: "12px 16px", textAlign: "left", background: "#f8fafc", borderTop: "1px solid #e0e0e0" }}>
+                              <div style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
+                                <span style={{ fontSize: "12px", color: "#64748b" }}>
+                                  Showing {visibleJobs.length} of {processedJobs.length} jobs
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setVisibleJobsCount((prev) => prev + 80)}
+                                  style={{
+                                    padding: "4px 10px",
+                                    borderRadius: "5px",
+                                    border: "1px solid #cbd5e1",
+                                    background: "#ffffff",
+                                    color: "#1e293b",
+                                    fontSize: "12px",
+                                    fontWeight: "600",
+                                    cursor: "pointer"
+                                  }}
+                                >
+                                  Show {Math.min(80, processedJobs.length - visibleJobs.length)} more
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setVisibleJobsCount(processedJobs.length)}
+                                  style={{
+                                    padding: "4px 10px",
+                                    borderRadius: "5px",
+                                    border: "1px solid #cbd5e1",
+                                    background: "#ffffff",
+                                    color: "#2563eb",
+                                    fontSize: "12px",
+                                    fontWeight: "600",
+                                    cursor: "pointer"
+                                  }}
+                                >
+                                  Show all {processedJobs.length}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
                       </tbody>
                     </table>
                   </div>

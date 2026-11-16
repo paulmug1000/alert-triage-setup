@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 
 function colIdxToLetter(idx0) {
   let n = Number(idx0) + 1;
@@ -452,11 +453,14 @@ export default function AdminWorkbookInspectorModal({
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <input
+            <DeferredSearchInput
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={sheetRole === "executions" ? "Filter execution logs..." : "Filter rows in tab..."}
+              showClearButton
+              spinnerSize={11}
+              spinnerRight="6px"
               style={{
                 padding: "6px 10px",
                 fontSize: "12px",

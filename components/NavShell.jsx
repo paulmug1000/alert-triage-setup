@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { SYSTEM_VERSION, getSystemCopyright } from "../config/version";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import PortalShell from "./portal/PortalShell";
 import { MonthViewSkeleton } from "./Skeleton";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -687,12 +688,16 @@ export default function NavShell({
 
                       {portalClients.length > 5 && (
                         <div style={{ padding: "6px 8px", borderBottom: "1px solid #e2e8f0", background: "#ffffff" }}>
-                          <input
+                          <DeferredSearchInput
                             type="text"
                             placeholder="Search client to manage..."
                             value={manageClientSearch}
                             onChange={(e) => setManageClientSearch(e.target.value)}
                             onClick={(e) => e.stopPropagation()}
+                            debounceMs={80}
+                            showClearButton
+                            spinnerSize={11}
+                            spinnerRight="6px"
                             style={{
                               width: "100%",
                               padding: "5px 8px",
@@ -857,13 +862,17 @@ export default function NavShell({
 
                     {portalClients.length > 5 && (
                       <div style={{ padding: "6px 8px", borderBottom: "1px solid #e2e8f0", background: "#ffffff" }}>
-                        <input
+                        <DeferredSearchInput
                           type="text"
                           placeholder="Search client..."
                           value={clientSearch}
                           onChange={(e) => setClientSearch(e.target.value)}
                           onClick={(e) => e.stopPropagation()}
                           disabled={Boolean(navigatingPulseClient)}
+                          debounceMs={80}
+                          showClearButton
+                          spinnerSize={11}
+                          spinnerRight="6px"
                           style={{
                             width: "100%",
                             padding: "5px 8px",

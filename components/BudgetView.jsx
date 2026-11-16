@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import { BudgetSkeleton } from "./Skeleton";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -1955,11 +1956,14 @@ export default function BudgetView({
                 style={{ display: "flex", alignItems: "center", gap: "12px" }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <input
+                <DeferredSearchInput
                   type="text"
                   placeholder="Search staff..."
                   value={salariesSearch}
                   onChange={(e) => setSalariesSearch(e.target.value)}
+                  showClearButton
+                  spinnerSize={11}
+                  spinnerRight="6px"
                   style={{
                     padding: "4px 8px",
                     borderRadius: "4px",
@@ -2368,11 +2372,14 @@ export default function BudgetView({
                 style={{ display: "flex", alignItems: "center", gap: "12px" }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <input
+                <DeferredSearchInput
                   type="text"
                   placeholder="Search contractors..."
                   value={contractorsSearch}
                   onChange={(e) => setContractorsSearch(e.target.value)}
+                  showClearButton
+                  spinnerSize={11}
+                  spinnerRight="6px"
                   style={{
                     padding: "4px 8px",
                     borderRadius: "4px",
@@ -2640,11 +2647,14 @@ export default function BudgetView({
                 style={{ display: "flex", alignItems: "center", gap: "12px" }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <input
+                <DeferredSearchInput
                   type="text"
                   placeholder="Search expenses..."
                   value={expensesSearch}
                   onChange={(e) => setExpensesSearch(e.target.value)}
+                  showClearButton
+                  spinnerSize={11}
+                  spinnerRight="6px"
                   style={{
                     padding: "4px 8px",
                     borderRadius: "4px",

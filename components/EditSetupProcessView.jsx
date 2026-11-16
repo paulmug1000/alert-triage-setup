@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 
 export default function EditSetupProcessView({ onBack, user, isAdmin }) {
   const [loading, setLoading] = useState(true);
@@ -523,11 +524,12 @@ export default function EditSetupProcessView({ onBack, user, isAdmin }) {
         </div>
 
         <div style={{ minWidth: "240px" }}>
-          <input
+          <DeferredSearchInput
             type="text"
             placeholder="Search setup steps..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            showClearButton
             style={{
               width: "100%",
               padding: "7px 12px",

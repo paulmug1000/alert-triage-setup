@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaHomeSkeleton } from "./Skeleton";
 import { isUserAuthorizedForClient, ADMIN_ONLY_FLAG_KEYS, ADMIN_ONLY_PROACTIVE_TYPES, getFlagName } from "../utils/helpers";
 import { getCrmToolType } from "../utils/integrationsBadge";
@@ -657,11 +658,12 @@ export default function HomeView({
 
           {/* Client Search */}
           <div style={{ minWidth: "220px" }}>
-            <input
+            <DeferredSearchInput
               type="text"
               placeholder="Search clients..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
+              showClearButton
               style={{
                 width: "100%",
                 padding: "7px 12px",

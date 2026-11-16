@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/router";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import EditClientSelector from "./EditClientSelector";
 import AdminSettingNoteTooltip from "./AdminSettingNoteTooltip";
 import { MASTER_SHEET_SETTING_NOTES } from "../config/masterSheetSettingNotes";
@@ -6761,11 +6762,14 @@ export default function ClientSettingsView({
               className="bank-modal-toolbar"
               style={{ padding: "12px 20px", background: "#F8FAFC", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}
             >
-              <input
+              <DeferredSearchInput
                 type="text"
                 value={bankSearchQuery}
                 onChange={(e) => setBankSearchQuery(e.target.value)}
                 placeholder="Filter accounts by name, code, currency..."
+                showClearButton
+                spinnerSize={12}
+                spinnerRight="8px"
                 style={{
                   flex: 1,
                   padding: "7px 10px",

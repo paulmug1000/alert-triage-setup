@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 
 const STATUS_OPTIONS = [
   { value: "live", label: "Live" },
@@ -573,11 +574,12 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
 
       {/* Search & Filter Bar */}
       <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "12px" }}>
-        <input
+        <DeferredSearchInput
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Filter by client name or script ID..."
+          showClearButton
           style={{ ...inputBaseStyle, maxWidth: "320px", padding: "6px 10px", fontSize: "12.5px" }}
         />
         <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>

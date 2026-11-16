@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 
 export default function OnboardClientModal({ isOpen, onClose, onClientCreated }) {
   const [clientName, setClientName] = useState("");
@@ -445,11 +446,14 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                           </React.Fragment>
                         ))}
                       </div>
-                      <input
+                      <DeferredSearchInput
                         type="text"
                         placeholder="Filter folders..."
                         value={folderSearch}
                         onChange={(e) => setFolderSearch(e.target.value)}
+                        showClearButton
+                        spinnerSize={11}
+                        spinnerRight="6px"
                         style={{
                           padding: "5px 8px",
                           borderRadius: "6px",

@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import { performTransactionsUpdate } from "../services/reconTransactionsMerge";
+
+const TX_SEARCH_META_CACHE = new WeakMap();
 
 export const VALID_RECON_CATEGORIES = [
   "Revenue",
@@ -2784,22 +2787,34 @@ export default function CashflowWorkbenchView({
         const q = searchTerm.toLowerCase().trim();
         const tokens = q.split(/\s+/).filter(Boolean);
 
-        const outNum = parseAmount(tx.outAmount || tx.outAmt);
-        const inNum = parseAmount(tx.inAmount || tx.inAmt);
-        const outStr = outNum > 0 ? formatAmount2DP(outNum).toLowerCase() : "";
-        const inStr = inNum > 0 ? formatAmount2DP(inNum).toLowerCase() : "";
-        const outRaw = outNum > 0 ? String(outNum) : "";
-        const inRaw = inNum > 0 ? String(inNum) : "";
-        const resolvedCat = getResolvedCategory(tx).toLowerCase();
-        const plCat = String(tx.plCategory || "").toLowerCase();
-        const dateFormatted = formatDateDMmmYy(tx.date).toLowerCase();
-        const dateRaw = String(tx.date || "").toLowerCase();
-        const payeeText = String(tx.payee || "").toLowerCase();
-        const particularsText = String(tx.particulars || "").toLowerCase();
-        const refText = String(tx.reference || "").toLowerCase();
-        const accText = String(tx.accountName || defaultAccount || "").toLowerCase();
+        let meta = TX_SEARCH_META_CACHE.get(tx);
+        if (!meta) {
+          const outNum = parseAmount(tx.outAmount || tx.outAmt);
+          const inNum = parseAmount(tx.inAmount || tx.inAmt);
+          const outStr = outNum > 0 ? formatAmount2DP(outNum).toLowerCase() : "";
+          const inStr = inNum > 0 ? formatAmount2DP(inNum).toLowerCase() : "";
+          const outRaw = outNum > 0 ? String(outNum) : "";
+          const inRaw = inNum > 0 ? String(inNum) : "";
+          const plCat = String(tx.plCategory || "").toLowerCase();
+          const dateFormatted = formatDateDMmmYy(tx.date).toLowerCase();
+          const dateRaw = String(tx.date || "").toLowerCase();
+          const payeeText = String(tx.payee || "").toLowerCase();
+          const particularsText = String(tx.particulars || "").toLowerCase();
+          const refText = String(tx.reference || "").toLowerCase();
+          const txAccText = String(tx.accountName || "").toLowerCase();
+          meta = {
+            outNum,
+            inNum,
+            hasTxAccount: Boolean(tx.accountName),
+            baseText: `${payeeText} ${particularsText} ${refText} ${plCat} ${dateFormatted} ${dateRaw} ${txAccText} ${outStr} ${inStr} ${outRaw} ${inRaw}`,
+          };
+          TX_SEARCH_META_CACHE.set(tx, meta);
+        }
 
-        const searchableText = `${payeeText} ${particularsText} ${refText} ${resolvedCat} ${plCat} ${dateFormatted} ${dateRaw} ${accText} ${outStr} ${inStr} ${outRaw} ${inRaw}`;
+        const { outNum, inNum, hasTxAccount, baseText } = meta;
+        const resolvedCat = getResolvedCategory(tx).toLowerCase();
+        const accFallback = !hasTxAccount && defaultAccount ? String(defaultAccount).toLowerCase() : "";
+        const searchableText = accFallback ? `${baseText} ${resolvedCat} ${accFallback}` : `${baseText} ${resolvedCat}`;
 
         const match = tokens.every(token => {
           // 1. Check text search in visible / relevant metadata
@@ -3105,45 +3120,25 @@ export default function CashflowWorkbenchView({
                 {/* Search row (replacing category pills) */}
                 <div>
                   <div style={{ position: "relative" }}>
-                    <input
+                    <DeferredSearchInput
+                      bare
                       type="text"
                       placeholder="Search payees, amounts, descriptions, categories..."
                       value={searchTerm}
                       onChange={e => setSearchTerm(e.target.value)}
+                      showClearButton
+                      spinnerSize={11}
+                      spinnerRight="6px"
                       style={{
                         width: "100%",
                         boxSizing: "border-box",
-                        padding: "6px 28px 6px 10px",
+                        padding: "6px 44px 6px 10px",
                         fontSize: "11px",
                         borderRadius: "6px",
                         border: "1px solid #cbd5e1",
                         background: "#ffffff"
                       }}
                     />
-                    {searchTerm && (
-                      <button
-                        type="button"
-                        onClick={() => setSearchTerm("")}
-                        title="Clear search"
-                        style={{
-                          position: "absolute",
-                          right: "6px",
-                          top: "50%",
-                          transform: "translateY(-50%)",
-                          background: "transparent",
-                          border: "none",
-                          color: "#94a3b8",
-                          cursor: "pointer",
-                          padding: "2px 4px",
-                          fontSize: "12px",
-                          lineHeight: 1
-                        }}
-                        onMouseEnter={e => e.currentTarget.style.color = "#475569"}
-                        onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}
-                      >
-                        ✕
-                      </button>
-                    )}
                   </div>
                   {searchTerm && (
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "4px", fontSize: "10px", color: "#64748b" }}>
@@ -5925,43 +5920,24 @@ export default function CashflowWorkbenchView({
                       </p>
                     </div>
                     <div style={{ minWidth: "220px", position: "relative" }}>
-                      <input
+                      <DeferredSearchInput
+                        bare
                         type="text"
                         placeholder="Search transactions..."
                         value={guidedReviewSearch}
                         onChange={e => setGuidedReviewSearch(e.target.value)}
+                        showClearButton
+                        spinnerSize={12}
+                        spinnerRight="6px"
                         style={{
                           width: "100%",
-                          padding: "6px 28px 6px 10px",
+                          boxSizing: "border-box",
+                          padding: "6px 44px 6px 10px",
                           fontSize: "12px",
                           borderRadius: "6px",
                           border: "1px solid #cbd5e1"
                         }}
                       />
-                      {guidedReviewSearch && (
-                        <button
-                          type="button"
-                          onClick={() => setGuidedReviewSearch("")}
-                          title="Clear search"
-                          style={{
-                            position: "absolute",
-                            right: "6px",
-                            top: "50%",
-                            transform: "translateY(-50%)",
-                            background: "transparent",
-                            border: "none",
-                            color: "#94a3b8",
-                            cursor: "pointer",
-                            padding: "2px 4px",
-                            fontSize: "12px",
-                            lineHeight: 1
-                          }}
-                          onMouseEnter={e => e.currentTarget.style.color = "#475569"}
-                          onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}
-                        >
-                          ✕
-                        </button>
-                      )}
                     </div>
                   </div>
 

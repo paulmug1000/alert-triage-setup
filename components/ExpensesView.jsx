@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaExpensesTableSkeleton } from "./Skeleton";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
@@ -969,11 +970,13 @@ export default function ExpensesView({
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <input
+              <DeferredSearchInput
                 type="text"
                 placeholder="Search category..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
+                spinnerSize={12}
+                spinnerRight="8px"
                 style={{
                   padding: "5px 10px",
                   fontSize: "13px",

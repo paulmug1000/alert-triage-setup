@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaSalariesSkeleton } from "./Skeleton";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
@@ -1029,11 +1030,13 @@ export default function SalariesView({
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <input
+                  <DeferredSearchInput
                     type="text"
                     placeholder="Search employee..."
                     value={employeeSearch}
                     onChange={(e) => setEmployeeSearch(e.target.value)}
+                    spinnerSize={11}
+                    spinnerRight="6px"
                     style={{
                       padding: "4px 8px",
                       fontSize: "12px",

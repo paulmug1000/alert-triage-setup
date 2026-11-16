@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaSetupOverviewSkeleton, PmaSetupDetailSkeleton } from "./Skeleton";
 import EditableSheetEditor from "./EditableSheetEditor";
 import OnboardClientModal from "./OnboardClientModal";
@@ -541,11 +542,12 @@ export default function SetupView({
 
           {/* Search Box */}
           <div style={{ minWidth: "260px" }}>
-            <input
+            <DeferredSearchInput
               type="text"
               placeholder="Search clients..."
               value={overviewSearch}
               onChange={(e) => setOverviewSearch(e.target.value)}
+              showClearButton
               style={{
                 width: "100%",
                 padding: "8px 12px",

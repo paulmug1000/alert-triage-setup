@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import {
   COMPARISON_SHEET_SPECS,
   colIndexToLetter,
@@ -879,11 +880,14 @@ export default function MasterComparisonSheetModal({
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-            <input
+            <DeferredSearchInput
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search rows..."
+              showClearButton
+              spinnerSize={11}
+              spinnerRight="6px"
               style={{
                 width: "180px",
                 padding: "4px 9px",

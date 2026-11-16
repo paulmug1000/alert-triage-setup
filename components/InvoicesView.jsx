@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaInvoicesTableSkeleton } from "./Skeleton";
 import InvoicesEditModal from "./InvoicesEditModal";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
@@ -1698,14 +1699,18 @@ export default function InvoicesView({
                     <div style={{ marginBottom: "14px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
                       <div style={{ position: "relative", width: "100%", maxWidth: "340px" }}>
                         <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
-                        <input
+                        <DeferredSearchInput
+                          bare
                           type="text"
                           placeholder="Search jobs..."
                           value={jobsSearchTerm}
                           onChange={e => setJobsSearchTerm(e.target.value)}
+                          showClearButton
+                          spinnerSize={12}
+                          spinnerRight="8px"
                           style={{
                             width: "100%",
-                            padding: "7px 10px 7px 32px",
+                            padding: "7px 44px 7px 32px",
                             borderRadius: "6px",
                             border: "1px solid #cbd5e1",
                             fontSize: "13px",
@@ -1714,15 +1719,6 @@ export default function InvoicesView({
                             backgroundColor: "#ffffff",
                           }}
                         />
-                        {jobsSearchTerm && (
-                          <button
-                            type="button"
-                            onClick={() => setJobsSearchTerm("")}
-                            style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px" }}
-                          >
-                            ✕
-                          </button>
-                        )}
                       </div>
                     </div>
 
@@ -2417,14 +2413,18 @@ export default function InvoicesView({
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginBottom: "14px" }}>
                       <div style={{ position: "relative", width: "100%", maxWidth: "340px" }}>
                         <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
-                        <input
+                        <DeferredSearchInput
+                          bare
                           type="text"
                           placeholder="Search invoices..."
                           value={invoiceSearchTerm}
                           onChange={e => setInvoiceSearchTerm(e.target.value)}
+                          showClearButton
+                          spinnerSize={12}
+                          spinnerRight="8px"
                           style={{
                             width: "100%",
-                            padding: "7px 10px 7px 32px",
+                            padding: "7px 44px 7px 32px",
                             borderRadius: "6px",
                             border: "1px solid #cbd5e1",
                             fontSize: "13px",
@@ -2433,15 +2433,6 @@ export default function InvoicesView({
                             backgroundColor: "#ffffff",
                           }}
                         />
-                        {invoiceSearchTerm && (
-                          <button
-                            type="button"
-                            onClick={() => setInvoiceSearchTerm("")}
-                            style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px" }}
-                          >
-                            ✕
-                          </button>
-                        )}
                       </div>
 
                       <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>

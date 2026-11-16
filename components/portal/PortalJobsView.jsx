@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import Spinner from "../Spinner";
+import DeferredSearchInput from "../DeferredSearchInput";
 import { PortalTableSkeleton } from "../Skeleton";
 import SplitMonthCard from "../SplitMonthCard";
 import InvoiceCostMonthControl from "../InvoiceCostMonthControl";
@@ -36,6 +37,86 @@ import PlaceholderPill, {
   generatePlaceholderInvoiceRef,
   generatePlaceholderExpenseId
 } from "../PlaceholderPill";
+
+const PORTAL_DATE_TS_CACHE = new Map();
+const PORTAL_MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+const PORTAL_JOB_SEARCH_CACHE = new WeakMap();
+
+const getPortalJobSearchText = (j) => {
+  if (!j || typeof j !== "object") return "";
+  let cached = PORTAL_JOB_SEARCH_CACHE.get(j);
+  if (cached !== undefined) return cached;
+  const parts = [];
+  if (j.client) parts.push(String(j.client).toLowerCase());
+  if (j.jobName) parts.push(String(j.jobName).toLowerCase());
+  if (j.productLine) parts.push(String(j.productLine).toLowerCase());
+  if (isNoEndDateSentinel(j.endDate)) parts.push("no end date");
+  cached = parts.join(" ");
+  PORTAL_JOB_SEARCH_CACHE.set(j, cached);
+  return cached;
+};
+
+const parsePortalDateToTs = (dateVal) => {
+  if (!dateVal) return null;
+  if (dateVal instanceof Date) return isNaN(dateVal.getTime()) ? null : dateVal.getTime();
+  const str = String(dateVal).trim();
+  if (!str || str === "—") return null;
+
+  if (PORTAL_DATE_TS_CACHE.has(str)) {
+    return PORTAL_DATE_TS_CACHE.get(str);
+  }
+
+  let ts = null;
+
+  // yyyy-mm-dd
+  const isoMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (isoMatch) {
+    const d = new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+    ts = isNaN(d.getTime()) ? null : d.getTime();
+  } else {
+    // dd/mm/yyyy or dd-mm-yyyy
+    const ukMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+    if (ukMatch) {
+      let y = parseInt(ukMatch[3], 10);
+      if (y < 100) y += 2000;
+      const d = new Date(y, parseInt(ukMatch[2], 10) - 1, parseInt(ukMatch[1], 10));
+      ts = isNaN(d.getTime()) ? null : d.getTime();
+    } else {
+      // dd-Mmm-yyyy e.g. 1-Oct-2026 or 01-Oct-26
+      const mmmMatch = str.match(/^(\d{1,2})[\s\-]([a-zA-Z]{3})[\s\-](\d{2,4})$/);
+      if (mmmMatch) {
+        const mi = PORTAL_MONTHS_MAP[mmmMatch[2].toLowerCase()];
+        let y = parseInt(mmmMatch[3], 10);
+        if (y < 100) y += 2000;
+        if (mi !== undefined) {
+          const d = new Date(y, mi, parseInt(mmmMatch[1], 10));
+          ts = isNaN(d.getTime()) ? null : d.getTime();
+        }
+      } else {
+        // Mmm-yy or Mmm-yyyy
+        const myMatch = str.match(/^([a-zA-Z]{3})[\s\-](\d{2,4})$/);
+        if (myMatch) {
+          const mi = PORTAL_MONTHS_MAP[myMatch[1].toLowerCase()];
+          let y = parseInt(myMatch[2], 10);
+          if (y < 100) y += 2000;
+          if (mi !== undefined) {
+            const d = new Date(y, mi, 1);
+            ts = isNaN(d.getTime()) ? null : d.getTime();
+          }
+        } else {
+          const parsed = new Date(str);
+          ts = !isNaN(parsed.getTime()) ? parsed.getTime() : null;
+        }
+      }
+    }
+  }
+
+  if (PORTAL_DATE_TS_CACHE.size > 5000) {
+    PORTAL_DATE_TS_CACHE.clear();
+  }
+  PORTAL_DATE_TS_CACHE.set(str, ts);
+  return ts;
+};
 
 export default function PortalJobsView({
   clientName,
@@ -198,54 +279,9 @@ export default function PortalJobsView({
 
   const parseDate = (dateVal) => {
     if (!dateVal) return null;
-    if (dateVal instanceof Date && !isNaN(dateVal.getTime())) return dateVal;
-    const str = String(dateVal).trim();
-    if (!str || str === "—") return null;
-
-    // yyyy-mm-dd
-    const isoMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-    if (isoMatch) {
-      const d = new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
-      return isNaN(d.getTime()) ? null : d;
-    }
-
-    // dd/mm/yyyy or dd-mm-yyyy
-    const ukMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-    if (ukMatch) {
-      let y = parseInt(ukMatch[3], 10);
-      if (y < 100) y += 2000;
-      const d = new Date(y, parseInt(ukMatch[2], 10) - 1, parseInt(ukMatch[1], 10));
-      return isNaN(d.getTime()) ? null : d;
-    }
-
-    // dd-Mmm-yyyy e.g. 1-Oct-2026 or 01-Oct-26
-    const mmmMatch = str.match(/^(\d{1,2})[\s\-]([a-zA-Z]{3})[\s\-](\d{2,4})$/);
-    if (mmmMatch) {
-      const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-      const mi = months[mmmMatch[2].toLowerCase()];
-      let y = parseInt(mmmMatch[3], 10);
-      if (y < 100) y += 2000;
-      if (mi !== undefined) {
-        const d = new Date(y, mi, parseInt(mmmMatch[1], 10));
-        return isNaN(d.getTime()) ? null : d;
-      }
-    }
-
-    // Mmm-yy or Mmm-yyyy
-    const myMatch = str.match(/^([a-zA-Z]{3})[\s\-](\d{2,4})$/);
-    if (myMatch) {
-      const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-      const mi = months[myMatch[1].toLowerCase()];
-      let y = parseInt(myMatch[2], 10);
-      if (y < 100) y += 2000;
-      if (mi !== undefined) {
-        const d = new Date(y, mi, 1);
-        return isNaN(d.getTime()) ? null : d;
-      }
-    }
-
-    const parsed = new Date(str);
-    return !isNaN(parsed.getTime()) ? parsed : null;
+    if (dateVal instanceof Date) return isNaN(dateVal.getTime()) ? null : dateVal;
+    const ts = parsePortalDateToTs(dateVal);
+    return ts === null ? null : new Date(ts);
   };
 
   const formatDateDdMmmYy = (dateVal) => {
@@ -271,29 +307,38 @@ export default function PortalJobsView({
     return Math.abs(lik) < 0.001;
   };
 
+  const baseVisibleJobs = useMemo(() => {
+    if (!jobsData?.all) return null;
+    const hasOptimistic = Object.keys(optimisticJobs).length > 0;
+    const baseList = hasOptimistic
+      ? jobsData.all.map((j) => {
+          const key = j.id !== undefined ? j.id : (j.parentId !== undefined ? j.parentId : j.rowNumber);
+          return (key !== undefined && optimisticJobs[key]) ? { ...j, ...optimisticJobs[key] } : j;
+        })
+      : jobsData.all;
+    return showZeroPercentJobs ? baseList : baseList.filter((j) => !isZeroPercentPipelineJob(j));
+  }, [jobsData, optimisticJobs, showZeroPercentJobs]);
+
   const visibleJobCounts = useMemo(() => {
-    if (!jobsData?.all) {
+    if (!baseVisibleJobs) {
       return {
         all: 0,
         confirmed: jobsData?.confirmedCount || 0,
         pipeline: jobsData?.pipelineCount || 0,
       };
     }
-    const baseList = jobsData.all
-      .map((j) => {
-        const key = j.id !== undefined ? j.id : (j.parentId !== undefined ? j.parentId : j.rowNumber);
-        return (key !== undefined && optimisticJobs[key]) ? { ...j, ...optimisticJobs[key] } : j;
-      })
-      .filter((j) => showZeroPercentJobs || !isZeroPercentPipelineJob(j));
-
-    const confirmed = baseList.filter((j) => j.type === "Confirmed").length;
-    const pipeline = baseList.filter((j) => j.type === "Pipeline").length;
+    let confirmed = 0;
+    let pipeline = 0;
+    for (let i = 0; i < baseVisibleJobs.length; i++) {
+      if (baseVisibleJobs[i].type === "Confirmed") confirmed++;
+      else if (baseVisibleJobs[i].type === "Pipeline") pipeline++;
+    }
     return {
-      all: baseList.length,
+      all: baseVisibleJobs.length,
       confirmed,
       pipeline,
     };
-  }, [jobsData, optimisticJobs, showZeroPercentJobs]);
+  }, [baseVisibleJobs, jobsData?.confirmedCount, jobsData?.pipelineCount]);
 
   const productLineOptions = useMemo(() => {
     const fromApi = data?.formOptions?.productLines || [];
@@ -312,16 +357,8 @@ export default function PortalJobsView({
   }, [data?.formOptions?.leadSources, jobsData?.all]);
 
   const filteredJobs = useMemo(() => {
-    if (!jobsData?.all) return [];
-    let list = jobsData.all.map((j) => {
-      const key = j.id !== undefined ? j.id : (j.parentId !== undefined ? j.parentId : j.rowNumber);
-      return (key !== undefined && optimisticJobs[key]) ? { ...j, ...optimisticJobs[key] } : j;
-    });
-
-    // Exclude 0% pipeline jobs unless showZeroPercentJobs is checked
-    if (!showZeroPercentJobs) {
-      list = list.filter((j) => !isZeroPercentPipelineJob(j));
-    }
+    if (!baseVisibleJobs) return [];
+    let list = baseVisibleJobs;
 
     // Filter by type
     if (filterType === "confirmed") {
@@ -332,25 +369,20 @@ export default function PortalJobsView({
       list = list.filter((j) => String(j.projectRetainer || "").toLowerCase().includes("project"));
     } else if (filterType === "retainer") {
       list = list.filter((j) => String(j.projectRetainer || "").toLowerCase().includes("retainer"));
+    } else {
+      list = [...list];
     }
 
-    // Filter by search
+    // Filter by search using cached lowercase text
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase().trim();
-      list = list.filter(
-        (j) =>
-          (j.client || "").toLowerCase().includes(q) ||
-          (j.jobName || "").toLowerCase().includes(q) ||
-          (j.productLine && j.productLine.toLowerCase().includes(q)) ||
-          (isNoEndDateSentinel(j.endDate) && "no end date".includes(q))
-      );
+      list = list.filter((j) => getPortalJobSearchText(j).includes(q));
     }
 
     // Sort
     const getSortDateTs = (val, isEndDate = false) => {
       if (isEndDate && isNoEndDateSentinel(val)) return Number.MAX_SAFE_INTEGER;
-      const d = parseDate(val);
-      return d ? d.getTime() : null;
+      return parsePortalDateToTs(val);
     };
     const compareDatesWithBlankLast = (tsA, tsB, asc) => {
       if (tsA === null && tsB === null) return 0;
@@ -436,7 +468,7 @@ export default function PortalJobsView({
     });
 
     return list;
-  }, [jobsData, filterType, searchTerm, sortBy, optimisticJobs, showZeroPercentJobs]);
+  }, [baseVisibleJobs, filterType, searchTerm, sortBy]);
 
   const rawSymbol =
     (propCurrencySymbol && propCurrencySymbol !== "£" ? propCurrencySymbol : null) ||
@@ -1552,7 +1584,7 @@ export default function PortalJobsView({
             />
             <span>Show 0% jobs</span>
           </label>
-          <input
+          <DeferredSearchInput
             type="text"
             placeholder="Search jobs or clients..."
             value={searchTerm}
@@ -1560,12 +1592,14 @@ export default function PortalJobsView({
               setSearchTerm(e.target.value);
               setCurrentPage(1);
             }}
+            showClearButton
+            spinnerColor="#0047AB"
             style={{
               padding: "4px 8px",
               borderRadius: "6px",
               border: "1px solid #cbd5e1",
               fontSize: "12px",
-              width: "180px",
+              width: "210px",
             }}
           />
         </div>
@@ -3392,11 +3426,13 @@ export default function PortalJobsView({
                             ×
                           </button>
                         </div>
-                        <input
+                        <DeferredSearchInput
                           type="text"
                           placeholder="Search target job..."
                           value={moveJobSearch}
                           onChange={(e) => setMoveJobSearch(e.target.value)}
+                          showClearButton
+                          spinnerColor="#0047AB"
                           style={{
                             ...formInputStyle,
                             padding: "5px 8px",

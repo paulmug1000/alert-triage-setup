@@ -475,6 +475,124 @@ export async function syncExpenseBreakdownToClientSheetNative(sheets, clientName
 }
 
 /**
+ * Calculates Beyond the Blueprint's active conversation count from CRMExcelCopy
+ * and updates cell Delivered!D81 in the client Google Sheet.
+ * Target sections:
+ *  - Proposal sent / Requested Proposal / Subject to final agreement
+ *  - Active Dialogue / In Active Dialogue
+ *  - Interest Expressed
+ */
+export async function syncBeyondTheBlueprintConversations_({ masterSS = null, ctx = null, sheets = null } = {}) {
+  const targetClient = "Beyond the Blueprint";
+  if (ctx && ctx.clientName !== targetClient) return;
+
+  try {
+    let grid = null;
+    if (masterSS) {
+      const copySheet = masterSS.getSheetByName("CRMExcelCopy");
+      grid = copySheet?.valuesGrid;
+    }
+
+    const supabase = getSupabaseAdmin();
+
+    if (!Array.isArray(grid) || grid.length === 0) {
+      if (supabase) {
+        const { data: tab } = await supabase
+          .from("master_sheet_grids")
+          .select("values_grid")
+          .eq("client_name", targetClient)
+          .eq("tab_name", "CRMExcelCopy")
+          .maybeSingle();
+        grid = tab?.values_grid;
+      }
+    }
+
+    if (!Array.isArray(grid) || grid.length === 0) return;
+
+    const targetSections = [
+      "proposal sent",
+      "requested proposal",
+      "active dialogue",
+      "interest expressed",
+    ];
+
+    const allSections = [
+      "delivered",
+      "in delivery",
+      "won",
+      "proposal sent",
+      "requested proposal",
+      "active dialogue",
+      "interest expressed",
+      "lost",
+      "on hold",
+      "backlog",
+      "current pipeline",
+    ];
+
+    let inTarget = false;
+    let count = 0;
+
+    // Header row is row 3 (idx 2)
+    for (let r = 3; r < grid.length; r++) {
+      const row = grid[r] || [];
+      const clientVal = String(row[1] ?? "").trim(); // Col B (index 1)
+      if (!clientVal) continue;
+
+      const norm = clientVal.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+      const matchedAnySection = allSections.find((s) => norm.includes(s.replace(/[^a-z0-9]/g, "")));
+      if (matchedAnySection) {
+        const matchedTarget = targetSections.find((s) => norm.includes(s.replace(/[^a-z0-9]/g, "")));
+        inTarget = Boolean(matchedTarget);
+        continue;
+      }
+
+      if (inTarget) {
+        count++;
+      }
+    }
+
+    const clientSheetId = ctx?.clientSheetId || "1MNsDQzTSuVylNCL2MUTqLjmQfd1NtkLhWsmrebyyqhE";
+    const sheetsClient = sheets || (await (await import("./sheetsClient.js")).getSheetsClient());
+
+    await sheetsClient.spreadsheets.values.update({
+      spreadsheetId: clientSheetId,
+      range: "Delivered!D81",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [[count]],
+      },
+    });
+
+    if (supabase) {
+      const { data: curClient } = await supabase
+        .from("clients")
+        .select("metadata")
+        .eq("client_name", targetClient)
+        .maybeSingle();
+
+      const prevMeta = curClient?.metadata && typeof curClient.metadata === "object" ? curClient.metadata : {};
+      await supabase
+        .from("clients")
+        .update({
+          metadata: {
+            ...prevMeta,
+            btb_conversations_count: count,
+            btb_conversations_updated_at: new Date().toISOString(),
+          },
+        })
+        .eq("client_name", targetClient);
+    }
+
+    console.log(`[BtB Hook] Updated Delivered!D81 to ${count} active conversations.`);
+    return count;
+  } catch (err) {
+    console.warn("[BtB Hook] Note updating Beyond the Blueprint conversation count:", err.message);
+  }
+}
+
+/**
  * 3A. Verbatim GAS `PullCRMBasedOn`
  */
 export async function pullLiveCrmDealsToSupabaseNative(sheets, ctxOrName) {
@@ -493,6 +611,10 @@ export async function pullLiveCrmDealsToSupabaseNative(sheets, ctxOrName) {
   const gas = createMasterGasInstance(env);
   await gas.PullCRMBasedOn(true);
   await env.finalizeExecution({ summary: "Pulled CRM deals" });
+
+  if (ctx.clientName === "Beyond the Blueprint") {
+    await syncBeyondTheBlueprintConversations_({ masterSS: env.masterSS, ctx, sheets });
+  }
 
   const dfcGrid = env.masterSS.getSheetByName("DataFromCRM")?.valuesGrid || [];
   const kiGrid = env.masterSS.getSheetByName("KeyInfo")?.valuesGrid || [];
@@ -644,6 +766,10 @@ export async function runNativeMasterSync({
       triggerSource: triggerLabel,
       summary: latestAutoSummary,
     });
+
+    if (runCrm && ctx.clientName === "Beyond the Blueprint") {
+      await syncBeyondTheBlueprintConversations_({ masterSS: env.masterSS, ctx, sheets });
+    }
   } catch (runErr) {
     env.console.error(`Uncaught sequence failure: ${runErr.message}`);
     await env
@@ -1061,6 +1187,10 @@ export async function runNativeMasterAmdAction({
       : `${cfg.label} completed in ${(durationMs / 1000).toFixed(1)}s`;
 
   await env.finalizeExecution({ summary: summaryText });
+
+  if (amdAction === "pull_crm" && ctx.clientName === "Beyond the Blueprint") {
+    await syncBeyondTheBlueprintConversations_({ masterSS: env.masterSS, ctx, sheets });
+  }
   markMasterComparisonsFresh(ctx.clientName);
   await invalidateClientActivityCache(ctx.clientName).catch(() => { });
 

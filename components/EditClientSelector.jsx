@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import { EditClientSelectorSkeleton } from "./Skeleton";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
@@ -60,14 +61,18 @@ export default function EditClientSelector({
           {/* Search bar */}
           {sortedClients.length > 5 && (
             <div style={{ marginBottom: "14px", position: "relative" }}>
-              <input
+              <DeferredSearchInput
+                bare
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={searchPlaceholder}
+                showClearButton
+                spinnerSize={13}
+                spinnerRight="10px"
                 style={{
                   width: "100%",
-                  padding: "9px 36px 9px 12px",
+                  padding: "9px 48px 9px 12px",
                   fontSize: "13px",
                   borderRadius: "6px",
                   border: "1px solid #cbd5e1",
@@ -77,28 +82,6 @@ export default function EditClientSelector({
                   color: "#1e293b",
                 }}
               />
-              {search && (
-                <button
-                  type="button"
-                  onClick={() => setSearch("")}
-                  style={{
-                    position: "absolute",
-                    right: "10px",
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    background: "none",
-                    border: "none",
-                    color: "#94a3b8",
-                    cursor: "pointer",
-                    fontSize: "14px",
-                    padding: 0,
-                    lineHeight: 1,
-                  }}
-                  title="Clear search"
-                >
-                  ✕
-                </button>
-              )}
             </div>
           )}
 

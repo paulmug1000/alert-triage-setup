@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import { formatCurrency } from "./JobsView";
 import { isPlaceholderExpense } from "../utils/helpers";
 import OutgoingsNewVendorModal from "./OutgoingsNewVendorModal";
@@ -247,14 +248,18 @@ export default function OutgoingsContractorPickerModal({
               <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", fontSize: "13px", color: "#94a3b8" }}>
                 🔍
               </span>
-              <input
+              <DeferredSearchInput
+                bare
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search contractors..."
+                showClearButton
+                spinnerSize={12}
+                spinnerRight="8px"
                 style={{
                   width: "100%",
-                  padding: "8px 10px 8px 32px",
+                  padding: "8px 44px 8px 32px",
                   borderRadius: "6px",
                   border: "1px solid #cbd5e1",
                   fontSize: "13px",

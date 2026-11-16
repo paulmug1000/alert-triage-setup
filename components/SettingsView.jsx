@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton from "./Skeleton";
 import ClientSettingsView from "./ClientSettingsView";
 import ClientRegistryCard from "./ClientRegistryCard";
@@ -1004,11 +1005,12 @@ export default function SettingsView({
                             </div>
 
                             <div style={{ minWidth: "220px", flex: "1 1 220px", maxWidth: "340px" }}>
-                              <input
+                              <DeferredSearchInput
                                 type="text"
                                 value={securitySearch}
                                 onChange={e => setSecuritySearch(e.target.value)}
                                 placeholder="Filter by email, client, IP..."
+                                showClearButton
                                 style={{
                                   width: "100%",
                                   padding: "6px 12px",

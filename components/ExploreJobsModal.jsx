@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import JobMatchCard from "./JobMatchCard";
 import { isPlaceholderInvoice, isDraftInvoice, toSheetDateFormat, getStatusPill } from "../utils/helpers";
 
@@ -314,15 +315,19 @@ export default function ExploreJobsModal({
             <span style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", fontSize: "14px", color: "#94a3b8" }}>
               🔍
             </span>
-            <input
+            <DeferredSearchInput
+              bare
               type="text"
               autoFocus
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Filter by client name, job title, or project code..."
+              showClearButton
+              spinnerSize={13}
+              spinnerRight="10px"
               style={{
                 width: "100%",
-                padding: "9px 12px 9px 36px",
+                padding: "9px 48px 9px 36px",
                 borderRadius: "8px",
                 border: "1px solid #cbd5e1",
                 fontSize: "14px",
@@ -330,25 +335,6 @@ export default function ExploreJobsModal({
                 boxSizing: "border-box"
               }}
             />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery("")}
-                style={{
-                  position: "absolute",
-                  right: "10px",
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  background: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "#94a3b8",
-                  fontSize: "14px"
-                }}
-              >
-                ✕
-              </button>
-            )}
           </div>
         </div>
 

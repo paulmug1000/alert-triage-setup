@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import AdminWorkbookInspectorModal from "./AdminWorkbookInspectorModal";
 import MasterComparisonSheetModal, {
   prefetchComparisonTab,
@@ -958,13 +959,15 @@ export default function DbView({
             </div>
 
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
-              <input
+              <DeferredSearchInput
                 type="text"
                 value={amQuery}
                 onChange={(e) => setAmQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSearchAlertMemory();
+                  if (e.key === "Enter") handleSearchAlertMemory(e.target.value);
                 }}
+                debounceMs={0}
+                showClearButton
                 placeholder="Search by client, invoice/job ref, summary, or fingerprint hash..."
                 style={{
                   flex: "1 1 240px",

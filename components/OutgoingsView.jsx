@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaOutgoingsTableSkeleton, PmaInvoicesTableSkeleton } from "./Skeleton";
 import OutgoingsEditModal from "./OutgoingsEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
@@ -1889,14 +1890,18 @@ export default function OutgoingsView({
               <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", flex: 1, minWidth: "260px" }}>
                 <div style={{ position: "relative", width: "100%", maxWidth: "340px" }}>
                   <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
-                  <input
+                  <DeferredSearchInput
+                    bare
                     type="text"
                     placeholder="Search vendors..."
                     value={contractorSearch}
                     onChange={e => setContractorSearch(e.target.value)}
+                    showClearButton
+                    spinnerSize={12}
+                    spinnerRight="8px"
                     style={{
                       width: "100%",
-                      padding: "7px 10px 7px 32px",
+                      padding: "7px 44px 7px 32px",
                       borderRadius: "6px",
                       border: "1px solid #cbd5e1",
                       fontSize: "13px",
@@ -1905,15 +1910,6 @@ export default function OutgoingsView({
                       backgroundColor: "#ffffff",
                     }}
                   />
-                  {contractorSearch && (
-                    <button
-                      type="button"
-                      onClick={() => setContractorSearch("")}
-                      style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px" }}
-                    >
-                      ✕
-                    </button>
-                  )}
                 </div>
                 <button
                   type="button"
@@ -2427,14 +2423,18 @@ export default function OutgoingsView({
                 <div style={{ marginBottom: "12px" }}>
                   <div style={{ position: "relative", maxWidth: "340px" }}>
                     <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
-                    <input
+                    <DeferredSearchInput
+                      bare
                       type="text"
                       placeholder="Search jobs..."
                       value={directCostsJobSearch}
                       onChange={e => setDirectCostsJobSearch(e.target.value)}
+                      showClearButton
+                      spinnerSize={12}
+                      spinnerRight="8px"
                       style={{
                         width: "100%",
-                        padding: "7px 10px 7px 32px",
+                        padding: "7px 44px 7px 32px",
                         borderRadius: "6px",
                         border: "1px solid #cbd5e1",
                         fontSize: "13px",
@@ -2443,15 +2443,6 @@ export default function OutgoingsView({
                         backgroundColor: "#ffffff",
                       }}
                     />
-                    {directCostsJobSearch && (
-                      <button
-                        type="button"
-                        onClick={() => setDirectCostsJobSearch("")}
-                        style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px" }}
-                      >
-                        ✕
-                      </button>
-                    )}
                   </div>
                 </div>
 

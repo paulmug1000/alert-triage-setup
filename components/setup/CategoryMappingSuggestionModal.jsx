@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import Spinner from "../Spinner";
+import DeferredSearchInput from "../DeferredSearchInput";
 
 const SECTIONS = [
   { key: "cosStaffCosts", label: "CoS staff costs", max: 10, range: "BA19:BA28", badgeColor: "#DCFCE7", textColor: "#15803D", desc: "Salaries, Wages, Employers NI, Staff Pension, Freelancers" },
@@ -325,11 +326,14 @@ export default function CategoryMappingSuggestionModal({
                     {activeSection.desc}
                   </p>
                 </div>
-                <input
+                <DeferredSearchInput
                   type="text"
                   placeholder="Filter categories..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  showClearButton
+                  spinnerSize={11}
+                  spinnerRight="6px"
                   style={{
                     padding: "6px 12px",
                     borderRadius: "6px",

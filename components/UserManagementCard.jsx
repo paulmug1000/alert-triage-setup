@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 
 const ROLE_OPTIONS = [
   {
@@ -592,16 +593,20 @@ export default function UserManagementCard({
                   Assigned clients ({formClients.length} selected) *
                 </label>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input
+                  <DeferredSearchInput
                     type="text"
                     value={clientSearch}
                     onChange={e => setClientSearch(e.target.value)}
                     placeholder="Filter clients..."
+                    showClearButton
+                    spinnerSize={11}
+                    spinnerRight="6px"
                     style={{
                       padding: "4px 8px",
                       fontSize: 12,
                       borderRadius: 6,
                       border: "1px solid #cbd5e1",
+                      width: 170,
                     }}
                   />
                   <button
@@ -737,11 +742,12 @@ export default function UserManagementCard({
           alignItems: "center",
         }}
       >
-        <input
+        <DeferredSearchInput
           type="text"
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
           placeholder="Search by name, email, or assigned client..."
+          showClearButton
           style={{
             flex: "1 1 240px",
             padding: "8px 12px",

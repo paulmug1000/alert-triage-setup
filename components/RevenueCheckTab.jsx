@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
 import { eomWorkMonthToTargetMonth } from "../utils/helpers";
@@ -802,17 +803,20 @@ export default function RevenueCheckTab({
                 </button>
               </div>
 
-              <input
+              <DeferredSearchInput
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search..."
+                showClearButton
+                spinnerSize={11}
+                spinnerRight="6px"
                 style={{
                   fontSize: "12px",
                   padding: "4px 8px",
                   borderRadius: "6px",
                   border: "1px solid #cbd5e1",
-                  width: "140px"
+                  width: "160px"
                 }}
               />
             </div>

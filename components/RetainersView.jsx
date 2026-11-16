@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import Spinner from "./Spinner";
+import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaRetainersTableSkeleton } from "./Skeleton";
 import RetainersEditModal from "./RetainersEditModal";
 import CreateRetainerModal from "./CreateRetainerModal";
@@ -454,11 +455,12 @@ export default function RetainersView({
               }}
             >
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "12px", flex: "1 1 320px" }}>
-                <input
+                <DeferredSearchInput
                   type="text"
                   placeholder="Search client or job name..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  showClearButton
                   style={{
                     padding: "7px 12px",
                     border: "1px solid #cbd5e1",

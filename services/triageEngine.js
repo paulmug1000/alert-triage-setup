@@ -22,7 +22,7 @@ import {
   checkUninvoicedRevenue_, checkDeletedInvoices_, checkJobStructureErrors_,
   checkDeletedExpenses_, checkUnreceivedExpenses_, checkAutoLogErrors_, checkAutoLogInfiniteLoops_,
   checkStaleUnreconGapExpenses_, checkRetroactiveOutgoingsChanges_, checkQuarantinedPLCategories_,
-  checkPartPaidBalances_
+  checkPartPaidBalances_, isAutoLogTimestampNewer_
 } from "./proactiveChecks.js";
 import {
   checkAllGASLocks, setCRMMode, getToleranceValues,
@@ -190,7 +190,7 @@ export function dispatchAsyncChainStep(baseUrl, payload, bypassToken = "") {
 async function flushAsyncChainDispatch_(dispatchPromise, waitMs = 350) {
   if (!dispatchPromise) return;
   await Promise.race([
-    dispatchPromise.catch(() => {}),
+    dispatchPromise.catch(() => { }),
     new Promise(resolve => setTimeout(resolve, waitMs)),
   ]);
 }
@@ -207,7 +207,7 @@ async function invokeInProcessHandler_(handlerFn, sheets, body) {
   };
   const mockRes = {
     statusCode: 200,
-    setHeader() {},
+    setHeader() { },
     status(code) {
       statusCode = code;
       this.statusCode = code;
@@ -1762,7 +1762,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
             _excludedClientsMemoryCache = excluded;
             _excludedClientsCachedAt = nowMs;
           }
-        } catch (_) {}
+        } catch (_) { }
         return excluded;
       })(),
       getClientManagerClientMap(sheets, automationCommanderSheetId),
@@ -2428,7 +2428,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
         progress: "Refresh complete",
         completedAt: Date.now(),
         updatedAt: Date.now(),
-      }, 300).catch(() => {});
+      }, 300).catch(() => { });
     }
 
     return res.status(200).json({ success: true, stored: precomputedData.totalAlerts });
@@ -2440,7 +2440,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
         error: `Store precomputed failed: ${err.message}`,
         completedAt: Date.now(),
         updatedAt: Date.now(),
-      }, 300).catch(() => {});
+      }, 300).catch(() => { });
     }
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -3538,7 +3538,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
                   if (isLegacyMatch && !oldSnap.timestamp && !oldSnap.occurrenceCount) {
                     situationChanged = true;
                   } else {
-                    const hasNewTimestamp = alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp;
+                    const hasNewTimestamp = isAutoLogTimestampNewer_(alert.timestamp, oldSnap.timestamp);
                     const hasMoreOccurrences = alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount);
                     if (hasNewTimestamp || hasMoreOccurrences) situationChanged = true;
                   }
@@ -3548,7 +3548,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
                   if (isLegacyMatch && !oldSnap.timestamp && !oldSnap.occurrenceCount) {
                     situationChanged = true;
                   } else {
-                    if (alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp) situationChanged = true;
+                    if (isAutoLogTimestampNewer_(alert.timestamp, oldSnap.timestamp)) situationChanged = true;
                     if (alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount)) situationChanged = true;
                   }
                 }
@@ -3557,7 +3557,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
                   if (isLegacyMatch && !oldSnap.timestamp) {
                     situationChanged = true;
                   } else {
-                    if (alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp) situationChanged = true;
+                    if (isAutoLogTimestampNewer_(alert.timestamp, oldSnap.timestamp)) situationChanged = true;
                   }
                 }
                 // 4. Proactive state alerts: key figures changed compared to acknowledged snapshot (evaluated for accepted state)
@@ -3733,7 +3733,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           step: "sweep",
           progress: `Scanning clients (batch ${nextBatchNum})...`,
           updatedAt: Date.now(),
-        }).catch(() => {});
+        }).catch(() => { });
 
         const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
           action: "run_flag_sweep",
@@ -3758,7 +3758,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           step: "build",
           progress: "Generating options (batch 1)...",
           updatedAt: Date.now(),
-        }).catch(() => {});
+        }).catch(() => { });
 
         const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
           action: "build_cached_alert_options",
@@ -3783,7 +3783,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
         error: `Sweep failed at index ${startIdx}: ${err.message}`,
         completedAt: Date.now(),
         updatedAt: Date.now(),
-      }, 300).catch(() => {});
+      }, 300).catch(() => { });
     }
     const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
     await logFlagSweepRun(sheets, acIdSweep, { clientsChecked: clientsChecked || 0, flagsRaised: flagsRaised || 0, errors: (errors || 0) + 1, alertsDelayed: alertsDelayed || 0, alertsWoken: alertsWoken || 0, elapsedSeconds: elapsedS, raisedDetail: raisedDetail || [], isContinuation: startIdx > 0, categoriesRun: categoriesRunStr || "" }).catch(() => { });
@@ -4102,7 +4102,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           step: "build",
           progress: `Generating options (batch ${nextBatch})...`,
           updatedAt: Date.now(),
-        }).catch(() => {});
+        }).catch(() => { });
 
         const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
           action: "build_cached_alert_options",
@@ -4122,7 +4122,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           step: "store",
           progress: "Finalising data...",
           updatedAt: Date.now(),
-        }).catch(() => {});
+        }).catch(() => { });
 
         const storeResult = await invokeInProcessHandler_(handleStorePrecomputed, sheets, {
           action: "store_precomputed",
@@ -4954,7 +4954,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                   if (!sheetNorm) continue;
 
                   if (cleanNorm.includes(sheetNorm) || sheetNorm.includes(cleanNorm) ||
-                      rawNorm.includes(sheetNorm) || sheetNorm.includes(rawNorm)) {
+                    rawNorm.includes(sheetNorm) || sheetNorm.includes(rawNorm)) {
                     outgoingsVendorRow = i + 13;
                     resolvedVendorName = sheetVendor;
                     break;
@@ -5954,23 +5954,23 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const isJobCostingTab = isJobCostingStyle({ headers: tabRows[0] || [] });
           const APP_FIELD_CONFIG = isJobCostingTab
             ? [
-                { name: "Client name", sheet: client, crm: crmClient, col: "A", writable: true },
-                { name: "Job name", sheet: jobName, crm: crmJob, col: "B", writable: true },
-                { name: "Revenue", sheet: revenue, crm: crmRevenue, col: "I", writable: true },
-                { name: "Direct costs", sheet: dirCosts, crm: crmDirCosts, col: "AH", writable: false },
-                { name: "Start date", sheet: startDate, crm: crmStart, col: "F", writable: true },
-                { name: "End date", sheet: endDate, crm: crmEnd, col: "G", writable: true },
-                { name: "% Likelihood", sheet: likelihood, crm: crmLikely, col: "AN", writable: tabName === "Pipeline" },
-              ]
+              { name: "Client name", sheet: client, crm: crmClient, col: "A", writable: true },
+              { name: "Job name", sheet: jobName, crm: crmJob, col: "B", writable: true },
+              { name: "Revenue", sheet: revenue, crm: crmRevenue, col: "I", writable: true },
+              { name: "Direct costs", sheet: dirCosts, crm: crmDirCosts, col: "AH", writable: false },
+              { name: "Start date", sheet: startDate, crm: crmStart, col: "F", writable: true },
+              { name: "End date", sheet: endDate, crm: crmEnd, col: "G", writable: true },
+              { name: "% Likelihood", sheet: likelihood, crm: crmLikely, col: "AN", writable: tabName === "Pipeline" },
+            ]
             : [
-                { name: "Client name", sheet: client, crm: crmClient, col: "A", writable: true },
-                { name: "Job name", sheet: jobName, crm: crmJob, col: "B", writable: true },
-                { name: "Revenue", sheet: revenue, crm: crmRevenue, col: "AG", writable: true },
-                { name: "Direct costs", sheet: dirCosts, crm: crmDirCosts, col: "AH", writable: true },
-                { name: "Start date", sheet: startDate, crm: crmStart, col: "AL", writable: true },
-                { name: "End date", sheet: endDate, crm: crmEnd, col: "AM", writable: true },
-                { name: "% Likelihood", sheet: likelihood, crm: crmLikely, col: "AN", writable: tabName === "Pipeline" },
-              ];
+              { name: "Client name", sheet: client, crm: crmClient, col: "A", writable: true },
+              { name: "Job name", sheet: jobName, crm: crmJob, col: "B", writable: true },
+              { name: "Revenue", sheet: revenue, crm: crmRevenue, col: "AG", writable: true },
+              { name: "Direct costs", sheet: dirCosts, crm: crmDirCosts, col: "AH", writable: true },
+              { name: "Start date", sheet: startDate, crm: crmStart, col: "AL", writable: true },
+              { name: "End date", sheet: endDate, crm: crmEnd, col: "AM", writable: true },
+              { name: "% Likelihood", sheet: likelihood, crm: crmLikely, col: "AN", writable: tabName === "Pipeline" },
+            ];
 
           if (jobRow) {
             // Collect child rows to safely batch structural updates (Client/Job names)
@@ -6230,23 +6230,23 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         const isJobCostingTab = isJobCostingStyle({ headers: tabRows[0] || [] });
         const FIELD_CONFIG = isJobCostingTab
           ? [
-              { name: "Client name", crm: crmClient, sheet: shtClient, col: "A", writable: true },
-              { name: "Job name", crm: crmJob, sheet: shtJob, col: "B", writable: true },
-              { name: "Revenue", crm: crmRevenue, sheet: shtRevenue, col: "I", writable: true },
-              { name: "Direct costs", crm: crmDirCosts, sheet: shtDirCosts, col: "AH", writable: false },
-              { name: "Start date", crm: crmStart, sheet: shtStart, col: "F", writable: true },
-              { name: "End date", crm: crmEnd, sheet: shtEnd, col: "G", writable: true },
-              { name: "% Likelihood", crm: crmLikely, sheet: shtLikely, col: "AN", writable: tabName === "Pipeline" },
-            ]
+            { name: "Client name", crm: crmClient, sheet: shtClient, col: "A", writable: true },
+            { name: "Job name", crm: crmJob, sheet: shtJob, col: "B", writable: true },
+            { name: "Revenue", crm: crmRevenue, sheet: shtRevenue, col: "I", writable: true },
+            { name: "Direct costs", crm: crmDirCosts, sheet: shtDirCosts, col: "AH", writable: false },
+            { name: "Start date", crm: crmStart, sheet: shtStart, col: "F", writable: true },
+            { name: "End date", crm: crmEnd, sheet: shtEnd, col: "G", writable: true },
+            { name: "% Likelihood", crm: crmLikely, sheet: shtLikely, col: "AN", writable: tabName === "Pipeline" },
+          ]
           : [
-              { name: "Client name", crm: crmClient, sheet: shtClient, col: "A", writable: true },
-              { name: "Job name", crm: crmJob, sheet: shtJob, col: "B", writable: true },
-              { name: "Revenue", crm: crmRevenue, sheet: shtRevenue, col: "AG", writable: true },
-              { name: "Direct costs", crm: crmDirCosts, sheet: shtDirCosts, col: "AH", writable: true },
-              { name: "Start date", crm: crmStart, sheet: shtStart, col: "AL", writable: true },
-              { name: "End date", crm: crmEnd, sheet: shtEnd, col: "AM", writable: true },
-              { name: "% Likelihood", crm: crmLikely, sheet: shtLikely, col: "AN", writable: tabName === "Pipeline" },
-            ];
+            { name: "Client name", crm: crmClient, sheet: shtClient, col: "A", writable: true },
+            { name: "Job name", crm: crmJob, sheet: shtJob, col: "B", writable: true },
+            { name: "Revenue", crm: crmRevenue, sheet: shtRevenue, col: "AG", writable: true },
+            { name: "Direct costs", crm: crmDirCosts, sheet: shtDirCosts, col: "AH", writable: true },
+            { name: "Start date", crm: crmStart, sheet: shtStart, col: "AL", writable: true },
+            { name: "End date", crm: crmEnd, sheet: shtEnd, col: "AM", writable: true },
+            { name: "% Likelihood", crm: crmLikely, sheet: shtLikely, col: "AN", writable: tabName === "Pipeline" },
+          ];
 
         if (jobRow) {
           // Collect child rows to safely batch structural updates (Client/Job names)
@@ -8623,77 +8623,77 @@ export async function handleAcceptOption(req, res, sheets) {
         const isJobCosting = isJobCostingTabForCreate;
         const confRechargedPairs = writeTab === "Confirmed"
           ? [
-              ["R", numVal(d.rechargedExpenses)],
-              ["AU", numVal(d.inv1OfWhichRechgd)],
-              ["AV", strVal(d.inv1CostMonth)],
-              ["BB", numVal(d.inv2OfWhichRechgd)],
-              ["BC", strVal(d.inv2CostMonth)],
-              ["BI", numVal(d.inv3OfWhichRechgd)],
-              ["BJ", strVal(d.inv3CostMonth)],
-            ]
+            ["R", numVal(d.rechargedExpenses)],
+            ["AU", numVal(d.inv1OfWhichRechgd)],
+            ["AV", strVal(d.inv1CostMonth)],
+            ["BB", numVal(d.inv2OfWhichRechgd)],
+            ["BC", strVal(d.inv2CostMonth)],
+            ["BI", numVal(d.inv3OfWhichRechgd)],
+            ["BJ", strVal(d.inv3CostMonth)],
+          ]
           : [];
         const fieldMap = isJobCosting
           ? [
-              ["A", strVal(d.clientName)],
-              ["B", strVal(d.jobName)],
-              ["C", strVal(d.projectCode)],
-              ["D", toSheetDateFormat(new Date())],
-              ["F", strVal(d.startDate)],
-              ["G", strVal(d.endDate)],
-              ["I", numVal(d.revenue)],
-              ["AI", strVal(d.vatYesNo || "No")],
-              ["AJ", strVal(d.projectType || "Project")],
-              // Inv1
-              ["AP", numVal(d.inv1Amount)],
-              ["AQ", strVal(d.inv1Ref)],
-              ["AR", strVal(d.inv1SentDate)],
-              ["AS", daysVal(d.inv1DaysToPay)],
-              ["AT", strVal(d.inv1Status || (d.inv1Amount ? "Sent" : ""))],
-              // Inv2 (if present)
-              ["AW", numVal(d.inv2Amount || "")],
-              ["AX", strVal(d.inv2Ref || "")],
-              ["AY", strVal(d.inv2SentDate || "")],
-              ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
-              ["BA", strVal(d.inv2Status || "")],
-              // Inv3 (if present)
-              ["BD", numVal(d.inv3Amount || "")],
-              ["BE", strVal(d.inv3Ref || "")],
-              ["BF", strVal(d.inv3SentDate || "")],
-              ["BG", d.inv3Amount ? daysVal(d.inv3DaysToPay) : ""],
-              ["BH", strVal(d.inv3Status || "")],
-              ...confRechargedPairs,
-            ]
+            ["A", strVal(d.clientName)],
+            ["B", strVal(d.jobName)],
+            ["C", strVal(d.projectCode)],
+            ["D", toSheetDateFormat(new Date())],
+            ["F", strVal(d.startDate)],
+            ["G", strVal(d.endDate)],
+            ["I", numVal(d.revenue)],
+            ["AI", strVal(d.vatYesNo || "No")],
+            ["AJ", strVal(d.projectType || "Project")],
+            // Inv1
+            ["AP", numVal(d.inv1Amount)],
+            ["AQ", strVal(d.inv1Ref)],
+            ["AR", strVal(d.inv1SentDate)],
+            ["AS", daysVal(d.inv1DaysToPay)],
+            ["AT", strVal(d.inv1Status || (d.inv1Amount ? "Sent" : ""))],
+            // Inv2 (if present)
+            ["AW", numVal(d.inv2Amount || "")],
+            ["AX", strVal(d.inv2Ref || "")],
+            ["AY", strVal(d.inv2SentDate || "")],
+            ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
+            ["BA", strVal(d.inv2Status || "")],
+            // Inv3 (if present)
+            ["BD", numVal(d.inv3Amount || "")],
+            ["BE", strVal(d.inv3Ref || "")],
+            ["BF", strVal(d.inv3SentDate || "")],
+            ["BG", d.inv3Amount ? daysVal(d.inv3DaysToPay) : ""],
+            ["BH", strVal(d.inv3Status || "")],
+            ...confRechargedPairs,
+          ]
           : [
-              ["A", strVal(d.clientName)],
-              ["B", strVal(d.jobName)],
-              ["C", strVal(d.projectCode)],
-              ["D", toSheetDateFormat(new Date())],
-              ["AG", numVal(d.revenue)],
-              ["AH", numVal(d.directCosts || "0")],
-              ["AI", strVal(d.vatYesNo || "No")],
-              ["AJ", strVal(d.projectType || "Project")],
-              ["AL", strVal(d.startDate)],
-              ["AM", strVal(d.endDate)],
-              // Inv1
-              ["AP", numVal(d.inv1Amount)],
-              ["AQ", strVal(d.inv1Ref)],
-              ["AR", strVal(d.inv1SentDate)],
-              ["AS", daysVal(d.inv1DaysToPay)],
-              ["AT", strVal(d.inv1Status || (d.inv1Amount ? "Sent" : ""))],
-              // Inv2 (if present)
-              ["AW", numVal(d.inv2Amount || "")],
-              ["AX", strVal(d.inv2Ref || "")],
-              ["AY", strVal(d.inv2SentDate || "")],
-              ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
-              ["BA", strVal(d.inv2Status || "")],
-              // Inv3 (if present)
-              ["BD", numVal(d.inv3Amount || "")],
-              ["BE", strVal(d.inv3Ref || "")],
-              ["BF", strVal(d.inv3SentDate || "")],
-              ["BG", d.inv3Amount ? daysVal(d.inv3DaysToPay) : ""],
-              ["BH", strVal(d.inv3Status || "")],
-              ...confRechargedPairs,
-            ];
+            ["A", strVal(d.clientName)],
+            ["B", strVal(d.jobName)],
+            ["C", strVal(d.projectCode)],
+            ["D", toSheetDateFormat(new Date())],
+            ["AG", numVal(d.revenue)],
+            ["AH", numVal(d.directCosts || "0")],
+            ["AI", strVal(d.vatYesNo || "No")],
+            ["AJ", strVal(d.projectType || "Project")],
+            ["AL", strVal(d.startDate)],
+            ["AM", strVal(d.endDate)],
+            // Inv1
+            ["AP", numVal(d.inv1Amount)],
+            ["AQ", strVal(d.inv1Ref)],
+            ["AR", strVal(d.inv1SentDate)],
+            ["AS", daysVal(d.inv1DaysToPay)],
+            ["AT", strVal(d.inv1Status || (d.inv1Amount ? "Sent" : ""))],
+            // Inv2 (if present)
+            ["AW", numVal(d.inv2Amount || "")],
+            ["AX", strVal(d.inv2Ref || "")],
+            ["AY", strVal(d.inv2SentDate || "")],
+            ["AZ", d.inv2Amount ? daysVal(d.inv2DaysToPay) : ""],
+            ["BA", strVal(d.inv2Status || "")],
+            // Inv3 (if present)
+            ["BD", numVal(d.inv3Amount || "")],
+            ["BE", strVal(d.inv3Ref || "")],
+            ["BF", strVal(d.inv3SentDate || "")],
+            ["BG", d.inv3Amount ? daysVal(d.inv3DaysToPay) : ""],
+            ["BH", strVal(d.inv3Status || "")],
+            ...confRechargedPairs,
+          ];
 
         for (const [col, val] of fieldMap) {
           if (val !== "") createCellUpdates.push({ cell: `${col}${newRow}`, value: val });
@@ -9123,26 +9123,26 @@ export async function handleAcceptOption(req, res, sheets) {
     if ((writeTab === "Confirmed" || writeTab === "Pipeline") && cellUpdates.length > 0) {
       const invColToSlot = writeTab === "Confirmed"
         ? {
-            AP: { s: 1, f: "a" }, AQ: { s: 1, f: "ref" }, AR: { s: 1, f: "sent" }, AS: { s: 1, f: "days" }, AT: { s: 1, f: "st" }, AU: { s: 1, f: "rech" }, AV: { s: 1, f: "cm" },
-            AW: { s: 2, f: "a" }, AX: { s: 2, f: "ref" }, AY: { s: 2, f: "sent" }, AZ: { s: 2, f: "days" }, BA: { s: 2, f: "st" }, BB: { s: 2, f: "rech" }, BC: { s: 2, f: "cm" },
-            BD: { s: 3, f: "a" }, BE: { s: 3, f: "ref" }, BF: { s: 3, f: "sent" }, BG: { s: 3, f: "days" }, BH: { s: 3, f: "st" }, BI: { s: 3, f: "rech" }, BJ: { s: 3, f: "cm" },
-          }
+          AP: { s: 1, f: "a" }, AQ: { s: 1, f: "ref" }, AR: { s: 1, f: "sent" }, AS: { s: 1, f: "days" }, AT: { s: 1, f: "st" }, AU: { s: 1, f: "rech" }, AV: { s: 1, f: "cm" },
+          AW: { s: 2, f: "a" }, AX: { s: 2, f: "ref" }, AY: { s: 2, f: "sent" }, AZ: { s: 2, f: "days" }, BA: { s: 2, f: "st" }, BB: { s: 2, f: "rech" }, BC: { s: 2, f: "cm" },
+          BD: { s: 3, f: "a" }, BE: { s: 3, f: "ref" }, BF: { s: 3, f: "sent" }, BG: { s: 3, f: "days" }, BH: { s: 3, f: "st" }, BI: { s: 3, f: "rech" }, BJ: { s: 3, f: "cm" },
+        }
         : {
-            AP: { s: 1, f: "a" }, AQ: { s: 1, f: "ref" }, AR: { s: 1, f: "sent" }, AS: { s: 1, f: "days" }, AT: { s: 1, f: "st" },
-            AW: { s: 2, f: "a" }, AX: { s: 2, f: "ref" }, AY: { s: 2, f: "sent" }, AZ: { s: 2, f: "days" }, BA: { s: 2, f: "st" },
-            BD: { s: 3, f: "a" }, BE: { s: 3, f: "ref" }, BF: { s: 3, f: "sent" }, BG: { s: 3, f: "days" }, BH: { s: 3, f: "st" },
-          };
+          AP: { s: 1, f: "a" }, AQ: { s: 1, f: "ref" }, AR: { s: 1, f: "sent" }, AS: { s: 1, f: "days" }, AT: { s: 1, f: "st" },
+          AW: { s: 2, f: "a" }, AX: { s: 2, f: "ref" }, AY: { s: 2, f: "sent" }, AZ: { s: 2, f: "days" }, BA: { s: 2, f: "st" },
+          BD: { s: 3, f: "a" }, BE: { s: 3, f: "ref" }, BF: { s: 3, f: "sent" }, BG: { s: 3, f: "days" }, BH: { s: 3, f: "st" },
+        };
       const invSlotToCol = writeTab === "Confirmed"
         ? {
-            1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
-            2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
-            3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH", rech: "BI", cm: "BJ" },
-          }
+          1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT", rech: "AU", cm: "AV" },
+          2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA", rech: "BB", cm: "BC" },
+          3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH", rech: "BI", cm: "BJ" },
+        }
         : {
-            1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
-            2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
-            3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
-          };
+          1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
+          2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
+          3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+        };
       const expColToSlot = {
         BX: { s: 1, f: "d" }, BY: { s: 1, f: "a" }, BZ: { s: 1, f: "v" }, CA: { s: 1, f: "dt" }, CB: { s: 1, f: "dp" }, CC: { s: 1, f: "st" }, CD: { s: 1, f: "id" },
         CE: { s: 2, f: "d" }, CF: { s: 2, f: "a" }, CG: { s: 2, f: "v" }, CH: { s: 2, f: "dt" }, CI: { s: 2, f: "dp" }, CJ: { s: 2, f: "st" }, CK: { s: 2, f: "id" },
@@ -9469,7 +9469,7 @@ export async function handleAcceptOption(req, res, sheets) {
             spreadsheetId: alert.clientId,
             requestBody: { requests: [] },
             _flushPendingRecompute: true,
-          }).catch(() => {});
+          }).catch(() => { });
         }
       }
 

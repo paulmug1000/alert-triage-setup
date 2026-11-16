@@ -1730,6 +1730,65 @@ export async function checkRetroactiveOutgoingsChanges_(clientName, masterSheetI
   return alerts;
 }
 
+export function parseAutoLogTimestampMs_(ts) {
+  if (!ts) return null;
+  if (ts instanceof Date) {
+    const t = ts.getTime();
+    return Number.isNaN(t) ? null : t;
+  }
+  if (typeof ts === "number" && Number.isFinite(ts) && ts > 20000 && ts < 90000) {
+    const dt = serialToDate(ts);
+    return dt && !Number.isNaN(dt.getTime()) ? dt.getTime() : null;
+  }
+  const str = String(ts).trim();
+  if (!str) return null;
+  if (/^\d{5}(?:\.\d+)?$/.test(str)) {
+    const num = parseFloat(str);
+    if (Number.isFinite(num) && num > 20000 && num < 90000) {
+      const dt = serialToDate(num);
+      return dt && !Number.isNaN(dt.getTime()) ? dt.getTime() : null;
+    }
+  }
+  const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const mSheet = str.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (mSheet) {
+    const mon = months[mSheet[2].toLowerCase()];
+    if (mon !== undefined) {
+      const yr = mSheet[3].length === 2 ? 2000 + parseInt(mSheet[3], 10) : parseInt(mSheet[3], 10);
+      const dd = parseInt(mSheet[1], 10);
+      const hh = mSheet[4] ? parseInt(mSheet[4], 10) : 0;
+      const mm = mSheet[5] ? parseInt(mSheet[5], 10) : 0;
+      const ss = mSheet[6] ? parseInt(mSheet[6], 10) : 0;
+      return Date.UTC(yr, mon, dd, hh, mm, ss);
+    }
+  }
+  const mUk = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (mUk) {
+    const yr = mUk[3].length === 2 ? 2000 + parseInt(mUk[3], 10) : parseInt(mUk[3], 10);
+    const mon = parseInt(mUk[2], 10) - 1;
+    const dd = parseInt(mUk[1], 10);
+    const hh = mUk[4] ? parseInt(mUk[4], 10) : 0;
+    const mm = mUk[5] ? parseInt(mUk[5], 10) : 0;
+    const ss = mUk[6] ? parseInt(mUk[6], 10) : 0;
+    return Date.UTC(yr, mon, dd, hh, mm, ss);
+  }
+  const parsed = Date.parse(str);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+export function isAutoLogTimestampNewer_(newTs, oldTs) {
+  if (!newTs || !oldTs) return false;
+  const newStr = String(newTs).trim();
+  const oldStr = String(oldTs).trim();
+  if (!newStr || !oldStr || newStr === oldStr) return false;
+  const newMs = parseAutoLogTimestampMs_(newTs);
+  const oldMs = parseAutoLogTimestampMs_(oldTs);
+  if (newMs !== null && oldMs !== null) {
+    return newMs > oldMs;
+  }
+  return newStr !== oldStr;
+}
+
 function formatAutoLogTimestamp_(ts) {
   if (!ts) return "";
   if (ts instanceof Date && !Number.isNaN(ts.getTime())) {
@@ -1841,16 +1900,18 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
     for (const [key, history] of transitionHistory.entries()) {
       if (history.length < 2) continue;
 
+      // Pair from newest to oldest so the latest oscillation is anchored to the most recent
+      // reversal and does not flip-flop when older transitions age out of the 100-row slice.
       const completedOscillations = [];
-      let i = 0;
-      while (i < history.length) {
-        const tStart = history[i];
+      let i = history.length - 1;
+      while (i >= 0) {
+        const tEnd = history[i];
         let revIdx = -1;
-        for (let j = i + 1; j < history.length; j++) {
-          const tNext = history[j];
+        for (let j = i - 1; j >= 0; j--) {
+          const tPrev = history[j];
           if (
-            tNext.fromVal.toLowerCase() === tStart.toVal.toLowerCase() &&
-            tNext.toVal.toLowerCase() === tStart.fromVal.toLowerCase()
+            tPrev.fromVal.toLowerCase() === tEnd.toVal.toLowerCase() &&
+            tPrev.toVal.toLowerCase() === tEnd.fromVal.toLowerCase()
           ) {
             revIdx = j;
             break;
@@ -1858,18 +1919,19 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
         }
 
         if (revIdx !== -1) {
-          const tEnd = history[revIdx];
+          const tStart = history[revIdx];
           completedOscillations.push({
             tStart,
             tEnd,
             intraRun: tStart.runIndex === tEnd.runIndex,
           });
-          // Advance past the reversing transition to ensure distinct cycles
-          i = revIdx + 1;
+          // Advance past the opening transition to ensure distinct cycles
+          i = revIdx - 1;
         } else {
-          i++;
+          i--;
         }
       }
+      completedOscillations.reverse();
 
       // Require at least TWO full oscillations / flip-flops
       if (completedOscillations.length < 2) continue;

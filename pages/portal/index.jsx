@@ -27,20 +27,24 @@ import Spinner from "../../components/Spinner";
 export default function PortalPage({
   initialUser = null,
   initialSetupClient = null,
-  initialSetupStatus = null
+  initialSetupStatus = null,
+  initialClients = null,
+  initialSelectedClient = null,
+  initialPayload = null,
+  initialPerformanceData = null
 }) {
   const router = useRouter();
   const auth = useAuth(initialUser);
   const { isAuthenticated, authChecking, user, logout } = auth;
 
-  const [clients, setClients] = useState([]);
-  const [selectedClient, setSelectedClient] = useState(
-    () => initialSetupClient || initialUser?.initialSetupClient || null
-  );
-  const [clientsLoaded, setClientsLoaded] = useState(false);
-  const clientsFetchedRef = useRef(false);
+  const ssrActiveClient = initialSetupClient || initialSelectedClient || initialUser?.initialSetupClient || null;
+
+  const [clients, setClients] = useState(() => (Array.isArray(initialClients) ? initialClients : []));
+  const [selectedClient, setSelectedClient] = useState(() => ssrActiveClient);
+  const [clientsLoaded, setClientsLoaded] = useState(() => Boolean(Array.isArray(initialClients) && initialClients.length > 0));
+  const clientsFetchedRef = useRef(Boolean(Array.isArray(initialClients) && initialClients.length > 0));
   const lastLoggedClientRef = useRef(null);
-  const activeClientSheetIdRef = useRef(null);
+  const activeClientSheetIdRef = useRef(ssrActiveClient?.clientSheetId || null);
   const [activeView, setActiveView] = useState("month");
 
   // Setup Mode & Tool Connection State
@@ -126,13 +130,17 @@ export default function PortalPage({
     }
   }, [router.query.view]);
 
-  // Month View live payload state
-  const [payload, setPayload] = useState(null);
+  // Month View live payload state (hydrated from SSR when available)
+  const [payload, setPayload] = useState(() => initialPayload || null);
   const [loadingPayload, setLoadingPayload] = useState(false);
   const [payloadError, setPayloadError] = useState(null);
 
-  // Performance Views data state (FY, YTD, Breakdowns)
-  const [performanceData, setPerformanceData] = useState(null);
+  // Performance Views data state (FY, YTD, Breakdowns - hydrated from SSR when available)
+  const [performanceData, setPerformanceData] = useState(() =>
+    initialPerformanceData && ssrActiveClient?.clientSheetId
+      ? { ...initialPerformanceData, clientSheetId: ssrActiveClient.clientSheetId }
+      : initialPerformanceData || null
+  );
   const [loadingPerformance, setLoadingPerformance] = useState(false);
   const [perfError, setPerfError] = useState(null);
 
@@ -151,9 +159,12 @@ export default function PortalPage({
   const [loadingBudget, setLoadingBudget] = useState(false);
   const [budgetError, setBudgetError] = useState(null);
 
+  const inFlightPayloadRef = useRef(false);
+
   const fetchPayload = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
     if (client.clientSheetId !== activeClientSheetIdRef.current) return;
+    inFlightPayloadRef.current = true;
     if (!isSilent) {
       setLoadingPayload(true);
       setPayloadError(null);
@@ -173,6 +184,9 @@ export default function PortalPage({
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.payload) {
         setPayload(data.payload);
+        if (data.performanceData) {
+          setPerformanceData({ ...data.performanceData, clientSheetId: client.clientSheetId });
+        }
       } else if (!isSilent) {
         throw new Error(data.error || "Failed to load client data");
       }
@@ -184,6 +198,7 @@ export default function PortalPage({
       }
     } finally {
       clearTimeout(timeoutId);
+      inFlightPayloadRef.current = false;
       if (!isSilent) {
         setLoadingPayload(false);
       }
@@ -205,7 +220,10 @@ export default function PortalPage({
     loadingBudget,
   };
 
-  const lastFetchedPayloadSheetIdRef = useRef(null);
+  const lastFetchedPayloadSheetIdRef = useRef(
+    initialPayload && ssrActiveClient?.clientSheetId ? ssrActiveClient.clientSheetId : null
+  );
+  const ssrSilentRevalidatedRef = useRef(false);
   useEffect(() => {
     const sheetId = selectedClient?.clientSheetId || null;
     if (!sheetId) {
@@ -227,8 +245,14 @@ export default function PortalPage({
       setKeyData(null);
       setBudgetData(null);
       fetchPayload(selectedClient, false);
+    } else if (!ssrSilentRevalidatedRef.current && initialPayload) {
+      ssrSilentRevalidatedRef.current = true;
+      const cachedAtMs = initialPayload._cachedAt ? new Date(initialPayload._cachedAt).getTime() : 0;
+      if (!cachedAtMs || Date.now() - cachedAtMs > 60000 || !performanceData) {
+        fetchPayload(selectedClient, false, true);
+      }
     }
-  }, [selectedClient, fetchPayload, user, setupStatus?.setupMode]);
+  }, [selectedClient, fetchPayload, user, setupStatus?.setupMode, initialPayload, performanceData]);
 
   const fetchPerformance = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
@@ -269,14 +293,23 @@ export default function PortalPage({
     }
   }, []);
 
-  // Fetch performance data when switching to a performance view or budget view (for actuals), or home view (for at-a-glance sparklines)
+  // Fetch performance data when switching to a performance view or budget view (for actuals), or home view (if payload didn't bundle it)
   useEffect(() => {
-    if (["month", "dashboard", "ytd", "perfBreakdown", "scenarios", "viewBudget", "budgetVariance"].includes(activeView) && selectedClient?.clientSheetId) {
+    if (["dashboard", "ytd", "perfBreakdown", "scenarios", "viewBudget", "budgetVariance"].includes(activeView) && selectedClient?.clientSheetId) {
       if (!performanceData && !loadingPerformance) {
         fetchPerformance(selectedClient, false);
       }
+    } else if (activeView === "month" && selectedClient?.clientSheetId) {
+      if (payload && !loadingPayload && !inFlightPayloadRef.current && !performanceData && !loadingPerformance) {
+        const timer = setTimeout(() => {
+          if (!inFlightPayloadRef.current && !dataStateRef.current.performanceData && !dataStateRef.current.loadingPerformance) {
+            fetchPerformance(selectedClient, false);
+          }
+        }, 250);
+        return () => clearTimeout(timer);
+      }
     }
-  }, [activeView, selectedClient, performanceData, loadingPerformance, fetchPerformance]);
+  }, [activeView, selectedClient, payload, loadingPayload, performanceData, loadingPerformance, fetchPerformance]);
 
   const fetchCashflow = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
@@ -380,7 +413,6 @@ export default function PortalPage({
   const handleRefreshPayload = () => {
     if (selectedClient) {
       fetchPayload(selectedClient, true);
-      fetchPerformance(selectedClient, true);
     }
   };
 
@@ -458,53 +490,44 @@ export default function PortalPage({
     }
   }, [activeView, selectedClient, performanceData, loadingPerformance, keyData, loadingKeyData, fetchPerformance, fetchKeyData]);
 
-  // Background preloading queue: once payload is loaded for the active client, preload remaining sections
-  // without cancelling timers when individual state slices update.
-  const hasPayloadLoaded = Boolean(payload);
+  // Background preloading queue: ONLY after the Pulse Home Page (payload + performanceData) has 100% finished
+  // loading, preload secondary sections with generous idle spacing so Home Page speed is never contested.
+  const hasHomeFullyLoaded = Boolean(payload && performanceData && !loadingPayload && !loadingPerformance);
   const currentClientSheetId = selectedClient?.clientSheetId || null;
   useEffect(() => {
-    if (!hasPayloadLoaded || !currentClientSheetId) return;
-
-    const t1 = setTimeout(() => {
-      const s = dataStateRef.current;
-      if (s.selectedClient?.clientSheetId !== currentClientSheetId) return;
-      if (!s.performanceData && !s.loadingPerformance) {
-        fetchPerformance(s.selectedClient, false);
-      }
-    }, 50);
+    if (!hasHomeFullyLoaded || !currentClientSheetId) return;
 
     const t2 = setTimeout(() => {
       const s = dataStateRef.current;
       if (s.selectedClient?.clientSheetId !== currentClientSheetId) return;
       if (!s.keyData && !s.loadingKeyData) {
-        fetchKeyData(s.selectedClient, false);
+        fetchKeyData(s.selectedClient, false, true);
       }
-    }, 150);
+    }, 2500);
 
     const t3 = setTimeout(() => {
       const s = dataStateRef.current;
       if (s.selectedClient?.clientSheetId !== currentClientSheetId) return;
       if (!s.cashflowData && !s.loadingCashflow) {
-        fetchCashflow(s.selectedClient, false);
+        fetchCashflow(s.selectedClient, false, true);
       }
-    }, 300);
+    }, 5000);
 
     const t4 = setTimeout(() => {
       const s = dataStateRef.current;
       if (s.selectedClient?.clientSheetId !== currentClientSheetId) return;
       const clientHasBudget = Boolean(s.payload?.clientInfo?.hasBudget ?? s.payload?.hasBudget);
       if (clientHasBudget && !s.budgetData && !s.loadingBudget) {
-        fetchBudget(s.selectedClient, false);
+        fetchBudget(s.selectedClient, false, true);
       }
-    }, 450);
+    }, 7500);
 
     return () => {
-      clearTimeout(t1);
       clearTimeout(t2);
       clearTimeout(t3);
       clearTimeout(t4);
     };
-  }, [hasPayloadLoaded, currentClientSheetId, fetchPerformance, fetchKeyData, fetchCashflow, fetchBudget]);
+  }, [hasHomeFullyLoaded, currentClientSheetId, fetchKeyData, fetchCashflow, fetchBudget]);
 
   const handleRefreshBudget = () => {
     if (selectedClient) {
@@ -739,6 +762,7 @@ export default function PortalPage({
           if (initial && typeof window !== "undefined") {
             localStorage.setItem("pulse_portal_client", initial.clientName);
             localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(initial));
+            document.cookie = `pulse_portal_client=${encodeURIComponent(initial.clientName)}; path=/; max-age=31536000; SameSite=Lax`;
           }
           if (initial) {
             logWorkspaceAccess(initial);
@@ -767,6 +791,8 @@ export default function PortalPage({
     if (client?.setupStatus) {
       setSetupStatus(client.setupStatus);
     } else if (!client?.setupMode) {
+      setSetupStatus({ setupMode: false });
+    } else {
       setSetupStatus(null);
     }
     setSelectedClient(client);
@@ -796,6 +822,7 @@ export default function PortalPage({
       if (typeof window !== "undefined") {
         localStorage.setItem("pulse_portal_client", client.clientName);
         localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(client));
+        document.cookie = `pulse_portal_client=${encodeURIComponent(client.clientName)}; path=/; max-age=31536000; SameSite=Lax`;
       }
       logWorkspaceAccess(client);
     } else {
@@ -803,6 +830,7 @@ export default function PortalPage({
       if (typeof window !== "undefined") {
         localStorage.removeItem("pulse_portal_client");
         localStorage.removeItem("pulse_portal_active_client_obj");
+        document.cookie = "pulse_portal_client=; path=/; max-age=0; SameSite=Lax";
       }
     }
     // Clean URL: Keep URL as clean /pulse using history.replaceState to avoid Next.js router navigation side-effects
@@ -866,20 +894,33 @@ export default function PortalPage({
     if (typeof window !== "undefined") {
       localStorage.removeItem("pulse_portal_client");
       localStorage.removeItem("pulse_portal_active_client_obj");
+      document.cookie = "pulse_portal_client=; path=/; max-age=0; SameSite=Lax";
     }
     await logout();
   };
 
-  // Fetch setup status for selected client
+  // Fetch detailed setup status only when the client is in setupMode or an admin is previewing setup
   useEffect(() => {
     if (!selectedClient?.clientName) {
       setSetupStatus(null);
       return;
     }
 
+    if (!selectedClient.setupMode && !isPreviewSetup) {
+      setSetupStatus((prev) => (prev?.setupMode === false ? prev : { setupMode: false }));
+      setLoadingSetupStatus(false);
+      return;
+    }
+
+    if (selectedClient.setupStatus && !isPreviewSetup) {
+      setSetupStatus(selectedClient.setupStatus);
+      setLoadingSetupStatus(false);
+      return;
+    }
+
     let isMounted = true;
     setLoadingSetupStatus(true);
-    fetch(`/api/setup/status?clientName=${encodeURIComponent(selectedClient.clientName)}&masterSheetId=${encodeURIComponent(selectedClient.masterSheetId || "")}`)
+    fetch(`/api/setup/status?clientName=${encodeURIComponent(selectedClient.clientName)}&masterSheetId=${encodeURIComponent(selectedClient.masterSheetId || "")}&clientSheetId=${encodeURIComponent(selectedClient.clientSheetId || "")}`)
       .then(r => r.json())
       .then(d => {
         if (isMounted && d.success && d.status) {
@@ -892,7 +933,7 @@ export default function PortalPage({
       });
 
     return () => { isMounted = false; };
-  }, [selectedClient?.clientName, selectedClient?.masterSheetId]);
+  }, [selectedClient?.clientName, selectedClient?.masterSheetId, selectedClient?.clientSheetId, selectedClient?.setupMode, selectedClient?.setupStatus, isPreviewSetup]);
 
   const hasBudget = payload ? Boolean(payload.clientInfo?.hasBudget ?? payload.hasBudget) : true;
   const hasCash = payload ? Boolean(payload.clientInfo?.hasCash ?? payload.hasCash) : true;
@@ -1412,7 +1453,7 @@ function getViewTitle(key) {
   return titles[key] || "Client portal view";
 }
 
-import { getSsrSessionUser } from "../../services/ssrSession";
+import { getSsrSessionUser, getSsrInitialPortalData } from "../../services/ssrSession";
 import { redisClient } from "../../services/redisClient";
 import { getClientSetupStatusForPortal } from "../../services/setupService";
 
@@ -1420,9 +1461,17 @@ export async function getServerSideProps(context) {
   const sessionUser = getSsrSessionUser(context.req);
   let initialSetupClient = null;
   let initialSetupStatus = null;
+  let ssrPortalData = {
+    initialClients: null,
+    initialSelectedClient: null,
+    initialPayload: null,
+    initialPerformanceData: null,
+  };
 
   if (sessionUser) {
     try {
+      ssrPortalData = await getSsrInitialPortalData(context.req, sessionUser, context.query);
+
       const queryClient = typeof context.query?.client === "string" ? context.query.client.trim() : "";
       const isPreview = context.query?.preview === "setup";
       const assigned = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
@@ -1430,18 +1479,27 @@ export async function getServerSideProps(context) {
         assigned.length === 1 && assigned[0] && assigned[0] !== "*"
           ? String(assigned[0]).trim()
           : "";
-      const candidateClientName = queryClient || singleAssigned;
+      const candidateClientName =
+        queryClient || ssrPortalData.initialSelectedClient?.clientName || singleAssigned;
 
-      if (candidateClientName && redisClient?.isOpen) {
-        const normKey = `pulse:setup:${candidateClientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`;
-        const rawSetup = await redisClient.get(normKey);
-        const parsedSetup = rawSetup ? JSON.parse(rawSetup) : null;
-        if (parsedSetup?.setupMode === true || isPreview) {
+      if (candidateClientName) {
+        let parsedSetup = ssrPortalData.selectedSetupConfig || null;
+        if (!parsedSetup && (isPreview || !ssrPortalData.initialSelectedClient) && redisClient?.isOpen) {
+          const normKey = `pulse:setup:${candidateClientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`;
+          const rawSetup = await Promise.race([
+            redisClient.get(normKey),
+            new Promise((resolve) => setTimeout(() => resolve(null), 150)),
+          ]);
+          parsedSetup = rawSetup ? JSON.parse(rawSetup) : null;
+        }
+        if (parsedSetup?.setupMode === true || ssrPortalData.initialSelectedClient?.setupMode === true || isPreview) {
           initialSetupStatus = await getClientSetupStatusForPortal({
             clientName: parsedSetup?.clientName || candidateClientName,
-            masterSheetId: parsedSetup?.masterSheetId || ""
+            masterSheetId: parsedSetup?.masterSheetId || "",
+            clientSheetId: ssrPortalData.initialSelectedClient?.clientSheetId || ""
           });
           initialSetupClient = {
+            ...(ssrPortalData.initialSelectedClient || {}),
             clientName: parsedSetup?.clientName || candidateClientName,
             setupMode: Boolean(initialSetupStatus?.setupMode),
             setupStatus: initialSetupStatus
@@ -1456,6 +1514,10 @@ export async function getServerSideProps(context) {
       initialUser: sessionUser || null,
       initialSetupClient,
       initialSetupStatus,
+      initialClients: ssrPortalData.initialClients,
+      initialSelectedClient: ssrPortalData.initialSelectedClient,
+      initialPayload: ssrPortalData.initialPayload,
+      initialPerformanceData: ssrPortalData.initialPerformanceData,
     },
   };
 }

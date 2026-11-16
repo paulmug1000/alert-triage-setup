@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { useAppGlobals } from "./useAppGlobals";
 
 export function useJobs(initialClient = null) {
-  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
+  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, safeFetchOnce, cleanSheetId } = useAppGlobals();
 
   const [jobsClient, setJobsClient] = useState(initialClient);
   const [jobsTab, setJobsTab] = useState("All");
@@ -163,12 +163,21 @@ export function useJobs(initialClient = null) {
     }
 
     try {
-      const res = await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_all_client_jobs", clientSheetId: client.clientSheetId, tabName, bypassCache }),
-      });
-      const data = await res.json();
-      if (data.success) {
+      const doFetch = async () => {
+        const res = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_all_client_jobs", clientSheetId: client.clientSheetId, tabName, bypassCache }),
+        });
+        const d = await res.json();
+        if (d.success) {
+          setCachedClientData(client.clientSheetId, cacheKey, d);
+        }
+        return d;
+      };
+      const data = (!bypassCache && tabName === "All" && typeof safeFetchOnce === "function")
+        ? await safeFetchOnce(`jobs_${cleanId}`, doFetch, true)
+        : await doFetch();
+      if (data?.success) {
         setJobsData(data.jobs);
         if (data.productLines) setProductLines(data.productLines);
         if (data.leadSources) setLeadSources(data.leadSources);
@@ -187,7 +196,7 @@ export function useJobs(initialClient = null) {
     } finally {
       setJobsLoading(false);
     }
-  }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch, safeFetchOnce]);
 
   return {
     jobsClient, setJobsClient,

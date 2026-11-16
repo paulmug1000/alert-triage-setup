@@ -22,7 +22,7 @@ import {
   getJobCostingRowFormulasLetterMap,
   buildJobRowClearAndRestorePlan
 } from "../utils/helpers.js";
-import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId } from "./userPermissions.js";
+import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, unwrapSheetId } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
@@ -31,7 +31,7 @@ import { redisClient } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext, flushPendingClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
 import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
-import { memoryCache, get2TierCache, set2TierCache, invalidatePmaClientCache } from "./cacheService.js";
+import { memoryCache, get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
 import {
   provisionRetainerChildRows_,
@@ -1012,142 +1012,319 @@ export async function handleGetOutgoings(req, res, sheets) {
   const { clientSheetId, bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
-    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
     const cacheKey = `pulse:pma:outgoings:${sheetIdClean}`;
 
-    if (!bypassCache) {
-      const cached = await get2TierCache(cacheKey);
-      if (
-        cached &&
-        Array.isArray(cached.contractors) &&
-        cached.directCostsMode !== undefined &&
-        cached.makingUpCos !== undefined &&
-        (cached.contractors.length === 0 || cached.contractors[0]?.deliveryPct !== undefined)
-      ) {
-        return res.status(200).json(cached);
-      }
-    }
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache: Boolean(bypassCache),
+      l1TtlSecs: 120,
+      redisTtlSecs: 86400,
+      isValidPayload: (c) =>
+        c &&
+        Array.isArray(c.contractors) &&
+        c.directCostsMode !== undefined &&
+        c.makingUpCos !== undefined &&
+        (c.contractors.length === 0 || c.contractors[0]?.deliveryPct !== undefined),
+      fetchFreshFn: async () => {
+        const [gridResp, keyInfoResp] = await Promise.all([
+          sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            ranges: ["Outgoings!A1:BG1", "Outgoings!A13:BG110", "Outgoings!A111:BG250"],
+            includeGridData: true,
+            fields: "sheets.data.rowData.values(formattedValue,note,effectiveValue)",
+          }),
+          sheets.spreadsheets.values.batchGet({
+            spreadsheetId: sheetIdClean,
+            ranges: ["KeyInfo!B15", "KeyInfo!D8"],
+          }).catch(() => null),
+        ]);
+        const kiRanges = keyInfoResp?.data?.valueRanges || [];
+        const revFocus = String(kiRanges[0]?.values?.[0]?.[0] || "Revenue").trim();
+        const rawDcMode = String(kiRanges[1]?.values?.[0]?.[0] || "Contractors").trim();
+        const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
 
-    const [gridResp, keyInfoResp] = await Promise.all([
-      sheets.spreadsheets.get({
-        spreadsheetId: sheetIdClean,
-        ranges: ["Outgoings!A1:BG1", "Outgoings!A13:BG110", "Outgoings!A111:BG250"],
-        includeGridData: true,
-        fields: "sheets.data.rowData.values(formattedValue,note,effectiveValue)",
-      }),
-      sheets.spreadsheets.values.batchGet({
-        spreadsheetId: sheetIdClean,
-        ranges: ["KeyInfo!B15", "KeyInfo!D8"],
-      }).catch(() => null),
-    ]);
-    const kiRanges = keyInfoResp?.data?.valueRanges || [];
-    const revFocus = String(kiRanges[0]?.values?.[0]?.[0] || "Revenue").trim();
-    const rawDcMode = String(kiRanges[1]?.values?.[0]?.[0] || "Contractors").trim();
-    const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
+        const sheetGrids = gridResp.data.sheets?.[0]?.data || [];
+        const headerGridData = sheetGrids[0];
+        const contractorGridData = sheetGrids[1];
+        const extraGridData = sheetGrids[2];
 
-    const sheetGrids = gridResp.data.sheets?.[0]?.data || [];
-    const headerGridData = sheetGrids[0];
-    const contractorGridData = sheetGrids[1];
-    const extraGridData = sheetGrids[2];
+        const headerCells = headerGridData?.rowData?.[0]?.values || [];
+        const contractorRows = contractorGridData?.rowData || [];
+        const extraRows = extraGridData?.rowData || [];
 
-    const headerCells = headerGridData?.rowData?.[0]?.values || [];
-    const contractorRows = contractorGridData?.rowData || [];
-    const extraRows = extraGridData?.rowData || [];
+        const months = parseOutgoingsMonthHeaders_(headerCells);
+        const parseNoteParts = parseOutgoingsNoteParts_;
 
-    const months = parseOutgoingsMonthHeaders_(headerCells);
-    const parseNoteParts = parseOutgoingsNoteParts_;
+        const contractors = [];
+        for (let r = 0; r < contractorRows.length; r++) {
+          const rowCells = contractorRows[r]?.values || [];
+          const name = String(rowCells[0]?.formattedValue || "").trim();
+          if (!name) continue;
+          if (name.toLowerCase() === "contractors" || name.startsWith("Total") || name.startsWith("=")) continue;
 
-    const contractors = [];
-    for (let r = 0; r < contractorRows.length; r++) {
-      const rowCells = contractorRows[r]?.values || [];
-      const name = String(rowCells[0]?.formattedValue || "").trim();
-      if (!name) continue;
-      if (name.toLowerCase() === "contractors" || name.startsWith("Total") || name.startsWith("=")) continue;
+          const vatFlag = String(rowCells[1]?.formattedValue || "").trim();
+          const invTiming = String(rowCells[2]?.formattedValue || "").trim();
+          const payTiming = String(rowCells[3]?.formattedValue || "").trim();
+          const deliveryPct = String(rowCells[4]?.formattedValue || "").trim();
 
-      const vatFlag = String(rowCells[1]?.formattedValue || "").trim();
-      const invTiming = String(rowCells[2]?.formattedValue || "").trim();
-      const payTiming = String(rowCells[3]?.formattedValue || "").trim();
-      const deliveryPct = String(rowCells[4]?.formattedValue || "").trim();
+          const cells = {};
+          for (const month of months) {
+            const cellData = rowCells[month.colIndex];
+            const note = cellData?.note || "";
+            const value = cellData?.formattedValue || "";
+            const { topNote, blocks } = parseNoteParts(note);
+            cells[month.colLetter] = { value, note, topNote, blocks };
+          }
 
-      const cells = {};
-      for (const month of months) {
-        const cellData = rowCells[month.colIndex];
-        const note = cellData?.note || "";
-        const value = cellData?.formattedValue || "";
-        const { topNote, blocks } = parseNoteParts(note);
-        cells[month.colLetter] = { value, note, topNote, blocks };
-      }
+          contractors.push({ sheetRow: 13 + r, name, vatFlag, invTiming, payTiming, deliveryPct, cells });
+        }
 
-      contractors.push({ sheetRow: 13 + r, name, vatFlag, invTiming, payTiming, deliveryPct, cells });
-    }
+        const extraOutgoingsRows = [];
+        for (let r = 0; r < extraRows.length; r++) {
+          const rowCells = extraRows[r]?.values || [];
+          const name = String(rowCells[0]?.formattedValue || "").trim();
+          if (!name || name.startsWith("Total") || name.startsWith("=")) continue;
 
-    const extraOutgoingsRows = [];
-    for (let r = 0; r < extraRows.length; r++) {
-      const rowCells = extraRows[r]?.values || [];
-      const name = String(rowCells[0]?.formattedValue || "").trim();
-      if (!name || name.startsWith("Total") || name.startsWith("=")) continue;
+          const vatFlag = String(rowCells[1]?.formattedValue || "").trim();
+          const invTiming = String(rowCells[2]?.formattedValue || "").trim();
+          const payTiming = String(rowCells[3]?.formattedValue || "").trim();
+          const deliveryPct = String(rowCells[4]?.formattedValue || "").trim();
 
-      const vatFlag = String(rowCells[1]?.formattedValue || "").trim();
-      const invTiming = String(rowCells[2]?.formattedValue || "").trim();
-      const payTiming = String(rowCells[3]?.formattedValue || "").trim();
-      const deliveryPct = String(rowCells[4]?.formattedValue || "").trim();
+          const cells = {};
+          let hasAnyNoteOrValue = false;
+          for (const month of months) {
+            const cellData = rowCells[month.colIndex];
+            const note = cellData?.note || "";
+            const value = cellData?.formattedValue || "";
+            if (note || value) hasAnyNoteOrValue = true;
+            const { topNote, blocks } = parseNoteParts(note);
+            cells[month.colLetter] = { value, note, topNote, blocks };
+          }
 
-      const cells = {};
-      let hasAnyNoteOrValue = false;
-      for (const month of months) {
-        const cellData = rowCells[month.colIndex];
-        const note = cellData?.note || "";
-        const value = cellData?.formattedValue || "";
-        if (note || value) hasAnyNoteOrValue = true;
-        const { topNote, blocks } = parseNoteParts(note);
-        cells[month.colLetter] = { value, note, topNote, blocks };
-      }
+          if (hasAnyNoteOrValue || r === 0) {
+            extraOutgoingsRows.push({ sheetRow: 111 + r, name, vatFlag, invTiming, payTiming, deliveryPct, cells });
+          }
+        }
 
-      if (hasAnyNoteOrValue || r === 0) {
-        extraOutgoingsRows.push({ sheetRow: 111 + r, name, vatFlag, invTiming, payTiming, deliveryPct, cells });
-      }
-    }
+        // Row 111 is "Making up CoS" formula row; Row 112 is the "Zero" override row
+        const row111Values = extraRows[0]?.values || [];
+        const row112Values = extraRows[1]?.values || [];
+        const cosRawName = String(row111Values[0]?.formattedValue || "").trim();
+        const cosPct = String(row112Values[0]?.formattedValue || "").trim();
 
-    // Row 111 is "Making up CoS" formula row; Row 112 is the "Zero" override row
-    const row111Values = extraRows[0]?.values || [];
-    const row112Values = extraRows[1]?.values || [];
-    const cosRawName = String(row111Values[0]?.formattedValue || "").trim();
-    const cosPct = String(row112Values[0]?.formattedValue || "").trim();
+        const makingUpCosCells = {};
+        for (const month of months) {
+          const cell111 = row111Values[month.colIndex];
+          const cell112 = row112Values[month.colIndex];
 
-    const makingUpCosCells = {};
-    for (const month of months) {
-      const cell111 = row111Values[month.colIndex];
-      const cell112 = row112Values[month.colIndex];
+          const val111Str = cell111?.formattedValue || "";
+          const val111Num = typeof cell111?.effectiveValue?.numberValue === "number"
+            ? cell111.effectiveValue.numberValue
+            : parseFloat(String(val111Str).replace(/[^0-9.-]/g, "")) || 0;
 
-      const val111Str = cell111?.formattedValue || "";
-      const val111Num = typeof cell111?.effectiveValue?.numberValue === "number"
-        ? cell111.effectiveValue.numberValue
-        : parseFloat(String(val111Str).replace(/[^0-9.-]/g, "")) || 0;
+          const raw112 = String(cell112?.formattedValue || cell112?.effectiveValue?.stringValue || "").trim();
+          const isZero = raw112.toUpperCase() === "ZERO";
 
-      const raw112 = String(cell112?.formattedValue || cell112?.effectiveValue?.stringValue || "").trim();
-      const isZero = raw112.toUpperCase() === "ZERO";
+          makingUpCosCells[month.colLetter] = {
+            amount: val111Num,
+            formatted: val111Str || (val111Num ? `£${val111Num.toLocaleString("en-GB")}` : "£0"),
+            isZero,
+            overrideValue: raw112,
+            note: cell111?.note || "",
+          };
+        }
 
-      makingUpCosCells[month.colLetter] = {
-        amount: val111Num,
-        formatted: val111Str || (val111Num ? `£${val111Num.toLocaleString("en-GB")}` : "£0"),
-        isZero,
-        overrideValue: raw112,
-        note: cell111?.note || "",
-      };
-    }
+        const makingUpCos = {
+          name: cosRawName || "Making up Cos",
+          pct: cosPct || "",
+          cells: makingUpCosCells,
+        };
 
-    const makingUpCos = {
-      name: cosRawName || "Making up Cos",
-      pct: cosPct || "",
-      cells: makingUpCosCells,
-    };
+        return { success: true, contractors, extraOutgoingsRows, months, directCostsMode, makingUpCos };
+      },
+    });
 
-    const payload = { success: true, contractors, extraOutgoingsRows, months, directCostsMode, makingUpCos };
-    await set2TierCache(cacheKey, payload, 120);
-    return res.status(200).json(payload);
+    return res.status(200).json(result.data);
   } catch (err) {
     console.error("❌ get_outgoings error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+const _inFlightSharedJobsRaw = new Map();
+
+/**
+ * Shared raw Confirmed (+ optional Pipeline) and KeyInfo loader for PMA endpoints.
+ * Deduplicates Confirmed!A1:DD and KeyInfo reads in L1 memory across Jobs, Invoices, Direct Costs, and Retainers.
+ * Stored strictly in L1 memoryCache (never remote Redis) to avoid saturating the Redis TCP socket.
+ */
+export async function getSharedClientConfirmedAndKeyInfo(
+  sheets,
+  rawSheetId,
+  { includePipeline = false, bypassCache = false } = {}
+) {
+  const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(rawSheetId) || rawSheetId);
+  const sharedKey = `pulse:pma:shared_jobs_raw:${sheetIdClean}`;
+
+  if (!bypassCache) {
+    const cached = memoryCache.get(sharedKey);
+    if (cached && Array.isArray(cached.confRows) && (!includePipeline || cached.hasPipeline)) {
+      return cached;
+    }
+  }
+
+  const inFlightAll = _inFlightSharedJobsRaw.get(`${sheetIdClean}:all`);
+  if (inFlightAll && !bypassCache) {
+    return inFlightAll;
+  }
+  const inFlightKey = `${sheetIdClean}:${includePipeline ? "all" : "conf"}`;
+  if (_inFlightSharedJobsRaw.has(inFlightKey) && !bypassCache) {
+    return _inFlightSharedJobsRaw.get(inFlightKey);
+  }
+
+  const fetchPromise = (async () => {
+    const targetConfMaxRow = 2500;
+    const targetPipeMaxRow = 1000;
+
+    const ranges = [
+      `Confirmed!A1:DD${targetConfMaxRow}`,
+      ...(includePipeline ? [`Pipeline!A1:DD${targetPipeMaxRow}`] : []),
+      "KeyInfo!B15",
+      "KeyInfo!D8",
+      "KeyInfo!C23:C26",
+      "KeyInfo!G32:G75",
+      "KeyInfo!Q4",
+      "KeyInfo!Q8:Q9",
+      "KeyInfo!D18",
+      "KeyInfo!D11:D13",
+    ];
+
+    let confRows = [];
+    let pipeRows = [];
+    let revFocus = "Revenue";
+    let rawDcMode = "Contractors";
+    let productLines = [];
+    let leadSources = [];
+    let accountingTool = "None";
+    let crmTool = "None";
+    let crmDrives = "NA";
+    let noEndDateRetainerMonths = 18;
+    let jobCostingStyle = "Standard";
+    let standardChargeOutRate = 0;
+    let contractorDayRate = 0;
+
+    const offset = includePipeline ? 2 : 1;
+
+    try {
+      const batchResp = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId: sheetIdClean,
+        ranges,
+        valueRenderOption: "FORMATTED_VALUE",
+      });
+      const vRanges = batchResp.data.valueRanges || [];
+      confRows = vRanges[0]?.values || [];
+      pipeRows = includePipeline ? vRanges[1]?.values || [] : [];
+      revFocus = String(vRanges[offset]?.values?.[0]?.[0] || "Revenue").trim();
+      rawDcMode = String(vRanges[offset + 1]?.values?.[0]?.[0] || "Contractors").trim();
+      productLines = (vRanges[offset + 2]?.values || []).flat().map((v) => String(v || "").trim()).filter(Boolean);
+      leadSources = (vRanges[offset + 3]?.values || []).flat().map((v) => String(v || "").trim()).filter(Boolean);
+      if (vRanges[offset + 4]?.values?.[0]?.[0]) accountingTool = String(vRanges[offset + 4].values[0][0]).trim();
+      if (vRanges[offset + 5]?.values?.[0]?.[0]) crmTool = String(vRanges[offset + 5].values[0][0]).trim();
+      if (vRanges[offset + 5]?.values?.[1]?.[0]) crmDrives = String(vRanges[offset + 5].values[1][0]).trim();
+      const parsedD18 = parseInt(String(vRanges[offset + 6]?.values?.[0]?.[0] || "").trim(), 10);
+      if (!isNaN(parsedD18) && parsedD18 > 0) noEndDateRetainerMonths = parsedD18;
+      const d11Data = vRanges[offset + 7]?.values || [];
+      if (d11Data?.[0]?.[0]) jobCostingStyle = String(d11Data[0][0]).trim();
+      if (d11Data?.[1]?.[0] !== undefined) standardChargeOutRate = parseFloat(String(d11Data[1][0]).replace(/[£$€,\s]/g, "")) || 0;
+      if (d11Data?.[2]?.[0] !== undefined) contractorDayRate = parseFloat(String(d11Data[2][0]).replace(/[£$€,\s]/g, "")) || 0;
+    } catch (_) {
+      try {
+        const cResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `Confirmed!A1:DD${targetConfMaxRow}`,
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        confRows = cResp.data.values || [];
+      } catch (_) {}
+      if (includePipeline) {
+        try {
+          const pResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `Pipeline!A1:DD${targetPipeMaxRow}`,
+            valueRenderOption: "FORMATTED_VALUE",
+          });
+          pipeRows = pResp.data.values || [];
+        } catch (_) {}
+      }
+    }
+
+    // Automatic overflow check for Confirmed (2501..5000)
+    if (
+      confRows.length >= targetConfMaxRow &&
+      Boolean(confRows[targetConfMaxRow - 1]?.[0] || confRows[targetConfMaxRow - 1]?.[1])
+    ) {
+      try {
+        const r = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `Confirmed!A${targetConfMaxRow + 1}:DD5000`,
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        if (r.data?.values?.length) confRows = [...confRows, ...r.data.values];
+      } catch (_) {}
+    }
+
+    if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
+      try {
+        const clientNameMatch = confRows[1]?.[0] || pipeRows[1]?.[0] || "";
+        if (clientNameMatch) {
+          const normKey = String(clientNameMatch).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+          const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
+          if (rawCfg) {
+            const parsedCfg = JSON.parse(rawCfg);
+            if (parsedCfg?.accountingTool) accountingTool = parsedCfg.accountingTool;
+          }
+        }
+      } catch (_) {}
+    }
+
+    const directCostsMode =
+      revFocus.toLowerCase() === "income"
+        ? "Pass-through"
+        : rawDcMode === "Pass-through"
+          ? "Pass-through"
+          : "Contractors";
+
+    const existing = memoryCache.get(sharedKey);
+    const finalPipeRows = includePipeline ? pipeRows : existing?.pipeRows || [];
+    const hasPipeline = Boolean(includePipeline || existing?.hasPipeline);
+
+    const sharedPayload = {
+      confRows,
+      pipeRows: finalPipeRows,
+      hasPipeline,
+      revFocus,
+      directCostsMode,
+      productLines,
+      leadSources,
+      accountingTool,
+      crmTool,
+      crmDrives,
+      noEndDateRetainerMonths,
+      jobCostingStyle,
+      standardChargeOutRate,
+      contractorDayRate,
+    };
+
+    memoryCache.set(sharedKey, sharedPayload, 120);
+    return sharedPayload;
+  })();
+
+  _inFlightSharedJobsRaw.set(inFlightKey, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    _inFlightSharedJobsRaw.delete(inFlightKey);
   }
 }
 
@@ -1155,152 +1332,149 @@ export async function handleGetDirectCostsJobs(req, res, sheets) {
   const { clientSheetId, showAll, bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
-    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
     const cacheKey = `pulse:pma:direct_costs_jobs:${sheetIdClean}:${showAll ? "all" : "active"}`;
 
-    if (!bypassCache) {
-      const cached = await get2TierCache(cacheKey);
-      if (cached && Array.isArray(cached.jobs) && cached.directCostsMode !== undefined) {
-        return res.status(200).json(cached);
-      }
-    }
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache: Boolean(bypassCache),
+      l1TtlSecs: 120,
+      redisTtlSecs: 86400,
+      isValidPayload: (c) => c && Array.isArray(c.jobs) && c.directCostsMode !== undefined,
+      fetchFreshFn: async () => {
+        const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+          includePipeline: false,
+          bypassCache: Boolean(bypassCache),
+        });
+        const rows = shared.confRows || [];
+        const directCostsMode = shared.directCostsMode || "Contractors";
 
-    const batchResp = await sheets.spreadsheets.values.batchGet({
-      spreadsheetId: sheetIdClean,
-      ranges: ["Confirmed!A1:CR5000", "KeyInfo!B15", "KeyInfo!D8"],
-      valueRenderOption: "FORMATTED_VALUE",
-    });
-    const valRanges = batchResp.data.valueRanges || [];
-    const rows = valRanges[0]?.values || [];
-    const revFocus = String(valRanges[1]?.values?.[0]?.[0] || "Revenue").trim();
-    const rawDcMode = String(valRanges[2]?.values?.[0]?.[0] || "Contractors").trim();
-    const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
-
-    const parseSheetDate = (d) => {
-      if (!d) return null;
-      const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-      if (!m) return null;
-      const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-      const mIdx = months[m[2].toLowerCase()];
-      if (mIdx === undefined) return null;
-      const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
-      return new Date(yr, mIdx, parseInt(m[1]));
-    };
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-
-    const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
-    const buildRowData = (rowNum, row, isParent) => ({
-      rowNum, isParent,
-      client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
-      rechargedExpenses: colVal(row, 17),
-      revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
-      projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
-      leftToInvoice: colVal(row, 74),
-      likelihood: null, copiedToConf: null,
-      invoiceSlots: [1, 2, 3].map(n => {
-        const base = n === 1 ? 41 : n === 2 ? 48 : 55;
-        return {
-          slotNum: n, amount: colVal(row, base), ref: colVal(row, base + 1), sentDate: colVal(row, base + 2),
-          daysToPay: colVal(row, base + 3), status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
-          ofWhichRechgd: colVal(row, base + 5), costMonth: colVal(row, base + 6), highlighted: false
+        const parseSheetDate = (d) => {
+          if (!d) return null;
+          const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+          if (!m) return null;
+          const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+          const mIdx = months[m[2].toLowerCase()];
+          if (mIdx === undefined) return null;
+          const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+          return new Date(yr, mIdx, parseInt(m[1]));
         };
-      }),
-      expenseSlots: [1, 2, 3].map(n => {
-        const base = n === 1 ? 75 : n === 2 ? 82 : 89;
-        return {
-          slotNum: n, description: colVal(row, base), amount: colVal(row, base + 1), vat: colVal(row, base + 2),
-          date: colVal(row, base + 3), daysToPay: colVal(row, base + 4), status: canonicalizeExpenseStatus(colVal(row, base + 5)),
-          transactionId: colVal(row, base + 6), highlighted: false
-        };
-      }),
-    });
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-    const jobs = [];
-    let ri = 1;
-    while (ri < rows.length) {
-      const row = rows[ri] || [];
-      const client = String(row[0] || "").trim();
-      const jobName = String(row[1] || "").trim();
-      const budgetNum = parseFloat(String(row[33] || "").replace(/[£$€,\s]/g, "")) || 0;
-      if (!client && !jobName) { ri++; continue; }
+        const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+        const buildRowData = (rowNum, row, isParent) => ({
+          rowNum, isParent,
+          client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+          rechargedExpenses: colVal(row, 17),
+          revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
+          projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+          leftToInvoice: colVal(row, 74),
+          likelihood: null, copiedToConf: null,
+          invoiceSlots: [1, 2, 3].map(n => {
+            const base = n === 1 ? 41 : n === 2 ? 48 : 55;
+            return {
+              slotNum: n, amount: colVal(row, base), ref: colVal(row, base + 1), sentDate: colVal(row, base + 2),
+              daysToPay: colVal(row, base + 3), status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
+              ofWhichRechgd: colVal(row, base + 5), costMonth: colVal(row, base + 6), highlighted: false
+            };
+          }),
+          expenseSlots: [1, 2, 3].map(n => {
+            const base = n === 1 ? 75 : n === 2 ? 82 : 89;
+            return {
+              slotNum: n, description: colVal(row, base), amount: colVal(row, base + 1), vat: colVal(row, base + 2),
+              date: colVal(row, base + 3), daysToPay: colVal(row, base + 4), status: canonicalizeExpenseStatus(colVal(row, base + 5)),
+              transactionId: colVal(row, base + 6), highlighted: false
+            };
+          }),
+        });
 
-      const parentRowNum = ri + 1;
-      const jobRows = [buildRowData(parentRowNum, row, true)];
-      let cj = ri + 1;
-      while (cj < rows.length) {
-        const next = rows[cj] || [];
-        const nc = String(next[0] || "").trim();
-        const nj = String(next[1] || "").trim();
-        const nRevenue = String(next[32] || "").trim();
-        const nBudget = parseFloat(String(next[33] || "").replace(/[£$€,\s]/g, "")) || 0;
-        const nStart = String(next[37] || "").trim();
-        if (nc === client && nj === jobName && !nRevenue && !nBudget && !nStart) {
-          jobRows.push(buildRowData(cj + 1, next, false));
-          cj++;
-        } else {
-          break;
-        }
-      }
-      ri = cj;
+        const jobs = [];
+        let ri = 1;
+        while (ri < rows.length) {
+          const row = rows[ri] || [];
+          const client = String(row[0] || "").trim();
+          const jobName = String(row[1] || "").trim();
+          const budgetNum = parseFloat(String(row[33] || "").replace(/[£$€,\s]/g, "")) || 0;
+          if (!client && !jobName) { ri++; continue; }
 
-      let realCostsTotal = 0;
-      let hasAnyExpenses = false;
-      for (const jr of jobRows) {
-        for (const slot of jr.expenseSlots) {
-          const isReal = (slot.transactionId || slot.description) && !isPlaceholderExpense(slot);
-          if (isReal) {
-            realCostsTotal += parseFloat(String(slot.amount || "").replace(/[£$€,\s]/g, "")) || 0;
-            hasAnyExpenses = true;
-          } else if (slot.amount || slot.description || slot.transactionId) {
-            hasAnyExpenses = true;
-          }
-        }
-      }
-      const revenueNum = parseFloat(String(row[32] || "").replace(/[£$€,\s]/g, "")) || 0;
-      const unreceivedCosts = budgetNum - realCostsTotal;
-
-      const hasDirectCosts = budgetNum > 0 || hasAnyExpenses;
-      const parentStart = parseSheetDate(row[37]);
-      const parentEnd = parseSheetDate(row[38]);
-      let hasRecentDate = (parentStart && parentStart >= sixMonthsAgo) || (parentEnd && parentEnd >= sixMonthsAgo);
-      if (!hasRecentDate) {
-        for (const jr of jobRows) {
-          const rStart = parseSheetDate(jr.startDate);
-          const rEnd = parseSheetDate(jr.endDate);
-          if ((rStart && rStart >= sixMonthsAgo) || (rEnd && rEnd >= sixMonthsAgo)) {
-            hasRecentDate = true;
-            break;
-          }
-          for (const slot of jr.expenseSlots) {
-            const sDate = parseSheetDate(slot.date);
-            if (sDate && sDate >= sixMonthsAgo) {
-              hasRecentDate = true;
+          const parentRowNum = ri + 1;
+          const jobRows = [buildRowData(parentRowNum, row, true)];
+          let cj = ri + 1;
+          while (cj < rows.length) {
+            const next = rows[cj] || [];
+            const nc = String(next[0] || "").trim();
+            const nj = String(next[1] || "").trim();
+            const nRevenue = String(next[32] || "").trim();
+            const nBudget = parseFloat(String(next[33] || "").replace(/[£$€,\s]/g, "")) || 0;
+            const nStart = String(next[37] || "").trim();
+            if (nc === client && nj === jobName && !nRevenue && !nBudget && !nStart) {
+              jobRows.push(buildRowData(cj + 1, next, false));
+              cj++;
+            } else {
               break;
             }
           }
-          if (hasRecentDate) break;
+          ri = cj;
+
+          let realCostsTotal = 0;
+          let hasAnyExpenses = false;
+          for (const jr of jobRows) {
+            for (const slot of jr.expenseSlots) {
+              const isReal = (slot.transactionId || slot.description) && !isPlaceholderExpense(slot);
+              if (isReal) {
+                realCostsTotal += parseFloat(String(slot.amount || "").replace(/[£$€,\s]/g, "")) || 0;
+                hasAnyExpenses = true;
+              } else if (slot.amount || slot.description || slot.transactionId) {
+                hasAnyExpenses = true;
+              }
+            }
+          }
+          const unreceivedCosts = budgetNum - realCostsTotal;
+
+          const hasDirectCosts = budgetNum > 0 || hasAnyExpenses;
+          const parentStart = parseSheetDate(row[37]);
+          const parentEnd = parseSheetDate(row[38]);
+          let hasRecentDate = (parentStart && parentStart >= sixMonthsAgo) || (parentEnd && parentEnd >= sixMonthsAgo);
+          if (!hasRecentDate) {
+            for (const jr of jobRows) {
+              const rStart = parseSheetDate(jr.startDate);
+              const rEnd = parseSheetDate(jr.endDate);
+              if ((rStart && rStart >= sixMonthsAgo) || (rEnd && rEnd >= sixMonthsAgo)) {
+                hasRecentDate = true;
+                break;
+              }
+              for (const slot of jr.expenseSlots) {
+                const sDate = parseSheetDate(slot.date);
+                if (sDate && sDate >= sixMonthsAgo) {
+                  hasRecentDate = true;
+                  break;
+                }
+              }
+              if (hasRecentDate) break;
+            }
+          }
+
+          const passesFilter = showAll ? true : (hasDirectCosts && hasRecentDate);
+          if (passesFilter) {
+            jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows, unreceivedCosts });
+          }
         }
-      }
 
-      const passesFilter = showAll ? true : (hasDirectCosts && hasRecentDate);
-      if (passesFilter) {
-        jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows, unreceivedCosts });
-      }
-    }
+        jobs.sort((a, b) => {
+          const da = parseSheetDate(a.rows[0]?.startDate);
+          const db = parseSheetDate(b.rows[0]?.startDate);
+          if (!da && !db) return 0;
+          if (!da) return 1;
+          if (!db) return -1;
+          return db - da;
+        });
 
-    jobs.sort((a, b) => {
-      const da = parseSheetDate(a.rows[0]?.startDate);
-      const db = parseSheetDate(b.rows[0]?.startDate);
-      if (!da && !db) return 0;
-      if (!da) return 1;
-      if (!db) return -1;
-      return db - da;
+        return { success: true, jobs, directCostsMode };
+      },
     });
 
-    const payload = { success: true, jobs, directCostsMode };
-    await set2TierCache(cacheKey, payload, 120);
-    return res.status(200).json(payload);
+    return res.status(200).json(result.data);
   } catch (err) {
     console.error("❌ get_direct_costs_jobs error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -1311,139 +1485,123 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
   const { clientSheetId, showAll, bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
-    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
     const cacheKey = `pulse:pma:invoice_jobs:${sheetIdClean}:${showAll ? "all" : "active"}`;
 
-    if (!bypassCache) {
-      const cached = await get2TierCache(cacheKey);
-      if (cached && Array.isArray(cached.jobs) && cached.hasAccountingIntegration !== undefined) {
-        return res.status(200).json(cached);
-      }
-    }
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache: Boolean(bypassCache),
+      l1TtlSecs: 120,
+      redisTtlSecs: 86400,
+      isValidPayload: (c) => c && Array.isArray(c.jobs) && c.hasAccountingIntegration !== undefined,
+      fetchFreshFn: async () => {
+        const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+          includePipeline: false,
+          bypassCache: Boolean(bypassCache),
+        });
+        const rows = shared.confRows || [];
+        const accountingTool = shared.accountingTool || "None";
+        const crmTool = shared.crmTool || "None";
+        const crmDrives = shared.crmDrives || "NA";
+        const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => accountingTool.toLowerCase().includes(t));
 
-    const batchResp = await sheets.spreadsheets.values.batchGet({
-      spreadsheetId: sheetIdClean,
-      ranges: ["Confirmed!A1:CR5000", "KeyInfo!Q4", "KeyInfo!Q8:Q9"],
-      valueRenderOption: "FORMATTED_VALUE",
-    });
-    const rows = batchResp.data.valueRanges?.[0]?.values || [];
-    const accRows = batchResp.data.valueRanges?.[1]?.values || [];
-    const crmRows = batchResp.data.valueRanges?.[2]?.values || [];
-    let accountingTool = String(accRows?.[0]?.[0] || "None").trim();
-    const crmTool = String(crmRows?.[0]?.[0] || "None").trim();
-    const crmDrives = String(crmRows?.[1]?.[0] || "NA").trim();
+        const parseSheetDate = (d) => {
+          if (!d) return null;
+          const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+          if (!m) return null;
+          const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+          const mIdx = months[m[2].toLowerCase()];
+          if (mIdx === undefined) return null;
+          const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+          return new Date(yr, mIdx, parseInt(m[1]));
+        };
 
-    if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
-      try {
-        const clientNameMatch = rows[1]?.[0] || "";
-        if (clientNameMatch) {
-          const normKey = String(clientNameMatch).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-          const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
-          if (rawCfg) {
-            const parsedCfg = JSON.parse(rawCfg);
-            if (parsedCfg?.accountingTool) accountingTool = parsedCfg.accountingTool;
+        const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+        const buildRowData = (rowNum, row, isParent) => ({
+          rowNum, isParent,
+          client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+          rechargedExpenses: colVal(row, 17),
+          revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
+          projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+          leftToInvoice: colVal(row, 74),
+          likelihood: null, copiedToConf: null,
+          invoiceSlots: [1, 2, 3].map(n => {
+            const base = n === 1 ? 41 : n === 2 ? 48 : 55;
+            return {
+              slotNum: n, amount: colVal(row, base), ref: colVal(row, base + 1), sentDate: colVal(row, base + 2),
+              daysToPay: colVal(row, base + 3), status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
+              ofWhichRechgd: colVal(row, base + 5), costMonth: colVal(row, base + 6), highlighted: false
+            };
+          }),
+          expenseSlots: [1, 2, 3].map(n => {
+            const base = n === 1 ? 75 : n === 2 ? 82 : 89;
+            return {
+              slotNum: n, description: colVal(row, base), amount: colVal(row, base + 1), vat: colVal(row, base + 2),
+              date: colVal(row, base + 3), daysToPay: colVal(row, base + 4), status: canonicalizeExpenseStatus(colVal(row, base + 5)),
+              transactionId: colVal(row, base + 6), highlighted: false
+            };
+          }),
+        });
+
+        const jobs = [];
+        let ri = 1;
+        while (ri < rows.length) {
+          const row = rows[ri] || [];
+          const client = String(row[0] || "").trim();
+          const jobName = String(row[1] || "").trim();
+          const rechargedNum = parseFloat(String(row[17] || "").replace(/[£$€,\s]/g, "")) || 0;
+          const revenueNum = parseFloat(String(row[32] || "").replace(/[£$€,\s]/g, "")) || 0;
+          if (!client && !jobName) { ri++; continue; }
+
+          const parentRowNum = ri + 1;
+          const jobRows = [buildRowData(parentRowNum, row, true)];
+          let cj = ri + 1;
+          while (cj < rows.length) {
+            const next = rows[cj] || [];
+            const nc = String(next[0] || "").trim();
+            const nj = String(next[1] || "").trim();
+            const nRecharged = parseFloat(String(next[17] || "").replace(/[£$€,\s]/g, "")) || 0;
+            const nRevenue = String(next[32] || "").trim();
+            const nBudget = parseFloat(String(next[33] || "").replace(/[£$€,\s]/g, "")) || 0;
+            const nStart = String(next[37] || "").trim();
+            if (nc === client && nj === jobName && !nRevenue && !nBudget && !nRecharged && !nStart) {
+              jobRows.push(buildRowData(cj + 1, next, false));
+              cj++;
+            } else {
+              break;
+            }
+          }
+          ri = cj;
+
+          let realInvoicedTotal = 0;
+          for (const jr of jobRows) {
+            for (const slot of jr.invoiceSlots) {
+              const ref = String(slot.ref || "").trim();
+              const isReal = ref && !isPlaceholderInvoice(ref, slot.status) && !isDraftInvoice(ref, slot.status);
+              if (isReal) realInvoicedTotal += parseFloat(String(slot.amount || "").replace(/[£$€,\s]/g, "")) || 0;
+            }
+          }
+          const uninvoicedAmount = (revenueNum + rechargedNum) - realInvoicedTotal;
+          const passesFilter = showAll || uninvoicedAmount > 0;
+          if (passesFilter) {
+            jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows, uninvoicedAmount });
           }
         }
-      } catch (_) { }
-    }
 
-    const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => accountingTool.toLowerCase().includes(t));
+        jobs.sort((a, b) => {
+          const da = parseSheetDate(a.rows[0]?.startDate);
+          const db = parseSheetDate(b.rows[0]?.startDate);
+          if (!da && !db) return 0;
+          if (!da) return 1;
+          if (!db) return -1;
+          return db - da;
+        });
 
-    const parseSheetDate = (d) => {
-      if (!d) return null;
-      const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-      if (!m) return null;
-      const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-      const mIdx = months[m[2].toLowerCase()];
-      if (mIdx === undefined) return null;
-      const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
-      return new Date(yr, mIdx, parseInt(m[1]));
-    };
-
-    const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
-    const buildRowData = (rowNum, row, isParent) => ({
-      rowNum, isParent,
-      client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
-      rechargedExpenses: colVal(row, 17),
-      revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
-      projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
-      leftToInvoice: colVal(row, 74),
-      likelihood: null, copiedToConf: null,
-      invoiceSlots: [1, 2, 3].map(n => {
-        const base = n === 1 ? 41 : n === 2 ? 48 : 55;
-        return {
-          slotNum: n, amount: colVal(row, base), ref: colVal(row, base + 1), sentDate: colVal(row, base + 2),
-          daysToPay: colVal(row, base + 3), status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
-          ofWhichRechgd: colVal(row, base + 5), costMonth: colVal(row, base + 6), highlighted: false
-        };
-      }),
-      expenseSlots: [1, 2, 3].map(n => {
-        const base = n === 1 ? 75 : n === 2 ? 82 : 89;
-        return {
-          slotNum: n, description: colVal(row, base), amount: colVal(row, base + 1), vat: colVal(row, base + 2),
-          date: colVal(row, base + 3), daysToPay: colVal(row, base + 4), status: canonicalizeExpenseStatus(colVal(row, base + 5)),
-          transactionId: colVal(row, base + 6), highlighted: false
-        };
-      }),
+        return { success: true, jobs, accountingTool, crmTool, crmDrives, hasAccountingIntegration };
+      },
     });
 
-    const jobs = [];
-    let ri = 1;
-    while (ri < rows.length) {
-      const row = rows[ri] || [];
-      const client = String(row[0] || "").trim();
-      const jobName = String(row[1] || "").trim();
-      const rechargedNum = parseFloat(String(row[17] || "").replace(/[£$€,\s]/g, "")) || 0;
-      const revenueNum = parseFloat(String(row[32] || "").replace(/[£$€,\s]/g, "")) || 0;
-      if (!client && !jobName) { ri++; continue; }
-
-      const parentRowNum = ri + 1;
-      const jobRows = [buildRowData(parentRowNum, row, true)];
-      let cj = ri + 1;
-      while (cj < rows.length) {
-        const next = rows[cj] || [];
-        const nc = String(next[0] || "").trim();
-        const nj = String(next[1] || "").trim();
-        const nRecharged = parseFloat(String(next[17] || "").replace(/[£$€,\s]/g, "")) || 0;
-        const nRevenue = String(next[32] || "").trim();
-        const nBudget = parseFloat(String(next[33] || "").replace(/[£$€,\s]/g, "")) || 0;
-        const nStart = String(next[37] || "").trim();
-        if (nc === client && nj === jobName && !nRevenue && !nBudget && !nRecharged && !nStart) {
-          jobRows.push(buildRowData(cj + 1, next, false));
-          cj++;
-        } else {
-          break;
-        }
-      }
-      ri = cj;
-
-      let realInvoicedTotal = 0;
-      for (const jr of jobRows) {
-        for (const slot of jr.invoiceSlots) {
-          const ref = String(slot.ref || "").trim();
-          const isReal = ref && !isPlaceholderInvoice(ref, slot.status) && !isDraftInvoice(ref, slot.status);
-          if (isReal) realInvoicedTotal += parseFloat(String(slot.amount || "").replace(/[£$€,\s]/g, "")) || 0;
-        }
-      }
-      const uninvoicedAmount = (revenueNum + rechargedNum) - realInvoicedTotal;
-      const passesFilter = showAll || uninvoicedAmount > 0;
-      if (passesFilter) {
-        jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows, uninvoicedAmount });
-      }
-    }
-
-    jobs.sort((a, b) => {
-      const da = parseSheetDate(a.rows[0]?.startDate);
-      const db = parseSheetDate(b.rows[0]?.startDate);
-      if (!da && !db) return 0;
-      if (!da) return 1;
-      if (!db) return -1;
-      return db - da;
-    });
-
-    const payload = { success: true, jobs, accountingTool, crmTool, crmDrives, hasAccountingIntegration };
-    await set2TierCache(cacheKey, payload, 120);
-    return res.status(200).json(payload);
+    return res.status(200).json(result.data);
   } catch (err) {
     console.error("❌ get_invoice_jobs error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -1457,440 +1615,347 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     return res.status(400).json({ success: false, error: "Invalid tabName. Must be All, Confirmed, or Pipeline." });
   }
   try {
-    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
     const cacheKey = `pulse:pma:jobs:${sheetIdClean}:${tabName || "All"}`;
     const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
 
     if (bypassCache) {
       invalidateMasterEngineCache(sbCtx?.clientName || null);
       await invalidatePmaClientCache(sheetIdClean, sbCtx?.masterSheetId || null, ["jobs"]).catch(() => {});
-    } else {
-      const cached = await get2TierCache(cacheKey);
-      if (cached && Array.isArray(cached.jobs) && cached.hasAccountingIntegration !== undefined) {
-        return res.status(200).json({
-          ...cached,
-          clientMode: sbCtx?.clientMode || cached.clientMode || "sheet",
-        });
-      }
     }
 
-    let confRows = [];
-    let pipeRows = [];
-    let productLines = [];
-    let leadSources = [];
-    const notesBySheet = { Confirmed: [], Pipeline: [] };
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache: Boolean(bypassCache),
+      l1TtlSecs: 120,
+      redisTtlSecs: 1800,
+      isValidPayload: (c) => c && Array.isArray(c.jobs) && c.hasAccountingIntegration !== undefined,
+      fetchFreshFn: async () => {
+        const NOTE_COL_INDICES = [0, 41, 48, 55, 75, 82, 89];
+        const notesMap = { Confirmed: {}, Pipeline: {} };
 
-    let accountingTool = "None";
-    let crmTool = "None";
-    let crmDrives = "NA";
-    let noEndDateRetainerMonths = 18;
-    let jobCostingStyle = "Standard";
-    let standardChargeOutRate = 0;
-    let contractorDayRate = 0;
-
-    const targetConfMaxRow = 2500;
-    const targetPipeMaxRow = 1000;
-
-    if (tabName === "All" || !tabName) {
-      try {
-        const batchResp = await sheets.spreadsheets.values.batchGet({
-          spreadsheetId: sheetIdClean,
-          ranges: [
-            `Confirmed!A1:DD${targetConfMaxRow}`,
-            `Pipeline!A1:DD${targetPipeMaxRow}`,
-            "KeyInfo!C23:C26",
-            "KeyInfo!G32:G75",
-            "KeyInfo!Q4",
-            "KeyInfo!Q8:Q9",
-            "KeyInfo!D18",
-            "KeyInfo!D11:D13"
-          ],
-          valueRenderOption: "FORMATTED_VALUE",
-        });
-        confRows = batchResp.data.valueRanges?.[0]?.values || [];
-        pipeRows = batchResp.data.valueRanges?.[1]?.values || [];
-        const plData = batchResp.data.valueRanges?.[2]?.values || [];
-        const lsData = batchResp.data.valueRanges?.[3]?.values || [];
-        const accData = batchResp.data.valueRanges?.[4]?.values || [];
-        const crmData = batchResp.data.valueRanges?.[5]?.values || [];
-        const d18Data = batchResp.data.valueRanges?.[6]?.values || [];
-        const d11Data = batchResp.data.valueRanges?.[7]?.values || [];
-        productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
-        leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
-        if (accData?.[0]?.[0]) accountingTool = String(accData[0][0]).trim();
-        if (crmData?.[0]?.[0]) crmTool = String(crmData[0][0]).trim();
-        if (crmData?.[1]?.[0]) crmDrives = String(crmData[1][0]).trim();
-        const parsedD18 = parseInt(String(d18Data?.[0]?.[0] || "").trim(), 10);
-        if (!isNaN(parsedD18) && parsedD18 > 0) noEndDateRetainerMonths = parsedD18;
-        if (d11Data?.[0]?.[0]) jobCostingStyle = String(d11Data[0][0]).trim();
-        if (d11Data?.[1]?.[0] !== undefined) standardChargeOutRate = parseFloat(String(d11Data[1][0]).replace(/[£$€,\s]/g, "")) || 0;
-        if (d11Data?.[2]?.[0] !== undefined) contractorDayRate = parseFloat(String(d11Data[2][0]).replace(/[£$€,\s]/g, "")) || 0;
-
-        if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
-          try {
-            const clientNameMatch = confRows[1]?.[0] || pipeRows[1]?.[0] || "";
-            if (clientNameMatch) {
-              const normKey = String(clientNameMatch).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-              const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
-              if (rawCfg) {
-                const parsedCfg = JSON.parse(rawCfg);
-                if (parsedCfg?.accountingTool) accountingTool = parsedCfg.accountingTool;
+        const populateNotesFromResp = (notesResp) => {
+          (notesResp?.data?.sheets || []).forEach((s) => {
+            const title = s.properties?.title;
+            if (!title || !notesMap[title]) return;
+            for (const blk of s.data || []) {
+              const startR = blk?.startRow || 0;
+              const rData = blk?.rowData || [];
+              for (let rIdx = 0; rIdx < rData.length; rIdx++) {
+                const rCells = rData[rIdx]?.values;
+                if (!rCells || !rCells.length) continue;
+                for (const cIdx of NOTE_COL_INDICES) {
+                  const noteVal = rCells[cIdx]?.note;
+                  if (noteVal) {
+                    notesMap[title][`${startR + rIdx + 1}:${cIdx}`] = noteVal;
+                  }
+                }
               }
             }
-          } catch (_) { }
-        }
-      } catch (batchErr) {
-        try {
-          const cResp = await sheets.spreadsheets.values.get({
-            spreadsheetId: sheetIdClean,
-            range: `Confirmed!A1:DD${targetConfMaxRow}`,
-            valueRenderOption: "FORMATTED_VALUE",
           });
-          confRows = cResp.data.values || [];
-        } catch (_) { }
-        try {
-          const pResp = await sheets.spreadsheets.values.get({
-            spreadsheetId: sheetIdClean,
-            range: `Pipeline!A1:DD${targetPipeMaxRow}`,
-            valueRenderOption: "FORMATTED_VALUE",
-          });
-          pipeRows = pResp.data.values || [];
-        } catch (_) { }
-      }
-    } else {
-      const targetMaxRow = tabName === "Pipeline" ? targetPipeMaxRow : targetConfMaxRow;
-      const resp = await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetIdClean,
-        range: `${tabName}!A1:DD${targetMaxRow}`,
-        valueRenderOption: "FORMATTED_VALUE",
-      });
-      if (tabName === "Confirmed") {
-        confRows = resp.data.values || [];
-      } else {
-        pipeRows = resp.data.values || [];
-      }
-      try {
-        const keyInfoResp = await sheets.spreadsheets.values.batchGet({
-          spreadsheetId: sheetIdClean,
-          ranges: ["KeyInfo!C23:C26", "KeyInfo!G32:G75", "KeyInfo!Q4", "KeyInfo!Q8:Q9", "KeyInfo!D18", "KeyInfo!D11:D13"],
-          valueRenderOption: "FORMATTED_VALUE"
-        });
-        const plData = keyInfoResp.data.valueRanges?.[0]?.values || [];
-        const lsData = keyInfoResp.data.valueRanges?.[1]?.values || [];
-        const accData = keyInfoResp.data.valueRanges?.[2]?.values || [];
-        const crmData = keyInfoResp.data.valueRanges?.[3]?.values || [];
-        const d18Data = keyInfoResp.data.valueRanges?.[4]?.values || [];
-        const d11Data = keyInfoResp.data.valueRanges?.[5]?.values || [];
-        productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
-        leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
-        if (accData?.[0]?.[0]) accountingTool = String(accData[0][0]).trim();
-        if (crmData?.[0]?.[0]) crmTool = String(crmData[0][0]).trim();
-        if (crmData?.[1]?.[0]) crmDrives = String(crmData[1][0]).trim();
-        const parsedD18 = parseInt(String(d18Data?.[0]?.[0] || "").trim(), 10);
-        if (!isNaN(parsedD18) && parsedD18 > 0) noEndDateRetainerMonths = parsedD18;
-        if (d11Data?.[0]?.[0]) jobCostingStyle = String(d11Data[0][0]).trim();
-        if (d11Data?.[1]?.[0] !== undefined) standardChargeOutRate = parseFloat(String(d11Data[1][0]).replace(/[£$€,\s]/g, "")) || 0;
-        if (d11Data?.[2]?.[0] !== undefined) contractorDayRate = parseFloat(String(d11Data[2][0]).replace(/[£$€,\s]/g, "")) || 0;
+        };
 
-        if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
-          try {
-            const clientNameMatch = confRows[1]?.[0] || pipeRows[1]?.[0] || "";
-            if (clientNameMatch) {
-              const normKey = String(clientNameMatch).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-              const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
-              if (rawCfg) {
-                const parsedCfg = JSON.parse(rawCfg);
-                if (parsedCfg?.accountingTool) accountingTool = parsedCfg.accountingTool;
-              }
+        const initialConfNoteCap = 600;
+        const initialPipeNoteCap = 300;
+        const initialNotesRanges = [];
+        if (tabName === "All" || !tabName || tabName === "Confirmed") {
+          initialNotesRanges.push(`Confirmed!A1:CL${initialConfNoteCap}`);
+        }
+        if (tabName === "All" || !tabName || tabName === "Pipeline") {
+          initialNotesRanges.push(`Pipeline!A1:CL${initialPipeNoteCap}`);
+        }
+
+        // Run values batchGet and cell notes fetch IN PARALLEL so there is no sequential round-trip waterfall
+        const [shared] = await Promise.all([
+          getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+            includePipeline: tabName !== "Confirmed",
+            bypassCache: Boolean(bypassCache),
+          }),
+          initialNotesRanges.length > 0
+            ? sheets.spreadsheets
+                .get({
+                  spreadsheetId: sheetIdClean,
+                  ranges: initialNotesRanges,
+                  fields: "sheets(properties.title,data(startRow,rowData.values.note))",
+                })
+                .then(populateNotesFromResp)
+                .catch((err) => {
+                  console.warn("⚠️ get_all_client_jobs: could not fetch cell notes:", err?.message);
+                })
+            : Promise.resolve(),
+        ]);
+
+        const confRows = tabName === "Pipeline" ? [] : (shared.confRows || []);
+        const pipeRows = tabName === "Confirmed" ? [] : (shared.pipeRows || []);
+        let productLines = [...(shared.productLines || [])];
+        let leadSources = [...(shared.leadSources || [])];
+        const accountingTool = shared.accountingTool || "None";
+        const crmTool = shared.crmTool || "None";
+        const crmDrives = shared.crmDrives || "NA";
+        const noEndDateRetainerMonths = shared.noEndDateRetainerMonths || 18;
+        const jobCostingStyle = shared.jobCostingStyle || "Standard";
+        const standardChargeOutRate = shared.standardChargeOutRate || 0;
+        const contractorDayRate = shared.contractorDayRate || 0;
+
+        // If active job rows exceed initial note cap, fetch only the remaining tail note rows
+        const getLastActiveRowCount = (rowsArr) => {
+          if (!Array.isArray(rowsArr)) return 0;
+          for (let i = rowsArr.length - 1; i >= 0; i--) {
+            const r = rowsArr[i];
+            if (r && (r[0] || r[1] || r[32] || r[41] || r[42] || r[48] || r[55] || r[75] || r[82] || r[89])) {
+              return i + 1;
             }
-          } catch (_) { }
-        }
-      } catch (_) { }
-    }
-
-    // Safety check: if Confirmed has active data reaching targetConfMaxRow, fetch overflow up to row 5000
-    if (
-      (tabName === "All" || !tabName || tabName === "Confirmed") &&
-      confRows.length >= targetConfMaxRow &&
-      Boolean(confRows[targetConfMaxRow - 1]?.[0] || confRows[targetConfMaxRow - 1]?.[1])
-    ) {
-      try {
-        const overflowResp = await sheets.spreadsheets.values.get({
-          spreadsheetId: sheetIdClean,
-          range: "Confirmed!A2501:DD5000",
-          valueRenderOption: "FORMATTED_VALUE",
-        });
-        const overflowRows = overflowResp.data.values || [];
-        if (overflowRows.length > 0) {
-          confRows = [...confRows, ...overflowRows];
-        }
-      } catch (_) { }
-    }
-
-    // Phase 2 Optimization: Scoped cell notes range based on actual active job rows in the sheet
-    // (confRows.length can be 5000 due to formula columns BT:DD, so find the last row with actual job/slot data)
-    const getLastActiveRowCount = (rowsArr) => {
-      if (!Array.isArray(rowsArr)) return 0;
-      for (let i = rowsArr.length - 1; i >= 0; i--) {
-        const r = rowsArr[i];
-        if (r && (r[0] || r[1] || r[32] || r[41] || r[42] || r[48] || r[55] || r[75] || r[82] || r[89])) {
-          return i + 1;
-        }
-      }
-      return 0;
-    };
-    const confNoteMaxRow = Math.min(Math.max(getLastActiveRowCount(confRows) + 5, 20), 1000);
-    const pipeNoteMaxRow = Math.min(Math.max(getLastActiveRowCount(pipeRows) + 5, 20), 1000);
-
-    const notesRanges = (tabName === "All" || !tabName)
-      ? [`Confirmed!A1:CL${confNoteMaxRow}`, `Pipeline!A1:CL${pipeNoteMaxRow}`]
-      : (tabName === "Confirmed" ? [`Confirmed!A1:CL${confNoteMaxRow}`] : [`Pipeline!A1:CL${pipeNoteMaxRow}`]);
-
-    if (notesRanges.length > 0) {
-      try {
-        const notesResp = await sheets.spreadsheets.get({
-          spreadsheetId: sheetIdClean,
-          ranges: notesRanges,
-          fields: "sheets(properties.title,data.rowData.values.note)",
-        });
-        (notesResp.data?.sheets || []).forEach((s) => {
-          const title = s.properties?.title;
-          if (title) {
-            notesBySheet[title] = s.data?.[0]?.rowData || [];
           }
-        });
-      } catch (err) {
-        console.warn("⚠️ get_all_client_jobs: could not fetch cell notes:", err?.message);
-      }
-    }
-
-    const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
-
-    const getNote = (sheetTitle, rowNum, colIdx) => {
-      const sData = notesBySheet[sheetTitle];
-      if (!sData) return "";
-      const r = sData[rowNum - 1];
-      if (!r || !r.values) return "";
-      return r.values[colIdx]?.note || "";
-    };
-
-    // Dynamically locate "Copied to confirmed tab?" column in Pipeline headers, fallback to 107 (Column DD)
-    let pipelineCopiedColIdx = 107;
-    if (pipeRows && pipeRows.length > 0) {
-      for (let r = 0; r < Math.min(pipeRows.length, 5); r++) {
-        const hRow = pipeRows[r] || [];
-        const found = hRow.findIndex((h) => {
-          const s = String(h || "").trim().toLowerCase();
-          return s.includes("copied") || s.includes("conf?");
-        });
-        if (found !== -1) {
-          pipelineCopiedColIdx = found;
-          break;
-        }
-      }
-    }
-
-    const isJobCosting = isJobCostingStyle({
-      d11Val: jobCostingStyle,
-      headers: confRows?.[0] || pipeRows?.[0] || []
-    });
-
-    const buildRowData = (rowNum, row, isParent, currentTab) => ({
-      rowNum, isParent, tabName: currentTab,
-      isJobCosting,
-      note: getNote(currentTab, rowNum, 0),
-      client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
-      dateConf: colVal(row, 3),
-      leadSrc: colVal(row, 4),
-      unevenSplit: colVal(row, 30),
-      revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
-      projectRetainer: colVal(row, 35), prodLine: colVal(row, 36),
-      startDate: colVal(row, 37), endDate: colVal(row, 38),
-      rechargedExpenses: currentTab === "Confirmed" ? colVal(row, 17) : "",
-      ...(isJobCosting ? {
-        fixedVariable: colVal(row, 7),
-        jobRevenue: colVal(row, 8),
-        contractorCosts: colVal(row, 10),
-        equivDays: colVal(row, 12),
-        equivContractorCosts: colVal(row, 13),
-        contractorCostsCheck: colVal(row, 14),
-        externalCosts: colVal(row, 16),
-        propSuccFeePct: colVal(row, 19),
-        propSuccFeeAmt: colVal(row, 20),
-        propSuccFeeRec: colVal(row, 21),
-        invNo: colVal(row, 27),
-      } : {}),
-      likelihood: currentTab === "Pipeline" ? colVal(row, 39) : (colVal(row, 39) || "100%"),
-      copiedToConf: currentTab === "Pipeline" ? colVal(row, pipelineCopiedColIdx) : null,
-      leftToInvoice: colVal(row, 74),
-      costsOutstanding: colVal(row, 106),
-      invoiceSlots: [1, 2, 3].map(n => {
-        const base = n === 1 ? 41 : n === 2 ? 48 : 55;
-        return {
-          slotNum: n,
-          amount: colVal(row, base),
-          ref: colVal(row, base + 1),
-          sentDate: colVal(row, base + 2),
-          daysToPay: colVal(row, base + 3),
-          status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
-          ofWhichRechgd: currentTab === "Confirmed" ? colVal(row, base + 5) : "",
-          costMonth: currentTab === "Confirmed" ? colVal(row, base + 6) : "",
-          highlighted: false,
-          note: getNote(currentTab, rowNum, base)
+          return 0;
         };
-      }),
-      expenseSlots: [1, 2, 3].map(n => {
-        const base = n === 1 ? 75 : n === 2 ? 82 : 89;
-        return {
-          slotNum: n,
-          description: colVal(row, base),
-          amount: colVal(row, base + 1),
-          vat: colVal(row, base + 2),
-          date: colVal(row, base + 3),
-          daysToPay: colVal(row, base + 4),
-          status: canonicalizeExpenseStatus(colVal(row, base + 5)),
-          transactionId: colVal(row, base + 6),
-          highlighted: false,
-          note: getNote(currentTab, rowNum, base)
+        const confNoteMaxRow = Math.min(getLastActiveRowCount(confRows) + 5, 2500);
+        const pipeNoteMaxRow = Math.min(getLastActiveRowCount(pipeRows) + 5, 1000);
+        const overflowNotesRanges = [];
+        if ((tabName === "All" || !tabName || tabName === "Confirmed") && confNoteMaxRow > initialConfNoteCap) {
+          overflowNotesRanges.push(`Confirmed!A${initialConfNoteCap + 1}:CL${confNoteMaxRow}`);
+        }
+        if ((tabName === "All" || !tabName || tabName === "Pipeline") && pipeNoteMaxRow > initialPipeNoteCap) {
+          overflowNotesRanges.push(`Pipeline!A${initialPipeNoteCap + 1}:CL${pipeNoteMaxRow}`);
+        }
+        if (overflowNotesRanges.length > 0) {
+          try {
+            const overflowNotesResp = await sheets.spreadsheets.get({
+              spreadsheetId: sheetIdClean,
+              ranges: overflowNotesRanges,
+              fields: "sheets(properties.title,data(startRow,rowData.values.note))",
+            });
+            populateNotesFromResp(overflowNotesResp);
+          } catch (_) {}
+        }
+
+        const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+
+        const getNote = (sheetTitle, rowNum, colIdx) => {
+          return notesMap[sheetTitle]?.[`${rowNum}:${colIdx}`] || "";
         };
-      }),
-    });
 
-    const deletedConfEntries = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:confirmed`) || []);
-    const deletedPipeEntries = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:pipeline`) || []);
-
-    const parseTabJobs = (rows, currentTab) => {
-      const deletedEntriesSet = currentTab === "Pipeline" ? deletedPipeEntries : deletedConfEntries;
-      const tabJobs = [];
-      let ri = currentTab === "Pipeline" ? 5 : 1;
-      while (ri < rows.length) {
-        const row = rows[ri] || [];
-        const parentRowNum = ri + 1;
-
-        const client = String(row[0] || "").trim();
-        const jobName = String(row[1] || "").trim();
-        if (!client && !jobName) { ri++; continue; }
-
-        const rowSig = `${parentRowNum}:${client.toLowerCase()}:${jobName.toLowerCase()}`;
-        if (deletedEntriesSet.has(rowSig)) { ri++; continue; }
-
-        const jobRows = [buildRowData(parentRowNum, row, true, currentTab)];
-        let cj = ri + 1;
-        while (cj < rows.length) {
-          const next = rows[cj] || [];
-          const nc = String(next[0] || "").trim();
-          const nj = String(next[1] || "").trim();
-          const nRecharged = currentTab === "Confirmed" ? String(next[17] || "").trim() : "";
-          const nRevenue = String(next[32] || "").trim();
-          const nStart = String(next[37] || "").trim();
-          const nEnd = String(next[38] || "").trim();
-
-          const hasParentIndicators = (nStart !== "" || nEnd !== "") || (nRevenue !== "" && parseFloat(String(nRevenue).replace(/[^0-9.-]/g, "")) > 0) || (nRecharged !== "" && parseFloat(String(nRecharged).replace(/[^0-9.-]/g, "")) > 0);
-          if (hasParentIndicators) {
-            break;
-          }
-
-          const clientMatches = !nc || nc.toLowerCase() === client.toLowerCase();
-          const jobMatches = (nj && nj.toLowerCase() === jobName.toLowerCase()) || (!nj && (next[41] || next[42] || (currentTab === "Confirmed" && (next[46] || next[47])) || next[75] || next[76]));
-
-          if (clientMatches && jobMatches) {
-            jobRows.push(buildRowData(cj + 1, next, false, currentTab));
-            cj++;
-          } else {
-            break;
-          }
-        }
-        ri = cj;
-
-        // Skip pipeline jobs that have been copied to confirmed tab (Column DD == "Yes")
-        if (currentTab === "Pipeline") {
-          const parentCopiedVal = String(colVal(row, pipelineCopiedColIdx) || "").trim().toLowerCase();
-          if (parentCopiedVal === "yes" || parentCopiedVal === "y") {
-            continue;
+        // Dynamically locate "Copied to confirmed tab?" column in Pipeline headers, fallback to 107 (Column DD)
+        let pipelineCopiedColIdx = 107;
+        if (pipeRows && pipeRows.length > 0) {
+          for (let r = 0; r < Math.min(pipeRows.length, 5); r++) {
+            const hRow = pipeRows[r] || [];
+            const found = hRow.findIndex((h) => {
+              const s = String(h || "").trim().toLowerCase();
+              return s.includes("copied") || s.includes("conf?");
+            });
+            if (found !== -1) {
+              pipelineCopiedColIdx = found;
+              break;
+            }
           }
         }
 
-        tabJobs.push({
-          id: `${currentTab.toLowerCase()}_${parentRowNum}`,
-          tabName: currentTab,
-          status: currentTab,
-          client,
-          jobName,
-          projectCode: row[2] || "",
+        const isJobCosting = isJobCostingStyle({
+          d11Val: jobCostingStyle,
+          headers: confRows?.[0] || pipeRows?.[0] || []
+        });
+
+        const buildRowData = (rowNum, row, isParent, currentTab) => ({
+          rowNum, isParent, tabName: currentTab,
+          isJobCosting,
+          note: getNote(currentTab, rowNum, 0),
+          client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+          dateConf: colVal(row, 3),
+          leadSrc: colVal(row, 4),
+          unevenSplit: colVal(row, 30),
+          revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
+          projectRetainer: colVal(row, 35), prodLine: colVal(row, 36),
+          startDate: colVal(row, 37), endDate: colVal(row, 38),
+          rechargedExpenses: currentTab === "Confirmed" ? colVal(row, 17) : "",
+          ...(isJobCosting ? {
+            fixedVariable: colVal(row, 7),
+            jobRevenue: colVal(row, 8),
+            contractorCosts: colVal(row, 10),
+            equivDays: colVal(row, 12),
+            equivContractorCosts: colVal(row, 13),
+            contractorCostsCheck: colVal(row, 14),
+            externalCosts: colVal(row, 16),
+            propSuccFeePct: colVal(row, 19),
+            propSuccFeeAmt: colVal(row, 20),
+            propSuccFeeRec: colVal(row, 21),
+            invNo: colVal(row, 27),
+          } : {}),
+          likelihood: currentTab === "Pipeline" ? colVal(row, 39) : (colVal(row, 39) || "100%"),
           copiedToConf: currentTab === "Pipeline" ? colVal(row, pipelineCopiedColIdx) : null,
-          note: getNote(currentTab, parentRowNum, 0),
-          rows: jobRows
+          leftToInvoice: colVal(row, 74),
+          costsOutstanding: colVal(row, 106),
+          invoiceSlots: [1, 2, 3].map(n => {
+            const base = n === 1 ? 41 : n === 2 ? 48 : 55;
+            return {
+              slotNum: n,
+              amount: colVal(row, base),
+              ref: colVal(row, base + 1),
+              sentDate: colVal(row, base + 2),
+              daysToPay: colVal(row, base + 3),
+              status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
+              ofWhichRechgd: currentTab === "Confirmed" ? colVal(row, base + 5) : "",
+              costMonth: currentTab === "Confirmed" ? colVal(row, base + 6) : "",
+              highlighted: false,
+              note: getNote(currentTab, rowNum, base)
+            };
+          }),
+          expenseSlots: [1, 2, 3].map(n => {
+            const base = n === 1 ? 75 : n === 2 ? 82 : 89;
+            return {
+              slotNum: n,
+              description: colVal(row, base),
+              amount: colVal(row, base + 1),
+              vat: colVal(row, base + 2),
+              date: colVal(row, base + 3),
+              daysToPay: colVal(row, base + 4),
+              status: canonicalizeExpenseStatus(colVal(row, base + 5)),
+              transactionId: colVal(row, base + 6),
+              highlighted: false,
+              note: getNote(currentTab, rowNum, base)
+            };
+          }),
         });
-      }
-      return tabJobs;
-    };
 
-    let jobs = [];
-    if (tabName === "All" || !tabName) {
-      const confJobs = parseTabJobs(confRows, "Confirmed");
-      const pipeJobs = parseTabJobs(pipeRows, "Pipeline");
-      jobs = [...confJobs, ...pipeJobs];
-    } else if (tabName === "Confirmed") {
-      jobs = parseTabJobs(confRows, "Confirmed");
-    } else {
-      jobs = parseTabJobs(pipeRows, "Pipeline");
-    }
+        const deletedConfEntries = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:confirmed`) || []);
+        const deletedPipeEntries = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:pipeline`) || []);
 
-    const parseSheetDate = (d) => {
-      if (!d) return null;
-      const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-      if (!m) return null;
-      const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-      const mIdx = months[m[2].toLowerCase()];
-      if (mIdx === undefined) return null;
-      const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
-      return new Date(yr, mIdx, parseInt(m[1]));
-    };
+        const parseTabJobs = (rows, currentTab) => {
+          const deletedEntriesSet = currentTab === "Pipeline" ? deletedPipeEntries : deletedConfEntries;
+          const tabJobs = [];
+          let ri = currentTab === "Pipeline" ? 5 : 1;
+          while (ri < rows.length) {
+            const row = rows[ri] || [];
+            const parentRowNum = ri + 1;
 
-    jobs.sort((a, b) => {
-      const da = parseSheetDate(a.rows[0]?.startDate);
-      const db = parseSheetDate(b.rows[0]?.startDate);
-      if (!da && !db) return 0;
-      if (!da) return 1;
-      if (!db) return -1;
-      return db - da;
+            const client = String(row[0] || "").trim();
+            const jobName = String(row[1] || "").trim();
+            if (!client && !jobName) { ri++; continue; }
+
+            const rowSig = `${parentRowNum}:${client.toLowerCase()}:${jobName.toLowerCase()}`;
+            if (deletedEntriesSet.has(rowSig)) { ri++; continue; }
+
+            const jobRows = [buildRowData(parentRowNum, row, true, currentTab)];
+            let cj = ri + 1;
+            while (cj < rows.length) {
+              const next = rows[cj] || [];
+              const nc = String(next[0] || "").trim();
+              const nj = String(next[1] || "").trim();
+              const nRecharged = currentTab === "Confirmed" ? String(next[17] || "").trim() : "";
+              const nRevenue = String(next[32] || "").trim();
+              const nStart = String(next[37] || "").trim();
+              const nEnd = String(next[38] || "").trim();
+
+              const hasParentIndicators = (nStart !== "" || nEnd !== "") || (nRevenue !== "" && parseFloat(String(nRevenue).replace(/[^0-9.-]/g, "")) > 0) || (nRecharged !== "" && parseFloat(String(nRecharged).replace(/[^0-9.-]/g, "")) > 0);
+              if (hasParentIndicators) {
+                break;
+              }
+
+              const clientMatches = !nc || nc.toLowerCase() === client.toLowerCase();
+              const jobMatches = (nj && nj.toLowerCase() === jobName.toLowerCase()) || (!nj && (next[41] || next[42] || (currentTab === "Confirmed" && (next[46] || next[47])) || next[75] || next[76]));
+
+              if (clientMatches && jobMatches) {
+                jobRows.push(buildRowData(cj + 1, next, false, currentTab));
+                cj++;
+              } else {
+                break;
+              }
+            }
+            ri = cj;
+
+            // Skip pipeline jobs that have been copied to confirmed tab (Column DD == "Yes")
+            if (currentTab === "Pipeline") {
+              const parentCopiedVal = String(colVal(row, pipelineCopiedColIdx) || "").trim().toLowerCase();
+              if (parentCopiedVal === "yes" || parentCopiedVal === "y") {
+                continue;
+              }
+            }
+
+            tabJobs.push({
+              id: `${currentTab.toLowerCase()}_${parentRowNum}`,
+              tabName: currentTab,
+              status: currentTab,
+              client,
+              jobName,
+              projectCode: row[2] || "",
+              copiedToConf: currentTab === "Pipeline" ? colVal(row, pipelineCopiedColIdx) : null,
+              note: getNote(currentTab, parentRowNum, 0),
+              rows: jobRows
+            });
+          }
+          return tabJobs;
+        };
+
+        let jobs = [];
+        if (tabName === "All" || !tabName) {
+          const confJobs = parseTabJobs(confRows, "Confirmed");
+          const pipeJobs = parseTabJobs(pipeRows, "Pipeline");
+          jobs = [...confJobs, ...pipeJobs];
+        } else if (tabName === "Confirmed") {
+          jobs = parseTabJobs(confRows, "Confirmed");
+        } else {
+          jobs = parseTabJobs(pipeRows, "Pipeline");
+        }
+
+        const parseSheetDate = (d) => {
+          if (!d) return null;
+          const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+          if (!m) return null;
+          const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+          const mIdx = months[m[2].toLowerCase()];
+          if (mIdx === undefined) return null;
+          const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+          return new Date(yr, mIdx, parseInt(m[1]));
+        };
+
+        jobs.sort((a, b) => {
+          const da = parseSheetDate(a.rows[0]?.startDate);
+          const db = parseSheetDate(b.rows[0]?.startDate);
+          if (!da && !db) return 0;
+          if (!da) return 1;
+          if (!db) return -1;
+          return db - da;
+        });
+
+        const distinctPl = new Set(productLines);
+        const distinctLs = new Set(leadSources);
+        const distinctClients = new Set();
+        jobs.forEach(j => {
+          if (j.client) distinctClients.add(String(j.client).trim());
+          j.rows?.forEach(r => {
+            if (r.client) distinctClients.add(String(r.client).trim());
+            if (r.prodLine) distinctPl.add(String(r.prodLine).trim());
+            if (r.leadSrc) distinctLs.add(String(r.leadSrc).trim());
+          });
+        });
+        productLines = Array.from(distinctPl).filter(Boolean).sort();
+        leadSources = Array.from(distinctLs).filter(Boolean).sort();
+        const existingClients = Array.from(distinctClients).filter(Boolean).sort();
+        const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => accountingTool.toLowerCase().includes(t));
+        return {
+          success: true,
+          jobs,
+          productLines,
+          leadSources,
+          existingClients,
+          accountingTool,
+          crmTool,
+          crmDrives,
+          clientMode: sbCtx?.clientMode || "sheet",
+          fetchedAt: new Date().toISOString(),
+          hasAccountingIntegration,
+          noEndDateRetainerMonths,
+          isJobCosting,
+          jobCostingStyle: isJobCosting ? "JobCosting" : "Standard",
+          standardChargeOutRate,
+          contractorDayRate,
+        };
+      },
     });
 
-    const distinctPl = new Set(productLines);
-    const distinctLs = new Set(leadSources);
-    const distinctClients = new Set();
-    jobs.forEach(j => {
-      if (j.client) distinctClients.add(String(j.client).trim());
-      j.rows?.forEach(r => {
-        if (r.client) distinctClients.add(String(r.client).trim());
-        if (r.prodLine) distinctPl.add(String(r.prodLine).trim());
-        if (r.leadSrc) distinctLs.add(String(r.leadSrc).trim());
-      });
+    return res.status(200).json({
+      ...result.data,
+      clientMode: sbCtx?.clientMode || result.data?.clientMode || "sheet",
     });
-    productLines = Array.from(distinctPl).filter(Boolean).sort();
-    leadSources = Array.from(distinctLs).filter(Boolean).sort();
-    const existingClients = Array.from(distinctClients).filter(Boolean).sort();
-    const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => accountingTool.toLowerCase().includes(t));
-    const payload = {
-      success: true,
-      jobs,
-      productLines,
-      leadSources,
-      existingClients,
-      accountingTool,
-      crmTool,
-      crmDrives,
-      clientMode: sbCtx?.clientMode || "sheet",
-      fetchedAt: new Date().toISOString(),
-      hasAccountingIntegration,
-      noEndDateRetainerMonths,
-      isJobCosting,
-      jobCostingStyle: isJobCosting ? "JobCosting" : "Standard",
-      standardChargeOutRate,
-      contractorDayRate,
-    };
-    await set2TierCache(cacheKey, payload, 120);
-    return res.status(200).json(payload);
   } catch (err) {
     console.error("❌ get_all_client_jobs error:", err);
     return res.status(500).json({ success: false, error: err.message });

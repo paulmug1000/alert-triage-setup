@@ -329,9 +329,18 @@ export default function SetupView({
   };
 
   // Called when a new client is provisioned in the modal
-  const handleClientProvisioned = (newClientData) => {
+  const handleClientProvisioned = () => {
+    if (onClientsChanged) onClientsChanged();
+    if (!selectedClientName && !managedClient) {
+      loadOverview();
+    }
+  };
+
+  const handleGoToChecklistFromModal = (newClientData) => {
     setIsOnboardModalOpen(false);
-    handleSelectClient(newClientData.clientName);
+    if (newClientData?.clientName) {
+      handleSelectClient(newClientData.clientName);
+    }
   };
 
   const isAccountingOAuth = ["xero", "quickbooks"].includes(accountingTool.toLowerCase());
@@ -664,6 +673,7 @@ export default function SetupView({
             isOpen={isOnboardModalOpen}
             onClose={() => setIsOnboardModalOpen(false)}
             onClientCreated={handleClientProvisioned}
+            onGoToChecklist={handleGoToChecklistFromModal}
           />
         )}
       </div>
@@ -1376,6 +1386,7 @@ export default function SetupView({
           isOpen={isOnboardModalOpen}
           onClose={() => setIsOnboardModalOpen(false)}
           onClientCreated={handleClientProvisioned}
+          onGoToChecklist={handleGoToChecklistFromModal}
         />
       )}
     </div>

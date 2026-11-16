@@ -61,11 +61,8 @@ export default function MonthView({
     }
   }, [keyData]);
 
-  // Coordinate loading: wait until both payload and performanceData are ready so the At A Glance charts
-  // and Previous Year comparison rows render completely on the first paint without jumping.
-  // If performanceData fails with an error or is not loading, we fall back gracefully to chartData.
-  const isWaitingForPerformance = !performanceData && !perfError && isLoadingPerformance;
-  const isReady = payload && !isWaitingForPerformance;
+  // Render immediately as soon as payload is ready so the Pulse Home Page never blocks on secondary fetches.
+  const isReady = Boolean(payload);
 
   if (!isReady) {
     if (error) {

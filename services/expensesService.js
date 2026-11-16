@@ -14,10 +14,10 @@
  * ============================================================================
  */
 
-import { getSheetsClient, withRetry, getSheetGid, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { getSheetsClient, withRetry, getSheetGid, getSheetTitles, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
-import { sanitizeFormulaInput } from "./userPermissions.js";
-import { memoryCache, invalidatePmaClientCache } from "./cacheService.js";
+import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
+import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 import { getClients } from "./workspaces.js";
 
@@ -64,283 +64,264 @@ export function parseNum(val) {
 export async function fetchExpensesData(clientName, clientSheetId, bypassCache = false) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
 
-  const cacheKey = `pma_expenses_${clientSheetId}`;
+  const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
+  const cacheKey = `pma_expenses_${cleanClientId}`;
 
-  if (!bypassCache) {
-    try {
-      if (redisClient?.isOpen) {
-        const cached = await redisClient.get(cacheKey);
-        if (cached) return JSON.parse(cached);
-      } else {
-        const mem = memoryCache.get(cacheKey);
-        if (mem) return mem;
-      }
-    } catch (e) {
-      console.warn("Expenses cache read error:", e?.message);
-    }
-  }
+  const cachedResult = await resolvePortalCache({
+    cacheKey,
+    bypassCache: Boolean(bypassCache),
+    l1TtlSecs: 120,
+    redisTtlSecs: 86400,
+    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.expenses)),
+    fetchFreshFn: async () => {
+      const sheets = await getSheetsClient();
 
-  const sheets = await getSheetsClient();
-
-  const [headerResp, gridResp] = await Promise.all([
-    withRetry(async () => {
-      return await sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: "Outgoings!A1:AZ2",
-        valueRenderOption: "FORMATTED_VALUE",
-      });
-    }),
-    withRetry(async () => {
-      return await sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        ranges: ["Outgoings!A126:AZ228"],
-        includeGridData: true,
-        fields: "sheets.data.rowData.values(formattedValue,note)",
-      });
-    }),
-  ]);
-
-  // Resolve client reconSheetId to inspect CR2 reconciliation status per month
-  let reconSheetId = null;
-  const cleanClientId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-  try {
-    const clients = await getClients();
-    const match = (clients || []).find(
-      (c) =>
-        (c.clientSheetId && (extractSheetIdFromUrl(c.clientSheetId) || c.clientSheetId) === cleanClientId) ||
-        (c.clientName && c.clientName.toLowerCase().trim() === clientName.toLowerCase().trim())
-    );
-    if (match) {
-      reconSheetId = match.reconSheetId || extractSheetIdFromUrl(match.reconSheetUrl) || null;
-    }
-  } catch (err) {
-    console.warn("Could not resolve reconSheetId for client:", clientName, err?.message);
-  }
-
-  const reconStatusMap = {};
-  if (reconSheetId) {
-    try {
-      const metaResp = await withRetry(() =>
-        sheets.spreadsheets.get({
-          spreadsheetId: reconSheetId,
-          fields: "sheets.properties.title",
-        })
-      );
-      const reconTabs = (metaResp.data.sheets || [])
-        .map((s) => s.properties?.title)
-        .filter((t) => /^\d{4}$/.test(t));
-
-      if (reconTabs.length > 0) {
-        const batchRanges = reconTabs.map((t) => `'${t}'!CR2`);
-        const batchResp = await withRetry(() =>
-          sheets.spreadsheets.values.batchGet({
-            spreadsheetId: reconSheetId,
-            ranges: batchRanges,
-            valueRenderOption: "FORMATTED_VALUE",
-          })
+      // Resolve client reconSheetId to inspect CR2 reconciliation status per month in parallel with Outgoings read
+      let reconSheetId = null;
+      try {
+        const clients = await getClients();
+        const match = (clients || []).find(
+          (c) =>
+            (c.clientSheetId && (extractSheetIdFromUrl(c.clientSheetId) || c.clientSheetId) === cleanClientId) ||
+            (c.clientName && c.clientName.toLowerCase().trim() === clientName.toLowerCase().trim())
         );
-        const vRanges = batchResp.data.valueRanges || [];
-        reconTabs.forEach((tab, idx) => {
-          const val = vRanges[idx]?.values?.[0]?.[0];
-          const isRecon = Boolean(val === true || String(val || "").trim().toUpperCase() === "TRUE");
-          reconStatusMap[tab] = isRecon;
-          const yy = parseInt(tab.slice(0, 2), 10);
-          const mm = tab.slice(2, 4);
-          const fullYear = yy < 50 ? 2000 + yy : 1900 + yy;
-          reconStatusMap[`${fullYear}-${mm}`] = isRecon;
+        if (match) {
+          reconSheetId = match.reconSheetId || extractSheetIdFromUrl(match.reconSheetUrl) || null;
+        }
+      } catch (err) {
+        console.warn("Could not resolve reconSheetId for client:", clientName, err?.message);
+      }
+
+      const fetchReconMap = async () => {
+        const map = {};
+        if (!reconSheetId) return map;
+        try {
+          const reconTitleSet = await getSheetTitles(sheets, reconSheetId);
+          const reconTabs = [...(reconTitleSet || [])].filter((t) => /^\d{4}$/.test(t));
+          if (reconTabs.length > 0) {
+            const batchRanges = reconTabs.map((t) => `'${t}'!CR2`);
+            const batchResp = await withRetry(() =>
+              sheets.spreadsheets.values.batchGet({
+                spreadsheetId: reconSheetId,
+                ranges: batchRanges,
+                valueRenderOption: "FORMATTED_VALUE",
+              })
+            );
+            const vRanges = batchResp.data.valueRanges || [];
+            reconTabs.forEach((tab, idx) => {
+              const val = vRanges[idx]?.values?.[0]?.[0];
+              const isRecon = Boolean(val === true || String(val || "").trim().toUpperCase() === "TRUE");
+              map[tab] = isRecon;
+              const yy = parseInt(tab.slice(0, 2), 10);
+              const mm = tab.slice(2, 4);
+              const fullYear = yy < 50 ? 2000 + yy : 1900 + yy;
+              map[`${fullYear}-${mm}`] = isRecon;
+            });
+          }
+        } catch (e) {
+          console.warn("Failed to fetch CR2 reconciliation status from Recon Sheet:", e?.message);
+        }
+        return map;
+      };
+
+      const [headerResp, gridResp, reconStatusMap] = await Promise.all([
+        withRetry(async () => {
+          return await sheets.spreadsheets.values.get({
+            spreadsheetId: cleanClientId,
+            range: "Outgoings!A1:AZ2",
+            valueRenderOption: "FORMATTED_VALUE",
+          });
+        }),
+        withRetry(async () => {
+          return await sheets.spreadsheets.get({
+            spreadsheetId: cleanClientId,
+            ranges: ["Outgoings!A126:AZ228"],
+            includeGridData: true,
+            fields: "sheets.data.rowData.values(formattedValue,note)",
+          });
+        }),
+        fetchReconMap(),
+      ]);
+
+      const row1 = headerResp.data.values?.[0] || [];
+      const rowData = gridResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
+
+      // Define the 3 Financial Year configurations
+      const fyConfigs = [
+        {
+          index: 0,
+          id: "fy1",
+          startCol: 6,  // Col G
+          count: 12,    // G to R
+          totalCol: 19, // Col T
+          totalColLetter: "T",
+          label: String(row1[19] || "").trim() || "FY1",
+        },
+        {
+          index: 1,
+          id: "fy2",
+          startCol: 21, // Col V
+          count: 12,    // V to AG
+          totalCol: 34, // Col AI
+          totalColLetter: "AI",
+          label: String(row1[34] || "").trim() || "FY2",
+        },
+        {
+          index: 2,
+          id: "fy3",
+          startCol: 36, // Col AK
+          count: 12,    // AK to AV
+          totalCol: 49, // Col AX
+          totalColLetter: "AX",
+          label: String(row1[49] || "").trim() || "FY3",
+        },
+      ];
+
+      // Resolve month columns for each FY
+      const now = new Date();
+      let defaultFyIndex = 0;
+
+      fyConfigs.forEach((fy, fIdx) => {
+        const monthCols = [];
+        for (let j = 0; j < fy.count; j++) {
+          const colIdx = fy.startCol + j;
+          const rawHdr = String(row1[colIdx] || "").trim();
+          const colLetter = colIdxToLetter(colIdx);
+          const parsed = parseMonthYearHeader(rawHdr);
+
+          let isReconciled = false;
+          let tabName = null;
+          let isoMonth = null;
+          if (parsed) {
+            tabName = `${String(parsed.year).slice(-2)}${String(parsed.monthIdx + 1).padStart(2, "0")}`;
+            isoMonth = `${parsed.year}-${String(parsed.monthIdx + 1).padStart(2, "0")}`;
+            isReconciled = Boolean(reconStatusMap[tabName] || reconStatusMap[isoMonth]);
+          }
+
+          monthCols.push({
+            colIdx,
+            colLetter,
+            label: rawHdr || `M${j + 1}`,
+            isReconciled,
+            tabName,
+            isoMonth,
+          });
+
+          // Check if current date falls in this FY
+          if (parsed) {
+            const mDate = new Date(parsed.year, parsed.monthIdx, 1);
+            const mEnd = new Date(parsed.year, parsed.monthIdx + 1, 0, 23, 59, 59);
+            if (now >= mDate && now <= mEnd) {
+              defaultFyIndex = fIdx;
+            }
+          }
+        }
+        fy.monthCols = monthCols;
+      });
+
+      // Parse Expense Rows (Rows 126 to 226, i.e. indices 0 to 100 in rowData; 225 & 226 are non-editable system rows)
+      const expenses = [];
+      let firstEmptyRow = null;
+
+      for (let i = 0; i < 101; i++) {
+        const sheetRow = 126 + i;
+        const rValues = rowData[i]?.values || [];
+        const category = String(rValues[0]?.formattedValue || "").trim();
+        const vat = String(rValues[1]?.formattedValue || "").trim() || "No";
+        const deliveryPct = String(rValues[4]?.formattedValue || "").trim() || "0%";
+        const isHidden = category.toLowerCase() === "hide";
+        const isSystemRow =
+          sheetRow === 225 ||
+          sheetRow === 226 ||
+          /^recharged expenses\s*\((forecast|recovery)\)$/i.test(category) ||
+          category.toLowerCase() === "recharged expenses recovery";
+        const isPopulated = category !== "" && !isHidden;
+
+        if (category === "" && !isSystemRow && sheetRow <= 224 && firstEmptyRow === null) {
+          firstEmptyRow = sheetRow;
+        }
+
+        // Determine delivery vs non-delivery based on column E %
+        const numDelPct = parseNum(deliveryPct);
+        const isDelivery = numDelPct > 0 || deliveryPct.toLowerCase() === "100%";
+
+        // Monthly data across all 3 FYs
+        const fyData = {};
+        fyConfigs.forEach((fy) => {
+          const months = fy.monthCols.map((m) => {
+            const cell = rValues[m.colIdx];
+            return {
+              colLetter: m.colLetter,
+              monthLabel: m.label,
+              isReconciled: Boolean(m.isReconciled),
+              value: cell?.formattedValue || "£0",
+              note: cell?.note || "",
+            };
+          });
+          const total = rValues[fy.totalCol]?.formattedValue || "£0";
+          fyData[fy.id] = { months, total };
+        });
+
+        expenses.push({
+          sheetRow,
+          index: i,
+          category,
+          vat: vat.toLowerCase() === "yes" ? "Yes" : "No",
+          deliveryPct: deliveryPct || "0%",
+          isDelivery,
+          isPopulated,
+          isSystemRow,
+          fyData,
         });
       }
-    } catch (e) {
-      console.warn("Failed to fetch CR2 reconciliation status from Recon Sheet:", e?.message);
-    }
-  }
 
-  const row1 = headerResp.data.values?.[0] || [];
-  const rowData = gridResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
+      // Parse Totals Rows (Row 227 and Row 228)
+      // Row 227 is at index (227 - 126) = 101
+      // Row 228 is at index (228 - 126) = 102
+      const row227Values = rowData[101]?.values || [];
+      const row228Values = rowData[102]?.values || [];
 
-  // Define the 3 Financial Year configurations
-  const fyConfigs = [
-    {
-      index: 0,
-      id: "fy1",
-      startCol: 6,  // Col G
-      count: 12,    // G to R
-      totalCol: 19, // Col T
-      totalColLetter: "T",
-      label: String(row1[19] || "").trim() || "FY1",
-    },
-    {
-      index: 1,
-      id: "fy2",
-      startCol: 21, // Col V
-      count: 12,    // V to AG
-      totalCol: 34, // Col AI
-      totalColLetter: "AI",
-      label: String(row1[34] || "").trim() || "FY2",
-    },
-    {
-      index: 2,
-      id: "fy3",
-      startCol: 36, // Col AK
-      count: 12,    // AK to AV
-      totalCol: 49, // Col AX
-      totalColLetter: "AX",
-      label: String(row1[49] || "").trim() || "FY3",
-    },
-  ];
+      const totals = {};
+      fyConfigs.forEach((fy) => {
+        const deliveryMonths = fy.monthCols.map((m) => row227Values[m.colIdx]?.formattedValue || "£0");
+        const deliveryTotal = row227Values[fy.totalCol]?.formattedValue || "£0";
 
-  // Resolve month columns for each FY
-  const now = new Date();
-  let defaultFyIndex = 0;
+        const nonDeliveryMonths = fy.monthCols.map((m) => row228Values[m.colIdx]?.formattedValue || "£0");
+        const nonDeliveryTotal = row228Values[fy.totalCol]?.formattedValue || "£0";
 
-  fyConfigs.forEach((fy, fIdx) => {
-    const monthCols = [];
-    for (let j = 0; j < fy.count; j++) {
-      const colIdx = fy.startCol + j;
-      const rawHdr = String(row1[colIdx] || "").trim();
-      const colLetter = colIdxToLetter(colIdx);
-      const parsed = parseMonthYearHeader(rawHdr);
-
-      let isReconciled = false;
-      let tabName = null;
-      let isoMonth = null;
-      if (parsed) {
-        tabName = `${String(parsed.year).slice(-2)}${String(parsed.monthIdx + 1).padStart(2, "0")}`;
-        isoMonth = `${parsed.year}-${String(parsed.monthIdx + 1).padStart(2, "0")}`;
-        isReconciled = Boolean(reconStatusMap[tabName] || reconStatusMap[isoMonth]);
-      }
-
-      monthCols.push({
-        colIdx,
-        colLetter,
-        label: rawHdr || `M${j + 1}`,
-        isReconciled,
-        tabName,
-        isoMonth,
-      });
-
-      // Check if current date falls in this FY
-      if (parsed) {
-        const mDate = new Date(parsed.year, parsed.monthIdx, 1);
-        const mEnd = new Date(parsed.year, parsed.monthIdx + 1, 0, 23, 59, 59);
-        if (now >= mDate && now <= mEnd) {
-          defaultFyIndex = fIdx;
-        }
-      }
-    }
-    fy.monthCols = monthCols;
-  });
-
-  // Parse Expense Rows (Rows 126 to 226, i.e. indices 0 to 100 in rowData; 225 & 226 are non-editable system rows)
-  const expenses = [];
-  let firstEmptyRow = null;
-
-  for (let i = 0; i < 101; i++) {
-    const sheetRow = 126 + i;
-    const rValues = rowData[i]?.values || [];
-    const category = String(rValues[0]?.formattedValue || "").trim();
-    const vat = String(rValues[1]?.formattedValue || "").trim() || "No";
-    const deliveryPct = String(rValues[4]?.formattedValue || "").trim() || "0%";
-    const isHidden = category.toLowerCase() === "hide";
-    const isSystemRow =
-      sheetRow === 225 ||
-      sheetRow === 226 ||
-      /^recharged expenses\s*\((forecast|recovery)\)$/i.test(category) ||
-      category.toLowerCase() === "recharged expenses recovery";
-    const isPopulated = category !== "" && !isHidden;
-
-    if (category === "" && !isSystemRow && sheetRow <= 224 && firstEmptyRow === null) {
-      firstEmptyRow = sheetRow;
-    }
-
-    // Determine delivery vs non-delivery based on column E %
-    const numDelPct = parseNum(deliveryPct);
-    const isDelivery = numDelPct > 0 || deliveryPct.toLowerCase() === "100%";
-
-    // Monthly data across all 3 FYs
-    const fyData = {};
-    fyConfigs.forEach((fy) => {
-      const months = fy.monthCols.map((m) => {
-        const cell = rValues[m.colIdx];
-        return {
-          colLetter: m.colLetter,
-          monthLabel: m.label,
-          isReconciled: Boolean(m.isReconciled),
-          value: cell?.formattedValue || "£0",
-          note: cell?.note || "",
+        totals[fy.id] = {
+          delivery: {
+            label: String(row227Values[0]?.formattedValue || "Total other expenses - delivery").trim(),
+            months: deliveryMonths,
+            total: deliveryTotal,
+          },
+          nonDelivery: {
+            label: String(row228Values[0]?.formattedValue || "Total other expenses - non-del").trim(),
+            months: nonDeliveryMonths,
+            total: nonDeliveryTotal,
+          },
         };
       });
-      const total = rValues[fy.totalCol]?.formattedValue || "£0";
-      fyData[fy.id] = { months, total };
-    });
 
-    expenses.push({
-      sheetRow,
-      index: i,
-      category,
-      vat: vat.toLowerCase() === "yes" ? "Yes" : "No",
-      deliveryPct: deliveryPct || "0%",
-      isDelivery,
-      isPopulated,
-      isSystemRow,
-      fyData,
-    });
-  }
+      const result = {
+        success: true,
+        clientName,
+        clientSheetId,
+        reconSheetId: reconSheetId || null,
+        reconStatusMap,
+        defaultFyIndex,
+        fyConfigs,
+        expenses,
+        totals,
+        firstAvailableRow: firstEmptyRow || null,
+        lastUpdated: new Date().toISOString(),
+      };
 
-  // Parse Totals Rows (Row 227 and Row 228)
-  // Row 227 is at index (227 - 126) = 101
-  // Row 228 is at index (228 - 126) = 102
-  const row227Values = rowData[101]?.values || [];
-  const row228Values = rowData[102]?.values || [];
-
-  const totals = {};
-  fyConfigs.forEach((fy) => {
-    const deliveryMonths = fy.monthCols.map((m) => row227Values[m.colIdx]?.formattedValue || "£0");
-    const deliveryTotal = row227Values[fy.totalCol]?.formattedValue || "£0";
-
-    const nonDeliveryMonths = fy.monthCols.map((m) => row228Values[m.colIdx]?.formattedValue || "£0");
-    const nonDeliveryTotal = row228Values[fy.totalCol]?.formattedValue || "£0";
-
-    totals[fy.id] = {
-      delivery: {
-        label: String(row227Values[0]?.formattedValue || "Total other expenses - delivery").trim(),
-        months: deliveryMonths,
-        total: deliveryTotal,
-      },
-      nonDelivery: {
-        label: String(row228Values[0]?.formattedValue || "Total other expenses - non-del").trim(),
-        months: nonDeliveryMonths,
-        total: nonDeliveryTotal,
-      },
-    };
+      return result;
+    },
   });
 
-  const result = {
-    success: true,
-    clientName,
-    clientSheetId,
-    reconSheetId: reconSheetId || null,
-    reconStatusMap,
-    defaultFyIndex,
-    fyConfigs,
-    expenses,
-    totals,
-    firstAvailableRow: firstEmptyRow || null,
-    lastUpdated: new Date().toISOString(),
-  };
-
-  try {
-    const payload = JSON.stringify(result);
-    if (redisClient?.isOpen) {
-      await redisClient.setEx(cacheKey, 60, payload);
-    } else {
-      memoryCache.set(cacheKey, result, 60);
-    }
-  } catch (e) {
-    console.warn("Expenses cache write error:", e?.message);
-  }
-
-  return result;
+  return cachedResult.data;
 }
 
 /**
@@ -518,12 +499,12 @@ export async function saveExpenseAmount({
   const sheets = await getSheetsClient();
   const hasNoteUpdates = Boolean(
     cellNotes &&
-      typeof cellNotes === "object" &&
-      Object.keys(cellNotes).some((k) => {
-        const cleanLetter = String(k).toUpperCase().trim();
-        if (!/^[A-Z]{1,2}$/.test(cleanLetter)) return false;
-        return isOutgoingsMonthlyCol(colLetterToNum(cleanLetter) - 1);
-      })
+    typeof cellNotes === "object" &&
+    Object.keys(cellNotes).some((k) => {
+      const cleanLetter = String(k).toUpperCase().trim();
+      if (!/^[A-Z]{1,2}$/.test(cleanLetter)) return false;
+      return isOutgoingsMonthlyCol(colLetterToNum(cleanLetter) - 1);
+    })
   );
 
   if (dataUpdates.length > 0) {

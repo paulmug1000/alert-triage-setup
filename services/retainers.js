@@ -2,10 +2,11 @@ import { waitUntil } from "@vercel/functions";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter, sanitizeFormulaInput } from "./sheetsClient.js";
 import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers.js";
 import { logPmaActivity } from "./pmaLogger.js";
-import { resolveClientNameBySheetId, getAllClients, resolveMasterSheetIdForClient_ } from "./workspaces.js";
+import { resolveClientNameBySheetId, getAllClients, resolveMasterSheetIdForClient_, getSharedClientConfirmedAndKeyInfo } from "./workspaces.js";
 import { isPlaceholderInvoice, isPlaceholderExpense, formatInvoiceRefForSheet, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay, isJobCostingStyle, getJobCostingRowFormulasLetterMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
-import { get2TierCache, set2TierCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
+import { get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
+import { unwrapSheetId } from "./sheetTokenService.js";
 import { redisClient } from "./redisClient.js";
 
 const RET_MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -483,66 +484,67 @@ export async function handleGetRetainerJobs(req, res, sheets) {
   const { clientSheetId, bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
-    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
     const cacheKey = `pulse:pma:retainer_jobs:${sheetIdClean}`;
 
-    if (!bypassCache) {
-      const cached = await get2TierCache(cacheKey);
-      if (cached && Array.isArray(cached.jobs)) {
-        return res.status(200).json(cached);
-      }
-    }
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache: Boolean(bypassCache),
+      l1TtlSecs: 120,
+      redisTtlSecs: 86400,
+      isValidPayload: (c) => c && Array.isArray(c.jobs),
+      fetchFreshFn: async () => {
+        const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+          includePipeline: false,
+          bypassCache: Boolean(bypassCache),
+        });
+        const rows = shared.confRows || [];
+        const retainerJobs = retFindRetainerJobs(rows, { onlyActiveOrRecentlyEnded: false });
 
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: sheetIdClean,
-      range: "Confirmed!A1:CR5000",
-      valueRenderOption: "FORMATTED_VALUE",
-    }));
-    const rows = resp.data.values || [];
-    const retainerJobs = retFindRetainerJobs(rows, { onlyActiveOrRecentlyEnded: false });
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+        const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+        const buildRowData = (rowNum, row, isParent) => ({
+          rowNum, isParent,
+          client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+          revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
+          projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+          invoiceSlots: [1, 2, 3].map(n => {
+            const base = n === 1 ? 41 : n === 2 ? 48 : 55;
+            return {
+              slotNum: n, amount: colVal(row, base), ref: colVal(row, base + 1), sentDate: colVal(row, base + 2),
+              daysToPay: colVal(row, base + 3), status: colVal(row, base + 4)
+            };
+          }),
+        });
 
-    const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
-    const buildRowData = (rowNum, row, isParent) => ({
-      rowNum, isParent,
-      client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
-      revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
-      projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
-      invoiceSlots: [1, 2, 3].map(n => {
-        const base = n === 1 ? 41 : n === 2 ? 48 : 55;
-        return {
-          slotNum: n, amount: colVal(row, base), ref: colVal(row, base + 1), sentDate: colVal(row, base + 2),
-          daysToPay: colVal(row, base + 3), status: colVal(row, base + 4)
-        };
-      }),
+        const jobs = retainerJobs.map(job => {
+          const rawEnd = colVal(job.parentRow, 38);
+          const isNoEnd = isNoEndDateSentinel(rawEnd);
+          const isCompleted = Boolean(!isNoEnd && job.endDate && job.endDate < todayStart);
+          return {
+            client: job.client, jobName: job.jobName, projectCode: job.projectCode,
+            revenue: job.revenue, vat: job.vat, projectRetainer: job.projectRetainer,
+            parentRowNum: job.parentRowNum,
+            isCompleted,
+            rows: [buildRowData(job.parentRowNum, job.parentRow, true)]
+              .concat(job.childRows.map(cr => buildRowData(cr.rowNum, cr.row, false))),
+          };
+        });
+
+        jobs.sort((a, b) => {
+          const ca = String(a.client || "").toLowerCase();
+          const cb = String(b.client || "").toLowerCase();
+          if (ca !== cb) return ca.localeCompare(cb);
+          return String(a.jobName || "").toLowerCase().localeCompare(String(b.jobName || "").toLowerCase());
+        });
+
+        return { success: true, jobs };
+      },
     });
 
-    const jobs = retainerJobs.map(job => {
-      const rawEnd = colVal(job.parentRow, 38);
-      const isNoEnd = isNoEndDateSentinel(rawEnd);
-      const isCompleted = Boolean(!isNoEnd && job.endDate && job.endDate < todayStart);
-      return {
-        client: job.client, jobName: job.jobName, projectCode: job.projectCode,
-        revenue: job.revenue, vat: job.vat, projectRetainer: job.projectRetainer,
-        parentRowNum: job.parentRowNum,
-        isCompleted,
-        rows: [buildRowData(job.parentRowNum, job.parentRow, true)]
-          .concat(job.childRows.map(cr => buildRowData(cr.rowNum, cr.row, false))),
-      };
-    });
-
-    jobs.sort((a, b) => {
-      const ca = String(a.client || "").toLowerCase();
-      const cb = String(b.client || "").toLowerCase();
-      if (ca !== cb) return ca.localeCompare(cb);
-      return String(a.jobName || "").toLowerCase().localeCompare(String(b.jobName || "").toLowerCase());
-    });
-
-    const payload = { success: true, jobs };
-    await set2TierCache(cacheKey, payload, 120);
-    return res.status(200).json(payload);
+    return res.status(200).json(result.data);
   } catch (err) {
     console.error("❌ get_retainer_jobs error:", err);
     return res.status(500).json({ success: false, error: err.message });

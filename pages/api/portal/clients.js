@@ -38,7 +38,7 @@ export default async function handler(req, res) {
           allClients = JSON.parse(rawCached);
           memoryCache.set(cacheKey, allClients, 300);
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     if (!allClients && (await isSupabaseControlPlaneActive())) {
@@ -67,7 +67,7 @@ export default async function handler(req, res) {
             }
             memoryCache.set(cacheKey, allClients, 300);
             if (redisClient?.isOpen) {
-              redisClient.set(cacheKey, JSON.stringify(allClients), { EX: 300 }).catch(() => {});
+              redisClient.set(cacheKey, JSON.stringify(allClients), { EX: 86400 }).catch(() => { });
             }
           }
         }
@@ -110,7 +110,7 @@ export default async function handler(req, res) {
 
       memoryCache.set(cacheKey, allClients, 300); // Cache in memory for 5 minutes
       if (redisClient?.isOpen) {
-        redisClient.set(cacheKey, JSON.stringify(allClients), { EX: 300 }).catch(() => {});
+        redisClient.set(cacheKey, JSON.stringify(allClients), { EX: 86400 }).catch(() => { });
       }
     }
 
@@ -150,14 +150,15 @@ export default async function handler(req, res) {
             try {
               return await getClientSetupStatusForPortal({
                 clientName: c.clientName,
-                masterSheetId: c.masterSheetId
+                masterSheetId: c.masterSheetId,
+                clientSheetId: c.clientSheetId
               });
             } catch {
               return null;
             }
           })
         );
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const hideMasterId = isPulseOnlyUser(sessionUser);

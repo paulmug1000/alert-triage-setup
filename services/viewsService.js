@@ -2,9 +2,9 @@ import { getSheetsClient, withRetry, colLetterToNum, colIndexToLetter, getSheetG
 import { resolveClientNameBySheetId } from "./workspaces.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient, sanitizeFormulaInput, verifyUserAuthorizedForSheet, isReadOnlySession, canViewSalariesAndDividends } from "./userPermissions.js";
+import { isUserAuthorizedForClient, sanitizeFormulaInput, verifyUserAuthorizedForSheet, isReadOnlySession, canViewSalariesAndDividends, unwrapSheetId } from "./userPermissions.js";
 import { sanitizeSpreadsheetTerms } from "../utils/helpers.js";
-import { memoryCache, invalidatePmaClientCache } from "./cacheService.js";
+import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 
 
@@ -162,271 +162,257 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
     throw new Error("Missing clientSheetId or masterSheetId");
   }
 
-  const cleanClientId = extractSheetIdFromUrl(clientSheetId) || clientSheetId || "";
-  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId || "";
-  const targetId = tab === "budget" ? (cleanMasterId || cleanClientId) : cleanClientId;
+  const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId || "");
+  const cleanMasterId = unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId || "");
+  const targetId = cleanClientId || cleanMasterId;
   const cacheKey = `pulse:view_data:${targetId}:${tab}`;
 
-  if (!bypassCache) {
-    const memCached = memoryCache.get(cacheKey);
-    if (memCached && memCached.success) {
-      return sanitizeViewDataForUser(memCached, sessionUser);
-    }
-    if (redisClient?.isOpen) {
-      try {
-        const redisCached = await redisClient.get(cacheKey);
-        if (redisCached) {
-          const parsed = JSON.parse(redisCached);
-          if (parsed && parsed.success) {
-            memoryCache.set(cacheKey, parsed, 120);
-            return sanitizeViewDataForUser(parsed, sessionUser);
+  const cachedResult = await resolvePortalCache({
+    cacheKey,
+    bypassCache: Boolean(bypassCache),
+    l1TtlSecs: 120,
+    redisTtlSecs: 86400,
+    isValidPayload: (p) => Boolean(p && p.success),
+    fetchFreshFn: async () => {
+      const saveAndReturn = (result) => result;
+
+      const sheets = await getSheetsClient();
+      const now = new Date();
+      const curMonth = now.getMonth();
+      const curYear = now.getFullYear();
+
+      if (tab === "dashboard") {
+        const [res, keyInfoRes] = await Promise.all([
+          withRetry(() => sheets.spreadsheets.get({
+            spreadsheetId: cleanClientId,
+            ranges: ["Dashboard!A1:AX54"],
+            fields: FIELDS,
+          })),
+          withRetry(() => sheets.spreadsheets.values.batchGet({
+            spreadsheetId: cleanClientId,
+            ranges: ["KeyInfo!B15", "KeyInfo!D8"],
+            valueRenderOption: "FORMATTED_VALUE",
+          })).catch(() => ({ data: { valueRanges: [] } })),
+        ]);
+
+        const rowData = res.data.sheets[0]?.data[0]?.rowData || [];
+        const matrix = rowData.map(r => (r.values || []).map(parseCell));
+        const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
+
+        const rawMode = String(keyInfoRes.data?.valueRanges?.[0]?.values?.[0]?.[0] || "Revenue").trim();
+        const isIncomeMode = rawMode.toLowerCase() === "income";
+        const rawDirectCostsMode = String(keyInfoRes.data?.valueRanges?.[1]?.values?.[0]?.[0] || "Contractors").trim();
+        const directCostsMode = isIncomeMode
+          ? "Pass-through"
+          : rawDirectCostsMode === "Pass-through"
+            ? "Pass-through"
+            : "Contractors";
+
+        const fyConfigs = [
+          { label: row0[19] || "FY1", totalCol: 19, monthCols: Array.from({ length: 12 }, (_, i) => 6 + i) },
+          { label: row0[34] || "FY2", totalCol: 34, monthCols: Array.from({ length: 12 }, (_, i) => 21 + i) },
+          { label: row0[49] || "FY3", totalCol: 49, monthCols: Array.from({ length: 12 }, (_, i) => 36 + i) },
+        ];
+
+        let defaultFyIndex = 0;
+        fyConfigs.forEach((fy, idx) => {
+          fy.months = fy.monthCols.map(colIdx => {
+            const label = row0[colIdx];
+            const parsed = parseMonthHeader(label);
+            if (parsed && parsed.year === curYear && parsed.month === curMonth) {
+              defaultFyIndex = idx;
+            }
+            return { colIdx, label, parsed };
+          });
+        });
+
+        return saveAndReturn({
+          success: true,
+          tab: "dashboard",
+          fyConfigs,
+          defaultFyIndex,
+          isIncomeMode,
+          directCostsMode,
+          matrix, // row 0: month headers, row 1: status headers, row 2..53: data
+        });
+      }
+
+      if (tab === "cash") {
+        const res = await withRetry(() => sheets.spreadsheets.get({
+          spreadsheetId: cleanClientId,
+          ranges: ["Cash!A1:AK76"],
+          fields: FIELDS,
+        }));
+
+        const rowData = res.data.sheets[0]?.data[0]?.rowData || [];
+        const matrix = rowData.map(r => (r.values || []).map(parseCell));
+        const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
+
+        let prevMonth = curMonth - 1;
+        let prevYear = curYear;
+        if (prevMonth < 0) {
+          prevMonth = 11;
+          prevYear -= 1;
+        }
+
+        let prevMonthColIdx = 1;
+        const monthCols = [];
+        for (let c = 1; c < row0.length; c++) {
+          const label = row0[c];
+          const parsed = parseMonthHeader(label);
+          if (parsed) {
+            if (parsed.year === prevYear && parsed.month === prevMonth) {
+              prevMonthColIdx = c;
+            }
+            monthCols.push({ colIdx: c, label, parsed });
           }
         }
-      } catch (e) { }
-    }
-  }
 
-  const saveAndReturn = (result) => {
-    memoryCache.set(cacheKey, result, 120);
-    if (redisClient?.isOpen) {
-      redisClient.set(cacheKey, JSON.stringify(result), { EX: 120 }).catch(() => { });
-    }
-    return sanitizeViewDataForUser(result, sessionUser);
-  };
-
-  const sheets = await getSheetsClient();
-  const now = new Date();
-  const curMonth = now.getMonth();
-  const curYear = now.getFullYear();
-
-  if (tab === "dashboard") {
-    const [res, keyInfoRes] = await Promise.all([
-      withRetry(() => sheets.spreadsheets.get({
-        spreadsheetId: cleanClientId,
-        ranges: ["Dashboard!A1:AX54"],
-        fields: FIELDS,
-      })),
-      withRetry(() => sheets.spreadsheets.values.batchGet({
-        spreadsheetId: cleanClientId,
-        ranges: ["KeyInfo!B15", "KeyInfo!D8"],
-        valueRenderOption: "FORMATTED_VALUE",
-      })).catch(() => ({ data: { valueRanges: [] } })),
-    ]);
-
-    const rowData = res.data.sheets[0]?.data[0]?.rowData || [];
-    const matrix = rowData.map(r => (r.values || []).map(parseCell));
-    const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
-
-    const rawMode = String(keyInfoRes.data?.valueRanges?.[0]?.values?.[0]?.[0] || "Revenue").trim();
-    const isIncomeMode = rawMode.toLowerCase() === "income";
-    const rawDirectCostsMode = String(keyInfoRes.data?.valueRanges?.[1]?.values?.[0]?.[0] || "Contractors").trim();
-    const directCostsMode = isIncomeMode
-      ? "Pass-through"
-      : rawDirectCostsMode === "Pass-through"
-        ? "Pass-through"
-        : "Contractors";
-
-    const fyConfigs = [
-      { label: row0[19] || "FY1", totalCol: 19, monthCols: Array.from({ length: 12 }, (_, i) => 6 + i) },
-      { label: row0[34] || "FY2", totalCol: 34, monthCols: Array.from({ length: 12 }, (_, i) => 21 + i) },
-      { label: row0[49] || "FY3", totalCol: 49, monthCols: Array.from({ length: 12 }, (_, i) => 36 + i) },
-    ];
-
-    let defaultFyIndex = 0;
-    fyConfigs.forEach((fy, idx) => {
-      fy.months = fy.monthCols.map(colIdx => {
-        const label = row0[colIdx];
-        const parsed = parseMonthHeader(label);
-        if (parsed && parsed.year === curYear && parsed.month === curMonth) {
-          defaultFyIndex = idx;
-        }
-        return { colIdx, label, parsed };
-      });
-    });
-
-    return saveAndReturn({
-      success: true,
-      tab: "dashboard",
-      fyConfigs,
-      defaultFyIndex,
-      isIncomeMode,
-      directCostsMode,
-      matrix, // row 0: month headers, row 1: status headers, row 2..53: data
-    });
-  }
-
-  if (tab === "cash") {
-    const res = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId: cleanClientId,
-      ranges: ["Cash!A1:AK76"],
-      fields: FIELDS,
-    }));
-
-    const rowData = res.data.sheets[0]?.data[0]?.rowData || [];
-    const matrix = rowData.map(r => (r.values || []).map(parseCell));
-    const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
-
-    let prevMonth = curMonth - 1;
-    let prevYear = curYear;
-    if (prevMonth < 0) {
-      prevMonth = 11;
-      prevYear -= 1;
-    }
-
-    let prevMonthColIdx = 1;
-    const monthCols = [];
-    for (let c = 1; c < row0.length; c++) {
-      const label = row0[c];
-      const parsed = parseMonthHeader(label);
-      if (parsed) {
-        if (parsed.year === prevYear && parsed.month === prevMonth) {
-          prevMonthColIdx = c;
-        }
-        monthCols.push({ colIdx: c, label, parsed });
+        return saveAndReturn({
+          success: true,
+          tab: "cash",
+          monthCols,
+          prevMonthColIdx,
+          matrix, // row 0: headers, row 1..75: cash data
+        });
       }
-    }
 
-    return saveAndReturn({
-      success: true,
-      tab: "cash",
-      monthCols,
-      prevMonthColIdx,
-      matrix, // row 0: headers, row 1..75: cash data
-    });
-  }
-
-  if (tab === "contractors" || tab === "outgoings") {
-    const res = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId: cleanClientId,
-      ranges: ["Outgoings!A1:AX238"],
-      fields: FIELDS,
-    }));
-
-    const rowData = res.data.sheets[0]?.data[0]?.rowData || [];
-    const matrix = rowData.map(r => (r.values || []).map(parseCell));
-    const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
-
-    const fyConfigs = [
-      { label: row0[19] || "FY1", totalCol: 19, monthCols: Array.from({ length: 12 }, (_, i) => 6 + i) },
-      { label: row0[34] || "FY2", totalCol: 34, monthCols: Array.from({ length: 12 }, (_, i) => 21 + i) },
-      { label: row0[49] || "FY3", totalCol: 49, monthCols: Array.from({ length: 12 }, (_, i) => 36 + i) },
-    ];
-
-    let defaultFyIndex = 0;
-    fyConfigs.forEach((fy, idx) => {
-      fy.months = fy.monthCols.map(colIdx => {
-        const label = row0[colIdx];
-        const parsed = parseMonthHeader(label);
-        if (parsed && parsed.year === curYear && parsed.month === curMonth) {
-          defaultFyIndex = idx;
-        }
-        return { colIdx, label, parsed };
-      });
-    });
-
-    if (tab === "contractors") {
-      return saveAndReturn({
-        success: true,
-        tab: "contractors",
-        fyConfigs,
-        defaultFyIndex,
-        headerRow: matrix[0] || [],
-        contractorRows: matrix.slice(12, 110), // rows 13 to 110 (editable)
-        totalRows: matrix.slice(110, 114), // rows 111 to 114 (summary/totals, non-editable)
-        mainRows: matrix.slice(12, 114), // rows 13 to 114 (kept for backwards compatibility)
-        section1Rows: matrix.slice(117, 123), // rows 118 to 123
-        section2Rows: matrix.slice(230, 237), // rows 231 to 237
-      });
-    } else {
-      return saveAndReturn({
-        success: true,
-        tab: "outgoings",
-        fyConfigs,
-        defaultFyIndex,
-        headerRow: matrix[0] || [],
-        outgoingRows: matrix.slice(125, 224), // rows 126 to 224 (editable)
-        totalRows: matrix.slice(224, 228), // rows 225 to 228 (system & summary/totals, non-editable)
-        mainRows: matrix.slice(125, 228), // rows 126 to 228 (kept for backwards compatibility)
-      });
-    }
-  }
-
-  if (tab === "budget") {
-    let targetBudgetSheetId = cleanClientId;
-    if (!targetBudgetSheetId && cleanMasterId) {
-      try {
-        const c1Res = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: cleanMasterId,
-          range: "KeyInfo!C1",
+      if (tab === "contractors" || tab === "outgoings") {
+        const res = await withRetry(() => sheets.spreadsheets.get({
+          spreadsheetId: cleanClientId,
+          ranges: ["Outgoings!A1:AX238"],
+          fields: FIELDS,
         }));
-        const c1Val = c1Res.data.values?.[0]?.[0];
-        if (c1Val) targetBudgetSheetId = extractSheetIdFromUrl(c1Val) || String(c1Val).trim();
-      } catch (e) {
-        console.warn("Could not read KeyInfo!C1 for clientSheetId fallback:", e);
-      }
-      if (!targetBudgetSheetId) targetBudgetSheetId = cleanMasterId;
-    }
 
-    if (!targetBudgetSheetId) {
-      throw new Error("Missing clientSheetId for Budget view");
-    }
+        const rowData = res.data.sheets[0]?.data[0]?.rowData || [];
+        const matrix = rowData.map(r => (r.values || []).map(parseCell));
+        const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
 
-    const [budgetRes, keyInfoRes] = await Promise.all([
-      withRetry(() => sheets.spreadsheets.get({
-        spreadsheetId: targetBudgetSheetId,
-        ranges: ["Budget!A1:AX253"],
-        fields: FIELDS,
-      })),
-      withRetry(() => sheets.spreadsheets.values.batchGet({
-        spreadsheetId: targetBudgetSheetId,
-        ranges: ["KeyInfo!B15", "KeyInfo!D8"],
-        valueRenderOption: "FORMATTED_VALUE",
-      })).catch(() => ({ data: { valueRanges: [] } }))
-    ]);
+        const fyConfigs = [
+          { label: row0[19] || "FY1", totalCol: 19, monthCols: Array.from({ length: 12 }, (_, i) => 6 + i) },
+          { label: row0[34] || "FY2", totalCol: 34, monthCols: Array.from({ length: 12 }, (_, i) => 21 + i) },
+          { label: row0[49] || "FY3", totalCol: 49, monthCols: Array.from({ length: 12 }, (_, i) => 36 + i) },
+        ];
 
-    const rowData = budgetRes.data.sheets[0]?.data[0]?.rowData || [];
-    const matrix = rowData.map(r => (r.values || []).map(parseCell));
-    const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
+        let defaultFyIndex = 0;
+        fyConfigs.forEach((fy, idx) => {
+          fy.months = fy.monthCols.map(colIdx => {
+            const label = row0[colIdx];
+            const parsed = parseMonthHeader(label);
+            if (parsed && parsed.year === curYear && parsed.month === curMonth) {
+              defaultFyIndex = idx;
+            }
+            return { colIdx, label, parsed };
+          });
+        });
 
-    const fyConfigs = [
-      { label: row0[19] || "FY1", totalCol: 19, monthCols: Array.from({ length: 12 }, (_, i) => 6 + i) },
-      { label: row0[34] || "FY2", totalCol: 34, monthCols: Array.from({ length: 12 }, (_, i) => 21 + i) },
-      { label: row0[49] || "FY3", totalCol: 49, monthCols: Array.from({ length: 12 }, (_, i) => 36 + i) },
-    ];
-
-    let defaultFyIndex = 0;
-    fyConfigs.forEach((fy, idx) => {
-      fy.months = fy.monthCols.map(colIdx => {
-        const label = row0[colIdx];
-        const parsed = parseMonthHeader(label);
-        if (parsed && parsed.year === curYear && parsed.month === curMonth) {
-          defaultFyIndex = idx;
+        if (tab === "contractors") {
+          return saveAndReturn({
+            success: true,
+            tab: "contractors",
+            fyConfigs,
+            defaultFyIndex,
+            headerRow: matrix[0] || [],
+            contractorRows: matrix.slice(12, 110), // rows 13 to 110 (editable)
+            totalRows: matrix.slice(110, 114), // rows 111 to 114 (summary/totals, non-editable)
+            mainRows: matrix.slice(12, 114), // rows 13 to 114 (kept for backwards compatibility)
+            section1Rows: matrix.slice(117, 123), // rows 118 to 123
+            section2Rows: matrix.slice(230, 237), // rows 231 to 237
+          });
+        } else {
+          return saveAndReturn({
+            success: true,
+            tab: "outgoings",
+            fyConfigs,
+            defaultFyIndex,
+            headerRow: matrix[0] || [],
+            outgoingRows: matrix.slice(125, 224), // rows 126 to 224 (editable)
+            totalRows: matrix.slice(224, 228), // rows 225 to 228 (system & summary/totals, non-editable)
+            mainRows: matrix.slice(125, 228), // rows 126 to 228 (kept for backwards compatibility)
+          });
         }
-        return { colIdx, label, parsed };
-      });
-    });
+      }
 
-    const rawMode = String(keyInfoRes.data?.valueRanges?.[0]?.values?.[0]?.[0] || "Revenue").trim();
-    const isIncomeMode = rawMode.toLowerCase() === "income";
-    const rawDirectCostsMode = String(keyInfoRes.data?.valueRanges?.[1]?.values?.[0]?.[0] || "Contractors").trim();
-    const directCostsMode = isIncomeMode
-      ? "Pass-through"
-      : rawDirectCostsMode === "Pass-through"
-        ? "Pass-through"
-        : "Contractors";
+      if (tab === "budget") {
+        let targetBudgetSheetId = cleanClientId;
+        if (!targetBudgetSheetId && cleanMasterId) {
+          try {
+            const c1Res = await withRetry(() => sheets.spreadsheets.values.get({
+              spreadsheetId: cleanMasterId,
+              range: "KeyInfo!C1",
+            }));
+            const c1Val = c1Res.data.values?.[0]?.[0];
+            if (c1Val) targetBudgetSheetId = extractSheetIdFromUrl(c1Val) || String(c1Val).trim();
+          } catch (e) {
+            console.warn("Could not read KeyInfo!C1 for clientSheetId fallback:", e);
+          }
+          if (!targetBudgetSheetId) targetBudgetSheetId = cleanMasterId;
+        }
 
-    return saveAndReturn({
-      success: true,
-      tab: "budget",
-      fyConfigs,
-      defaultFyIndex,
-      isIncomeMode,
-      directCostsMode,
-      matrix, // rows 0 to 252 (Budget rows 1 to 253)
-    });
-  }
+        if (!targetBudgetSheetId) {
+          throw new Error("Missing clientSheetId for Budget view");
+        }
 
-  throw new Error(`Unsupported tab: ${tab}`);
+        const [budgetRes, keyInfoRes] = await Promise.all([
+          withRetry(() => sheets.spreadsheets.get({
+            spreadsheetId: targetBudgetSheetId,
+            ranges: ["Budget!A1:AX253"],
+            fields: FIELDS,
+          })),
+          withRetry(() => sheets.spreadsheets.values.batchGet({
+            spreadsheetId: targetBudgetSheetId,
+            ranges: ["KeyInfo!B15", "KeyInfo!D8"],
+            valueRenderOption: "FORMATTED_VALUE",
+          })).catch(() => ({ data: { valueRanges: [] } }))
+        ]);
+
+        const rowData = budgetRes.data.sheets[0]?.data[0]?.rowData || [];
+        const matrix = rowData.map(r => (r.values || []).map(parseCell));
+        const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
+
+        const fyConfigs = [
+          { label: row0[19] || "FY1", totalCol: 19, monthCols: Array.from({ length: 12 }, (_, i) => 6 + i) },
+          { label: row0[34] || "FY2", totalCol: 34, monthCols: Array.from({ length: 12 }, (_, i) => 21 + i) },
+          { label: row0[49] || "FY3", totalCol: 49, monthCols: Array.from({ length: 12 }, (_, i) => 36 + i) },
+        ];
+
+        let defaultFyIndex = 0;
+        fyConfigs.forEach((fy, idx) => {
+          fy.months = fy.monthCols.map(colIdx => {
+            const label = row0[colIdx];
+            const parsed = parseMonthHeader(label);
+            if (parsed && parsed.year === curYear && parsed.month === curMonth) {
+              defaultFyIndex = idx;
+            }
+            return { colIdx, label, parsed };
+          });
+        });
+
+        const rawMode = String(keyInfoRes.data?.valueRanges?.[0]?.values?.[0]?.[0] || "Revenue").trim();
+        const isIncomeMode = rawMode.toLowerCase() === "income";
+        const rawDirectCostsMode = String(keyInfoRes.data?.valueRanges?.[1]?.values?.[0]?.[0] || "Contractors").trim();
+        const directCostsMode = isIncomeMode
+          ? "Pass-through"
+          : rawDirectCostsMode === "Pass-through"
+            ? "Pass-through"
+            : "Contractors";
+
+        return saveAndReturn({
+          success: true,
+          tab: "budget",
+          fyConfigs,
+          defaultFyIndex,
+          isIncomeMode,
+          directCostsMode,
+          matrix, // rows 0 to 252 (Budget rows 1 to 253)
+        });
+      }
+
+      throw new Error(`Unsupported tab: ${tab}`);
+    },
+  });
+
+  return sanitizeViewDataForUser(cachedResult.data, sessionUser);
 }
 
 export async function handleUpdateViewCell(req, res, sheets) {

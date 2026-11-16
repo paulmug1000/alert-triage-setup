@@ -199,8 +199,19 @@ export default function OnboardingChecklistView({
       const data = await res.json();
       if (data.success) {
         setChecklist(data);
-        if (data.keyInfoSettings?.masterDeploymentUrl) {
-          setDeploymentUrl(data.keyInfoSettings.masterDeploymentUrl);
+        if (data.deploymentUrl || data.keyInfoSettings?.masterDeploymentUrl) {
+          setDeploymentUrl(data.deploymentUrl || data.keyInfoSettings.masterDeploymentUrl);
+        }
+        if (data.scriptIds) {
+          setClientScriptId(data.scriptIds.clientScriptId || "");
+          setMasterScriptId(data.scriptIds.masterScriptId || "");
+          setReconScriptId(data.scriptIds.reconScriptId || "");
+        }
+        if (Array.isArray(data.phases) && data.phases.length > 0) {
+          setOpenPhaseId((prev) => {
+            const exists = data.phases.some((p) => p.id === prev);
+            return exists ? prev : data.phases[0].id;
+          });
         }
       } else {
         throw new Error(data.error || "Failed to load onboarding checklist.");
@@ -284,34 +295,50 @@ export default function OnboardingChecklistView({
     }
   };
 
+  const effectiveClientMode = checklist?.clientMode || "sheet";
+  const effectiveMasterMode = checklist?.masterMode || "sheet";
+  const showClientScriptInput = effectiveClientMode === "sheet";
+  const showMasterScriptInputs = effectiveMasterMode === "sheet";
+  const effectiveClientSheetId = checklist?.clientSheetId || clientSheetId;
+  const effectiveMasterSheetId = checklist?.masterSheetId || masterSheetId;
+
   // Save Script IDs
   const handleSaveScriptIds = async (e) => {
     e?.preventDefault();
-    if (!clientScriptId && !masterScriptId && !reconScriptId) {
-      setFeedback({ type: "error", message: "Please enter at least one Script ID." });
+    const hasRelevantId =
+      (showClientScriptInput && clientScriptId.trim()) ||
+      (showMasterScriptInputs && (masterScriptId.trim() || reconScriptId.trim()));
+    if (!hasRelevantId) {
+      setFeedback({ type: "error", message: "Please enter at least one script ID." });
       return;
     }
     setSavingScriptIds(true);
     setFeedback(null);
 
     try {
+      const payload = { clientName };
+      if (showClientScriptInput) payload.clientScriptId = clientScriptId.trim();
+      if (showMasterScriptInputs) {
+        payload.masterScriptId = masterScriptId.trim();
+        payload.reconScriptId = reconScriptId.trim();
+      }
       const res = await fetch("/api/setup/script-ids", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          clientName,
-          clientScriptId,
-          masterScriptId,
-          reconScriptId
-        })
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (data.success) {
-        setFeedback({ type: "success", message: `Script IDs recorded into Client Version Tracker (Row ${data.rowNum}).` });
+        setFeedback({
+          type: "success",
+          message: data.rowNum
+            ? `Script IDs recorded into version tracker (row ${data.rowNum}).`
+            : "Script IDs saved."
+        });
         advanceTaskExpansion("p1_script_ids", checklist?.phases);
         loadChecklist();
       } else {
-        throw new Error(data.error || "Failed to save Script IDs.");
+        throw new Error(data.error || "Failed to save script IDs.");
       }
     } catch (err) {
       setFeedback({ type: "error", message: err.message });
@@ -403,16 +430,16 @@ export default function OnboardingChecklistView({
           </p>
         )}
 
-        {/* Step 0: Authorise IMPORTRANGE connections */}
-        {isUserAdmin && task.id === "p1_importrange_auth" && (
+        {/* Step 0: Authorise IMPORTRANGE connections (only when Master Google Sheet is used) */}
+        {isUserAdmin && task.id === "p1_importrange_auth" && effectiveMasterMode === "sheet" && (
           <div style={{ padding: "14px 18px", borderRadius: "10px", background: "#FFFFFF", border: "1px solid #E2E8F0" }}>
             <span style={{ fontSize: "12px", fontWeight: "700", color: "#475569", textTransform: "uppercase", letterSpacing: "0.5px" }}>
               Quick links & authorisations
             </span>
             <div style={{ display: "flex", gap: "16px", marginTop: "8px", flexWrap: "wrap" }}>
-              {masterSheetId && (
+              {checklist?.hasRealMasterSheet && effectiveMasterSheetId && (
                 <a
-                  href={`https://docs.google.com/spreadsheets/d/${masterSheetId}/edit#gid=0`}
+                  href={`https://docs.google.com/spreadsheets/d/${effectiveMasterSheetId}/edit#gid=0`}
                   target="_blank"
                   rel="noreferrer"
                   style={{ fontSize: "13px", fontWeight: "600", color: "#0284C7", textDecoration: "none" }}
@@ -420,9 +447,9 @@ export default function OnboardingChecklistView({
                   Authorise Master IMPORTRANGE ↗
                 </a>
               )}
-              {clientSheetId && (
+              {effectiveClientMode === "sheet" && checklist?.hasRealClientSheet && effectiveClientSheetId && (
                 <a
-                  href={`https://docs.google.com/spreadsheets/d/${clientSheetId}/edit`}
+                  href={`https://docs.google.com/spreadsheets/d/${effectiveClientSheetId}/edit`}
                   target="_blank"
                   rel="noreferrer"
                   style={{ fontSize: "13px", fontWeight: "600", color: "#0284C7", textDecoration: "none" }}
@@ -434,16 +461,16 @@ export default function OnboardingChecklistView({
           </div>
         )}
 
-        {/* Step 0: Deploy Master sheet GAS and copy deployment URL */}
-        {isUserAdmin && task.id === "p1_gas_deployment" && (
+        {/* Step 0: Deploy Master sheet GAS and copy deployment URL (only when Master Google Sheet is used) */}
+        {isUserAdmin && task.id === "p1_gas_deployment" && effectiveMasterMode === "sheet" && (
           <div style={{ padding: "16px", borderRadius: "10px", background: "#FFFBEB", border: "1px solid #FDE68A" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
               <span style={{ fontSize: "13px", fontWeight: "700", color: "#B45309" }}>
                 Master sheet GAS deployment URL
               </span>
-              {masterSheetId && (
+              {checklist?.hasRealMasterSheet && effectiveMasterSheetId && (
                 <a
-                  href={`https://docs.google.com/spreadsheets/d/${masterSheetId}/edit`}
+                  href={`https://docs.google.com/spreadsheets/d/${effectiveMasterSheetId}/edit`}
                   target="_blank"
                   rel="noreferrer"
                   style={{ fontSize: "12px", fontWeight: "600", color: "#0284C7", textDecoration: "none" }}
@@ -483,53 +510,59 @@ export default function OnboardingChecklistView({
           </div>
         )}
 
-        {/* Step 0: Copy GAS script IDs into Client Version Tracker */}
-        {isUserAdmin && task.id === "p1_script_ids" && (
+        {/* Step 0: Copy GAS script IDs (only for Google Sheets-based parts) */}
+        {isUserAdmin && task.id === "p1_script_ids" && (showClientScriptInput || showMasterScriptInputs) && (
           <div style={{ padding: "16px", borderRadius: "10px", background: "#FFFFFF", border: "1px solid #E2E8F0" }}>
             <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "6px" }}>
-              Record script IDs into version tracker
+              Record script IDs for Google Sheets
             </span>
             <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
-              From Project Settings in each sheet’s Apps Script editor, copy the Script ID and paste below:
+              From Project Settings in each Google Sheet’s Apps Script editor, copy the Script ID and paste below:
             </p>
             <form onSubmit={handleSaveScriptIds}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "12px", marginBottom: "12px" }}>
-                <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
-                    Client Script ID (Col R)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Paste Client Script ID"
-                    value={clientScriptId}
-                    onChange={(e) => setClientScriptId(e.target.value)}
-                    style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
-                    Master Script ID (Col S)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Paste Master Script ID"
-                    value={masterScriptId}
-                    onChange={(e) => setMasterScriptId(e.target.value)}
-                    style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
-                    Recon Script ID (Col T)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Paste Recon Script ID"
-                    value={reconScriptId}
-                    onChange={(e) => setReconScriptId(e.target.value)}
-                    style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                  />
-                </div>
+                {showClientScriptInput && (
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
+                      Client script ID
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Paste client script ID"
+                      value={clientScriptId}
+                      onChange={(e) => setClientScriptId(e.target.value)}
+                      style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
+                    />
+                  </div>
+                )}
+                {showMasterScriptInputs && (
+                  <>
+                    <div>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
+                        Master script ID
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Paste master script ID"
+                        value={masterScriptId}
+                        onChange={(e) => setMasterScriptId(e.target.value)}
+                        style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
+                        Recon script ID
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Paste recon script ID"
+                        value={reconScriptId}
+                        onChange={(e) => setReconScriptId(e.target.value)}
+                        style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
                 <button
@@ -546,7 +579,7 @@ export default function OnboardingChecklistView({
                     cursor: savingScriptIds ? "wait" : "pointer"
                   }}
                 >
-                  {savingScriptIds ? "Saving IDs..." : "Save script IDs to tracker"}
+                  {savingScriptIds ? "Saving IDs..." : "Save script IDs"}
                 </button>
               </div>
             </form>
@@ -590,7 +623,7 @@ export default function OnboardingChecklistView({
                 {isUserAdmin ? "Master sheet KeyInfo settings form" : "Core financial settings"}
               </span>
               <KeyInfoSettingsForm
-                masterSheetId={masterSheetId}
+                masterSheetId={effectiveMasterSheetId}
                 clientName={clientName}
                 isAdmin={isUserAdmin}
                 onSaved={() => {
@@ -825,10 +858,38 @@ export default function OnboardingChecklistView({
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "10px" }}>
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
               <span style={{ fontSize: "12px", fontWeight: "700", padding: "2px 8px", borderRadius: "10px", background: "#FEF3C7", color: "#B45309" }}>
                 SETUP MODE ACTIVE
               </span>
+              {isUserAdmin && (
+                <>
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      fontWeight: "600",
+                      padding: "2px 8px",
+                      borderRadius: "10px",
+                      background: effectiveClientMode === "supabase" ? "#DCFCE7" : "#EFF6FF",
+                      color: effectiveClientMode === "supabase" ? "#166534" : "#1E40AF"
+                    }}
+                  >
+                    Client: {effectiveClientMode === "supabase" ? "Supabase" : "Google Sheets"}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      fontWeight: "600",
+                      padding: "2px 8px",
+                      borderRadius: "10px",
+                      background: effectiveMasterMode === "supabase" ? "#DCFCE7" : "#EFF6FF",
+                      color: effectiveMasterMode === "supabase" ? "#166534" : "#1E40AF"
+                    }}
+                  >
+                    Master: {effectiveMasterMode === "supabase" ? "Supabase" : "Google Sheets"}
+                  </span>
+                </>
+              )}
               <h2 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#0F172A" }}>
                 Onboarding progress: {clientName}
               </h2>
@@ -1081,7 +1142,7 @@ export default function OnboardingChecklistView({
       {/* Suggestion Modals */}
       <AccountingSettingsSuggestionModal
         clientName={clientName}
-        masterSheetId={masterSheetId}
+        masterSheetId={effectiveMasterSheetId}
         isAdmin={isUserAdmin}
         isOpen={showAccountingModal}
         onClose={() => setShowAccountingModal(false)}
@@ -1093,7 +1154,7 @@ export default function OnboardingChecklistView({
 
       <CategoryMappingSuggestionModal
         clientName={clientName}
-        masterSheetId={masterSheetId}
+        masterSheetId={effectiveMasterSheetId}
         isAdmin={isUserAdmin}
         isOpen={showCategoryModal}
         onClose={() => setShowCategoryModal(false)}
@@ -1105,7 +1166,7 @@ export default function OnboardingChecklistView({
 
       <CrmMappingSuggestionModal
         clientName={clientName}
-        masterSheetId={masterSheetId}
+        masterSheetId={effectiveMasterSheetId}
         isAdmin={isUserAdmin}
         isOpen={showCrmModal}
         onClose={() => setShowCrmModal(false)}

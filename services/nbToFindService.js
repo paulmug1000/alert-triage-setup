@@ -17,10 +17,10 @@
  * ============================================================================
  */
 
-import { getSheetsClient, withRetry, getSheetGid, colLetterToNum } from "./sheetsClient.js";
+import { getSheetsClient, withRetry, getSheetGid, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
-import { sanitizeFormulaInput } from "./userPermissions.js";
-import { memoryCache, invalidatePmaClientCache } from "./cacheService.js";
+import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
+import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 
 export function colIdxToLetter(colIdx) {
@@ -54,253 +54,240 @@ export function parseMonthYearHeader(label) {
 export async function fetchNBToFindData(clientName, clientSheetId, bypassCache = false) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
 
-  const cacheKey = `pma_nbtofind_${clientSheetId}`;
+  const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
+  const cacheKey = `pma_nbtofind_${cleanClientId}`;
 
-  if (!bypassCache) {
-    try {
-      if (redisClient?.isOpen) {
-        const cached = await redisClient.get(cacheKey);
-        if (cached) return JSON.parse(cached);
-      } else {
-        const mem = memoryCache.get(cacheKey);
-        if (mem) return mem;
-      }
-    } catch (e) {
-      console.warn("NBtoFind cache read error:", e?.message);
-    }
-  }
+  const cachedResult = await resolvePortalCache({
+    cacheKey,
+    bypassCache: Boolean(bypassCache),
+    l1TtlSecs: 120,
+    redisTtlSecs: 86400,
+    isValidPayload: (p) => Boolean(p && p.success && p.sections),
+    fetchFreshFn: async () => {
+      const sheets = await getSheetsClient();
 
-  const sheets = await getSheetsClient();
+      const [response, gridResponse] = await Promise.all([
+        withRetry(async () => {
+          return await sheets.spreadsheets.values.batchGet({
+            spreadsheetId: cleanClientId,
+            ranges: [
+              "NBtoFind!A1:AV25",
+              "KeyInfo!B15",
+              "KeyInfo!C4:D5",
+              "KeyInfo!D8",
+            ],
+            valueRenderOption: "FORMATTED_VALUE",
+          });
+        }),
+        withRetry(async () => {
+          return await sheets.spreadsheets.get({
+            spreadsheetId: cleanClientId,
+            ranges: ["NBtoFind!A1:AV25"],
+            fields: "sheets.data.rowData.values(formattedValue,note)",
+          });
+        }),
+      ]);
 
-  const [response, gridResponse] = await Promise.all([
-    withRetry(async () => {
-      return await sheets.spreadsheets.values.batchGet({
-        spreadsheetId: clientSheetId,
-        ranges: [
-          "NBtoFind!A1:AV25",
-          "KeyInfo!B15",
-          "KeyInfo!C4:D5",
-          "KeyInfo!D8",
-        ],
-        valueRenderOption: "FORMATTED_VALUE",
-      });
-    }),
-    withRetry(async () => {
-      return await sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        ranges: ["NBtoFind!A1:AV25"],
-        fields: "sheets.data.rowData.values(formattedValue,note)",
-      });
-    }),
-  ]);
+      const valueRanges = response.data.valueRanges || [];
+      const rows = valueRanges[0]?.values || [];
+      const gridRowData = gridResponse.data?.sheets?.[0]?.data?.[0]?.rowData || [];
+      const keyInfoB15 = String(valueRanges[1]?.values?.[0]?.[0] || "").trim();
+      const currencyRows = valueRanges[2]?.values || [];
+      const keyInfoD8 = String(valueRanges[3]?.values?.[0]?.[0] || "").trim();
 
-  const valueRanges = response.data.valueRanges || [];
-  const rows = valueRanges[0]?.values || [];
-  const gridRowData = gridResponse.data?.sheets?.[0]?.data?.[0]?.rowData || [];
-  const keyInfoB15 = String(valueRanges[1]?.values?.[0]?.[0] || "").trim();
-  const currencyRows = valueRanges[2]?.values || [];
-  const keyInfoD8 = String(valueRanges[3]?.values?.[0]?.[0] || "").trim();
+      const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
+      let currencySymbol = rawCurrencySymbol;
+      if (currencySymbol.toUpperCase() === "EUR" || currencySymbol === "€") currencySymbol = "€";
+      else if (currencySymbol.toUpperCase() === "GBP" || currencySymbol === "£") currencySymbol = "£";
+      else if (currencySymbol.toUpperCase() === "USD" || currencySymbol === "$") currencySymbol = "$";
 
-  const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
-  let currencySymbol = rawCurrencySymbol;
-  if (currencySymbol.toUpperCase() === "EUR" || currencySymbol === "€") currencySymbol = "€";
-  else if (currencySymbol.toUpperCase() === "GBP" || currencySymbol === "£") currencySymbol = "£";
-  else if (currencySymbol.toUpperCase() === "USD" || currencySymbol === "$") currencySymbol = "$";
+      const rawThousandsSeparator = String(currencyRows?.[1]?.[1] || (currencyRows?.[1]?.[0] && currencyRows?.[1]?.[0] !== "Thous. separator" ? currencyRows?.[1]?.[0] : "") || "").trim();
+      const thousandsSeparator = rawThousandsSeparator || (currencySymbol === "€" ? "." : ",");
 
-  const rawThousandsSeparator = String(currencyRows?.[1]?.[1] || (currencyRows?.[1]?.[0] && currencyRows?.[1]?.[0] !== "Thous. separator" ? currencyRows?.[1]?.[0] : "") || "").trim();
-  const thousandsSeparator = rawThousandsSeparator || (currencySymbol === "€" ? "." : ",");
+      // Resolve Revenue Focus / Mode ("Income" vs "Revenue") from KeyInfo!B15 or sheet labels
+      const row3LabelRaw = String(rows[2]?.[0] || "").toLowerCase();
+      const inferredFromSheet = row3LabelRaw.includes("income") ? "Income" : row3LabelRaw.includes("revenue") ? "Revenue" : "Revenue";
+      const revenueFocus = keyInfoB15.toLowerCase() === "income" ? "Income" : keyInfoB15.toLowerCase() === "revenue" ? "Revenue" : inferredFromSheet;
+      const modeTerm = revenueFocus; // "Income" | "Revenue"
+      const directCostsMode =
+        modeTerm === "Income"
+          ? "Pass-through"
+          : keyInfoD8.toLowerCase().includes("pass")
+            ? "Pass-through"
+            : "Contractors";
+      const dcTerm = directCostsMode === "Pass-through" ? "pass-through costs" : "direct costs";
 
-  // Resolve Revenue Focus / Mode ("Income" vs "Revenue") from KeyInfo!B15 or sheet labels
-  const row3LabelRaw = String(rows[2]?.[0] || "").toLowerCase();
-  const inferredFromSheet = row3LabelRaw.includes("income") ? "Income" : row3LabelRaw.includes("revenue") ? "Revenue" : "Revenue";
-  const revenueFocus = keyInfoB15.toLowerCase() === "income" ? "Income" : keyInfoB15.toLowerCase() === "revenue" ? "Revenue" : inferredFromSheet;
-  const modeTerm = revenueFocus; // "Income" | "Revenue"
-  const directCostsMode =
-    modeTerm === "Income"
-      ? "Pass-through"
-      : keyInfoD8.toLowerCase().includes("pass")
-      ? "Pass-through"
-      : "Contractors";
-  const dcTerm = directCostsMode === "Pass-through" ? "pass-through costs" : "direct costs";
+      const row1 = rows[0] || [];
 
-  const row1 = rows[0] || [];
+      // Define the 3 Financial Years
+      const fyConfigs = [
+        {
+          index: 0,
+          id: "fy1",
+          startCol: 6,  // Col G
+          count: 12,    // G to R
+          totalCol: 19, // Col T
+          totalColLetter: "T",
+          label: String(row1[19] || "").trim() || "FY1",
+        },
+        {
+          index: 1,
+          id: "fy2",
+          startCol: 21, // Col V
+          count: 12,    // V to AG
+          totalCol: 34, // Col AI
+          totalColLetter: "AI",
+          label: String(row1[34] || "").trim() || "FY2",
+        },
+        {
+          index: 2,
+          id: "fy3",
+          startCol: 36, // Col AK
+          count: 12,    // AK to AV
+          totalCol: 49, // Col AX
+          totalColLetter: "AX",
+          label: String(row1[49] || "").trim() || "FY3",
+        },
+      ];
 
-  // Define the 3 Financial Years
-  const fyConfigs = [
-    {
-      index: 0,
-      id: "fy1",
-      startCol: 6,  // Col G
-      count: 12,    // G to R
-      totalCol: 19, // Col T
-      totalColLetter: "T",
-      label: String(row1[19] || "").trim() || "FY1",
-    },
-    {
-      index: 1,
-      id: "fy2",
-      startCol: 21, // Col V
-      count: 12,    // V to AG
-      totalCol: 34, // Col AI
-      totalColLetter: "AI",
-      label: String(row1[34] || "").trim() || "FY2",
-    },
-    {
-      index: 2,
-      id: "fy3",
-      startCol: 36, // Col AK
-      count: 12,    // AK to AV
-      totalCol: 49, // Col AX
-      totalColLetter: "AX",
-      label: String(row1[49] || "").trim() || "FY3",
-    },
-  ];
+      const now = new Date();
+      let defaultFyIndex = 0;
 
-  const now = new Date();
-  let defaultFyIndex = 0;
+      fyConfigs.forEach((fy, fIdx) => {
+        const monthCols = [];
+        for (let j = 0; j < fy.count; j++) {
+          const colIdx = fy.startCol + j;
+          const rawHdr = String(row1[colIdx] || "").trim();
+          const colLetter = colIdxToLetter(colIdx);
+          monthCols.push({
+            colIdx,
+            colLetter,
+            label: rawHdr || `M${j + 1}`,
+          });
 
-  fyConfigs.forEach((fy, fIdx) => {
-    const monthCols = [];
-    for (let j = 0; j < fy.count; j++) {
-      const colIdx = fy.startCol + j;
-      const rawHdr = String(row1[colIdx] || "").trim();
-      const colLetter = colIdxToLetter(colIdx);
-      monthCols.push({
-        colIdx,
-        colLetter,
-        label: rawHdr || `M${j + 1}`,
-      });
-
-      const parsed = parseMonthYearHeader(rawHdr);
-      if (parsed) {
-        const mDate = new Date(parsed.year, parsed.monthIdx, 1);
-        const mEnd = new Date(parsed.year, parsed.monthIdx + 1, 0, 23, 59, 59);
-        if (now >= mDate && now <= mEnd) {
-          defaultFyIndex = fIdx;
+          const parsed = parseMonthYearHeader(rawHdr);
+          if (parsed) {
+            const mDate = new Date(parsed.year, parsed.monthIdx, 1);
+            const mEnd = new Date(parsed.year, parsed.monthIdx + 1, 0, 23, 59, 59);
+            if (now >= mDate && now <= mEnd) {
+              defaultFyIndex = fIdx;
+            }
+          }
         }
-      }
-    }
-    fy.monthCols = monthCols;
-  });
+        fy.monthCols = monthCols;
+      });
 
-  // Extract cell A9 (Use targets?), cell A12 (Use budget for income targets?) and cell A21 (NB direct costs as a percentage?)
-  const cellA9 = String(rows[8]?.[0] || "").trim(); // Row 9, index 8
-  const cellA12 = String(rows[11]?.[0] || "").trim(); // Row 12, index 11
-  const cellA21 = String(rows[20]?.[0] || "").trim(); // Row 21, index 20
+      // Extract cell A9 (Use targets?), cell A12 (Use budget for income targets?) and cell A21 (NB direct costs as a percentage?)
+      const cellA9 = String(rows[8]?.[0] || "").trim(); // Row 9, index 8
+      const cellA12 = String(rows[11]?.[0] || "").trim(); // Row 12, index 11
+      const cellA21 = String(rows[20]?.[0] || "").trim(); // Row 21, index 20
 
-  const useTargets = cellA9.toLowerCase() === "yes" ? "Yes" : "No";
-  const useBudgetForIncomeTargets = cellA12.toLowerCase() === "yes" ? "Yes" : "No";
-  const directCostsPercentage = cellA21 || "0%";
+      const useTargets = cellA9.toLowerCase() === "yes" ? "Yes" : "No";
+      const useBudgetForIncomeTargets = cellA12.toLowerCase() === "yes" ? "Yes" : "No";
+      const directCostsPercentage = cellA21 || "0%";
 
-  // Helper to extract a row's data across each FY
-  const extractRowData = (rowIdx, defaultLabel) => {
-    const r = rows[rowIdx] || [];
-    const rGrid = gridRowData[rowIdx]?.values || [];
-    const label = String(r[0] || defaultLabel).trim();
-    const result = {};
+      // Helper to extract a row's data across each FY
+      const extractRowData = (rowIdx, defaultLabel) => {
+        const r = rows[rowIdx] || [];
+        const rGrid = gridRowData[rowIdx]?.values || [];
+        const label = String(r[0] || defaultLabel).trim();
+        const result = {};
 
-    fyConfigs.forEach((fy) => {
-      const months = fy.monthCols.map((m) => ({
-        colLetter: m.colLetter,
-        monthLabel: m.label,
-        value: r[m.colIdx] || "",
-        note: rGrid[m.colIdx]?.note || "",
-      }));
-      const total = r[fy.totalCol] || "£0";
-      result[fy.id] = { label, months, total };
-    });
+        fyConfigs.forEach((fy) => {
+          const months = fy.monthCols.map((m) => ({
+            colLetter: m.colLetter,
+            monthLabel: m.label,
+            value: r[m.colIdx] || "",
+            note: rGrid[m.colIdx]?.note || "",
+          }));
+          const total = r[fy.totalCol] || "£0";
+          result[fy.id] = { label, months, total };
+        });
 
-    return { label, fyData: result };
-  };
-
-  // Row 3: New business to find income/revenue (manual inputs)
-  const row3 = extractRowData(2, `New business to find ${modeTerm.toLowerCase()}`);
-  // Row 5: New business to find direct/pass-through costs (manual inputs in revenue mode)
-  const row5 = extractRowData(4, `NB to find ${dcTerm}`);
-  row5.label = `NB to find ${dcTerm}`;
-  Object.values(row5.fyData).forEach((fy) => { fy.label = `NB to find ${dcTerm}`; });
-  // Row 10: Total income/revenue target
-  const row10 = extractRowData(9, `Total ${modeTerm.toLowerCase()} target`);
-  // Row 12: Use budget for income/revenue targets? (Budget values)
-  const row12 = extractRowData(11, `Budget ${modeTerm.toLowerCase()} targets`);
-  row12.label = `Budget ${modeTerm.toLowerCase()} target`;
-  // Row 14: NB to find figure based on target
-  const row14 = extractRowData(13, "NB to find figure based on target");
-  // Row 18: NB to find figure to use (Final target figure)
-  const row18 = extractRowData(17, "NB to find figure to use");
-  // Row 20: NB direct/pass-through costs as a percentage
-  const row20 = extractRowData(19, `NB ${dcTerm} calculation`);
-  row20.label = `NB ${dcTerm} calculation`;
-  Object.values(row20.fyData).forEach((fy) => { fy.label = `NB ${dcTerm} calculation`; });
-  // Row 23: NB to find direct/pass-through costs to use
-  const row23 = extractRowData(22, `NB to find ${dcTerm} to use`);
-  row23.label = `NB to find ${dcTerm} to use`;
-  Object.values(row23.fyData).forEach((fy) => { fy.label = `NB to find ${dcTerm} to use`; });
-
-  // Row 25: "Use NB to find?" Yes/No dropdown for each month
-  const row25Raw = rows[24] || [];
-  const rGrid25 = gridRowData[24]?.values || [];
-  const row25Label = String(row25Raw[0] || "Use NB to find?").trim();
-  const row25 = { label: row25Label, fyData: {} };
-
-  fyConfigs.forEach((fy) => {
-    const months = fy.monthCols.map((m) => {
-      const val = String(row25Raw[m.colIdx] || "").trim();
-      return {
-        colLetter: m.colLetter,
-        monthLabel: m.label,
-        value: val.toLowerCase() === "no" ? "No" : "Yes",
-        note: rGrid25[m.colIdx]?.note || "",
+        return { label, fyData: result };
       };
-    });
-    row25.fyData[fy.id] = { label: row25Label, months };
+
+      // Row 3: New business to find income/revenue (manual inputs)
+      const row3 = extractRowData(2, `New business to find ${modeTerm.toLowerCase()}`);
+      // Row 5: New business to find direct/pass-through costs (manual inputs in revenue mode)
+      const row5 = extractRowData(4, `NB to find ${dcTerm}`);
+      row5.label = `NB to find ${dcTerm}`;
+      Object.values(row5.fyData).forEach((fy) => { fy.label = `NB to find ${dcTerm}`; });
+      // Row 10: Total income/revenue target
+      const row10 = extractRowData(9, `Total ${modeTerm.toLowerCase()} target`);
+      // Row 12: Use budget for income/revenue targets? (Budget values)
+      const row12 = extractRowData(11, `Budget ${modeTerm.toLowerCase()} targets`);
+      row12.label = `Budget ${modeTerm.toLowerCase()} target`;
+      // Row 14: NB to find figure based on target
+      const row14 = extractRowData(13, "NB to find figure based on target");
+      // Row 18: NB to find figure to use (Final target figure)
+      const row18 = extractRowData(17, "NB to find figure to use");
+      // Row 20: NB direct/pass-through costs as a percentage
+      const row20 = extractRowData(19, `NB ${dcTerm} calculation`);
+      row20.label = `NB ${dcTerm} calculation`;
+      Object.values(row20.fyData).forEach((fy) => { fy.label = `NB ${dcTerm} calculation`; });
+      // Row 23: NB to find direct/pass-through costs to use
+      const row23 = extractRowData(22, `NB to find ${dcTerm} to use`);
+      row23.label = `NB to find ${dcTerm} to use`;
+      Object.values(row23.fyData).forEach((fy) => { fy.label = `NB to find ${dcTerm} to use`; });
+
+      // Row 25: "Use NB to find?" Yes/No dropdown for each month
+      const row25Raw = rows[24] || [];
+      const rGrid25 = gridRowData[24]?.values || [];
+      const row25Label = String(row25Raw[0] || "Use NB to find?").trim();
+      const row25 = { label: row25Label, fyData: {} };
+
+      fyConfigs.forEach((fy) => {
+        const months = fy.monthCols.map((m) => {
+          const val = String(row25Raw[m.colIdx] || "").trim();
+          return {
+            colLetter: m.colLetter,
+            monthLabel: m.label,
+            value: val.toLowerCase() === "no" ? "No" : "Yes",
+            note: rGrid25[m.colIdx]?.note || "",
+          };
+        });
+        row25.fyData[fy.id] = { label: row25Label, months };
+      });
+
+      const result = {
+        success: true,
+        clientName,
+        clientSheetId,
+        revenueFocus,
+        modeTerm,
+        directCostsMode,
+        currencySymbol,
+        thousandsSeparator,
+        defaultFyIndex,
+        fyConfigs,
+        settings: {
+          useTargets,                // Cell A9
+          useBudgetForIncomeTargets, // Cell A12
+          directCostsPercentage,     // Cell A21
+          revenueFocus,
+          modeTerm,
+          directCostsMode,
+        },
+        sections: {
+          row3,
+          row5,
+          row10,
+          row12,
+          row14,
+          row18,
+          row20,
+          row23,
+          row25,
+        },
+        lastUpdated: new Date().toISOString(),
+      };
+
+      return result;
+    },
   });
 
-  const result = {
-    success: true,
-    clientName,
-    clientSheetId,
-    revenueFocus,
-    modeTerm,
-    directCostsMode,
-    currencySymbol,
-    thousandsSeparator,
-    defaultFyIndex,
-    fyConfigs,
-    settings: {
-      useTargets,                // Cell A9
-      useBudgetForIncomeTargets, // Cell A12
-      directCostsPercentage,     // Cell A21
-      revenueFocus,
-      modeTerm,
-      directCostsMode,
-    },
-    sections: {
-      row3,
-      row5,
-      row10,
-      row12,
-      row14,
-      row18,
-      row20,
-      row23,
-      row25,
-    },
-    lastUpdated: new Date().toISOString(),
-  };
-
-  try {
-    const payload = JSON.stringify(result);
-    if (redisClient?.isOpen) {
-      await redisClient.setEx(cacheKey, 60, payload);
-    } else {
-      memoryCache.set(cacheKey, result, 60);
-    }
-  } catch (e) {
-    console.warn("NBtoFind cache write error:", e?.message);
-  }
-
-  return result;
+  return cachedResult.data;
 }
 
 /**
@@ -363,7 +350,7 @@ export async function saveNBToFindSettings({
     memoryCache.del(cacheKey);
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
     await invalidatePmaClientCache(clientSheetId, null, ["views", "jobs"]);
-  } catch {}
+  } catch { }
 
   await logPmaActivity({
     userEmail: userEmail || "system",
@@ -418,12 +405,12 @@ export async function saveNBToFindMonthlyValues({
   const sheets = await getSheetsClient();
   const hasNoteUpdates = Boolean(
     cellNotes &&
-      typeof cellNotes === "object" &&
-      Object.keys(cellNotes).some((k) => {
-        const cleanLetter = String(k).toUpperCase().trim();
-        if (!/^[A-Z]{1,2}$/.test(cleanLetter)) return false;
-        return isNbMonthlyCol(colLetterToNum(cleanLetter) - 1);
-      })
+    typeof cellNotes === "object" &&
+    Object.keys(cellNotes).some((k) => {
+      const cleanLetter = String(k).toUpperCase().trim();
+      if (!/^[A-Z]{1,2}$/.test(cleanLetter)) return false;
+      return isNbMonthlyCol(colLetterToNum(cleanLetter) - 1);
+    })
   );
 
   if (updates.length > 0) {
@@ -483,7 +470,7 @@ export async function saveNBToFindMonthlyValues({
     memoryCache.del(cacheKey);
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
     await invalidatePmaClientCache(clientSheetId, null, ["views", "jobs"]);
-  } catch {}
+  } catch { }
 
   await logPmaActivity({
     userEmail: userEmail || "system",

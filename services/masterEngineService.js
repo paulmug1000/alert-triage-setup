@@ -331,6 +331,22 @@ export function invalidateMasterEngineCache(clientName = null) {
 }
 
 /**
+ * Returns true if a sheet ID is a synthetic Supabase-only virtual identifier (no Google Sheet exists).
+ */
+export function isVirtualSupabaseSheetId(id) {
+  const s = String(id || "").trim();
+  return !s || s.startsWith("sb-");
+}
+
+function patchGridCell_(grid, r0, c0, val) {
+  const out = Array.isArray(grid) ? grid.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
+  while (out.length <= r0) out.push([]);
+  while (out[r0].length <= c0) out[r0].push("");
+  out[r0][c0] = val;
+  return out;
+}
+
+/**
  * Resolves whether a given spreadsheetId or clientName belongs to a client in Supabase
  * and returns its master_mode ('sheet' | 'supabase'), sheetRole ('master' | 'recon' | 'client'), etc.
  */
@@ -649,8 +665,10 @@ export function expandClientTabFromStorage_(data, tabName, { valuesOnly = false 
   return data;
 }
 
+const _inFlightGridLoads = new Map();
+
 async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = null, options = {}) {
-  const valuesOnly = Boolean(options?.valuesOnly);
+  const valuesOnly = Boolean(options?.valuesOnly) && tabName !== "AppData" && tabName !== "KeyInfo";
   const supabase = getSupabaseAdmin();
   if (!supabase) return { values_grid: [], formulas_grid: [], notes_grid: {} };
 
@@ -660,100 +678,122 @@ async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = 
     return cached.record;
   }
 
-  let data = null;
-  let error = null;
-
-  if (sheetRole === "client") {
-    const selectCols = valuesOnly
-      ? "id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count"
-      : "id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count";
-    const res = await supabase
-      .from("master_sheet_grids")
-      .select(selectCols)
-      .eq("client_name", ctx.clientName)
-      .or(`and(sheet_role.eq.client,tab_name.eq.${tabName}),and(sheet_role.eq.master,tab_name.eq.Client::${tabName})`)
-      .limit(1)
-      .maybeSingle();
-    data = res.data;
-    error = res.error;
-    if (!error && data) {
-      expandClientTabFromStorage_(data, tabName, { valuesOnly });
-      if (valuesOnly) data._valuesOnlyLoaded = true;
-      _gridMemoryCache.set(cacheKey, { record: data, expiresAt: Date.now() + GRID_CACHE_TTL_MS });
-      return data;
-    }
-  } else {
-    const res = await supabase
-      .from("master_sheet_grids")
-      .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
-      .eq("client_name", ctx.clientName)
-      .eq("sheet_role", sheetRole)
-      .eq("tab_name", tabName)
-      .maybeSingle();
-    data = res.data;
-    error = res.error;
-    if (!error && data) {
-      data.values_grid = compactGrid2D(data.values_grid || []);
-      data.formulas_grid = data.values_grid;
-      _gridMemoryCache.set(cacheKey, { record: data, expiresAt: Date.now() + GRID_CACHE_TTL_MS });
-      return data;
-    }
+  // Coalesce concurrent requests for the same tab
+  const fullInFlight = _inFlightGridLoads.get(cacheKey);
+  if (fullInFlight) {
+    return fullInFlight;
+  }
+  const inFlightKey = valuesOnly ? `${cacheKey}::vo` : cacheKey;
+  if (_inFlightGridLoads.has(inFlightKey)) {
+    return _inFlightGridLoads.get(inFlightKey);
   }
 
-  // Lazy-seed from underlying Google Sheet if not yet in master_sheet_grids
-  const sourceSheetId =
-    sheetRole === "recon" ? ctx.reconSheetId : sheetRole === "client" ? ctx.clientSheetId : ctx.masterSheetId;
-  if (rawSheetsApi && sourceSheetId) {
-    try {
-      const [valResp, formResp] = await Promise.all([
-        rawSheetsApi.spreadsheets.values.get({
-          spreadsheetId: sourceSheetId,
-          range: `'${tabName}'`,
-          valueRenderOption: "UNFORMATTED_VALUE",
-        }),
-        rawSheetsApi.spreadsheets.values
-          .get({
+  const loadPromise = (async () => {
+    let data = null;
+    let error = null;
+
+    if (sheetRole === "client") {
+      const selectCols = valuesOnly
+        ? "id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count"
+        : "id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count";
+      const res = await supabase
+        .from("master_sheet_grids")
+        .select(selectCols)
+        .eq("client_name", ctx.clientName)
+        .or(`and(sheet_role.eq.client,tab_name.eq.${tabName}),and(sheet_role.eq.master,tab_name.eq.Client::${tabName})`)
+        .limit(1)
+        .maybeSingle();
+      data = res.data;
+      error = res.error;
+      if (!error && data) {
+        expandClientTabFromStorage_(data, tabName, { valuesOnly });
+        if (valuesOnly) data._valuesOnlyLoaded = true;
+        const existing = _gridMemoryCache.get(cacheKey);
+        if (!valuesOnly || !existing || existing.expiresAt <= Date.now() || existing.record._valuesOnlyLoaded) {
+          _gridMemoryCache.set(cacheKey, { record: data, expiresAt: Date.now() + GRID_CACHE_TTL_MS });
+        }
+        return data;
+      }
+    } else {
+      const res = await supabase
+        .from("master_sheet_grids")
+        .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
+        .eq("client_name", ctx.clientName)
+        .eq("sheet_role", sheetRole)
+        .eq("tab_name", tabName)
+        .maybeSingle();
+      data = res.data;
+      error = res.error;
+      if (!error && data) {
+        data.values_grid = compactGrid2D(data.values_grid || []);
+        data.formulas_grid = data.values_grid;
+        _gridMemoryCache.set(cacheKey, { record: data, expiresAt: Date.now() + GRID_CACHE_TTL_MS });
+        return data;
+      }
+    }
+
+    // Lazy-seed from underlying Google Sheet if not yet in master_sheet_grids
+    const sourceSheetId =
+      sheetRole === "recon" ? ctx.reconSheetId : sheetRole === "client" ? ctx.clientSheetId : ctx.masterSheetId;
+    if (rawSheetsApi && sourceSheetId) {
+      try {
+        const [valResp, formResp] = await Promise.all([
+          rawSheetsApi.spreadsheets.values.get({
             spreadsheetId: sourceSheetId,
             range: `'${tabName}'`,
-            valueRenderOption: "FORMULA",
-          })
-          .catch(() => ({ data: { values: [] } })),
-      ]);
-      const valuesGrid = valResp?.data?.values || [];
-      const formulasGrid = formResp?.data?.values || valuesGrid;
-      const maxCols = valuesGrid.reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0);
+            valueRenderOption: "UNFORMATTED_VALUE",
+          }),
+          rawSheetsApi.spreadsheets.values
+            .get({
+              spreadsheetId: sourceSheetId,
+              range: `'${tabName}'`,
+              valueRenderOption: "FORMULA",
+            })
+            .catch(() => ({ data: { values: [] } })),
+        ]);
+        const valuesGrid = valResp?.data?.values || [];
+        const formulasGrid = formResp?.data?.values || valuesGrid;
+        const maxCols = valuesGrid.reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0);
 
-      await saveVirtualTabGrid_(ctx, sheetRole, tabName, valuesGrid, formulasGrid, {});
-      const saved = _gridMemoryCache.get(cacheKey)?.record;
-      if (saved) return saved;
-      return {
-        client_id: ctx.clientId,
-        client_name: ctx.clientName,
-        sheet_role: sheetRole,
-        tab_name: tabName,
-        values_grid: valuesGrid,
-        formulas_grid: formulasGrid,
-        notes_grid: {},
-        row_count: valuesGrid.length,
-        col_count: maxCols,
-      };
-    } catch {
-      // Tab may not exist on legacy sheet
+        await saveVirtualTabGrid_(ctx, sheetRole, tabName, valuesGrid, formulasGrid, {});
+        const saved = _gridMemoryCache.get(cacheKey)?.record;
+        if (saved) return saved;
+        return {
+          client_id: ctx.clientId,
+          client_name: ctx.clientName,
+          sheet_role: sheetRole,
+          tab_name: tabName,
+          values_grid: valuesGrid,
+          formulas_grid: formulasGrid,
+          notes_grid: {},
+          row_count: valuesGrid.length,
+          col_count: maxCols,
+        };
+      } catch {
+        // Tab may not exist on legacy sheet
+      }
     }
-  }
 
-  const emptyRecord = {
-    client_id: ctx.clientId,
-    client_name: ctx.clientName,
-    sheet_role: sheetRole,
-    tab_name: tabName,
-    values_grid: [],
-    formulas_grid: [],
-    notes_grid: {},
-    row_count: 0,
-    col_count: 0,
-  };
-  return emptyRecord;
+    const emptyRecord = {
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      sheet_role: sheetRole,
+      tab_name: tabName,
+      values_grid: [],
+      formulas_grid: [],
+      notes_grid: {},
+      row_count: 0,
+      col_count: 0,
+    };
+    return emptyRecord;
+  })();
+
+  _inFlightGridLoads.set(inFlightKey, loadPromise);
+  try {
+    return await loadPromise;
+  } finally {
+    _inFlightGridLoads.delete(inFlightKey);
+  }
 }
 
 export function recomputeReconTabFormulasSync_(grid) {
@@ -2722,11 +2762,17 @@ export async function handleVirtualSheetsCall({
             : [{ tabName: t.tab_name, startRow0: 0, endRow0: (t.row_count || 1) - 1, startCol0: 0, endCol0: (t.col_count || 1) - 1 }];
 
         if (matchingRanges.length > 0) {
+          const fieldsStr = String(params.fields || "");
+          const isNotesOnlyReq =
+            fieldsStr.includes("note") &&
+            !fieldsStr.includes("formattedValue") &&
+            !fieldsStr.includes("effectiveValue") &&
+            !fieldsStr.includes("userEnteredValue") &&
+            !fieldsStr.includes("effectiveFormat");
+
           sheetObj.data = matchingRanges.map((mr) => {
             const mrStartR = mr.startRow0 ?? 0;
             const mrStartC = mr.startCol0 ?? 0;
-            const slicedVals = sliceGrid2D_(t.values_grid || [], mr);
-            const slicedForms = sliceGrid2D_(t.formulas_grid || t.values_grid || [], mr);
             let maxNoteRowCount = 0;
             const noteMaxColCountByRow = new Map();
             if (t.notes_grid && typeof t.notes_grid === "object") {
@@ -2752,6 +2798,33 @@ export async function handleVirtualSheetsCall({
                 }
               }
             }
+
+            if (isNotesOnlyReq) {
+              const rowData = [];
+              for (let rOffset = 0; rOffset < maxNoteRowCount; rOffset++) {
+                const colCount = noteMaxColCountByRow.get(rOffset) || 0;
+                if (colCount === 0) {
+                  rowData.push({ values: [] });
+                  continue;
+                }
+                const absR = mrStartR + rOffset;
+                const values = [];
+                for (let cOffset = 0; cOffset < colCount; cOffset++) {
+                  const absC = mrStartC + cOffset;
+                  const noteStr = t.notes_grid?.[`${absR}:${absC}`] || "";
+                  values.push(noteStr ? { note: noteStr } : {});
+                }
+                rowData.push({ values });
+              }
+              return {
+                startRow: mrStartR,
+                startColumn: mrStartC,
+                rowData,
+              };
+            }
+
+            const slicedVals = sliceGrid2D_(t.values_grid || [], mr);
+            const slicedForms = sliceGrid2D_(t.formulas_grid || t.values_grid || [], mr);
             const rowCount = Math.max(
               slicedVals.length,
               slicedForms.length,
@@ -3428,6 +3501,9 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
   invalidateMasterEngineCache();
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) throw new Error(`Client "${clientName}" not found in Supabase clients registry.`);
+  if (isVirtualSupabaseSheetId(ctx.masterSheetId) && isVirtualSupabaseSheetId(ctx.reconSheetId)) {
+    throw new Error(`Client "${clientName}" was provisioned directly in Supabase and has no Google Master or Recon sheets to sync from.`);
+  }
 
   const summary = {
     clientName: ctx.clientName,
@@ -3444,7 +3520,7 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
   };
 
   // 1. Fetch Master Sheet metadata & tabs (bypassing virtual router so we read live legacy sheet)
-  if (ctx.masterSheetId) {
+  if (ctx.masterSheetId && !isVirtualSupabaseSheetId(ctx.masterSheetId)) {
     const masterMeta = await sheets.spreadsheets.get({
       spreadsheetId: ctx.masterSheetId,
       fields: "sheets.properties.title",
@@ -3543,7 +3619,7 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
   }
 
   // 2. Fetch Recon Sheet metadata & tabs
-  if (ctx.reconSheetId) {
+  if (ctx.reconSheetId && !isVirtualSupabaseSheetId(ctx.reconSheetId)) {
     const reconMeta = await sheets.spreadsheets.get({
       spreadsheetId: ctx.reconSheetId,
       fields: "sheets.properties.title",
@@ -3891,6 +3967,12 @@ export async function materializeClientSheetFromMaster(sheets, clientName = "APP
   if (!ctx || !ctx.clientSheetId || !ctx.masterSheetId) {
     throw new Error(`Client "${clientName}" is missing clientSheetId or masterSheetId.`);
   }
+  if (isVirtualSupabaseSheetId(ctx.clientSheetId)) {
+    throw new Error(`Client "${clientName}" was provisioned in Supabase without a Google Client Sheet.`);
+  }
+  if (isVirtualSupabaseSheetId(ctx.masterSheetId)) {
+    throw new Error(`Client "${clientName}" has no Google Master Sheet; its Client Sheet IMPORTRANGEs are already materialized.`);
+  }
 
   // Check which tabs actually exist on both the Client Sheet and Master Sheet
   const [clientMeta, masterMeta, { data: existingKi }] = await Promise.all([
@@ -4118,6 +4200,9 @@ export async function restoreClientSheetImportranges(sheets, clientName = "APPTE
 
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx || !ctx.clientSheetId) throw new Error(`Client "${clientName}" not found.`);
+  if (isVirtualSupabaseSheetId(ctx.clientSheetId) || isVirtualSupabaseSheetId(ctx.masterSheetId)) {
+    throw new Error(`Cannot restore IMPORTRANGEs because "${clientName}" does not have both Google Client and Google Master sheets.`);
+  }
 
   const { data: ki } = await supabase
     .from("tenant_key_info")
@@ -4173,6 +4258,17 @@ export async function setClientMasterMode(clientName, masterMode) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
 
+  if (cleanMode === "sheet") {
+    const { data: cur } = await supabase
+      .from("clients")
+      .select("master_sheet_id")
+      .eq("client_name", clientName)
+      .maybeSingle();
+    if (!cur?.master_sheet_id || isVirtualSupabaseSheetId(cur.master_sheet_id)) {
+      throw new Error(`Cannot switch "${clientName}" Master & Recon to Google Sheets because no Google Master Sheet was provisioned for this client.`);
+    }
+  }
+
   const { data, error } = await supabase
     .from("clients")
     .update({ master_mode: cleanMode, updated_at: new Date().toISOString() })
@@ -4192,6 +4288,17 @@ export async function setClientMode(clientName, clientMode) {
   const cleanMode = clientMode === "supabase" ? "supabase" : "sheet";
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
+
+  if (cleanMode === "sheet") {
+    const { data: cur } = await supabase
+      .from("clients")
+      .select("client_sheet_id")
+      .eq("client_name", clientName)
+      .maybeSingle();
+    if (!cur?.client_sheet_id || isVirtualSupabaseSheetId(cur.client_sheet_id)) {
+      throw new Error(`Cannot switch "${clientName}" Client Portal to Google Sheets because no Google Client Sheet was provisioned for this client.`);
+    }
+  }
 
   const { data, error } = await supabase
     .from("clients")
@@ -4416,6 +4523,9 @@ export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") 
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx || !ctx.clientSheetId) {
     throw new Error(`Client "${clientName}" not found or missing clientSheetId.`);
+  }
+  if (isVirtualSupabaseSheetId(ctx.clientSheetId)) {
+    throw new Error(`Client "${clientName}" was provisioned directly in Supabase and has no Google Client Sheet to sync from.`);
   }
 
   const metaResp = await sheets.spreadsheets.get({
@@ -4687,6 +4797,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
       };
       return {
         ...c,
+        hasRealClientSheet: Boolean(c.client_sheet_id && !isVirtualSupabaseSheetId(c.client_sheet_id)),
+        hasRealMasterSheet: Boolean(c.master_sheet_id && !isVirtualSupabaseSheetId(c.master_sheet_id)),
+        hasRealReconSheet: Boolean(c.recon_sheet_id && !isVirtualSupabaseSheetId(c.recon_sheet_id)),
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,
@@ -5079,4 +5192,503 @@ export async function updateVirtualTabCellFromInspector({
     cellCoord: `${colLetter}${Number(rowIndex0) + 1}`,
     value,
   };
+}
+
+/**
+ * Seeds virtual Supabase workbooks directly from Google Sheet templates during new client onboarding,
+ * and materializes Client Google Sheet IMPORTRANGEs when Client is Google Sheets and Master is Supabase.
+ */
+export async function seedNewClientTemplatesToSupabase(
+  sheets,
+  {
+    clientId,
+    clientName,
+    normalizedKey,
+    clientMode = "supabase",
+    masterMode = "supabase",
+    clientSheetId = "",
+    clientUrl = "",
+    masterSheetId = "",
+    masterUrl = "",
+    reconSheetId = "",
+    reconUrl = "",
+    accountingTool = "None",
+    crmTool = "None",
+    crmDrives = "NA",
+    clientTemplateId = "",
+    masterTemplateId = "",
+    reconTemplateId = "",
+  }
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!sheets) throw new Error("Google Sheets client is required to read template workbooks.");
+
+  _sheetContextCache.expiresAt = 0;
+  invalidateMasterEngineCache(clientName);
+
+  const ctx = {
+    clientId,
+    clientName,
+    normalizedKey,
+    masterMode,
+    clientMode,
+    clientSheetId,
+    masterSheetId,
+    reconSheetId,
+  };
+
+  const clientRef = clientUrl || clientSheetId;
+  const masterRef = masterUrl || masterSheetId;
+  const reconRef = reconUrl || reconSheetId;
+
+  const patchMasterKeyInfoOverrides = (grid) => {
+    let g = patchGridCell_(grid, 0, 1, clientName); // B1
+    g = patchGridCell_(g, 0, 2, clientRef); // C1
+    g = patchGridCell_(g, 0, 3, masterRef); // D1
+    g = patchGridCell_(g, 0, 6, reconRef); // G1
+    g = patchGridCell_(g, 3, 16, accountingTool || "None"); // Q4
+    g = patchGridCell_(g, 7, 16, crmTool || "None"); // Q8
+    g = patchGridCell_(g, 8, 16, crmDrives || "NA"); // Q9
+    return g;
+  };
+
+  // 1. Seed Master & Recon virtual grids from templates if masterMode === 'supabase'
+  if (masterMode === "supabase") {
+    if (masterTemplateId) {
+      const masterMeta = await sheets.spreadsheets.get({
+        spreadsheetId: masterTemplateId,
+        fields: "sheets.properties.title",
+        _bypassSupabaseVirtualSheet: true,
+      });
+      const existingMasterTabs = new Set((masterMeta.data.sheets || []).map((s) => s.properties.title));
+      const orderedCore = CORE_MASTER_TABS.filter((t) => existingMasterTabs.has(t));
+      const extraTabs = [...existingMasterTabs].filter(
+        (t) => !CORE_MASTER_TABS.includes(t) && t !== "GasExecLogs" && t !== "GasScriptProps"
+      );
+      const tabsToPull = [...orderedCore, ...extraTabs];
+
+      let templateInvMode = "Whole";
+      for (let i = 0; i < tabsToPull.length; i += 6) {
+        const chunk = tabsToPull.slice(i, i + 6);
+        const ranges = chunk.map((t) => `'${t}'`);
+        const [valBatch, formBatch] = await Promise.all([
+          sheets.spreadsheets.values.batchGet({
+            spreadsheetId: masterTemplateId,
+            ranges,
+            valueRenderOption: "UNFORMATTED_VALUE",
+            _bypassSupabaseVirtualSheet: true,
+          }),
+          sheets.spreadsheets.values
+            .batchGet({
+              spreadsheetId: masterTemplateId,
+              ranges,
+              valueRenderOption: "FORMULA",
+              _bypassSupabaseVirtualSheet: true,
+            })
+            .catch(() => ({ data: { valueRanges: [] } })),
+        ]);
+
+        const vList = valBatch.data.valueRanges || [];
+        const fList = formBatch.data.valueRanges || [];
+
+        for (let j = 0; j < chunk.length; j++) {
+          const tabName = chunk[j];
+          let vGrid = vList[j]?.values || [];
+          let fGrid = fList[j]?.values || vGrid;
+
+          if (tabName === "KeyInfo") {
+            vGrid = patchMasterKeyInfoOverrides(vGrid);
+            fGrid = patchMasterKeyInfoOverrides(fGrid);
+            const rawMode = String(vGrid[7]?.[6] || "Whole").trim();
+            if (rawMode) templateInvMode = rawMode;
+            await syncStructuredKeyInfoFromGrid_(ctx, vGrid).catch((e) =>
+              console.warn("[seedNewClientTemplatesToSupabase] tenant_key_info sync warning:", e.message)
+            );
+          } else if (tabName === "DataChgAlert") {
+            const invFreq = String(vGrid[1]?.[24] || "").trim();
+            const crmFreq = String(vGrid[2]?.[24] || "").trim();
+            const expFreq = String(vGrid[3]?.[24] || "").trim();
+            await supabase
+              .from("sync_schedules")
+              .upsert(
+                {
+                  client_id: clientId,
+                  client_name: clientName,
+                  master_sheet_id: masterSheetId,
+                  inv_freq: invFreq || "Not Used",
+                  crm_freq: crmFreq || "Not Used",
+                  exp_freq: expFreq || "Not Used",
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "client_name" }
+              )
+              .catch(() => { });
+          }
+
+          await saveVirtualTabGrid_(ctx, "master", tabName, vGrid, fGrid, {});
+        }
+      }
+
+      const seedProps = [
+        ["Key", "Value", "UpdatedAt"],
+        ["INV_LAST_IMPORT_MODE", templateInvMode || "Whole", new Date().toISOString()],
+        ["EXP_LAST_IMPORT_MODE", "Whole", new Date().toISOString()],
+      ];
+      await saveVirtualTabGrid_(ctx, "master", "GasScriptProps", seedProps, seedProps, {});
+    }
+
+    if (reconTemplateId) {
+      const reconMeta = await sheets.spreadsheets.get({
+        spreadsheetId: reconTemplateId,
+        fields: "sheets.properties.title",
+        _bypassSupabaseVirtualSheet: true,
+      });
+      const allReconTabs = (reconMeta.data.sheets || [])
+        .map((s) => s.properties.title)
+        .filter((t) => Boolean(t));
+
+      for (let i = 0; i < allReconTabs.length; i += 5) {
+        const chunk = allReconTabs.slice(i, i + 5);
+        const ranges = chunk.map((t) => `'${t}'`);
+        const [valBatch, formBatch] = await Promise.all([
+          sheets.spreadsheets.values.batchGet({
+            spreadsheetId: reconTemplateId,
+            ranges,
+            valueRenderOption: "UNFORMATTED_VALUE",
+            _bypassSupabaseVirtualSheet: true,
+          }),
+          sheets.spreadsheets.values
+            .batchGet({
+              spreadsheetId: reconTemplateId,
+              ranges,
+              valueRenderOption: "FORMULA",
+              _bypassSupabaseVirtualSheet: true,
+            })
+            .catch(() => ({ data: { valueRanges: [] } })),
+        ]);
+
+        const vList = valBatch.data.valueRanges || [];
+        const fList = formBatch.data.valueRanges || [];
+
+        for (let j = 0; j < chunk.length; j++) {
+          const tabName = chunk[j];
+          let vGrid = vList[j]?.values || [];
+          let fGrid = fList[j]?.values || vGrid;
+          if (tabName === "KeyInfo") {
+            vGrid = patchGridCell_(patchGridCell_(vGrid, 0, 2, clientRef), 0, 3, masterRef);
+            fGrid = patchGridCell_(patchGridCell_(fGrid, 0, 2, clientRef), 0, 3, masterRef);
+          }
+          await saveVirtualTabGrid_(ctx, "recon", tabName, vGrid, fGrid, {});
+        }
+      }
+    }
+  }
+
+  // Helper to resolve Master -> Client materialized target ranges (KeyInfo, Welcome, YrCalcs)
+  const buildMaterializedRangesFromMaster = async (sourceMasterId, applyOverrides, clientSourceId) => {
+    const [srcMasterMeta, srcClientMeta] = await Promise.all([
+      sheets.spreadsheets.get({
+        spreadsheetId: sourceMasterId,
+        fields: "sheets.properties.title",
+        _bypassSupabaseVirtualSheet: true,
+      }),
+      sheets.spreadsheets.get({
+        spreadsheetId: clientSourceId,
+        fields: "sheets.properties.title",
+        _bypassSupabaseVirtualSheet: true,
+      }),
+    ]);
+
+    const masterTabs = new Set((srcMasterMeta.data.sheets || []).map((s) => s.properties.title));
+    const clientTabs = new Set((srcClientMeta.data.sheets || []).map((s) => s.properties.title));
+    const targets = [];
+
+    if (clientTabs.has("KeyInfo") && masterTabs.has("KeyInfo")) {
+      targets.push(
+        { id: "keyinfo_header", clientRange: "KeyInfo!A1:B1", masterRange: "KeyInfo!A1:B1", mode: "VALUES_ONLY" },
+        { id: "keyinfo_body", clientRange: "KeyInfo!A2:AZ150", masterRange: "KeyInfo!A2:AZ150", mode: "FORMULAS_NO_EXTERNAL" }
+      );
+    }
+    if (clientTabs.has("Welcome") && masterTabs.has("Welcome")) {
+      targets.push({ id: "welcome_block", clientRange: "Welcome!B3:D26", masterRange: "Welcome!B3:D26", mode: "VALUES_ONLY" });
+    }
+    if (clientTabs.has("YrCalcs")) {
+      const yrAnchorResp = await sheets.spreadsheets.values
+        .get({
+          spreadsheetId: clientSourceId,
+          range: "YrCalcs!A1",
+          valueRenderOption: "FORMULA",
+          _bypassSupabaseVirtualSheet: true,
+        })
+        .catch(() => null);
+      const yrFormula = String(yrAnchorResp?.data?.values?.[0]?.[0] || "");
+      if (/importrange/i.test(yrFormula)) {
+        const rangeMatch = yrFormula.match(/["']([^"'!]+)!([A-Za-z0-9:$]+)["']/);
+        if (rangeMatch) {
+          const srcTab = rangeMatch[1].replace(/^'|'$/g, "");
+          const srcCoords = rangeMatch[2].replace(/\$/g, "");
+          if (masterTabs.has(srcTab)) {
+            targets.push({
+              id: "yrcalcs_block",
+              clientRange: `YrCalcs!${srcCoords}`,
+              masterRange: `${srcTab}!${srcCoords}`,
+              mode: "FORMULAS_NO_EXTERNAL",
+            });
+          }
+        }
+      }
+    }
+
+    if (targets.length === 0) return { targets: [], batchWriteData: [], backupMap: {} };
+
+    const anchorRanges = targets.map((t) => {
+      const tab = t.clientRange.split("!")[0];
+      const startCoord = t.clientRange.split("!")[1].split(":")[0];
+      return `${tab}!${startCoord}`;
+    });
+    const [existingAnchorsResp, masterValResp, masterFormResp] = await Promise.all([
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientSourceId,
+        ranges: anchorRanges,
+        valueRenderOption: "FORMULA",
+        _bypassSupabaseVirtualSheet: true,
+      }),
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: sourceMasterId,
+        ranges: targets.map((t) => t.masterRange),
+        valueRenderOption: "FORMATTED_VALUE",
+        _bypassSupabaseVirtualSheet: true,
+      }),
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: sourceMasterId,
+        ranges: targets.map((t) => t.masterRange),
+        valueRenderOption: "FORMULA",
+        _bypassSupabaseVirtualSheet: true,
+      }),
+    ]);
+
+    const backupMap = {};
+    (existingAnchorsResp.data.valueRanges || []).forEach((vr, idx) => {
+      const t = targets[idx];
+      backupMap[t.id] = {
+        clientRange: t.clientRange,
+        anchorRange: anchorRanges[idx],
+        originalFormula: vr.values?.[0]?.[0] || "",
+      };
+    });
+
+    const batchWriteData = [];
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[i];
+      const vals = masterValResp.data.valueRanges?.[i]?.values || [];
+      const forms = masterFormResp.data.valueRanges?.[i]?.values || [];
+      const maxR = Math.max(vals.length, forms.length);
+      const mergedRows = [];
+
+      for (let r = 0; r < maxR; r++) {
+        const vRow = vals[r] || [];
+        const fRow = forms[r] || [];
+        const maxC = Math.max(vRow.length, fRow.length);
+        const outRow = [];
+        for (let c = 0; c < maxC; c++) {
+          const fCell = fRow[c];
+          const vCell = vRow[c] ?? "";
+          if (t.mode === "VALUES_ONLY") {
+            outRow.push(vCell);
+          } else if (
+            typeof fCell === "string" &&
+            /\b(importrange|CRMList!|PLFromApp!|Year0PLFromApp!|PLComp!|InvComp!|DirComp!|CRMComp!|DataFromCRM!)/i.test(fCell)
+          ) {
+            outRow.push(vCell);
+          } else if (typeof fCell === "string" && fCell.startsWith("=")) {
+            outRow.push(fCell);
+          } else {
+            outRow.push(vCell !== "" && vCell !== undefined ? vCell : fCell !== undefined ? fCell : "");
+          }
+        }
+        mergedRows.push(outRow);
+      }
+
+      if (t.id === "keyinfo_body") {
+        for (let r = 0; r < mergedRows.length; r++) {
+          const vRow = vals[r] || [];
+          for (let c = 0; c < Math.max(mergedRows[r].length, vRow.length); c++) {
+            if ((mergedRows[r][c] === undefined || mergedRows[r][c] === "") && vRow[c] !== undefined && vRow[c] !== "") {
+              mergedRows[r][c] = vRow[c];
+            }
+          }
+        }
+        if (applyOverrides) {
+          // Rows in KeyInfo!A2:AZ150 start at sheet row 2 (r=0 -> row 2; Q4 -> r=2, Q8 -> r=6, Q9 -> r=7)
+          while (mergedRows.length <= 7) mergedRows.push([]);
+          for (const [rIdx, val] of [[2, accountingTool || "None"], [6, crmTool || "None"], [7, crmDrives || "NA"]]) {
+            while (mergedRows[rIdx].length <= 16) mergedRows[rIdx].push("");
+            mergedRows[rIdx][16] = val;
+          }
+        }
+      } else if (t.id === "keyinfo_header" && applyOverrides) {
+        while (mergedRows.length < 1) mergedRows.push([]);
+        while (mergedRows[0].length < 2) mergedRows[0].push("");
+        mergedRows[0][1] = clientName;
+      }
+
+      batchWriteData.push({ range: t.clientRange, values: mergedRows });
+    }
+
+    return { targets, batchWriteData, backupMap };
+  };
+
+  // 2. If Client is Google Sheets and Master is Supabase, materialize the Client Google Sheet directly
+  if (clientMode === "sheet" && masterMode === "supabase" && clientSheetId && !isVirtualSupabaseSheetId(clientSheetId) && masterTemplateId) {
+    try {
+      const { batchWriteData, backupMap } = await buildMaterializedRangesFromMaster(masterTemplateId, true, clientSheetId);
+      if (batchWriteData.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: clientSheetId,
+          requestBody: {
+            valueInputOption: "USER_ENTERED",
+            data: batchWriteData,
+          },
+          _bypassSupabaseVirtualSheet: true,
+        });
+        await supabase
+          .from("tenant_key_info")
+          .update({
+            client_importrange_backup: backupMap,
+            client_materialized_at: new Date().toISOString(),
+          })
+          .eq("client_id", clientId);
+      }
+    } catch (matErr) {
+      console.warn("[seedNewClientTemplatesToSupabase] Client sheet materialization warning:", matErr.message);
+    }
+  }
+
+  // 3. Seed Client virtual grids from Client Template if clientMode === 'supabase'
+  if (clientMode === "supabase" && clientTemplateId) {
+    const sourceMasterForClient = masterMode === "sheet" && masterSheetId && !isVirtualSupabaseSheetId(masterSheetId)
+      ? masterSheetId
+      : masterTemplateId;
+
+    let materializedRanges = [];
+    if (sourceMasterForClient) {
+      try {
+        const res = await buildMaterializedRangesFromMaster(
+          sourceMasterForClient,
+          masterMode === "supabase",
+          clientTemplateId
+        );
+        materializedRanges = res.batchWriteData || [];
+        if (masterMode === "supabase" && Object.keys(res.backupMap || {}).length > 0) {
+          await supabase
+            .from("tenant_key_info")
+            .update({
+              client_importrange_backup: res.backupMap,
+              client_materialized_at: new Date().toISOString(),
+            })
+            .eq("client_id", clientId);
+        }
+      } catch (e) {
+        console.warn("[seedNewClientTemplatesToSupabase] Virtual client materialize warning:", e.message);
+      }
+    }
+
+    const metaResp = await sheets.spreadsheets.get({
+      spreadsheetId: clientTemplateId,
+      fields: "sheets(properties(sheetId,title))",
+      _bypassSupabaseVirtualSheet: true,
+    });
+    const existingTitles = new Set((metaResp.data.sheets || []).map((s) => s.properties.title));
+    const tabsToFetch = CORE_CLIENT_TABS.filter((t) => existingTitles.has(t));
+
+    const outNotesMap = {};
+    if (existingTitles.has("Outgoings")) {
+      try {
+        const notesResp = await sheets.spreadsheets.get({
+          spreadsheetId: clientTemplateId,
+          ranges: ["Outgoings!G13:AV111"],
+          fields: "sheets.data.rowData.values.note",
+          _bypassSupabaseVirtualSheet: true,
+        });
+        const rowData = notesResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
+        rowData.forEach((rObj, rOff) => {
+          (rObj.values || []).forEach((vObj, cOff) => {
+            if (vObj?.note) {
+              outNotesMap[`${12 + rOff}:${6 + cOff}`] = String(vObj.note);
+            }
+          });
+        });
+      } catch (e) {
+        console.warn(`[seedNewClientTemplatesToSupabase] Outgoings notes warning (${clientName}):`, e.message);
+      }
+    }
+
+    const grids = {};
+    const chunkSize = 8;
+    for (let i = 0; i < tabsToFetch.length; i += chunkSize) {
+      const batch = tabsToFetch.slice(i, i + chunkSize);
+      const ranges = batch.map((t) => `'${t}'`);
+      const [valResp, formResp] = await Promise.all([
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientTemplateId,
+          ranges,
+          valueRenderOption: "UNFORMATTED_VALUE",
+          _bypassSupabaseVirtualSheet: true,
+        }),
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientTemplateId,
+          ranges,
+          valueRenderOption: "FORMULA",
+          _bypassSupabaseVirtualSheet: true,
+        }),
+      ]);
+
+      for (let j = 0; j < batch.length; j++) {
+        const tabName = batch[j];
+        let valuesGrid = valResp.data.valueRanges?.[j]?.values || [];
+        let formulasGrid = formResp.data.valueRanges?.[j]?.values || valuesGrid;
+        const notesGrid = tabName === "Outgoings" ? outNotesMap : {};
+
+        for (const mat of materializedRanges) {
+          const parsedMat = parseA1Range(mat.range, tabName);
+          if (parsedMat.tabName === tabName) {
+            valuesGrid = applyWriteToGrid2D_(valuesGrid, parsedMat, mat.values, {
+              sheetRole: "client",
+              tabName,
+              valueInputOption: "USER_ENTERED",
+              notesGrid,
+              isFormulaGrid: false,
+            });
+            formulasGrid = applyWriteToGrid2D_(formulasGrid, parsedMat, mat.values, {
+              sheetRole: "client",
+              tabName,
+              valueInputOption: "USER_ENTERED",
+              notesGrid,
+              isFormulaGrid: true,
+            });
+          }
+        }
+
+        if (tabName === "KeyInfo") {
+          valuesGrid = patchGridCell_(patchGridCell_(valuesGrid, 0, 2, clientRef), 0, 3, masterRef);
+          formulasGrid = patchGridCell_(patchGridCell_(formulasGrid, 0, 2, clientRef), 0, 3, masterRef);
+        }
+
+        grids[tabName] = {
+          values: valuesGrid,
+          formulas: formulasGrid,
+          notes: notesGrid,
+        };
+        await saveVirtualTabGrid_(ctx, "client", tabName, valuesGrid, formulasGrid, notesGrid);
+      }
+    }
+
+    await syncStructuredClientTablesFromGrids_(ctx, grids).catch((e) =>
+      console.warn("[seedNewClientTemplatesToSupabase] Stage 4 relational sync warning:", e.message)
+    );
+  }
+
+  invalidateMasterEngineCache(clientName);
+  return { success: true };
 }

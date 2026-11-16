@@ -19,10 +19,14 @@ import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } 
 import { getIntegrationStatus } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput, getServiceAccountPoolEmails } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
-import { isUserAuthorizedForClient, resolveMasterSheetIdByClientName } from "./userPermissions.js";
+import { isUserAuthorizedForClient, resolveMasterSheetIdByClientName, resolveClientSheetIdByClientName, unwrapSheetId } from "./userPermissions.js";
 import { clearAllClientsMemoryCache } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
-import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import {
+  resolveSupabaseSheetContext,
+  isVirtualSupabaseSheetId,
+  seedNewClientTemplatesToSupabase,
+} from "./masterEngineService.js";
 
 export const TRACKER_SHEET_ID = "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co";
 export const REPORTING_CONTROL_SHEET_ID = "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s";
@@ -145,7 +149,7 @@ export function isOAuthTool(tool) {
 /**
  * Returns full setup configuration for a client (for PMA Setup view).
  */
-export async function getClientSetupConfig({ clientName, masterSheetId, forceSheetSync = false }) {
+export async function getClientSetupConfig({ clientName, masterSheetId, clientSheetId, forceSheetSync = false }) {
   if (!clientName) throw new Error("Missing clientName parameter.");
 
   const redisKey = getSetupRedisKey(clientName);
@@ -163,15 +167,16 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
   // Fast path: Only query Google Sheets API if:
   // 1) forceSheetSync is true, OR
   // 2) Redis does not have accountingTool and crmTool cached yet, OR
-  // 3) Both tools are cached as 'None' (in case KeyInfo!Q4/Q8 was updated directly in the sheet)
+  // 3) Both tools are cached as 'None' AND sheetSyncedAt has not been recorded yet
   const hasCachedTools =
     config &&
     typeof config.accountingTool === "string" &&
     typeof config.crmTool === "string" &&
-    !(config.accountingTool === "None" && config.crmTool === "None");
+    (Boolean(config.sheetSyncedAt) || !(config.accountingTool === "None" && config.crmTool === "None"));
   const needsSheetSync = forceSheetSync || !hasCachedTools;
 
-  let resolvedMasterSheetId = masterSheetId || config?.masterSheetId || "";
+  let resolvedMasterSheetId = unwrapSheetId(masterSheetId || config?.masterSheetId || "");
+  let resolvedClientSheetId = unwrapSheetId(clientSheetId || config?.clientSheetId || "");
   let sheetQ4 = config?.accountingTool || "None";
   let sheetQ8 = config?.crmTool || "None";
   let sheetQ9 = config?.crmDrives || "NA";
@@ -179,13 +184,17 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
   if (needsSheetSync) {
     try {
       const sheets = await getSheetsClient();
+      if (!resolvedClientSheetId) {
+        resolvedClientSheetId = await resolveClientSheetIdByClientName(sheets, clientName);
+      }
       if (!resolvedMasterSheetId) {
         resolvedMasterSheetId = await resolveMasterSheetIdByClientName(sheets, clientName);
       }
-      if (resolvedMasterSheetId) {
+      const targetKeyInfoSheetId = resolvedClientSheetId || resolvedMasterSheetId;
+      if (targetKeyInfoSheetId) {
         const res = await withRetry(() =>
           sheets.spreadsheets.values.batchGet({
-            spreadsheetId: resolvedMasterSheetId,
+            spreadsheetId: targetKeyInfoSheetId,
             ranges: ["KeyInfo!Q4:Q9", "KeyInfo!B15", "KeyInfo!D8"]
           })
         );
@@ -421,7 +430,7 @@ export async function saveClientSetupConfig({
  * Fast lookup for the client portal auth gate (/pulse).
  * Safe and fast; returns false for any client without setup mode enabled.
  */
-export async function getClientSetupStatusForPortal({ clientName, masterSheetId }) {
+export async function getClientSetupStatusForPortal({ clientName, masterSheetId, clientSheetId }) {
   if (!clientName) return { setupMode: false, configuredTools: [], hasDisconnectedTools: false };
 
   const redisKey = getSetupRedisKey(clientName);
@@ -436,21 +445,28 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
     console.error(`Error querying Redis setup config for ${clientName}:`, err);
   }
 
-  // If no Redis config or missing tool selections, attempt reading KeyInfo!Q4:Q9
-  let resolvedMasterSheetId = masterSheetId || config?.masterSheetId || "";
+  // If no Redis config yet, attempt reading KeyInfo!Q4:Q9 from Client Sheet (falling back to Master Sheet)
+  let resolvedMasterSheetId = unwrapSheetId(masterSheetId || config?.masterSheetId || "");
+  let resolvedClientSheetId = unwrapSheetId(clientSheetId || config?.clientSheetId || "");
   let accountingTool = config?.accountingTool || "None";
   let crmTool = config?.crmTool || "None";
 
-  if (accountingTool === "None" || crmTool === "None" || !resolvedMasterSheetId) {
+  const needsInitialSync = !config || (!config.sheetSyncedAt && accountingTool === "None" && crmTool === "None");
+
+  if (needsInitialSync) {
     try {
       const sheets = await getSheetsClient();
+      if (!resolvedClientSheetId) {
+        resolvedClientSheetId = await resolveClientSheetIdByClientName(sheets, clientName);
+      }
       if (!resolvedMasterSheetId) {
         resolvedMasterSheetId = await resolveMasterSheetIdByClientName(sheets, clientName);
       }
-      if (resolvedMasterSheetId && (accountingTool === "None" || crmTool === "None")) {
+      const targetKeyInfoSheetId = resolvedClientSheetId || resolvedMasterSheetId;
+      if (targetKeyInfoSheetId) {
         const res = await withRetry(() =>
           sheets.spreadsheets.values.get({
-            spreadsheetId: resolvedMasterSheetId,
+            spreadsheetId: targetKeyInfoSheetId,
             range: "KeyInfo!Q4:Q9"
           })
         );
@@ -461,27 +477,20 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
         if (accountingTool === "None" && sheetQ4 !== "None") accountingTool = sheetQ4;
         if (crmTool === "None" && sheetQ8 !== "None") crmTool = sheetQ8;
 
-        // Cache back to Redis whenever config was missing OR tool selections changed in KeyInfo!Q4:Q9
-        const shouldPersist =
-          !config ||
-          config.accountingTool !== accountingTool ||
-          config.crmTool !== crmTool ||
-          !config.masterSheetId;
-        if (shouldPersist) {
-          config = {
-            ...(config || {}),
-            clientName,
-            masterSheetId: resolvedMasterSheetId,
-            setupMode: config?.setupMode === true,
-            requestConnections: config?.requestConnections === true,
-            accountingTool,
-            crmTool,
-            crmDrives: config?.crmDrives || sheetQ9,
-            sheetSyncedAt: new Date().toISOString(),
-            updatedAt: config?.updatedAt || new Date().toISOString()
-          };
-          await redisClient.set(redisKey, JSON.stringify(config)).catch(() => { });
-        }
+        config = {
+          ...(config || {}),
+          clientName,
+          masterSheetId: resolvedMasterSheetId,
+          clientSheetId: resolvedClientSheetId,
+          setupMode: config?.setupMode === true,
+          requestConnections: config?.requestConnections === true,
+          accountingTool,
+          crmTool,
+          crmDrives: config?.crmDrives || sheetQ9,
+          sheetSyncedAt: new Date().toISOString(),
+          updatedAt: config?.updatedAt || new Date().toISOString()
+        };
+        await redisClient.set(redisKey, JSON.stringify(config)).catch(() => { });
       }
     } catch (sheetErr) {
       // Non-fatal sheet read note
@@ -1475,64 +1484,130 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
     t.metadata = `${config.crmTool} Connected`;
   }
 
+  // Resolve client & master provisioning mode from Supabase clients registry
+  const sheetCtx = await resolveSupabaseSheetContext({ clientName }).catch(() => null);
+  let clientRowMeta = null;
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data } = await sb
+        .from("clients")
+        .select("client_mode, master_mode, client_sheet_id, master_sheet_id, recon_sheet_id, client_script_id, master_script_id, recon_script_id, master_deployment_url")
+        .eq("normalized_key", normalizeKey(clientName))
+        .maybeSingle();
+      clientRowMeta = data || null;
+    } catch (_) { }
+  }
+
+  const clientMode = (clientRowMeta?.client_mode || sheetCtx?.clientMode) === "supabase" ? "supabase" : "sheet";
+  const masterMode = (clientRowMeta?.master_mode || sheetCtx?.masterMode) === "supabase" ? "supabase" : "sheet";
+  const resolvedClientSheetId = clientRowMeta?.client_sheet_id || sheetCtx?.clientSheetId || config?.clientSheetId || "";
+  const resolvedMasterSheetId = masterSheetId || clientRowMeta?.master_sheet_id || sheetCtx?.masterSheetId || config?.masterSheetId || "";
+  const resolvedReconSheetId = clientRowMeta?.recon_sheet_id || sheetCtx?.reconSheetId || "";
+
+  const hasRealClientSheet = clientMode === "sheet" && Boolean(resolvedClientSheetId && !isVirtualSupabaseSheetId(resolvedClientSheetId));
+  const hasRealMasterSheet = masterMode === "sheet" && Boolean(resolvedMasterSheetId && !isVirtualSupabaseSheetId(resolvedMasterSheetId));
+  const hasRealReconSheet = masterMode === "sheet" && Boolean(resolvedReconSheetId && !isVirtualSupabaseSheetId(resolvedReconSheetId));
+  const hasAnyGoogleSheet = clientMode === "sheet" || masterMode === "sheet";
+
+  const isTaskApplicableForMode = (taskId) => {
+    if (["p1_importrange_auth", "p1_agent_secret", "p1_gas_deployment"].includes(taskId)) {
+      return masterMode === "sheet";
+    }
+    if (["p1_drive_folder", "p1_duplicate_templates", "p1_bookmarks", "p1_rename_gas", "p1_script_ids"].includes(taskId)) {
+      return hasAnyGoogleSheet;
+    }
+    return true;
+  };
+
   // Build full phase structure from dynamic setup process template
   const template = await getSetupProcessTemplate(sheets);
   const phasesCatalog = template?.phases || DEFAULT_SETUP_PHASES;
-  const tasksCatalog = (template?.tasks || DEFAULT_SETUP_TASKS_CATALOG).filter(t => t.active !== false);
+  const allActiveTasksCatalog = (template?.tasks || DEFAULT_SETUP_TASKS_CATALOG).filter(t => t.active !== false);
+  const tasksCatalog = allActiveTasksCatalog.filter(t => isTaskApplicableForMode(t.id));
 
-  let totalTasks = tasksCatalog.length;
+  const totalTasks = tasksCatalog.length;
   let completedCount = 0;
 
-  const phases = phasesCatalog.map(phase => {
-    const tasksInPhase = tasksCatalog.filter(t => t.phaseId === phase.id);
-    let phaseCompleted = 0;
+  const phases = phasesCatalog
+    .map(phase => {
+      const tasksInPhase = tasksCatalog.filter(t => t.phaseId === phase.id);
+      let phaseCompleted = 0;
 
-    const tasks = tasksInPhase.map(catalogTask => {
-      const recorded = taskStatusMap.get(catalogTask.id);
-      const isCompleted = recorded ? Boolean(recorded.isCompleted) : false;
-      if (isCompleted) {
-        completedCount++;
-        phaseCompleted++;
-      }
+      const tasks = tasksInPhase.map(catalogTask => {
+        const recorded = taskStatusMap.get(catalogTask.id);
+        const isCompleted = recorded ? Boolean(recorded.isCompleted) : false;
+        if (isCompleted) {
+          completedCount++;
+          phaseCompleted++;
+        }
+        return {
+          id: catalogTask.id,
+          phaseId: catalogTask.phaseId,
+          title: catalogTask.title,
+          autoCompletable: Boolean(catalogTask.autoCompletable),
+          description: catalogTask.description || "",
+          order: catalogTask.order,
+          isCompleted,
+          completedAt: recorded?.completedAt || "",
+          completedBy: recorded?.completedBy || "",
+          metadata: recorded?.metadata || ""
+        };
+      });
+
       return {
-        id: catalogTask.id,
-        phaseId: catalogTask.phaseId,
-        title: catalogTask.title,
-        autoCompletable: Boolean(catalogTask.autoCompletable),
-        description: catalogTask.description || "",
-        order: catalogTask.order,
-        isCompleted,
-        completedAt: recorded?.completedAt || "",
-        completedBy: recorded?.completedBy || "",
-        metadata: recorded?.metadata || ""
+        ...phase,
+        totalCount: tasks.length,
+        completedCount: phaseCompleted,
+        isPhaseComplete: tasks.length > 0 && phaseCompleted === tasks.length,
+        tasks
       };
-    });
+    })
+    .filter(phase => phase.tasks.length > 0);
 
-    return {
-      ...phase,
-      totalCount: tasks.length,
-      completedCount: phaseCompleted,
-      isPhaseComplete: phaseCompleted > 0 && phaseCompleted === tasks.length,
-      tasks
-    };
-  });
+  const progressPercent = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 100;
 
-  const progressPercent = Math.round((completedCount / totalTasks) * 100);
-
-  // Fetch Master Sheet KeyInfo parameters if masterSheetId provided
+  // Fetch Master Sheet KeyInfo parameters if resolvedMasterSheetId available
   let keyInfoSettings = null;
-  if (masterSheetId) {
-    keyInfoSettings = await getMasterKeyInfoSettings(sheets, masterSheetId).catch(() => null);
+  if (resolvedMasterSheetId) {
+    keyInfoSettings = await getMasterKeyInfoSettings(sheets, resolvedMasterSheetId).catch(() => null);
   }
 
-  // Cache back to Redis
-  const flatTaskList = [];
-  phases.forEach(p => p.tasks.forEach(t => flatTaskList.push({ taskId: t.id, ...t })));
+  // Cache full catalog status back to Redis so mode toggles never lose task history
+  const flatTaskList = allActiveTasksCatalog.map(catalogTask => {
+    const recorded = taskStatusMap.get(catalogTask.id);
+    return {
+      taskId: catalogTask.id,
+      id: catalogTask.id,
+      phaseId: catalogTask.phaseId,
+      title: catalogTask.title,
+      autoCompletable: Boolean(catalogTask.autoCompletable),
+      description: catalogTask.description || "",
+      order: catalogTask.order,
+      isCompleted: recorded ? Boolean(recorded.isCompleted) : false,
+      completedAt: recorded?.completedAt || "",
+      completedBy: recorded?.completedBy || "",
+      metadata: recorded?.metadata || ""
+    };
+  });
   await redisClient.set(checklistRedisKey, JSON.stringify(flatTaskList), { EX: 86400 }).catch(() => { });
 
   return {
     clientName,
     setupMode: Boolean(config?.setupMode),
+    clientMode,
+    masterMode,
+    hasRealClientSheet,
+    hasRealMasterSheet,
+    hasRealReconSheet,
+    clientSheetId: resolvedClientSheetId,
+    masterSheetId: resolvedMasterSheetId,
+    scriptIds: {
+      clientScriptId: clientRowMeta?.client_script_id || "",
+      masterScriptId: clientRowMeta?.master_script_id || "",
+      reconScriptId: clientRowMeta?.recon_script_id || "",
+    },
+    deploymentUrl: clientRowMeta?.master_deployment_url || "",
     totalTasks,
     completedCount,
     progressPercent,
@@ -1816,6 +1891,19 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
         }
       })
     );
+
+    // If Master is Google Sheet and Client is Supabase, mirror KeyInfo settings to virtual Client Sheet
+    try {
+      const ctx = await resolveSupabaseSheetContext({ spreadsheetId: masterSheetId, clientName }).catch(() => null);
+      if (ctx && ctx.masterMode === "sheet" && ctx.clientMode === "supabase" && ctx.clientSheetId) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: ctx.clientSheetId,
+            requestBody: { valueInputOption: "USER_ENTERED", data: updates },
+          })
+        );
+      }
+    } catch (_) { }
   }
 
   if (rechargedRow21Payload) {
@@ -1827,7 +1915,7 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
         const m = String(c1Res.data.values?.[0]?.[0] || "").match(/\/d\/([a-zA-Z0-9-_]+)/);
         if (m) clientSheetId = m[1];
       }
-      if (clientSheetId) {
+      if (clientSheetId && !(ctx?.masterMode === "sheet" && ctx?.clientMode === "supabase")) {
         await withRetry(() =>
           sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: clientSheetId,
@@ -1986,17 +2074,33 @@ export async function saveScriptIdsToTracker(sheets, { clientName, clientScriptI
 
   const norm = normalizeKey(clientName);
   let rowNum = null;
+  let clientMode = "sheet";
+  let masterMode = "sheet";
 
   if (isSupabaseConfigured()) {
     const sb = getSupabaseAdmin();
-    await sb
+    const { data: existingClient } = await sb
       .from("clients")
-      .update({
-        client_script_id: String(clientScriptId || ""),
-        master_script_id: String(masterScriptId || ""),
-        recon_script_id: String(reconScriptId || ""),
-      })
-      .eq("normalized_key", norm);
+      .select("client_mode, master_mode, client_script_id, master_script_id, recon_script_id")
+      .eq("normalized_key", norm)
+      .maybeSingle();
+
+    if (existingClient) {
+      clientMode = existingClient.client_mode || "sheet";
+      masterMode = existingClient.master_mode || "sheet";
+    }
+
+    const updatePayload = {};
+    if (clientScriptId !== undefined) updatePayload.client_script_id = String(clientScriptId || "");
+    if (masterScriptId !== undefined) updatePayload.master_script_id = String(masterScriptId || "");
+    if (reconScriptId !== undefined) updatePayload.recon_script_id = String(reconScriptId || "");
+
+    if (Object.keys(updatePayload).length > 0) {
+      await sb
+        .from("clients")
+        .update(updatePayload)
+        .eq("normalized_key", norm);
+    }
   }
 
   const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
@@ -2033,12 +2137,19 @@ export async function saveScriptIdsToTracker(sheets, { clientName, clientScriptI
     }
   }
 
+  const metaParts = [];
+  if (clientMode === "sheet") metaParts.push(`Client: ${clientScriptId || "NA"}`);
+  if (masterMode === "sheet") {
+    metaParts.push(`Master: ${masterScriptId || "NA"}`);
+    metaParts.push(`Recon: ${reconScriptId || "NA"}`);
+  }
+
   // Auto-mark task p1_script_ids as complete
   await updateClientChecklistTask(sheets, {
     clientName,
     taskId: "p1_script_ids",
     isCompleted: true,
-    metadata: `Client: ${clientScriptId || "NA"} | Master: ${masterScriptId || "NA"} | Recon: ${reconScriptId || "NA"}`,
+    metadata: metaParts.join(" | ") || "Saved",
     userEmail
   });
 
@@ -2181,6 +2292,8 @@ function extractDriveFolderId(input) {
 
 export async function provisionNewClientSystem({
   clientName,
+  clientMode = "supabase",
+  masterMode = "supabase",
   accountingTool = "None",
   crmTool = "None",
   crmDrives = "NA",
@@ -2191,16 +2304,27 @@ export async function provisionNewClientSystem({
   if (!clientName || !clientName.trim()) {
     throw new Error("Client name is required");
   }
+  if (!["supabase", "sheet"].includes(clientMode) || !["supabase", "sheet"].includes(masterMode)) {
+    throw new Error("Invalid provisioning mode: clientMode and masterMode must be 'supabase' or 'sheet'.");
+  }
+  if ((clientMode === "supabase" || masterMode === "supabase") && !isSupabaseConfigured()) {
+    throw new Error("Supabase must be configured to provision Supabase-backed client or master engines.");
+  }
 
   const cleanClientName = sanitizeFormulaInput(clientName.trim());
-  const drive = await getDriveClient();
+  const norm = normalizeKey(cleanClientName);
+  const needsClientSheet = clientMode === "sheet";
+  const needsMasterSheet = masterMode === "sheet";
+  const needsDriveFolder = needsClientSheet || needsMasterSheet;
+
   const sheets = await getSheetsClient();
+  const drive = needsDriveFolder ? await getDriveClient() : null;
   const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
   if (!supaControlPlane) {
     await ensureClientSetupTabs(sheets);
   }
 
-  console.log(`🚀 Starting Provisioning for new client: "${cleanClientName}"...`);
+  console.log(`🚀 Starting Provisioning for new client: "${cleanClientName}" (client=${clientMode}, master=${masterMode})...`);
 
   // 1. Get Template IDs from Supabase `system_config` (`client_provisioning_templates`) with Tracker fallback
   const templates = await getProvisioningTemplates(sheets);
@@ -2210,152 +2334,201 @@ export async function provisionNewClientSystem({
     throw new Error("Missing client provisioning template IDs in Supabase system_config (`client_provisioning_templates`) or Clients Version Tracker Row 3.");
   }
 
-  // 2. Use Existing Folder or Create Destination Folder in Google Drive
+  // 2. Use Existing Folder or Create Destination Folder in Google Drive (ONLY if at least one sheet is Google Sheets)
   let folderId = "";
   let folderUrl = "";
-  const parsedExistingId = extractDriveFolderId(existingFolderId);
+  if (needsDriveFolder) {
+    const parsedExistingId = extractDriveFolderId(existingFolderId);
 
-  if (parsedExistingId) {
-    console.log(`  📁 Using existing Drive folder "${parsedExistingId}" for "${cleanClientName}"...`);
-    const existingMeta = await withRetry(() =>
-      drive.files.get({
-        fileId: parsedExistingId,
-        fields: "id, name, webViewLink, mimeType",
+    if (parsedExistingId) {
+      console.log(`  📁 Using existing Drive folder "${parsedExistingId}" for "${cleanClientName}"...`);
+      const existingMeta = await withRetry(() =>
+        drive.files.get({
+          fileId: parsedExistingId,
+          fields: "id, name, webViewLink, mimeType",
+          supportsAllDrives: true
+        })
+      );
+      if (!existingMeta?.data?.id) {
+        throw new Error("Could not access the specified existing Google Drive folder.");
+      }
+      folderId = existingMeta.data.id;
+      folderUrl = existingMeta.data.webViewLink || `https://drive.google.com/drive/folders/${folderId}`;
+    } else {
+      const parentId = extractDriveFolderId(targetParentFolderId) || DEFAULT_CLIENTS_FOLDER_ID;
+      console.log(`  📁 Creating Drive folder "${cleanClientName}" inside parent "${parentId}"...`);
+      const folderRes = await drive.files.create({
+        requestBody: {
+          name: cleanClientName,
+          mimeType: "application/vnd.google-apps.folder",
+          parents: [parentId]
+        },
+        fields: "id, name, webViewLink",
         supportsAllDrives: true
-      })
-    );
-    if (!existingMeta?.data?.id) {
-      throw new Error("Could not access the specified existing Google Drive folder.");
-    }
-    folderId = existingMeta.data.id;
-    folderUrl = existingMeta.data.webViewLink || `https://drive.google.com/drive/folders/${folderId}`;
-  } else {
-    const parentId = extractDriveFolderId(targetParentFolderId) || DEFAULT_CLIENTS_FOLDER_ID;
-    console.log(`  📁 Creating Drive folder "${cleanClientName}" inside parent "${parentId}"...`);
-    const folderRes = await drive.files.create({
-      requestBody: {
-        name: cleanClientName,
-        mimeType: "application/vnd.google-apps.folder",
-        parents: [parentId]
-      },
-      fields: "id, name, webViewLink",
-      supportsAllDrives: true
-    });
-    folderId = folderRes.data.id;
-    folderUrl = folderRes.data.webViewLink || `https://drive.google.com/drive/folders/${folderId}`;
-  }
-
-  // 3. Duplicate Templates into the New Folder
-  console.log(`  📋 Copying Client, Master, Recon templates & creating backup sheet...`);
-  const [clientCopy, masterCopy, reconCopy, backupCopy] = await Promise.all([
-    drive.files.copy({
-      fileId: clientTemplateId,
-      requestBody: {
-        name: `${cleanClientName} Agency Management Dashboard`,
-        parents: [folderId]
-      },
-      fields: "id, name, webViewLink"
-    }),
-    drive.files.copy({
-      fileId: masterTemplateId,
-      requestBody: {
-        name: `AMD ${cleanClientName} master`,
-        parents: [folderId]
-      },
-      fields: "id, name, webViewLink"
-    }),
-    drive.files.copy({
-      fileId: reconTemplateId,
-      requestBody: {
-        name: `Recon ${cleanClientName}`,
-        parents: [folderId]
-      },
-      fields: "id, name, webViewLink"
-    }),
-    drive.files.create({
-      requestBody: {
-        name: `${cleanClientName} backup sheet`,
-        mimeType: "application/vnd.google-apps.spreadsheet",
-        parents: [folderId]
-      },
-      fields: "id, name, webViewLink"
-    })
-  ]);
-
-  const clientUrl = clientCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${clientCopy.data.id}/edit`;
-  const masterUrl = masterCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${masterCopy.data.id}/edit`;
-  const reconUrl = reconCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${reconCopy.data.id}/edit`;
-  const backupUrl = backupCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${backupCopy.data.id}/edit`;
-
-  // 4. Grant Editor Permissions (including all Service Accounts in the multi-project pool / group)
-  const emailsToShare = [
-    ...new Set([
-      "pulse@pulsedashboard.co.uk",
-      "alert-triage-backend@automation-commander.iam.gserviceaccount.com",
-      ...getServiceAccountPoolEmails(),
-    ]),
-  ];
-  const groupEmail = (process.env.GOOGLE_SERVICE_ACCOUNT_GROUP_EMAIL || "").trim().toLowerCase();
-  for (const fileId of [clientCopy.data.id, masterCopy.data.id, reconCopy.data.id, backupCopy.data.id]) {
-    for (const email of emailsToShare) {
-      const isGroup = groupEmail && email.toLowerCase() === groupEmail;
-      drive.permissions.create({
-        fileId,
-        requestBody: { role: "writer", type: isGroup ? "group" : "user", emailAddress: email },
-        sendNotificationEmail: false,
-        supportsAllDrives: true,
-      }).catch(err => console.warn(`Share note for ${email}:`, err.message));
+      });
+      folderId = folderRes.data.id;
+      folderUrl = folderRes.data.webViewLink || `https://drive.google.com/drive/folders/${folderId}`;
     }
   }
 
-  // 5. Update KeyInfo Tabs Across Sheets
-  console.log(`  🔗 Linking KeyInfo tabs across Master, Recon, and Client sheets...`);
-  await Promise.all([
-    // Master Sheet KeyInfo
-    withRetry(() =>
-      sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: masterCopy.data.id,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: [
-            { range: "KeyInfo!B1", values: [[cleanClientName]] },
-            { range: "KeyInfo!C1", values: [[clientUrl]] },
-            { range: "KeyInfo!D1", values: [[masterUrl]] },
-            { range: "KeyInfo!G1", values: [[reconUrl]] },
-            { range: "KeyInfo!Q4", values: [[accountingTool || "None"]] },
-            { range: "KeyInfo!Q8", values: [[crmTool || "None"]] },
-            { range: "KeyInfo!Q9", values: [[crmDrives || "NA"]] }
-          ]
-        }
-      })
-    ).catch(e => console.warn("Master KeyInfo update note:", e.message)),
+  // 3. Duplicate Only Required Templates into the Drive Folder
+  let clientCopy = null;
+  let masterCopy = null;
+  let reconCopy = null;
+  let backupCopy = null;
 
-    // Recon Sheet KeyInfo
-    withRetry(() =>
-      sheets.spreadsheets.values.update({
-        spreadsheetId: reconCopy.data.id,
-        range: "KeyInfo!C1:D1",
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[clientUrl, masterUrl]] }
-      })
-    ).catch(e => console.warn("Recon KeyInfo update note:", e.message)),
+  if (needsDriveFolder) {
+    console.log(`  📋 Copying required templates into Google Drive (client=${needsClientSheet}, master=${needsMasterSheet})...`);
+    const copyTasks = [];
+    if (needsClientSheet) {
+      copyTasks.push(
+        drive.files.copy({
+          fileId: clientTemplateId,
+          requestBody: {
+            name: `${cleanClientName} Agency Management Dashboard`,
+            parents: [folderId]
+          },
+          fields: "id, name, webViewLink"
+        }).then((res) => { clientCopy = res; })
+      );
+    }
+    if (needsMasterSheet) {
+      copyTasks.push(
+        drive.files.copy({
+          fileId: masterTemplateId,
+          requestBody: {
+            name: `AMD ${cleanClientName} master`,
+            parents: [folderId]
+          },
+          fields: "id, name, webViewLink"
+        }).then((res) => { masterCopy = res; }),
+        drive.files.copy({
+          fileId: reconTemplateId,
+          requestBody: {
+            name: `Recon ${cleanClientName}`,
+            parents: [folderId]
+          },
+          fields: "id, name, webViewLink"
+        }).then((res) => { reconCopy = res; }),
+        drive.files.create({
+          requestBody: {
+            name: `${cleanClientName} backup sheet`,
+            mimeType: "application/vnd.google-apps.spreadsheet",
+            parents: [folderId]
+          },
+          fields: "id, name, webViewLink"
+        }).then((res) => { backupCopy = res; })
+      );
+    }
+    await Promise.all(copyTasks);
+  }
 
-    // Client Sheet KeyInfo
-    withRetry(() =>
-      sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: clientCopy.data.id,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: [
-            { range: "KeyInfo!C1", values: [[clientUrl]] },
-            { range: "KeyInfo!D1", values: [[masterUrl]] }
-          ]
-        }
-      })
-    ).catch(e => console.warn("Client KeyInfo update note:", e.message))
-  ]);
+  const clientSheetId = needsClientSheet ? clientCopy.data.id : `sb-client-${norm}`;
+  const masterSheetId = needsMasterSheet ? masterCopy.data.id : `sb-master-${norm}`;
+  const reconSheetId = needsMasterSheet ? reconCopy.data.id : `sb-recon-${norm}`;
 
-  // 6. Enroll in Clients Version Tracker (Legacy sheet control plane only)
+  const clientUrl = needsClientSheet ? (clientCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${clientSheetId}/edit`) : "";
+  const masterUrl = needsMasterSheet ? (masterCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${masterSheetId}/edit`) : "";
+  const reconUrl = needsMasterSheet ? (reconCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${reconSheetId}/edit`) : "";
+  const backupUrl = needsMasterSheet ? (backupCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${backupCopy.data.id}/edit`) : "";
+
+  // 4. Grant Editor Permissions on created Google Drive files
+  const createdFileIds = [
+    clientCopy?.data?.id,
+    masterCopy?.data?.id,
+    reconCopy?.data?.id,
+    backupCopy?.data?.id,
+  ].filter(Boolean);
+
+  if (createdFileIds.length > 0 && drive) {
+    const emailsToShare = [
+      ...new Set([
+        "pulse@pulsedashboard.co.uk",
+        "alert-triage-backend@automation-commander.iam.gserviceaccount.com",
+        ...getServiceAccountPoolEmails(),
+      ]),
+    ];
+    const groupEmail = (process.env.GOOGLE_SERVICE_ACCOUNT_GROUP_EMAIL || "").trim().toLowerCase();
+    for (const fileId of createdFileIds) {
+      for (const email of emailsToShare) {
+        const isGroup = groupEmail && email.toLowerCase() === groupEmail;
+        drive.permissions.create({
+          fileId,
+          requestBody: { role: "writer", type: isGroup ? "group" : "user", emailAddress: email },
+          sendNotificationEmail: false,
+          supportsAllDrives: true,
+        }).catch(err => console.warn(`Share note for ${email}:`, err.message));
+      }
+    }
+  }
+
+  // 5. Update KeyInfo Tabs Across Created Google Sheets
+  if (createdFileIds.length > 0) {
+    console.log(`  🔗 Linking KeyInfo tabs across created Google Sheets...`);
+    const linkPromises = [];
+    const clientRefForSheet = clientUrl || clientSheetId;
+    const masterRefForSheet = masterUrl || masterSheetId;
+    const reconRefForSheet = reconUrl || reconSheetId;
+
+    if (needsMasterSheet && masterCopy?.data?.id) {
+      linkPromises.push(
+        withRetry(() =>
+          sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: masterCopy.data.id,
+            requestBody: {
+              valueInputOption: "USER_ENTERED",
+              data: [
+                { range: "KeyInfo!B1", values: [[cleanClientName]] },
+                { range: "KeyInfo!C1", values: [[clientRefForSheet]] },
+                { range: "KeyInfo!D1", values: [[masterRefForSheet]] },
+                { range: "KeyInfo!G1", values: [[reconRefForSheet]] },
+                { range: "KeyInfo!Q4", values: [[accountingTool || "None"]] },
+                { range: "KeyInfo!Q8", values: [[crmTool || "None"]] },
+                { range: "KeyInfo!Q9", values: [[crmDrives || "NA"]] }
+              ]
+            },
+            _bypassSupabaseVirtualSheet: true,
+          })
+        ).catch(e => console.warn("Master KeyInfo update note:", e.message))
+      );
+    }
+
+    if (needsMasterSheet && reconCopy?.data?.id) {
+      linkPromises.push(
+        withRetry(() =>
+          sheets.spreadsheets.values.update({
+            spreadsheetId: reconCopy.data.id,
+            range: "KeyInfo!C1:D1",
+            valueInputOption: "USER_ENTERED",
+            requestBody: { values: [[clientRefForSheet, masterRefForSheet]] },
+            _bypassSupabaseVirtualSheet: true,
+          })
+        ).catch(e => console.warn("Recon KeyInfo update note:", e.message))
+      );
+    }
+
+    if (needsClientSheet && clientCopy?.data?.id) {
+      linkPromises.push(
+        withRetry(() =>
+          sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: clientCopy.data.id,
+            requestBody: {
+              valueInputOption: "USER_ENTERED",
+              data: [
+                { range: "KeyInfo!C1", values: [[clientRefForSheet]] },
+                { range: "KeyInfo!D1", values: [[masterRefForSheet]] }
+              ]
+            },
+            _bypassSupabaseVirtualSheet: true,
+          })
+        ).catch(e => console.warn("Client KeyInfo update note:", e.message))
+      );
+    }
+
+    await Promise.all(linkPromises);
+  }
+
+  // 6. Enroll in Legacy Sheets Control Plane (only when Supabase control plane is inactive)
   if (!supaControlPlane) {
     console.log(`  📝 Enrolling into Clients Version Tracker...`);
     try {
@@ -2436,15 +2609,14 @@ export async function provisionNewClientSystem({
     }
   }
 
-  // 9. Seed Overview & Initial Tasks (AC Sheet in legacy mode, plus Supabase below and Default EoM Tasks always)
+  // 9. Seed Overview & Initial Tasks
   const now = new Date().toISOString();
   const autoDoneTaskIds = new Set([
-    "p1_drive_folder",
-    "p1_duplicate_templates",
     "p2_select_tools",
     "p4_ac_enrollment",
     "p4_rep_control",
-    "p4_eom_jobs"
+    "p4_eom_jobs",
+    ...(needsDriveFolder ? ["p1_drive_folder", "p1_duplicate_templates"] : []),
   ]);
   const template = await getSetupProcessTemplate(sheets).catch(() => null);
   const catalogTasks = (template?.tasks || DEFAULT_SETUP_TASKS_CATALOG).filter(t => t.active !== false);
@@ -2461,6 +2633,21 @@ export async function provisionNewClientSystem({
     };
   }
 
+  const applicableTasksCount = catalogTasks.filter((t) => {
+    if (["p1_importrange_auth", "p1_agent_secret", "p1_gas_deployment"].includes(t.id)) return needsMasterSheet;
+    if (["p1_drive_folder", "p1_duplicate_templates", "p1_bookmarks", "p1_rename_gas", "p1_script_ids"].includes(t.id)) return needsDriveFolder;
+    return true;
+  }).length;
+  const applicableCompletedCount = catalogTasks.filter((t) => {
+    if (!autoDoneTaskIds.has(t.id)) return false;
+    if (["p1_importrange_auth", "p1_agent_secret", "p1_gas_deployment"].includes(t.id)) return needsMasterSheet;
+    if (["p1_drive_folder", "p1_duplicate_templates", "p1_bookmarks", "p1_rename_gas", "p1_script_ids"].includes(t.id)) return needsDriveFolder;
+    return true;
+  }).length;
+  const initialProgressPct = applicableTasksCount > 0
+    ? Math.round((applicableCompletedCount / applicableTasksCount) * 100)
+    : 0;
+
   if (!supaControlPlane) {
     console.log(`  🎯 Seeding ClientSetupOverview & ClientSetupTasks...`);
     try {
@@ -2470,7 +2657,7 @@ export async function provisionNewClientSystem({
         valueInputOption: "USER_ENTERED",
         requestBody: {
           values: [[
-            cleanClientName, "IN_PROGRESS", "15%", "5", "34", now, "",
+            cleanClientName, "IN_PROGRESS", `${initialProgressPct}%`, String(applicableCompletedCount), String(applicableTasksCount), now, "",
             folderUrl, clientUrl, masterUrl, reconUrl, backupUrl
           ]]
         }
@@ -2513,8 +2700,10 @@ export async function provisionNewClientSystem({
   // 10. Persist to Redis & Supabase
   const setupConfigRecord = {
     clientName: cleanClientName,
-    masterSheetId: masterCopy.data.id,
-    clientSheetId: clientCopy.data.id,
+    masterSheetId,
+    clientSheetId,
+    clientMode,
+    masterMode,
     setupMode: true,
     requestConnections: false,
     accountingTool,
@@ -2534,27 +2723,26 @@ export async function provisionNewClientSystem({
   if (isSupabaseConfigured()) {
     try {
       const sb = getSupabaseAdmin();
-      const norm = normalizeKey(cleanClientName);
       const { data: insertedClient, error: clientUpsertErr } = await sb
         .from("clients")
         .upsert({
           client_name: cleanClientName,
           normalized_key: norm,
           status: "live",
-          client_mode: "sheet",
-          master_mode: "supabase",
-          client_sheet_id: clientCopy.data.id,
+          client_mode: clientMode,
+          master_mode: masterMode,
+          client_sheet_id: clientSheetId,
           client_sheet_url: clientUrl,
-          master_sheet_id: masterCopy.data.id,
+          master_sheet_id: masterSheetId,
           master_sheet_url: masterUrl,
-          recon_sheet_id: reconCopy.data.id,
+          recon_sheet_id: reconSheetId,
           recon_sheet_url: reconUrl,
           backup_sheet_url: backupUrl,
           drive_folder_id: folderId,
           metadata: {
             setupMode: true,
             folderUrl,
-            backupSheetId: backupCopy.data.id,
+            backupSheetId: backupCopy?.data?.id || "",
             accountingTool: accountingTool || "None",
             crmTool: crmTool || "None",
             crmDrives: crmDrives || "NA",
@@ -2565,6 +2753,30 @@ export async function provisionNewClientSystem({
 
       if (clientUpsertErr) {
         console.warn("⚠️ Supabase clients upsert warning:", clientUpsertErr.message);
+      }
+
+      // Seed virtual Supabase grids directly from templates (and materialize Client Google Sheet if Master is Supabase)
+      if (clientMode === "supabase" || masterMode === "supabase") {
+        console.log(`  🗄️ Seeding Supabase virtual workbooks from templates (client=${clientMode}, master=${masterMode})...`);
+        await seedNewClientTemplatesToSupabase(sheets, {
+          clientId: insertedClient?.id || null,
+          clientName: cleanClientName,
+          normalizedKey: norm,
+          clientMode,
+          masterMode,
+          clientSheetId,
+          clientUrl,
+          masterSheetId,
+          masterUrl,
+          reconSheetId,
+          reconUrl,
+          accountingTool,
+          crmTool,
+          crmDrives,
+          clientTemplateId,
+          masterTemplateId,
+          reconTemplateId,
+        });
       }
 
       await sb.from("client_setup_state").upsert({
@@ -2578,9 +2790,9 @@ export async function provisionNewClientSystem({
         tasks_map: initialTasksMap,
         overview_data: {
           status: "IN_PROGRESS",
-          progressPercent: 15,
-          completedTasks: 5,
-          totalTasks: catalogTasks.length || 34,
+          progressPercent: initialProgressPct,
+          completedTasks: applicableCompletedCount,
+          totalTasks: applicableTasksCount,
           driveFolderUrl: folderUrl,
           clientSheetUrl: clientUrl,
           masterSheetUrl: masterUrl,
@@ -2591,12 +2803,25 @@ export async function provisionNewClientSystem({
       }, { onConflict: "normalized_key" });
     } catch (sbErr) {
       console.warn("⚠️ Supabase provisionNewClientSystem warning:", sbErr.message);
+      if (clientMode === "supabase" || masterMode === "supabase") {
+        throw sbErr;
+      }
     }
   }
 
+  // Invalidate client list caches so the new client appears immediately across workspaces
+  try {
+    clearAllClientsMemoryCache();
+    clearSsrClientsMemoryCache();
+    if (redisClient?.isOpen) {
+      const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+      if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+    }
+  } catch (_) { }
+
   logPmaActivity({
     action: "client_provisioned",
-    details: `Successfully provisioned new client "${cleanClientName}" with folder & sheets`,
+    details: `Provisioned new client "${cleanClientName}" (client: ${clientMode}, master: ${masterMode})`,
     clientName: cleanClientName,
     userEmail
   }).catch(() => { });
@@ -2606,14 +2831,18 @@ export async function provisionNewClientSystem({
   return {
     success: true,
     clientName: cleanClientName,
+    clientMode,
+    masterMode,
+    hasRealClientSheet: needsClientSheet,
+    hasRealMasterSheet: needsMasterSheet,
     folderUrl,
     clientUrl,
     masterUrl,
     reconUrl,
     backupUrl,
-    clientSheetId: clientCopy.data.id,
-    masterSheetId: masterCopy.data.id,
-    reconSheetId: reconCopy.data.id
+    clientSheetId,
+    masterSheetId,
+    reconSheetId
   };
 }
 

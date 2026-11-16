@@ -23,7 +23,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  const { clientName, masterSheetId } = req.query;
+  const { clientName, masterSheetId, clientSheetId } = req.query;
   if (!clientName) {
     return res.status(400).json({ success: false, error: "Missing required clientName parameter." });
   }
@@ -32,10 +32,11 @@ export default async function handler(req, res) {
   if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
     return res.status(403).json({ success: false, error: "Access denied to this client." });
   }
-  if (!sessionUser.isAdmin && masterSheetId) {
+  if (!sessionUser.isAdmin && (clientSheetId || masterSheetId)) {
     try {
       const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+      const targetSheet = clientSheetId || masterSheetId;
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, targetSheet, clientName, sheets);
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
       }
@@ -45,7 +46,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const status = await getClientSetupStatusForPortal({ clientName, masterSheetId });
+    const status = await getClientSetupStatusForPortal({ clientName, masterSheetId, clientSheetId });
     return res.status(200).json({
       success: true,
       userRole: sessionUser.role,

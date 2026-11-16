@@ -1,10 +1,10 @@
 import { getSessionUser } from "../../../services/authService.js";
-import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
+import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 
 const CASH_CACHE_TTL_SECS = 60; // 60s L1 fresh window
-const CASH_REDIS_TTL_SECS = 900; // 15m Redis SWR retention
+const CASH_REDIS_TTL_SECS = 86400; // 24h Redis SWR retention
 
 // Fast month string parser (e.g. "Oct 26" -> Date)
 function parseMonthYear(str) {
@@ -33,13 +33,18 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
 
-  const clientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
+  const rawClientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
   const isAutoRefresh = req.query.autoRefresh === "true" || req.body?.autoRefresh === true;
 
-  if (!clientSheetId) {
+  if (!rawClientSheetId) {
     return res.status(400).json({ success: false, error: "clientSheetId is required" });
+  }
+
+  const clientSheetId = unwrapSheetId(extractSheetIdFromUrl(rawClientSheetId) || rawClientSheetId);
+  if (!clientSheetId || clientSheetId === "__INVALID_WS_TOKEN__") {
+    return res.status(400).json({ success: false, error: "Invalid clientSheetId" });
   }
 
   const sheets = await getSheetsClient();

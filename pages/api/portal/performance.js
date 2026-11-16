@@ -1,28 +1,12 @@
 import { getSessionUser } from "../../../services/authService.js";
-import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
+import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
-import { formatCurrencyString, parseMoney } from "../../../services/deepDiveHelper.js";
-
-const PERF_CACHE_TTL_SECS = 60; // 60s L1 fresh window
-const PERF_REDIS_TTL_SECS = 900; // 15m Redis SWR retention
-
-// Fast month string parser (e.g. "Apr 26" -> Date)
-function parseMonthYear(str) {
-  if (!str) return null;
-  const match = String(str).trim().match(/^([a-zA-Z]{3})[\s\-](\d{2,4})$/);
-  if (match) {
-    const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-    const m = months[match[1].toLowerCase()];
-    let yr = parseInt(match[2], 10);
-    if (yr < 100) yr += 2000;
-    if (m !== undefined && !isNaN(yr)) {
-      return new Date(yr, m, 1);
-    }
-  }
-  const d = new Date(str);
-  return isNaN(d.getTime()) ? null : d;
-}
+import {
+  fetchAndBuildPortalHomeAndPerformance,
+  PORTAL_L1_TTL_SECS,
+  PORTAL_REDIS_TTL_SECS,
+} from "../../../services/portalDataService.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
@@ -34,26 +18,31 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
 
-  const clientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
+  const rawClientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
   const isAutoRefresh = req.query.autoRefresh === "true" || req.body?.autoRefresh === true;
 
-  if (!clientSheetId) {
+  if (!rawClientSheetId) {
     return res.status(400).json({ success: false, error: "clientSheetId is required" });
+  }
+
+  const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(rawClientSheetId) || rawClientSheetId);
+  if (!cleanClientId || cleanClientId === "__INVALID_WS_TOKEN__") {
+    return res.status(400).json({ success: false, error: "Invalid clientSheetId" });
   }
 
   const sheets = await getSheetsClient();
 
   // Universal Fail-Closed Authorization Guard: binds sheetId to tenant identity
-  const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+  const auth = await verifyUserAuthorizedForSheet(sessionUser, cleanClientId, clientName, sheets);
   if (!auth.authorized) {
     return res.status(auth.status || 403).json({ success: false, error: auth.error });
   }
 
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
 
-  const cacheKey = `pulse:portal:performance:${clientSheetId}`;
+  const cacheKey = `pulse:portal:performance:${cleanClientId}`;
 
   try {
     const result = await resolvePortalCache({
@@ -61,205 +50,19 @@ export default async function handler(req, res) {
       bypassCache,
       isAutoRefresh,
       isReadOnly: Boolean(sessionUser.isReadOnly),
-      l1TtlSecs: PERF_CACHE_TTL_SECS,
-      redisTtlSecs: PERF_REDIS_TTL_SECS,
+      l1TtlSecs: PORTAL_L1_TTL_SECS,
+      redisTtlSecs: PORTAL_REDIS_TTL_SECS,
+      isValidPayload: (p) => p && Array.isArray(p.years),
       fetchFreshFn: async () => {
-        const [formattedResp, mathResp] = await Promise.all([
-          withRetry(() =>
-            sheets.spreadsheets.values.batchGet({
-              spreadsheetId: clientSheetId,
-              ranges: [
-                "AppData!A1:CR35",
-                "AppData!Z42:Z59",
-                "AppData!W40:W44",
-                "KeyInfo!C4:D5",
-                "KeyInfo!B15",
-                "KeyInfo!D8",
-              ],
-              valueRenderOption: "FORMATTED_VALUE",
-            })
-          ),
-          withRetry(() =>
-            sheets.spreadsheets.values.get({
-              spreadsheetId: clientSheetId,
-              range: "AppData!A1:CR35",
-              valueRenderOption: "UNFORMATTED_VALUE",
-            })
-          ),
-        ]);
-
-        const appDataDisp = formattedResp.data.valueRanges?.[0]?.values || [];
-        const appDataMath = mathResp.data?.values || [];
-        const thresholdsRaw = (formattedResp.data.valueRanges?.[1]?.values || []).map((r) => r[0] || "");
-        const toggles = formattedResp.data.valueRanges?.[2]?.values || [];
-        const keyInfoRows = formattedResp.data.valueRanges?.[3]?.values || [];
-        const modeRows = formattedResp.data.valueRanges?.[4]?.values || [];
-        const directCostsModeRows = formattedResp.data.valueRanges?.[5]?.values || [];
-
-    const mode = String(modeRows[0]?.[0] || "Revenue").trim();
-    const rawDirectCostsMode = String(directCostsModeRows[0]?.[0] || "Contractors").trim();
-    const directCostsMode =
-      mode.toLowerCase() === "income"
-        ? "Pass-through"
-        : rawDirectCostsMode === "Pass-through"
-        ? "Pass-through"
-        : "Contractors";
-
-    const currencySymbol = String(keyInfoRows[0]?.[1] || (keyInfoRows[0]?.[0] && keyInfoRows[0]?.[0] !== "Tracker currency" ? keyInfoRows[0]?.[0] : "") || "£").trim() || "£";
-    const thousandsSeparator = String(keyInfoRows[1]?.[1] || (keyInfoRows[1]?.[0] && keyInfoRows[1]?.[0] !== "Thous. separator" ? keyInfoRows[1]?.[0] : "") || ",").trim() || ",";
-
-    const version = toggles[0]?.[0] || ""; // W40
-    const showExtraRows = toggles[2]?.[0] === "Yes"; // W42
-    const numRows = showExtraRows ? 34 : 32;
-
-    // Thresholds: Z42:Z59 (18 rows) - normalize percentages into decimal numbers (e.g. "49.50%" -> 0.495)
-    const thresholds = thresholdsRaw.slice(0, 18).map((v) => {
-      if (typeof v === "number") return v > 1 ? v / 100 : v;
-      const s = String(v || "").replace(/%/g, "").trim();
-      const n = parseFloat(s);
-      if (isNaN(n)) return 0;
-      return String(v).includes("%") || n > 1 ? n / 100 : n;
+        const built = await fetchAndBuildPortalHomeAndPerformance(
+          sheets,
+          cleanClientId,
+          auth.clientName || clientName,
+          { saveToCache: true }
+        );
+        return built.performanceData;
+      },
     });
-
-    // Year Blocks mapping (0-indexed start column, count 14)
-    // Hist: CE:CR (Col 83 -> index 82)
-    // Year 1: G:T (Col 7 -> index 6)
-    // Year 2: V:AI (Col 22 -> index 21)
-    // Year 3: AK:AX (Col 37 -> index 36)
-    const yearBlockConfigs = [
-      { id: "hist", name: "Historical Year", start: 82, count: 14 },
-      { id: "year1", name: "Year 1", start: 6, count: 14 },
-      { id: "year2", name: "Year 2", start: 21, count: 14 },
-      { id: "year3", name: "Year 3", start: 36, count: 14 },
-    ];
-
-    const today = new Date();
-    let currentYearIdx = 1; // Default to Year 1
-    let fallbackIdx = 0;
-
-    // Determine current financial year by inspecting row 1 month dates
-    for (let bi = 0; bi < yearBlockConfigs.length; bi++) {
-      const blk = yearBlockConfigs[bi];
-      const firstMonthStr = appDataDisp[0]?.[blk.start];
-      const d = parseMonthYear(firstMonthStr);
-
-      if (d) {
-        const fyStart = new Date(d.getFullYear(), d.getMonth(), 1);
-        const fyEnd = new Date(d.getFullYear(), d.getMonth() + 12, 0, 23, 59, 59);
-
-        if (today >= fyStart && today <= fyEnd) {
-          currentYearIdx = bi;
-          break;
-        }
-        if (today > fyEnd) {
-          fallbackIdx = bi;
-        }
-      }
-    }
-
-    if (currentYearIdx === 1 && fallbackIdx > 1) {
-      currentYearIdx = fallbackIdx;
-    }
-
-    // Build line items (Column A, rows 1 to numRows)
-    const lineItemLabels = [];
-    for (let i = 0; i < numRows; i++) {
-      lineItemLabels.push(appDataDisp[i]?.[0] !== undefined ? String(appDataDisp[i][0]).trim() : "");
-    }
-    if (mode.toLowerCase() !== "income" && lineItemLabels.length > 13 && lineItemLabels[11]) {
-      if (directCostsMode === "Contractors") {
-        lineItemLabels[12] = "Other expenses - delivery";
-        lineItemLabels[13] = "Hide";
-      } else if (directCostsMode === "Pass-through") {
-        lineItemLabels[12] = "Pass-through costs";
-        lineItemLabels[13] = "Other expenses - delivery";
-      }
-    }
-
-    // Build the 4 year blocks
-    const years = yearBlockConfigs.map((blk, yIdx) => {
-      const headerMonths = [];
-      for (let j = 0; j < 12; j++) {
-        const mStr = appDataDisp[0]?.[blk.start + j] || `M${j + 1}`;
-        headerMonths.push(String(mStr).trim());
-      }
-      const totalColHeader = appDataDisp[0]?.[blk.start + 13] || "FY Total";
-
-      // Row 2 is status (Actual / Forecast)
-      const monthStatuses = [];
-      for (let j = 0; j < 12; j++) {
-        monthStatuses.push(appDataDisp[1]?.[blk.start + j] || "Forecast");
-      }
-
-      // Build data rows for this year
-      const rows = [];
-      for (let i = 0; i < numRows; i++) {
-        const label = lineItemLabels[i];
-        const monthlyValues = [];
-        const monthlyMath = [];
-
-        for (let j = 0; j < 12; j++) {
-          const colIdx = blk.start + j;
-          const valDisp = appDataDisp[i]?.[colIdx] !== undefined ? String(appDataDisp[i][colIdx]).trim() : "";
-          const rawMath = appDataMath[i]?.[colIdx];
-          const valMath = typeof rawMath === "number" ? rawMath : (valDisp ? parseMoney(valDisp, thousandsSeparator) : null);
-          monthlyValues.push(formatCurrencyString(valDisp, null, currencySymbol, thousandsSeparator));
-          monthlyMath.push(valMath);
-        }
-
-        const rawTotalVal = appDataDisp[i]?.[blk.start + 13] !== undefined ? String(appDataDisp[i][blk.start + 13]).trim() : "";
-        const rawTotalMath = appDataMath[i]?.[blk.start + 13];
-        const totalVal = formatCurrencyString(rawTotalVal, null, currencySymbol, thousandsSeparator);
-        const totalMath = typeof rawTotalMath === "number" ? rawTotalMath : (rawTotalVal ? parseMoney(rawTotalVal, thousandsSeparator) : null);
-
-        rows.push({
-          rowIndex: i + 1,
-          label,
-          monthlyValues,
-          monthlyMath,
-          totalVal,
-          totalMath,
-        });
-      }
-
-      // Financial year title extracted from first and last month, e.g. "FY27 (Apr 26 - Mar 27)"
-      const startMonth = headerMonths[0];
-      const endMonth = headerMonths[11];
-      const fyLabel = totalColHeader.replace(/\s*total/i, "").trim() || blk.name;
-      const displayTitle = `${fyLabel} (${startMonth} – ${endMonth})`;
-
-      return {
-        id: blk.id,
-        yearIndex: yIdx,
-        name: blk.name,
-        fyLabel,
-        displayTitle,
-        headerMonths,
-        monthStatuses,
-        statusValues: monthStatuses,
-        totalColHeader,
-        rows,
-      };
-    });
-
-    const performanceData = {
-      _cachedAt: new Date().toISOString(),
-      currencySymbol,
-      thousandsSeparator,
-      mode,
-      directCostsMode,
-      version,
-      showExtraRows,
-      numRows,
-      currentYearIdx,
-      thresholds,
-      lineItemLabels,
-      years,
-    };
-
-    return performanceData;
-  },
-});
 
     return res.status(200).json({
       success: true,

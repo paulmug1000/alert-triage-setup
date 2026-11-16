@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { redisClient } from "./redisClient.js";
-import { maskResponseSheetIdsForUser } from "./sheetTokenService.js";
+import { memoryCache } from "./cacheService.js";
+import { maskResponseSheetIdsForUser, unwrapSheetId } from "./sheetTokenService.js";
 
 const DEFAULT_AC_SHEET_ID = process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 const ALL_CLIENTS_CACHE_KEY = `pulse:all_clients:${DEFAULT_AC_SHEET_ID}`;
@@ -236,4 +237,173 @@ export async function getSsrInitialPmaData(sessionUser) {
     },
     sessionUser
   );
+}
+
+/**
+ * Fast SSR preloader for the Pulse Portal (/pulse) home page.
+ * Resolves authorized clients, active selectedClient (from ?client= or pulse_portal_client cookie),
+ * and warm L1/Redis payload + performanceData in a single sub-50ms pass so the Pulse Home Page
+ * renders on the very first paint without a client-side waterfall.
+ */
+export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
+  if (!sessionUser) {
+    return {
+      initialClients: null,
+      initialSelectedClient: null,
+      initialPayload: null,
+      initialPerformanceData: null,
+      selectedSetupConfig: null,
+    };
+  }
+
+  try {
+    const cookies = parseCookies(req?.headers?.cookie || "");
+    const savedClientCookie = cookies.pulse_portal_client ? String(cookies.pulse_portal_client).trim() : "";
+    const queryClient = typeof query?.client === "string" ? query.client.trim() : "";
+    const isChooseRequested = query?.choose === "true";
+
+    const portalCacheKey = `pulse:portal:allClients:${DEFAULT_AC_SHEET_ID}`;
+    let rawPortalClients = memoryCache.get(portalCacheKey);
+
+    if (!rawPortalClients && _l1Clients && Array.isArray(_l1Clients.clientsArray)) {
+      rawPortalClients = _l1Clients.clientsArray;
+    }
+
+    if (!rawPortalClients && redisClient?.isOpen) {
+      const rawRes = await Promise.race([
+        redisClient.mGet([portalCacheKey, ALL_CLIENTS_CACHE_KEY]),
+        new Promise((resolve) => setTimeout(() => resolve(null), 150)),
+      ]);
+      if (Array.isArray(rawRes)) {
+        if (rawRes[0]) {
+          try {
+            rawPortalClients = JSON.parse(rawRes[0]);
+            memoryCache.set(portalCacheKey, rawPortalClients, 300);
+          } catch {}
+        } else if (rawRes[1]) {
+          try {
+            const parsedAll = JSON.parse(rawRes[1]);
+            if (Array.isArray(parsedAll?.clientsArray)) {
+              rawPortalClients = parsedAll.clientsArray;
+              memoryCache.set(portalCacheKey, rawPortalClients, 300);
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (!Array.isArray(rawPortalClients) || rawPortalClients.length === 0) {
+      return {
+        initialClients: null,
+        initialSelectedClient: null,
+        initialPayload: null,
+        initialPerformanceData: null,
+        selectedSetupConfig: null,
+      };
+    }
+
+    const authorizedClients = rawPortalClients
+      .filter((c) => isClientAllowedForUser(sessionUser, c.clientName))
+      .sort((a, b) => String(a.clientName || "").localeCompare(String(b.clientName || "")));
+
+    const isPulseOnly = Boolean(
+      (sessionUser.role === "ClientUser" ||
+        sessionUser.role === "Senior (Restricted)" ||
+        sessionUser.isSenior ||
+        sessionUser.isReadOnly) &&
+        !sessionUser.isAdmin
+    );
+
+    const cleanClients = authorizedClients.map((c) => {
+      const setupMode = Boolean(c.setupMode);
+      return isPulseOnly
+        ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode }
+        : {
+            clientName: c.clientName,
+            clientSheetId: c.clientSheetId,
+            masterSheetId: c.masterSheetId,
+            setupMode,
+          };
+    });
+
+    let selectedRaw = null;
+    if (cleanClients.length === 1) {
+      selectedRaw = cleanClients[0];
+    } else if (cleanClients.length > 1 && !isChooseRequested) {
+      if (queryClient) {
+        selectedRaw = cleanClients.find((c) => c.clientName.toLowerCase() === queryClient.toLowerCase()) || null;
+      }
+      if (!selectedRaw && savedClientCookie) {
+        selectedRaw = cleanClients.find((c) => c.clientName.toLowerCase() === savedClientCookie.toLowerCase()) || null;
+      }
+      if (!selectedRaw && !isPulseOnly) {
+        selectedRaw =
+          cleanClients.find((c) => c.clientName.toUpperCase() === "APPTEST") || cleanClients[0] || null;
+      }
+    }
+
+    let initialPayload = null;
+    let initialPerformanceData = null;
+    let selectedSetupConfig = null;
+
+    if (selectedRaw?.clientSheetId) {
+      const rawSheetId = unwrapSheetId(selectedRaw.clientSheetId);
+      const payloadKey = `pulse:portal:payload:${rawSheetId}`;
+      const perfKey = `pulse:portal:performance:${rawSheetId}`;
+      const setupKey = `pulse:setup:${String(selectedRaw.clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`;
+
+      initialPayload = memoryCache.get(payloadKey) || null;
+      initialPerformanceData = memoryCache.get(perfKey) || null;
+
+      if ((!initialPayload || !initialPerformanceData) && redisClient?.isOpen) {
+        try {
+          const cachedTriple = await Promise.race([
+            redisClient.mGet([payloadKey, perfKey, setupKey]),
+            new Promise((resolve) => setTimeout(() => resolve(null), 150)),
+          ]);
+          if (Array.isArray(cachedTriple)) {
+            if (!initialPayload && cachedTriple[0]) {
+              initialPayload = JSON.parse(cachedTriple[0]);
+              memoryCache.set(payloadKey, initialPayload, 60);
+            }
+            if (!initialPerformanceData && cachedTriple[1]) {
+              initialPerformanceData = JSON.parse(cachedTriple[1]);
+              memoryCache.set(perfKey, initialPerformanceData, 60);
+            }
+            if (cachedTriple[2]) {
+              selectedSetupConfig = JSON.parse(cachedTriple[2]);
+              if (selectedSetupConfig?.setupMode === true) {
+                selectedRaw.setupMode = true;
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    const masked = maskResponseSheetIdsForUser(
+      {
+        initialClients: cleanClients,
+        initialSelectedClient: selectedRaw,
+      },
+      sessionUser
+    );
+
+    return {
+      initialClients: masked.initialClients || null,
+      initialSelectedClient: masked.initialSelectedClient || null,
+      initialPayload: selectedRaw?.setupMode || query?.preview === "setup" ? null : initialPayload || null,
+      initialPerformanceData:
+        selectedRaw?.setupMode || query?.preview === "setup" ? null : initialPerformanceData || null,
+      selectedSetupConfig,
+    };
+  } catch {
+    return {
+      initialClients: null,
+      initialSelectedClient: null,
+      initialPayload: null,
+      initialPerformanceData: null,
+      selectedSetupConfig: null,
+    };
+  }
 }

@@ -16,6 +16,7 @@ import { runDailyAutoBackupSweep } from "../../services/supabaseBackupService";
 import { dispatchDueNativeMasterSyncs } from "../../services/masterSyncEngine";
 import { getSheetsClient } from "../../services/sheetsClient";
 import { sendDailyAlertsSummary, checkAndNotifyTabErrors } from "../../services/dailyAlertsNotifier";
+import { warmAllClientsPortalHomeCache } from "../../services/portalDataService";
 
 export const config = {
   maxDuration: 300,
@@ -184,6 +185,21 @@ export default async function handler(req, res) {
 
       // Lazy-load Google Sheets client once for any remaining sheet-mode checks below
       const sheets = await getSheetsClient().catch(() => null);
+
+      // Pre-warm Pulse Home Page (payload + performance) caches across active clients in Redis
+      try {
+        const bgSheets = await getSheetsClient({ pool: "background" }).catch(() => sheets);
+        const warmRes = await warmAllClientsPortalHomeCache({
+          sheets: bgSheets,
+          maxClientsPerRun: 25,
+          minStaleAgeMs: 20 * 60 * 1000,
+        });
+        if (warmRes?.warmed > 0) {
+          console.log(`CRON: Pre-warmed Pulse home cache for ${warmRes.warmed} client(s) (${warmRes.skipped} already fresh).`);
+        }
+      } catch (warmErr) {
+        console.warn("⚠️ CRON: Non-fatal error pre-warming Pulse home cache:", warmErr.message);
+      }
 
       // Check Confirmed/Pipeline (ErrorCheck!B3:B4) across active clients and notify once per incident window
       try {

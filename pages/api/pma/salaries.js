@@ -25,40 +25,34 @@ export default async function handler(req, res) {
   if (req.method === "GET") {
     let { clientName, masterSheetId, clientSheetId, bypassCache } = req.query;
 
-    if (!masterSheetId || !clientSheetId) {
-      if (clientName) {
-        try {
-          const all = await getClients();
-          const match = all.find((c) => c.clientName?.toLowerCase() === clientName.toLowerCase().trim());
-          if (match) {
-            masterSheetId = masterSheetId || match.masterSheetId;
-            clientSheetId = clientSheetId || match.clientSheetId;
-          }
-        } catch (e) {
-          console.warn("Failed to resolve client sheets in GET /api/pma/salaries:", e);
+    if (!clientSheetId && clientName) {
+      try {
+        const all = await getClients();
+        const match = all.find((c) => c.clientName?.toLowerCase() === clientName.toLowerCase().trim());
+        if (match) {
+          masterSheetId = masterSheetId || match.masterSheetId;
+          clientSheetId = clientSheetId || match.clientSheetId;
         }
+      } catch (e) {
+        console.warn("Failed to resolve client sheets in GET /api/pma/salaries:", e);
       }
     }
 
-    if (!masterSheetId || !clientSheetId) {
+    if (!clientSheetId && !masterSheetId) {
       return res.status(400).json({
         success: false,
-        error: "Missing required masterSheetId or clientSheetId parameter.",
+        error: "Missing required clientSheetId parameter.",
       });
     }
 
     if (!sessionUser.isAdmin) {
       const sheets = await getSheetsClient();
-      const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
-      if (!masterAuth.authorized) {
-        return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this client." });
-      }
-      const boundClient = masterAuth.clientName || clientName;
-      const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, boundClient, sheets);
+      const targetSheet = clientSheetId || masterSheetId;
+      const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, targetSheet, clientName, sheets);
       if (!clientAuth.authorized) {
         return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
       }
-      clientName = boundClient || clientName;
+      clientName = clientAuth.clientName || clientName;
     }
 
     try {

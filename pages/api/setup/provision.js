@@ -30,15 +30,33 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Only administrators can provision new client systems." });
   }
 
-  const { clientName, accountingTool, crmTool, crmDrives, targetParentFolderId, existingFolderId } = req.body || {};
+  const {
+    clientName,
+    clientMode,
+    masterMode,
+    accountingTool,
+    crmTool,
+    crmDrives,
+    targetParentFolderId,
+    existingFolderId
+  } = req.body || {};
 
   if (!clientName || !clientName.trim()) {
-    return res.status(400).json({ success: false, error: "Client Name is required." });
+    return res.status(400).json({ success: false, error: "Client name is required." });
+  }
+
+  if (!["supabase", "sheet"].includes(clientMode) || !["supabase", "sheet"].includes(masterMode)) {
+    return res.status(400).json({
+      success: false,
+      error: "Please specify whether Client and Master sheets should be provisioned in Supabase or Google Sheets."
+    });
   }
 
   try {
     const result = await provisionNewClientSystem({
       clientName: clientName.trim(),
+      clientMode,
+      masterMode,
       accountingTool: accountingTool || "None",
       crmTool: crmTool || "None",
       crmDrives: crmDrives || "NA",

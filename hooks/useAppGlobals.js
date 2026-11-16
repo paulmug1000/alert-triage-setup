@@ -401,11 +401,11 @@ export function AppGlobalsProvider({ children }) {
     }
   }, [getCachedClientData]);
 
-  const scheduleNextQueueTask = useCallback(() => {
+  const scheduleNextQueueTask = useCallback((delayMs = 100) => {
     if (queueTimerRef.current) clearTimeout(queueTimerRef.current);
     queueTimerRef.current = setTimeout(() => {
       runNextQueueTask();
-    }, 100);
+    }, delayMs);
   }, [runNextQueueTask]);
 
   // ── INSTANT USER PRIORITY PROMOTION ────────────────────────────────────────
@@ -533,7 +533,7 @@ export function AppGlobalsProvider({ children }) {
       queuedTaskMapRef.current.set(key, task);
     };
 
-    // ── PRIORITY 2: Core screens (Jobs, Contractors, Invoices, Retainers)
+    // ── PRIORITY 1 & 2: Core screens (Jobs, Contractors, Invoices, Retainers)
     const jobsKey = `jobs_${cleanClientId}`;
     const jobsFetcher = async () => {
       const res = await fetch("/api/triage", {
@@ -545,14 +545,7 @@ export function AppGlobalsProvider({ children }) {
       if (d.success) setCachedClientData(cleanClientId, "jobs_All", d);
       return d;
     };
-    const cachedJobs = getCachedClientData(cleanClientId, "jobs_All");
-    if ((!cachedJobs || cachedJobs.isStale) && !inFlightPrefetchesRef.current.has(jobsKey)) {
-      if (foregroundActiveCountRef.current === 0) {
-        safeFetchOnce(jobsKey, jobsFetcher);
-      } else {
-        enqueue(jobsKey, 2, "jobs_All", jobsFetcher);
-      }
-    }
+    enqueue(jobsKey, 1, "jobs_All", jobsFetcher);
 
     enqueue(`outgoings_${cleanClientId}`, 2, "outgoings", async () => {
       const res = await fetch("/api/triage", {
@@ -630,7 +623,12 @@ export function AppGlobalsProvider({ children }) {
         `/api/portal/payload?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
       );
       const d = await res.json();
-      if (d.success && d.payload) setCachedClientData(cleanClientId, "portal_payload", d.payload);
+      if (d.success && d.payload) {
+        setCachedClientData(cleanClientId, "portal_payload", d.payload);
+        if (d.performanceData) {
+          setCachedClientData(cleanClientId, "portal_perf", d.performanceData);
+        }
+      }
       return d;
     });
 
@@ -726,9 +724,10 @@ export function AppGlobalsProvider({ children }) {
       return d;
     });
 
-    // Start sequential processing loop
-    scheduleNextQueueTask();
-  }, [cleanSheetId, getCachedClientData, setCachedClientData, safeFetchOnce, scheduleNextQueueTask]);
+    // Start sequential processing loop after initial PMA page load has settled (1.8s)
+    // so PMA Home Page alert counts and active user requests get 100% uncontested priority.
+    scheduleNextQueueTask(1800);
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, scheduleNextQueueTask]);
 
   // Automatically trigger background preloading whenever managedClient changes
   const prevManagedClientIdRef = useRef(null);

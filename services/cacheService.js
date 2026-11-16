@@ -101,7 +101,7 @@ export async function get2TierCache(key) {
 }
 
 /**
- * Set item in both L1 memory cache and L2 Redis cache.
+ * Set item in both L1 memory cache and L2 Redis cache (non-blocking Redis write).
  */
 export async function set2TierCache(key, value, ttlSeconds = 60) {
   if (!key || value === undefined) return;
@@ -109,7 +109,9 @@ export async function set2TierCache(key, value, ttlSeconds = 60) {
   memoryCache.set(key, value, ttl);
   try {
     if (redisClient?.isOpen) {
-      await redisClient.set(key, JSON.stringify(value), { EX: ttl });
+      redisClient
+        .set(key, JSON.stringify(value), { EX: ttl })
+        .catch((err) => console.warn(`[set2TierCache] Redis error for key ${key}:`, err?.message));
     }
   } catch (err) {
     console.warn(`[set2TierCache] Redis error for key ${key}:`, err?.message);
@@ -152,7 +154,7 @@ export async function resolvePortalCache({
   isAutoRefresh = false,
   isReadOnly = false,
   l1TtlSecs = 60,
-  redisTtlSecs = 900,
+  redisTtlSecs = 1800,
   isValidPayload = null,
   fetchFreshFn,
 }) {
@@ -163,6 +165,9 @@ export async function resolvePortalCache({
 
   const saveToCaches = (data) => {
     if (!data || data._skipCache) return;
+    if (typeof data === "object" && !data._cachedAt) {
+      data._cachedAt = new Date().toISOString();
+    }
     memoryCache.set(cacheKey, data, l1TtlSecs);
     try {
       if (redisClient?.isOpen) {
@@ -170,7 +175,7 @@ export async function resolvePortalCache({
           .set(cacheKey, JSON.stringify(data), { EX: redisTtlSecs })
           .catch((err) => console.warn(`[resolvePortalCache] Redis write warning for ${cacheKey}:`, err?.message));
       }
-    } catch (_) {}
+    } catch (_) { }
   };
 
   // 1. Check L1 Memory Cache (when not bypassing)
@@ -218,7 +223,7 @@ export async function resolvePortalCache({
               if (typeof waitUntil === "function") {
                 try {
                   waitUntil(bgPromise);
-                } catch (_) {}
+                } catch (_) { }
               }
             }
             return {
@@ -280,6 +285,7 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
   const allScopes = !scopes || scopes.length === 0;
 
   if (cleanClientId) {
+    memoryCache.del(`pulse:pma:shared_jobs_raw:${cleanClientId}*`);
     if (allScopes || scopes.includes("jobs")) {
       patterns.push(`pulse:pma:jobs:${cleanClientId}*`);
       patterns.push(`pulse:pma:invoice_jobs:${cleanClientId}*`);
@@ -366,11 +372,11 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
     if (typeof waitUntil === "function") {
       try {
         waitUntil(redisCleanup);
-      } catch (_) {}
+      } catch (_) { }
     }
     await Promise.race([
       redisCleanup,
-      new Promise((resolve) => setTimeout(resolve, 1000)),
+      new Promise((resolve) => setTimeout(resolve, 400)),
     ]);
   }
 }

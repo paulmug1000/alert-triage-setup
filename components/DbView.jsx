@@ -565,6 +565,8 @@ export default function DbView({
   const activeClientName = activeClientObj?.client_name || selectedClient || "APPTEST";
   const activeClientMode = activeClientObj?.master_mode || "sheet";
   const activeClientPortalMode = activeClientObj?.client_mode || "sheet";
+  const hasRealMasterSheet = activeClientObj ? activeClientObj.hasRealMasterSheet !== false : true;
+  const hasRealClientSheet = activeClientObj ? activeClientObj.hasRealClientSheet !== false : true;
   const isMaterialized = Boolean(
     stage2Data?.keyInfoMeta?.client_materialized_at || activeClientObj?.materializedAt
   );
@@ -1638,22 +1640,24 @@ export default function DbView({
                   1. {activeClientName} Master & Recon workbook sync ({activeClientObj?.masterTabCount || 0} master / {activeClientObj?.reconTabCount || 0} recon tabs)
                 </div>
                 <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "2px" }}>
-                  Copies all Master & Recon tabs, values, formulas, invoices, and direct costs from Google Sheets into Supabase.
+                  {hasRealMasterSheet
+                    ? "Copies all Master & Recon tabs, values, formulas, invoices, and direct costs from Google Sheets into Supabase."
+                    : "Provisioned directly in Supabase — no Google Master or Recon sheet exists to sync from."}
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => handleMigrateClient(activeClientName)}
-                disabled={!s2Ready || isBusy}
+                disabled={!s2Ready || !hasRealMasterSheet || isBusy}
                 style={{
                   padding: "7px 14px",
                   fontSize: "12px",
                   fontWeight: 600,
                   color: "#ffffff",
-                  background: !s2Ready || isBusy ? "#94a3b8" : "#1a56db",
+                  background: !s2Ready || !hasRealMasterSheet || isBusy ? "#94a3b8" : "#1a56db",
                   border: "none",
                   borderRadius: "6px",
-                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                  cursor: !s2Ready || !hasRealMasterSheet ? "not-allowed" : isBusy ? "wait" : "pointer",
                   display: "inline-flex",
                   alignItems: "center",
                   gap: "6px",
@@ -1696,16 +1700,20 @@ export default function DbView({
                     2. {activeClientName} Client Sheet IMPORTRANGE links
                   </div>
                   <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "2px" }}>
-                    {isMaterialized
-                      ? `IMPORTRANGEs removed: ${activeClientName} Client Sheet uses direct values (original formulas backed up).`
-                      : `Replaces Master Sheet IMPORTRANGE formulas on ${activeClientName} Client Sheet (with 1-click rollback).`}
+                    {!hasRealClientSheet
+                      ? `Provisioned directly in Supabase — no Google Client Sheet exists.`
+                      : !hasRealMasterSheet
+                        ? `Client Sheet is already materialized (Master runs natively in Supabase).`
+                        : isMaterialized
+                          ? `IMPORTRANGEs removed: ${activeClientName} Client Sheet uses direct values (original formulas backed up).`
+                          : `Replaces Master Sheet IMPORTRANGE formulas on ${activeClientName} Client Sheet (with 1-click rollback).`}
                   </div>
                 </div>
 
                 <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                   <button
                     type="button"
-                    disabled={!s2Ready || isBusy}
+                    disabled={!s2Ready || !hasRealClientSheet || !hasRealMasterSheet || isBusy}
                     onClick={() => handleMaterialize(false, activeClientName)}
                     style={{
                       padding: "6px 11px",
@@ -1714,8 +1722,8 @@ export default function DbView({
                       borderRadius: "6px",
                       border: "1px solid #cbd5e1",
                       background: isMaterialized ? "#dcfce7" : "#ffffff",
-                      color: isMaterialized ? "#166534" : "#1e293b",
-                      cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                      color: !hasRealClientSheet || !hasRealMasterSheet ? "#94a3b8" : isMaterialized ? "#166534" : "#1e293b",
+                      cursor: !s2Ready || !hasRealClientSheet || !hasRealMasterSheet ? "not-allowed" : isBusy ? "wait" : "pointer",
                       display: "inline-flex",
                       alignItems: "center",
                       gap: "5px",
@@ -1730,7 +1738,7 @@ export default function DbView({
                           : "2. Remove Master IMPORTRANGEs"}
                     </span>
                   </button>
-                  {isMaterialized && (
+                  {isMaterialized && hasRealClientSheet && hasRealMasterSheet && (
                     <button
                       type="button"
                       disabled={isBusy}
@@ -1776,7 +1784,9 @@ export default function DbView({
                   </div>
                   <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "2px" }}>
                     {activeClientMode === "supabase"
-                      ? `Active: all ${activeClientName} Master & Recon reads, writes, comparisons, and syncs run on Supabase.`
+                      ? hasRealMasterSheet
+                        ? `Active: all ${activeClientName} Master & Recon reads, writes, comparisons, and syncs run on Supabase.`
+                        : `Active (Supabase-native): ${activeClientName} Master & Recon run on Supabase (no Google Master Sheet).`
                       : `Legacy: ${activeClientName} is currently reading from its Google Master & Recon sheets.`}
                   </div>
                 </div>
@@ -1784,7 +1794,8 @@ export default function DbView({
                 <div style={{ display: "inline-flex", background: "#e2e8f0", borderRadius: "6px", padding: "3px", gap: "3px" }}>
                   <button
                     type="button"
-                    disabled={isBusy}
+                    disabled={!hasRealMasterSheet || isBusy}
+                    title={!hasRealMasterSheet ? "No Google Master Sheet was provisioned for this client." : undefined}
                     onClick={() => handleSetMasterMode("sheet", activeClientName)}
                     style={{
                       padding: "5px 10px",
@@ -1792,9 +1803,9 @@ export default function DbView({
                       fontWeight: 600,
                       borderRadius: "5px",
                       border: "none",
-                      cursor: isBusy ? "wait" : "pointer",
+                      cursor: !hasRealMasterSheet ? "not-allowed" : isBusy ? "wait" : "pointer",
                       background: activeClientMode === "sheet" ? "#ffffff" : "transparent",
-                      color: activeClientMode === "sheet" ? "#0f172a" : "#475569",
+                      color: !hasRealMasterSheet ? "#94a3b8" : activeClientMode === "sheet" ? "#0f172a" : "#475569",
                       display: "inline-flex",
                       alignItems: "center",
                       gap: "5px",
@@ -1857,9 +1868,11 @@ export default function DbView({
                     4. {activeClientName} Client Sheet virtual workbook ({activeClientObj?.clientTabCount || 0} tabs)
                   </div>
                   <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "2px" }}>
-                    {hasClientVirtualTabs
-                      ? `Seeded: ${activeClientObj?.clientTabCount || 31} Client Sheet tabs & Outgoings cell notes stored in Supabase.`
-                      : `Seeds all 31 Client Sheet tabs (values, formulas & cell notes) for ${activeClientName} into Supabase.`}
+                    {!hasRealClientSheet
+                      ? `Provisioned directly in Supabase (${activeClientObj?.clientTabCount || 31} virtual Client tabs seeded — no Google Client Sheet exists).`
+                      : hasClientVirtualTabs
+                        ? `Seeded: ${activeClientObj?.clientTabCount || 31} Client Sheet tabs & Outgoings cell notes stored in Supabase.`
+                        : `Seeds all 31 Client Sheet tabs (values, formulas & cell notes) for ${activeClientName} into Supabase.`}
                   </div>
                 </div>
 
@@ -1887,7 +1900,7 @@ export default function DbView({
                   )}
                   <button
                     type="button"
-                    disabled={!s2Ready || isBusy}
+                    disabled={!s2Ready || !hasRealClientSheet || isBusy}
                     onClick={() => handleSeedClientSheet(activeClientName)}
                     style={{
                       padding: "6px 11px",
@@ -1896,8 +1909,8 @@ export default function DbView({
                       borderRadius: "6px",
                       border: "1px solid #cbd5e1",
                       background: hasClientVirtualTabs ? "#dcfce7" : "#ffffff",
-                      color: hasClientVirtualTabs ? "#166534" : "#1e293b",
-                      cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                      color: !hasRealClientSheet ? "#94a3b8" : hasClientVirtualTabs ? "#166534" : "#1e293b",
+                      cursor: !s2Ready || !hasRealClientSheet ? "not-allowed" : isBusy ? "wait" : "pointer",
                       display: "inline-flex",
                       alignItems: "center",
                       gap: "5px",
@@ -1935,7 +1948,9 @@ export default function DbView({
                   </div>
                   <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "2px" }}>
                     {activeClientPortalMode === "supabase"
-                      ? `Active: all ${activeClientName} Pulse Portal views, edits, and formula calculations run 100% on Supabase.`
+                      ? hasRealClientSheet
+                        ? `Active: all ${activeClientName} Pulse Portal views, edits, and formula calculations run 100% on Supabase.`
+                        : `Active (Supabase-native): ${activeClientName} Pulse Portal runs on Supabase (no Google Client Sheet).`
                       : `Legacy: ${activeClientName} Pulse Portal is currently reading and writing to its Google Client Sheet.`}
                   </div>
                 </div>
@@ -1943,7 +1958,8 @@ export default function DbView({
                 <div style={{ display: "inline-flex", background: "#e2e8f0", borderRadius: "6px", padding: "3px", gap: "3px" }}>
                   <button
                     type="button"
-                    disabled={isBusy}
+                    disabled={!hasRealClientSheet || isBusy}
+                    title={!hasRealClientSheet ? "No Google Client Sheet was provisioned for this client." : undefined}
                     onClick={() => handleSetClientMode("sheet", activeClientName)}
                     style={{
                       padding: "5px 10px",
@@ -1951,9 +1967,9 @@ export default function DbView({
                       fontWeight: 600,
                       borderRadius: "5px",
                       border: "none",
-                      cursor: isBusy ? "wait" : "pointer",
+                      cursor: !hasRealClientSheet ? "not-allowed" : isBusy ? "wait" : "pointer",
                       background: activeClientPortalMode === "sheet" ? "#ffffff" : "transparent",
-                      color: activeClientPortalMode === "sheet" ? "#0f172a" : "#475569",
+                      color: !hasRealClientSheet ? "#94a3b8" : activeClientPortalMode === "sheet" ? "#0f172a" : "#475569",
                       display: "inline-flex",
                       alignItems: "center",
                       gap: "5px",

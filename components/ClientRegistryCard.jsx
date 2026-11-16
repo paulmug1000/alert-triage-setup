@@ -129,10 +129,7 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
   const [savingTemplates, setSavingTemplates] = useState(false);
 
   const [loading, setLoading] = useState(true);
-  const [savingRowKeys, setSavingRowKeys] = useState({});
   const [savingBatch, setSavingBatch] = useState(false);
-  const [deletingKey, setDeletingKey] = useState("");
-  const [confirmDeleteKey, setConfirmDeleteKey] = useState("");
 
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -212,57 +209,6 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
     );
   };
 
-  const handleUndoRow = (rowKey) => {
-    const orig = originalMap[rowKey];
-    if (!orig) return;
-    setRows(prev => prev.map(r => (getRowKey(r) === rowKey ? { ...orig } : r)));
-  };
-
-  const handleSaveRow = async (row) => {
-    const rowKey = getRowKey(row);
-    if (!String(row.client_name || "").trim()) {
-      setError("Client name is required before saving.");
-      return;
-    }
-    setSavingRowKeys(prev => ({ ...prev, [rowKey]: true }));
-    setError("");
-    setNotice("");
-    try {
-      const res = await fetch("/api/pma/control-plane", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "save_client_registry_row",
-          automationCommanderSheetId,
-          row,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to save client row.");
-      }
-      const saved = normalizeEditableRow(data.client);
-      const savedKey = getRowKey(saved);
-      setRows(prev => prev.map(r => (getRowKey(r) === rowKey ? saved : r)));
-      setOriginalMap(prev => {
-        const next = { ...prev };
-        delete next[rowKey];
-        next[savedKey] = { ...saved };
-        return next;
-      });
-      setNotice(`Saved changes for ${saved.client_name}.`);
-      onClientsChanged?.();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSavingRowKeys(prev => {
-        const next = { ...prev };
-        delete next[rowKey];
-        return next;
-      });
-    }
-  };
-
   const handleSaveAll = async () => {
     if (dirtyRows.length === 0) return;
     const missingName = dirtyRows.find(r => !String(r.client_name || "").trim());
@@ -294,42 +240,6 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
       setError(err.message);
     } finally {
       setSavingBatch(false);
-    }
-  };
-
-  const handleDeleteRow = async (row) => {
-    const rowKey = getRowKey(row);
-    setDeletingKey(rowKey);
-    setError("");
-    setNotice("");
-    try {
-      const res = await fetch("/api/pma/control-plane", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "delete_client_registry_row",
-          automationCommanderSheetId,
-          id: row.id,
-          clientName: row.client_name,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to delete client row.");
-      }
-      setRows(prev => prev.filter(r => getRowKey(r) !== rowKey));
-      setOriginalMap(prev => {
-        const next = { ...prev };
-        delete next[rowKey];
-        return next;
-      });
-      setConfirmDeleteKey("");
-      setNotice(`Removed ${row.client_name} from the client registry.`);
-      onClientsChanged?.();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setDeletingKey("");
     }
   };
 
@@ -629,32 +539,12 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
                     {col.label}
                   </th>
                 ))}
-                <th
-                  style={{
-                    position: "sticky",
-                    top: 0,
-                    right: 0,
-                    zIndex: 4,
-                    background: "#f8fafc",
-                    color: "#334155",
-                    fontWeight: "700",
-                    fontSize: "11.5px",
-                    textAlign: "left",
-                    padding: "8px 10px",
-                    borderBottom: "1px solid #cbd5e1",
-                    borderLeft: "2px solid #cbd5e1",
-                    minWidth: 165,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  Actions
-                </th>
               </tr>
             </thead>
             <tbody>
               {filteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan={COLUMNS.length + 1} style={{ padding: "20px", textAlign: "center", color: "#64748b" }}>
+                  <td colSpan={COLUMNS.length} style={{ padding: "20px", textAlign: "center", color: "#64748b" }}>
                     No matching clients found.
                   </td>
                 </tr>
@@ -662,8 +552,6 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
                 filteredRows.map(row => {
                   const rowKey = getRowKey(row);
                   const isDirty = dirtyKeySet.has(rowKey);
-                  const isRowSaving = Boolean(savingRowKeys[rowKey]);
-                  const isConfirmingDel = confirmDeleteKey === rowKey;
                   const rowBg = isDirty ? "#fffbeb" : "#ffffff";
 
                   return (
@@ -688,118 +576,6 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
                           {renderCellInput(row, col)}
                         </td>
                       ))}
-                      <td
-                        style={{
-                          position: "sticky",
-                          right: 0,
-                          zIndex: 1,
-                          background: rowBg,
-                          padding: "6px 10px",
-                          borderBottom: "1px solid #e2e8f0",
-                          borderLeft: "2px solid #cbd5e1",
-                          whiteSpace: "nowrap",
-                          verticalAlign: "middle",
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                          <button
-                            type="button"
-                            onClick={() => handleSaveRow(row)}
-                            disabled={!isDirty || isRowSaving}
-                            style={{
-                              padding: "4px 9px",
-                              borderRadius: "5px",
-                              border: "1px solid",
-                              borderColor: isDirty ? "#0047AB" : "#cbd5e1",
-                              background: isDirty ? "#0047AB" : "#f8fafc",
-                              color: isDirty ? "#ffffff" : "#94a3b8",
-                              fontSize: "11.5px",
-                              fontWeight: "600",
-                              cursor: !isDirty ? "default" : isRowSaving ? "wait" : "pointer",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "4px",
-                            }}
-                          >
-                            {isRowSaving ? <Spinner size={10} color="#ffffff" /> : null}
-                            Save
-                          </button>
-
-                          {isDirty && (
-                            <button
-                              type="button"
-                              onClick={() => handleUndoRow(rowKey)}
-                              style={{
-                                padding: "4px 7px",
-                                borderRadius: "5px",
-                                border: "1px solid #cbd5e1",
-                                background: "#ffffff",
-                                color: "#475569",
-                                fontSize: "11.5px",
-                                fontWeight: "600",
-                                cursor: "pointer",
-                              }}
-                            >
-                              Undo
-                            </button>
-                          )}
-
-                          {isConfirmingDel ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteRow(row)}
-                                disabled={deletingKey === rowKey}
-                                style={{
-                                  padding: "4px 7px",
-                                  borderRadius: "5px",
-                                  border: "1px solid #dc2626",
-                                  background: "#dc2626",
-                                  color: "#ffffff",
-                                  fontSize: "11.5px",
-                                  fontWeight: "600",
-                                  cursor: deletingKey === rowKey ? "wait" : "pointer",
-                                }}
-                              >
-                                Confirm
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteKey("")}
-                                style={{
-                                  padding: "4px 7px",
-                                  borderRadius: "5px",
-                                  border: "1px solid #cbd5e1",
-                                  background: "#ffffff",
-                                  color: "#475569",
-                                  fontSize: "11.5px",
-                                  fontWeight: "600",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteKey(rowKey)}
-                              style={{
-                                padding: "4px 7px",
-                                borderRadius: "5px",
-                                border: "1px solid #fecaca",
-                                background: "#fff1f2",
-                                color: "#be123c",
-                                fontSize: "11.5px",
-                                fontWeight: "600",
-                                cursor: "pointer",
-                              }}
-                            >
-                              Delete
-                            </button>
-                          )}
-                        </div>
-                      </td>
                     </tr>
                   );
                 })

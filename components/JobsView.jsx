@@ -1004,9 +1004,6 @@ export default function JobsView({
     }
   }, [managedClient, initialClient, allOutgoingsClients, jobsClient?.clientSheetId]);
 
-  const draftEditsRef = useRef(draftEdits);
-  draftEditsRef.current = draftEdits;
-
   const handlePullJobsFromSheet = async () => {
     if (!isSysAdmin || !jobsClient?.clientName || pullingFromSheet) return;
     setPullingFromSheet(true);
@@ -1044,6 +1041,8 @@ export default function JobsView({
 
   // Draft edits keyed by job identifier: { [jobKey]: { [field]: newValue } }
   const [draftEdits, setDraftEdits] = useState({});
+  const draftEditsRef = useRef(draftEdits);
+  draftEditsRef.current = draftEdits;
   const [rechargedToggleByKey, setRechargedToggleByKey] = useState({});
 
   // Loading / saving states

@@ -2,6 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { getCanonicalAcSheetId, matchesClientName, isPulseOnlyUser, installSheetIdBoundary } from "../../../services/userPermissions.js";
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
+import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "../../../services/supabaseClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { redisClient } from "../../../services/redisClient.js";
 
@@ -38,6 +39,41 @@ export default async function handler(req, res) {
           memoryCache.set(cacheKey, allClients, 300);
         }
       } catch (_) {}
+    }
+
+    if (!allClients && (await isSupabaseControlPlaneActive())) {
+      try {
+        const sb = getSupabaseAdmin();
+        if (sb) {
+          const { data: dbClients, error: sbErr } = await sb
+            .from("clients")
+            .select("client_name, status, metadata, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, client_mode, master_mode")
+            .order("client_name", { ascending: true });
+          if (!sbErr && Array.isArray(dbClients) && dbClients.length > 0) {
+            allClients = [];
+            for (const c of dbClients) {
+              const effectiveStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+              if (["inactive", "archived", "suspended"].includes(effectiveStatus)) continue;
+              const clientName = String(c.client_name || "").trim();
+              const clientSheetId = extractSheetIdFromUrl(c.client_sheet_url || c.client_sheet_id) || String(c.client_sheet_id || "").trim();
+              const masterSheetId = extractSheetIdFromUrl(c.master_sheet_url || c.master_sheet_id) || String(c.master_sheet_id || "").trim();
+              if (!clientName) continue;
+              if (!clientSheetId && !masterSheetId && c.client_mode !== "supabase" && c.master_mode !== "supabase") continue;
+              allClients.push({
+                clientName,
+                clientSheetId,
+                masterSheetId,
+              });
+            }
+            memoryCache.set(cacheKey, allClients, 300);
+            if (redisClient?.isOpen) {
+              redisClient.set(cacheKey, JSON.stringify(allClients), { EX: 300 }).catch(() => {});
+            }
+          }
+        }
+      } catch (sbLoadErr) {
+        console.warn("⚠️ Portal clients Supabase load fallback to sheet:", sbLoadErr.message);
+      }
     }
 
     if (!allClients) {

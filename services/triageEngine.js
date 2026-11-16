@@ -578,7 +578,7 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
       const [{ data: dbClients, error: cErr }, { data: schedRows }, { data: dcaRows }] = await Promise.all([
         sb
           .from("clients")
-          .select("client_name, status, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url, client_script_id, auto_updates_row_index")
+          .select("client_name, status, metadata, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url, client_script_id, auto_updates_row_index")
           .order("client_name", { ascending: true }),
         sb.from("sync_schedules").select("*"),
         sb
@@ -604,8 +604,8 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
         const clientRows = [];
 
         for (const c of dbClients) {
-          const st = String(c.status || "live").trim().toLowerCase();
-          if (st === "inactive" || st === "archived") continue;
+          const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+          if (st === "inactive" || st === "archived" || st === "suspended") continue;
 
           const clientName = String(c.client_name || "").trim();
           const clientSheetUrl = c.client_sheet_url || (c.client_sheet_id ? `https://docs.google.com/spreadsheets/d/${c.client_sheet_id}` : "");
@@ -1623,12 +1623,12 @@ export async function handleRehashIgnoredAlerts(req, res, sheets) {
     if (supaControlPlane && sb) {
       const { data: dbClients } = await sb
         .from("clients")
-        .select("client_name, status, client_sheet_id, master_sheet_id")
+        .select("client_name, status, metadata, client_sheet_id, master_sheet_id")
         .order("client_name", { ascending: true });
       clientTargets = (dbClients || [])
         .filter((c) => {
-          const st = String(c.status || "live").trim().toLowerCase();
-          return c.client_name && st !== "inactive" && st !== "archived" && (c.client_sheet_id || c.master_sheet_id);
+          const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+          return c.client_name && st !== "inactive" && st !== "archived" && st !== "suspended" && (c.client_sheet_id || c.master_sheet_id);
         })
         .map((c) => ({
           clientName: String(c.client_name).trim(),

@@ -1617,12 +1617,12 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
     if (supaControlPlane && sb) {
       const { data: dbClients } = await sb
         .from("clients")
-        .select("client_name, status, client_sheet_id, client_sheet_url, client_mode")
+        .select("client_name, status, metadata, client_sheet_id, client_sheet_url, client_mode")
         .order("client_name", { ascending: true });
       clients = (dbClients || [])
         .filter((c) => {
-          const st = String(c.status || "live").trim().toLowerCase();
-          return c.client_name && st !== "inactive" && st !== "archived" && (c.client_sheet_id || c.client_sheet_url || c.client_mode === "supabase");
+          const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+          return c.client_name && st !== "inactive" && st !== "archived" && st !== "suspended" && (c.client_sheet_id || c.client_sheet_url || c.client_mode === "supabase");
         })
         .map((c) => ({
           clientName: String(c.client_name).trim(),
@@ -6915,11 +6915,11 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
     if (supaControlPlane && sb) {
       const { data: dbClients } = await sb
         .from("clients")
-        .select("client_name, status, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url");
+        .select("client_name, status, metadata, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url");
       const matched = (dbClients || []).find(
         (c) =>
           c.client_name &&
-          !["inactive", "archived"].includes(String(c.status || "live").trim().toLowerCase()) &&
+          !["inactive", "archived", "suspended"].includes(String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase()) &&
           matchesClientName(c.client_name, clientName)
       );
       if (matched) {

@@ -386,7 +386,7 @@ export async function refreshNativeChartOfAccounts(sheets, clientName) {
         requestBody: { values: colValues },
         _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
       });
-    } catch (_) {}
+    } catch (_) { }
   }
 
   return res || { success: true, categories };
@@ -571,8 +571,8 @@ export async function runNativeMasterSync({
     Array.isArray(types) && types.length > 0
       ? types.map((t) => String(t).toLowerCase())
       : syncType === "all"
-      ? ["invoice", "crm", "expense"]
-      : [String(syncType).toLowerCase()]
+        ? ["invoice", "crm", "expense"]
+        : [String(syncType).toLowerCase()]
   );
 
   const runInv = typeSet.has("invoice") || typeSet.has("all");
@@ -653,7 +653,7 @@ export async function runNativeMasterSync({
         status: "Failed",
         summary: `Error: ${runErr.message}`,
       })
-      .catch(() => {});
+      .catch(() => { });
     await supabase
       .from("sync_schedules")
       .update({
@@ -664,8 +664,8 @@ export async function runNativeMasterSync({
         },
       })
       .eq("client_name", ctx.clientName)
-      .catch(() => {});
-    await invalidateClientActivityCache(ctx.clientName).catch(() => {});
+      .catch(() => { });
+    await invalidateClientActivityCache(ctx.clientName).catch(() => { });
     throw runErr;
   }
 
@@ -730,7 +730,7 @@ export async function runNativeMasterSync({
       summary: `Completed verbatim GAS runtime ${syncType} sequence for ${ctx.clientName} (${invoicesPulled} invoices, ${directCostsPulled} direct costs, ${crmDealsPulled} CRM deals)`,
       details: results,
       user: userEmail,
-    }).catch(() => {});
+    }).catch(() => { });
   }
 
   return results;
@@ -752,7 +752,7 @@ export async function dispatchDueNativeMasterSyncs({
 
   const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }] = await Promise.all([
     supabase.from("sync_schedules").select("*"),
-    supabase.from("clients").select("client_name, status, master_mode"),
+    supabase.from("clients").select("client_name, status, metadata, master_mode"),
     supabase
       .from("master_sheet_grids")
       .select("client_name, values_grid")
@@ -763,7 +763,10 @@ export async function dispatchDueNativeMasterSyncs({
 
   const eligibleClients = new Set(
     (clientRows || [])
-      .filter((c) => c.status === "live" && c.master_mode === "supabase")
+      .filter((c) => {
+        const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+        return st === "live" && c.master_mode === "supabase";
+      })
       .map((c) => c.client_name)
   );
 

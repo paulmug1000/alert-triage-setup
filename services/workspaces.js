@@ -146,10 +146,12 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
           clientsArray = [];
           clientsObj = {};
           for (const c of sbClients) {
+            const effectiveStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+            if (["inactive", "archived", "suspended"].includes(effectiveStatus)) continue;
             const clientName = String(c.client_name || "").trim();
             const clientSheetId = String(c.client_sheet_id || "").trim();
             const masterSheetId = String(c.master_sheet_id || "").trim();
-            if (!clientName || !clientSheetId) continue;
+            if (!clientName || (!clientSheetId && c.client_mode !== "supabase")) continue;
             const reconSheetUrl = String(c.recon_sheet_url || "").trim();
             const reconSheetId = String(c.recon_sheet_id || "").trim();
             const scriptId = String(c.client_script_id || "").trim();

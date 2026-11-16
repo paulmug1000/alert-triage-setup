@@ -6,11 +6,22 @@ import { getControlPlaneStatus, syncControlPlaneToSupabase } from "../../../serv
 import { logPmaActivity } from "../../../services/pmaLogger.js";
 import { getAllUsers, createOrUpdateUser, deleteUserByEmail, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { getAllClients, clearAllClientsMemoryCache } from "../../../services/workspaces.js";
+import { clearSsrClientsMemoryCache } from "../../../services/ssrSession.js";
+import { memoryCache } from "../../../services/cacheService.js";
 import { flushAllAlertMemoryCaches, searchAlertMemoryEntries, deleteAlertMemoryEntryByHash } from "../../../services/alertMemory.js";
 import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
 
-const VALID_CLIENT_STATUSES = new Set(["live", "setup", "paused", "archived"]);
+const VALID_CLIENT_STATUSES = new Set(["live", "setup", "paused", "suspended", "archived"]);
 const VALID_ENGINE_MODES = new Set(["sheet", "supabase", "shadow"]);
+
+function normalizeClientStatusFromDb_(row) {
+  if (!row || typeof row !== "object") return row;
+  const override = String(row?.metadata?.statusOverride || "").trim().toLowerCase();
+  if (override && VALID_CLIENT_STATUSES.has(override)) {
+    return { ...row, status: override };
+  }
+  return row;
+}
 
 function normalizeClientKey_(name) {
   return String(name || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
@@ -130,34 +141,111 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
 
   if (existingId) {
     const payload = buildClientRegistryPayload_(rawRow, { isUpdate: true });
-    const { data, error } = await sb
+    const { data: existingRow } = await sb
+      .from("clients")
+      .select("id, metadata")
+      .eq("id", existingId)
+      .maybeSingle();
+
+    const nextMetadata = { ...(existingRow?.metadata || {}) };
+    if (payload.status === "suspended") {
+      nextMetadata.statusOverride = "suspended";
+    } else {
+      delete nextMetadata.statusOverride;
+    }
+    payload.metadata = nextMetadata;
+
+    let { data, error } = await sb
       .from("clients")
       .update(payload)
       .eq("id", existingId)
       .select("*")
       .single();
+
+    if (
+      error &&
+      (error.code === "23514" || String(error.message || "").includes("clients_status_check")) &&
+      payload.status === "suspended"
+    ) {
+      ({ data, error } = await sb
+        .from("clients")
+        .update({
+          ...payload,
+          status: "archived",
+          metadata: { ...nextMetadata, statusOverride: "suspended" },
+        })
+        .eq("id", existingId)
+        .select("*")
+        .single());
+    }
+
     if (error) throw new Error(error.message);
-    return data;
+    return normalizeClientStatusFromDb_(data);
   }
 
   const payload = buildClientRegistryPayload_(rawRow, { isUpdate: false });
-  const { data, error } = await sb
+  const { data: existingByKey } = await sb
+    .from("clients")
+    .select("id, metadata")
+    .eq("normalized_key", payload.normalized_key)
+    .maybeSingle();
+
+  const nextMetadata = { ...(existingByKey?.metadata || {}) };
+  if (payload.status === "suspended") {
+    nextMetadata.statusOverride = "suspended";
+  } else {
+    delete nextMetadata.statusOverride;
+  }
+  payload.metadata = nextMetadata;
+
+  let { data, error } = await sb
     .from("clients")
     .upsert(payload, { onConflict: "normalized_key" })
     .select("*")
     .single();
+
+  if (
+    error &&
+    (error.code === "23514" || String(error.message || "").includes("clients_status_check")) &&
+    payload.status === "suspended"
+  ) {
+    ({ data, error } = await sb
+      .from("clients")
+      .upsert(
+        {
+          ...payload,
+          status: "archived",
+          metadata: { ...nextMetadata, statusOverride: "suspended" },
+        },
+        { onConflict: "normalized_key" }
+      )
+      .select("*")
+      .single());
+  }
+
   if (error) throw new Error(error.message);
-  return data;
+  return normalizeClientStatusFromDb_(data);
 }
 
 async function invalidateClientsCache_(acId) {
   clearAllClientsMemoryCache();
+  clearSsrClientsMemoryCache();
+  const canonicalAcId = acId || getCanonicalAcSheetId();
+  if (canonicalAcId) {
+    memoryCache.del(`pulse:portal:allClients:${canonicalAcId}`);
+  }
+  if (process.env.AUTOMATION_COMMANDER_SHEET_ID) {
+    memoryCache.del(`pulse:portal:allClients:${process.env.AUTOMATION_COMMANDER_SHEET_ID}`);
+  }
   if (!redisClient?.isOpen) return;
   const keys = new Set();
-  const canonicalAcId = acId || getCanonicalAcSheetId();
-  if (canonicalAcId) keys.add(`pulse:all_clients:${canonicalAcId}`);
+  if (canonicalAcId) {
+    keys.add(`pulse:all_clients:${canonicalAcId}`);
+    keys.add(`pulse:portal:allClients:${canonicalAcId}`);
+  }
   if (process.env.AUTOMATION_COMMANDER_SHEET_ID) {
     keys.add(`pulse:all_clients:${process.env.AUTOMATION_COMMANDER_SHEET_ID}`);
+    keys.add(`pulse:portal:allClients:${process.env.AUTOMATION_COMMANDER_SHEET_ID}`);
   }
   for (const k of keys) {
     await redisClient.del(k).catch(() => {});
@@ -380,7 +468,7 @@ export default async function handler(req, res) {
       if (clientErr) throw new Error(clientErr.message);
       return res.status(200).json({
         success: true,
-        clients: clientRows || [],
+        clients: (clientRows || []).map(normalizeClientStatusFromDb_),
         templates: tplRow?.value || null,
       });
     }

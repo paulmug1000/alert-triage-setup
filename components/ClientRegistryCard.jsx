@@ -5,8 +5,65 @@ const STATUS_OPTIONS = [
   { value: "live", label: "Live" },
   { value: "setup", label: "Setup" },
   { value: "paused", label: "Paused" },
+  { value: "suspended", label: "Suspended" },
   { value: "archived", label: "Archived" },
 ];
+
+const STATUS_DEFINITIONS = [
+  {
+    value: "live",
+    label: "Live",
+    bg: "#dcfce7",
+    color: "#166534",
+    border: "#bbf7d0",
+    summary: "Fully active client across all systems.",
+    details: "Visible in client switchers, included in scheduled background syncs, triage and alert emails, EoM workflows, and mass GAS script rollouts.",
+    capabilities: ["Yes", "Yes", "Yes", "Yes", "Yes"],
+  },
+  {
+    value: "setup",
+    label: "Setup",
+    bg: "#e0f2fe",
+    color: "#0369a1",
+    border: "#bae6fd",
+    summary: "Client onboarding in progress.",
+    details: "Visible in switchers (holding gate shown in Portal if setup mode is enabled), excluded from automated background syncs until moved to Live, while included in triage/EoM setup checks and mass GAS script rollouts.",
+    capabilities: ["Yes", "No", "Yes", "Yes", "Yes"],
+  },
+  {
+    value: "paused",
+    label: "Paused",
+    bg: "#fef3c7",
+    color: "#92400e",
+    border: "#fde68a",
+    summary: "Temporary pause on automated background syncs only.",
+    details: "Stops scheduled background accounting, CRM, and time syncs. Client remains visible in client switchers and included in triage checks, tab-error notifications, EoM tools, and mass GAS script rollouts.",
+    capabilities: ["Yes", "No", "Yes", "Yes", "Yes"],
+  },
+  {
+    value: "suspended",
+    label: "Suspended",
+    bg: "#f3e8ff",
+    color: "#6b21a8",
+    border: "#e9d5ff",
+    summary: "Dormant client whose spreadsheets are still kept up to date.",
+    details: "Hidden from Pulse and PMA client switchers and excluded from background syncs, triage, tab-error/daily emails, and EoM tools, while still receiving mass GAS script rollouts so spreadsheets remain ready if moved back to Live.",
+    capabilities: ["No", "No", "No", "No", "Yes"],
+  },
+  {
+    value: "archived",
+    label: "Archived",
+    bg: "#f1f5f9",
+    color: "#475569",
+    border: "#cbd5e1",
+    summary: "Inactive historical client preserved for records.",
+    details: "Hidden from Pulse and PMA client switchers and excluded from background syncs, triage, alert/tab-error emails, EoM tools, and mass GAS script rollouts. All Supabase and Google Drive data remains intact.",
+    capabilities: ["No", "No", "No", "No", "No"],
+  },
+];
+
+const STATUS_TOOLTIP_TEXT =
+  "Live: active everywhere | Setup: onboarding (no auto-sync) | Paused: stops auto-sync only | Suspended: hidden/excluded except GAS script rollouts | Archived: hidden/excluded everywhere (click for full details)";
 
 const MODE_LABELS = {
   supabase: { label: "Supabase", bg: "#dcfce7", color: "#166534", border: "#bbf7d0" },
@@ -34,7 +91,7 @@ const EMPTY_TEMPLATES = {
 
 const COLUMNS = [
   { key: "client_name", label: "Client name", type: "text", width: 170, stickyLeft: 0, placeholder: "Required client name" },
-  { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS, width: 96 },
+  { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS, width: 108 },
   { key: "master_mode", label: "Master mode", type: "readonly_mode", width: 92 },
   { key: "client_mode", label: "Portal mode", type: "readonly_mode", width: 92 },
   { key: "client_sheet_url", label: "Client sheet URL", type: "url", width: 125, placeholder: "https://docs.google.com/..." },
@@ -130,11 +187,49 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
 
   const [loading, setLoading] = useState(true);
   const [savingBatch, setSavingBatch] = useState(false);
+  const [showStatusModal, setShowStatusModal] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    if (!showStatusModal) return;
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") setShowStatusModal(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showStatusModal]);
+
+  const renderStatusHelpButton = () => (
+    <button
+      type="button"
+      onClick={() => setShowStatusModal(true)}
+      title={STATUS_TOOLTIP_TEXT}
+      aria-label="View status definitions"
+      style={{
+        width: "16px",
+        height: "16px",
+        padding: 0,
+        borderRadius: "999px",
+        border: "1px solid #94a3b8",
+        background: "#ffffff",
+        color: "#475569",
+        fontSize: "10.5px",
+        fontWeight: "700",
+        lineHeight: "14px",
+        cursor: "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+      }}
+    >
+      ?
+    </button>
+  );
 
   const loadRegistry = useCallback(async () => {
     setLoading(true);
@@ -485,18 +580,21 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
           placeholder="Filter by client name or script ID..."
           style={{ ...inputBaseStyle, maxWidth: "320px", padding: "6px 10px", fontSize: "12.5px" }}
         />
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          style={{ ...inputBaseStyle, width: "auto", padding: "6px 10px", fontSize: "12.5px" }}
-        >
-          <option value="all">All statuses</option>
-          {STATUS_OPTIONS.map(s => (
-            <option key={s.value} value={s.value}>
-              {s.label}
-            </option>
-          ))}
-        </select>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            style={{ ...inputBaseStyle, width: "auto", padding: "6px 10px", fontSize: "12.5px" }}
+          >
+            <option value="all">All statuses</option>
+            {STATUS_OPTIONS.map(s => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+          {renderStatusHelpButton()}
+        </div>
         {notice && (
           <span style={{ fontSize: "12px", fontWeight: "600", color: "#166534" }}>{notice}</span>
         )}
@@ -536,7 +634,14 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {col.label}
+                    {col.key === "status" ? (
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                        <span>{col.label}</span>
+                        {renderStatusHelpButton()}
+                      </div>
+                    ) : (
+                      col.label
+                    )}
                   </th>
                 ))}
               </tr>
@@ -582,6 +687,133 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
               )}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {showStatusModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="status-definitions-title"
+          onClick={() => setShowStatusModal(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "16px",
+            zIndex: 1000,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#ffffff",
+              borderRadius: "10px",
+              border: "1px solid #e2e8f0",
+              boxShadow: "0 12px 30px rgba(15, 23, 42, 0.18)",
+              width: "100%",
+              maxWidth: "740px",
+              maxHeight: "88vh",
+              overflowY: "auto",
+              padding: "18px 20px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "10px" }}>
+              <div>
+                <h4 id="status-definitions-title" style={{ margin: 0, fontSize: "15.5px", fontWeight: "700", color: "#0f172a" }}>
+                  Status definitions
+                </h4>
+                <p style={{ margin: "3px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  How each client status affects switchers, automated jobs, reporting tools, and GAS rollouts.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowStatusModal(false)}
+                style={btnSecondaryStyle}
+              >
+                Close
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "14px" }}>
+              {STATUS_DEFINITIONS.map(def => (
+                <div
+                  key={def.value}
+                  style={{
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "8px",
+                    padding: "10px 12px",
+                    background: "#f8fafc",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", flexWrap: "wrap" }}>
+                    <span
+                      style={{
+                        display: "inline-block",
+                        fontSize: "11px",
+                        fontWeight: "700",
+                        padding: "2px 9px",
+                        borderRadius: "999px",
+                        background: def.bg,
+                        color: def.color,
+                        border: `1px solid ${def.border}`,
+                      }}
+                    >
+                      {def.label}
+                    </span>
+                    <span style={{ fontSize: "12.5px", fontWeight: "600", color: "#0f172a" }}>
+                      {def.summary}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#475569", lineHeight: "1.45" }}>
+                    {def.details}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ border: "1px solid #e2e8f0", borderRadius: "8px", overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px" }}>
+                <thead>
+                  <tr style={{ background: "#f1f5f9", color: "#334155" }}>
+                    <th style={{ textAlign: "left", padding: "7px 8px", borderBottom: "1px solid #cbd5e1" }}>Status</th>
+                    <th style={{ textAlign: "center", padding: "7px 8px", borderBottom: "1px solid #cbd5e1" }}>Client switchers</th>
+                    <th style={{ textAlign: "center", padding: "7px 8px", borderBottom: "1px solid #cbd5e1" }}>Background syncs</th>
+                    <th style={{ textAlign: "center", padding: "7px 8px", borderBottom: "1px solid #cbd5e1" }}>Triage and alerts</th>
+                    <th style={{ textAlign: "center", padding: "7px 8px", borderBottom: "1px solid #cbd5e1" }}>End-of-month tools</th>
+                    <th style={{ textAlign: "center", padding: "7px 8px", borderBottom: "1px solid #cbd5e1" }}>Mass GAS rollouts</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {STATUS_DEFINITIONS.map((def, idx) => (
+                    <tr key={def.value} style={{ background: idx % 2 === 0 ? "#ffffff" : "#f8fafc" }}>
+                      <td style={{ padding: "6px 8px", fontWeight: "600", color: "#0f172a", borderBottom: "1px solid #e2e8f0" }}>
+                        {def.label}
+                      </td>
+                      {def.capabilities.map((cell, cIdx) => (
+                        <td
+                          key={cIdx}
+                          style={{
+                            padding: "6px 8px",
+                            textAlign: "center",
+                            fontWeight: "600",
+                            color: cell === "Yes" ? "#166534" : "#64748b",
+                            borderBottom: "1px solid #e2e8f0",
+                          }}
+                        >
+                          {cell}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </div>

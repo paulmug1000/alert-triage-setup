@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS public.clients (
   normalized_key TEXT NOT NULL UNIQUE,
   short_code TEXT,
   service_type TEXT DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'live' CHECK (status IN ('setup', 'live', 'paused', 'archived')),
+  status TEXT NOT NULL DEFAULT 'live' CHECK (status IN ('setup', 'live', 'paused', 'suspended', 'archived')),
   master_mode TEXT NOT NULL DEFAULT 'sheet' CHECK (master_mode IN ('sheet', 'supabase', 'shadow')),
   client_mode TEXT NOT NULL DEFAULT 'sheet' CHECK (client_mode IN ('sheet', 'supabase', 'shadow')),
   client_sheet_id TEXT DEFAULT '',

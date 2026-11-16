@@ -422,13 +422,13 @@ export async function checkAndNotifyTabErrors({ sheets: providedSheets, automati
     try {
       const { data: dbClients, error } = await sb
         .from("clients")
-        .select("client_name, status, client_mode, master_mode, client_sheet_id, master_sheet_id")
+        .select("client_name, status, metadata, client_mode, master_mode, client_sheet_id, master_sheet_id")
         .order("client_name", { ascending: true });
       if (!error && Array.isArray(dbClients) && dbClients.length > 0) {
         clientList = dbClients
           .filter((c) => {
-            const st = String(c.status || "live").trim().toLowerCase();
-            return c.client_name && st !== "inactive" && st !== "archived";
+            const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+            return c.client_name && st !== "inactive" && st !== "archived" && st !== "suspended";
           })
           .map((c) => ({
             clientName: String(c.client_name).trim(),

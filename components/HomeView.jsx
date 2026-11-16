@@ -90,12 +90,11 @@ export default function HomeView({
     !(Array.isArray(propIntegrationsData) && propIntegrationsData.length > 0)
   );
 
-  // Optimistic cached alert count from previous session (hydrated in useEffect for SSR safety)
-  const [cachedTotalAlerts, setCachedTotalAlerts] = useState(null);
+  // Clean up legacy alert cache keys to prevent stale flashes
   useEffect(() => {
     try {
-      const stored = localStorage.getItem("pulse_cached_total_alerts");
-      if (stored != null) setCachedTotalAlerts(Number(stored));
+      localStorage.removeItem("pulse_cached_total_alerts");
+      localStorage.removeItem("pulse_cached_alert_badge");
     } catch { }
   }, []);
 
@@ -222,16 +221,6 @@ export default function HomeView({
     return Object.values(clientAlertCounts).reduce((acc, count) => acc + count, 0);
   }, [clientAlertCounts, managedClient]);
 
-  // Sync latest confirmed alert count to localStorage (only when not in managedClient mode)
-  useEffect(() => {
-    if (!managedClient && triageComplete && totalAlertsCount != null) {
-      setCachedTotalAlerts(totalAlertsCount);
-      try {
-        localStorage.setItem("pulse_cached_total_alerts", String(totalAlertsCount));
-        localStorage.setItem("pulse_cached_alert_badge", String(totalAlertsCount));
-      } catch { }
-    }
-  }, [triageComplete, totalAlertsCount, managedClient]);
 
   // Clients that are not yet fully set up
   const clientsPendingSetup = useMemo(() => {
@@ -306,47 +295,54 @@ export default function HomeView({
               <span style={{ fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.6px", color: "#64748B" }}>
                 Alerts needing processing
               </span>
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: "28px",
-                  height: "28px",
-                  borderRadius: "50%",
-                  background: totalAlertsCount > 0 ? "rgba(239, 68, 68, 0.12)" : "rgba(34, 197, 94, 0.12)",
-                  color: totalAlertsCount > 0 ? "#DC2626" : "#16A34A",
-                  fontSize: "14px",
-                  fontWeight: "700",
-                }}
-              >
-                {totalAlertsCount > 0 ? "!" : "✓"}
-              </span>
+              {!triageComplete ? (
+                <Skeleton circle height="28px" />
+              ) : (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: "28px",
+                    height: "28px",
+                    borderRadius: "50%",
+                    background: totalAlertsCount > 0 ? "rgba(239, 68, 68, 0.12)" : "rgba(34, 197, 94, 0.12)",
+                    color: totalAlertsCount > 0 ? "#DC2626" : "#16A34A",
+                    fontSize: "14px",
+                    fontWeight: "700",
+                  }}
+                >
+                  {totalAlertsCount > 0 ? "!" : "✓"}
+                </span>
+              )}
             </div>
 
             <div style={{ display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "8px" }}>
-              {isLoadingAlerts && cachedTotalAlerts === null && !managedClient ? (
+              {!triageComplete ? (
                 <div style={{ display: "flex", alignItems: "baseline", gap: "10px", padding: "2px 0" }}>
-                  <Skeleton width="55px" height="36px" borderRadius="6px" />
-                  <Skeleton width="85px" height="14px" />
+                  <Skeleton width="48px" height="34px" borderRadius="6px" />
+                  <span style={{ fontSize: "14px", color: "#64748B", fontWeight: "500" }}>
+                    total alerts
+                  </span>
                 </div>
               ) : (
                 <>
-                  <span style={{ fontSize: "36px", fontWeight: "800", color: (((!managedClient && !triageComplete && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) > 0)) ? "#DC2626" : "#0F172A", lineHeight: 1 }}>
-                    {!managedClient && !triageComplete && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount}
+                  <span style={{ fontSize: "36px", fontWeight: "800", color: totalAlertsCount > 0 ? "#DC2626" : "#0F172A", lineHeight: 1 }}>
+                    {totalAlertsCount}
                   </span>
                   <span style={{ fontSize: "14px", color: "#64748B", fontWeight: "500", display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                    total {(!managedClient && !triageComplete && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) === 1 ? "alert" : "alerts"}
-                    {!managedClient && isLoadingAlerts && cachedTotalAlerts !== null && (
-                      <span style={{ fontSize: "12px", color: "#94A3B8" }}>(syncing...)</span>
-                    )}
+                    total {totalAlertsCount === 1 ? "alert" : "alerts"}
                   </span>
                 </>
               )}
             </div>
 
             <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#64748B", lineHeight: "1.4" }}>
-              {totalAlertsCount === 0 && !isLoadingAlerts
+              {!triageComplete
+                ? (managedClient?.clientName
+                  ? `Active discrepancies and proactive alerts for ${managedClient.clientName}.`
+                  : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients.`)
+                : totalAlertsCount === 0
                 ? (managedClient?.clientName
                   ? `All alerts for ${managedClient.clientName} are currently clear.`
                   : "There are no active alerts across your clients.")

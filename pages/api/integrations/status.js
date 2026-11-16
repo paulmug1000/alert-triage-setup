@@ -15,7 +15,26 @@ import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheets
 import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, resolveClientNameBySheetId, canAccessPma, installSheetIdBoundary } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
 import { getSessionUser } from "../../../services/authService.js";
+import { getSupabaseAdmin } from "../../../services/supabaseClient.js";
 import { redisClient } from "../../../services/redisClient.js";
+
+async function getExcludedClientNamesSet_() {
+  const excluded = new Set();
+  try {
+    const sb = getSupabaseAdmin();
+    if (!sb) return excluded;
+    const { data: statusRows } = await sb
+      .from("clients")
+      .select("client_name, status, metadata");
+    for (const c of (statusRows || [])) {
+      const eff = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+      if (c.client_name && (eff === "inactive" || eff === "archived" || eff === "suspended")) {
+        excluded.add(String(c.client_name).trim().toLowerCase());
+      }
+    }
+  } catch (_) {}
+  return excluded;
+}
 
 let _allIntegrationsStatusCache = null;
 let _allIntegrationsStatusCachedAt = 0;
@@ -69,7 +88,10 @@ export default async function handler(req, res) {
       }
 
       if (cachedData) {
-        let scopedClients = cachedData.allClients || [];
+        const excludedClientNamesSet = await getExcludedClientNamesSet_();
+        let scopedClients = (cachedData.allClients || []).filter(
+          c => !excludedClientNamesSet.has(String(c?.clientName || "").trim().toLowerCase())
+        );
         if (!sessionUser.isAdmin) {
           const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
           scopedClients = scopedClients
@@ -209,6 +231,13 @@ export default async function handler(req, res) {
           };
         })
         .filter(c => c.clientName && c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name" && c.masterSheetId);
+
+      const excludedClientNamesSet = await getExcludedClientNamesSet_();
+      if (excludedClientNamesSet.size > 0) {
+        clients = clients.filter(
+          c => !excludedClientNamesSet.has(String(c?.clientName || "").trim().toLowerCase())
+        );
+      }
 
       // Respect user permissions
       const isGlobalScope = Boolean(sessionUser.isAdmin);

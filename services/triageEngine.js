@@ -1735,11 +1735,34 @@ export async function handleGetPrecomputed(req, res, sheets) {
 
     const tMem0 = Date.now();
     // Pass allowFallback = false so we NEVER download the 8.5MB AlertMemory sheet during user page load
-    const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId, false);
+    const [handledMap, excludedClientNamesSet] = await Promise.all([
+      readHandledAlertHashes(sheets, automationCommanderSheetId, false),
+      (async () => {
+        const excluded = new Set();
+        try {
+          const sb = getSupabaseAdmin();
+          if (sb) {
+            const { data: statusRows } = await sb
+              .from("clients")
+              .select("client_name, status, metadata");
+            for (const c of (statusRows || [])) {
+              const eff = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+              if (c.client_name && (eff === "inactive" || eff === "archived" || eff === "suspended")) {
+                excluded.add(String(c.client_name).trim().toLowerCase());
+              }
+            }
+          }
+        } catch (_) {}
+        return excluded;
+      })(),
+    ]);
     const tMem = Date.now() - tMem0;
+
+    const isClientExcluded = (name) => excludedClientNamesSet.has(String(name || "").trim().toLowerCase());
 
     const tFilt0 = Date.now();
     const filteredAlerts = data.alerts.filter(alert => {
+      if (isClientExcluded(alert.clientName)) return false;
       const hash = alert.fingerprintHash || buildAlertFingerprint(alert);
       const status = handledMap[hash];
       if (!status) return true;
@@ -1747,6 +1770,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
     });
 
     const filteredProactive = (data.proactiveAlerts || []).filter(alert => {
+      if (isClientExcluded(alert.clientName)) return false;
       const hash = alert.fingerprintHash || createHash("sha256").update(alert.alertKey || "").digest("hex").substring(0, 16);
       let status = handledMap[hash];
       if (!status && alert.legacyAlertKey) {
@@ -1759,6 +1783,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
     const tFilt = Date.now() - tFilt0;
 
     const filteredNoAction = (data.noActionAlerts || []).filter(alert => {
+      if (isClientExcluded(alert.clientName)) return false;
       if (alert.flagType === "expenseUnreconGaps") {
         const detail = String(alert.flagDetail || alert.alertSummary || "");
         if (detail.includes("Manual Gap") || detail.includes("Placeholder Gap")) return false;
@@ -1859,7 +1884,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       }
     }
 
-    let clientsSource = data.clientsWithFlags || [];
+    let clientsSource = (data.clientsWithFlags || []).filter(c => !isClientExcluded(c.clientName));
     if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       clientsSource = clientsSource.filter(c =>

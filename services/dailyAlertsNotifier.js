@@ -201,6 +201,29 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
     }
   }
 
+  // Filter out alerts belonging to inactive/archived/suspended clients
+  try {
+    const sb = getSupabaseAdmin();
+    if (sb && allAlerts.length > 0) {
+      const { data: statusRows } = await sb
+        .from("clients")
+        .select("client_name, status, metadata");
+      const excluded = new Set(
+        (statusRows || [])
+          .filter((c) => {
+            const eff = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+            return c.client_name && (eff === "inactive" || eff === "archived" || eff === "suspended");
+          })
+          .map((c) => String(c.client_name).trim().toLowerCase())
+      );
+      if (excluded.size > 0) {
+        allAlerts = allAlerts.filter((a) => !excluded.has(String(a?.clientName || "").trim().toLowerCase()));
+      }
+    }
+  } catch (statusErr) {
+    console.warn("  Supabase client status filter warning:", statusErr.message);
+  }
+
   // 3. Setup Email Transport
   const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
   const emailPass = process.env.PMA_EMAIL_APP_PASSWORD;

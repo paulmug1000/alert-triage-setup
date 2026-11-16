@@ -230,6 +230,7 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
 async function invalidateClientsCache_(acId) {
   clearAllClientsMemoryCache();
   clearSsrClientsMemoryCache();
+  invalidatePrecomputedMemoryCache();
   const canonicalAcId = acId || getCanonicalAcSheetId();
   if (canonicalAcId) {
     memoryCache.del(`pulse:portal:allClients:${canonicalAcId}`);
@@ -238,7 +239,7 @@ async function invalidateClientsCache_(acId) {
     memoryCache.del(`pulse:portal:allClients:${process.env.AUTOMATION_COMMANDER_SHEET_ID}`);
   }
   if (!redisClient?.isOpen) return;
-  const keys = new Set();
+  const keys = new Set(["pulse:integrations:status_all"]);
   if (canonicalAcId) {
     keys.add(`pulse:all_clients:${canonicalAcId}`);
     keys.add(`pulse:portal:allClients:${canonicalAcId}`);
@@ -249,6 +250,49 @@ async function invalidateClientsCache_(acId) {
   }
   for (const k of keys) {
     await redisClient.del(k).catch(() => {});
+  }
+
+  // Prune any inactive/archived/suspended clients from triage_precomputed so PMA Alerts updates immediately
+  try {
+    const sb = getSupabaseAdmin();
+    const rawPre = await redisClient.get("triage_precomputed");
+    if (sb && rawPre) {
+      const { data: statusRows } = await sb
+        .from("clients")
+        .select("client_name, status, metadata");
+      const excluded = new Set(
+        (statusRows || [])
+          .filter((c) => {
+            const eff = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+            return c.client_name && (eff === "inactive" || eff === "archived" || eff === "suspended");
+          })
+          .map((c) => String(c.client_name).trim().toLowerCase())
+      );
+      if (excluded.size > 0) {
+        const pre = JSON.parse(rawPre);
+        const keep = (item) => !excluded.has(String(item?.clientName || "").trim().toLowerCase());
+        const nextClients = Array.isArray(pre.clientsWithFlags) ? pre.clientsWithFlags.filter(keep) : pre.clientsWithFlags;
+        const nextAlerts = Array.isArray(pre.alerts) ? pre.alerts.filter(keep) : pre.alerts;
+        const nextProactive = Array.isArray(pre.proactiveAlerts) ? pre.proactiveAlerts.filter(keep) : pre.proactiveAlerts;
+        const nextNoAction = Array.isArray(pre.noActionAlerts) ? pre.noActionAlerts.filter(keep) : pre.noActionAlerts;
+        const changed =
+          (Array.isArray(pre.clientsWithFlags) && nextClients.length !== pre.clientsWithFlags.length) ||
+          (Array.isArray(pre.alerts) && nextAlerts.length !== pre.alerts.length) ||
+          (Array.isArray(pre.proactiveAlerts) && nextProactive.length !== pre.proactiveAlerts.length) ||
+          (Array.isArray(pre.noActionAlerts) && nextNoAction.length !== pre.noActionAlerts.length);
+        if (changed) {
+          pre.clientsWithFlags = nextClients;
+          pre.alerts = nextAlerts;
+          pre.proactiveAlerts = nextProactive;
+          pre.noActionAlerts = nextNoAction;
+          pre.totalAlerts = Array.isArray(nextAlerts) ? nextAlerts.length : 0;
+          pre.noActionCount = Array.isArray(nextNoAction) ? nextNoAction.length : 0;
+          await redisClient.set("triage_precomputed", JSON.stringify(pre), { EX: 86400 * 7 });
+        }
+      }
+    }
+  } catch (pruneErr) {
+    console.warn("invalidateClientsCache_ triage_precomputed prune warning:", pruneErr.message);
   }
 }
 

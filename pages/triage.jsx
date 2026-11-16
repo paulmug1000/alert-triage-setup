@@ -315,15 +315,6 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     isAccepting, setIsAccepting, refreshTriage, reloadFromCache
   } = triageEngine;
 
-  const [cachedAlertCount, setCachedAlertCount] = useState(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const stored = localStorage.getItem("pulse_cached_alert_badge");
-        return stored != null ? parseInt(stored, 10) : 0;
-      } catch { return 0; }
-    }
-    return 0;
-  });
 
   const authorizedProactiveCount = useMemo(() => {
     return (proactiveAlerts || []).filter(
@@ -470,15 +461,6 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     return flagCount + proactiveCount;
   }, [managedClient, triageEngine.clientsWithFlags, assignedByClient, assignedAppIds, proactiveAlerts, isAdmin]);
 
-  useEffect(() => {
-    if (triageEngine.triageComplete && !managedClient) {
-      setCachedAlertCount(currentLiveAlertCount);
-      try {
-        localStorage.setItem("pulse_cached_alert_badge", String(currentLiveAlertCount));
-        localStorage.setItem("pulse_cached_total_alerts", String(currentLiveAlertCount));
-      } catch { }
-    }
-  }, [triageEngine.triageComplete, currentLiveAlertCount, managedClient]);
 
   // --- INITIAL DATA LOAD ---
   // Explicitly trigger triage data load only when authenticated, scoped to current user, and allowed in PMA
@@ -1441,7 +1423,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
-          onClientsChanged={() => loadClients(true)}
+          onClientsChanged={() => {
+            loadClients(true);
+            reloadFromCache?.(true);
+          }}
         />
       );
     }
@@ -1470,7 +1455,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
             setSettingsSubsection("");
           }}
           onRegisterNavGuard={registerNavGuard}
-          onClientsChanged={() => loadClients(true)}
+          onClientsChanged={() => {
+            loadClients(true);
+            reloadFromCache?.(true);
+          }}
         />
       );
     }
@@ -1587,7 +1575,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onSetup={handleNavSetup}
         onSettings={handleNavSettings}
         onDb={handleNavDb}
-        homeAlertCount={managedClient ? (managedClientAlertCount ?? 0) : (triageEngine.triageComplete ? currentLiveAlertCount : (cachedAlertCount || currentLiveAlertCount))}
+        homeAlertCount={triageEngine.triageComplete ? (managedClient ? (managedClientAlertCount ?? 0) : currentLiveAlertCount) : undefined}
         taskCount={navTaskCount}
         integrationsCount={integrationsAttentionCount}
         user={user}

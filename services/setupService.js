@@ -1105,7 +1105,7 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
     try {
       const [{ data: stateRows }, { data: dbClients }] = await Promise.all([
         sb.from("client_setup_state").select("client_name, normalized_key, setup_status, accounting_tool, crm_tool, overview_data"),
-        sb.from("clients").select("id, client_name, normalized_key, client_sheet_url, master_sheet_url, recon_sheet_url, drive_folder_id, metadata"),
+        sb.from("clients").select("id, client_name, normalized_key, status, client_sheet_url, master_sheet_url, recon_sheet_url, drive_folder_id, metadata"),
       ]);
       for (const c of (dbClients || [])) {
         if (c.normalized_key) clientMetaMap.set(c.normalized_key, c);
@@ -1280,6 +1280,11 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
   const results = [];
   for (const c of allOutgoingsClients) {
     if (!c.clientName) continue;
+    const cMeta = clientMetaMap.get(normalizeKey(c.clientName)) || clientMetaMap.get(c.clientName.trim().toLowerCase());
+    if (cMeta) {
+      const effStatus = String(cMeta?.metadata?.statusOverride || cMeta?.status || "live").trim().toLowerCase();
+      if (["inactive", "archived", "suspended"].includes(effStatus)) continue;
+    }
     if (sessionUser && !isUserAuthorizedForClient(sessionUser, c.clientName)) {
       continue;
     }

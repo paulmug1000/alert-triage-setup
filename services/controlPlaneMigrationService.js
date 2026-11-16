@@ -341,6 +341,16 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
   const trackerRows = trackerResp.data?.values || [];
   const autoRows = autoUpdatesResp.data?.values || [];
 
+  const { data: existingDbClients } = await sb
+    .from("clients")
+    .select("normalized_key, status, metadata, master_mode, client_mode, reports_folder_id");
+  const existingClientsByKey = new Map(
+    (existingDbClients || []).filter(c => c.normalized_key).map(c => [c.normalized_key, c])
+  );
+  const autoRowKeys = new Set(
+    autoRows.map(r => normalizeKey(String(r[0] || "").trim())).filter(Boolean)
+  );
+
   const clientsByKey = new Map();
   const schedulesToUpsert = [];
 
@@ -350,6 +360,8 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
     const normKey = normalizeKey(clientName);
     if (!normKey) return;
 
+    const prev = existingClientsByKey.get(normKey);
+    const inAutoUpdates = autoRowKeys.has(normKey);
     const clientUrl = String(row[11] || "").trim();
     const masterUrl = String(row[12] || "").trim();
     const reconUrl = String(row[13] || "").trim();
@@ -376,11 +388,12 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
       webapp_version: String(row[20] || "").trim(),
       master_deployment_url: String(row[22] || "").trim(),
       backup_sheet_url: String(row[24] || "").trim(),
-      reports_folder_id: reportsFolderId,
+      reports_folder_id: reportsFolderId || prev?.reports_folder_id || "",
       tracker_row_index: idx + 5,
-      status: "live",
-      master_mode: "sheet",
-      client_mode: "sheet",
+      status: prev?.status || (inAutoUpdates ? "live" : "archived"),
+      metadata: prev?.metadata || (inAutoUpdates ? {} : { statusOverride: "suspended" }),
+      master_mode: prev?.master_mode || "sheet",
+      client_mode: prev?.client_mode || "sheet",
     });
   });
 
@@ -390,6 +403,7 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
     const normKey = normalizeKey(clientName);
     if (!normKey) return;
 
+    const prev = existingClientsByKey.get(normKey);
     const reconUrl = String(row[9] || "").trim();
     const clientUrl = String(row[11] || "").trim();
     const masterUrl = String(row[12] || "").trim();
@@ -398,9 +412,10 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
     const existing = clientsByKey.get(normKey) || {
       client_name: clientName,
       normalized_key: normKey,
-      status: "live",
-      master_mode: "sheet",
-      client_mode: "sheet",
+      status: prev?.status || "live",
+      metadata: prev?.metadata || {},
+      master_mode: prev?.master_mode || "sheet",
+      client_mode: prev?.client_mode || "sheet",
     };
 
     clientsByKey.set(normKey, {

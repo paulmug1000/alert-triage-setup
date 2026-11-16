@@ -183,8 +183,10 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
   const [rows, setRows] = useState([]);
   const [originalMap, setOriginalMap] = useState({});
   const [templates, setTemplates] = useState(EMPTY_TEMPLATES);
+  const [snapshotMeta, setSnapshotMeta] = useState(null);
   const [showTemplates, setShowTemplates] = useState(false);
   const [savingTemplates, setSavingTemplates] = useState(false);
+  const [syncingSnapshots, setSyncingSnapshots] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [savingBatch, setSavingBatch] = useState(false);
@@ -257,6 +259,9 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
       setOriginalMap(orig);
       if (data.templates) {
         setTemplates({ ...EMPTY_TEMPLATES, ...data.templates });
+      }
+      if (data.snapshotMeta !== undefined) {
+        setSnapshotMeta(data.snapshotMeta || null);
       }
     } catch (err) {
       setError(err.message);
@@ -366,6 +371,35 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
       setError(err.message);
     } finally {
       setSavingTemplates(false);
+    }
+  };
+
+  const handleSyncTemplateSnapshots = async () => {
+    setSyncingSnapshots(true);
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch("/api/pma/control-plane", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "sync_provisioning_template_snapshots",
+          automationCommanderSheetId,
+          templates,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to sync template snapshots to Supabase.");
+      }
+      if (data.snapshotMeta) {
+        setSnapshotMeta(data.snapshotMeta);
+      }
+      setNotice("Provisioning template snapshots synced to Supabase.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSyncingSnapshots(false);
     }
   };
 
@@ -536,23 +570,70 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
             <div>
               <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>Provisioning template IDs</div>
               <div style={{ fontSize: "11.5px", color: "#64748b" }}>
-                Template spreadsheet and Apps Script IDs used when onboarding new clients in Supabase mode.
+                Template spreadsheet and Apps Script IDs used when onboarding new clients.
               </div>
             </div>
-            <button
-              type="submit"
-              disabled={savingTemplates}
-              style={{
-                ...btnSecondaryStyle,
-                background: "#0047AB",
-                borderColor: "#0047AB",
-                color: "#ffffff",
-                cursor: savingTemplates ? "wait" : "pointer",
-              }}
-            >
-              {savingTemplates ? <Spinner size={12} color="#ffffff" /> : null}
-              Save templates
-            </button>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={handleSyncTemplateSnapshots}
+                disabled={syncingSnapshots || savingTemplates}
+                style={{
+                  ...btnSecondaryStyle,
+                  background: "#166534",
+                  borderColor: "#166534",
+                  color: "#ffffff",
+                  cursor: syncingSnapshots ? "wait" : "pointer",
+                }}
+              >
+                {syncingSnapshots ? <Spinner size={12} color="#ffffff" /> : null}
+                {syncingSnapshots ? "Syncing snapshots..." : "Sync templates to Supabase"}
+              </button>
+              <button
+                type="submit"
+                disabled={savingTemplates || syncingSnapshots}
+                style={{
+                  ...btnSecondaryStyle,
+                  background: "#0047AB",
+                  borderColor: "#0047AB",
+                  color: "#ffffff",
+                  cursor: savingTemplates ? "wait" : "pointer",
+                }}
+              >
+                {savingTemplates ? <Spinner size={12} color="#ffffff" /> : null}
+                Save templates
+              </button>
+            </div>
+          </div>
+          <div
+            style={{
+              marginBottom: "10px",
+              padding: "8px 10px",
+              borderRadius: "6px",
+              fontSize: "11.5px",
+              background: snapshotMeta?.syncedAt ? "#ecfdf5" : "#fffbeb",
+              border: `1px solid ${snapshotMeta?.syncedAt ? "#a7f3d0" : "#fde68a"}`,
+              color: snapshotMeta?.syncedAt ? "#065f46" : "#92400e",
+            }}
+          >
+            {snapshotMeta?.syncedAt ? (
+              snapshotMeta.clientTemplateId === templates.clientTemplateId &&
+                snapshotMeta.masterTemplateId === templates.masterTemplateId &&
+                snapshotMeta.reconTemplateId === templates.reconTemplateId ? (
+                <span>
+                  Supabase snapshot synced ({snapshotMeta.masterTabCount || 0} Master, {snapshotMeta.reconTabCount || 0} Recon, {snapshotMeta.clientTabCount || 0} Client tabs) on{" "}
+                  {new Date(snapshotMeta.syncedAt).toLocaleString()}. Supabase-only onboarding makes zero Google Sheets API calls.
+                </span>
+              ) : (
+                <span>
+                  Template IDs have changed since the last snapshot. Click <b>Sync templates to Supabase</b> to refresh.
+                </span>
+              )
+            ) : (
+              <span>
+                No Supabase template snapshot synced yet. Click <b>Sync templates to Supabase</b> so Supabase-only client onboarding runs without reading Google Sheets.
+              </span>
+            )}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "10px" }}>
             {TEMPLATE_FIELDS.map(tf => (

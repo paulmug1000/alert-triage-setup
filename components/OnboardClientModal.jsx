@@ -2,6 +2,52 @@ import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
 
+function formatToolLabel(tool) {
+  if (!tool || tool === "None") return "";
+  if (tool === "Quickbooks") return "QuickBooks Online";
+  if (tool === "Monday") return "Monday.com";
+  return tool;
+}
+
+function buildConnectionEmailContent({ contactName, accountingTool, crmTool }) {
+  const firstName = String(contactName || "").trim().split(/\s+/)[0] || "there";
+  const accLabel = formatToolLabel(accountingTool);
+  const crmLabel = formatToolLabel(crmTool);
+
+  let toolSentence = "";
+  if (accLabel && crmLabel) {
+    toolSentence = `We're setting up Pulse for you, and need to create a link to your accounting (${accLabel}) and CRM (${crmLabel}) tools.`;
+  } else if (accLabel) {
+    toolSentence = `We're setting up Pulse for you, and need to create a link to your accounting tool (${accLabel}).`;
+  } else if (crmLabel) {
+    toolSentence = `We're setting up Pulse for you, and need to create a link to your CRM tool (${crmLabel}).`;
+  } else {
+    toolSentence = "We're setting up Pulse for you, and need to create a link to your tools.";
+  }
+
+  const subject = "Pulse setup: Please connect your tools";
+  const body = [
+    `Dear ${firstName},`,
+    "",
+    toolSentence,
+    "",
+    "To do this, please log in to Pulse by following this link:",
+    "",
+    "https://app.pulsedashboard.co.uk/",
+    "",
+    "Then choose the service that drives your email account (eg Google or Microsoft), and approve the connection to Pulse.",
+    "",
+    "Once this is done, just follow the on-screen instructions to authorise the connections to the tools you use.",
+    "",
+    "Please reply to this email with any questions.",
+    "",
+    "Thanks,",
+    "The Pulse Team",
+  ].join("\n");
+
+  return { subject, body };
+}
+
 export default function OnboardClientModal({ isOpen, onClose, onClientCreated, onGoToChecklist }) {
   const [clientName, setClientName] = useState("");
   const [clientMode, setClientMode] = useState(""); // '' | 'supabase' | 'sheet'
@@ -31,6 +77,16 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
   const [currentStep, setCurrentStep] = useState("");
   const [error, setError] = useState(null);
   const [createdData, setCreatedData] = useState(null);
+
+  // Post-provisioning steps: 'form' | 'client_user' | 'email_preview'
+  const [modalStep, setModalStep] = useState("form");
+  const [contactName, setContactName] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [sendEmailChoice, setSendEmailChoice] = useState(""); // '' | 'yes' | 'no'
+  const [savingClientUser, setSavingClientUser] = useState(false);
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [sendingEmail, setSendingEmail] = useState(false);
 
   const currentParentId = breadcrumbs[breadcrumbs.length - 1]?.id || "16qLMIFy1GyiEZ4DkKjVaFXOKGQKDW8Cj";
 
@@ -73,6 +129,14 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
       setError(null);
       setCreatedData(null);
       setCurrentStep("");
+      setModalStep("form");
+      setContactName("");
+      setContactEmail("");
+      setSendEmailChoice("");
+      setSavingClientUser(false);
+      setEmailSubject("");
+      setEmailBody("");
+      setSendingEmail(false);
     }
   }, [isOpen]);
 
@@ -99,6 +163,14 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
   const filteredFolders = foldersList.filter((f) =>
     f.name.toLowerCase().includes(folderSearch.trim().toLowerCase())
   );
+
+  const finishOnboardingToChecklist = (dataToUse) => {
+    if (onGoToChecklist) {
+      onGoToChecklist(dataToUse || createdData);
+    } else {
+      onClose();
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -153,6 +225,8 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
       }
 
       setCreatedData(data);
+      setModalStep("client_user");
+      setSendEmailChoice("");
       if (onClientCreated) {
         onClientCreated(data);
       }
@@ -161,6 +235,96 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveClientUser = async (e) => {
+    e.preventDefault();
+    if (!contactName.trim()) {
+      setError("Please enter the client's name.");
+      return;
+    }
+    const cleanEmail = contactEmail.toLowerCase().trim();
+    if (!cleanEmail || !cleanEmail.includes("@")) {
+      setError("Please enter a valid client email address.");
+      return;
+    }
+    if (!sendEmailChoice) {
+      setError("Please choose whether to send the client an email asking them to connect their tools.");
+      return;
+    }
+
+    setSavingClientUser(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/setup/client-invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create_client_user",
+          clientName: createdData.clientName,
+          contactName: contactName.trim(),
+          contactEmail: cleanEmail,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to add client user.");
+      }
+
+      if (sendEmailChoice === "yes") {
+        const draft = buildConnectionEmailContent({
+          contactName: contactName.trim(),
+          accountingTool: createdData.accountingTool || accountingTool,
+          crmTool: createdData.crmTool || crmTool,
+        });
+        setEmailSubject(draft.subject);
+        setEmailBody(draft.body);
+        setModalStep("email_preview");
+      } else {
+        finishOnboardingToChecklist(createdData);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingClientUser(false);
+    }
+  };
+
+  const handleSendConnectionEmail = async (e) => {
+    e.preventDefault();
+    if (!emailSubject.trim()) {
+      setError("Please enter an email subject.");
+      return;
+    }
+    if (!emailBody.trim()) {
+      setError("Please enter an email message.");
+      return;
+    }
+
+    setSendingEmail(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/setup/client-invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send_connection_email",
+          clientName: createdData.clientName,
+          toEmail: contactEmail.toLowerCase().trim(),
+          subject: emailSubject.trim(),
+          body: emailBody.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to send email.");
+      }
+      finishOnboardingToChecklist(createdData);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSendingEmail(false);
     }
   };
 
@@ -177,6 +341,8 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
       }
     });
   };
+
+  const isBusy = loading || savingClientUser || sendingEmail;
 
   return (
     <div
@@ -200,7 +366,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
           background: "#FFFFFF",
           borderRadius: "16px",
           width: "100%",
-          maxWidth: "580px",
+          maxWidth: modalStep === "email_preview" ? "640px" : "580px",
           maxHeight: "92vh",
           display: "flex",
           flexDirection: "column",
@@ -222,15 +388,21 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
         >
           <div>
             <h2 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#0F172A" }}>
-              {createdData ? "Client system created" : "Onboard new client"}
+              {modalStep === "email_preview"
+                ? "Email preview"
+                : createdData
+                  ? "Client system created"
+                  : "Onboard new client"}
             </h2>
             <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748B" }}>
-              {createdData
-                ? "Client system provisioned successfully."
-                : "Choose client name, where sheets should be provisioned, and initial tool connections."}
+              {modalStep === "email_preview"
+                ? "Review the email asking the client to connect their tools."
+                : createdData
+                  ? "Add the primary client user and choose whether to send a connection invitation."
+                  : "Choose client name, where sheets should be provisioned, and initial tool connections."}
             </p>
           </div>
-          {!loading && (
+          {!isBusy && (
             <button
               onClick={onClose}
               style={{
@@ -280,15 +452,124 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
                 This usually takes about 10–15 seconds. Please do not close this window.
               </p>
             </div>
-          ) : createdData ? (
-            <div>
+          ) : modalStep === "email_preview" && createdData ? (
+            <form onSubmit={handleSendConnectionEmail}>
               <div
                 style={{
-                  padding: "16px",
+                  padding: "10px 14px",
+                  borderRadius: "8px",
+                  background: "#F8FAFC",
+                  border: "1px solid #E2E8F0",
+                  fontSize: "12.5px",
+                  color: "#334155",
+                  marginBottom: "14px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "4px",
+                }}
+              >
+                <div>
+                  <span style={{ fontWeight: "700", color: "#64748B" }}>From:</span>{" "}
+                  <span>pulse@pulsedashboard.co.uk</span>
+                </div>
+                <div>
+                  <span style={{ fontWeight: "700", color: "#64748B" }}>To:</span>{" "}
+                  <span>{contactEmail.trim()}</span>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: "14px" }}>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
+                  Subject
+                </label>
+                <input
+                  type="text"
+                  value={emailSubject}
+                  onChange={(e) => setEmailSubject(e.target.value)}
+                  disabled={sendingEmail}
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    borderRadius: "8px",
+                    border: "1px solid #CBD5E1",
+                    fontSize: "13px",
+                    boxSizing: "border-box",
+                  }}
+                />
+              </div>
+
+              <div style={{ marginBottom: "20px" }}>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
+                  Message
+                </label>
+                <textarea
+                  rows={14}
+                  value={emailBody}
+                  onChange={(e) => setEmailBody(e.target.value)}
+                  disabled={sendingEmail}
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    borderRadius: "8px",
+                    border: "1px solid #CBD5E1",
+                    fontSize: "13px",
+                    lineHeight: "1.5",
+                    fontFamily: "inherit",
+                    boxSizing: "border-box",
+                    resize: "vertical",
+                  }}
+                />
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                <button
+                  type="button"
+                  disabled={sendingEmail}
+                  onClick={() => finishOnboardingToChecklist(createdData)}
+                  style={{
+                    padding: "9px 18px",
+                    borderRadius: "8px",
+                    border: "1px solid #CBD5E1",
+                    background: "#FFFFFF",
+                    color: "#475569",
+                    fontWeight: "600",
+                    fontSize: "13px",
+                    cursor: sendingEmail ? "not-allowed" : "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={sendingEmail}
+                  style={{
+                    padding: "9px 20px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "#023f98",
+                    color: "#FFFFFF",
+                    fontWeight: "700",
+                    fontSize: "13px",
+                    cursor: sendingEmail ? "wait" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "8px",
+                  }}
+                >
+                  {sendingEmail && <Spinner size={13} color="#FFFFFF" />}
+                  <span>{sendingEmail ? "Sending..." : "Send"}</span>
+                </button>
+              </div>
+            </form>
+          ) : modalStep === "client_user" && createdData ? (
+            <form onSubmit={handleSaveClientUser}>
+              <div
+                style={{
+                  padding: "14px 16px",
                   borderRadius: "10px",
                   background: "#ECFDF5",
                   border: "1px solid #A7F3D0",
-                  marginBottom: "20px"
+                  marginBottom: "16px"
                 }}
               >
                 <p style={{ margin: "0 0 6px", fontWeight: "700", color: "#065F46", fontSize: "14px" }}>
@@ -300,18 +581,20 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
                   {" · "}
                   Master sheet provisioned in{" "}
                   <b>{createdData.masterMode === "supabase" ? "Supabase" : "Google Sheets"}</b>.
-                  The client is now in setup mode.
+                  {createdData.requestConnections
+                    ? " Setup mode and Request tool connections have been enabled automatically."
+                    : " The client is now in setup mode."}
                 </p>
               </div>
 
               {(createdData.folderUrl || createdSheetUrls.length > 0) && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "24px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center", marginBottom: "18px", padding: "10px 12px", borderRadius: "8px", background: "#F8FAFC", border: "1px solid #E2E8F0" }}>
                   {createdData.folderUrl && (
                     <a
                       href={createdData.folderUrl}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ fontSize: "13px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
+                      style={{ fontSize: "12.5px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                     >
                       Open Google Drive folder ↗
                     </a>
@@ -321,9 +604,9 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
                       href={createdData.clientUrl}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ fontSize: "13px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
+                      style={{ fontSize: "12.5px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                     >
-                      Open client dashboard sheet ↗
+                      Open client sheet ↗
                     </a>
                   )}
                   {createdData.masterUrl && (
@@ -331,9 +614,9 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
                       href={createdData.masterUrl}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ fontSize: "13px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
+                      style={{ fontSize: "12.5px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                     >
-                      Open master data engine sheet ↗
+                      Open master sheet ↗
                     </a>
                   )}
                   {createdData.reconUrl && (
@@ -341,61 +624,161 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
                       href={createdData.reconUrl}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ fontSize: "13px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
+                      style={{ fontSize: "12.5px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                     >
                       Open recon sheet ↗
                     </a>
                   )}
+                  {createdSheetUrls.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={handleOpenSheets}
+                      style={{
+                        marginLeft: "auto",
+                        padding: "4px 10px",
+                        borderRadius: "6px",
+                        border: "1px solid #CBD5E1",
+                        background: "#FFFFFF",
+                        color: "#1E293B",
+                        fontWeight: "600",
+                        fontSize: "11.5px",
+                        cursor: "pointer"
+                      }}
+                    >
+                      Open all {createdSheetUrls.length} sheets
+                    </button>
+                  )}
                 </div>
               )}
 
-              <div style={{ display: "flex", gap: "10px" }}>
-                {createdSheetUrls.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleOpenSheets}
-                    style={{
-                      flex: 1,
-                      padding: "10px 16px",
-                      borderRadius: "8px",
-                      border: "1px solid #CBD5E1",
-                      background: "#F8FAFC",
-                      color: "#1E293B",
-                      fontWeight: "600",
-                      fontSize: "13px",
-                      cursor: "pointer"
-                    }}
-                  >
-                    {createdSheetUrls.length === 1
-                      ? "Open created sheet"
-                      : `Open all ${createdSheetUrls.length} sheets`}
-                  </button>
-                )}
+              <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0", marginBottom: "18px" }}>
+                <div style={{ fontSize: "13.5px", fontWeight: "700", color: "#0F172A", marginBottom: "4px" }}>
+                  Add client user
+                </div>
+                <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
+                  Enter the client contact’s details to add them to Users as a <b>Client user</b> for {createdData.clientName}.
+                </p>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "14px" }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
+                      Client’s name <span style={{ color: "#DC2626" }}>*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Jane Smith"
+                      value={contactName}
+                      onChange={(e) => setContactName(e.target.value)}
+                      disabled={savingClientUser}
+                      style={{
+                        width: "100%",
+                        padding: "8px 10px",
+                        borderRadius: "8px",
+                        border: "1px solid #CBD5E1",
+                        fontSize: "13px",
+                        background: "#FFFFFF",
+                        boxSizing: "border-box"
+                      }}
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
+                      Email address <span style={{ color: "#DC2626" }}>*</span>
+                    </label>
+                    <input
+                      type="email"
+                      placeholder="e.g. jane@acme.com"
+                      value={contactEmail}
+                      onChange={(e) => setContactEmail(e.target.value)}
+                      disabled={savingClientUser}
+                      style={{
+                        width: "100%",
+                        padding: "8px 10px",
+                        borderRadius: "8px",
+                        border: "1px solid #CBD5E1",
+                        fontSize: "13px",
+                        background: "#FFFFFF",
+                        boxSizing: "border-box"
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
+                    Would you like to send the client an email asking them to connect their tools? <span style={{ color: "#DC2626" }}>*</span>
+                  </label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                    <button
+                      type="button"
+                      disabled={savingClientUser}
+                      onClick={() => setSendEmailChoice("yes")}
+                      style={{
+                        padding: "9px 12px",
+                        borderRadius: "8px",
+                        border: sendEmailChoice === "yes" ? "2px solid #023f98" : "1px solid #CBD5E1",
+                        background: sendEmailChoice === "yes" ? "#EFF6FF" : "#FFFFFF",
+                        color: sendEmailChoice === "yes" ? "#023f98" : "#475569",
+                        fontSize: "12.5px",
+                        fontWeight: "700",
+                        cursor: "pointer"
+                      }}
+                    >
+                      Yes, preview email
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingClientUser}
+                      onClick={() => setSendEmailChoice("no")}
+                      style={{
+                        padding: "9px 12px",
+                        borderRadius: "8px",
+                        border: sendEmailChoice === "no" ? "2px solid #023f98" : "1px solid #CBD5E1",
+                        background: sendEmailChoice === "no" ? "#EFF6FF" : "#FFFFFF",
+                        color: sendEmailChoice === "no" ? "#023f98" : "#475569",
+                        fontSize: "12.5px",
+                        fontWeight: "700",
+                        cursor: "pointer"
+                      }}
+                    >
+                      No, skip email
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
                 <button
-                  type="button"
-                  onClick={() => {
-                    if (onGoToChecklist) {
-                      onGoToChecklist(createdData);
-                    } else {
-                      onClose();
-                    }
-                  }}
+                  type="submit"
+                  disabled={savingClientUser}
                   style={{
                     flex: 1,
-                    padding: "10px 16px",
+                    padding: "10px 18px",
                     borderRadius: "8px",
                     border: "none",
                     background: "#023f98",
                     color: "#FFFFFF",
                     fontWeight: "700",
                     fontSize: "13px",
-                    cursor: "pointer"
+                    cursor: savingClientUser ? "wait" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "8px"
                   }}
                 >
-                  Go to onboarding checklist →
+                  {savingClientUser && <Spinner size={13} color="#FFFFFF" />}
+                  <span>
+                    {savingClientUser
+                      ? "Saving client user..."
+                      : sendEmailChoice === "yes"
+                        ? "Add user & preview email →"
+                        : "Add user & go to setup process →"}
+                  </span>
                 </button>
               </div>
-            </div>
+            </form>
           ) : (
             <form onSubmit={handleSubmit}>
               {/* 1. Client Name */}

@@ -2698,6 +2698,10 @@ export async function provisionNewClientSystem({
   }
 
   // 10. Persist to Redis & Supabase
+  const hasSelectedTools = Boolean(
+    (accountingTool && accountingTool !== "None") ||
+    (crmTool && crmTool !== "None")
+  );
   const setupConfigRecord = {
     clientName: cleanClientName,
     masterSheetId,
@@ -2705,7 +2709,7 @@ export async function provisionNewClientSystem({
     clientMode,
     masterMode,
     setupMode: true,
-    requestConnections: false,
+    requestConnections: hasSelectedTools,
     accountingTool,
     crmTool,
     crmDrives,
@@ -2714,6 +2718,7 @@ export async function provisionNewClientSystem({
     masterUrl,
     reconUrl,
     backupUrl,
+    sheetSyncedAt: now,
     updatedAt: now,
     updatedBy: userEmail
   };
@@ -2741,6 +2746,7 @@ export async function provisionNewClientSystem({
           drive_folder_id: folderId,
           metadata: {
             setupMode: true,
+            requestConnections: hasSelectedTools,
             folderUrl,
             backupSheetId: backupCopy?.data?.id || "",
             accountingTool: accountingTool || "None",
@@ -2809,13 +2815,17 @@ export async function provisionNewClientSystem({
     }
   }
 
-  // Invalidate client list caches so the new client appears immediately across workspaces
+  // Invalidate client list caches so the new client appears immediately across workspaces & portal
   try {
     clearAllClientsMemoryCache();
     clearSsrClientsMemoryCache();
     if (redisClient?.isOpen) {
-      const allClientKeys = await redisClient.keys("pulse:all_clients:*");
-      if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+      const [allClientKeys, portalClientKeys] = await Promise.all([
+        redisClient.keys("pulse:all_clients:*"),
+        redisClient.keys("pulse:portal:allClients:*"),
+      ]);
+      const keysToDel = [...allClientKeys, ...portalClientKeys];
+      if (keysToDel.length > 0) await redisClient.del(keysToDel);
     }
   } catch (_) { }
 
@@ -2833,6 +2843,10 @@ export async function provisionNewClientSystem({
     clientName: cleanClientName,
     clientMode,
     masterMode,
+    setupMode: true,
+    requestConnections: hasSelectedTools,
+    accountingTool: accountingTool || "None",
+    crmTool: crmTool || "None",
     hasRealClientSheet: needsClientSheet,
     hasRealMasterSheet: needsMasterSheet,
     folderUrl,

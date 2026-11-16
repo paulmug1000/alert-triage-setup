@@ -51,6 +51,7 @@ let _assignedExpensesCachedAt = 0;
 export function clearAllClientsMemoryCache() {
   _allClientsMemoryCache = null;
   _allClientsCachedAt = 0;
+  memoryCache.del("pulse:portal:allClients:*");
 }
 
 export let assignedExpensesTabVerified = false;

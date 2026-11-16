@@ -30,99 +30,123 @@ export default async function handler(req, res) {
     const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
     const cacheKey = `pulse:portal:allClients:${acId}`;
 
+    const loadFreshAllClients = async () => {
+      let fresh = null;
+      if (await isSupabaseControlPlaneActive()) {
+        try {
+          const sb = getSupabaseAdmin();
+          if (sb) {
+            const { data: dbClients, error: sbErr } = await sb
+              .from("clients")
+              .select("client_name, status, metadata, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, client_mode, master_mode")
+              .order("client_name", { ascending: true });
+            if (!sbErr && Array.isArray(dbClients) && dbClients.length > 0) {
+              fresh = [];
+              for (const c of dbClients) {
+                const effectiveStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+                if (["inactive", "archived", "suspended"].includes(effectiveStatus)) continue;
+                const clientName = String(c.client_name || "").trim();
+                const clientSheetId = extractSheetIdFromUrl(c.client_sheet_url || c.client_sheet_id) || String(c.client_sheet_id || "").trim();
+                const masterSheetId = extractSheetIdFromUrl(c.master_sheet_url || c.master_sheet_id) || String(c.master_sheet_id || "").trim();
+                if (!clientName) continue;
+                if (!clientSheetId && !masterSheetId && c.client_mode !== "supabase" && c.master_mode !== "supabase") continue;
+                fresh.push({
+                  clientName,
+                  clientSheetId,
+                  masterSheetId,
+                });
+              }
+            }
+          }
+        } catch (sbLoadErr) {
+          console.warn("⚠️ Portal clients Supabase load fallback to sheet:", sbLoadErr.message);
+        }
+      }
+
+      if (!fresh) {
+        const sheets = await getSheetsClient();
+        const resp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: acId,
+            range: "AutoUpdates!A2:N500",
+          })
+        );
+
+        const rows = resp.data.values || [];
+        fresh = [];
+
+        for (const row of rows) {
+          const clientName = String(row[0] || "").trim();
+          const clientSheetUrl = row[11];
+          const masterSheetUrl = row[12];
+
+          if (!clientName || !clientSheetUrl) continue;
+          if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
+
+          const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
+          const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
+
+          if (!clientSheetId && !masterSheetId) continue;
+
+          fresh.push({
+            clientName,
+            clientSheetId,
+            masterSheetId,
+          });
+        }
+      }
+
+      memoryCache.set(cacheKey, fresh, 300);
+      if (redisClient?.isOpen) {
+        redisClient.set(cacheKey, JSON.stringify(fresh), { EX: 86400 }).catch(() => { });
+      }
+      return fresh;
+    };
+
+    let usedCache = false;
     let allClients = !bypassCache ? memoryCache.get(cacheKey) : null;
-    if (!allClients && !bypassCache && redisClient?.isOpen) {
+    if (allClients) {
+      usedCache = true;
+    } else if (!bypassCache && redisClient?.isOpen) {
       try {
         const rawCached = await redisClient.get(cacheKey);
         if (rawCached) {
           allClients = JSON.parse(rawCached);
           memoryCache.set(cacheKey, allClients, 300);
+          usedCache = true;
         }
       } catch (_) { }
     }
 
-    if (!allClients && (await isSupabaseControlPlaneActive())) {
-      try {
-        const sb = getSupabaseAdmin();
-        if (sb) {
-          const { data: dbClients, error: sbErr } = await sb
-            .from("clients")
-            .select("client_name, status, metadata, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, client_mode, master_mode")
-            .order("client_name", { ascending: true });
-          if (!sbErr && Array.isArray(dbClients) && dbClients.length > 0) {
-            allClients = [];
-            for (const c of dbClients) {
-              const effectiveStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
-              if (["inactive", "archived", "suspended"].includes(effectiveStatus)) continue;
-              const clientName = String(c.client_name || "").trim();
-              const clientSheetId = extractSheetIdFromUrl(c.client_sheet_url || c.client_sheet_id) || String(c.client_sheet_id || "").trim();
-              const masterSheetId = extractSheetIdFromUrl(c.master_sheet_url || c.master_sheet_id) || String(c.master_sheet_id || "").trim();
-              if (!clientName) continue;
-              if (!clientSheetId && !masterSheetId && c.client_mode !== "supabase" && c.master_mode !== "supabase") continue;
-              allClients.push({
-                clientName,
-                clientSheetId,
-                masterSheetId,
-              });
-            }
-            memoryCache.set(cacheKey, allClients, 300);
-            if (redisClient?.isOpen) {
-              redisClient.set(cacheKey, JSON.stringify(allClients), { EX: 86400 }).catch(() => { });
-            }
-          }
-        }
-      } catch (sbLoadErr) {
-        console.warn("⚠️ Portal clients Supabase load fallback to sheet:", sbLoadErr.message);
-      }
-    }
-
     if (!allClients) {
-      const sheets = await getSheetsClient();
-      const resp = await withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: acId,
-          range: "AutoUpdates!A2:N500",
-        })
-      );
-
-      const rows = resp.data.values || [];
-      allClients = [];
-
-      for (const row of rows) {
-        const clientName = String(row[0] || "").trim();
-        const clientSheetUrl = row[11];
-        const masterSheetUrl = row[12];
-
-        if (!clientName || !clientSheetUrl) continue;
-        if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
-
-        const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
-        const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
-
-        if (!clientSheetId && !masterSheetId) continue;
-
-        allClients.push({
-          clientName,
-          clientSheetId,
-          masterSheetId,
-        });
-      }
-
-      memoryCache.set(cacheKey, allClients, 300); // Cache in memory for 5 minutes
-      if (redisClient?.isOpen) {
-        redisClient.set(cacheKey, JSON.stringify(allClients), { EX: 86400 }).catch(() => { });
-      }
+      allClients = await loadFreshAllClients();
     }
 
     // Role-based scoping:
     // Only Admin can see ALL clients.
     // ClientManager and ClientUser only see their assigned clients.
-    let authorizedClients = allClients;
-    if (!sessionUser.isAdmin) {
+    const filterAuthorized = (list) => {
+      if (sessionUser.isAdmin) return list;
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-      authorizedClients = allClients.filter((c) =>
+      return list.filter((c) =>
         assignedList.some((assigned) => matchesClientName(assigned, c.clientName))
       );
+    };
+
+    let authorizedClients = filterAuthorized(allClients);
+
+    // Self-heal stale cache: if a non-admin user has assigned clients missing from the cached list, refresh live once
+    if (usedCache && !sessionUser.isAdmin) {
+      const assignedList = (Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [])
+        .map((a) => String(a || "").trim())
+        .filter((a) => a && a !== "*");
+      const missingAssigned = assignedList.some(
+        (assigned) => !authorizedClients.some((c) => matchesClientName(assigned, c.clientName))
+      );
+      if (missingAssigned) {
+        allClients = await loadFreshAllClients();
+        authorizedClients = filterAuthorized(allClients);
+      }
     }
 
     authorizedClients.sort((a, b) => a.clientName.localeCompare(b.clientName));

@@ -259,10 +259,11 @@ function buildSingleflightKey_(namespace, method, params) {
 function createPooledSheetsClient_(poolType = "interactive") {
   const executeCall = async (namespace, method, isReadOnly, params, rest) => {
     const bypassVirtual = Boolean(params && params._bypassSupabaseVirtualSheet);
+    const forcePrimary = Boolean(params && params._usePrimaryAccount);
     let resolvedParams = params;
     let resolvedSheetId = "";
     if (params && typeof params === "object") {
-      const { _bypassSupabaseVirtualSheet, ...cleanParams } = params;
+      const { _bypassSupabaseVirtualSheet, _usePrimaryAccount, ...cleanParams } = params;
       resolvedParams = cleanParams;
       if (typeof cleanParams.spreadsheetId === "string") {
         resolvedSheetId = unwrapSheetId(cleanParams.spreadsheetId);
@@ -292,17 +293,20 @@ function createPooledSheetsClient_(poolType = "interactive") {
       // All write operations (update, append, batchUpdate, clear, batchClear) ALWAYS execute
       // through the primary Service Account (alert-triage-backend), which is an authorized
       // editor on all Protected Ranges across every Client, Master, and Recon sheet.
-      // Read operations (get, batchGet) shard across the multi-project Service Account pool.
-      const entry = isReadOnly
-        ? selectPoolEntry_(resolvedSheetId, poolType)
-        : getPoolEntries_()[0];
-      const targetObj =
-        namespace === "values"
-          ? entry.rawSheets.spreadsheets.values
-          : namespace === "sheets"
-          ? entry.rawSheets.spreadsheets.sheets
-          : entry.rawSheets.spreadsheets;
-      const fn = targetObj[method].bind(targetObj);
+      // Read operations (get, batchGet) shard across the multi-project Service Account pool unless _usePrimaryAccount is set.
+      const entry =
+        isReadOnly && !forcePrimary
+          ? selectPoolEntry_(resolvedSheetId, poolType)
+          : getPoolEntries_()[0];
+      const getMethodFn = (poolEntry) => {
+        const targetObj =
+          namespace === "values"
+            ? poolEntry.rawSheets.spreadsheets.values
+            : namespace === "sheets"
+            ? poolEntry.rawSheets.spreadsheets.sheets
+            : poolEntry.rawSheets.spreadsheets;
+        return targetObj[method].bind(targetObj);
+      };
 
       // Strip internal underscore options (e.g. _skipFormulaRecompute, _bypassVirtualSheet) before
       // invoking the real Google Sheets API client, which rejects unknown parameters with HTTP 400.
@@ -325,14 +329,25 @@ function createPooledSheetsClient_(poolType = "interactive") {
       }
 
       try {
-        return await fn(apiParams, ...rest);
+        return await getMethodFn(entry)(apiParams, ...rest);
       } catch (err) {
         if (isQuotaError_(err)) {
           entry.cooldownUntil = Date.now() + COOLDOWN_DURATION_MS;
           err._throttledPoolEntryId = entry.id;
-        } else if (isPermissionError_(err) && entry.id !== getPoolEntries_()[0]?.id) {
-          // If a secondary pool account lacks permission on a specific sheet, fall back to primary/other account
-          entry.cooldownUntil = Date.now() + COOLDOWN_DURATION_MS;
+        } else if (isPermissionError_(err)) {
+          // If a pool account lacks permission on a specific sheet, fail over across other pool accounts
+          // (trying the primary service account first) without requiring every caller to wrap in withRetry().
+          const fallbacks = getPoolEntries_().filter((e) => e.id !== entry.id);
+          if (fallbacks.length > 0) {
+            entry.cooldownUntil = Date.now() + COOLDOWN_DURATION_MS;
+            for (const fb of fallbacks) {
+              try {
+                return await getMethodFn(fb)(apiParams, ...rest);
+              } catch (fbErr) {
+                if (!isPermissionError_(fbErr)) throw fbErr;
+              }
+            }
+          }
           err._throttledPoolEntryId = entry.id;
           err._isPoolPermissionFallback = true;
         }

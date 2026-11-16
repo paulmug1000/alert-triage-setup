@@ -10,6 +10,7 @@ import { clearSsrClientsMemoryCache } from "../../../services/ssrSession.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { flushAllAlertMemoryCaches, searchAlertMemoryEntries, deleteAlertMemoryEntryByHash } from "../../../services/alertMemory.js";
 import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
+import { syncProvisioningTemplateSnapshots, getProvisioningTemplateSnapshotsMeta } from "../../../services/masterEngineService.js";
 
 const VALID_CLIENT_STATUSES = new Set(["live", "setup", "paused", "suspended", "archived"]);
 const VALID_ENGINE_MODES = new Set(["sheet", "supabase", "shadow"]);
@@ -249,7 +250,7 @@ async function invalidateClientsCache_(acId) {
     keys.add(`pulse:portal:allClients:${process.env.AUTOMATION_COMMANDER_SHEET_ID}`);
   }
   for (const k of keys) {
-    await redisClient.del(k).catch(() => {});
+    await redisClient.del(k).catch(() => { });
   }
 
   // Prune any inactive/archived/suspended clients from triage_precomputed so PMA Alerts updates immediately
@@ -307,7 +308,7 @@ async function refreshPrecomputedAlerts_(sheets, acId) {
       headers: {},
     };
     const mockRes = {
-      status: () => ({ json: () => {} }),
+      status: () => ({ json: () => { } }),
     };
     await handleStorePrecomputed(mockReq, mockRes, sheets);
   } catch (err) {
@@ -497,7 +498,7 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, error: "Supabase is not configured." });
       }
       const sb = getSupabaseAdmin();
-      const [{ data: clientRows, error: clientErr }, { data: tplRow }] = await Promise.all([
+      const [{ data: clientRows, error: clientErr }, { data: tplRow }, snapshotMeta] = await Promise.all([
         sb
           .from("clients")
           .select("*")
@@ -508,12 +509,14 @@ export default async function handler(req, res) {
           .select("value")
           .eq("key", "client_provisioning_templates")
           .maybeSingle(),
+        getProvisioningTemplateSnapshotsMeta().catch(() => null),
       ]);
       if (clientErr) throw new Error(clientErr.message);
       return res.status(200).json({
         success: true,
         clients: (clientRows || []).map(normalizeClientStatusFromDb_),
         templates: tplRow?.value || null,
+        snapshotMeta,
       });
     }
 
@@ -543,7 +546,7 @@ export default async function handler(req, res) {
           reportsFolderId: saved.reports_folder_id,
         },
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       return res.status(200).json({ success: true, client: saved });
     }
 
@@ -572,7 +575,7 @@ export default async function handler(req, res) {
         summary: `Batch saved ${savedClients.length} client registry record${savedClients.length === 1 ? "" : "s"}: ${savedClients.map(c => c.client_name).join(", ")}`,
         details: { count: savedClients.length, clients: savedClients.map(c => c.client_name) },
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       return res.status(200).json({ success: true, clients: savedClients });
     }
 
@@ -602,7 +605,7 @@ export default async function handler(req, res) {
         summary: `Deleted client registry record "${cleanName || cleanId}"`,
         details: { id: cleanId || null, clientName: cleanName || null },
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       return res.status(200).json({ success: true });
     }
 
@@ -630,7 +633,7 @@ export default async function handler(req, res) {
       });
       if (tplErr) throw new Error(tplErr.message);
       if (redisClient?.isOpen) {
-        await redisClient.del("pulse:setup:provisioning_templates").catch(() => {});
+        await redisClient.del("pulse:setup:provisioning_templates").catch(() => { });
       }
       const sheets = await getSheetsClient().catch(() => null);
       await logPmaActivity(sheets, {
@@ -640,8 +643,31 @@ export default async function handler(req, res) {
         summary: "Updated client provisioning template sheet and script IDs",
         details: templatesPayload,
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       return res.status(200).json({ success: true, templates: templatesPayload });
+    }
+
+    if (action === "sync_provisioning_template_snapshots") {
+      if (!isSupabaseConfigured()) {
+        return res.status(400).json({ success: false, error: "Supabase is not configured." });
+      }
+      const t = req.body?.templates || {};
+      const sheets = await getSheetsClient();
+      const snapRes = await syncProvisioningTemplateSnapshots(sheets, {
+        clientTemplateId: t.clientTemplateId || "",
+        masterTemplateId: t.masterTemplateId || "",
+        reconTemplateId: t.reconTemplateId || "",
+        userEmail: sessionUser.email || "Admin",
+      });
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId,
+        category: "SYSTEM",
+        action: "PROVISIONING_TEMPLATE_SNAPSHOTS_SYNCED",
+        summary: "Synced Client, Master, and Recon template snapshots to Supabase",
+        details: snapRes.meta,
+        userEmail: sessionUser.email || "Admin",
+      }).catch(() => { });
+      return res.status(200).json({ success: true, snapshotMeta: snapRes.meta });
     }
 
     return res.status(400).json({ success: false, error: `Unknown action: ${action}` });

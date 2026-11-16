@@ -1,4 +1,4 @@
-import { withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import {
@@ -155,10 +155,11 @@ export async function getAllUsers(sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID, by
     }
   }
 
-  await ensureUsersTab(sheets);
+  const activeSheets = sheets || (await getSheetsClient());
+  await ensureUsersTab(activeSheets);
 
   try {
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
+    const resp = await withRetry(() => activeSheets.spreadsheets.values.get({
       spreadsheetId: acId,
       range: `${USERS_TAB}!A2:H500`
     }));

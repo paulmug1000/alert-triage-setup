@@ -439,10 +439,14 @@ export async function runBackgroundTriageRefresh({
 
 let _precomputedMemoryCache = null;
 let _precomputedCachedAt = 0;
+let _excludedClientsMemoryCache = null;
+let _excludedClientsCachedAt = 0;
 
 export function invalidatePrecomputedMemoryCache() {
   _precomputedMemoryCache = null;
   _precomputedCachedAt = 0;
+  _excludedClientsMemoryCache = null;
+  _excludedClientsCachedAt = 0;
 }
 
 export const FLAG_NAMES = {
@@ -1735,9 +1739,13 @@ export async function handleGetPrecomputed(req, res, sheets) {
 
     const tMem0 = Date.now();
     // Pass allowFallback = false so we NEVER download the 8.5MB AlertMemory sheet during user page load
-    const [handledMap, excludedClientNamesSet] = await Promise.all([
+    const [handledMap, excludedClientNamesSet, cmMap] = await Promise.all([
       readHandledAlertHashes(sheets, automationCommanderSheetId, false),
       (async () => {
+        const nowMs = Date.now();
+        if (_excludedClientsMemoryCache && (nowMs - _excludedClientsCachedAt < 30000)) {
+          return _excludedClientsMemoryCache;
+        }
         const excluded = new Set();
         try {
           const sb = getSupabaseAdmin();
@@ -1751,10 +1759,13 @@ export async function handleGetPrecomputed(req, res, sheets) {
                 excluded.add(String(c.client_name).trim().toLowerCase());
               }
             }
+            _excludedClientsMemoryCache = excluded;
+            _excludedClientsCachedAt = nowMs;
           }
         } catch (_) {}
         return excluded;
       })(),
+      getClientManagerClientMap(sheets, automationCommanderSheetId),
     ]);
     const tMem = Date.now() - tMem0;
 
@@ -1892,9 +1903,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       );
     }
 
-    const tCm0 = Date.now();
-    const cmMap = await getClientManagerClientMap(sheets, automationCommanderSheetId);
-    const tCm = Date.now() - tCm0;
+    const tCm = 0;
 
     const clientsWithUpdatedCounts = clientsSource.map(c => {
       const counts = alertCountsByClientAndFlag[c.clientName] || {};

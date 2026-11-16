@@ -182,13 +182,12 @@ async function fetchAllSupabaseRows_(buildQueryFn, pageSize = 1000) {
 
 /**
  * Returns a compact map { [fingerprintHash]: status } for handled (non-cached) alerts.
- * When Supabase Control Plane is active, queries indexed PostgreSQL directly (with a 5s memory buffer)
- * so edits/deletes in Supabase are reflected within seconds without being masked by the 7d Redis sheet cache.
+ * Checks L1 memory and L2 Redis first (<5ms), falling back to indexed Supabase / Sheet queries on cache miss.
+ * Mutations (ignore, accept, task, delete) update or flush both L1 and Redis immediately via updateHandledAlertHashesBatch.
  */
 export async function readHandledAlertHashes(sheets, automationCommanderSheetId, allowFallback = true) {
   const now = Date.now();
-  const supabaseActive = await isSupabaseControlPlaneActive();
-  const memoryTtlMs = supabaseActive ? 5000 : 60000;
+  const memoryTtlMs = 30000;
 
   if (_handledHashesMemoryCache && (now - _handledHashesCachedAt < memoryTtlMs)) {
     return _handledHashesMemoryCache;
@@ -196,7 +195,23 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
 
   const cacheKey = `pulse:alert_memory_handled:${automationCommanderSheetId}`;
 
-  // If Supabase Control Plane is active, query indexed handled hashes directly (paginated beyond 1000 rows)
+  // 1. Check Redis cache first (<5ms) so interactive page loads never paginate thousands of Supabase rows
+  try {
+    if (redisClient?.isOpen && automationCommanderSheetId) {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        _handledHashesMemoryCache = parsed;
+        _handledHashesCachedAt = now;
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ Redis read error in readHandledAlertHashes:", err.message);
+  }
+
+  // 2. On Redis cache miss, if Supabase Control Plane is active, query indexed handled hashes directly
+  const supabaseActive = await isSupabaseControlPlaneActive();
   if (supabaseActive) {
     try {
       const sb = getSupabaseAdmin();
@@ -217,27 +232,13 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
         _handledHashesMemoryCache = handledMap;
         _handledHashesCachedAt = now;
         if (redisClient?.isOpen && automationCommanderSheetId) {
-          redisClient.set(cacheKey, JSON.stringify(handledMap), { EX: 86400 * 7 }).catch(() => { });
+          redisClient.set(cacheKey, JSON.stringify(handledMap), { EX: 3600 }).catch(() => { });
         }
         return handledMap;
       }
     } catch (sbErr) {
       console.warn("⚠️ Supabase readHandledAlertHashes fallback:", sbErr.message);
     }
-  }
-
-  try {
-    if (redisClient?.isOpen && automationCommanderSheetId) {
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        _handledHashesMemoryCache = parsed;
-        _handledHashesCachedAt = now;
-        return parsed;
-      }
-    }
-  } catch (err) {
-    console.warn("⚠️ Redis read error in readHandledAlertHashes:", err.message);
   }
 
   // During interactive loads, if Redis has not yet populated, return empty map rather than blocking 45s for 9MB
@@ -256,7 +257,7 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
 
   try {
     if (redisClient?.isOpen && automationCommanderSheetId) {
-      await redisClient.set(cacheKey, JSON.stringify(handledMap), { EX: 86400 * 7 });
+      await redisClient.set(cacheKey, JSON.stringify(handledMap), { EX: 3600 });
     }
   } catch (err) {
     console.warn("⚠️ Redis write error in readHandledAlertHashes:", err.message);

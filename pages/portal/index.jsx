@@ -54,6 +54,7 @@ export default function PortalPage({
   const [loadingSetupStatus, setLoadingSetupStatus] = useState(false);
   const [isPreviewSetup, setIsPreviewSetup] = useState(false);
   const [oauthFeedback, setOauthFeedback] = useState(null);
+  const [oauthEvent, setOauthEvent] = useState(null);
 
   // Immediately hydrate setup client & status when user logs in via OTP on client side
   useEffect(() => {
@@ -71,13 +72,25 @@ export default function PortalPage({
     if (isPreview) {
       setIsPreviewSetup(true);
     }
-    const tool = router.query.integration || (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("integration") : null);
+    const searchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    const tool = router.query.integration || router.query.tool || searchParams?.get("integration") || searchParams?.get("tool");
     if (tool) {
-      const status = router.query.status || (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("status") : null);
-      const modalParam = router.query.modal || (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("modal") : null);
+      const status = router.query.status || searchParams?.get("status");
+      const modalParam = router.query.modal || searchParams?.get("modal");
+      const accountParam = router.query.account || router.query.tenant || searchParams?.get("account") || searchParams?.get("tenant") || "";
+      const messageParam = router.query.message || router.query.error_description || router.query.error || searchParams?.get("message") || searchParams?.get("error_description") || searchParams?.get("error") || "";
+      const urlParam = router.query.url || searchParams?.get("url") || "";
+      setOauthEvent({
+        tool: String(tool),
+        status: status ? String(status) : "",
+        modal: modalParam ? String(modalParam) : "",
+        account: String(accountParam),
+        message: String(messageParam),
+        url: String(urlParam)
+      });
       const isGoogleSheetPickerReturn = String(tool).toLowerCase() === "googlesheet" && (status === "oauth_authorized" || modalParam === "picker");
       if (isGoogleSheetPickerReturn) {
-        // Handled directly inside SetupHoldingGate by reopening GoogleSheetLinkModal and launching the Google Picker
+        // Handled directly inside SetupHoldingGate / PortalShell by reopening GoogleSheetLinkModal and launching the Google Picker
       } else if (status === "success") {
         setOauthFeedback({
           type: "success",
@@ -899,6 +912,29 @@ export default function PortalPage({
     await logout();
   };
 
+  const refreshSetupStatus = useCallback(async () => {
+    if (!selectedClient?.clientName) return null;
+    try {
+      const res = await fetch(
+        `/api/setup/status?clientName=${encodeURIComponent(selectedClient.clientName)}&masterSheetId=${encodeURIComponent(selectedClient.masterSheetId || "")}&clientSheetId=${encodeURIComponent(selectedClient.clientSheetId || "")}`
+      );
+      const d = await res.json();
+      if (d.success && d.status) {
+        setSetupStatus(d.status);
+        return d.status;
+      }
+    } catch (e) {
+      console.error("Setup status refresh note:", e);
+    }
+    return null;
+  }, [selectedClient?.clientName, selectedClient?.masterSheetId, selectedClient?.clientSheetId]);
+
+  useEffect(() => {
+    if (oauthEvent?.status === "success" && selectedClient?.clientName) {
+      refreshSetupStatus();
+    }
+  }, [oauthEvent?.status, selectedClient?.clientName, refreshSetupStatus]);
+
   const lastSetupStatusClientRef = useRef(null);
 
   // Fetch detailed setup status (immediately for setupMode/preview, and lazily in background for live clients to populate profile menu tool indicators)
@@ -1180,6 +1216,8 @@ export default function PortalPage({
         hasCash={hasCash}
         setupStatus={setupStatus}
         onPreviewSetup={() => setIsPreviewSetup(true)}
+        onRefreshSetupStatus={refreshSetupStatus}
+        oauthEvent={oauthEvent}
         masterSheetId={selectedClient?.masterSheetId}
         clientSheetId={selectedClient?.clientSheetId}
       >

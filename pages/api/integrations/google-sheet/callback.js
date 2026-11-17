@@ -114,6 +114,11 @@ export default async function handler(req, res) {
 
     const separator = returnUrl.includes("?") ? "&" : "?";
     const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
+    const hasLinkedSheet = Boolean(existingGrant?.metadata?.spreadsheetId || existingGrant?.metadata?.url);
+
+    if (statePayload?.reconnectOnly && hasLinkedSheet) {
+      return res.redirect(`${returnUrl}${separator}integration=googlesheet&status=success&account=${encodeURIComponent(userEmail)}${clientParam}&tenant=${encodeURIComponent(userEmail)}`);
+    }
 
     return res.redirect(`${returnUrl}${separator}integration=googlesheet&status=oauth_authorized&modal=picker&account=${encodeURIComponent(userEmail)}${clientParam}&tenant=${encodeURIComponent(userEmail)}`);
 

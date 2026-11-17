@@ -103,6 +103,53 @@ export function getSettingsRedisKey(clientName) {
 /**
  * Reads all client settings for a given client from Redis or Google Sheets.
  */
+function mergeCrmSpreadsheetIntoSetup(existingSetup, settings, clientName, masterSheetId, syncedAt) {
+  const revFocus = String(settings.customisation?.revenueFocus || existingSetup.revenueFocus || "Revenue").trim();
+  const dcMode = revFocus === "Income"
+    ? "Pass-through"
+    : (settings.customisation?.directCostsMode === "Pass-through"
+      ? "Pass-through"
+      : (settings.customisation?.directCostsMode === "Contractors"
+        ? "Contractors"
+        : (existingSetup.directCostsMode || "Contractors")));
+
+  const nextSetup = {
+    ...existingSetup,
+    clientName,
+    masterSheetId,
+    revenueFocus: revFocus,
+    directCostsMode: dcMode,
+    sheetSyncedAt: syncedAt
+  };
+
+  if (settings.accounting?.toolInUse) {
+    nextSetup.accountingTool = String(settings.accounting.toolInUse).trim();
+  }
+  if (settings.crm?.toolInUse) {
+    nextSetup.crmTool = String(settings.crm.toolInUse).trim();
+  }
+  if (settings.crm?.googleSheetUrl !== undefined) {
+    nextSetup.googleSheetUrl = String(settings.crm.googleSheetUrl || "").trim();
+  }
+  if (settings.crm?.googleSheetTab !== undefined) {
+    nextSetup.googleSheetTab = String(settings.crm.googleSheetTab || "").trim();
+  }
+  if (settings.crm?.excel) {
+    const ex = settings.crm.excel;
+    nextSetup.excel = {
+      ...(existingSetup.excel || {}),
+      driveId: String(ex.driveId || "").trim(),
+      fileId: String(ex.fileId || "").trim(),
+      sheetName: String(ex.worksheetName || ex.sheetName || "").trim(),
+      range: String(ex.range || "").trim(),
+      columnRow: String(ex.columnRow || "").trim(),
+      keyHeaders: String(ex.keyHeaders || "").trim()
+    };
+  }
+
+  return { nextSetup, revFocus, dcMode };
+}
+
 export async function getClientSettings({ clientName, masterSheetId, clientSheetId, bypassCache = false }) {
   if (!clientName || !masterSheetId) {
     throw new Error("Missing required clientName or masterSheetId parameter.");
@@ -610,19 +657,20 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
           const rawSetup = await redisClient.get(setupKey);
           if (rawSetup) existingSetup = JSON.parse(rawSetup);
         } catch { }
-        const revFocus = String(settings.customisation.revenueFocus || "Revenue").trim();
-        const dcMode = revFocus === "Income"
-          ? "Pass-through"
-          : (settings.customisation.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
-        if (existingSetup.revenueFocus !== revFocus || existingSetup.directCostsMode !== dcMode) {
-          await redisClient.set(setupKey, JSON.stringify({
-            ...existingSetup,
-            clientName,
-            masterSheetId,
-            revenueFocus: revFocus,
-            directCostsMode: dcMode,
-            sheetSyncedAt: new Date().toISOString()
-          }));
+        const { nextSetup, revFocus, dcMode } = mergeCrmSpreadsheetIntoSetup(
+          existingSetup,
+          settings,
+          clientName,
+          masterSheetId,
+          new Date().toISOString()
+        );
+        const excelChanged =
+          String(existingSetup.excel?.driveId || "") !== String(nextSetup.excel?.driveId || "") ||
+          String(existingSetup.excel?.fileId || "") !== String(nextSetup.excel?.fileId || "");
+        const gsheetChanged =
+          String(existingSetup.googleSheetUrl || "") !== String(nextSetup.googleSheetUrl || "");
+        if (existingSetup.revenueFocus !== revFocus || existingSetup.directCostsMode !== dcMode || excelChanged || gsheetChanged) {
+          await redisClient.set(setupKey, JSON.stringify(nextSetup));
           const allClientKeys = await redisClient.keys("pulse:all_clients:*");
           if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
           clearAllClientsMemoryCache();
@@ -1203,17 +1251,17 @@ export async function saveClientSettings({
         await redisClient.del(`pulse:portal:payload:${clientSheetId}`);
         await redisClient.del(`pulse:portal:performance:${clientSheetId}`);
       }
-    } catch {}
+    } catch { }
   }
   if (clientSheetId) {
     try {
       await del2TierCache(`pma_expenses_${clientSheetId}*`);
       await invalidatePmaClientCache(clientSheetId, masterSheetId, ["outgoings", "views", "cash", "jobs"]);
-    } catch {}
+    } catch { }
   }
   if (redisClient?.isOpen) {
     try {
-      if (settings.customisation) {
+      if (settings.customisation || settings.crm || settings.accounting) {
         const cleanKey = String(clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
         const setupKey = `pulse:setup:${cleanKey}`;
         let existingSetup = {};
@@ -1221,18 +1269,14 @@ export async function saveClientSettings({
           const rawSetup = await redisClient.get(setupKey);
           if (rawSetup) existingSetup = JSON.parse(rawSetup);
         } catch { }
-        const revFocus = String(settings.customisation.revenueFocus || "Revenue").trim();
-        const dcMode = revFocus === "Income"
-          ? "Pass-through"
-          : (settings.customisation.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
-        await redisClient.set(setupKey, JSON.stringify({
-          ...existingSetup,
+        const { nextSetup } = mergeCrmSpreadsheetIntoSetup(
+          existingSetup,
+          settings,
           clientName,
           masterSheetId,
-          revenueFocus: revFocus,
-          directCostsMode: dcMode,
-          sheetSyncedAt: savedAt
-        }));
+          savedAt
+        );
+        await redisClient.set(setupKey, JSON.stringify(nextSetup));
         const allClientKeys = await redisClient.keys("pulse:all_clients:*");
         if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
         clearAllClientsMemoryCache();

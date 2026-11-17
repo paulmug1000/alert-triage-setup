@@ -4,6 +4,8 @@ import { useRouter } from "next/router";
 import { SYSTEM_VERSION, getSystemCopyright } from "../../config/version";
 import { PmaTransitionSkeleton } from "../Skeleton";
 import { useModalScrollLock } from "../../hooks/useModalScrollLock";
+import GoogleSheetLinkModal from "../integrations/GoogleSheetLinkModal";
+import ExcelLinkModal from "../integrations/ExcelLinkModal";
 
 export default function PortalShell({
   clientName,
@@ -17,6 +19,10 @@ export default function PortalShell({
   hasCash = true,
   setupStatus = null,
   onPreviewSetup = null,
+  onRefreshSetupStatus = null,
+  oauthEvent = null,
+  masterSheetId = "",
+  clientSheetId = "",
   children
 }) {
   const router = useRouter();
@@ -24,6 +30,89 @@ export default function PortalShell({
   const [openDropdown, setOpenDropdown] = useState(null); // 'perf' | 'cash' | 'keyData' | 'analysis' | 'user' | 'client' | null
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [navigatingToPma, setNavigatingToPma] = useState(false);
+  const [googleSheetModalOpen, setGoogleSheetModalOpen] = useState(false);
+  const [googleSheetAutoOpenPicker, setGoogleSheetAutoOpenPicker] = useState(false);
+  const [googleSheetConnectedAccount, setGoogleSheetConnectedAccount] = useState("");
+  const [excelModalOpen, setExcelModalOpen] = useState(false);
+  const [portalBanner, setPortalBanner] = useState(null);
+  const handledOauthRef = useRef("");
+
+  const getToolDisplayName = (tool) => {
+    const t = String(tool || "").trim().toLowerCase();
+    const map = {
+      xero: "Xero",
+      quickbooks: "QuickBooks",
+      hubspot: "HubSpot",
+      clickup: "ClickUp",
+      monday: "Monday",
+      pipedrive: "Pipedrive",
+      close: "Close",
+      capsule: "Capsule",
+      googlesheet: "Google Sheet",
+      excel: "Microsoft Excel"
+    };
+    return map[t] || (t ? t.charAt(0).toUpperCase() + t.slice(1) : "tool");
+  };
+
+  const computeRedirectBack = () => {
+    if (typeof window === "undefined") {
+      return `/pulse${clientName ? `?client=${encodeURIComponent(clientName)}` : ""}`;
+    }
+    const p = new URLSearchParams(window.location.search);
+    ["integration", "tool", "status", "error", "error_description", "modal", "account", "tenant", "site", "org", "portal", "workspace", "company", "url", "message"].forEach(k => p.delete(k));
+    if (clientName && !p.get("client")) {
+      p.set("client", clientName);
+    }
+    const qs = p.toString();
+    return `${window.location.pathname}${qs ? `?${qs}` : ""}`;
+  };
+
+  useEffect(() => {
+    if (!oauthEvent?.tool || !oauthEvent?.status) return;
+    const eventKey = `${oauthEvent.tool}|${oauthEvent.status}|${oauthEvent.modal}|${oauthEvent.message}`;
+    if (handledOauthRef.current === eventKey) return;
+    handledOauthRef.current = eventKey;
+
+    const cleanTool = String(oauthEvent.tool).toLowerCase();
+    const displayName = getToolDisplayName(cleanTool);
+    const isGoogleSheetPickerReturn =
+      cleanTool === "googlesheet" &&
+      (oauthEvent.status === "oauth_authorized" || oauthEvent.modal === "picker");
+
+    if (isGoogleSheetPickerReturn) {
+      if (oauthEvent.account) {
+        setGoogleSheetConnectedAccount(oauthEvent.account);
+      }
+      setGoogleSheetAutoOpenPicker(true);
+      setGoogleSheetModalOpen(true);
+    } else if (oauthEvent.status === "success") {
+      setPortalBanner({
+        type: "success",
+        message: `Connected ${displayName} successfully.`
+      });
+      onRefreshSetupStatus?.();
+    } else if (oauthEvent.status === "denied") {
+      setPortalBanner({
+        type: "warning",
+        message: `Authorisation for ${displayName} was cancelled. No changes were made to your account.`
+      });
+    } else if (oauthEvent.status === "error") {
+      if (cleanTool === "excel" && oauthEvent.url) {
+        setExcelModalOpen(true);
+      }
+      setPortalBanner({
+        type: "error",
+        message: `Could not complete the connection to ${displayName}${oauthEvent.message ? `: ${oauthEvent.message}` : ""}.`
+      });
+    }
+
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      ["integration", "tool", "status", "error", "error_description", "modal", "account", "tenant", "site", "org", "portal", "workspace", "company", "url", "message"].forEach(k => p.delete(k));
+      const qs = p.toString();
+      window.history.replaceState({}, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
+    }
+  }, [oauthEvent, onRefreshSetupStatus]);
 
   const isSeniorRestricted = Boolean(
     user?.isSenior ||
@@ -831,8 +920,26 @@ export default function PortalShell({
                               <button
                                 type="button"
                                 onClick={() => {
-                                  const connectUrl = `/api/integrations/${encodeURIComponent(t.tool)}/connect?clientName=${encodeURIComponent(clientName)}&redirectBack=${encodeURIComponent("/pulse")}`;
-                                  window.location.href = connectUrl;
+                                  setOpenDropdown(null);
+                                  if (t.tool === "excel" && !t.hasLinkedSpreadsheet) {
+                                    setExcelModalOpen(true);
+                                    return;
+                                  }
+                                  if (t.tool === "googlesheet" && !t.hasLinkedSpreadsheet) {
+                                    setGoogleSheetModalOpen(true);
+                                    return;
+                                  }
+                                  const q = new URLSearchParams({
+                                    clientName: clientName || "",
+                                    clientKey: clientName || "",
+                                    redirectBack: computeRedirectBack()
+                                  });
+                                  if (masterSheetId) q.set("masterSheetId", masterSheetId);
+                                  if (clientSheetId) q.set("clientSheetId", clientSheetId);
+                                  if ((t.tool === "excel" || t.tool === "googlesheet") && t.hasLinkedSpreadsheet) {
+                                    q.set("reconnectOnly", "1");
+                                  }
+                                  window.location.href = `/api/integrations/${encodeURIComponent(t.tool)}/connect?${q.toString()}`;
                                 }}
                                 style={{
                                   background: t.needsReconnect ? "#fee2e2" : "#eff6ff",
@@ -1094,9 +1201,91 @@ export default function PortalShell({
       {/* Main Content Area */}
       <main style={{ flex: 1, width: "100%", padding: 0 }}>
         <div className="portal-main-content-wrapper" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "1.5rem 2rem", boxSizing: "border-box" }}>
+          {portalBanner && (
+            <div
+              style={{
+                marginBottom: "16px",
+                padding: "12px 16px",
+                borderRadius: "8px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "12px",
+                fontSize: "13.5px",
+                fontWeight: 500,
+                background: portalBanner.type === "error" ? "#fef2f2" : portalBanner.type === "warning" ? "#fffbeb" : "#ecfdf5",
+                color: portalBanner.type === "error" ? "#991b1b" : portalBanner.type === "warning" ? "#92400e" : "#065f46",
+                border: `1px solid ${portalBanner.type === "error" ? "#fecaca" : portalBanner.type === "warning" ? "#fde68a" : "#a7f3d0"}`
+              }}
+            >
+              <span>{portalBanner.message}</span>
+              <button
+                type="button"
+                onClick={() => setPortalBanner(null)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "inherit",
+                  cursor: "pointer",
+                  fontSize: "15px",
+                  fontWeight: 700,
+                  padding: "0 4px"
+                }}
+                aria-label="Dismiss notification"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           {children}
         </div>
       </main>
+
+      {googleSheetModalOpen && (
+        <GoogleSheetLinkModal
+          isOpen={googleSheetModalOpen}
+          onClose={() => {
+            setGoogleSheetModalOpen(false);
+            setGoogleSheetAutoOpenPicker(false);
+          }}
+          clientName={clientName}
+          masterSheetId={masterSheetId}
+          clientSheetId={clientSheetId}
+          connectedAccount={googleSheetConnectedAccount}
+          autoOpenPicker={googleSheetAutoOpenPicker}
+          redirectBack={computeRedirectBack()}
+          isClientView={true}
+          onSuccess={async () => {
+            setGoogleSheetAutoOpenPicker(false);
+            await onRefreshSetupStatus?.();
+            setPortalBanner({
+              type: "success",
+              message: "Connected Google Sheet successfully."
+            });
+          }}
+        />
+      )}
+
+      {excelModalOpen && (
+        <ExcelLinkModal
+          isOpen={excelModalOpen}
+          onClose={() => setExcelModalOpen(false)}
+          clientName={clientName}
+          masterSheetId={masterSheetId}
+          clientSheetId={clientSheetId}
+          redirectBack={computeRedirectBack()}
+          isClientView={true}
+          initialError={oauthEvent?.tool === "excel" && oauthEvent?.status === "error" ? oauthEvent.message : null}
+          initialUrl={oauthEvent?.tool === "excel" ? oauthEvent.url : ""}
+          onSuccess={async () => {
+            await onRefreshSetupStatus?.();
+            setPortalBanner({
+              type: "success",
+              message: "Connected Microsoft Excel successfully."
+            });
+          }}
+        />
+      )}
 
       {/* Responsive Styles Injection */}
       <style jsx global>{`

@@ -10,13 +10,16 @@ export default function ExcelLinkModal({
   currentConfig,
   onSuccess,
   isClientView = false,
-  redirectBack = "/pma?nav=integrations"
+  redirectBack = "/pma?nav=integrations",
+  initialError = null,
+  initialUrl = ""
 }) {
   const resolvedClientName = client?.clientName || clientName || "";
   const resolvedMasterSheetId = client?.masterSheetId || masterSheetId || "";
   const resolvedClientSheetId = client?.clientSheetId || clientSheetId || "";
 
   const [excelUrl, setExcelUrl] = useState(() => {
+    if (initialUrl) return initialUrl;
     if (typeof window !== "undefined") {
       const pUrl = new URLSearchParams(window.location.search).get("url");
       if (pUrl) return pUrl;
@@ -36,7 +39,7 @@ export default function ExcelLinkModal({
       currentConfig?.url ||
       client?.integrations?.excel?.metadata?.url
     );
-    const hasQueryUrl = typeof window !== "undefined" && Boolean(new URLSearchParams(window.location.search).get("url"));
+    const hasQueryUrl = Boolean(initialUrl) || (typeof window !== "undefined" && Boolean(new URLSearchParams(window.location.search).get("url")));
     return (hasConfigUrl && Boolean(currentConfig?.connected || client?.integrations?.excel?.connected)) || hasQueryUrl;
   });
   const [driveId, setDriveId] = useState(currentConfig?.metadata?.driveId || currentConfig?.driveId || "");
@@ -56,6 +59,7 @@ export default function ExcelLinkModal({
   const [inspectionData, setInspectionData] = useState(null);
   const [linking, setLinking] = useState(false);
   const [error, setError] = useState(() => {
+    if (initialError) return initialError;
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
       const isExcel = p.get("integration") === "excel" || p.get("tool") === "excel";

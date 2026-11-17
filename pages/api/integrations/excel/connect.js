@@ -6,6 +6,7 @@
 
 import crypto from "crypto";
 import { buildExcelAuthUrl, discoverSharePointTenantId } from "../../../../services/excelIntegrationService.js";
+import { getIntegrationTokens } from "../../../../services/vaultService.js";
 import { getSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet, matchesClientName } from "../../../../services/userPermissions.js";
@@ -63,7 +64,17 @@ export default async function handler(req, res) {
 
     const nonce = crypto.randomBytes(16).toString("hex");
     const pendingUrl = (req.query?.url || req.body?.url || "").trim();
-    const azureTenantId = pendingUrl ? await discoverSharePointTenantId(pendingUrl) : "";
+    let azureTenantId = pendingUrl ? await discoverSharePointTenantId(pendingUrl) : "";
+    if (!azureTenantId && (clientKey || clientName || masterSheetId)) {
+      const existingGrant = await getIntegrationTokens({
+        clientKey: clientKey || clientName,
+        masterSheetId,
+        tool: "excel"
+      }).catch(() => null);
+      azureTenantId =
+        existingGrant?.metadata?.azureTenantId ||
+        (existingGrant?.metadata?.url ? await discoverSharePointTenantId(existingGrant.metadata.url) : "");
+    }
 
     const statePayload = {
       nonce,

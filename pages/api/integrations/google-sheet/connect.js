@@ -70,7 +70,8 @@ export default async function handler(req, res) {
       masterSheetId: masterSheetId || "",
       clientSheetId: clientSheetId || "",
       redirectBack: sanitizedRedirectBack,
-      url: (req.query?.url || req.body?.url || "").trim()
+      url: (req.query?.url || req.body?.url || "").trim(),
+      reconnectOnly: req.query?.reconnectOnly === "1" || req.body?.reconnectOnly === true
     };
 
     const stateToken = createSignedOAuthState(statePayload);

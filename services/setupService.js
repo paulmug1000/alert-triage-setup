@@ -549,32 +549,87 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId,
       tool: cleanTool
     });
 
-    if (!status?.connected && cleanLower.includes("sheet")) {
+    if (!status?.connected && !status?.reconnectRequired && cleanLower.includes("sheet")) {
       if (config?.googleSheetUrl && config.googleSheetUrl.startsWith("http")) {
         status = { connected: true, status: "connected", tenantName: config.googleSheetTab || "Pipeline" };
-      }
-    } else if (!status?.connected && cleanLower.includes("excel")) {
-      if (config?.excel?.fileId || config?.excel?.driveId) {
-        status = { connected: true, status: "connected", tenantName: config.excel?.sheetName || "Sheet1" };
       }
     }
 
     let hasLinkedSpreadsheet = true;
-    if (cleanTool === "googlesheet") {
-      hasLinkedSpreadsheet = Boolean(
-        config?.googleSheetUrl ||
-        status?.metadata?.url ||
-        status?.metadata?.spreadsheetId ||
-        status?.metadata?.spreadsheetTitle
-      );
-    } else if (cleanTool === "excel") {
-      hasLinkedSpreadsheet = Boolean(
-        config?.excel?.fileId ||
-        config?.excel?.driveId ||
-        status?.metadata?.fileId ||
-        status?.metadata?.driveId ||
-        status?.metadata?.url
-      );
+    const computeHasLinkedSpreadsheet = () => {
+      if (cleanTool === "googlesheet") {
+        return Boolean(
+          config?.googleSheetUrl ||
+          status?.metadata?.url ||
+          status?.metadata?.spreadsheetId ||
+          status?.metadata?.spreadsheetTitle
+        );
+      }
+      if (cleanTool === "excel") {
+        return Boolean(
+          config?.excel?.fileId ||
+          config?.excel?.driveId ||
+          status?.metadata?.fileId ||
+          status?.metadata?.driveId ||
+          status?.metadata?.url
+        );
+      }
+      return true;
+    };
+
+    hasLinkedSpreadsheet = computeHasLinkedSpreadsheet();
+
+    // Fallback: if Redis config/Vault metadata hasn't cached KeyInfo spreadsheet coords yet, read once from Master Sheet
+    if (!hasLinkedSpreadsheet && (cleanTool === "excel" || cleanTool === "googlesheet")) {
+      try {
+        const sheets = await getSheetsClient();
+        if (!resolvedMasterSheetId) {
+          resolvedMasterSheetId = await resolveMasterSheetIdByClientName(sheets, clientName);
+        }
+        if (resolvedMasterSheetId) {
+          const range = cleanTool === "excel" ? "KeyInfo!X36:X38" : "KeyInfo!X11:X12";
+          const kiRes = await withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: resolvedMasterSheetId,
+              range
+            })
+          );
+          const vals = kiRes.data.values || [];
+          if (cleanTool === "excel") {
+            const driveId = String(vals[0]?.[0] || "").trim();
+            const fileId = String(vals[1]?.[0] || "").trim();
+            const sheetName = String(vals[2]?.[0] || "").trim();
+            if (driveId || fileId) {
+              config = {
+                ...(config || {}),
+                clientName,
+                masterSheetId: resolvedMasterSheetId,
+                excel: { ...(config?.excel || {}), driveId, fileId, sheetName }
+              };
+              await redisClient.set(redisKey, JSON.stringify(config)).catch(() => { });
+            }
+          } else {
+            const gUrl = String(vals[0]?.[0] || "").trim();
+            const gTab = String(vals[1]?.[0] || "").trim();
+            if (gUrl && gUrl.startsWith("http")) {
+              config = {
+                ...(config || {}),
+                clientName,
+                masterSheetId: resolvedMasterSheetId,
+                googleSheetUrl: gUrl,
+                googleSheetTab: gTab
+              };
+              await redisClient.set(redisKey, JSON.stringify(config)).catch(() => { });
+              if (!status?.connected && !status?.reconnectRequired) {
+                status = { connected: true, status: "connected", tenantName: gTab || "Pipeline" };
+              }
+            }
+          }
+          hasLinkedSpreadsheet = computeHasLinkedSpreadsheet();
+        }
+      } catch (_) {
+        // Non-fatal Master Sheet fallback note
+      }
     }
 
     const isConnected = Boolean(status?.connected) && hasLinkedSpreadsheet;
@@ -594,6 +649,7 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId,
       name: toolName,
       type,
       connected: isConnected,
+      hasLinkedSpreadsheet,
       needsReconnect,
       hasEverConnected,
       status: status?.status || (isConnected ? "connected" : "disconnected"),

@@ -9,7 +9,7 @@ import {
   inspectExcelWorkbook,
   linkExcelToClient
 } from "../../../../services/excelIntegrationService.js";
-import { saveIntegrationTokens } from "../../../../services/vaultService.js";
+import { saveIntegrationTokens, getIntegrationTokens } from "../../../../services/vaultService.js";
 import { verifySignedOAuthState } from "../../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
@@ -100,12 +100,25 @@ export default async function handler(req, res) {
 
     const accountLabel = userEmail ? `${displayName ? displayName + " " : ""}(${userEmail})` : "Microsoft 365 Account";
 
-    // 5. If an Excel URL was submitted, verify access to the workbook via Microsoft Graph with user's token
+    const existingGrant = await getIntegrationTokens({
+      clientKey,
+      masterSheetId,
+      tool: "excel"
+    }).catch(() => null);
+
+    // 5. Verify access to the workbook (using submitted URL, or previously linked driveId/fileId on simple reconnect)
+    const existingDriveId = existingGrant?.metadata?.driveId || "";
+    const existingFileId = existingGrant?.metadata?.fileId || "";
+    const existingSheetName = existingGrant?.metadata?.sheetName || "";
     let inspectData = null;
-    if (statePayload?.url) {
+
+    if (statePayload?.url || (existingDriveId && existingFileId)) {
       try {
         inspectData = await inspectExcelWorkbook({
-          url: statePayload.url,
+          url: statePayload?.url || undefined,
+          driveId: statePayload?.url ? undefined : existingDriveId,
+          fileId: statePayload?.url ? undefined : existingFileId,
+          sheetName: statePayload?.url ? "" : existingSheetName,
           token: tokens.accessToken,
           clientKey
         });
@@ -113,7 +126,7 @@ export default async function handler(req, res) {
         console.warn(`⚠️ Excel file access verification failed for ${clientName} (${userEmail}):`, accessErr.message);
         const separator = returnUrl.includes("?") ? "&" : "?";
         const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
-        const pendingUrl = `&url=${encodeURIComponent(statePayload.url)}`;
+        const pendingUrl = statePayload?.url ? `&url=${encodeURIComponent(statePayload.url)}` : "";
         const helpfulMsg = accessErr.message
           ? (userEmail && !accessErr.message.includes(userEmail)
               ? `${accessErr.message} (Signed-in Microsoft 365 account: ${userEmail})`
@@ -125,7 +138,8 @@ export default async function handler(req, res) {
       }
     }
 
-    // 6. Encrypt and store tokens in Central Vault ONLY after file access is verified
+    // 6. Encrypt and store tokens in Central Vault ONLY after file access is verified (preserving existing link metadata on reconnect)
+    const prevMeta = existingGrant?.metadata || {};
     await saveIntegrationTokens({
       clientKey,
       clientName,
@@ -133,14 +147,15 @@ export default async function handler(req, res) {
       tool: "excel",
       tokens,
       metadata: {
+        ...prevMeta,
         userEmail,
         displayName,
         accountName: accountLabel,
         tenantName: accountLabel,
-        azureTenantId,
-        url: statePayload?.url || "",
-        driveId: inspectData?.driveId || "",
-        fileId: inspectData?.fileId || ""
+        azureTenantId: azureTenantId || prevMeta.azureTenantId || "",
+        url: statePayload?.url || prevMeta.url || "",
+        driveId: inspectData?.driveId || prevMeta.driveId || "",
+        fileId: inspectData?.fileId || prevMeta.fileId || ""
       }
     });
 

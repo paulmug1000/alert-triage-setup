@@ -2769,7 +2769,7 @@ export default function ClientSettingsView({
             Loading settings for {selectedClientName}...
           </div>
           <div style={{ marginTop: "6px", fontSize: "13px", color: "#64748B" }}>
-            Retrieving configuration parameters and sheet mappings
+            Retrieving configuration parameters and  mappings
           </div>
         </div>
       )}
@@ -5488,128 +5488,128 @@ export default function ClientSettingsView({
                         <span>Swipe horizontally to view all status mapping columns</span>
                       </div>
                       <div style={{ border: "1px solid #E2E8F0", borderRadius: "8px", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                      <table style={{ width: "100%", minWidth: "560px", borderCollapse: "collapse", fontSize: "12px", textAlign: "left" }}>
-                        <thead>
-                          <tr style={{ background: "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
-                            <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569" }}>CRM status / stage name</th>
-                            <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569", width: "140px" }}>
-                              <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                                <span>Likelihood %</span>
-                                {renderAdminNote("crm.statusTable.likelihood")}
-                              </div>
-                            </th>
-                            <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569", width: "210px" }}>
-                              <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                                <span>Start date rule</span>
-                                {renderAdminNote("crm.statusTable.startDateRule")}
-                              </div>
-                            </th>
-                            <th style={{ padding: "8px 12px", width: "60px" }}></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {settings.crmStatusMapping.map((item, idx) => {
-                            const isCrmStatus = item.fromCrm === true || (!item.isManual && knownCrmStatuses.has(String(item.status || "").trim().toLowerCase()));
-                            return (
-                              <tr key={idx} style={{ borderBottom: "1px solid #F1F5F9" }}>
-                                <td style={{ padding: "6px 12px" }}>
-                                  <input
-                                    type="text"
-                                    value={item.status || ""}
-                                    readOnly={isCrmStatus}
-                                    onChange={(e) => {
-                                      if (isCrmStatus) return;
-                                      const val = e.target.value;
-                                      updateSettingsField(prev => {
-                                        const next = [...prev.crmStatusMapping];
-                                        next[idx] = { ...next[idx], status: val };
-                                        return { ...prev, crmStatusMapping: next };
-                                      });
-                                    }}
-                                    placeholder={isCrmStatus ? "CRM Stage Name" : "e.g. Qualified, Presentation, Closed Won"}
-                                    title={isCrmStatus ? "CRM status name is pulled from CRM and is not editable" : "Manually added status name"}
-                                    style={{
-                                      width: "100%",
-                                      padding: "5px 8px",
-                                      borderRadius: "4px",
-                                      border: isCrmStatus ? "1px solid #E2E8F0" : "1px solid #CBD5E1",
-                                      fontSize: "12px",
-                                      boxSizing: "border-box",
-                                      background: isCrmStatus ? "#F1F5F9" : "#FFFFFF",
-                                      color: isCrmStatus ? "#475569" : "#0F172A",
-                                      cursor: isCrmStatus ? "not-allowed" : "text"
-                                    }}
-                                  />
-                                </td>
-                                <td style={{ padding: "6px 12px" }}>
-                                  <input
-                                    type="text"
-                                    value={item.likelihood || ""}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      updateSettingsField(prev => {
-                                        const next = [...prev.crmStatusMapping];
-                                        next[idx] = { ...next[idx], likelihood: val };
-                                        return { ...prev, crmStatusMapping: next };
-                                      });
-                                    }}
-                                    placeholder="e.g. 50%"
-                                    style={{ width: "100%", padding: "5px 8px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                                  />
-                                </td>
-                                <td style={{ padding: "6px 12px" }}>
-                                  <select
-                                    value={item.startDateRule || ""}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      updateSettingsField(prev => {
-                                        const next = [...prev.crmStatusMapping];
-                                        next[idx] = { ...next[idx], startDateRule: val };
-                                        return { ...prev, crmStatusMapping: next };
-                                      });
-                                    }}
-                                    style={{
-                                      width: "100%",
-                                      padding: "5px 8px",
-                                      borderRadius: "4px",
-                                      border: "1px solid #CBD5E1",
-                                      fontSize: "12px",
-                                      boxSizing: "border-box",
-                                      background: "#FFFFFF",
-                                      color: item.startDateRule ? "#0F172A" : "#64748B"
-                                    }}
-                                  >
-                                    <option value="">-- None --</option>
-                                    {CRM_START_DATE_RULES.map(r => (
-                                      <option key={r} value={r}>
-                                        {r} {r === "1" ? "month" : "months"} in the future
-                                      </option>
-                                    ))}
-                                  </select>
-                                </td>
-                                <td style={{ padding: "6px 12px", textAlign: "right" }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      updateSettingsField(prev => ({
-                                        ...prev,
-                                        crmStatusMapping: prev.crmStatusMapping.filter((_, i) => i !== idx)
-                                      }));
-                                    }}
-                                    style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: "14px" }}
-                                    title="Delete row"
-                                  >
-                                    ✕
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </>
-                )}
+                        <table style={{ width: "100%", minWidth: "560px", borderCollapse: "collapse", fontSize: "12px", textAlign: "left" }}>
+                          <thead>
+                            <tr style={{ background: "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
+                              <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569" }}>CRM status / stage name</th>
+                              <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569", width: "140px" }}>
+                                <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                  <span>Likelihood %</span>
+                                  {renderAdminNote("crm.statusTable.likelihood")}
+                                </div>
+                              </th>
+                              <th style={{ padding: "8px 12px", fontWeight: "600", color: "#475569", width: "210px" }}>
+                                <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                  <span>Start date rule</span>
+                                  {renderAdminNote("crm.statusTable.startDateRule")}
+                                </div>
+                              </th>
+                              <th style={{ padding: "8px 12px", width: "60px" }}></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {settings.crmStatusMapping.map((item, idx) => {
+                              const isCrmStatus = item.fromCrm === true || (!item.isManual && knownCrmStatuses.has(String(item.status || "").trim().toLowerCase()));
+                              return (
+                                <tr key={idx} style={{ borderBottom: "1px solid #F1F5F9" }}>
+                                  <td style={{ padding: "6px 12px" }}>
+                                    <input
+                                      type="text"
+                                      value={item.status || ""}
+                                      readOnly={isCrmStatus}
+                                      onChange={(e) => {
+                                        if (isCrmStatus) return;
+                                        const val = e.target.value;
+                                        updateSettingsField(prev => {
+                                          const next = [...prev.crmStatusMapping];
+                                          next[idx] = { ...next[idx], status: val };
+                                          return { ...prev, crmStatusMapping: next };
+                                        });
+                                      }}
+                                      placeholder={isCrmStatus ? "CRM Stage Name" : "e.g. Qualified, Presentation, Closed Won"}
+                                      title={isCrmStatus ? "CRM status name is pulled from CRM and is not editable" : "Manually added status name"}
+                                      style={{
+                                        width: "100%",
+                                        padding: "5px 8px",
+                                        borderRadius: "4px",
+                                        border: isCrmStatus ? "1px solid #E2E8F0" : "1px solid #CBD5E1",
+                                        fontSize: "12px",
+                                        boxSizing: "border-box",
+                                        background: isCrmStatus ? "#F1F5F9" : "#FFFFFF",
+                                        color: isCrmStatus ? "#475569" : "#0F172A",
+                                        cursor: isCrmStatus ? "not-allowed" : "text"
+                                      }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 12px" }}>
+                                    <input
+                                      type="text"
+                                      value={item.likelihood || ""}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        updateSettingsField(prev => {
+                                          const next = [...prev.crmStatusMapping];
+                                          next[idx] = { ...next[idx], likelihood: val };
+                                          return { ...prev, crmStatusMapping: next };
+                                        });
+                                      }}
+                                      placeholder="e.g. 50%"
+                                      style={{ width: "100%", padding: "5px 8px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 12px" }}>
+                                    <select
+                                      value={item.startDateRule || ""}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        updateSettingsField(prev => {
+                                          const next = [...prev.crmStatusMapping];
+                                          next[idx] = { ...next[idx], startDateRule: val };
+                                          return { ...prev, crmStatusMapping: next };
+                                        });
+                                      }}
+                                      style={{
+                                        width: "100%",
+                                        padding: "5px 8px",
+                                        borderRadius: "4px",
+                                        border: "1px solid #CBD5E1",
+                                        fontSize: "12px",
+                                        boxSizing: "border-box",
+                                        background: "#FFFFFF",
+                                        color: item.startDateRule ? "#0F172A" : "#64748B"
+                                      }}
+                                    >
+                                      <option value="">-- None --</option>
+                                      {CRM_START_DATE_RULES.map(r => (
+                                        <option key={r} value={r}>
+                                          {r} {r === "1" ? "month" : "months"} in the future
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td style={{ padding: "6px 12px", textAlign: "right" }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        updateSettingsField(prev => ({
+                                          ...prev,
+                                          crmStatusMapping: prev.crmStatusMapping.filter((_, i) => i !== idx)
+                                        }));
+                                      }}
+                                      style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: "14px" }}
+                                      title="Delete row"
+                                    >
+                                      ✕
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -6556,69 +6556,69 @@ export default function ClientSettingsView({
                                     lowerLabel.includes("missing job");
                                   const isLikelihoodRule = lowerLabel.includes("likel");
                                   return (
-                                  <tr key={rIdx} style={{ borderBottom: "1px solid #F1F5F9" }}>
-                                    <td style={{ padding: "6px 10px", color: "#334155", fontWeight: "500" }}>
-                                      <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                                        <span>{r.label}</span>
-                                        {isMissingJobRule && renderAdminNote("automation.crm.row.crmMissingJob")}
-                                        {isLikelihoodRule && renderAdminNote("automation.crm.row.likelihoodMismatch")}
-                                      </span>
-                                    </td>
-                                    <td style={{ padding: "6px 10px" }}>
-                                      <select
-                                        value={r.gasAction || "Include"}
-                                        onChange={(e) => {
-                                          const val = e.target.value;
-                                          updateSettingsField(prev => {
-                                            const nextRules = [...(prev.automation?.crm?.rules?.[table.key] || [])];
-                                            nextRules[rIdx] = { ...nextRules[rIdx], gasAction: val };
-                                            return {
-                                              ...prev,
-                                              automation: {
-                                                ...prev.automation,
-                                                crm: {
-                                                  ...prev.automation.crm,
-                                                  rules: { ...prev.automation.crm.rules, [table.key]: nextRules }
+                                    <tr key={rIdx} style={{ borderBottom: "1px solid #F1F5F9" }}>
+                                      <td style={{ padding: "6px 10px", color: "#334155", fontWeight: "500" }}>
+                                        <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                          <span>{r.label}</span>
+                                          {isMissingJobRule && renderAdminNote("automation.crm.row.crmMissingJob")}
+                                          {isLikelihoodRule && renderAdminNote("automation.crm.row.likelihoodMismatch")}
+                                        </span>
+                                      </td>
+                                      <td style={{ padding: "6px 10px" }}>
+                                        <select
+                                          value={r.gasAction || "Include"}
+                                          onChange={(e) => {
+                                            const val = e.target.value;
+                                            updateSettingsField(prev => {
+                                              const nextRules = [...(prev.automation?.crm?.rules?.[table.key] || [])];
+                                              nextRules[rIdx] = { ...nextRules[rIdx], gasAction: val };
+                                              return {
+                                                ...prev,
+                                                automation: {
+                                                  ...prev.automation,
+                                                  crm: {
+                                                    ...prev.automation.crm,
+                                                    rules: { ...prev.automation.crm.rules, [table.key]: nextRules }
+                                                  }
                                                 }
-                                              }
-                                            };
-                                          });
-                                        }}
-                                        style={{ padding: "3px 6px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "11px", fontWeight: "600" }}
-                                      >
-                                        {DISCREPANCY_GAS_OPTIONS.map(opt => (
-                                          <option key={opt} value={opt}>{opt}</option>
-                                        ))}
-                                      </select>
-                                    </td>
-                                    <td style={{ padding: "6px 10px" }}>
-                                      <select
-                                        value={r.pmaAction || "Include"}
-                                        onChange={(e) => {
-                                          const val = e.target.value;
-                                          updateSettingsField(prev => {
-                                            const nextRules = [...(prev.automation?.crm?.rules?.[table.key] || [])];
-                                            nextRules[rIdx] = { ...nextRules[rIdx], pmaAction: val };
-                                            return {
-                                              ...prev,
-                                              automation: {
-                                                ...prev.automation,
-                                                crm: {
-                                                  ...prev.automation.crm,
-                                                  rules: { ...prev.automation.crm.rules, [table.key]: nextRules }
+                                              };
+                                            });
+                                          }}
+                                          style={{ padding: "3px 6px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "11px", fontWeight: "600" }}
+                                        >
+                                          {DISCREPANCY_GAS_OPTIONS.map(opt => (
+                                            <option key={opt} value={opt}>{opt}</option>
+                                          ))}
+                                        </select>
+                                      </td>
+                                      <td style={{ padding: "6px 10px" }}>
+                                        <select
+                                          value={r.pmaAction || "Include"}
+                                          onChange={(e) => {
+                                            const val = e.target.value;
+                                            updateSettingsField(prev => {
+                                              const nextRules = [...(prev.automation?.crm?.rules?.[table.key] || [])];
+                                              nextRules[rIdx] = { ...nextRules[rIdx], pmaAction: val };
+                                              return {
+                                                ...prev,
+                                                automation: {
+                                                  ...prev.automation,
+                                                  crm: {
+                                                    ...prev.automation.crm,
+                                                    rules: { ...prev.automation.crm.rules, [table.key]: nextRules }
+                                                  }
                                                 }
-                                              }
-                                            };
-                                          });
-                                        }}
-                                        style={{ padding: "3px 6px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "11px", fontWeight: "600" }}
-                                      >
-                                        {DISCREPANCY_PMA_OPTIONS.map(opt => (
-                                          <option key={opt} value={opt}>{opt}</option>
-                                        ))}
-                                      </select>
-                                    </td>
-                                  </tr>
+                                              };
+                                            });
+                                          }}
+                                          style={{ padding: "3px 6px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "11px", fontWeight: "600" }}
+                                        >
+                                          {DISCREPANCY_PMA_OPTIONS.map(opt => (
+                                            <option key={opt} value={opt}>{opt}</option>
+                                          ))}
+                                        </select>
+                                      </td>
+                                    </tr>
                                   );
                                 })}
                               </tbody>

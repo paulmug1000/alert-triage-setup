@@ -1818,15 +1818,19 @@ export function evaluateCRMComp(grids) {
   setCell(crmComp, 4, 173, dateHeader5); // FR5
 
   if (isJobCosting) {
-    // Ensure JobCosting headers in Row 5 (BO, BP, BR and FT, FU, FW, HB, HC)
-    if (isBlankCell(getCell(crmComp, 4, 66))) setCell(crmComp, 4, 66, "Date job will start"); // BO5
-    if (isBlankCell(getCell(crmComp, 4, 67))) setCell(crmComp, 4, 67, "Date job will end");   // BP5
-    if (isBlankCell(getCell(crmComp, 4, 69))) setCell(crmComp, 4, 69, "Job revenue");         // BR5
-    if (isBlankCell(getCell(crmComp, 4, 175))) setCell(crmComp, 4, 175, "Date job will start"); // FT5
-    if (isBlankCell(getCell(crmComp, 4, 176))) setCell(crmComp, 4, 176, "Date job will end");   // FU5
-    if (isBlankCell(getCell(crmComp, 4, 178))) setCell(crmComp, 4, 178, "Job revenue");         // FW5
-    if (isBlankCell(getCell(crmComp, 4, 209))) setCell(crmComp, 4, 209, "% likel.");            // HB5
-    if (isBlankCell(getCell(crmComp, 4, 210))) setCell(crmComp, 4, 210, "Copied to confirmed tab?"); // HC5
+    // Ensure JobCosting headers in Row 5 (BO, BP, BR and FT, FU, FW, HB, HC), healing any raw formula strings
+    const needsJobCostingHeader = (v) => isBlankCell(v) || String(v ?? "").trim().startsWith("=");
+    if (needsJobCostingHeader(getCell(crmComp, 4, 66))) setCell(crmComp, 4, 66, "Date job will start"); // BO5
+    if (needsJobCostingHeader(getCell(crmComp, 4, 67))) setCell(crmComp, 4, 67, "Date job will end");   // BP5
+    if (needsJobCostingHeader(getCell(crmComp, 4, 69))) setCell(crmComp, 4, 69, "Job revenue");         // BR5
+    if (needsJobCostingHeader(getCell(crmComp, 4, 175))) setCell(crmComp, 4, 175, "Date job will start"); // FT5
+    if (needsJobCostingHeader(getCell(crmComp, 4, 176))) setCell(crmComp, 4, 176, "Date job will end");   // FU5
+    if (needsJobCostingHeader(getCell(crmComp, 4, 178))) setCell(crmComp, 4, 178, "Job revenue");         // FW5
+    if (needsJobCostingHeader(getCell(crmComp, 4, 209))) setCell(crmComp, 4, 209, "% likel.");            // HB5
+    const hc5Val = String(getCell(crmComp, 4, 210) ?? "").trim();
+    if (needsJobCostingHeader(hc5Val) || hc5Val === "Total direct costs check") {
+      setCell(crmComp, 4, 210, "Copied to confirmed tab?"); // HC5
+    }
 
     // Ensure Row 4 Ignore flags on formula columns CP4 (93), CU4 (98), CV4 (99) and mirror CP4:CW4 -> GU4:HB4 (202..209)
     if (isBlankCell(getCell(crmComp, 3, 93))) setCell(crmComp, 3, 93, "Ignore");
@@ -2023,6 +2027,7 @@ export function evaluateCRMComp(grids) {
   const logicType = String(getCell(crmList, 1, 111) || "Or").trim().toLowerCase();
   const opMatch = (rawLike.match(/[<>=]+/) || [])[0] || "=";
   const rawValMatch = (rawLike.match(/[\d.]+/) || [])[0];
+  const hasLikeRule = Boolean(rawLike.trim() && rawValMatch);
   const likeTargetVal = rawValMatch ? Number(rawValMatch) / (rawLike.includes("%") ? 100 : 1) : 0;
   const flInclRegex = rawIncl.trim() ? new RegExp(rawIncl.trim().toLowerCase().replace(/\s*,\s*/g, "|"), "i") : null;
 
@@ -2050,14 +2055,24 @@ export function evaluateCRMComp(grids) {
     if (!isBlankCell(EU)) {
       const fbNum = gsN(toNumOrNull(FB) ?? FB);
       let likeCond = false;
-      if (opMatch === "<") likeCond = fbNum < likeTargetVal;
-      else if (opMatch === "<=") likeCond = fbNum <= likeTargetVal;
-      else if (opMatch === ">") likeCond = fbNum > likeTargetVal;
-      else if (opMatch === ">=") likeCond = fbNum >= likeTargetVal;
-      else if (opMatch === "=") likeCond = fbNum === likeTargetVal;
+      if (hasLikeRule) {
+        if (opMatch === "<") likeCond = fbNum < likeTargetVal;
+        else if (opMatch === "<=") likeCond = fbNum <= likeTargetVal;
+        else if (opMatch === ">") likeCond = fbNum > likeTargetVal;
+        else if (opMatch === ">=") likeCond = fbNum >= likeTargetVal;
+        else if (opMatch === "=") likeCond = fbNum === likeTargetVal;
+      } else if (logicType === "and" && flInclRegex) {
+        likeCond = true;
+      }
 
-      const statCond = flInclRegex ? flInclRegex.test(String(FC ?? "").toLowerCase()) : true;
-      rowIsConf = logicType === "or" ? (likeCond || statCond) : (likeCond && statCond);
+      // In OR mode an empty Status incl rule must evaluate to false (matching CRMList!CZ4),
+      // while in AND mode it acts as a no-op when a likelihood rule is configured.
+      const statCond = flInclRegex
+        ? flInclRegex.test(String(FC ?? "").toLowerCase())
+        : (logicType === "and" && hasLikeRule);
+      rowIsConf = (hasLikeRule || flInclRegex)
+        ? (logicType === "or" ? (likeCond || statCond) : (likeCond && statCond))
+        : false;
 
       if (isConfMode) {
         FL = rowIsConf ? "" : 1;

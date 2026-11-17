@@ -439,6 +439,21 @@ export async function toggleExpenseDelivery({
   return { success: true, sheetRow: rowNum, deliveryPct: newDelPct };
 }
 
+const isOutgoingsMonthlyCol = (colIdx) =>
+  (colIdx >= 6 && colIdx <= 17) || (colIdx >= 21 && colIdx <= 32) || (colIdx >= 36 && colIdx <= 47);
+
+async function invalidateExpensesCaches(clientSheetId) {
+  const cleanId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
+  const cacheKeys = new Set([`pma_expenses_${cleanId}`, `pma_expenses_${clientSheetId}`]);
+  try {
+    for (const k of cacheKeys) {
+      memoryCache.del(k);
+      if (redisClient?.isOpen) await redisClient.del(k);
+    }
+    await invalidatePmaClientCache(cleanId, null, ["outgoings", "views", "cash"]);
+  } catch { }
+}
+
 /**
  * Save a single monthly expense amount or multiple amounts, plus optional cell notes
  */
@@ -477,9 +492,6 @@ export async function saveExpenseAmount({
       throw new Error(`Cannot modify expenses for a reconciled month. Column ${c} is locked.`);
     }
   }
-
-  const isOutgoingsMonthlyCol = (colIdx) =>
-    (colIdx >= 6 && colIdx <= 17) || (colIdx >= 21 && colIdx <= 32) || (colIdx >= 36 && colIdx <= 47);
 
   const dataUpdates = [];
   if (monthlyAmounts && typeof monthlyAmounts === "object") {
@@ -560,13 +572,7 @@ export async function saveExpenseAmount({
     return { success: true, updated: 0 };
   }
 
-  // Invalidate cache
-  const cacheKey = `pma_expenses_${clientSheetId}`;
-  try {
-    memoryCache.del(cacheKey);
-    if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash"]);
-  } catch { }
+  await invalidateExpensesCaches(clientSheetId);
 
   await logPmaActivity({
     userEmail: userEmail || "system",
@@ -576,6 +582,142 @@ export async function saveExpenseAmount({
   });
 
   return { success: true, sheetRow: rowNum, updated: dataUpdates.length };
+}
+
+/**
+ * Batch save monthly expense amounts and cell notes across multiple rows and columns.
+ */
+export async function saveExpenseBatch({
+  clientName,
+  clientSheetId,
+  updates = [], // [{ sheetRow, colLetter, value }]
+  cellNotes = [], // [{ sheetRow, colLetter, note }]
+  userEmail,
+}) {
+  if (!clientSheetId) throw new Error("Client Sheet ID is required");
+
+  const currentData = await fetchExpensesData(clientName, clientSheetId, false);
+  const reconciledColLetters = new Set();
+  (currentData?.fyConfigs || []).forEach((fy) => {
+    (fy.monthCols || []).forEach((m) => {
+      if (m.isReconciled && m.colLetter) {
+        reconciledColLetters.add(m.colLetter.toUpperCase());
+      }
+    });
+  });
+
+  const systemRowSet = new Set([225, 226]);
+  (currentData?.expenses || []).forEach((exp) => {
+    if (exp.isSystemRow) systemRowSet.add(exp.sheetRow);
+  });
+
+  // Deduplicate by cell coordinate (last update wins)
+  const dedupedValues = new Map();
+  for (const up of updates || []) {
+    const rowNum = parseInt(up?.sheetRow, 10);
+    const cleanLetter = String(up?.colLetter || "").toUpperCase().trim();
+    if (isNaN(rowNum) || rowNum < 126 || rowNum > 224 || systemRowSet.has(rowNum)) continue;
+    if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
+    const colIdx = colLetterToNum(cleanLetter) - 1;
+    if (!isOutgoingsMonthlyCol(colIdx)) continue;
+    if (reconciledColLetters.has(cleanLetter)) {
+      throw new Error(`Cannot modify expenses for a reconciled month. Column ${cleanLetter} is locked.`);
+    }
+    const cleanVal = sanitizeFormulaInput(String(up?.value ?? "").trim());
+    dedupedValues.set(`${rowNum}_${cleanLetter}`, {
+      range: `Outgoings!${cleanLetter}${rowNum}`,
+      values: [[cleanVal]],
+    });
+  }
+
+  const dedupedNotes = new Map();
+  for (const cn of cellNotes || []) {
+    const rowNum = parseInt(cn?.sheetRow, 10);
+    const cleanLetter = String(cn?.colLetter || "").toUpperCase().trim();
+    if (isNaN(rowNum) || rowNum < 126 || rowNum > 224 || systemRowSet.has(rowNum)) continue;
+    if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
+    const colIdx = colLetterToNum(cleanLetter) - 1;
+    if (!isOutgoingsMonthlyCol(colIdx)) continue;
+    if (reconciledColLetters.has(cleanLetter)) {
+      throw new Error(`Cannot modify expenses for a reconciled month. Column ${cleanLetter} is locked.`);
+    }
+    dedupedNotes.set(`${rowNum}_${cleanLetter}`, {
+      rowNum,
+      colIdx,
+      note: String(cn?.note ?? ""),
+    });
+  }
+
+  const dataUpdates = Array.from(dedupedValues.values());
+  const noteItems = Array.from(dedupedNotes.values());
+
+  if (dataUpdates.length === 0 && noteItems.length === 0) {
+    return { success: true, savedValuesCount: 0, savedNotesCount: 0 };
+  }
+
+  const sheets = await getSheetsClient();
+
+  if (noteItems.length > 0) {
+    const gid = await getSheetGid(sheets, clientSheetId, "Outgoings");
+    const noteRequests = noteItems.map((item) => ({
+      updateCells: {
+        range: {
+          sheetId: gid,
+          startRowIndex: item.rowNum - 1,
+          endRowIndex: item.rowNum,
+          startColumnIndex: item.colIdx,
+          endColumnIndex: item.colIdx + 1,
+        },
+        rows: [{ values: [{ note: item.note }] }],
+        fields: "note",
+      },
+    }));
+
+    await withRetry(async () => {
+      return await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: clientSheetId,
+        _skipFormulaRecompute: dataUpdates.length > 0,
+        requestBody: {
+          requests: noteRequests,
+        },
+      });
+    });
+  }
+
+  if (dataUpdates.length > 0) {
+    await withRetry(async () => {
+      return await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: clientSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: dataUpdates,
+        },
+      });
+    });
+  }
+
+  await invalidateExpensesCaches(clientSheetId);
+
+  const summary = [];
+  if (dataUpdates.length > 0) {
+    summary.push(`${dataUpdates.length} cell${dataUpdates.length > 1 ? "s" : ""}`);
+  }
+  if (noteItems.length > 0) {
+    summary.push(`${noteItems.length} note${noteItems.length > 1 ? "s" : ""}`);
+  }
+
+  await logPmaActivity({
+    userEmail: userEmail || "system",
+    action: "UPDATE_EXPENSE_AMOUNTS",
+    clientName,
+    details: `Batch updated ${summary.join(" and ")} in Outgoings`,
+  });
+
+  return {
+    success: true,
+    savedValuesCount: dataUpdates.length,
+    savedNotesCount: noteItems.length,
+  };
 }
 
 /**

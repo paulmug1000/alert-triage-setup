@@ -4,6 +4,7 @@ import KeyInfoSettingsForm from "./KeyInfoSettingsForm";
 import AccountingSettingsSuggestionModal from "./setup/AccountingSettingsSuggestionModal";
 import CategoryMappingSuggestionModal from "./setup/CategoryMappingSuggestionModal";
 import CrmMappingSuggestionModal from "./setup/CrmMappingSuggestionModal";
+import MatchCrmPipelineModal from "./setup/MatchCrmPipelineModal";
 import UserManagementCard from "./UserManagementCard";
 
 export default function OnboardingChecklistView({
@@ -37,6 +38,7 @@ export default function OnboardingChecklistView({
   const [showAccountingModal, setShowAccountingModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showCrmModal, setShowCrmModal] = useState(false);
+  const [showCrmMatchModal, setShowCrmMatchModal] = useState(false);
 
   // Script IDs form state
   const [clientScriptId, setClientScriptId] = useState("");
@@ -113,7 +115,7 @@ export default function OnboardingChecklistView({
       if (isUserAdmin && ["p1_importrange_auth", "p1_gas_deployment", "p1_script_ids", "p5_add_users"].includes(task.id)) {
         return true;
       }
-      if (["p2_keyinfo_settings", "p3_pull_pl", "p3_other_expenses", "p4_crm_list_tab", "p4_eom_jobs"].includes(task.id)) {
+      if (["p2_keyinfo_settings", "p3_pull_pl", "p3_other_expenses", "p4_review_crm", "p4_crm_list_tab", "p4_eom_jobs"].includes(task.id)) {
         return true;
       }
       if (task.description && String(task.description).trim()) {
@@ -702,6 +704,38 @@ export default function OnboardingChecklistView({
           </div>
         )}
 
+        {/* Step 3: Review CRM data & match existing Pipeline jobs */}
+        {task.id === "p4_review_crm" && (
+          <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                  {isUserAdmin ? "Match CRM deals to existing Pipeline jobs" : "Match CRM deals to existing pipeline jobs"}
+                </span>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                  Matches incoming CRM deals against existing jobs without a Project code so duplicates are avoided on CRM sync.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCrmMatchModal(true)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                Match existing jobs
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Step 3: Set up CRMList mappings & definitions */}
         {task.id === "p4_crm_list_tab" && (
           <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
@@ -1171,9 +1205,23 @@ export default function OnboardingChecklistView({
         isOpen={showCrmModal}
         onClose={() => setShowCrmModal(false)}
         onApplied={() => {
-          handleAutoCompleteTask("p4_review_crm");
           handleAutoCompleteTask("p4_crm_list_tab");
           setFeedback({ type: "success", message: isUserAdmin ? "CRM field mappings and job definitions applied to Master Sheet CRMList." : "CRM field mappings and job definitions applied." });
+        }}
+      />
+
+      <MatchCrmPipelineModal
+        clientName={clientName}
+        masterSheetId={effectiveMasterSheetId}
+        isAdmin={isUserAdmin}
+        isOpen={showCrmMatchModal}
+        onClose={() => setShowCrmMatchModal(false)}
+        onApplied={(res) => {
+          handleAutoCompleteTask("p4_review_crm");
+          setFeedback({
+            type: "success",
+            message: `Linked ${res?.appliedCount ?? 0} existing pipeline job(s) to CRM Project codes.`,
+          });
         }}
       />
     </div>

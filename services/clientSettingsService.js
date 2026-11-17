@@ -994,14 +994,13 @@ export async function saveClientSettings({
       if (jcStyle === "JobCosting") {
         // Ensure CRMComp JobCosting headers & ignore flags are provisioned on Master
         masterUpdates.push(
-          { range: "CRMComp!BO5:BP5", values: [["=CP6", "=CU6"]] },
-          { range: "CRMComp!BR5", values: [["=CV6"]] },
+          { range: "CRMComp!BO5:BP5", values: [["Date job will start", "Date job will end"]] },
+          { range: "CRMComp!BR5", values: [["Job revenue"]] },
           { range: "CRMComp!CP4", values: [["Ignore"]] },
           { range: "CRMComp!CU4:CV4", values: [["Ignore", "Ignore"]] },
-          { range: "CRMComp!GU4:HB4", values: [["=CP4", "=CQ4", "=CR4", "=CS4", "=CT4", "=CU4", "=CV4", "=CW4"]] },
-          { range: "CRMComp!FT5:FU5", values: [["=GU6", "=GZ6"]] },
-          { range: "CRMComp!FW5", values: [["=HA6"]] },
-          { range: "CRMComp!HB5:HC5", values: [["=CW6", "Total direct costs check"]] }
+          { range: "CRMComp!FT5:FU5", values: [["Date job will start", "Date job will end"]] },
+          { range: "CRMComp!FW5", values: [["Job revenue"]] },
+          { range: "CRMComp!HB5:HC5", values: [["% likel.", "Copied to confirmed tab?"]] }
         );
 
         // If Client Sheet has not yet been provisioned with JobCosting headers in F1:AB1, provision headers & Row 2 formulas

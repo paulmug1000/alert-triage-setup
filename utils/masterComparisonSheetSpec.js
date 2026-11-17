@@ -425,7 +425,7 @@ const CRMCOMP_WIDTHS = buildWidthMap(267, [
   [["AH", "AI"], 94], [["AJ", "AK"], 77], ["AL", 88], ["AN", 30], ["AO", 69],
   ["AP", 116], ["AQ", 176], [["AR", "AS"], 79], [["AT", "AU"], 70], ["AV", 44],
   ["AW", 65], ["AX", 34], [["AY", "BF"], 43], ["BG", 23], ["BH", 53], ["BI", 48],
-  ["BJ", 158], ["BK", 259], ["BL", 77], [["BM", "BN"], 91], [["BO", "CO"], 12],
+  ["BJ", 158], ["BK", 259], ["BL", 77], [["BM", "BN"], 91], [["BO", "BP"], 80], ["BQ", 56], ["BR", 72], [["BS", "CO"], 20],
   [["CP", "CS"], 77], ["CT", 69], [["CU", "CV"], 77], ["CW", 56], ["CX", 104],
   [["CY", "DF"], 42], ["DG", 369], ["DM", 109], ["DN", 213], ["DO", 75],
   [["DP", "DQ"], 76], [["DR", "DS"], 70], ["DT", 64], ["DU", 65], [["DV", "DW"], 82],
@@ -434,7 +434,7 @@ const CRMCOMP_WIDTHS = buildWidthMap(267, [
   ["EQ", 89], ["ER", 41], ["ES", 33], ["ET", 46], ["EU", 74], ["EV", 114],
   ["EW", 192], [["EX", "EY"], 69], [["EZ", "FA"], 73], ["FB", 49], ["FC", 73],
   ["FD", 74], [["FE", "FL"], 51], ["FM", 45], ["FN", 48], ["FO", 158], ["FP", 217],
-  ["FQ", 74], [["FR", "FS"], 109], [["FT", "GT"], 25], [["GU", "GV"], 76], ["GW", 43],
+  ["FQ", 74], [["FR", "FS"], 109], [["FT", "FU"], 77], ["FV", 25], ["FW", 76], [["FX", "GT"], 25], [["GU", "GV"], 76], ["GW", 43],
   ["GX", 64], ["GY", 158], [["GZ", "HA"], 74], ["HB", 52], ["HC", 80], ["HD", 29],
   [["HE", "HT"], 40],
 ]);
@@ -500,7 +500,8 @@ const CRMCOMP_ROWS_1_TO_5 = (() => {
     [["AY", "BF"], { fontSize: 8, italic: true, align: "center" }],
     ["BH", { fontSize: 8, italic: true }],
     [["BJ", "DF"], { bg: "#741b47", fg: "#ffffff", fontSize: 10, bold: true, align: "left", wrap: true }],
-    ["BO", { bg: "#ffff00" }],
+    [["BO", "BP"], { bg: "#ffff00", fg: "#000000" }],
+    ["BR", { bg: "#ffff00", fg: "#000000" }],
     [["CY", "DF"], { fontSize: 8, italic: true }],
     [["DM", "DZ"], { bg: "#b6d7a8", fg: "#000000", fontSize: 10, bold: true, align: "left", wrap: true }],
     ["DP", { align: "right" }], ["DQ", { align: "right" }], ["DR", { align: "right" }], ["DT", { align: "right" }],
@@ -511,14 +512,15 @@ const CRMCOMP_ROWS_1_TO_5 = (() => {
     [["FE", "FL"], { fontSize: 8, align: "center" }],
     ["FM", { align: "right" }],
     [["FO", "HT"], { bg: "#741b47", fg: "#ffffff", fontSize: 10, bold: true, align: "left", wrap: true }],
-    ["FT", { bg: "#ffff00" }],
+    [["FT", "FU"], { bg: "#ffff00", fg: "#000000" }],
+    ["FW", { bg: "#ffff00", fg: "#000000" }],
     [["HM", "HT"], { fontSize: 8, italic: true }],
   ]);
 
   return { 0: r0, 1: r1, 2: {}, 3: r3, 4: r4 };
 })();
 
-function getCrmCompDataCellStyle(r, c) {
+function getCrmCompDataCellStyle(r, c, rawValue, displayValue) {
   let bg = "#ffffff";
   if (
     (c >= 0 && c <= 14) ||
@@ -544,6 +546,14 @@ function getCrmCompDataCellStyle(r, c) {
   else if (c === 47) { align = r >= 6 ? "right" : "left"; nf = "PERCENT:0%"; }
   else if (c >= 50 && c <= 57) { align = "center"; }
   else if (c === 59) { align = "center"; checkbox = true; }
+  else if (c === 66 || c === 67 || c === 175 || c === 176) {
+    nf = "DATE:d-mmm-yy";
+    const txt = String(displayValue ?? "").trim() || String(rawValue ?? "").trim();
+    align = txt === "" || txt.startsWith("<") ? "left" : "right";
+  }
+  else if (c === 69 || c === 178) {
+    align = (Number.isFinite(toNum(rawValue)) || Number.isFinite(toNum(displayValue))) ? "right" : "left";
+  }
   else if (c === 93 || c === 94) { align = "left"; nf = "NUMBER:#,##0.00"; }
   else if (c === 98 || c === 99) { align = "left"; nf = "DATE:d-mmm-yy"; }
   else if (c === 100) { align = r >= 6 ? "right" : "left"; nf = "PERCENT:0%"; }
@@ -565,7 +575,7 @@ function getCrmCompDataCellStyle(r, c) {
   else if (c === 207 || c === 208) { nf = "DATE:d-mmm-yy"; }
   else if (c === 209) { nf = "PERCENT:0.00%"; }
 
-  if (r === 5) align = c >= 116 ? "center" : align;
+  if (r === 5 && (c < 175 || c > 201)) align = c >= 116 ? "center" : align;
 
   return { bg, fg: "#000000", fontSize: 10, bold: false, italic: false, align, wrap: false, nf, checkbox };
 }
@@ -726,7 +736,7 @@ export function getCellPresentation({ tabName, r, c, rawValue, displayValue, gri
   } else if (tabName === "DirComp") {
     base = getDirCompDataCellStyle(r, c);
   } else {
-    base = getCrmCompDataCellStyle(r, c);
+    base = getCrmCompDataCellStyle(r, c, rawValue, displayValue);
   }
 
   if (tabName === "InvComp") {

@@ -4,11 +4,28 @@ import DeferredSearchInput from "./DeferredSearchInput";
 import {
   COMPARISON_SHEET_SPECS,
   colIndexToLetter,
+  letterToColIndex,
   precomputeInvCompBhCounts,
   getCellPresentation,
   formatCellForComparisonSheet,
   isRowDiscrepancy,
 } from "../utils/masterComparisonSheetSpec";
+
+const HEADER_CELL_REF_RE = /^=\s*\$?([A-Za-z]+)\$?(\d+)\s*$/;
+
+function resolveHeaderFormulaValue(val, valuesGrid) {
+  let cur = val;
+  for (let depth = 0; depth < 4; depth++) {
+    if (typeof cur !== "string") return cur;
+    const m = cur.match(HEADER_CELL_REF_RE);
+    if (!m) return cur;
+    const col = letterToColIndex(m[1]);
+    const row = parseInt(m[2], 10) - 1;
+    if (col < 0 || row < 0 || !Array.isArray(valuesGrid?.[row])) return cur;
+    cur = valuesGrid[row][col] ?? "";
+  }
+  return cur;
+}
 
 const COMPARISON_TABS = ["InvComp", "DirComp", "CRMComp"];
 
@@ -476,8 +493,11 @@ export default function MasterComparisonSheetModal({
           ? (spec.widths[6] || 92) + (spec.widths[7] || 92)
           : spec.widths[c] || 100;
 
-      const dispVal = rowVals[c] ?? "";
-      const rawVal = rowRaws[c] !== undefined ? rowRaws[c] : dispVal;
+      const rawDispVal = rowVals[c] ?? "";
+      const dispVal = isHeaderRow
+        ? resolveHeaderFormulaValue(rawDispVal, gridData.valuesGrid)
+        : rawDispVal;
+      const rawVal = rowRaws[c] !== undefined ? rowRaws[c] : rawDispVal;
       const pres = getCellPresentation({
         tabName: activeTab,
         r,

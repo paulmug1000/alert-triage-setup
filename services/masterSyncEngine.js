@@ -1122,61 +1122,73 @@ export async function runNativeMasterAmdAction({
   let rawResult = null;
   let metrics = {};
 
-  switch (amdAction) {
-    case "pull_invoices": {
-      rawResult = await gas.PullInvoicesBasedOn(true);
-      const rows = env.masterSS.getSheetByName("InvFromApp")?.valuesGrid || [];
-      metrics.rowsCount = Math.max(0, rows.length - 1);
-      break;
-    }
-    case "pull_expenses": {
-      rawResult = await gas.syncAccountingDataToSheet(true);
-      const rows = env.masterSS.getSheetByName("JnlsFromApp")?.valuesGrid || [];
-      metrics.rowsCount = Math.max(0, rows.length - 1);
-      break;
-    }
-    case "pull_crm": {
-      rawResult = await gas.PullCRMBasedOn(true);
-      const rows = env.masterSS.getSheetByName("DataFromCRM")?.valuesGrid || [];
-      metrics.rowsCount = Math.max(0, rows.length - 1);
-      break;
-    }
-    case "pull_pl": {
-      rawResult = await gas.PullPLBasedOn(true);
-      const rows = env.masterSS.getSheetByName("PLFromApp")?.valuesGrid || [];
-      metrics.categoriesCount = Math.max(0, rows.length - 1);
-      break;
-    }
-    case "expenses_gap_check": {
-      rawResult = await gas.runManualEntryAndGapScan(false);
-      const dirComp = env.masterSS.getSheetByName("DirComp")?.valuesGrid || [];
-      metrics.unreconciledGaps = dirComp[1]?.[1] ?? 0;
-      metrics.placeholderEntries = dirComp[1]?.[2] ?? 0;
-      break;
-    }
-    case "invoices_gap_check": {
-      rawResult = await gas.runManualInvoiceGapScan();
-      const invComp = env.masterSS.getSheetByName("InvComp")?.valuesGrid || [];
-      metrics.staleUnsentCount = invComp[1]?.[2] ?? 0;
-      break;
-    }
-    case "retainer_fix": {
-      rawResult = await gas.RetainerInvoiceFix();
-      break;
-    }
-    case "pull_outgoings_notes": {
-      rawResult = await gas.refreshOutgoingsAndUI();
-      const notesGrid = env.masterSS.getSheetByName("OutgNotes")?.valuesGrid || [];
-      let nonEmptyNotes = 0;
-      for (const r of notesGrid) {
-        if (!Array.isArray(r)) continue;
-        for (const c of r) {
-          if (c !== "" && c !== null && c !== undefined) nonEmptyNotes++;
-        }
+  try {
+    switch (amdAction) {
+      case "pull_invoices": {
+        rawResult = await gas.PullInvoicesBasedOn(true);
+        const rows = env.masterSS.getSheetByName("InvFromApp")?.valuesGrid || [];
+        metrics.rowsCount = Math.max(0, rows.length - 1);
+        break;
       }
-      metrics.notesCount = nonEmptyNotes;
-      break;
+      case "pull_expenses": {
+        rawResult = await gas.syncAccountingDataToSheet(true);
+        const rows = env.masterSS.getSheetByName("JnlsFromApp")?.valuesGrid || [];
+        metrics.rowsCount = Math.max(0, rows.length - 1);
+        break;
+      }
+      case "pull_crm": {
+        rawResult = await gas.PullCRMBasedOn(true);
+        const rows = env.masterSS.getSheetByName("DataFromCRM")?.valuesGrid || [];
+        metrics.rowsCount = Math.max(0, rows.length - 1);
+        break;
+      }
+      case "pull_pl": {
+        rawResult = await gas.PullPLBasedOn(true);
+        const rows = env.masterSS.getSheetByName("PLFromApp")?.valuesGrid || [];
+        metrics.categoriesCount = Math.max(0, rows.length - 1);
+        break;
+      }
+      case "expenses_gap_check": {
+        rawResult = await gas.runManualEntryAndGapScan(false);
+        const dirComp = env.masterSS.getSheetByName("DirComp")?.valuesGrid || [];
+        metrics.unreconciledGaps = dirComp[1]?.[1] ?? 0;
+        metrics.placeholderEntries = dirComp[1]?.[2] ?? 0;
+        break;
+      }
+      case "invoices_gap_check": {
+        rawResult = await gas.runManualInvoiceGapScan();
+        const invComp = env.masterSS.getSheetByName("InvComp")?.valuesGrid || [];
+        metrics.staleUnsentCount = invComp[1]?.[2] ?? 0;
+        break;
+      }
+      case "retainer_fix": {
+        rawResult = await gas.RetainerInvoiceFix();
+        break;
+      }
+      case "pull_outgoings_notes": {
+        rawResult = await gas.refreshOutgoingsAndUI();
+        const notesGrid = env.masterSS.getSheetByName("OutgNotes")?.valuesGrid || [];
+        let nonEmptyNotes = 0;
+        for (const r of notesGrid) {
+          if (!Array.isArray(r)) continue;
+          for (const c of r) {
+            if (c !== "" && c !== null && c !== undefined) nonEmptyNotes++;
+          }
+        }
+        metrics.notesCount = nonEmptyNotes;
+        break;
+      }
     }
+  } catch (amdErr) {
+    env.console.error(`Uncaught AMD action failure (${cfg.fnName}): ${amdErr.message}`);
+    await env
+      .finalizeExecution({
+        summary: `Error: ${amdErr.message}`,
+        status: "Failed",
+      })
+      .catch(() => { });
+    await invalidateClientActivityCache(ctx.clientName).catch(() => { });
+    throw amdErr;
   }
 
   const uiAlerts = Array.isArray(env.uiAlerts) ? [...env.uiAlerts] : [];

@@ -106,7 +106,7 @@ export const SETUP_TASKS_CATALOG = [
   { id: "p3_cash_opening", phaseId: "phase_3", title: "Add cash opening figure" },
 
   // Phase 4: Automations & Cadence
-  { id: "p4_review_crm", phaseId: "phase_4", title: "Review CRM data, mapping fields, and client assumptions" },
+  { id: "p4_review_crm", phaseId: "phase_4", title: "Review CRM data, match existing pipeline jobs, and check assumptions" },
   { id: "p4_crm_list_tab", phaseId: "phase_4", title: "Set up CRMList tab (mappings, Confirmed & Pipeline definitions)" },
   { id: "p4_review_retainers", phaseId: "phase_4", title: "Review recurring invoices to check for retainers" },
   { id: "p4_agent_trigger", phaseId: "phase_4", title: "Turn on agent check (Master menu: Install Trigger: Agent Check)" },

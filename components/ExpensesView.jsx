@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaExpensesTableSkeleton } from "./Skeleton";
@@ -7,14 +7,28 @@ import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
+const parseNum = (val) => {
+  if (val === null || val === undefined || val === "") return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const s = String(val).trim();
+  if (!s || s === "-" || s === "£-" || s === "$-" || s === "€-") return 0;
+  const isNeg = (s.startsWith("(") && s.endsWith(")")) || s.startsWith("-");
+  const cleaned = s.replace(/[£$€,\s()]/g, "");
+  const num = parseFloat(cleaned);
+  if (isNaN(num)) return 0;
+  return isNeg ? -Math.abs(num) : num;
+};
+
 const formatCurrency = (val) => {
   if (val === null || val === undefined || val === "") return "£0";
   const s = String(val).trim();
-  if (!s || s === "-" || s === "£-" || s === "$-") return "£0";
-  if (s.startsWith("£") || s.startsWith("$") || s.startsWith("€")) return s;
+  if (!s || s === "-" || s === "£-" || s === "$-" || s === "€-") return "£0";
+  if (/^-?[£$€]/.test(s) || /^\([£$€]/.test(s)) return s;
   const num = parseFloat(s.replace(/[£$€,\s]/g, ""));
   if (isNaN(num)) return s;
-  return "£" + Math.round(num).toLocaleString("en-GB");
+  const rounded = Math.round(num);
+  if (rounded < 0) return "-£" + Math.abs(rounded).toLocaleString("en-GB");
+  return "£" + rounded.toLocaleString("en-GB");
 };
 
 export default function ExpensesView({
@@ -60,6 +74,7 @@ export default function ExpensesView({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
+  const [saveStatus, setSaveStatus] = useState("idle"); // "idle" | "saving" | "saved" | "error"
 
   // FY Navigation & Filters
   const [selectedFyIdx, setSelectedFyIdx] = useState(() => expensesData?.defaultFyIndex ?? 0);
@@ -67,6 +82,28 @@ export default function ExpensesView({
   const [activeTab, setActiveTab] = useState("all"); // "all" | "delivery" | "non-delivery"
   const [draggingRow, setDraggingRow] = useState(null); // { sheetRow, isDelivery }
   const [dragOverSection, setDragOverSection] = useState(null); // "delivery" | "nonDelivery"
+
+  // Cell Selection, Copy/Paste, Drag-to-Fill, Undo/Redo
+  const [activeCell, setActiveCell] = useState(null); // { sheetRow, colLetter }
+  const [copiedCell, setCopiedCell] = useState(null); // { sheetRow, colLetter, value, note }
+  const [dragRange, setDragRange] = useState(null); // { startRowIdx, startMonthIdx, endRowIdx, endMonthIdx, axis }
+  const [contextMenu, setContextMenu] = useState(null); // { x, y, sheetRow, colLetter, monthLabel, category, value, note, canEdit }
+  const [undoStack, setUndoStack] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
+
+  const expensesDataRef = useRef(expensesData);
+  expensesDataRef.current = expensesData;
+  const selectedClientRef = useRef(selectedClient);
+  selectedClientRef.current = selectedClient;
+
+  const isDraggingFillRef = useRef(false);
+  const dragOriginWasMonthCellRef = useRef(false);
+  const latestDragRangeRef = useRef(null);
+  const internalClipboardRef = useRef(null); // { value, note, syncedToSystem }
+  const pendingUpdatesRef = useRef(new Map()); // `${sheetRow}_${colLetter}` -> { sheetRow, colLetter, value }
+  const pendingNotesRef = useRef(new Map()); // `${sheetRow}_${colLetter}` -> { sheetRow, colLetter, note }
+  const saveTimeoutRef = useRef(null);
+  const tableScrollRef = useRef(null);
 
   // Quick Inline/Modal Amount Editing
   const [editingCell, setEditingCell] = useState(null); // { sheetRow, colLetter, label, value, category, note }
@@ -129,6 +166,29 @@ export default function ExpensesView({
     }
   };
 
+  // Reset grid interaction state when switching clients
+  useEffect(() => {
+    setActiveCell(null);
+    setCopiedCell(null);
+    setDragRange(null);
+    setContextMenu(null);
+    setUndoStack([]);
+    setRedoStack([]);
+    setSaveStatus("idle");
+    pendingUpdatesRef.current.clear();
+    pendingNotesRef.current.clear();
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+  }, [selectedClient?.clientSheetId]);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, []);
+
   // Fetch Expenses Data with caching
   const fetchExpenses = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client || !client.clientSheetId) return;
@@ -137,7 +197,9 @@ export default function ExpensesView({
     const cached = !bypassCache ? getCachedClientData(client.clientSheetId, "expenses") : null;
     if (cached?.data) {
       setExpensesData(cached.data);
-      setSelectedFyIdx(cached.data.defaultFyIndex ?? 0);
+      if (!silent) {
+        setSelectedFyIdx(cached.data.defaultFyIndex ?? 0);
+      }
       setLoading(false);
       if (!cached.isStale) return;
     } else if (!silent) {
@@ -152,7 +214,9 @@ export default function ExpensesView({
           const fresh = getCachedClientData(client.clientSheetId, "expenses");
           if (fresh?.data) {
             setExpensesData(fresh.data);
-            setSelectedFyIdx(fresh.data.defaultFyIndex ?? 0);
+            if (!silent) {
+              setSelectedFyIdx(fresh.data.defaultFyIndex ?? 0);
+            }
             setLoading(false);
             return;
           }
@@ -160,7 +224,7 @@ export default function ExpensesView({
       }
     }
 
-    setError(null);
+    if (!silent) setError(null);
     try {
       const res = await fetch(
         `/api/pma/expenses?clientName=${encodeURIComponent(client.clientName)}&clientSheetId=${encodeURIComponent(
@@ -171,14 +235,22 @@ export default function ExpensesView({
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to load expenses data");
       }
+      // Avoid overwriting newer optimistic edits if a silent refresh finishes while edits are pending
+      if (silent && (pendingUpdatesRef.current.size > 0 || pendingNotesRef.current.size > 0)) {
+        return;
+      }
       setExpensesData(data);
-      setSelectedFyIdx(data.defaultFyIndex ?? 0);
+      if (!silent) {
+        setSelectedFyIdx(data.defaultFyIndex ?? 0);
+      }
       setCachedClientData(client.clientSheetId, "expenses", data);
     } catch (err) {
       console.error("Failed to fetch expenses:", err);
-      setError(err.message || "Failed to load expenses data");
+      if (!silent) {
+        setError(err.message || "Failed to load expenses data");
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
@@ -191,10 +263,10 @@ export default function ExpensesView({
     }
   }, [selectedClient, fetchExpenses]);
 
-  const showSuccess = (msg) => {
+  const showSuccess = useCallback((msg) => {
     setSaveSuccessMsg(msg);
     setTimeout(() => setSaveSuccessMsg(""), 4000);
-  };
+  }, []);
 
   // Filtered clients list
   const filteredClients = useMemo(() => {
@@ -227,6 +299,781 @@ export default function ExpensesView({
 
     return { deliveryExpenses: del, nonDeliveryExpenses: nonDel };
   }, [expensesData?.expenses, searchTerm]);
+
+  // Visual row order and index maps for keyboard navigation and vertical/horizontal drag-to-fill
+  const visibleRows = useMemo(() => {
+    const rows = [];
+    if (activeTab === "all" || activeTab === "delivery") {
+      rows.push(...deliveryExpenses);
+    }
+    if (activeTab === "all" || activeTab === "non-delivery") {
+      rows.push(...nonDeliveryExpenses);
+    }
+    return rows;
+  }, [activeTab, deliveryExpenses, nonDeliveryExpenses]);
+
+  const rowIndexMap = useMemo(() => {
+    const map = new Map();
+    visibleRows.forEach((exp, idx) => map.set(exp.sheetRow, idx));
+    return map;
+  }, [visibleRows]);
+
+  const monthIndexMap = useMemo(() => {
+    const map = new Map();
+    (currentFy?.monthCols || []).forEach((m, idx) => map.set(m.colLetter, idx));
+    return map;
+  }, [currentFy]);
+
+  // ── BATCH SAVE ENGINE (DEBOUNCED OR IMMEDIATE) ─────────────────────────────
+  const triggerBatchSave = useCallback(async () => {
+    const client = selectedClientRef.current;
+    if (!client?.clientSheetId) return;
+
+    const updateEntries = Array.from(pendingUpdatesRef.current.entries());
+    const noteEntries = Array.from(pendingNotesRef.current.entries());
+    if (updateEntries.length === 0 && noteEntries.length === 0) return;
+
+    setSaveStatus("saving");
+    setError(null);
+
+    try {
+      const res = await fetch("/api/pma/expenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_batch",
+          clientName: client.clientName,
+          clientSheetId: client.clientSheetId,
+          updates: updateEntries.map(([, v]) => v),
+          cellNotes: noteEntries.map(([, v]) => v),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to save expense changes");
+      }
+
+      // Only clear entries that haven't been superseded while the request was in flight
+      updateEntries.forEach(([k, sentItem]) => {
+        if (pendingUpdatesRef.current.get(k) === sentItem) {
+          pendingUpdatesRef.current.delete(k);
+        }
+      });
+      noteEntries.forEach(([k, sentItem]) => {
+        if (pendingNotesRef.current.get(k) === sentItem) {
+          pendingNotesRef.current.delete(k);
+        }
+      });
+
+      if (pendingUpdatesRef.current.size > 0 || pendingNotesRef.current.size > 0) {
+        triggerBatchSave();
+      } else {
+        setSaveStatus("saved");
+        fetchExpenses(client, true, true);
+        setTimeout(() => {
+          setSaveStatus((prev) => (prev === "saved" ? "idle" : prev));
+        }, 2500);
+      }
+    } catch (err) {
+      console.error("Batch save error:", err);
+      setSaveStatus("error");
+      setError(err.message || "Failed to save expense changes");
+    }
+  }, [fetchExpenses]);
+
+  const queueBatchSave = useCallback((cellUpdates = [], noteUpdates = [], immediate = false) => {
+    cellUpdates.forEach((up) => {
+      pendingUpdatesRef.current.set(`${up.sheetRow}_${up.colLetter}`, up);
+    });
+    noteUpdates.forEach((nu) => {
+      pendingNotesRef.current.set(`${nu.sheetRow}_${nu.colLetter}`, nu);
+    });
+
+    if (cellUpdates.length === 0 && noteUpdates.length === 0) return;
+
+    setSaveStatus("saving");
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+
+    if (immediate) {
+      triggerBatchSave();
+    } else {
+      saveTimeoutRef.current = setTimeout(() => {
+        saveTimeoutRef.current = null;
+        triggerBatchSave();
+      }, 450);
+    }
+  }, [triggerBatchSave]);
+
+  // ── APPLY CELL CHANGES (OPTIMISTIC UI + TOTALS + UNDO/REDO) ────────────────
+  const applyCellChanges = useCallback((changes = [], { isUndoRedo = false, immediate = false } = {}) => {
+    const prevData = expensesDataRef.current;
+    if (!changes.length || !prevData?.expenses) return false;
+
+    const fallbackFyId = prevData?.fyConfigs?.[selectedFyIdx]?.id;
+    const undoRecord = [];
+    const queuedValues = [];
+    const queuedNotes = [];
+
+    // Clone expenses array and track per-row / per-section numeric deltas
+    const nextExpenses = prevData.expenses.map((exp) => ({ ...exp }));
+    const expByRow = new Map();
+    nextExpenses.forEach((exp, idx) => expByRow.set(exp.sheetRow, { exp, idx }));
+
+    const fyTotalDeltas = new Map(); // `${sheetRow}_${fyId}` -> delta
+    const sectionMonthDeltas = new Map(); // `${fyId}_${sectionKey}_${monthIdx}` -> delta
+    const sectionFyDeltas = new Map(); // `${fyId}_${sectionKey}` -> delta
+
+    changes.forEach(({ sheetRow, colLetter, fyId = fallbackFyId, value, note }) => {
+      if (!fyId) return;
+      const found = expByRow.get(sheetRow);
+      if (!found) return;
+      const { exp, idx } = found;
+      if (exp.isSystemRow || exp.sheetRow < 126 || exp.sheetRow > 224) return;
+
+      const fyEntry = exp.fyData?.[fyId];
+      if (!fyEntry || !Array.isArray(fyEntry.months)) return;
+
+      const mIdx = fyEntry.months.findIndex((m) => m.colLetter === colLetter);
+      if (mIdx === -1) return;
+
+      const currentMonth = fyEntry.months[mIdx];
+      if (currentMonth.isReconciled) return;
+
+      const oldValue = currentMonth.value || "£0";
+      const oldNote = currentMonth.note || "";
+      const updatedValue = value !== undefined ? formatCurrency(value) : oldValue;
+      const updatedNote = note !== undefined ? String(note).trim() : oldNote;
+
+      if (updatedValue === oldValue && updatedNote === oldNote) return;
+
+      // Clone nested fyData and months for this row before mutating
+      const clonedMonths = fyEntry.months.slice();
+      clonedMonths[mIdx] = {
+        ...currentMonth,
+        value: updatedValue,
+        note: updatedNote,
+      };
+      nextExpenses[idx] = {
+        ...exp,
+        fyData: {
+          ...exp.fyData,
+          [fyId]: {
+            ...fyEntry,
+            months: clonedMonths,
+          },
+        },
+      };
+      expByRow.set(sheetRow, { exp: nextExpenses[idx], idx });
+
+      if (value !== undefined && updatedValue !== oldValue) {
+        queuedValues.push({ sheetRow, colLetter, value: updatedValue });
+        const delta = parseNum(updatedValue) - parseNum(oldValue);
+        if (delta !== 0) {
+          const rowKey = `${sheetRow}_${fyId}`;
+          fyTotalDeltas.set(rowKey, (fyTotalDeltas.get(rowKey) || 0) + delta);
+
+          const sectionKey = exp.isDelivery ? "delivery" : "nonDelivery";
+          const secMonthKey = `${fyId}_${sectionKey}_${mIdx}`;
+          sectionMonthDeltas.set(secMonthKey, (sectionMonthDeltas.get(secMonthKey) || 0) + delta);
+          const secFyKey = `${fyId}_${sectionKey}`;
+          sectionFyDeltas.set(secFyKey, (sectionFyDeltas.get(secFyKey) || 0) + delta);
+        }
+      }
+
+      if (note !== undefined && updatedNote !== oldNote) {
+        queuedNotes.push({ sheetRow, colLetter, note: updatedNote });
+      }
+
+      undoRecord.push({
+        sheetRow,
+        colLetter,
+        fyId,
+        oldValue,
+        newValue: updatedValue,
+        oldNote,
+        newNote: updatedNote,
+      });
+    });
+
+    if (undoRecord.length === 0) return false;
+
+    // Apply row FY total deltas
+    fyTotalDeltas.forEach((delta, key) => {
+      const [rowStr, fyId] = key.split("_");
+      const found = expByRow.get(parseInt(rowStr, 10));
+      if (!found) return;
+      const { exp, idx } = found;
+      const fyEntry = exp.fyData?.[fyId];
+      if (!fyEntry) return;
+      const nextTotal = formatCurrency(parseNum(fyEntry.total) + delta);
+      nextExpenses[idx] = {
+        ...exp,
+        fyData: {
+          ...exp.fyData,
+          [fyId]: {
+            ...fyEntry,
+            total: nextTotal,
+          },
+        },
+      };
+    });
+
+    // Apply section totals deltas
+    let nextTotals = prevData.totals;
+    if (prevData.totals && (sectionMonthDeltas.size > 0 || sectionFyDeltas.size > 0)) {
+      nextTotals = { ...prevData.totals };
+      sectionMonthDeltas.forEach((delta, key) => {
+        const [fyId, sectionKey, mIdxStr] = key.split("_");
+        const mIdx = parseInt(mIdxStr, 10);
+        if (!nextTotals[fyId]?.[sectionKey]) return;
+        const sec = nextTotals[fyId][sectionKey];
+        const nextMonths = sec.months.slice();
+        nextMonths[mIdx] = formatCurrency(parseNum(nextMonths[mIdx]) + delta);
+        nextTotals[fyId] = {
+          ...nextTotals[fyId],
+          [sectionKey]: {
+            ...sec,
+            months: nextMonths,
+          },
+        };
+      });
+      sectionFyDeltas.forEach((delta, key) => {
+        const [fyId, sectionKey] = key.split("_");
+        if (!nextTotals[fyId]?.[sectionKey]) return;
+        const sec = nextTotals[fyId][sectionKey];
+        nextTotals[fyId] = {
+          ...nextTotals[fyId],
+          [sectionKey]: {
+            ...sec,
+            total: formatCurrency(parseNum(sec.total) + delta),
+          },
+        };
+      });
+    }
+
+    const nextData = {
+      ...prevData,
+      expenses: nextExpenses,
+      totals: nextTotals,
+    };
+
+    expensesDataRef.current = nextData;
+    setExpensesData(nextData);
+
+    if (!isUndoRedo) {
+      setUndoStack((prev) => [...prev, undoRecord]);
+      setRedoStack([]);
+    }
+
+    queueBatchSave(queuedValues, queuedNotes, immediate);
+    return true;
+  }, [selectedFyIdx, queueBatchSave]);
+
+  // ── UNDO & REDO ────────────────────────────────────────────────────────────
+  const handleUndo = useCallback(() => {
+    if (undoStack.length === 0 || !isAdmin) return;
+    const lastAction = undoStack[undoStack.length - 1];
+    setUndoStack((prev) => prev.slice(0, -1));
+
+    const reverseChanges = lastAction.map((item) => ({
+      sheetRow: item.sheetRow,
+      colLetter: item.colLetter,
+      fyId: item.fyId,
+      value: item.oldValue,
+      note: item.oldNote,
+    }));
+
+    applyCellChanges(reverseChanges, { isUndoRedo: true });
+    setRedoStack((prev) => [...prev, lastAction]);
+  }, [undoStack, isAdmin, applyCellChanges]);
+
+  const handleRedo = useCallback(() => {
+    if (redoStack.length === 0 || !isAdmin) return;
+    const actionToRedo = redoStack[redoStack.length - 1];
+    setRedoStack((prev) => prev.slice(0, -1));
+
+    const applyAgain = actionToRedo.map((item) => ({
+      sheetRow: item.sheetRow,
+      colLetter: item.colLetter,
+      fyId: item.fyId,
+      value: item.newValue,
+      note: item.newNote,
+    }));
+
+    applyCellChanges(applyAgain, { isUndoRedo: true });
+    setUndoStack((prev) => [...prev, actionToRedo]);
+  }, [redoStack, isAdmin, applyCellChanges]);
+
+  // ── COPY & PASTE HELPERS ───────────────────────────────────────────────────
+  const getCellDetails = useCallback((sheetRow, colLetter, fyId = currentFy?.id) => {
+    if (!fyId) return null;
+    const exp = (expensesDataRef.current?.expenses || []).find((e) => e.sheetRow === sheetRow);
+    const month = exp?.fyData?.[fyId]?.months?.find((m) => m.colLetter === colLetter);
+    if (!exp || !month) return null;
+    return { exp, month };
+  }, [currentFy?.id]);
+
+  const handleCopyCell = useCallback((target = activeCell, writeSystemClipboard = true) => {
+    if (!target || !currentFy) return false;
+    const details = getCellDetails(target.sheetRow, target.colLetter, currentFy.id);
+    if (!details) return false;
+    const val = details.month.value || "£0";
+    const note = details.month.note || "";
+
+    const clipEntry = {
+      value: val,
+      note,
+      syncedToSystem: false,
+    };
+    internalClipboardRef.current = clipEntry;
+    setCopiedCell({
+      sheetRow: target.sheetRow,
+      colLetter: target.colLetter,
+      value: val,
+      note,
+    });
+
+    if (writeSystemClipboard && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(val).then(() => {
+        if (internalClipboardRef.current === clipEntry) {
+          clipEntry.syncedToSystem = true;
+        }
+      }).catch(() => { });
+    }
+    return true;
+  }, [activeCell, currentFy, getCellDetails]);
+
+  const applyPasteToActiveCell = useCallback((clipText = "", fromButton = false) => {
+    if (!isAdmin || !activeCell || !currentFy) return;
+    const details = getCellDetails(activeCell.sheetRow, activeCell.colLetter, currentFy.id);
+    if (!details) return;
+
+    const internal = internalClipboardRef.current;
+    const trimmedClip = String(clipText ?? "").trim();
+    const useInternal = Boolean(
+      internal &&
+      (
+        (fromButton && (!trimmedClip || !internal.syncedToSystem || trimmedClip === String(internal.value).trim())) ||
+        (!fromButton && (trimmedClip === "" || !internal.syncedToSystem || trimmedClip === String(internal.value).trim()))
+      )
+    );
+
+    if (useInternal) {
+      if (details.exp.isSystemRow || details.month.isReconciled) {
+        setError(
+          details.exp.isSystemRow
+            ? "Cannot paste into an automatically calculated row."
+            : `${details.month.monthLabel} is reconciled and locked.`
+        );
+        return;
+      }
+      applyCellChanges([{
+        sheetRow: activeCell.sheetRow,
+        colLetter: activeCell.colLetter,
+        fyId: currentFy.id,
+        value: internal.value,
+        note: internal.note,
+      }]);
+      return;
+    }
+
+    if (!trimmedClip) return;
+
+    // Support pasting 1x1 or multi-cell TSV text from external spreadsheets
+    const startRowIdx = rowIndexMap.get(activeCell.sheetRow);
+    const startMonthIdx = monthIndexMap.get(activeCell.colLetter);
+    if (startRowIdx === undefined || startMonthIdx === undefined) return;
+
+    const normalized = String(clipText).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n$/, "");
+    const grid = normalized.split("\n").map((line) => line.split("\t"));
+
+    const changes = [];
+    let skippedLocked = 0;
+
+    for (let rOff = 0; rOff < grid.length; rOff++) {
+      const targetRow = visibleRows[startRowIdx + rOff];
+      if (!targetRow) continue;
+      for (let cOff = 0; cOff < grid[rOff].length; cOff++) {
+        const targetMonth = currentFy.monthCols[startMonthIdx + cOff];
+        if (!targetMonth) continue;
+        if (targetRow.isSystemRow || targetMonth.isReconciled) {
+          skippedLocked++;
+          continue;
+        }
+        changes.push({
+          sheetRow: targetRow.sheetRow,
+          colLetter: targetMonth.colLetter,
+          fyId: currentFy.id,
+          value: grid[rOff][cOff].trim(),
+        });
+      }
+    }
+
+    if (changes.length > 0) {
+      applyCellChanges(changes);
+    } else if (skippedLocked > 0) {
+      setError("Target cell is reconciled or read-only.");
+    }
+  }, [isAdmin, activeCell, currentFy, getCellDetails, rowIndexMap, monthIndexMap, visibleRows, applyCellChanges]);
+
+  const handlePasteFromMenuOrButton = useCallback(async () => {
+    if (!isAdmin || !activeCell || !currentFy) return;
+    let clipText = "";
+    if (typeof navigator !== "undefined" && navigator.clipboard?.readText) {
+      try {
+        clipText = await navigator.clipboard.readText();
+      } catch {
+        clipText = "";
+      }
+    }
+    applyPasteToActiveCell(clipText, true);
+  }, [isAdmin, activeCell, currentFy, applyPasteToActiveCell]);
+
+  // ── KEYBOARD SHORTCUTS, CLIPBOARD EVENTS & NAVIGATION ──────────────────────
+  useEffect(() => {
+    const isTypingInFormControl = () => {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+    };
+
+    const handleKeyDown = (e) => {
+      if (editingCell || editingCategory || isTypingInFormControl()) return;
+
+      // Close context menu or clear selection on Escape
+      if (e.key === "Escape") {
+        if (contextMenu) {
+          setContextMenu(null);
+          return;
+        }
+        if (copiedCell) {
+          setCopiedCell(null);
+          return;
+        }
+        if (activeCell) {
+          setActiveCell(null);
+        }
+        return;
+      }
+
+      // Undo: Ctrl+Z / Cmd+Z
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        if (!isAdmin) return;
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+
+      // Redo: Ctrl+Y / Cmd+Y or Ctrl+Shift+Z / Cmd+Shift+Z
+      if (
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z")
+      ) {
+        if (!isAdmin) return;
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+
+      if (!activeCell || !currentFy) return;
+      const curRowIdx = rowIndexMap.get(activeCell.sheetRow);
+      const curMonthIdx = monthIndexMap.get(activeCell.colLetter);
+
+      // Copy fallback if copy event isn't triggered (or ensures state updates immediately)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        const selection = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+        if (!selection) {
+          handleCopyCell(activeCell, true);
+        }
+        return;
+      }
+
+      // Arrow Navigation
+      if (curRowIdx !== undefined && curMonthIdx !== undefined) {
+        if (e.key === "ArrowRight" && curMonthIdx < currentFy.monthCols.length - 1) {
+          e.preventDefault();
+          setContextMenu(null);
+          setActiveCell({
+            sheetRow: activeCell.sheetRow,
+            colLetter: currentFy.monthCols[curMonthIdx + 1].colLetter,
+          });
+          return;
+        }
+        if (e.key === "ArrowLeft" && curMonthIdx > 0) {
+          e.preventDefault();
+          setContextMenu(null);
+          setActiveCell({
+            sheetRow: activeCell.sheetRow,
+            colLetter: currentFy.monthCols[curMonthIdx - 1].colLetter,
+          });
+          return;
+        }
+        if (e.key === "ArrowDown" && curRowIdx < visibleRows.length - 1) {
+          e.preventDefault();
+          setContextMenu(null);
+          setActiveCell({
+            sheetRow: visibleRows[curRowIdx + 1].sheetRow,
+            colLetter: activeCell.colLetter,
+          });
+          return;
+        }
+        if (e.key === "ArrowUp" && curRowIdx > 0) {
+          e.preventDefault();
+          setContextMenu(null);
+          setActiveCell({
+            sheetRow: visibleRows[curRowIdx - 1].sheetRow,
+            colLetter: activeCell.colLetter,
+          });
+          return;
+        }
+      }
+
+      if (!isAdmin) return;
+      const details = getCellDetails(activeCell.sheetRow, activeCell.colLetter, currentFy.id);
+      if (!details) return;
+      const canEdit = !details.exp.isSystemRow && !details.month.isReconciled;
+
+      // Enter / F2 opens edit modal
+      if ((e.key === "Enter" || e.key === "F2") && canEdit) {
+        e.preventDefault();
+        setContextMenu(null);
+        setEditingCell({
+          sheetRow: details.exp.sheetRow,
+          colLetter: details.month.colLetter,
+          label: details.month.monthLabel,
+          value: details.month.value,
+          category: details.exp.category,
+          note: details.month.note || "",
+          isReconciled: Boolean(details.month.isReconciled),
+        });
+        setCellInputValue(details.month.value);
+        setCellNoteValue(details.month.note || "");
+        return;
+      }
+
+      // Delete / Backspace clears numeric value
+      if ((e.key === "Delete" || e.key === "Backspace") && canEdit) {
+        e.preventDefault();
+        applyCellChanges([{
+          sheetRow: details.exp.sheetRow,
+          colLetter: details.month.colLetter,
+          fyId: currentFy.id,
+          value: "£0",
+        }]);
+        return;
+      }
+
+      // Direct numeric/currency key opens edit modal prefilled with typed character
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && /^[0-9.\-]$/.test(e.key) && canEdit) {
+        e.preventDefault();
+        setContextMenu(null);
+        setEditingCell({
+          sheetRow: details.exp.sheetRow,
+          colLetter: details.month.colLetter,
+          label: details.month.monthLabel,
+          value: details.month.value,
+          category: details.exp.category,
+          note: details.month.note || "",
+          isReconciled: Boolean(details.month.isReconciled),
+        });
+        setCellInputValue(e.key);
+        setCellNoteValue(details.month.note || "");
+      }
+    };
+
+    const handleCopyEvent = (e) => {
+      if (editingCell || editingCategory || isTypingInFormControl() || !activeCell || !currentFy) return;
+      const selection = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+      if (selection) return;
+
+      const details = getCellDetails(activeCell.sheetRow, activeCell.colLetter, currentFy.id);
+      if (!details) return;
+
+      const val = details.month.value || "£0";
+      const note = details.month.note || "";
+      if (e.clipboardData) {
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", val);
+      }
+      internalClipboardRef.current = { value: val, note, syncedToSystem: true };
+      setCopiedCell({
+        sheetRow: activeCell.sheetRow,
+        colLetter: activeCell.colLetter,
+        value: val,
+        note,
+      });
+    };
+
+    const handlePasteEvent = (e) => {
+      if (editingCell || editingCategory || isTypingInFormControl() || !activeCell || !currentFy || !isAdmin) return;
+      e.preventDefault();
+      const clipText = e.clipboardData?.getData("text/plain") ?? "";
+      applyPasteToActiveCell(clipText, false);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("copy", handleCopyEvent);
+    window.addEventListener("paste", handlePasteEvent);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("copy", handleCopyEvent);
+      window.removeEventListener("paste", handlePasteEvent);
+    };
+  }, [
+    activeCell,
+    copiedCell,
+    contextMenu,
+    currentFy,
+    editingCell,
+    editingCategory,
+    isAdmin,
+    visibleRows,
+    rowIndexMap,
+    monthIndexMap,
+    getCellDetails,
+    handleCopyCell,
+    applyPasteToActiveCell,
+    applyCellChanges,
+    handleUndo,
+    handleRedo,
+  ]);
+
+  // Close context menu on outside click or scroll
+  useEffect(() => {
+    if (!contextMenu) return;
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [contextMenu]);
+
+  // Reset month-cell mouse origin flag on window mouseup
+  useEffect(() => {
+    const handleMouseUpReset = () => {
+      dragOriginWasMonthCellRef.current = false;
+    };
+    window.addEventListener("mouseup", handleMouseUpReset);
+    return () => window.removeEventListener("mouseup", handleMouseUpReset);
+  }, []);
+
+  // ── DRAG-TO-FILL HANDLERS (ROW & COLUMN) ───────────────────────────────────
+  const handleDragFillMouseDown = (e, exp, monthCol, rowIdx, monthIdx) => {
+    if (!isAdmin || exp.isSystemRow || !currentFy) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setContextMenu(null);
+
+    isDraggingFillRef.current = true;
+    const initialRange = {
+      startRowIdx: rowIdx,
+      startMonthIdx: monthIdx,
+      endRowIdx: rowIdx,
+      endMonthIdx: monthIdx,
+      axis: "row",
+    };
+    latestDragRangeRef.current = initialRange;
+    setDragRange(initialRange);
+
+    const handleWindowMouseMove = (moveEvent) => {
+      if (!isDraggingFillRef.current) return;
+
+      // Auto-scroll horizontal container near edges
+      const scroller = tableScrollRef.current;
+      if (scroller) {
+        const rect = scroller.getBoundingClientRect();
+        if (moveEvent.clientX > rect.right - 40) {
+          scroller.scrollLeft += 18;
+        } else if (moveEvent.clientX < rect.left + 40) {
+          scroller.scrollLeft -= 18;
+        }
+      }
+
+      const targetElem = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+      const cellElem = targetElem?.closest("[data-exp-row-idx][data-exp-month-idx]");
+      if (cellElem) {
+        const hoverRowIdx = parseInt(cellElem.getAttribute("data-exp-row-idx"), 10);
+        const hoverMonthIdx = parseInt(cellElem.getAttribute("data-exp-month-idx"), 10);
+        if (!isNaN(hoverRowIdx) && !isNaN(hoverMonthIdx)) {
+          const dRow = Math.abs(hoverRowIdx - rowIdx);
+          const dCol = Math.abs(hoverMonthIdx - monthIdx);
+          const nextRange = dCol >= dRow
+            ? { startRowIdx: rowIdx, startMonthIdx: monthIdx, endRowIdx: rowIdx, endMonthIdx: hoverMonthIdx, axis: "row" }
+            : { startRowIdx: rowIdx, startMonthIdx: monthIdx, endRowIdx: hoverRowIdx, endMonthIdx: monthIdx, axis: "col" };
+          latestDragRangeRef.current = nextRange;
+          setDragRange(nextRange);
+        }
+      }
+    };
+
+    const handleWindowMouseUp = () => {
+      isDraggingFillRef.current = false;
+      dragOriginWasMonthCellRef.current = false;
+      window.removeEventListener("mousemove", handleWindowMouseMove);
+      window.removeEventListener("mouseup", handleWindowMouseUp);
+
+      const finalRange = latestDragRangeRef.current;
+      latestDragRangeRef.current = null;
+      setDragRange(null);
+
+      if (!finalRange) return;
+      const srcRow = visibleRows[finalRange.startRowIdx];
+      const srcMonthData = srcRow?.fyData?.[currentFy.id]?.months?.[finalRange.startMonthIdx];
+      if (!srcRow || !srcMonthData) return;
+
+      const srcValue = srcMonthData.value || "£0";
+      const srcNote = srcMonthData.note || "";
+      const changes = [];
+
+      if (finalRange.axis === "row") {
+        const minM = Math.min(finalRange.startMonthIdx, finalRange.endMonthIdx);
+        const maxM = Math.max(finalRange.startMonthIdx, finalRange.endMonthIdx);
+        for (let mIdx = minM; mIdx <= maxM; mIdx++) {
+          if (mIdx === finalRange.startMonthIdx) continue;
+          const targetMonth = currentFy.monthCols[mIdx];
+          if (!targetMonth || targetMonth.isReconciled || srcRow.isSystemRow) continue;
+          changes.push({
+            sheetRow: srcRow.sheetRow,
+            colLetter: targetMonth.colLetter,
+            fyId: currentFy.id,
+            value: srcValue,
+            note: srcNote,
+          });
+        }
+      } else {
+        const minR = Math.min(finalRange.startRowIdx, finalRange.endRowIdx);
+        const maxR = Math.max(finalRange.startRowIdx, finalRange.endRowIdx);
+        const targetMonth = currentFy.monthCols[finalRange.startMonthIdx];
+        if (targetMonth && !targetMonth.isReconciled) {
+          for (let rIdx = minR; rIdx <= maxR; rIdx++) {
+            if (rIdx === finalRange.startRowIdx) continue;
+            const targetRow = visibleRows[rIdx];
+            if (!targetRow || targetRow.isSystemRow) continue;
+            changes.push({
+              sheetRow: targetRow.sheetRow,
+              colLetter: targetMonth.colLetter,
+              fyId: currentFy.id,
+              value: srcValue,
+              note: srcNote,
+            });
+          }
+        }
+      }
+
+      if (changes.length > 0) {
+        applyCellChanges(changes);
+      }
+    };
+
+    window.addEventListener("mousemove", handleWindowMouseMove);
+    window.addEventListener("mouseup", handleWindowMouseUp);
+  };
 
   // ── HANDLER: TOGGLE VAT (Col B) ──────────────────────────────────────────
   const handleToggleVat = async (exp, newVat) => {
@@ -363,51 +1210,23 @@ export default function ExpensesView({
 
   // ── HANDLER: SAVE SINGLE MONTH AMOUNT ─────────────────────────────────────
   const handleSaveAmount = async () => {
-    if (!selectedClient || !editingCell || !isAdmin) return;
-    setSaving(true);
+    if (!selectedClient || !editingCell || !isAdmin || !currentFy) return;
     setError(null);
-    try {
-      const res = await fetch("/api/pma/expenses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "save_amounts",
-          clientName: selectedClient.clientName,
-          clientSheetId: selectedClient.clientSheetId,
-          sheetRow: editingCell.sheetRow,
-          monthlyAmounts: {
-            [editingCell.colLetter]: cellInputValue,
-          },
-          cellNotes: {
-            [editingCell.colLetter]: cellNoteValue,
-          },
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || "Failed to update amount");
-      setExpensesData((prev) => {
-        if (!prev?.expenses) return prev;
-        return {
-          ...prev,
-          expenses: prev.expenses.map((e) => {
-            if (e.sheetRow !== editingCell.sheetRow) return e;
-            const updatedMonths = (e.months || []).map((m) =>
-              m.colLetter === editingCell.colLetter
-                ? { ...m, value: cellInputValue, note: cellNoteValue }
-                : m
-            );
-            return { ...e, months: updatedMonths };
-          }),
-        };
-      });
-      setEditingCell(null);
-      showSuccess(`Updated ${editingCell.label} amount for "${editingCell.category}".`);
-      fetchExpenses(selectedClient, true, true);
-    } catch (err) {
-      console.error("Save amount error:", err);
-      setError(err.message || "Failed to update amount");
-    } finally {
-      setSaving(false);
+    const changed = applyCellChanges(
+      [{
+        sheetRow: editingCell.sheetRow,
+        colLetter: editingCell.colLetter,
+        fyId: currentFy.id,
+        value: cellInputValue,
+        note: cellNoteValue,
+      }],
+      { immediate: true }
+    );
+    const label = editingCell.label;
+    const category = editingCell.category;
+    setEditingCell(null);
+    if (changed) {
+      showSuccess(`Updated ${label} amount for "${category}".`);
     }
   };
 
@@ -473,13 +1292,18 @@ export default function ExpensesView({
     const fyTotal = exp.fyData?.[currentFy?.id]?.total || "£0";
     const isSystemRow = Boolean(exp.isSystemRow);
     const canDragRow = isAdmin && !isSystemRow;
+    const rowIdx = rowIndexMap.get(exp.sheetRow);
 
     return (
       <tr
         key={exp.sheetRow}
         draggable={canDragRow}
         onDragStart={(e) => {
-          if (canDragRow) handleDragStart(e, exp);
+          if (!canDragRow || isDraggingFillRef.current || dragOriginWasMonthCellRef.current) {
+            e.preventDefault();
+            return;
+          }
+          handleDragStart(e, exp);
         }}
         onDragEnd={() => {
           setDraggingRow(null);
@@ -489,12 +1313,11 @@ export default function ExpensesView({
           background: isSystemRow ? "#f8fafc" : "#ffffff",
           borderBottom: "1px solid #f1f5f9",
           transition: "background 0.1s",
-          cursor: canDragRow ? "grab" : "default",
           opacity: draggingRow?.sheetRow === exp.sheetRow ? 0.4 : 1,
         }}
       >
         {/* Drag / Move Control */}
-        <td style={{ padding: "8px 10px", width: "40px", textAlign: "center" }}>
+        <td style={{ padding: "8px 10px", width: "40px", textAlign: "center", cursor: canDragRow ? "grab" : "default" }}>
           {isAdmin && !isSystemRow && (
             <button
               type="button"
@@ -521,7 +1344,7 @@ export default function ExpensesView({
         </td>
 
         {/* Category Name (Col A) */}
-        <td style={{ padding: "8px 12px", textAlign: "left", fontWeight: 600, color: "#1e293b", minWidth: "220px" }}>
+        <td style={{ padding: "8px 12px", textAlign: "left", fontWeight: 600, color: "#1e293b", minWidth: "220px", cursor: canDragRow ? "grab" : "default" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <span
@@ -615,26 +1438,99 @@ export default function ExpensesView({
         </td>
 
         {/* 12 Months Columns */}
-        {months.map((m) => {
+        {months.map((m, monthIdx) => {
           const isLocked = Boolean(m.isReconciled);
           const canEditCell = isAdmin && !isLocked && !isSystemRow;
+          const isActive = activeCell?.sheetRow === exp.sheetRow && activeCell?.colLetter === m.colLetter;
+          const isCopied = copiedCell?.sheetRow === exp.sheetRow && copiedCell?.colLetter === m.colLetter;
+
+          const isDragTarget = Boolean(
+            dragRange &&
+            rowIdx !== undefined &&
+            (
+              (dragRange.axis === "row" &&
+                rowIdx === dragRange.startRowIdx &&
+                monthIdx >= Math.min(dragRange.startMonthIdx, dragRange.endMonthIdx) &&
+                monthIdx <= Math.max(dragRange.startMonthIdx, dragRange.endMonthIdx)) ||
+              (dragRange.axis === "col" &&
+                monthIdx === dragRange.startMonthIdx &&
+                rowIdx >= Math.min(dragRange.startRowIdx, dragRange.endRowIdx) &&
+                rowIdx <= Math.max(dragRange.startRowIdx, dragRange.endRowIdx))
+            )
+          );
+
+          const isDragSource = Boolean(
+            dragRange &&
+            rowIdx === dragRange.startRowIdx &&
+            monthIdx === dragRange.startMonthIdx
+          );
+
+          let cellBg = isLocked ? "#f8fafc" : "transparent";
+          if (isDragTarget && !isDragSource) {
+            cellBg = canEditCell ? "#dbeafe" : "#f1f5f9";
+          } else if (isActive) {
+            cellBg = "#eff6ff";
+          }
+
+          let cellShadow = "none";
+          if (isActive) {
+            cellShadow = "inset 0 0 0 2px #0066cc";
+          } else if (isDragTarget) {
+            cellShadow = canEditCell ? "inset 0 0 0 1.5px #3b82f6" : "inset 0 0 0 1px #94a3b8";
+          } else if (isCopied) {
+            cellShadow = "inset 0 0 0 2px dashed #16a34a";
+          }
+
+          const openEditModal = () => {
+            if (!canEditCell) return;
+            setEditingCell({
+              sheetRow: exp.sheetRow,
+              colLetter: m.colLetter,
+              label: m.monthLabel,
+              value: m.value,
+              category: exp.category,
+              note: m.note || "",
+              isReconciled: isLocked,
+            });
+            setCellInputValue(m.value);
+            setCellNoteValue(m.note || "");
+          };
+
           return (
             <td
               key={m.colLetter}
+              data-exp-row-idx={rowIdx}
+              data-exp-month-idx={monthIdx}
+              onMouseDown={() => {
+                dragOriginWasMonthCellRef.current = true;
+              }}
               onClick={() => {
-                if (canEditCell) {
-                  setEditingCell({
-                    sheetRow: exp.sheetRow,
-                    colLetter: m.colLetter,
-                    label: m.monthLabel,
-                    value: m.value,
-                    category: exp.category,
-                    note: m.note || "",
-                    isReconciled: isLocked,
-                  });
-                  setCellInputValue(m.value);
-                  setCellNoteValue(m.note || "");
-                }
+                setContextMenu(null);
+                setActiveCell({ sheetRow: exp.sheetRow, colLetter: m.colLetter });
+              }}
+              onDoubleClick={() => {
+                setContextMenu(null);
+                openEditModal();
+              }}
+              onContextMenu={(e) => {
+                if (!isAdmin) return;
+                e.preventDefault();
+                setActiveCell({ sheetRow: exp.sheetRow, colLetter: m.colLetter });
+                const menuW = 210;
+                const menuH = 165;
+                const x = typeof window !== "undefined" ? Math.min(e.clientX, window.innerWidth - menuW - 8) : e.clientX;
+                const y = typeof window !== "undefined" ? Math.min(e.clientY, window.innerHeight - menuH - 8) : e.clientY;
+                setContextMenu({
+                  x,
+                  y,
+                  sheetRow: exp.sheetRow,
+                  colLetter: m.colLetter,
+                  monthLabel: m.monthLabel,
+                  category: exp.category,
+                  value: m.value || "£0",
+                  note: m.note || "",
+                  canEdit: canEditCell,
+                });
               }}
               style={{
                 position: "relative",
@@ -642,28 +1538,65 @@ export default function ExpensesView({
                 textAlign: "right",
                 color: isLocked || isSystemRow ? "#64748b" : "#0f172a",
                 fontWeight: isLocked || isSystemRow ? 400 : 500,
-                background: isLocked ? "#f8fafc" : "transparent",
-                cursor: isAdmin ? (canEditCell ? "pointer" : "not-allowed") : "default",
-                transition: "background 0.1s",
+                background: cellBg,
+                boxShadow: cellShadow,
+                cursor: isAdmin ? (canEditCell ? "cell" : "default") : "default",
+                transition: "background 0.08s",
+                userSelect: "none",
               }}
               onMouseEnter={(e) => {
-                if (canEditCell) e.currentTarget.style.background = "#eff6ff";
+                if (!isActive && !isDragTarget && canEditCell) {
+                  e.currentTarget.style.background = "#f1f7ff";
+                }
               }}
               onMouseLeave={(e) => {
-                if (canEditCell) e.currentTarget.style.background = isLocked ? "#f8fafc" : "transparent";
+                if (!isActive && !isDragTarget) {
+                  e.currentTarget.style.background = isLocked ? "#f8fafc" : "transparent";
+                }
               }}
               title={
                 isSystemRow
-                  ? "Calculated automatically (read-only)"
+                  ? "Calculated automatically (read-only · Ctrl+C to copy)"
                   : isLocked
-                    ? `${m.monthLabel} is reconciled (locked)`
+                    ? `${m.monthLabel} is reconciled (locked · Ctrl+C or drag corner handle to copy)`
                     : isAdmin
-                      ? `Click to edit ${m.monthLabel} amount & note`
+                      ? `${m.monthLabel}: Click to select · Double-click to edit · Right-click or Ctrl+C/V to copy & paste · Drag corner handle to fill`
                       : undefined
               }
             >
               <CellNoteIndicator note={m.note} />
               {m.value || "£0"}
+
+              {/* Bottom-right Drag Fill Handle on Active Cell */}
+              {isActive && isAdmin && !isSystemRow && rowIdx !== undefined && (
+                <div
+                  onMouseDown={(e) => handleDragFillMouseDown(e, exp, m, rowIdx, monthIdx)}
+                  style={{
+                    position: "absolute",
+                    bottom: "-5px",
+                    right: "-5px",
+                    width: "14px",
+                    height: "14px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "crosshair",
+                    zIndex: 25,
+                  }}
+                  title="Drag along row or column to copy value and note"
+                >
+                  <div
+                    style={{
+                      width: "8px",
+                      height: "8px",
+                      background: "#0066cc",
+                      border: "1.5px solid #ffffff",
+                      borderRadius: "1px",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+                    }}
+                  />
+                </div>
+              )}
             </td>
           );
         })}
@@ -748,12 +1681,90 @@ export default function ExpensesView({
 
         {selectedClient && (
           <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            {/* Undo / Redo & Save Status (for editable sessions) */}
+            {isAdmin && (
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <div style={{ display: "inline-flex", border: "1px solid #cbd5e1", borderRadius: "6px", overflow: "hidden" }}>
+                  <button
+                    type="button"
+                    onClick={handleUndo}
+                    disabled={undoStack.length === 0}
+                    style={{
+                      background: undoStack.length > 0 ? "#ffffff" : "#f1f5f9",
+                      border: "none",
+                      padding: "6px 10px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: undoStack.length > 0 ? "#1e293b" : "#94a3b8",
+                      cursor: undoStack.length > 0 ? "pointer" : "not-allowed",
+                      borderRight: "1px solid #cbd5e1",
+                    }}
+                    title="Undo (Ctrl+Z)"
+                  >
+                    ↶ Undo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRedo}
+                    disabled={redoStack.length === 0}
+                    style={{
+                      background: redoStack.length > 0 ? "#ffffff" : "#f1f5f9",
+                      border: "none",
+                      padding: "6px 10px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: redoStack.length > 0 ? "#1e293b" : "#94a3b8",
+                      cursor: redoStack.length > 0 ? "pointer" : "not-allowed",
+                    }}
+                    title="Redo (Ctrl+Y)"
+                  >
+                    ↷ Redo
+                  </button>
+                </div>
+
+                {saveStatus === "saving" && (
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748b" }}>
+                    <Spinner size={12} color="#0047AB" />
+                    <span>Saving changes...</span>
+                  </div>
+                )}
+                {saveStatus === "saved" && (
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "12px", color: "#16a34a", fontWeight: 600 }}>
+                    <span>✓ All changes saved</span>
+                  </div>
+                )}
+                {saveStatus === "error" && (
+                  <button
+                    type="button"
+                    onClick={triggerBatchSave}
+                    style={{
+                      background: "#fee2e2",
+                      border: "1px solid #fca5a5",
+                      color: "#dc2626",
+                      borderRadius: "6px",
+                      padding: "4px 8px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Retry save
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* FY Navigator */}
             {expensesData?.fyConfigs && (
               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                 <button
                   type="button"
-                  onClick={() => setSelectedFyIdx((prev) => Math.max(0, prev - 1))}
+                  onClick={() => {
+                    setActiveCell(null);
+                    setDragRange(null);
+                    setContextMenu(null);
+                    setSelectedFyIdx((prev) => Math.max(0, prev - 1));
+                  }}
                   disabled={selectedFyIdx <= 0}
                   style={{
                     background: "#fff",
@@ -772,7 +1783,12 @@ export default function ExpensesView({
 
                 <select
                   value={selectedFyIdx}
-                  onChange={(e) => setSelectedFyIdx(parseInt(e.target.value, 10))}
+                  onChange={(e) => {
+                    setActiveCell(null);
+                    setDragRange(null);
+                    setContextMenu(null);
+                    setSelectedFyIdx(parseInt(e.target.value, 10));
+                  }}
                   style={{
                     padding: "6px 10px",
                     borderRadius: "6px",
@@ -794,9 +1810,12 @@ export default function ExpensesView({
 
                 <button
                   type="button"
-                  onClick={() =>
-                    setSelectedFyIdx((prev) => Math.min(expensesData.fyConfigs.length - 1, prev + 1))
-                  }
+                  onClick={() => {
+                    setActiveCell(null);
+                    setDragRange(null);
+                    setContextMenu(null);
+                    setSelectedFyIdx((prev) => Math.min(expensesData.fyConfigs.length - 1, prev + 1));
+                  }}
                   disabled={selectedFyIdx >= expensesData.fyConfigs.length - 1}
                   style={{
                     background: "#fff",
@@ -819,7 +1838,7 @@ export default function ExpensesView({
             <button
               type="button"
               onClick={() => selectedClient && fetchExpenses(selectedClient, true)}
-              disabled={loading || saving}
+              disabled={loading || saving || saveStatus === "saving"}
               style={{
                 padding: "7px 14px",
                 background: "#f8fafc",
@@ -828,7 +1847,7 @@ export default function ExpensesView({
                 fontSize: "13px",
                 fontWeight: 600,
                 color: "#334155",
-                cursor: loading ? "not-allowed" : "pointer",
+                cursor: loading || saveStatus === "saving" ? "not-allowed" : "pointer",
                 display: "inline-flex",
                 alignItems: "center",
                 gap: "6px",
@@ -997,6 +2016,65 @@ export default function ExpensesView({
             </div>
           </div>
 
+          {/* Spreadsheet Controls & Copied Indicator Bar */}
+          {isAdmin && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: "8px",
+                marginBottom: "10px",
+                padding: "7px 12px",
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "6px",
+                fontSize: "11.5px",
+                color: "#475569",
+              }}
+            >
+              <span>
+                Click a cell to select, double-click or press Enter to edit, Ctrl+C / Ctrl+V (or right-click) to copy and paste values and notes, or drag the cell corner handle along a row or column.
+              </span>
+              {copiedCell && (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    background: "#f0fdf4",
+                    border: "1px solid #bbf7d0",
+                    color: "#166534",
+                    padding: "2px 8px",
+                    borderRadius: "4px",
+                    fontWeight: 600,
+                  }}
+                >
+                  <span>
+                    Copied: {copiedCell.value}{copiedCell.note ? " (with note)" : ""}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCopiedCell(null)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#166534",
+                      cursor: "pointer",
+                      padding: 0,
+                      fontSize: "12px",
+                      lineHeight: 1,
+                    }}
+                    title="Clear copied indicator"
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+
           {/* ── EXPENSES MAIN CONTAINER ── */}
           <div
             style={{
@@ -1008,8 +2086,8 @@ export default function ExpensesView({
               marginBottom: "24px",
             }}
           >
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", textAlign: "right" }}>
+            <div ref={tableScrollRef} style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", textAlign: "right", userSelect: dragRange ? "none" : undefined }}>
                 <thead>
                   <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #cbd5e1" }}>
                     <th style={{ padding: "8px 10px", textAlign: "center", width: "40px", color: "#475569" }}>Move</th>
@@ -1522,6 +2600,153 @@ export default function ExpensesView({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── CELL RIGHT-CLICK CONTEXT MENU ── */}
+      {contextMenu && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "fixed",
+            top: `${contextMenu.y}px`,
+            left: `${contextMenu.x}px`,
+            zIndex: 10000,
+            background: "#ffffff",
+            border: "1px solid #cbd5e1",
+            borderRadius: "6px",
+            boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 4px 10px -2px rgba(0, 0, 0, 0.08)",
+            minWidth: "200px",
+            padding: "4px 0",
+            fontSize: "12.5px",
+            color: "#1e293b",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              handleCopyCell({ sheetRow: contextMenu.sheetRow, colLetter: contextMenu.colLetter }, true);
+              setContextMenu(null);
+            }}
+            style={{
+              width: "100%",
+              padding: "7px 12px",
+              background: "transparent",
+              border: "none",
+              textAlign: "left",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              color: "#1e293b",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "#f1f5f9"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span>Copy cell</span>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>Ctrl+C</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!contextMenu.canEdit}
+            onClick={() => {
+              if (!contextMenu.canEdit) return;
+              setContextMenu(null);
+              handlePasteFromMenuOrButton();
+            }}
+            style={{
+              width: "100%",
+              padding: "7px 12px",
+              background: "transparent",
+              border: "none",
+              textAlign: "left",
+              cursor: contextMenu.canEdit ? "pointer" : "not-allowed",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              color: contextMenu.canEdit ? "#1e293b" : "#94a3b8",
+            }}
+            onMouseEnter={(e) => { if (contextMenu.canEdit) e.currentTarget.style.background = "#f1f5f9"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span>Paste cell</span>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>Ctrl+V</span>
+          </button>
+
+          <div style={{ height: "1px", background: "#e2e8f0", margin: "4px 0" }} />
+
+          <button
+            type="button"
+            disabled={!contextMenu.canEdit}
+            onClick={() => {
+              if (!contextMenu.canEdit) return;
+              const target = contextMenu;
+              setContextMenu(null);
+              setEditingCell({
+                sheetRow: target.sheetRow,
+                colLetter: target.colLetter,
+                label: target.monthLabel,
+                value: target.value,
+                category: target.category,
+                note: target.note || "",
+                isReconciled: false,
+              });
+              setCellInputValue(target.value);
+              setCellNoteValue(target.note || "");
+            }}
+            style={{
+              width: "100%",
+              padding: "7px 12px",
+              background: "transparent",
+              border: "none",
+              textAlign: "left",
+              cursor: contextMenu.canEdit ? "pointer" : "not-allowed",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              color: contextMenu.canEdit ? "#1e293b" : "#94a3b8",
+            }}
+            onMouseEnter={(e) => { if (contextMenu.canEdit) e.currentTarget.style.background = "#f1f5f9"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span>Edit amount and note</span>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>Enter</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!contextMenu.canEdit}
+            onClick={() => {
+              if (!contextMenu.canEdit || !currentFy) return;
+              const target = contextMenu;
+              setContextMenu(null);
+              applyCellChanges([{
+                sheetRow: target.sheetRow,
+                colLetter: target.colLetter,
+                fyId: currentFy.id,
+                value: "£0",
+                note: "",
+              }]);
+            }}
+            style={{
+              width: "100%",
+              padding: "7px 12px",
+              background: "transparent",
+              border: "none",
+              textAlign: "left",
+              cursor: contextMenu.canEdit ? "pointer" : "not-allowed",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              color: contextMenu.canEdit ? "#dc2626" : "#94a3b8",
+            }}
+            onMouseEnter={(e) => { if (contextMenu.canEdit) e.currentTarget.style.background = "#fef2f2"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span>Clear value and note</span>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}></span>
+          </button>
         </div>
       )}
     </div>

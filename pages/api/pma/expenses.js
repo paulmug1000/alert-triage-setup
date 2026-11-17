@@ -4,6 +4,7 @@ import {
   saveExpenseMetadata,
   toggleExpenseDelivery,
   saveExpenseAmount,
+  saveExpenseBatch,
   addExpenseCategory,
 } from "../../../services/expensesService.js";
 import { getClients } from "../../../services/workspaces.js";
@@ -140,6 +141,18 @@ export default async function handler(req, res) {
           sheetRow,
           monthlyAmounts,
           cellNotes: req.body?.cellNotes,
+          userEmail: sessionUser.email,
+        });
+        return res.status(200).json(result);
+      }
+
+      // Action: save_batch (batch update amounts and notes across rows/columns)
+      if (action === "save_batch") {
+        const result = await saveExpenseBatch({
+          clientName: clientName || "Client",
+          clientSheetId,
+          updates: Array.isArray(req.body?.updates) ? req.body.updates : [],
+          cellNotes: Array.isArray(req.body?.cellNotes) ? req.body.cellNotes : [],
           userEmail: sessionUser.email,
         });
         return res.status(200).json(result);

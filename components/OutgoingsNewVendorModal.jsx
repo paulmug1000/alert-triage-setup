@@ -18,6 +18,12 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
 
   const save = async () => {
     if (!vendorName.trim()) { setError("Please enter a vendor name"); return; }
+    const parsedPct = parseFloat(String(deliveryPct).replace(/%/g, "").trim());
+    if (isNaN(parsedPct) || parsedPct < 0 || parsedPct > 100) {
+      setError("Delivery % must be between 0 and 100");
+      return;
+    }
+    setError("");
     setSaving(true);
     try {
       const res = await fetch("/api/triage", {
@@ -28,7 +34,7 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
           masterSheetId: outgoingsClient?.masterSheetId,
           clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
           vendorName: vendorName.trim(),
-          vatFlag, invTiming, payTiming, deliveryPct: parseFloat(deliveryPct) || 100,
+          vatFlag, invTiming, payTiming, deliveryPct: parsedPct,
         }),
       });
       const data = await res.json();
@@ -40,7 +46,7 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
         vatFlag,
         invTiming,
         payTiming,
-        deliveryPct: `${parseFloat(deliveryPct) || 100}%`,
+        deliveryPct: `${parsedPct}%`,
         cells: {}
       };
       if (typeof onCreated === "function") {
@@ -84,7 +90,7 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
             </div>
             <div>
               <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Delivery %</label>
-              <input type="number" value={deliveryPct} onChange={e => setDeliveryPct(e.target.value)}
+              <input type="number" min="0" max="100" value={deliveryPct} onChange={e => setDeliveryPct(e.target.value)}
                 style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "14px", boxSizing: "border-box" }} />
             </div>
           </div>

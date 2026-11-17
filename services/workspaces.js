@@ -7244,6 +7244,136 @@ export async function handleAddNewJob(req, res, sheets) {
   }
 }
 
+function computeOutgoingsDefaultDates_(headerStr, recTimingStr, payTimingStr) {
+  const mNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const mMatch = String(headerStr || "").trim().match(/([A-Za-z]{3})[\s\-]*(\d{2,4})/);
+  if (!mMatch) return { rec: "", pay: "", monthTag: "" };
+  const mIdx = mNames.findIndex(m => m.toLowerCase() === mMatch[1].toLowerCase());
+  let yr = parseInt(mMatch[2], 10);
+  if (yr < 100) yr += 2000;
+  if (mIdx === -1 || isNaN(yr)) return { rec: "", pay: "", monthTag: "" };
+  const baseDate = new Date(yr, mIdx, 1);
+  const today = new Date();
+  const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+
+  const recDate = new Date(yr, mIdx, 1);
+  if (String(recTimingStr || "Curr").trim().toLowerCase().includes("next")) {
+    recDate.setMonth(recDate.getMonth() + 1);
+  }
+  recDate.setDate(5);
+  if (recDate < currentMonthStart) {
+    recDate.setFullYear(today.getFullYear(), today.getMonth(), 5);
+  }
+
+  const payDate = new Date(yr, mIdx, 1);
+  if (String(payTimingStr || "Curr").trim().toLowerCase().includes("next")) {
+    payDate.setMonth(payDate.getMonth() + 1);
+  }
+  payDate.setDate(28);
+  if (payDate < currentMonthStart) {
+    const targetPayMonth = today.getDate() > 20 ? today.getMonth() + 1 : today.getMonth();
+    payDate.setFullYear(today.getFullYear(), targetPayMonth, 28);
+  }
+
+  const fmt = (d) => `${d.getDate()}-${mNames[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+  return {
+    rec: fmt(recDate),
+    pay: fmt(payDate),
+    monthTag: `${mNames[baseDate.getMonth()]}-${String(baseDate.getFullYear()).slice(-2)}`
+  };
+}
+
+function sanitizeOutgNotesVal_(val) {
+  return typeof val === "string" && /^[\s'’]*[=+\-@]/.test(val)
+    ? "'" + val.replace(/^[\s'’]+/, "")
+    : String(val || "");
+}
+
+function buildUpdatedCosNote_(cosCell, hCellStr, cosInvTiming, cosPayTiming, colLetter) {
+  if (!cosCell) return null;
+  const cosVal = typeof cosCell.effectiveValue?.numberValue === "number"
+    ? cosCell.effectiveValue.numberValue
+    : parseFloat(String(cosCell.formattedValue || "").replace(/[^0-9.-]/g, "")) || 0;
+  const existingCosNote = cosCell.note || "";
+  const cosEst = computeOutgoingsDefaultDates_(hCellStr, cosInvTiming, cosPayTiming);
+  if (Math.abs(cosVal) <= 0.001) {
+    return existingCosNote ? "" : null;
+  }
+  if (existingCosNote.includes("{Amt:")) {
+    let updated = existingCosNote.replace(/\{Amt:\s*[^}]*\}/, `{Amt: ${cosVal.toFixed(2)}}`);
+    if (cosEst.rec) updated = updated.replace(/\{Rec date:\s*\}/g, `{Rec date: ${cosEst.rec}}`);
+    if (cosEst.pay) updated = updated.replace(/\{Pay date:\s*\}/g, `{Pay date: ${cosEst.pay}}`);
+    return updated;
+  }
+  const cosPrefix = cosEst.monthTag ? `PLACE-EXP-${cosEst.monthTag}-Makin-` : `PLACE-EXP-${colLetter}-Makin-`;
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `{App ID: ${cosPrefix}${rand}}{Amt: ${cosVal.toFixed(2)}}{Status: }{Rec date: ${cosEst.rec}}{Pay date: ${cosEst.pay}}{Description: Placeholder Entry - Making up CoS}`;
+}
+
+async function resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, explicitMasterSheetId) {
+  let targetMasterId = explicitMasterSheetId ? (extractSheetIdFromUrl(explicitMasterSheetId) || explicitMasterSheetId) : null;
+  if (!targetMasterId) {
+    try {
+      const { clientsArray } = await getAllClients(sheets);
+      const clients = clientsArray || [];
+      const found = clients.find(c =>
+        (tenantClient && c.clientName && c.clientName.toLowerCase() === tenantClient.toLowerCase()) ||
+        extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean ||
+        extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean
+      );
+      if (found?.masterSheetId) {
+        targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+      }
+    } catch (lookupErr) {
+      console.warn("Could not resolve masterSheetId in outgoings note update:", lookupErr.message);
+    }
+  }
+  return targetMasterId;
+}
+
+async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData }) {
+  const outgNotesUpdates = [
+    sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetIdClean,
+      requestBody: {
+        valueInputOption: "RAW",
+        data: outgNotesData,
+      },
+    }).catch(() => {})
+  ];
+
+  if (targetMasterId) {
+    outgNotesUpdates.push(
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: targetMasterId,
+        requestBody: {
+          valueInputOption: "RAW",
+          data: outgNotesData,
+        },
+      }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message))
+    );
+  }
+  await Promise.allSettled(outgNotesUpdates);
+
+  if (targetMasterId) {
+    resolveSupabaseSheetContext({ clientName: tenantClient, spreadsheetId: targetMasterId })
+      .then((supaCtx) => {
+        if (supaCtx && supaCtx.masterMode === "supabase") {
+          return recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || tenantClient);
+        }
+        const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
+        if (cronSecret) {
+          return fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: targetMasterId, secret: cronSecret }),
+          });
+        }
+      })
+      .catch((e) => console.warn("Background refreshOutgoings call failed:", e.message));
+  }
+}
+
 export async function handleUpdateOutgoingNote(req, res, sheets) {
   const { clientSheetId, sheetRow, colLetter, blocks, topNote } = req.body;
   if (!clientSheetId || !sheetRow || !colLetter) return res.status(400).json({ success: false, error: "Missing required fields" });
@@ -7285,45 +7415,6 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       } catch (e) { }
     }
 
-    const computeOutgoingsDefaultDates = (headerStr, recTimingStr, payTimingStr) => {
-      const mNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      const mMatch = String(headerStr || "").trim().match(/([A-Za-z]{3})[\s\-]*(\d{2,4})/);
-      if (!mMatch) return { rec: "", pay: "", monthTag: "" };
-      const mIdx = mNames.findIndex(m => m.toLowerCase() === mMatch[1].toLowerCase());
-      let yr = parseInt(mMatch[2], 10);
-      if (yr < 100) yr += 2000;
-      if (mIdx === -1 || isNaN(yr)) return { rec: "", pay: "", monthTag: "" };
-      const baseDate = new Date(yr, mIdx, 1);
-      const today = new Date();
-      const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-
-      const recDate = new Date(yr, mIdx, 1);
-      if (String(recTimingStr || "Curr").trim().toLowerCase().includes("next")) {
-        recDate.setMonth(recDate.getMonth() + 1);
-      }
-      recDate.setDate(5);
-      if (recDate < currentMonthStart) {
-        recDate.setFullYear(today.getFullYear(), today.getMonth(), 5);
-      }
-
-      const payDate = new Date(yr, mIdx, 1);
-      if (String(payTimingStr || "Curr").trim().toLowerCase().includes("next")) {
-        payDate.setMonth(payDate.getMonth() + 1);
-      }
-      payDate.setDate(28);
-      if (payDate < currentMonthStart) {
-        const targetPayMonth = today.getDate() > 20 ? today.getMonth() + 1 : today.getMonth();
-        payDate.setFullYear(today.getFullYear(), targetPayMonth, 28);
-      }
-
-      const fmt = (d) => `${d.getDate()}-${mNames[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
-      return {
-        rec: fmt(recDate),
-        pay: fmt(payDate),
-        monthTag: `${mNames[baseDate.getMonth()]}-${String(baseDate.getFullYear()).slice(-2)}`
-      };
-    };
-
     let resolvedBlocks = blocks || [];
     const hasBlankPlaceholderDates = resolvedBlocks.some(b => {
       const idUpper = String(b.appId || "").toUpperCase();
@@ -7341,7 +7432,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
         );
         const hStr = metaResp.data.valueRanges?.[0]?.values?.[0]?.[0] || "";
         const rowTimings = metaResp.data.valueRanges?.[1]?.values?.[0] || [];
-        const est = computeOutgoingsDefaultDates(hStr, rowTimings[0] || "Curr", rowTimings[1] || "Curr");
+        const est = computeOutgoingsDefaultDates_(hStr, rowTimings[0] || "Curr", rowTimings[1] || "Curr");
         if (est.rec || est.pay) {
           resolvedBlocks = resolvedBlocks.map(b => {
             const idUpper = String(b.appId || "").toUpperCase();
@@ -7414,26 +7505,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
         const cosInvTiming = cosTimingsRow[0]?.formattedValue || "Curr";
         const cosPayTiming = cosTimingsRow[1]?.formattedValue || "Curr";
         const cosCell = gridArr[2]?.rowData?.[0]?.values?.[0];
-        if (cosCell) {
-          const cosVal = typeof cosCell.effectiveValue?.numberValue === "number"
-            ? cosCell.effectiveValue.numberValue
-            : parseFloat(String(cosCell.formattedValue || "").replace(/[^0-9.-]/g, "")) || 0;
-          const existingCosNote = cosCell.note || "";
-          const cosEst = computeOutgoingsDefaultDates(hCellStr, cosInvTiming, cosPayTiming);
-          if (Math.abs(cosVal) <= 0.001) {
-            if (existingCosNote) {
-              newCosNote = "";
-            }
-          } else if (existingCosNote.includes("{Amt:")) {
-            newCosNote = existingCosNote.replace(/\{Amt:\s*[^}]*\}/, `{Amt: ${cosVal.toFixed(2)}}`);
-            if (cosEst.rec) newCosNote = newCosNote.replace(/\{Rec date:\s*\}/g, `{Rec date: ${cosEst.rec}}`);
-            if (cosEst.pay) newCosNote = newCosNote.replace(/\{Pay date:\s*\}/g, `{Pay date: ${cosEst.pay}}`);
-          } else if (Math.abs(cosVal) > 0.001) {
-            const cosPrefix = cosEst.monthTag ? `PLACE-EXP-${cosEst.monthTag}-Makin-` : `PLACE-EXP-${colLetter}-Makin-`;
-            const rand = Math.floor(1000 + Math.random() * 9000);
-            newCosNote = `{App ID: ${cosPrefix}${rand}}{Amt: ${cosVal.toFixed(2)}}{Status: }{Rec date: ${cosEst.rec}}{Pay date: ${cosEst.pay}}{Description: Placeholder Entry - Making up CoS}`;
-          }
-        }
+        newCosNote = buildUpdatedCosNote_(cosCell, hCellStr, cosInvTiming, cosPayTiming, colLetter);
       } catch (cosErr) {
         console.warn("Could not inspect Row 111 Making up CoS:", cosErr.message);
       }
@@ -7482,80 +7554,16 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
     }
 
-    let targetMasterId = req.body.masterSheetId ? (extractSheetIdFromUrl(req.body.masterSheetId) || req.body.masterSheetId) : null;
-    if (!targetMasterId) {
-      try {
-        const { clientsArray } = await getAllClients(sheets);
-        const clients = clientsArray || [];
-        const found = clients.find(c =>
-          (tenantClient && c.clientName && c.clientName.toLowerCase() === tenantClient.toLowerCase()) ||
-          extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean ||
-          extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean
-        );
-        if (found?.masterSheetId) {
-          targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
-        }
-      } catch (lookupErr) {
-        console.warn("Could not resolve masterSheetId in handleUpdateOutgoingNote:", lookupErr.message);
-      }
-    }
-
-    const safeNoteVal = typeof noteStr === "string" && /^[\s'’]*[=+\-@]/.test(noteStr)
-      ? "'" + noteStr.replace(/^[\s'’]+/, "")
-      : String(noteStr || "");
-    const safeCosVal = newCosNote !== null && typeof newCosNote === "string" && /^[\s'’]*[=+\-@]/.test(newCosNote)
-      ? "'" + newCosNote.replace(/^[\s'’]+/, "")
-      : String(newCosNote || "");
+    const targetMasterId = await resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, req.body.masterSheetId);
 
     const outgNotesData = [
-      { range: `OutgNotes!${colLetter}${sheetRow}`, values: [[safeNoteVal]] }
+      { range: `OutgNotes!${colLetter}${sheetRow}`, values: [[sanitizeOutgNotesVal_(noteStr)]] }
     ];
     if (newCosNote !== null) {
-      outgNotesData.push({ range: `OutgNotes!${colLetter}111`, values: [[safeCosVal]] });
+      outgNotesData.push({ range: `OutgNotes!${colLetter}111`, values: [[sanitizeOutgNotesVal_(newCosNote)]] });
     }
 
-    // Write to Client Sheet's local OutgNotes tab and Master Sheet's OutgNotes tab
-    const outgNotesUpdates = [
-      sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean,
-        requestBody: {
-          valueInputOption: "RAW",
-          data: outgNotesData
-        }
-      }).catch(() => {})
-    ];
-
-    if (targetMasterId) {
-      outgNotesUpdates.push(
-        sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: targetMasterId,
-          requestBody: {
-            valueInputOption: "RAW",
-            data: outgNotesData
-          }
-        }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message))
-      );
-    }
-    await Promise.allSettled(outgNotesUpdates);
-
-    if (targetMasterId) {
-      // Trigger GAS refreshOutgoings or native Supabase comparison recompute asynchronously without blocking response
-      resolveSupabaseSheetContext({ clientName: tenantClient, spreadsheetId: targetMasterId })
-        .then((supaCtx) => {
-          if (supaCtx && supaCtx.masterMode === "supabase") {
-            return recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || tenantClient);
-          }
-          const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
-          if (cronSecret) {
-            return fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: targetMasterId, secret: cronSecret }),
-            });
-          }
-        })
-        .catch((e) => console.warn("Background refreshOutgoings call failed:", e.message));
-    }
+    await syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData });
 
     let contractor = req.body.contractorName || "";
     if (!contractor && sheetRow) {
@@ -7606,6 +7614,261 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
     return res.status(200).json({ success: true, cellRef, blockCount: (blocks || []).length, cellTotal });
   } catch (err) {
     console.error("❌ update_outgoing_note error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
+  const { clientSheetId, updates = [], clientName, masterSheetId, automationCommanderSheetId } = req.body || {};
+  if (!clientSheetId || !Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ success: false, error: "Missing required fields: clientSheetId and updates" });
+  }
+
+  const sessionUser = getSessionUser(req);
+  const deduped = new Map();
+
+  for (const item of updates) {
+    const parsedRow = parseInt(item?.sheetRow, 10);
+    const cleanColLetter = String(item?.colLetter || "").trim().toUpperCase();
+    if (isNaN(parsedRow) || parsedRow < 4 || parsedRow > 400 || parsedRow === 111) continue;
+    if (!/^[E-Z]$|^A[A-Z]$/.test(cleanColLetter)) continue;
+    const colIdx0 = colLetterToNum(cleanColLetter) - 1;
+    const isMonthlyCol = (colIdx0 >= 6 && colIdx0 <= 17) || (colIdx0 >= 21 && colIdx0 <= 32) || (colIdx0 >= 36 && colIdx0 <= 47);
+    if (!isMonthlyCol) continue;
+
+    if (sessionUser?.role === "Senior (Restricted)" && ((parsedRow >= 115 && parsedRow <= 123) || (parsedRow >= 230 && parsedRow <= 238))) {
+      return res.status(403).json({ success: false, error: "Forbidden: Access to salary and dividend rows is restricted." });
+    }
+
+    deduped.set(`${parsedRow}_${cleanColLetter}`, {
+      sheetRow: parsedRow,
+      colLetter: cleanColLetter,
+      colIdx0,
+      contractorName: String(item?.contractorName || "").trim(),
+      blocks: Array.isArray(item?.blocks) ? item.blocks : [],
+      topNote: typeof item?.topNote === "string" ? item.topNote.trim() : "",
+    });
+  }
+
+  const validUpdates = Array.from(deduped.values());
+  if (validUpdates.length === 0) {
+    return res.status(200).json({ success: true, updatedCount: 0, updatedCosCells: {} });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+    // Resolve default placeholder dates in a single read if any block is missing dates
+    const needsDateBackfill = validUpdates.some((u) =>
+      u.blocks.some((b) => {
+        const idUpper = String(b.appId || "").toUpperCase();
+        const isPl = idUpper.includes("PLACE-EXP") || idUpper.includes("MANUAL-EXP") || idUpper.includes("MANUAL-ENTRY") || idUpper.includes("UNRECON-GAP");
+        return isPl && (!b.recDate || !b.payDate);
+      })
+    );
+
+    let headerRow = [];
+    let timingsByRow = new Map();
+    if (needsDateBackfill) {
+      try {
+        const rowNums = validUpdates.map((u) => u.sheetRow);
+        const minRow = Math.min(...rowNums);
+        const maxRow = Math.max(...rowNums);
+        const metaResp = await withRetry(() =>
+          sheets.spreadsheets.values.batchGet({
+            spreadsheetId: sheetIdClean,
+            ranges: ["Outgoings!A1:BG1", `Outgoings!C${minRow}:D${maxRow}`],
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        );
+        headerRow = metaResp.data.valueRanges?.[0]?.values?.[0] || [];
+        const timingRows = metaResp.data.valueRanges?.[1]?.values || [];
+        for (let r = minRow; r <= maxRow; r++) {
+          const vals = timingRows[r - minRow] || [];
+          timingsByRow.set(r, { rec: vals[0] || "Curr", pay: vals[1] || "Curr" });
+        }
+      } catch (e) { }
+    }
+
+    const outgoingsGid = await getSheetGid(sheets, sheetIdClean, "Outgoings");
+    const valuesBatchData = [];
+    const noteRequests = [];
+    const outgNotesData = [];
+    const touchedCosCols = new Set();
+
+    for (const u of validUpdates) {
+      let resolvedBlocks = u.blocks;
+      if (needsDateBackfill) {
+        const hStr = headerRow[u.colIdx0] || "";
+        const rowT = timingsByRow.get(u.sheetRow) || { rec: "Curr", pay: "Curr" };
+        const est = computeOutgoingsDefaultDates_(hStr, rowT.rec, rowT.pay);
+        if (est.rec || est.pay) {
+          resolvedBlocks = resolvedBlocks.map((b) => {
+            const idUpper = String(b.appId || "").toUpperCase();
+            const isPl = idUpper.includes("PLACE-EXP") || idUpper.includes("MANUAL-EXP") || idUpper.includes("MANUAL-ENTRY") || idUpper.includes("UNRECON-GAP");
+            if (!isPl) return b;
+            return {
+              ...b,
+              recDate: b.recDate || est.rec,
+              payDate: b.payDate || est.pay,
+            };
+          });
+        }
+      }
+
+      const blockStr = resolvedBlocks.map((b) =>
+        `{App ID: ${b.appId}}{Amt: ${b.amount}}{Status:${b.status ? " " + b.status : ""}}{Rec date:${b.recDate ? " " + b.recDate : ""}}{Pay date:${b.payDate ? " " + b.payDate : ""}}{Description:${b.description ? " " + b.description : ""}}`
+      ).join("\n");
+
+      const noteStr = u.topNote
+        ? (u.topNote + (blockStr ? "\n" + blockStr : ""))
+        : blockStr;
+
+      const cellTotal = resolvedBlocks
+        .filter((b) => !String(b.appId || "").startsWith("UNRECON-GAP"))
+        .reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
+
+      valuesBatchData.push({
+        range: `Outgoings!${u.colLetter}${u.sheetRow}`,
+        values: [[cellTotal || ""]],
+      });
+
+      noteRequests.push({
+        updateCells: {
+          range: {
+            sheetId: outgoingsGid,
+            startRowIndex: u.sheetRow - 1,
+            endRowIndex: u.sheetRow,
+            startColumnIndex: u.colIdx0,
+            endColumnIndex: u.colIdx0 + 1,
+          },
+          rows: [{ values: [{ note: noteStr }] }],
+          fields: "note",
+        },
+      });
+
+      outgNotesData.push({
+        range: `OutgNotes!${u.colLetter}${u.sheetRow}`,
+        values: [[sanitizeOutgNotesVal_(noteStr)]],
+      });
+
+      if (u.sheetRow >= 12 && u.sheetRow <= 110) {
+        touchedCosCols.add(u.colLetter);
+      }
+    }
+
+    // 1. Write cell totals first so Row 111 Making up CoS formulas reflect updated totals
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: valuesBatchData,
+        },
+      })
+    );
+
+    // 2. Inspect Row 111 Making up CoS for each affected column in a single batch read
+    const updatedCosCells = {};
+    if (touchedCosCols.size > 0) {
+      try {
+        const cosColsArr = Array.from(touchedCosCols);
+        const ranges = ["Outgoings!C111:D111"];
+        cosColsArr.forEach((col) => {
+          ranges.push(`Outgoings!${col}1`, `Outgoings!${col}111`);
+        });
+        const cosResp = await withRetry(() =>
+          sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            ranges,
+            includeGridData: true,
+            fields: "sheets.data.rowData.values(effectiveValue,formattedValue,note)",
+          })
+        );
+        const gridArr = cosResp.data.sheets?.[0]?.data || [];
+        const cosTimingsRow = gridArr[0]?.rowData?.[0]?.values || [];
+        const cosInvTiming = cosTimingsRow[0]?.formattedValue || "Curr";
+        const cosPayTiming = cosTimingsRow[1]?.formattedValue || "Curr";
+
+        cosColsArr.forEach((col, i) => {
+          const hCellStr = gridArr[1 + i * 2]?.rowData?.[0]?.values?.[0]?.formattedValue || "";
+          const cosCell = gridArr[2 + i * 2]?.rowData?.[0]?.values?.[0];
+          if (cosCell) {
+            const cosVal = typeof cosCell.effectiveValue?.numberValue === "number"
+              ? cosCell.effectiveValue.numberValue
+              : parseFloat(String(cosCell.formattedValue || "").replace(/[^0-9.-]/g, "")) || 0;
+            updatedCosCells[col] = {
+              amount: cosVal,
+              formatted: cosCell.formattedValue || (cosVal ? `£${cosVal.toLocaleString("en-GB")}` : "£0"),
+            };
+          }
+          const newCosNote = buildUpdatedCosNote_(cosCell, hCellStr, cosInvTiming, cosPayTiming, col);
+          if (newCosNote !== null) {
+            const colIdx0 = colLetterToNum(col) - 1;
+            noteRequests.push({
+              updateCells: {
+                range: {
+                  sheetId: outgoingsGid,
+                  startRowIndex: 110,
+                  endRowIndex: 111,
+                  startColumnIndex: colIdx0,
+                  endColumnIndex: colIdx0 + 1,
+                },
+                rows: [{ values: [{ note: newCosNote }] }],
+                fields: "note",
+              },
+            });
+            outgNotesData.push({
+              range: `OutgNotes!${col}111`,
+              values: [[sanitizeOutgNotesVal_(newCosNote)]],
+            });
+          }
+        });
+      } catch (cosErr) {
+        console.warn("Could not batch-inspect Row 111 Making up CoS:", cosErr.message);
+      }
+    }
+
+    // 3. Apply all cell notes in one batchUpdate
+    if (noteRequests.length > 0) {
+      await withRetry(() =>
+        sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          _skipFormulaRecompute: true,
+          requestBody: { requests: noteRequests },
+        })
+      );
+    }
+
+    let tenantClient = clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId);
+    }
+    const targetMasterId = await resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, masterSheetId);
+    await syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData });
+
+    const bgTasks = logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "EXPENSES",
+      action: "Outgoing Notes Batch Updated",
+      summary: `Batch updated ${validUpdates.length} contractor cell${validUpdates.length !== 1 ? "s" : ""}`,
+      details: {
+        updatedCount: validUpdates.length,
+        clientName: tenantClient,
+      },
+    }).catch((e) => console.error("PMA log failed:", e));
+    try { waitUntil(bgTasks); } catch (_) { }
+
+    await invalidatePmaClientCache(sheetIdClean, null, ["outgoings", "views"]).catch(() => { });
+
+    return res.status(200).json({
+      success: true,
+      updatedCount: validUpdates.length,
+      updatedCosCells,
+    });
+  } catch (err) {
+    console.error("❌ update_outgoing_notes_batch error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

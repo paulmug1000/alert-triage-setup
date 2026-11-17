@@ -40,7 +40,7 @@ import {
   handleCreateOutgoingsVendor, handleUpdateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
-  handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleVerifyExpenseInPulse, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote, handleSetMakingUpCosZero, handleSetMakingUpCosTarget,
+  handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleVerifyExpenseInPulse, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote, handleUpdateOutgoingNotesBatch, handleSetMakingUpCosZero, handleSetMakingUpCosTarget,
   handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, handleGetDefaultDaysToPay, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
@@ -279,6 +279,7 @@ export default async function handler(req, res) {
       create_outgoings_vendor: ["outgoings"],
       update_outgoings_vendor: ["outgoings"],
       update_outgoing_note: ["outgoings", "cash"],
+      update_outgoing_notes_batch: ["outgoings", "cash"],
       set_making_up_cos_zero: ["outgoings", "cash"],
       set_making_up_cos_target: ["outgoings", "views", "settings"],
       mark_expense_assigned: ["outgoings", "cash"],
@@ -732,6 +733,8 @@ export default async function handler(req, res) {
 
     } else if (action === "update_outgoing_note") {
       return await handleUpdateOutgoingNote(req, res, sheets);
+    } else if (action === "update_outgoing_notes_batch") {
+      return await handleUpdateOutgoingNotesBatch(req, res, sheets);
     } else if (action === "set_making_up_cos_zero") {
       return await handleSetMakingUpCosZero(req, res, sheets);
     } else if (action === "set_making_up_cos_target") {

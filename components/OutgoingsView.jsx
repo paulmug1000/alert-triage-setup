@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaOutgoingsTableSkeleton, PmaInvoicesTableSkeleton } from "./Skeleton";
@@ -105,6 +105,122 @@ function formatContractorExpenseDescription(exp) {
     return `${vendor} (${description})`;
   }
   return vendor || description || exp?.description || exp?.contactName || exp?.accountName || "";
+}
+
+const CONTRACTOR_MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function parseContractorAmount(val) {
+  if (val === null || val === undefined || val === "") return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const s = String(val).trim();
+  if (!s || s === "-" || s === "£-" || s === "$-" || s === "€-") return 0;
+  const isNeg = (s.startsWith("(") && s.endsWith(")")) || s.startsWith("-");
+  const cleaned = s.replace(/[£$€,\s()]/g, "");
+  const num = parseFloat(cleaned);
+  if (isNaN(num)) return NaN;
+  return isNeg ? -Math.abs(num) : num;
+}
+
+function getContractorMonthDetails(monthObj) {
+  if (monthObj?.isoMonth) {
+    const match = String(monthObj.isoMonth).match(/^(\d{4})-(\d{2})/);
+    if (match) {
+      const year = parseInt(match[1], 10);
+      const monthIdx = parseInt(match[2], 10) - 1;
+      return {
+        baseDate: new Date(year, monthIdx, 1),
+        dateStr: `${CONTRACTOR_MONTH_NAMES[monthIdx]}-${String(year).slice(-2)}`,
+      };
+    }
+  }
+  if (monthObj?.dateObj) {
+    const d = new Date(monthObj.dateObj);
+    if (!isNaN(d.getTime())) {
+      return {
+        baseDate: new Date(d.getFullYear(), d.getMonth(), 1),
+        dateStr: `${CONTRACTOR_MONTH_NAMES[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`,
+      };
+    }
+  }
+  const txtMatch = String(monthObj?.label || "").match(/([a-zA-Z]{3})[- ]?(\d{2,4})/);
+  if (txtMatch) {
+    const mIdx = CONTRACTOR_MONTH_NAMES.findIndex(m => m.toLowerCase() === txtMatch[1].toLowerCase());
+    let yr = parseInt(txtMatch[2], 10);
+    if (yr < 100) yr += 2000;
+    if (mIdx !== -1 && !isNaN(yr)) {
+      return {
+        baseDate: new Date(yr, mIdx, 1),
+        dateStr: `${CONTRACTOR_MONTH_NAMES[mIdx]}-${String(yr).slice(-2)}`,
+      };
+    }
+  }
+  const now = new Date();
+  return {
+    baseDate: new Date(now.getFullYear(), now.getMonth(), 1),
+    dateStr: `${CONTRACTOR_MONTH_NAMES[now.getMonth()]}-${String(now.getFullYear()).slice(-2)}`,
+  };
+}
+
+function computeContractorPlaceholderDates(baseDate, invTiming, payTiming) {
+  const today = new Date();
+  const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+
+  const recDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+  if (String(invTiming || "").trim().toLowerCase().includes("next")) {
+    recDate.setMonth(recDate.getMonth() + 1);
+  }
+  recDate.setDate(5);
+  if (recDate < currentMonthStart) {
+    recDate.setFullYear(today.getFullYear(), today.getMonth(), 5);
+  }
+
+  const payDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+  if (String(payTiming || "").trim().toLowerCase().includes("next")) {
+    payDate.setMonth(payDate.getMonth() + 1);
+  }
+  payDate.setDate(28);
+  if (payDate < currentMonthStart) {
+    const targetPayMonth = today.getDate() > 20 ? today.getMonth() + 1 : today.getMonth();
+    payDate.setFullYear(today.getFullYear(), targetPayMonth, 28);
+  }
+
+  const fmt = (d) => `${d.getDate()}-${CONTRACTOR_MONTH_NAMES[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+  return { recDate: fmt(recDate), payDate: fmt(payDate) };
+}
+
+function createContractorPlaceholderBlock(contractor, monthObj, amount) {
+  const roundedAmt = Math.round((parseFloat(amount) || 0) * 100) / 100;
+  if (roundedAmt <= 0) return null;
+  const { baseDate, dateStr } = getContractorMonthDetails(monthObj);
+  const { recDate, payDate } = computeContractorPlaceholderDates(baseDate, contractor?.invTiming, contractor?.payTiming);
+  const cleanName = String(contractor?.name || "Row").trim().replace(/[^a-zA-Z0-9]/g, "");
+  const shortCode = cleanName.slice(0, 5) || "Vend";
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return {
+    appId: `PLACE-EXP-${dateStr}-${shortCode}-${rand}`,
+    amount: roundedAmt,
+    status: "",
+    recDate,
+    payDate,
+    description: `Placeholder Entry - ${contractor?.name || "Contractor"}`,
+  };
+}
+
+function analyzeContractorCell(contractor, colLetter) {
+  const cell = contractor?.cells?.[colLetter] || { blocks: [], topNote: "" };
+  const realBlocks = (cell.blocks || []).filter(b => !String(b.appId || "").startsWith("UNRECON-GAP"));
+  const syncedBills = realBlocks.filter(b => b.appId && !isPlaceholderExpense(b.appId));
+  const placeholderBlocks = realBlocks.filter(b => !b.appId || isPlaceholderExpense(b.appId));
+  const total = realBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
+  return {
+    cell,
+    realBlocks,
+    syncedBills,
+    placeholderBlocks,
+    total,
+    hasSyncedBills: syncedBills.length > 0,
+    hasPlaceholders: placeholderBlocks.length > 0,
+  };
 }
 
 export default function OutgoingsView({
@@ -367,6 +483,28 @@ export default function OutgoingsView({
   const [editingContractor, setEditingContractor] = useState(null);
   const [vendorMismatchPrompt, setVendorMismatchPrompt] = useState(null);
   const [outgoingsNotice, setOutgoingsNotice] = useState(null);
+
+  // Contractors Spreadsheet Copy/Paste, Drag-to-Fill & Undo/Redo
+  const canEditContractors = !auth.user?.isReadOnly;
+  const [activeContractorCell, setActiveContractorCell] = useState(null); // { sheetRow, colLetter }
+  const [copiedContractorCell, setCopiedContractorCell] = useState(null); // { sheetRow, colLetter, amount, formattedAmount, topNote }
+  const [contractorDragRange, setContractorDragRange] = useState(null); // { startRowIdx, startMonthIdx, endRowIdx, endMonthIdx, axis }
+  const [contractorContextMenu, setContractorContextMenu] = useState(null);
+  const [contractorUndoStack, setContractorUndoStack] = useState([]);
+  const [contractorRedoStack, setContractorRedoStack] = useState([]);
+  const [contractorSaveStatus, setContractorSaveStatus] = useState("idle"); // "idle" | "saving" | "saved" | "error"
+
+  const outgoingsDataRef = useRef(outgoingsData);
+  outgoingsDataRef.current = outgoingsData;
+  const outgoingsClientRef = useRef(outgoingsClient);
+  outgoingsClientRef.current = outgoingsClient;
+
+  const isDraggingContractorFillRef = useRef(false);
+  const latestContractorDragRangeRef = useRef(null);
+  const internalContractorClipboardRef = useRef(null); // { amount, formattedAmount, topNote, syncedToSystem }
+  const pendingContractorUpdatesRef = useRef(new Map()); // `${sheetRow}_${colLetter}` -> { sheetRow, colLetter, contractorName, blocks, topNote }
+  const contractorSaveTimeoutRef = useRef(null);
+  const contractorTableScrollRef = useRef(null);
 
   const filteredContractors = React.useMemo(() => {
     const list = outgoingsData?.contractors || [];
@@ -883,9 +1021,10 @@ export default function OutgoingsView({
   const getStatusColour = (s) => STATUS_COLOURS[s] || STATUS_COLOURS[""];
 
   const OUTGOINGS_WINDOW = 7;
-  const visibleMonths = outgoingsData
-    ? outgoingsData.months.slice(outgoingsMonthOffset, outgoingsMonthOffset + OUTGOINGS_WINDOW)
-    : [];
+  const visibleMonths = useMemo(
+    () => (outgoingsData ? outgoingsData.months.slice(outgoingsMonthOffset, outgoingsMonthOffset + OUTGOINGS_WINDOW) : []),
+    [outgoingsData, outgoingsMonthOffset]
+  );
 
   const fmtMonthLabel = (labelOrIso) => {
     if (!labelOrIso) return "";
@@ -909,6 +1048,729 @@ export default function OutgoingsView({
     ? allOutgoingsClients
     : [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
   const noClient = !outgoingsClient && !managedClient && !initialClient;
+
+  // Reset contractor grid interaction state on client switch
+  useEffect(() => {
+    setActiveContractorCell(null);
+    setCopiedContractorCell(null);
+    setContractorDragRange(null);
+    setContractorContextMenu(null);
+    setContractorUndoStack([]);
+    setContractorRedoStack([]);
+    setContractorSaveStatus("idle");
+    pendingContractorUpdatesRef.current.clear();
+    if (contractorSaveTimeoutRef.current) {
+      clearTimeout(contractorSaveTimeoutRef.current);
+      contractorSaveTimeoutRef.current = null;
+    }
+  }, [outgoingsClient?.clientSheetId]);
+
+  useEffect(() => {
+    return () => {
+      if (contractorSaveTimeoutRef.current) clearTimeout(contractorSaveTimeoutRef.current);
+    };
+  }, []);
+
+  const contractorRowIndexMap = useMemo(() => {
+    const map = new Map();
+    filteredContractors.forEach((c, idx) => map.set(c.sheetRow, idx));
+    return map;
+  }, [filteredContractors]);
+
+  const contractorMonthIndexMap = useMemo(() => {
+    const map = new Map();
+    visibleMonths.forEach((m, idx) => map.set(m.colLetter, idx));
+    return map;
+  }, [visibleMonths]);
+
+  const triggerContractorBatchSave = useCallback(async () => {
+    const client = outgoingsClientRef.current;
+    if (!client?.clientSheetId) return;
+
+    const entries = Array.from(pendingContractorUpdatesRef.current.entries());
+    if (entries.length === 0) return;
+
+    setContractorSaveStatus("saving");
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_outgoing_notes_batch",
+          sessionId,
+          automationCommanderSheetId,
+          clientSheetId: client.clientSheetId,
+          clientName: client.clientName || client.name || "",
+          masterSheetId: client.masterSheetId || "",
+          updates: entries.map(([, v]) => v),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || `Failed to update contractor cells (HTTP ${res.status})`);
+      }
+
+      entries.forEach(([k, sentItem]) => {
+        if (pendingContractorUpdatesRef.current.get(k) === sentItem) {
+          pendingContractorUpdatesRef.current.delete(k);
+        }
+      });
+
+      if (data.updatedCosCells && Object.keys(data.updatedCosCells).length > 0) {
+        setOutgoingsData(prev => {
+          if (!prev?.makingUpCos) return prev;
+          const nextCells = { ...prev.makingUpCos.cells };
+          Object.entries(data.updatedCosCells).forEach(([col, cosInfo]) => {
+            nextCells[col] = {
+              ...(nextCells[col] || {}),
+              amount: cosInfo.amount,
+              formatted: cosInfo.formatted,
+            };
+          });
+          return {
+            ...prev,
+            makingUpCos: {
+              ...prev.makingUpCos,
+              cells: nextCells,
+            },
+          };
+        });
+      }
+
+      if (client.masterSheetId) {
+        outgoingsPullPendingRef.current = { clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId };
+      }
+      if (typeof invalidateCachedClientData === "function") {
+        invalidateCachedClientData(client.clientSheetId, "outgoings");
+      }
+
+      if (pendingContractorUpdatesRef.current.size > 0) {
+        triggerContractorBatchSave();
+      } else {
+        setContractorSaveStatus("saved");
+        setTimeout(() => {
+          setContractorSaveStatus(prev => (prev === "saved" ? "idle" : prev));
+        }, 2500);
+      }
+    } catch (err) {
+      console.error("triggerContractorBatchSave error:", err);
+      setContractorSaveStatus("error");
+      setOutgoingsNotice({
+        title: "Save failed",
+        message: err?.message || "Failed to save contractor changes. Click Retry save to try again.",
+      });
+    }
+  }, [sessionId, automationCommanderSheetId, outgoingsPullPendingRef, invalidateCachedClientData, setOutgoingsData]);
+
+  const queueContractorBatchSave = useCallback((updates = [], immediate = false) => {
+    if (!updates.length) return;
+    updates.forEach(up => {
+      pendingContractorUpdatesRef.current.set(`${up.sheetRow}_${up.colLetter}`, up);
+    });
+
+    setContractorSaveStatus("saving");
+    if (contractorSaveTimeoutRef.current) {
+      clearTimeout(contractorSaveTimeoutRef.current);
+      contractorSaveTimeoutRef.current = null;
+    }
+
+    if (immediate) {
+      triggerContractorBatchSave();
+    } else {
+      contractorSaveTimeoutRef.current = setTimeout(() => {
+        contractorSaveTimeoutRef.current = null;
+        triggerContractorBatchSave();
+      }, 450);
+    }
+  }, [triggerContractorBatchSave]);
+
+  const applyContractorCellChanges = useCallback((changes = [], { isUndoRedo = false, immediate = false } = {}) => {
+    const prevData = outgoingsDataRef.current;
+    if (!changes.length || !prevData?.contractors) return false;
+
+    const undoRecord = [];
+    const queuedUpdates = [];
+    const nextContractors = prevData.contractors.map(c => ({ ...c }));
+    const contractorIdxByRow = new Map();
+    nextContractors.forEach((c, idx) => contractorIdxByRow.set(c.sheetRow, idx));
+
+    changes.forEach(({ sheetRow, colLetter, targetBlocks, targetTopNote }) => {
+      const idx = contractorIdxByRow.get(sheetRow);
+      if (idx === undefined) return;
+      const contractor = nextContractors[idx];
+      const existingCell = contractor.cells?.[colLetter] || { blocks: [], topNote: "" };
+      const oldBlocks = (existingCell.blocks || []).filter(b => !String(b.appId || "").startsWith("UNRECON-GAP"));
+      const oldTopNote = existingCell.topNote || "";
+
+      const finalBlocks = Array.isArray(targetBlocks) ? targetBlocks : oldBlocks;
+      const finalTopNote = targetTopNote !== undefined ? String(targetTopNote).trim() : oldTopNote;
+
+      nextContractors[idx] = {
+        ...contractor,
+        cells: {
+          ...contractor.cells,
+          [colLetter]: {
+            ...existingCell,
+            blocks: finalBlocks,
+            topNote: finalTopNote,
+          },
+        },
+      };
+
+      undoRecord.push({
+        sheetRow,
+        colLetter,
+        oldBlocks,
+        newBlocks: finalBlocks,
+        oldTopNote,
+        newTopNote: finalTopNote,
+      });
+
+      queuedUpdates.push({
+        sheetRow,
+        colLetter,
+        contractorName: contractor.name || "",
+        blocks: finalBlocks,
+        topNote: finalTopNote,
+      });
+    });
+
+    if (undoRecord.length === 0) return false;
+
+    const nextData = {
+      ...prevData,
+      contractors: nextContractors,
+    };
+    outgoingsDataRef.current = nextData;
+    setOutgoingsData(nextData);
+
+    if (!isUndoRedo) {
+      setContractorUndoStack(prev => [...prev, undoRecord]);
+      setContractorRedoStack([]);
+    }
+
+    queueContractorBatchSave(queuedUpdates, immediate);
+    return true;
+  }, [setOutgoingsData, queueContractorBatchSave]);
+
+  const handleContractorUndo = useCallback(() => {
+    if (!canEditContractors || contractorUndoStack.length === 0) return;
+    const lastAction = contractorUndoStack[contractorUndoStack.length - 1];
+    setContractorUndoStack(prev => prev.slice(0, -1));
+
+    const reverseChanges = lastAction.map(item => ({
+      sheetRow: item.sheetRow,
+      colLetter: item.colLetter,
+      targetBlocks: item.oldBlocks,
+      targetTopNote: item.oldTopNote,
+    }));
+
+    applyContractorCellChanges(reverseChanges, { isUndoRedo: true });
+    setContractorRedoStack(prev => [...prev, lastAction]);
+  }, [canEditContractors, contractorUndoStack, applyContractorCellChanges]);
+
+  const handleContractorRedo = useCallback(() => {
+    if (!canEditContractors || contractorRedoStack.length === 0) return;
+    const actionToRedo = contractorRedoStack[contractorRedoStack.length - 1];
+    setContractorRedoStack(prev => prev.slice(0, -1));
+
+    const redoChanges = actionToRedo.map(item => ({
+      sheetRow: item.sheetRow,
+      colLetter: item.colLetter,
+      targetBlocks: item.newBlocks,
+      targetTopNote: item.newTopNote,
+    }));
+
+    applyContractorCellChanges(redoChanges, { isUndoRedo: true });
+    setContractorUndoStack(prev => [...prev, actionToRedo]);
+  }, [canEditContractors, contractorRedoStack, applyContractorCellChanges]);
+
+  const handleCopyContractorCell = useCallback((target = activeContractorCell, writeSystemClipboard = true) => {
+    if (!target) return false;
+    const contractor = (outgoingsDataRef.current?.contractors || []).find(c => c.sheetRow === target.sheetRow);
+    if (!contractor) return false;
+    const { cell, total } = analyzeContractorCell(contractor, target.colLetter);
+    const roundedAmount = Math.round((parseFloat(total) || 0) * 100) / 100;
+    const formattedAmount = `£${roundedAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    const clipEntry = {
+      amount: roundedAmount,
+      formattedAmount,
+      topNote: cell.topNote || "",
+      syncedToSystem: false,
+    };
+    internalContractorClipboardRef.current = clipEntry;
+    setCopiedContractorCell({
+      sheetRow: target.sheetRow,
+      colLetter: target.colLetter,
+      amount: roundedAmount,
+      formattedAmount,
+      topNote: cell.topNote || "",
+    });
+
+    if (writeSystemClipboard && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(formattedAmount).then(() => {
+        if (internalContractorClipboardRef.current === clipEntry) {
+          clipEntry.syncedToSystem = true;
+        }
+      }).catch(() => { });
+    }
+    return true;
+  }, [activeContractorCell]);
+
+  const applyPasteToActiveContractorCell = useCallback((clipText = "", fromButton = false) => {
+    if (!canEditContractors || !activeContractorCell) return;
+    const data = outgoingsDataRef.current;
+    if (!data?.contractors || !data?.months) return;
+
+    const targetContractor = data.contractors.find(c => c.sheetRow === activeContractorCell.sheetRow);
+    const targetMonth = data.months.find(m => m.colLetter === activeContractorCell.colLetter);
+    if (!targetContractor || !targetMonth) return;
+
+    const internal = internalContractorClipboardRef.current;
+    const trimmedClip = String(clipText ?? "").trim();
+    const useInternal = Boolean(
+      internal &&
+      (
+        (fromButton && (!trimmedClip || !internal.syncedToSystem || trimmedClip === internal.formattedAmount || parseContractorAmount(trimmedClip) === internal.amount)) ||
+        (!fromButton && (trimmedClip === "" || !internal.syncedToSystem || trimmedClip === internal.formattedAmount))
+      )
+    );
+
+    if (useInternal) {
+      const info = analyzeContractorCell(targetContractor, targetMonth.colLetter);
+      if (info.hasSyncedBills) {
+        setOutgoingsNotice({
+          title: "Cannot overwrite synced expenses",
+          message: `${targetContractor.name} (${fmtMonthLabel(targetMonth.isoMonth || targetMonth.label)}) contains synced accounting bills and cannot be overwritten by pasting.`,
+        });
+        return;
+      }
+      const newBlock = createContractorPlaceholderBlock(targetContractor, targetMonth, internal.amount);
+      applyContractorCellChanges([{
+        sheetRow: targetContractor.sheetRow,
+        colLetter: targetMonth.colLetter,
+        targetBlocks: newBlock ? [newBlock] : [],
+        targetTopNote: internal.topNote || "",
+      }]);
+      return;
+    }
+
+    if (!trimmedClip) return;
+
+    // Parse 1x1 or multi-cell TSV text from external spreadsheets
+    const startRowIdx = contractorRowIndexMap.get(activeContractorCell.sheetRow);
+    const startMonthIdx = contractorMonthIndexMap.get(activeContractorCell.colLetter);
+    if (startRowIdx === undefined || startMonthIdx === undefined) return;
+
+    const normalized = String(clipText).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n$/, "");
+    const grid = normalized.split("\n").map(line => line.split("\t"));
+
+    const changes = [];
+    let skippedProtected = 0;
+
+    for (let rOff = 0; rOff < grid.length; rOff++) {
+      const rowContractor = filteredContractors[startRowIdx + rOff];
+      if (!rowContractor) continue;
+      for (let cOff = 0; cOff < grid[rOff].length; cOff++) {
+        const colMonth = visibleMonths[startMonthIdx + cOff];
+        if (!colMonth) continue;
+        const parsedAmt = parseContractorAmount(grid[rOff][cOff]);
+        if (isNaN(parsedAmt)) continue;
+        const info = analyzeContractorCell(rowContractor, colMonth.colLetter);
+        if (info.hasSyncedBills) {
+          skippedProtected++;
+          continue;
+        }
+        const newBlock = createContractorPlaceholderBlock(rowContractor, colMonth, parsedAmt);
+        changes.push({
+          sheetRow: rowContractor.sheetRow,
+          colLetter: colMonth.colLetter,
+          targetBlocks: newBlock ? [newBlock] : [],
+        });
+      }
+    }
+
+    if (changes.length > 0) {
+      applyContractorCellChanges(changes);
+    } else if (skippedProtected > 0) {
+      setOutgoingsNotice({
+        title: "Cannot overwrite synced expenses",
+        message: "Target cell contains synced accounting bills and cannot be overwritten.",
+      });
+    }
+  }, [
+    canEditContractors,
+    activeContractorCell,
+    contractorRowIndexMap,
+    contractorMonthIndexMap,
+    filteredContractors,
+    visibleMonths,
+    applyContractorCellChanges,
+  ]);
+
+  const handlePasteContractorFromMenu = useCallback(async () => {
+    if (!canEditContractors || !activeContractorCell) return;
+    let clipText = "";
+    if (typeof navigator !== "undefined" && navigator.clipboard?.readText) {
+      try {
+        clipText = await navigator.clipboard.readText();
+      } catch {
+        clipText = "";
+      }
+    }
+    applyPasteToActiveContractorCell(clipText, true);
+  }, [canEditContractors, activeContractorCell, applyPasteToActiveContractorCell]);
+
+  // Keyboard shortcuts, clipboard events & arrow navigation for Contractors grid
+  useEffect(() => {
+    if (effectiveSubTab !== "contractors" || noClient) return;
+
+    const anyModalOpen = Boolean(
+      outgoingsEditCell ||
+      outgoingsEstimate ||
+      outgoingsNewVendor ||
+      editingContractor ||
+      outgoingsReplacePrompt ||
+      vendorMismatchPrompt ||
+      outgoingsNotice ||
+      selectedJobForDetail ||
+      directCostsEditSlot ||
+      placeholderChoicePrompt
+    );
+
+    const isTypingInFormControl = () => {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+    };
+
+    const handleKeyDown = (e) => {
+      if (anyModalOpen || isTypingInFormControl()) return;
+
+      if (e.key === "Escape") {
+        if (contractorContextMenu) {
+          setContractorContextMenu(null);
+          return;
+        }
+        if (copiedContractorCell) {
+          setCopiedContractorCell(null);
+          return;
+        }
+        if (activeContractorCell) {
+          setActiveContractorCell(null);
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        if (!canEditContractors) return;
+        e.preventDefault();
+        handleContractorUndo();
+        return;
+      }
+
+      if (
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z")
+      ) {
+        if (!canEditContractors) return;
+        e.preventDefault();
+        handleContractorRedo();
+        return;
+      }
+
+      if (!activeContractorCell) return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        const selection = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+        if (!selection) {
+          handleCopyContractorCell(activeContractorCell, true);
+        }
+        return;
+      }
+
+      const curRowIdx = contractorRowIndexMap.get(activeContractorCell.sheetRow);
+      const curMonthIdx = contractorMonthIndexMap.get(activeContractorCell.colLetter);
+
+      if (curRowIdx !== undefined && curMonthIdx !== undefined) {
+        if (e.key === "ArrowRight" && curMonthIdx < visibleMonths.length - 1) {
+          e.preventDefault();
+          setContractorContextMenu(null);
+          setActiveContractorCell({
+            sheetRow: activeContractorCell.sheetRow,
+            colLetter: visibleMonths[curMonthIdx + 1].colLetter,
+          });
+          return;
+        }
+        if (e.key === "ArrowLeft" && curMonthIdx > 0) {
+          e.preventDefault();
+          setContractorContextMenu(null);
+          setActiveContractorCell({
+            sheetRow: activeContractorCell.sheetRow,
+            colLetter: visibleMonths[curMonthIdx - 1].colLetter,
+          });
+          return;
+        }
+        if (e.key === "ArrowDown" && curRowIdx < filteredContractors.length - 1) {
+          e.preventDefault();
+          setContractorContextMenu(null);
+          setActiveContractorCell({
+            sheetRow: filteredContractors[curRowIdx + 1].sheetRow,
+            colLetter: activeContractorCell.colLetter,
+          });
+          return;
+        }
+        if (e.key === "ArrowUp" && curRowIdx > 0) {
+          e.preventDefault();
+          setContractorContextMenu(null);
+          setActiveContractorCell({
+            sheetRow: filteredContractors[curRowIdx - 1].sheetRow,
+            colLetter: activeContractorCell.colLetter,
+          });
+          return;
+        }
+      }
+
+      if (!canEditContractors) return;
+      const contractor = (outgoingsDataRef.current?.contractors || []).find(c => c.sheetRow === activeContractorCell.sheetRow);
+      const monthObj = (outgoingsDataRef.current?.months || []).find(m => m.colLetter === activeContractorCell.colLetter);
+      if (!contractor || !monthObj) return;
+
+      if (e.key === "Enter" || e.key === "F2") {
+        e.preventDefault();
+        setContractorContextMenu(null);
+        const cell = contractor.cells?.[monthObj.colLetter] || { blocks: [], topNote: "" };
+        setOutgoingsEditCell({
+          contractor,
+          colLetter: monthObj.colLetter,
+          monthLabel: monthObj.label,
+          topNote: cell.topNote || "",
+        });
+        return;
+      }
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        const info = analyzeContractorCell(contractor, monthObj.colLetter);
+        if (info.hasSyncedBills) {
+          setOutgoingsNotice({
+            title: "Cannot clear synced expenses",
+            message: `${contractor.name} (${fmtMonthLabel(monthObj.isoMonth || monthObj.label)}) contains synced accounting bills. Open the cell to manage them.`,
+          });
+          return;
+        }
+        if (info.hasPlaceholders) {
+          applyContractorCellChanges([{
+            sheetRow: contractor.sheetRow,
+            colLetter: monthObj.colLetter,
+            targetBlocks: [],
+          }]);
+        }
+      }
+    };
+
+    const handleCopyEvent = (e) => {
+      if (anyModalOpen || isTypingInFormControl() || !activeContractorCell) return;
+      const selection = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+      if (selection) return;
+
+      const contractor = (outgoingsDataRef.current?.contractors || []).find(c => c.sheetRow === activeContractorCell.sheetRow);
+      if (!contractor) return;
+      const { cell, total } = analyzeContractorCell(contractor, activeContractorCell.colLetter);
+      const roundedAmount = Math.round((parseFloat(total) || 0) * 100) / 100;
+      const formattedAmount = `£${roundedAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+      if (e.clipboardData) {
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", formattedAmount);
+      }
+      internalContractorClipboardRef.current = {
+        amount: roundedAmount,
+        formattedAmount,
+        topNote: cell.topNote || "",
+        syncedToSystem: true,
+      };
+      setCopiedContractorCell({
+        sheetRow: activeContractorCell.sheetRow,
+        colLetter: activeContractorCell.colLetter,
+        amount: roundedAmount,
+        formattedAmount,
+        topNote: cell.topNote || "",
+      });
+    };
+
+    const handlePasteEvent = (e) => {
+      if (anyModalOpen || isTypingInFormControl() || !activeContractorCell || !canEditContractors) return;
+      e.preventDefault();
+      const clipText = e.clipboardData?.getData("text/plain") ?? "";
+      applyPasteToActiveContractorCell(clipText, false);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("copy", handleCopyEvent);
+    window.addEventListener("paste", handlePasteEvent);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("copy", handleCopyEvent);
+      window.removeEventListener("paste", handlePasteEvent);
+    };
+  }, [
+    effectiveSubTab,
+    noClient,
+    canEditContractors,
+    activeContractorCell,
+    copiedContractorCell,
+    contractorContextMenu,
+    outgoingsEditCell,
+    outgoingsEstimate,
+    outgoingsNewVendor,
+    editingContractor,
+    outgoingsReplacePrompt,
+    vendorMismatchPrompt,
+    outgoingsNotice,
+    selectedJobForDetail,
+    directCostsEditSlot,
+    placeholderChoicePrompt,
+    filteredContractors,
+    visibleMonths,
+    contractorRowIndexMap,
+    contractorMonthIndexMap,
+    handleCopyContractorCell,
+    applyPasteToActiveContractorCell,
+    applyContractorCellChanges,
+    handleContractorUndo,
+    handleContractorRedo,
+    setOutgoingsEditCell,
+  ]);
+
+  // Close contractor context menu on outside click or scroll
+  useEffect(() => {
+    if (!contractorContextMenu) return;
+    const closeMenu = () => setContractorContextMenu(null);
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [contractorContextMenu]);
+
+  // Drag-to-fill handler along row or column for Contractors tab (creates placeholder notes)
+  const handleContractorDragFillMouseDown = (e, contractor, monthObj, rowIdx, monthIdx) => {
+    if (!canEditContractors) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setContractorContextMenu(null);
+
+    isDraggingContractorFillRef.current = true;
+    const initialRange = {
+      startRowIdx: rowIdx,
+      startMonthIdx: monthIdx,
+      endRowIdx: rowIdx,
+      endMonthIdx: monthIdx,
+      axis: "row",
+    };
+    latestContractorDragRangeRef.current = initialRange;
+    setContractorDragRange(initialRange);
+
+    const handleWindowMouseMove = (moveEvent) => {
+      if (!isDraggingContractorFillRef.current) return;
+
+      const scroller = contractorTableScrollRef.current;
+      if (scroller) {
+        const rect = scroller.getBoundingClientRect();
+        if (moveEvent.clientX > rect.right - 40) {
+          scroller.scrollLeft += 18;
+        } else if (moveEvent.clientX < rect.left + 40) {
+          scroller.scrollLeft -= 18;
+        }
+      }
+
+      const targetElem = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+      const cellElem = targetElem?.closest("[data-contractor-row-idx][data-contractor-month-idx]");
+      if (cellElem) {
+        const hoverRowIdx = parseInt(cellElem.getAttribute("data-contractor-row-idx"), 10);
+        const hoverMonthIdx = parseInt(cellElem.getAttribute("data-contractor-month-idx"), 10);
+        if (!isNaN(hoverRowIdx) && !isNaN(hoverMonthIdx)) {
+          const dRow = Math.abs(hoverRowIdx - rowIdx);
+          const dCol = Math.abs(hoverMonthIdx - monthIdx);
+          const nextRange = dCol >= dRow
+            ? { startRowIdx: rowIdx, startMonthIdx: monthIdx, endRowIdx: rowIdx, endMonthIdx: hoverMonthIdx, axis: "row" }
+            : { startRowIdx: rowIdx, startMonthIdx: monthIdx, endRowIdx: hoverRowIdx, endMonthIdx: monthIdx, axis: "col" };
+          latestContractorDragRangeRef.current = nextRange;
+          setContractorDragRange(nextRange);
+        }
+      }
+    };
+
+    const handleWindowMouseUp = () => {
+      isDraggingContractorFillRef.current = false;
+      window.removeEventListener("mousemove", handleWindowMouseMove);
+      window.removeEventListener("mouseup", handleWindowMouseUp);
+
+      const finalRange = latestContractorDragRangeRef.current;
+      latestContractorDragRangeRef.current = null;
+      setContractorDragRange(null);
+
+      if (!finalRange) return;
+      const srcContractor = filteredContractors[finalRange.startRowIdx];
+      const srcMonth = visibleMonths[finalRange.startMonthIdx];
+      if (!srcContractor || !srcMonth) return;
+
+      const srcInfo = analyzeContractorCell(srcContractor, srcMonth.colLetter);
+      const srcAmount = Math.round((parseFloat(srcInfo.total) || 0) * 100) / 100;
+      const srcTopNote = srcInfo.cell.topNote || "";
+      const changes = [];
+
+      if (finalRange.axis === "row") {
+        const minM = Math.min(finalRange.startMonthIdx, finalRange.endMonthIdx);
+        const maxM = Math.max(finalRange.startMonthIdx, finalRange.endMonthIdx);
+        for (let mIdx = minM; mIdx <= maxM; mIdx++) {
+          if (mIdx === finalRange.startMonthIdx) continue;
+          const targetMonth = visibleMonths[mIdx];
+          if (!targetMonth) continue;
+          const targetInfo = analyzeContractorCell(srcContractor, targetMonth.colLetter);
+          if (targetInfo.hasSyncedBills) continue;
+          const newBlock = createContractorPlaceholderBlock(srcContractor, targetMonth, srcAmount);
+          changes.push({
+            sheetRow: srcContractor.sheetRow,
+            colLetter: targetMonth.colLetter,
+            targetBlocks: newBlock ? [newBlock] : [],
+            targetTopNote: srcTopNote,
+          });
+        }
+      } else {
+        const minR = Math.min(finalRange.startRowIdx, finalRange.endRowIdx);
+        const maxR = Math.max(finalRange.startRowIdx, finalRange.endRowIdx);
+        const targetMonth = visibleMonths[finalRange.startMonthIdx];
+        if (targetMonth) {
+          for (let rIdx = minR; rIdx <= maxR; rIdx++) {
+            if (rIdx === finalRange.startRowIdx) continue;
+            const targetContractor = filteredContractors[rIdx];
+            if (!targetContractor) continue;
+            const targetInfo = analyzeContractorCell(targetContractor, targetMonth.colLetter);
+            if (targetInfo.hasSyncedBills) continue;
+            const newBlock = createContractorPlaceholderBlock(targetContractor, targetMonth, srcAmount);
+            changes.push({
+              sheetRow: targetContractor.sheetRow,
+              colLetter: targetMonth.colLetter,
+              targetBlocks: newBlock ? [newBlock] : [],
+              targetTopNote: srcTopNote,
+            });
+          }
+        }
+      }
+
+      if (changes.length > 0) {
+        applyContractorCellChanges(changes);
+      }
+    };
+
+    window.addEventListener("mousemove", handleWindowMouseMove);
+    window.addEventListener("mouseup", handleWindowMouseUp);
+  };
 
   return (
     <>
@@ -1934,26 +2796,154 @@ export default function OutgoingsView({
                 </button>
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <button onClick={() => setOutgoingsMonthOffset(Math.max(0, outgoingsMonthOffset - 1))}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                {canEditContractors && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <div style={{ display: "inline-flex", border: "1px solid #cbd5e1", borderRadius: "6px", overflow: "hidden" }}>
+                      <button
+                        type="button"
+                        onClick={handleContractorUndo}
+                        disabled={contractorUndoStack.length === 0}
+                        style={{
+                          background: contractorUndoStack.length > 0 ? "#ffffff" : "#f1f5f9",
+                          border: "none",
+                          padding: "5px 9px",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          color: contractorUndoStack.length > 0 ? "#1e293b" : "#94a3b8",
+                          cursor: contractorUndoStack.length > 0 ? "pointer" : "not-allowed",
+                          borderRight: "1px solid #cbd5e1",
+                        }}
+                        title="Undo (Ctrl+Z)"
+                      >
+                        ↶ Undo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleContractorRedo}
+                        disabled={contractorRedoStack.length === 0}
+                        style={{
+                          background: contractorRedoStack.length > 0 ? "#ffffff" : "#f1f5f9",
+                          border: "none",
+                          padding: "5px 9px",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          color: contractorRedoStack.length > 0 ? "#1e293b" : "#94a3b8",
+                          cursor: contractorRedoStack.length > 0 ? "pointer" : "not-allowed",
+                        }}
+                        title="Redo (Ctrl+Y)"
+                      >
+                        ↷ Redo
+                      </button>
+                    </div>
+                    {contractorSaveStatus === "saving" && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "#64748b" }}>
+                        <Spinner size={12} color="#0047AB" />
+                        <span>Saving changes...</span>
+                      </span>
+                    )}
+                    {contractorSaveStatus === "saved" && (
+                      <span style={{ fontSize: "12px", color: "#16a34a", fontWeight: 600 }}>
+                        ✓ All changes saved
+                      </span>
+                    )}
+                    {contractorSaveStatus === "error" && (
+                      <button
+                        type="button"
+                        onClick={triggerContractorBatchSave}
+                        style={{
+                          background: "#fee2e2",
+                          border: "1px solid #fca5a5",
+                          color: "#dc2626",
+                          borderRadius: "6px",
+                          padding: "4px 8px",
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Retry save
+                      </button>
+                    )}
+                  </div>
+                )}
+                <button onClick={() => { setContractorDragRange(null); setContractorContextMenu(null); setOutgoingsMonthOffset(Math.max(0, outgoingsMonthOffset - 1)); }}
                   disabled={outgoingsMonthOffset === 0}
                   style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsMonthOffset === 0 ? "default" : "pointer", opacity: outgoingsMonthOffset === 0 ? 0.4 : 1 }}>◀</button>
                 <span style={{ fontSize: "13px", color: "#555", minWidth: "140px", textAlign: "center" }}>
                   {fmtMonthLabel(visibleMonths[0]?.isoMonth || visibleMonths[0]?.label)} – {fmtMonthLabel(visibleMonths[visibleMonths.length - 1]?.isoMonth || visibleMonths[visibleMonths.length - 1]?.label)}
                 </span>
-                <button onClick={() => setOutgoingsMonthOffset(Math.min((outgoingsData.months.length - OUTGOINGS_WINDOW), outgoingsMonthOffset + 1))}
+                <button onClick={() => { setContractorDragRange(null); setContractorContextMenu(null); setOutgoingsMonthOffset(Math.min((outgoingsData.months.length - OUTGOINGS_WINDOW), outgoingsMonthOffset + 1)); }}
                   disabled={outgoingsMonthOffset >= outgoingsData.months.length - OUTGOINGS_WINDOW}
                   style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer" }}>▶</button>
                 <button onClick={async () => { setOutgoingsLoading(true); await loadOutgoings(outgoingsClient, true); setOutgoingsLoading(false); }}
-                  disabled={outgoingsLoading}
-                  style={{ padding: "5px 14px", background: outgoingsLoading ? "#e0e0e0" : "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsLoading ? "default" : "pointer", fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                  disabled={outgoingsLoading || contractorSaveStatus === "saving"}
+                  style={{ padding: "5px 14px", background: outgoingsLoading ? "#e0e0e0" : "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsLoading || contractorSaveStatus === "saving" ? "default" : "pointer", fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "6px" }}>
                   {outgoingsLoading ? <><Spinner size={12} color="#475569" /> Refreshing...</> : "↻ Refresh"}
                 </button>
               </div>
             </div>
 
-            <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
-              <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${190 + OUTGOINGS_WINDOW * 160}px` }}>
+            {canEditContractors && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: "8px",
+                  marginBottom: "10px",
+                  padding: "7px 12px",
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "6px",
+                  fontSize: "11.5px",
+                  color: "#475569",
+                }}
+              >
+                <span>
+                  Click a cell to select, double-click or press Enter to edit, Ctrl+C / Ctrl+V (or right-click) to copy amounts as placeholder entries, or drag the cell corner handle along a row or column.
+                </span>
+                {copiedContractorCell && (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      background: "#f0fdf4",
+                      border: "1px solid #bbf7d0",
+                      color: "#166534",
+                      padding: "2px 8px",
+                      borderRadius: "4px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    <span>
+                      Copied: {copiedContractorCell.formattedAmount}{copiedContractorCell.topNote ? " (with note)" : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCopiedContractorCell(null)}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#166534",
+                        cursor: "pointer",
+                        padding: 0,
+                        fontSize: "12px",
+                        lineHeight: 1,
+                      }}
+                      title="Clear copied indicator"
+                    >
+                      ×
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
+
+            <div ref={contractorTableScrollRef} style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+              <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${190 + OUTGOINGS_WINDOW * 160}px`, userSelect: contractorDragRange ? "none" : undefined }}>
                 <colgroup>
                   <col style={{ width: "190px" }} />
                   {visibleMonths.map(m => <col key={m.colLetter} style={{ width: "160px" }} />)}
@@ -2035,15 +3025,38 @@ export default function OutgoingsView({
                             style={{ background: "none", border: "1px solid #ddd", borderRadius: "4px", cursor: "pointer", color: "#888", fontSize: "16px", padding: "0 5px", lineHeight: "18px", flexShrink: 0, marginLeft: "4px" }}>+</button>
                         </div>
                       </td>
-                      {visibleMonths.map(m => {
-                        const cell = contractor.cells[m.colLetter] || { blocks: [] };
-                        const realBlocks = (cell.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"));
-                        const total = realBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
+                      {visibleMonths.map((m, monthIdx) => {
+                        const cellInfo = analyzeContractorCell(contractor, m.colLetter);
+                        const { cell, realBlocks, total, hasSyncedBills, hasPlaceholders } = cellInfo;
                         const isEmpty = realBlocks.length === 0;
                         const isTarget = selectedInboxAppIds.size > 0 || !!outgoingsPlacing;
                         const isCurr = isCurrentMonth(m.isoMonth || m.label);
 
+                        const isActive = !isTarget && activeContractorCell?.sheetRow === contractor.sheetRow && activeContractorCell?.colLetter === m.colLetter;
+                        const isCopied = copiedContractorCell?.sheetRow === contractor.sheetRow && copiedContractorCell?.colLetter === m.colLetter;
+                        const canOverwrite = canEditContractors && !hasSyncedBills;
+
+                        const isDragTarget = Boolean(
+                          contractorDragRange &&
+                          (
+                            (contractorDragRange.axis === "row" &&
+                              rowIdx === contractorDragRange.startRowIdx &&
+                              monthIdx >= Math.min(contractorDragRange.startMonthIdx, contractorDragRange.endMonthIdx) &&
+                              monthIdx <= Math.max(contractorDragRange.startMonthIdx, contractorDragRange.endMonthIdx)) ||
+                            (contractorDragRange.axis === "col" &&
+                              monthIdx === contractorDragRange.startMonthIdx &&
+                              rowIdx >= Math.min(contractorDragRange.startRowIdx, contractorDragRange.endRowIdx) &&
+                              rowIdx <= Math.max(contractorDragRange.startRowIdx, contractorDragRange.endRowIdx))
+                          )
+                        );
+                        const isDragSource = Boolean(
+                          contractorDragRange &&
+                          rowIdx === contractorDragRange.startRowIdx &&
+                          monthIdx === contractorDragRange.startMonthIdx
+                        );
+
                         const handleCellClick = async () => {
+                          setContractorContextMenu(null);
                           const toPlace = selectedInboxAppIds.size > 0
                             ? displayedInbox.filter(e => selectedInboxAppIds.has(e.appId))
                             : (outgoingsPlacingRef.current ? [outgoingsPlacingRef.current] : []);
@@ -2067,19 +3080,86 @@ export default function OutgoingsView({
                             }
                             await executeContractorCellPlacement(contractor, m.colLetter, toPlace, cell, realBlocks);
                           } else {
-                            setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label, topNote: cell.topNote || "" });
+                            setActiveContractorCell({ sheetRow: contractor.sheetRow, colLetter: m.colLetter });
                           }
                         };
 
+                        const handleCellDoubleClick = () => {
+                          if (isTarget) return;
+                          setContractorContextMenu(null);
+                          setActiveContractorCell({ sheetRow: contractor.sheetRow, colLetter: m.colLetter });
+                          setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label, topNote: cell.topNote || "" });
+                        };
+
+                        let baseBg = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8";
+                        if (isDragTarget && !isDragSource) {
+                          baseBg = canOverwrite ? "#dbeafe" : "#f1f5f9";
+                        } else if (isActive) {
+                          baseBg = "#eff6ff";
+                        }
+
+                        let cellBoxShadow = "none";
+                        if (isActive) {
+                          cellBoxShadow = "inset 0 0 0 2px #0066cc";
+                        } else if (isDragTarget) {
+                          cellBoxShadow = canOverwrite ? "inset 0 0 0 1.5px #3b82f6" : "inset 0 0 0 1px #94a3b8";
+                        } else if (isCopied) {
+                          cellBoxShadow = "inset 0 0 0 2px dashed #16a34a";
+                        }
+
                         return (
-                          <td key={m.colLetter} onClick={handleCellClick}
-                            style={{
-                              padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: "pointer", minHeight: "52px", position: "relative",
-                              background: isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",
-                              outline: isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px"
+                          <td
+                            key={m.colLetter}
+                            data-contractor-row-idx={rowIdx}
+                            data-contractor-month-idx={monthIdx}
+                            onClick={handleCellClick}
+                            onDoubleClick={handleCellDoubleClick}
+                            onContextMenu={(e) => {
+                              if (!canEditContractors || isTarget) return;
+                              e.preventDefault();
+                              setActiveContractorCell({ sheetRow: contractor.sheetRow, colLetter: m.colLetter });
+                              const menuW = 230;
+                              const menuH = 175;
+                              const x = typeof window !== "undefined" ? Math.min(e.clientX, window.innerWidth - menuW - 8) : e.clientX;
+                              const y = typeof window !== "undefined" ? Math.min(e.clientY, window.innerHeight - menuH - 8) : e.clientY;
+                              setContractorContextMenu({
+                                x,
+                                y,
+                                sheetRow: contractor.sheetRow,
+                                colLetter: m.colLetter,
+                                monthLabel: m.label,
+                                contractor,
+                                cell,
+                                total,
+                                canOverwrite,
+                                hasSyncedBills,
+                                hasPlaceholders,
+                              });
                             }}
-                            onMouseEnter={e => { e.currentTarget.style.background = "#f0f4ff"; }}
-                            onMouseLeave={e => { e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8"; }}>
+                            style={{
+                              padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top",
+                              cursor: isTarget ? "pointer" : "cell", minHeight: "52px", position: "relative",
+                              background: baseBg,
+                              boxShadow: cellBoxShadow,
+                              outline: isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px",
+                              userSelect: "none",
+                            }}
+                            onMouseEnter={e => {
+                              if (!isActive && !isDragTarget) e.currentTarget.style.background = "#f0f4ff";
+                            }}
+                            onMouseLeave={e => {
+                              if (!isActive && !isDragTarget) {
+                                e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8";
+                              }
+                            }}
+                            title={
+                              isTarget
+                                ? "Click to allocate selected expense"
+                                : hasSyncedBills
+                                  ? "Contains synced accounting bills · Click to select, double-click to view/edit, Ctrl+C to copy amount, or drag corner handle to copy as placeholder"
+                                  : "Click to select · Double-click to edit · Right-click or Ctrl+C/V to copy & paste · Drag corner handle to fill"
+                            }
+                          >
                             <CellNoteIndicator note={cell.topNote} />
                             {savingContractorCellKey === `${contractor.sheetRow}-${m.colLetter}` && (
                               <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "10px", color: "#2563eb", fontWeight: 600, marginBottom: "2px" }}>
@@ -2109,6 +3189,37 @@ export default function OutgoingsView({
                               </>
                             ) : (
                               <div style={{ color: isTarget ? "#1a56db" : "#d0d0d0", fontSize: "18px", textAlign: "center", paddingTop: "4px" }}>{isTarget ? "+" : "+"}</div>
+                            )}
+
+                            {/* Bottom-right Drag Fill Handle on Active Cell */}
+                            {isActive && canEditContractors && (
+                              <div
+                                onMouseDown={(e) => handleContractorDragFillMouseDown(e, contractor, m, rowIdx, monthIdx)}
+                                style={{
+                                  position: "absolute",
+                                  bottom: "-5px",
+                                  right: "-5px",
+                                  width: "14px",
+                                  height: "14px",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  cursor: "crosshair",
+                                  zIndex: 25,
+                                }}
+                                title="Drag along row or column to copy amount as placeholder entries"
+                              >
+                                <div
+                                  style={{
+                                    width: "8px",
+                                    height: "8px",
+                                    background: "#0066cc",
+                                    border: "1.5px solid #ffffff",
+                                    borderRadius: "1px",
+                                    boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+                                  }}
+                                />
+                              </div>
                             )}
                           </td>
                         );
@@ -3137,6 +4248,152 @@ export default function OutgoingsView({
           </>
         )}
       </div>
+
+      {/* ── CONTRACTOR CELL RIGHT-CLICK CONTEXT MENU ── */}
+      {contractorContextMenu && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "fixed",
+            top: `${contractorContextMenu.y}px`,
+            left: `${contractorContextMenu.x}px`,
+            zIndex: 10000,
+            background: "#ffffff",
+            border: "1px solid #cbd5e1",
+            borderRadius: "6px",
+            boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 4px 10px -2px rgba(0, 0, 0, 0.08)",
+            minWidth: "220px",
+            padding: "4px 0",
+            fontSize: "12.5px",
+            color: "#1e293b",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              handleCopyContractorCell({
+                sheetRow: contractorContextMenu.sheetRow,
+                colLetter: contractorContextMenu.colLetter,
+              }, true);
+              setContractorContextMenu(null);
+            }}
+            style={{
+              width: "100%",
+              padding: "7px 12px",
+              background: "transparent",
+              border: "none",
+              textAlign: "left",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              color: "#1e293b",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "#f1f5f9"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span>Copy amount</span>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>Ctrl+C</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!contractorContextMenu.canOverwrite}
+            onClick={() => {
+              if (!contractorContextMenu.canOverwrite) return;
+              setContractorContextMenu(null);
+              handlePasteContractorFromMenu();
+            }}
+            title={contractorContextMenu.hasSyncedBills ? "Cannot overwrite synced accounting bills" : undefined}
+            style={{
+              width: "100%",
+              padding: "7px 12px",
+              background: "transparent",
+              border: "none",
+              textAlign: "left",
+              cursor: contractorContextMenu.canOverwrite ? "pointer" : "not-allowed",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              color: contractorContextMenu.canOverwrite ? "#1e293b" : "#94a3b8",
+            }}
+            onMouseEnter={(e) => { if (contractorContextMenu.canOverwrite) e.currentTarget.style.background = "#f1f5f9"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span>Paste as placeholder</span>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>Ctrl+V</span>
+          </button>
+
+          <div style={{ height: "1px", background: "#e2e8f0", margin: "4px 0" }} />
+
+          <button
+            type="button"
+            onClick={() => {
+              const target = contractorContextMenu;
+              setContractorContextMenu(null);
+              setOutgoingsEditCell({
+                contractor: target.contractor,
+                colLetter: target.colLetter,
+                monthLabel: target.monthLabel,
+                topNote: target.cell?.topNote || "",
+              });
+            }}
+            style={{
+              width: "100%",
+              padding: "7px 12px",
+              background: "transparent",
+              border: "none",
+              textAlign: "left",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              color: "#1e293b",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "#f1f5f9"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span>Edit cell</span>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>Enter</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!contractorContextMenu.canOverwrite || !contractorContextMenu.hasPlaceholders}
+            onClick={() => {
+              if (!contractorContextMenu.canOverwrite || !contractorContextMenu.hasPlaceholders) return;
+              const target = contractorContextMenu;
+              setContractorContextMenu(null);
+              applyContractorCellChanges([{
+                sheetRow: target.sheetRow,
+                colLetter: target.colLetter,
+                targetBlocks: [],
+              }]);
+            }}
+            style={{
+              width: "100%",
+              padding: "7px 12px",
+              background: "transparent",
+              border: "none",
+              textAlign: "left",
+              cursor: (contractorContextMenu.canOverwrite && contractorContextMenu.hasPlaceholders) ? "pointer" : "not-allowed",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              color: (contractorContextMenu.canOverwrite && contractorContextMenu.hasPlaceholders) ? "#dc2626" : "#94a3b8",
+            }}
+            onMouseEnter={(e) => {
+              if (contractorContextMenu.canOverwrite && contractorContextMenu.hasPlaceholders) {
+                e.currentTarget.style.background = "#fef2f2";
+              }
+            }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span>Clear placeholders</span>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>Del</span>
+          </button>
+        </div>
+      )}
     </>
   );
 }

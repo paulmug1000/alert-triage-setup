@@ -279,7 +279,7 @@ export default function CreateTaskModal() {
             {taskModalIsProactive
               ? ` · ${cleanText(taskModalAlert.heading || taskModalAlert.alertType || "Proactive alert")}`
               : isInfo
-              ? ` · ${taskModalAlert.flagDetail ? `${getFlagName(taskModalAlert.flagType)}: ${cleanText(taskModalAlert.flagDetail)}` : (getFlagName(taskModalAlert.flagType) || taskModalAlert.flagType)}`
+              ? ` · ${taskModalAlert.flagDetail ? `${getFlagName(taskModalAlert.flagType, taskModalAlert)}: ${cleanText(taskModalAlert.flagDetail)}` : (getFlagName(taskModalAlert.flagType, taskModalAlert) || taskModalAlert.flagType)}`
               : ` · ${cleanText(getAlertSummary(taskModalAlert))}`}
           </div>
         )}

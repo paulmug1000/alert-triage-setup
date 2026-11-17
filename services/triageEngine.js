@@ -1828,6 +1828,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
     }
 
     const alertCountsByClientAndFlag = {};
+    const crmAlertSubTypesByClient = {};
     const activeExpenseIdsByClient = {};
     const activeContractorExpenseIdsByClient = {};
     const activePassThroughExpenseIdsByClient = {};
@@ -1848,6 +1849,13 @@ export async function handleGetPrecomputed(req, res, sheets) {
 
       if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
       alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+
+      if (flagKey === "crmPipeAppDiscr" || flagKey === "crmConfAppDiscr" || flagKey === "crmPipeDashDiscr" || flagKey === "crmConfDashDiscr") {
+        if (!crmAlertSubTypesByClient[key]) crmAlertSubTypesByClient[key] = {};
+        if (!crmAlertSubTypesByClient[key][flagKey]) crmAlertSubTypesByClient[key][flagKey] = { notFound: 0, fieldMismatch: 0 };
+        if (alert.subType === "field_mismatch") crmAlertSubTypesByClient[key][flagKey].fieldMismatch += 1;
+        else crmAlertSubTypesByClient[key][flagKey].notFound += 1;
+      }
 
       if (flagKey === "contractorsDashboardDiscr" || flagKey === "passThroughDashboardDiscr" || flagKey === "expenseDashboardDiscr") {
         const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
@@ -1921,6 +1929,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
         hasClientManager: cmMap.hasManager(c.clientName),
         flags: updatedFlags,
         alertCounts: counts,
+        crmAlertSubTypes: crmAlertSubTypesByClient[c.clientName] || {},
         activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
         activeContractorExpenseIds: activeContractorExpenseIdsByClient[c.clientName] || [],
         activePassThroughExpenseIds: activePassThroughExpenseIdsByClient[c.clientName] || [],
@@ -1979,6 +1988,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
         hasClientManager: c.hasClientManager || false,
         flags: c.flags,
         alertCounts: c.alertCounts || {},
+        crmAlertSubTypes: c.crmAlertSubTypes || {},
         activeExpenseIds: c.activeExpenseIds || [],
         activeContractorExpenseIds: c.activeContractorExpenseIds || [],
         activePassThroughExpenseIds: c.activePassThroughExpenseIds || [],
@@ -2264,6 +2274,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
         // Populate alertCounts and active*Ids on finalClientsWithFlags so triage_precomputed
         // always matches the exact structure produced by handleGetPrecomputed.
         const storeCountsByClient = {};
+        const storeCrmSubTypesByClient = {};
         const storeExpIdsByClient = {};
         const storeContrIdsByClient = {};
         const storePassIdsByClient = {};
@@ -2273,6 +2284,12 @@ export async function handleStorePrecomputed(req, res, sheets) {
           const fKey = a.flagType || a.alertType || a.type;
           if (!storeCountsByClient[k]) storeCountsByClient[k] = {};
           storeCountsByClient[k][fKey] = (storeCountsByClient[k][fKey] || 0) + 1;
+          if (fKey === "crmPipeAppDiscr" || fKey === "crmConfAppDiscr" || fKey === "crmPipeDashDiscr" || fKey === "crmConfDashDiscr") {
+            if (!storeCrmSubTypesByClient[k]) storeCrmSubTypesByClient[k] = {};
+            if (!storeCrmSubTypesByClient[k][fKey]) storeCrmSubTypesByClient[k][fKey] = { notFound: 0, fieldMismatch: 0 };
+            if (a.subType === "field_mismatch") storeCrmSubTypesByClient[k][fKey].fieldMismatch += 1;
+            else storeCrmSubTypesByClient[k][fKey].notFound += 1;
+          }
           if (fKey === "contractorsDashboardDiscr" || fKey === "passThroughDashboardDiscr" || fKey === "expenseDashboardDiscr") {
             const txId = a.summary?.transactionId || a.summary?.appId || a.summary?.reference || a.summary?.id;
             if (txId !== undefined && txId !== null && txId !== "") {
@@ -2317,6 +2334,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
         finalClientsWithFlags = finalClientsWithFlags.map(c => ({
           ...c,
           alertCounts: storeCountsByClient[c.clientName] || {},
+          crmAlertSubTypes: storeCrmSubTypesByClient[c.clientName] || {},
           activeExpenseIds: storeExpIdsByClient[c.clientName] || [],
           activeContractorExpenseIds: storeContrIdsByClient[c.clientName] || [],
           activePassThroughExpenseIds: storePassIdsByClient[c.clientName] || [],

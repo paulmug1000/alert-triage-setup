@@ -661,9 +661,9 @@ export default function AlertSelectionView({
     if (isApp) {
       const hasNotFound = groupAlerts.some(a => !a.subType || a.subType === "not_found");
       const hasMismatch = groupAlerts.some(a => a.subType === "field_mismatch");
-      if (hasMismatch && !hasNotFound) return `Job discrepancy - CRM details don’t match Pulse details (${tab})`;
+      if (hasMismatch && !hasNotFound) return `Job discrepancy - details in Pulse do not match those in CRM (${tab})`;
       if (!hasMismatch && hasNotFound) return `Job discrepancy - in Pulse but not in CRM (${tab})`;
-      return `Job discrepancy - in Pulse but not in CRM (${tab})`;
+      return `Job discrepancy - Pulse-CRM (${tab})`;
     }
     return getFlagName(type);
   };

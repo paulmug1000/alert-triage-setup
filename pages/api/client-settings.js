@@ -23,7 +23,8 @@ import {
   fetchCrmProductLinesFromSheet,
   fetchCrmLeadSourcesFromSheet,
   refreshChartOfAccountsService,
-  pullFreshPlCategoriesService
+  pullFreshPlCategoriesService,
+  pullCrmDataService
 } from "../../services/clientSettingsService.js";
 
 export default async function handler(req, res) {
@@ -178,6 +179,21 @@ export default async function handler(req, res) {
         return res.status(200).json(result);
       } catch (err) {
         console.error("POST /api/client-settings (pull_fresh_pl) error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    }
+
+    // Handle Pull CRM data
+    if (action === "pull_crm_data") {
+      try {
+        const result = await pullCrmDataService({
+          clientName,
+          masterSheetId,
+          userEmail: sessionUser.email || "Admin"
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("POST /api/client-settings (pull_crm_data) error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
     }

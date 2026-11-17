@@ -928,6 +928,7 @@ export default function ClientSettingsView({
   const [newManualNonCashAccountName, setNewManualNonCashAccountName] = useState("");
 
   // CRM mappings testing & preview states
+  const [pullingCrm, setPullingCrm] = useState(false);
   const [testingCrm, setTestingCrm] = useState(false);
   const [crmTestSuccessMsg, setCrmTestSuccessMsg] = useState("");
   const [crmTestErrorMsg, setCrmTestErrorMsg] = useState("");
@@ -1724,6 +1725,70 @@ export default function ClientSettingsView({
         nonCashBankAccountDetails: newDetails
       }
     }));
+  };
+
+  const handlePullCrmData = async () => {
+    if (!settings || !activeClientObj?.masterSheetId) return;
+    setPullingCrm(true);
+    setCrmTestSuccessMsg("");
+    setCrmTestErrorMsg("");
+
+    try {
+      const res = await fetch("/api/client-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "pull_crm_data",
+          clientName: selectedClientName,
+          masterSheetId: activeClientObj.masterSheetId
+        })
+      });
+
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || "Failed to pull CRM data");
+      }
+
+      const crmPatch = {
+        availableCrmHeaders: Array.isArray(data.availableCrmHeaders) ? data.availableCrmHeaders : [],
+        rawCrmRows: Array.isArray(data.rawCrmRows) ? data.rawCrmRows : [],
+        previewMappedJobs: Array.isArray(data.previewMappedJobs) ? data.previewMappedJobs : [],
+        previewConfirmedJobs: Array.isArray(data.previewConfirmedJobs) ? data.previewConfirmedJobs : [],
+        previewPipelineJobs: Array.isArray(data.previewPipelineJobs) ? data.previewPipelineJobs : []
+      };
+
+      setSettings(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          crm: {
+            ...prev.crm,
+            ...crmPatch
+          }
+        };
+      });
+      setInitialSettingsSnapshot(prevSnap => {
+        if (!prevSnap) return prevSnap;
+        try {
+          const parsed = JSON.parse(prevSnap);
+          parsed.crm = {
+            ...parsed.crm,
+            ...crmPatch
+          };
+          return JSON.stringify(parsed);
+        } catch {
+          return prevSnap;
+        }
+      });
+
+      setCrmTestSuccessMsg(data.message || `Pulled ${data.dealsPulled ?? 0} rows from CRM and refreshed field options.`);
+      setTimeout(() => setCrmTestSuccessMsg(""), 6000);
+    } catch (err) {
+      setCrmTestErrorMsg(err.message || "Failed to pull CRM data");
+      setTimeout(() => setCrmTestErrorMsg(""), 8000);
+    } finally {
+      setPullingCrm(false);
+    }
   };
 
   const handleTestCrmMappings = async () => {
@@ -4810,10 +4875,80 @@ export default function ClientSettingsView({
                   )}
                   {crmTestErrorMsg && (
                     <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: "6px", padding: "10px 14px", fontSize: "13px", color: "#B91C1C", marginBottom: "18px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span>⚠️ {crmTestErrorMsg}</span>
+                      <span>{crmTestErrorMsg}</span>
                       <button type="button" onClick={() => setCrmTestErrorMsg("")} style={{ background: "none", border: "none", color: "#B91C1C", cursor: "pointer", fontWeight: "bold" }}>✕</button>
                     </div>
                   )}
+
+                  {/* ── Top action bar: Pull CRM data ── */}
+                  {(() => {
+                    const crmTool = String(settings.crm?.toolInUse || "None").trim();
+                    const hasCrmTool = Boolean(crmTool && crmTool.toLowerCase() !== "none");
+                    const loadedRowCount = (settings.crm?.rawCrmRows || []).filter(r => r && r.some(cell => String(cell).trim() !== "")).length;
+                    const headerCount = (settings.crm?.availableCrmHeaders || []).length;
+                    return (
+                      <div style={{ marginBottom: "20px", background: "#F8FAFC", borderRadius: "10px", padding: "16px 20px", border: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+                        <div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                            <h4 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#0F172A" }}>
+                              Pull CRM data
+                            </h4>
+                            {hasCrmTool ? (
+                              <span style={{ fontSize: "11px", fontWeight: "700", color: "#0369A1", background: "#E0F2FE", border: "1px solid #BAE6FD", padding: "2px 8px", borderRadius: "12px" }}>
+                                {crmTool}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: "11px", fontWeight: "600", color: "#B45309", background: "#FEF3C7", border: "1px solid #FDE68A", padding: "2px 8px", borderRadius: "12px" }}>
+                                No CRM connected
+                              </span>
+                            )}
+                            {loadedRowCount > 0 && (
+                              <span style={{ fontSize: "11px", fontWeight: "600", color: "#475569", background: "#FFFFFF", border: "1px solid #CBD5E1", padding: "2px 8px", borderRadius: "12px" }}>
+                                {loadedRowCount} {loadedRowCount === 1 ? "row" : "rows"} · {headerCount} {headerCount === 1 ? "field" : "fields"} loaded
+                              </span>
+                            )}
+                          </div>
+                          <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748B" }}>
+                            {hasCrmTool
+                              ? `Fetch the latest deals and field headers from ${crmTool} so the mapping, job definition, and status options below can be configured.`
+                              : "Connect a CRM tool in Integrations before pulling CRM data."}
+                          </p>
+                          {renderCellRef("DataFromCRM!A1:ZZ")}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handlePullCrmData}
+                          disabled={pullingCrm || !hasCrmTool}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            padding: "8px 16px",
+                            borderRadius: "6px",
+                            border: "none",
+                            background: (!hasCrmTool || pullingCrm) ? "#94A3B8" : "#0066CC",
+                            color: "#FFFFFF",
+                            fontSize: "13px",
+                            fontWeight: "600",
+                            cursor: !hasCrmTool ? "not-allowed" : (pullingCrm ? "wait" : "pointer"),
+                            opacity: !hasCrmTool ? 0.65 : 1,
+                            boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                            transition: "all 0.15s ease"
+                          }}
+                        >
+                          {pullingCrm ? (
+                            <>
+                              <Spinner size={12} color="#FFFFFF" />
+                              <span>Pulling CRM data...</span>
+                            </>
+                          ) : (
+                            <span>Pull CRM data</span>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })()}
 
                   {/* ── Subsection 1: CRM field mapping & live preview ── */}
                   <div style={{ marginBottom: "32px", background: "#FFFFFF", borderRadius: "10px", padding: "20px", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.02)", boxSizing: "border-box", maxWidth: "100%", minWidth: 0 }}>

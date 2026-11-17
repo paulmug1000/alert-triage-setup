@@ -26,6 +26,7 @@ import { getSupabaseAdmin } from "./supabaseClient.js";
 import {
   refreshNativeChartOfAccounts,
   pullLivePLToSupabaseNative,
+  runNativeMasterAmdAction,
 } from "./masterSyncEngine.js";
 
 const REDIS_SETTINGS_PREFIX = "pulse:client_settings:";
@@ -1554,6 +1555,91 @@ export async function pullFreshPlCategoriesService({ clientName, masterSheetId }
     message: gasResult?.message || "Successfully pulled fresh P&L data.",
     plCategories,
     sheetRemainingCategories
+  };
+}
+
+/**
+ * Pulls fresh CRM data into DataFromCRM and refreshes CRMList previews + available headers.
+ */
+export async function pullCrmDataService({ clientName, masterSheetId, userEmail = "Admin" }) {
+  if (!masterSheetId) throw new Error("Missing masterSheetId");
+  const sheets = await getSheetsClient();
+
+  const crmToolResp = await withRetry(() => sheets.spreadsheets.values.get({
+    spreadsheetId: masterSheetId,
+    range: "KeyInfo!Q8",
+    valueRenderOption: "FORMATTED_VALUE"
+  })).catch(() => ({ data: { values: [[""]] } }));
+  const crmTool = String(crmToolResp.data?.values?.[0]?.[0] || "").trim();
+  if (!crmTool || crmTool.toLowerCase() === "none") {
+    throw new Error("No CRM tool is configured for this client. Connect a CRM integration first.");
+  }
+
+  let pullResult = null;
+  const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+  if (supaCtx && supaCtx.masterMode === "supabase") {
+    pullResult = await runNativeMasterAmdAction({
+      sheets,
+      clientName: supaCtx.clientName || clientName,
+      amdAction: "pull_crm",
+      userEmail: userEmail || "Admin",
+    });
+  } else {
+    const webAppUrl = await getClientWebAppUrl(sheets, clientName, "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M");
+    if (!webAppUrl) {
+      throw new Error("Master sheet automation URL not found for this client.");
+    }
+    const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
+    const resp = await fetch(webAppUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret, action: "pull_crm", clientName })
+    });
+    pullResult = await resp.json().catch(() => null);
+    if (!resp.ok || (pullResult && pullResult.success === false)) {
+      throw new Error(pullResult?.error || "Failed to pull CRM data from Master sheet.");
+    }
+  }
+
+  const crmResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+    spreadsheetId: masterSheetId,
+    ranges: [
+      "DataFromCRM!A1:ZZ",
+      "CRMList!A4:M",
+      "CRMList!CZ4:DL",
+      "CRMList!DU4:EG"
+    ],
+    valueRenderOption: "FORMATTED_VALUE"
+  }));
+
+  const cVals = crmResp.data.valueRanges || [];
+  const rawCrmData = cVals[0]?.values || [];
+  const availableCrmHeaders = (rawCrmData[0] || []).map(h => String(h || "").trim()).filter(Boolean);
+  const rawCrmRows = rawCrmData.slice(1);
+  const previewMappedJobs = (cVals[1]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+  const previewConfirmedJobs = (cVals[2]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+  const previewPipelineJobs = (cVals[3]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+
+  if (redisClient?.isOpen && clientName) {
+    try {
+      await redisClient.del(getSettingsRedisKey(clientName));
+    } catch (e) { }
+  }
+
+  const dealsPulled = rawCrmRows.filter(r => r && r.some(cell => String(cell).trim() !== "")).length;
+
+  return {
+    success: true,
+    crmTool,
+    dealsPulled,
+    message: pullResult?.uiAlerts?.length
+      ? pullResult.uiAlerts.join(" | ")
+      : `Pulled ${dealsPulled} ${dealsPulled === 1 ? "row" : "rows"} from ${crmTool}.`,
+    availableCrmHeaders,
+    rawCrmRows,
+    previewMappedJobs,
+    previewConfirmedJobs,
+    previewPipelineJobs
   };
 }
 

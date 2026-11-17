@@ -276,7 +276,7 @@ export default function ClientSelectionView({
                   }
                   if (key === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
                   if (count === 0) return null;
-                  const label = getFlagName(key);
+                  const label = getFlagName(key, client.crmAlertSubTypes?.[key]);
                   return {
                     text: `${label} (${count} alert${count !== 1 ? "s" : ""})`,
                     isAdminOnly: ADMIN_ONLY_FLAG_KEYS.has(key),
@@ -288,7 +288,7 @@ export default function ClientSelectionView({
                 .filter(([key, val]) => val && isFlagVisible(key) && !ACTIONABLE_FLAG_KEYS.includes(key) && (client.alertCounts?.[key] || 0) > 0)
                 .map(([key]) => {
                   const count = client.alertCounts?.[key] || 0;
-                  const label = getFlagName(key);
+                  const label = getFlagName(key, client.crmAlertSubTypes?.[key]);
                   return {
                     text: `${label} (${count} alert${count !== 1 ? "s" : ""})`,
                     isAdminOnly: ADMIN_ONLY_FLAG_KEYS.has(key),

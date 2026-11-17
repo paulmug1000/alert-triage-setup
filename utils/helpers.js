@@ -759,7 +759,27 @@ export function sanitizeSpreadsheetTerms(text) {
     .trim();
 }
 
-export const getFlagName = (flagKey) => {
+export const getFlagName = (flagKey, alertOrSubType = null) => {
+  if ((flagKey === "crmPipeAppDiscr" || flagKey === "crmConfAppDiscr") && alertOrSubType) {
+    const tab = flagKey === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
+    if (typeof alertOrSubType === "string") {
+      if (alertOrSubType === "field_mismatch") {
+        return `Job discrepancy - details in Pulse do not match those in CRM (${tab})`;
+      }
+    } else if (typeof alertOrSubType === "object") {
+      if (alertOrSubType.subType === "field_mismatch") {
+        return `Job discrepancy - details in Pulse do not match those in CRM (${tab})`;
+      }
+      const nf = Number(alertOrSubType.notFound || 0);
+      const fm = Number(alertOrSubType.fieldMismatch || 0);
+      if (fm > 0 && nf === 0) {
+        return `Job discrepancy - details in Pulse do not match those in CRM (${tab})`;
+      }
+      if (fm > 0 && nf > 0) {
+        return `Job discrepancy - Pulse-CRM (${tab})`;
+      }
+    }
+  }
   const flagNames = {
     "invoiceDashboardDiscr": "Invoice discrepancy",
     "crmPipeDashDiscr": "Job discrepancy - Pulse-CRM (Pipeline)",

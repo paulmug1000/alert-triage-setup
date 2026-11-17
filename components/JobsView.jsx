@@ -932,6 +932,225 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
   return result;
 };
 
+const uiRetainerRowHasRealData = (row) => {
+  if (!row) return false;
+  for (const s of (row.invoiceSlots || [])) {
+    const ref = String(s.ref ?? "").trim();
+    if (ref && !isPlaceholderInvoice(ref, s.status)) return true;
+    const status = String(s.status ?? "").trim().toLowerCase();
+    if (status.includes("sent") || status.includes("paid")) return true;
+  }
+  for (const s of (row.expenseSlots || [])) {
+    const id = String(s.ref ?? s.id ?? "").trim();
+    if (id && !isPlaceholderExpense(id, s.status)) return true;
+  }
+  return false;
+};
+
+const detectRetainerIntervalMonthsUi = (childDates) => {
+  const dates = (childDates || []).filter(Boolean);
+  if (dates.length < 2) return 1;
+  const diffs = [];
+  for (let k = 0; k < dates.length - 1; k++) {
+    const d1 = dates[k];
+    const d2 = dates[k + 1];
+    if (d1 && d2) {
+      const diffDays = Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / 86400000);
+      const calc = Math.round(diffDays / 30);
+      if (calc > 0) diffs.push(calc);
+    }
+  }
+  if (diffs.length === 0) return 1;
+  const counts = {};
+  let maxCount = 0;
+  let modeInterval = 1;
+  for (const val of diffs) {
+    counts[val] = (counts[val] || 0) + 1;
+    if (counts[val] > maxCount) {
+      maxCount = counts[val];
+      modeInterval = val;
+    }
+  }
+  return modeInterval;
+};
+
+const detectRetainerTimingOffsetUi = (allInvoiceDates, jobStartDate, intervalMonths) => {
+  const dates = (allInvoiceDates || []).filter(Boolean);
+  if (dates.length === 0 || !jobStartDate) return "during";
+  const interval = intervalMonths || 1;
+  if (dates.length === 1) {
+    const firstPeriodStart = new Date(jobStartDate.getFullYear(), jobStartDate.getMonth(), 1);
+    const firstPeriodEnd = new Date(jobStartDate.getFullYear(), jobStartDate.getMonth() + interval, 0, 23, 59, 59);
+    if (dates[0].getTime() < firstPeriodStart.getTime()) return "before";
+    if (dates[0].getTime() > firstPeriodEnd.getTime()) return "after";
+    return "during";
+  }
+  let beforeVotes = 0;
+  let duringVotes = 0;
+  let afterVotes = 0;
+  dates.forEach((sent, i) => {
+    const total = jobStartDate.getFullYear() * 12 + jobStartDate.getMonth() + i * interval;
+    const y = Math.floor(total / 12);
+    const m = ((total % 12) + 12) % 12;
+    const periodStart = new Date(y, m, 1);
+    const periodEnd = new Date(y, m + interval, 0, 23, 59, 59);
+    if (sent.getTime() < periodStart.getTime()) beforeVotes++;
+    else if (sent.getTime() > periodEnd.getTime()) afterVotes++;
+    else duringVotes++;
+  });
+  const total = beforeVotes + duringVotes + afterVotes;
+  if (total === 0) return "during";
+  if (beforeVotes / total >= 2 / 3) return "before";
+  if (afterVotes / total >= 2 / 3) return "after";
+  return "during";
+};
+
+/**
+ * Optimistically projects retainer child rows when a retainer's end date is changed in the UI,
+ * mirroring `executeChangeRetainerEndDate` so the invoice placeholder list updates immediately.
+ */
+export const projectRetainerRowsForEndDate = (job, targetEndDateVal, overrideRevenueVal) => {
+  if (!job || !Array.isArray(job.rows) || job.rows.length === 0) return job?.rows || [];
+  const parentRow = job.rows[0];
+  const childRows = job.rows.slice(1);
+  const oldEndDate = parseSheetDate(parentRow.endDate);
+  const newEnd = isNoEndDateSentinel(targetEndDateVal) ? new Date(2050, 11, 31) : parseSheetDate(targetEndDateVal);
+  if (!newEnd) return job.rows;
+
+  const startDate = parseSheetDate(parentRow.startDate);
+  const childDates = childRows.map((cr) => parseSheetDate(cr.invoiceSlots?.[0]?.sentDate)).filter(Boolean);
+  const intervalMonths = detectRetainerIntervalMonthsUi(childDates);
+  const invoiceTimingOffset = detectRetainerTimingOffsetUi(childDates, startDate, intervalMonths);
+  const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
+
+  const isGrowing = !oldEndDate || newEnd > oldEndDate;
+
+  if (!isGrowing) {
+    const newEndVal = newEnd.getFullYear() * 12 + newEnd.getMonth();
+    let anchorIdx = -1;
+    let anchorPeriodMonthVal = null;
+    for (let k = 0; k < childRows.length; k++) {
+      const slot0 = childRows[k].invoiceSlots?.[0];
+      const d = parseSheetDate(slot0?.sentDate);
+      const ref = String(slot0?.ref ?? "").trim();
+      if (d && ref && !isPlaceholderInvoice(ref, slot0?.status)) {
+        anchorIdx = k;
+        anchorPeriodMonthVal = d.getFullYear() * 12 + d.getMonth() + timingMonthAdjust;
+        break;
+      }
+    }
+    if (anchorIdx === -1 && !startDate) {
+      for (let k = 0; k < childRows.length; k++) {
+        const d = parseSheetDate(childRows[k].invoiceSlots?.[0]?.sentDate);
+        if (d) {
+          anchorIdx = k;
+          anchorPeriodMonthVal = d.getFullYear() * 12 + d.getMonth() + timingMonthAdjust;
+          break;
+        }
+      }
+    }
+
+    const trimIndices = new Set();
+    for (let c = childRows.length - 1; c >= 0; c--) {
+      const cr = childRows[c];
+      const invDate = parseSheetDate(cr.invoiceSlots?.[0]?.sentDate);
+      let rowMonthVal = invDate ? (invDate.getFullYear() * 12 + invDate.getMonth() + timingMonthAdjust) : null;
+      if (rowMonthVal === null && !uiRetainerRowHasRealData(cr)) {
+        if (anchorIdx !== -1 && anchorPeriodMonthVal !== null) {
+          rowMonthVal = anchorPeriodMonthVal + (c - anchorIdx) * intervalMonths;
+        } else if (startDate) {
+          rowMonthVal = startDate.getFullYear() * 12 + startDate.getMonth() + c * intervalMonths;
+        }
+      }
+      if (rowMonthVal !== null && rowMonthVal > newEndVal) {
+        trimIndices.add(c);
+      } else {
+        break;
+      }
+    }
+
+    if (trimIndices.size === 0) return job.rows;
+    // Mirror backend safety: if any candidate row has real invoice/expense data, trim is blocked.
+    for (const idx of trimIndices) {
+      if (uiRetainerRowHasRealData(childRows[idx])) return job.rows;
+    }
+    const keptChildren = childRows.filter((_, idx) => !trimIndices.has(idx));
+    return [parentRow, ...keptChildren];
+  }
+
+  // Growing: mirror executeChangeRetainerEndDate 18-month future runway + contract end / value caps
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
+  const pastCount = childDates.filter((d) => (d.getFullYear() * 12 + d.getMonth() + timingMonthAdjust) <= currentMonthVal).length;
+  const targetCount = pastCount + 18;
+  if (childRows.length >= targetCount) return job.rows;
+
+  const parseMoney = (v) => parseFloat(String(v ?? "").replace(/[£$€,\s]/g, "")) || 0;
+  const revenue = overrideRevenueVal !== undefined ? parseMoney(overrideRevenueVal) : parseMoney(parentRow.revenue);
+  const totalInvoiced =
+    childRows.reduce((sum, cr) => sum + Math.max(0, parseMoney(cr.invoiceSlots?.[0]?.amount) - parseMoney(cr.invoiceSlots?.[0]?.ofWhichRechgd)), 0) +
+    Math.max(0, parseMoney(parentRow.invoiceSlots?.[0]?.amount) - parseMoney(parentRow.invoiceSlots?.[0]?.ofWhichRechgd));
+  const diffDays = Math.round(Math.abs(newEnd.getTime() - (startDate || newEnd).getTime()) / 86400000);
+  const durationMonths = Math.max(1, Math.round(diffDays / 30.4375));
+  const totalContractValue = durationMonths * revenue;
+
+  const sendDay = childDates.length > 0 ? childDates[childDates.length - 1].getDate() : 28;
+  let lastDate;
+  if (childDates.length > 0) {
+    lastDate = childDates[childDates.length - 1];
+  } else {
+    const baseStart = startDate || newEnd;
+    const prevMonth = new Date(baseStart.getFullYear(), baseStart.getMonth() - 1, 1);
+    const maxDayPrev = new Date(prevMonth.getFullYear(), prevMonth.getMonth() + 1, 0).getDate();
+    lastDate = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), Math.min(sendDay, maxDayPrev));
+  }
+
+  const rowsNeeded = targetCount - childRows.length;
+  const newRowDates = [];
+  let simulatedTotal = totalInvoiced;
+  const endVal = newEnd.getFullYear() * 12 + newEnd.getMonth();
+  for (let k = 0; k < rowsNeeded; k++) {
+    const monthOffset = (k + 1) * intervalMonths;
+    const targetMonthFirst = new Date(lastDate.getFullYear(), lastDate.getMonth() + monthOffset, 1);
+    const testVal = targetMonthFirst.getFullYear() * 12 + targetMonthFirst.getMonth();
+    if ((testVal + timingMonthAdjust) > endVal) break;
+    if ((simulatedTotal + revenue) > (totalContractValue + 1.00)) break;
+    const maxDaysInMonth = new Date(targetMonthFirst.getFullYear(), targetMonthFirst.getMonth() + 1, 0).getDate();
+    const nextTestDate = new Date(targetMonthFirst.getFullYear(), targetMonthFirst.getMonth(), Math.min(sendDay, maxDaysInMonth));
+    simulatedTotal += revenue;
+    newRowDates.push(nextTestDate);
+  }
+
+  if (newRowDates.length === 0) return job.rows;
+
+  const defaultDays = childRows[0]?.invoiceSlots?.[0]?.daysToPay || "30";
+  const formattedAmount = revenue > 0 ? formatCurrency(revenue) : (parentRow.revenue || "");
+  const syntheticChildren = newRowDates.map((d, idx) => ({
+    rowNum: -(idx + 1),
+    isParent: false,
+    isOptimisticPlaceholder: true,
+    tabName: parentRow.tabName || job.tabName || "Confirmed",
+    client: parentRow.client || job.client || "",
+    jobName: parentRow.jobName || job.jobName || "",
+    vat: parentRow.vat || "",
+    likelihood: "100%",
+    invoiceSlots: [
+      {
+        slotNum: 1,
+        amount: formattedAmount,
+        ref: "",
+        sentDate: toSheetDateFormat(d),
+        daysToPay: String(defaultDays),
+        status: "",
+      },
+    ],
+    expenseSlots: [],
+  }));
+
+  return [parentRow, ...childRows, ...syntheticChildren];
+};
+
 const pendingTextareaResizes = new Set();
 let resizeBatchScheduled = false;
 
@@ -2355,6 +2574,74 @@ export default function JobsView({
     setActionError(null);
     setSavingJobKeys((prev) => new Set(prev).add(jobKey));
 
+    const parentTypeVal = currentDraft.projectRetainer !== undefined
+      ? currentDraft.projectRetainer
+      : (parentRow.projectRetainer || job.projectRetainer || "");
+    const isRetainerJob = String(parentTypeVal).trim().toLowerCase().includes("retainer");
+    const isRetainerEndDateEdit = isConfirmed && isRetainerJob && currentDraft.endDate !== undefined;
+    const preSaveJobSnapshot = isRetainerEndDateEdit ? job : null;
+    const preSaveDraftSnapshot = isRetainerEndDateEdit ? { ...currentDraft } : null;
+
+    const applyDraftFieldsToJob = (baseJob, baseRows, invUpdatesMap, expUpdatesMap) => {
+      const updatedRows = baseRows.map((r, rIdx) => {
+        const nextRow = { ...r };
+        Object.keys(currentDraft).forEach((f) => {
+          let nextVal = currentDraft[f];
+          if (FIELD_MAP[f]?.isDate && nextVal) nextVal = toSheetDateFormat(nextVal);
+          if ((f === "revenue" || f === "directCosts" || f === "rechargedExpenses") && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
+            nextVal = formatCurrency(nextVal);
+          }
+          if (f === "likelihood" && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
+            nextVal = normalizeLikelihoodInput(nextVal);
+          }
+          if (rIdx === 0 || f === "client" || f === "jobName") {
+            nextRow[f] = nextVal;
+          }
+        });
+        if (invUpdatesMap && invUpdatesMap.size > 0 && Array.isArray(nextRow.invoiceSlots)) {
+          nextRow.invoiceSlots = nextRow.invoiceSlots.map((sl) => {
+            const match = invUpdatesMap.get(`${r.rowNum}_${sl.slotNum}`);
+            return match ? { ...sl, ...match } : sl;
+          });
+        }
+        if (expUpdatesMap && expUpdatesMap.size > 0 && Array.isArray(nextRow.expenseSlots)) {
+          nextRow.expenseSlots = nextRow.expenseSlots.map((sl) => {
+            const match = expUpdatesMap.get(`${r.rowNum}_${sl.slotNum}`);
+            return match ? { ...sl, ...match } : sl;
+          });
+        }
+        return nextRow;
+      });
+      return {
+        ...baseJob,
+        client: currentDraft.client || baseJob.client,
+        jobName: currentDraft.jobName || baseJob.jobName,
+        projectCode: currentDraft.projectCode !== undefined ? currentDraft.projectCode : baseJob.projectCode,
+        rows: updatedRows
+      };
+    };
+
+    // Optimistically reflect retainer end-date placeholder changes on screen immediately
+    // before the backend row add/trim finishes.
+    if (isRetainerEndDateEdit) {
+      const projectedRows = projectRetainerRowsForEndDate(
+        job,
+        currentDraft.endDate,
+        currentDraft.revenue
+      );
+      setJobsData((prevJobs) => {
+        if (!prevJobs) return prevJobs;
+        return prevJobs.map((j) =>
+          getJobKey(j) === jobKey ? applyDraftFieldsToJob(j, projectedRows, null, null) : j
+        );
+      });
+      setDraftEdits((prev) => {
+        const next = { ...prev };
+        delete next[jobKey];
+        return next;
+      });
+    }
+
     try {
       const res = await fetch("/api/triage", {
         method: "POST",
@@ -2366,7 +2653,7 @@ export default function JobsView({
           clientName: jobsClient.clientName || jobsClient.name || "",
           tabName,
           rowNum: parentRowNum,
-          isRetainer: String(parentRow.type || job.type || "").trim().toLowerCase() === "retainer",
+          isRetainer: isRetainerJob,
           endClientName: currentDraft.client || parentRow.client || job.client,
           jobName: currentDraft.jobName || parentRow.jobName || job.jobName,
           updates
@@ -2378,7 +2665,7 @@ export default function JobsView({
         throw new Error(data.error || "Failed to update job");
       }
 
-      // Optimistically update local jobsData
+      // Reconcile local jobsData with exact server updates (trimmed rows & newly provisioned child rows)
       const invUpdatesMap = new Map();
       (data.invoiceSlotUpdates || []).forEach((u) => {
         invUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, {
@@ -2394,51 +2681,51 @@ export default function JobsView({
         });
       });
 
+      const trimmedSet = new Set((data.trimmedRowNums || []).map((n) => Number(n)));
+
       setJobsData((prevJobs) => {
         if (!prevJobs) return prevJobs;
         return prevJobs.map((j) => {
           if (getJobKey(j) !== jobKey) return j;
-          const updatedRows = j.rows.map((r, rIdx) => {
-            const nextRow = { ...r };
-            Object.keys(currentDraft).forEach((f) => {
-              let nextVal = currentDraft[f];
-              if (FIELD_MAP[f]?.isDate && nextVal) nextVal = toSheetDateFormat(nextVal);
-              if ((f === "revenue" || f === "directCosts") && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
-                nextVal = formatCurrency(nextVal);
-              }
-              if (f === "likelihood" && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
-                nextVal = normalizeLikelihoodInput(nextVal);
-              }
-              if (rIdx === 0 || f === "client" || f === "jobName") {
-                nextRow[f] = nextVal;
-              }
-            });
-            if (invUpdatesMap.size > 0 && Array.isArray(nextRow.invoiceSlots)) {
-              nextRow.invoiceSlots = nextRow.invoiceSlots.map((sl) => {
-                const match = invUpdatesMap.get(`${r.rowNum}_${sl.slotNum}`);
-                return match ? { ...sl, ...match } : sl;
-              });
+          // When we applied an optimistic retainer projection, reconcile against the pre-save rows
+          // so any temporary placeholder rows are replaced with the authoritative server rows.
+          const sourceRows = preSaveJobSnapshot ? preSaveJobSnapshot.rows : j.rows;
+          const filteredRows = (sourceRows || []).filter(
+            (r, rIdx) => !r.isOptimisticPlaceholder && (rIdx === 0 || !trimmedSet.has(Number(r.rowNum)))
+          );
+          const reconciled = applyDraftFieldsToJob(j, filteredRows, invUpdatesMap, expUpdatesMap);
+
+          if (Array.isArray(data.addedChildRows) && data.addedChildRows.length > 0) {
+            const existingNums = new Set(reconciled.rows.map((r) => Number(r.rowNum)));
+            const parentUpdated = reconciled.rows[0] || {};
+            const formattedAdded = data.addedChildRows
+              .filter((ar) => !existingNums.has(Number(ar.rowNum)))
+              .map((ar) => ({
+                ...ar,
+                client: parentUpdated.client || ar.client || "",
+                jobName: parentUpdated.jobName || ar.jobName || "",
+                vat: parentUpdated.vat || ar.vat || "",
+                invoiceSlots: (ar.invoiceSlots || []).map((sl) => ({
+                  ...sl,
+                  amount: sl.amount !== "" && sl.amount !== undefined && sl.amount !== null ? formatCurrency(sl.amount) : "",
+                })),
+              }));
+            if (formattedAdded.length > 0) {
+              const parentOnly = reconciled.rows.slice(0, 1);
+              const childrenCombined = [...reconciled.rows.slice(1), ...formattedAdded].sort(
+                (a, b) => Number(a.rowNum) - Number(b.rowNum)
+              );
+              reconciled.rows = [...parentOnly, ...childrenCombined];
             }
-            if (expUpdatesMap.size > 0 && Array.isArray(nextRow.expenseSlots)) {
-              nextRow.expenseSlots = nextRow.expenseSlots.map((sl) => {
-                const match = expUpdatesMap.get(`${r.rowNum}_${sl.slotNum}`);
-                return match ? { ...sl, ...match } : sl;
-              });
-            }
-            return nextRow;
-          });
-          return {
-            ...j,
-            client: currentDraft.client || j.client,
-            jobName: currentDraft.jobName || j.jobName,
-            projectCode: currentDraft.projectCode !== undefined ? currentDraft.projectCode : j.projectCode,
-            rows: updatedRows
-          };
+          }
+
+          return reconciled;
         });
       });
 
       // Clear draft for this job
       setDraftEdits((prev) => {
+        if (!prev[jobKey]) return prev;
         const next = { ...prev };
         delete next[jobKey];
         return next;
@@ -2460,6 +2747,15 @@ export default function JobsView({
       }
     } catch (err) {
       console.error("Save job failed:", err);
+      if (preSaveJobSnapshot) {
+        setJobsData((prevJobs) => {
+          if (!prevJobs) return prevJobs;
+          return prevJobs.map((j) => (getJobKey(j) === jobKey ? preSaveJobSnapshot : j));
+        });
+      }
+      if (preSaveDraftSnapshot) {
+        setDraftEdits((prev) => ({ ...prev, [jobKey]: preSaveDraftSnapshot }));
+      }
       setActionError(`Save failed for ${job.jobName || "job"}: ${err.message}`);
     } finally {
       setSavingJobKeys((prev) => {
@@ -4159,10 +4455,27 @@ export default function JobsView({
                               jobDraft.rechargedExpenses !== undefined)
                           );
 
+                          const shouldProjectRetainerPreview = Boolean(
+                            isRetainer &&
+                            isConfirmed &&
+                            isDirty &&
+                            jobDraft?.endDate !== undefined
+                          );
+                          const effectiveJobForDisplay = shouldProjectRetainerPreview
+                            ? {
+                                ...job,
+                                rows: projectRetainerRowsForEndDate(
+                                  job,
+                                  endDateVal,
+                                  jobDraft?.revenue !== undefined ? revVal : undefined
+                                ),
+                              }
+                            : job;
+
                           // Calculate real revenue and direct cost metrics strictly excluding gap sweep placeholders (cached when unedited)
                           const metrics = hasFinancialDraft
-                            ? getJobFinancialMetrics(job, isRetainer, isConfirmed, revVal, directCostsVal, noEndDateRetainerMonths, endDateVal, rechVal)
-                            : getJobFinancialMetrics(job, isRetainer, isConfirmed, undefined, undefined, noEndDateRetainerMonths);
+                            ? getJobFinancialMetrics(effectiveJobForDisplay, isRetainer, isConfirmed, revVal, directCostsVal, noEndDateRetainerMonths, endDateVal, rechVal)
+                            : getJobFinancialMetrics(effectiveJobForDisplay, isRetainer, isConfirmed, undefined, undefined, noEndDateRetainerMonths);
 
                           // Distinct product line and lead source options (computed only when row is expanded)
                           const plOptions = isExpanded ? Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort() : [];
@@ -4690,6 +5003,10 @@ export default function JobsView({
                                           ✕
                                         </button>
                                       </>
+                                    ) : isSaving ? (
+                                      <span style={{ fontSize: "11px", fontWeight: "600", color: "#0369a1", background: "#eff6ff", padding: "3px 8px", borderRadius: "10px", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                        <Spinner size={10} color="#0369a1" /> Saving...
+                                      </span>
                                     ) : recentlySaved ? (
                                       <span style={{ fontSize: "11px", fontWeight: "600", color: "#16a34a", background: "#f0fdf4", padding: "3px 8px", borderRadius: "10px" }}>
                                         ✓ Saved
@@ -5044,7 +5361,7 @@ export default function JobsView({
 
                                         {/* Card 2: Invoices */}
                                         {(() => {
-                                          const invoiceItems = groupSlotItemsForDisplay(getJobInvoiceItems(job, isRetainer), "invoice");
+                                          const invoiceItems = groupSlotItemsForDisplay(getJobInvoiceItems(effectiveJobForDisplay, isRetainer), "invoice");
                                           return (
                                             <div
                                               style={{
@@ -5167,7 +5484,7 @@ export default function JobsView({
                                                              )}
                                                               {isRetainer && item.row && (
                                                                 <span style={{ fontSize: "10px", color: "#64748b" }}>
-                                                                  ({getRetainerRowMonthLabel(item.row, 0, job)})
+                                                                  ({getRetainerRowMonthLabel(item.row, 0, effectiveJobForDisplay)})
                                                                 </span>
                                                               )}
                                                             </div>
@@ -5231,6 +5548,7 @@ export default function JobsView({
                                                     }
 
                                                     const slot = item.slot;
+                                                    const isPendingPlaceholder = Boolean(item.row?.isOptimisticPlaceholder || item.rowNum < 0);
                                                     const hasData = Boolean((slot.ref && String(slot.ref).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
                                                     const isPlaceholder = isPlaceholderInvoice(slot.ref, slot.status);
                                                     const pillStyle = getStatusPill(slot.status);
@@ -5239,7 +5557,7 @@ export default function JobsView({
                                                     return (
                                                       <div
                                                         key={item.id}
-                                                        onClick={() => {
+                                                        onClick={isPendingPlaceholder ? undefined : () => {
                                                           setInvoicesEditSlot({
                                                             rowNum: item.rowNum,
                                                             slotNum: item.slotNum,
@@ -5254,9 +5572,9 @@ export default function JobsView({
                                                         style={{
                                                           padding: "9px 12px",
                                                           borderRadius: "7px",
-                                                          border: isInvoiceMatched ? "1px solid #fde047" : "1px solid #e2e8f0",
-                                                          background: isInvoiceMatched ? "#fefce8" : "#ffffff",
-                                                          cursor: "pointer",
+                                                          border: isInvoiceMatched ? "1px solid #fde047" : (isPendingPlaceholder ? "1px dashed #93c5fd" : "1px solid #e2e8f0"),
+                                                          background: isInvoiceMatched ? "#fefce8" : (isPendingPlaceholder ? "#f8fafc" : "#ffffff"),
+                                                          cursor: isPendingPlaceholder ? "default" : "pointer",
                                                           transition: "all 0.15s ease",
                                                           boxSizing: "border-box",
                                                           maxWidth: "100%",
@@ -5268,14 +5586,16 @@ export default function JobsView({
                                                           boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                                                         }}
                                                         title={
-                                                          hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
-                                                            ? (isConfirmed
-                                                              ? "Synced from accounting software. Click to view or edit days to pay or recharged expenses."
-                                                              : "Synced from accounting software. Click to view or edit days to pay.")
-                                                            : "Click to edit invoice"
+                                                          isPendingPlaceholder
+                                                            ? (isSaving ? "Syncing retainer schedule in background..." : "Save job changes before editing this placeholder")
+                                                            : (hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
+                                                              ? (isConfirmed
+                                                                ? "Synced from accounting software. Click to view or edit days to pay or recharged expenses."
+                                                                : "Synced from accounting software. Click to view or edit days to pay.")
+                                                              : "Click to edit invoice")
                                                         }
-                                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
-                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = isInvoiceMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isInvoiceMatched ? "#fefce8" : "#ffffff"; }}
+                                                        onMouseEnter={(e) => { if (!isPendingPlaceholder) { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; } }}
+                                                        onMouseLeave={(e) => { if (!isPendingPlaceholder) { e.currentTarget.style.borderColor = isInvoiceMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isInvoiceMatched ? "#fefce8" : "#ffffff"; } }}
                                                       >
                                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -5291,6 +5611,12 @@ export default function JobsView({
                                                                 </span>
                                                               )}
 
+                                                            {isPendingPlaceholder && (
+                                                              <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" }}>
+                                                                {isSaving ? "Syncing..." : "Preview"}
+                                                              </span>
+                                                            )}
+
                                                             {hasData && slot.status && (
                                                               <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
                                                                 <HighlightText text={slot.status} query={searchQuery} />
@@ -5304,16 +5630,18 @@ export default function JobsView({
                                                               </svg>
                                                             )}
 
-                                                            <NoteIndicatorButton
-                                                              size="sm"
-                                                              note={slot.note || ""}
-                                                              onClick={() => openSlotNoteModal({ item, type: "invoice", job })}
-                                                              title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice"}
-                                                            />
+                                                            {!isPendingPlaceholder && (
+                                                              <NoteIndicatorButton
+                                                                size="sm"
+                                                                note={slot.note || ""}
+                                                                onClick={() => openSlotNoteModal({ item, type: "invoice", job })}
+                                                                title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice"}
+                                                              />
+                                                            )}
 
                                                             {isRetainer && item.row && (
                                                               <span style={{ fontSize: "10px", color: "#64748b" }}>
-                                                                ({getRetainerRowMonthLabel(item.row, 0, job)})
+                                                                ({getRetainerRowMonthLabel(item.row, 0, effectiveJobForDisplay)})
                                                               </span>
                                                             )}
                                                           </div>

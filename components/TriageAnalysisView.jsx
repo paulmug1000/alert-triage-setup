@@ -718,7 +718,7 @@ export default function TriageAnalysisView({
 
         {(alert.flagType || alert.alertType || alert.type) && (() => {
           const key = alert.flagType || alert.alertType || alert.type;
-          const fullName = getFlagName(key);
+          const fullName = getFlagName(key, alert);
           return (
             <div className="pma-alert-detail-banner" style={{ ...styles.alertMetadata, fontSize: "15px", fontWeight: "600", padding: "14px", marginBottom: "16px", color: "#1d4ed8", backgroundColor: "#eff6ff", borderLeft: "4px solid #3b82f6" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>

@@ -561,9 +561,9 @@ function getCrmCompDataCellStyle(r, c, rawValue, displayValue) {
   else if (c === 121 || c === 122) { align = r === 5 ? "center" : "right"; nf = "DATE:d-mmm-yyyy"; }
   else if (c === 123) { align = r === 5 ? "center" : "right"; nf = "PERCENT:0%"; }
   else if (c === 125) { align = r === 5 ? "center" : "left"; nf = "DATE:d-mmm-yy"; }
-  else if (c === 137 || c === 138) { align = r === 5 ? "center" : "right"; nf = "CURRENCY:[$£]#,##0.00"; }
-  else if (c === 139 || c === 140) { align = r === 5 ? "center" : "right"; nf = "DATE:d-mmm-yyyy"; }
-  else if (c === 141) { align = r === 5 ? "center" : "right"; nf = "PERCENT:0%"; }
+  else if (c === 138 || c === 139) { align = r === 5 ? "center" : "right"; nf = "CURRENCY:[$£]#,##0.00"; }
+  else if (c === 140 || c === 141) { align = r === 5 ? "center" : "right"; nf = "DATE:d-mmm-yy"; }
+  else if (c === 142) { align = r === 5 ? "center" : "right"; nf = "PERCENT:0%"; }
   else if (c === 144) { align = r === 5 ? "center" : "left"; nf = "DATE:d-mmm-yy"; }
   else if (c === 153 || c === 154) { align = r === 5 ? "center" : "right"; nf = "NUMBER:#,##0.00"; }
   else if (c === 155 || c === 156) { align = r === 5 ? "center" : "right"; nf = "DATE:d-mmm-yy"; }

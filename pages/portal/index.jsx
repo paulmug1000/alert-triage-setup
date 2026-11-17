@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import Head from "next/head";
 import { useRouter } from "next/router";
 import { useAuth } from "../../hooks/useAuth";
@@ -24,6 +24,8 @@ import CompanyChooser from "../../components/portal/CompanyChooser";
 import SetupHoldingGate from "../../components/portal/SetupHoldingGate";
 import Spinner from "../../components/Spinner";
 
+const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
 export default function PortalPage({
   initialUser = null,
   initialSetupClient = null,
@@ -37,10 +39,47 @@ export default function PortalPage({
   const auth = useAuth(initialUser);
   const { isAuthenticated, authChecking, user, logout } = auth;
 
-  const ssrActiveClient = initialSetupClient || initialSelectedClient || initialUser?.initialSetupClient || null;
+  // Read instant client-side handoff from PMA NavShell (never present during SSR HTML hydration)
+  const navHandoffRef = useRef(undefined);
+  if (navHandoffRef.current === undefined) {
+    if (typeof window !== "undefined" && window.__PULSE_PORTAL_HANDOFF__) {
+      const h = window.__PULSE_PORTAL_HANDOFF__;
+      const isFresh = Boolean(h.timestamp && Date.now() - h.timestamp < 30000);
+      const urlParams = new URLSearchParams(window.location.search);
+      const isChoose = router.query.choose === "true" || urlParams.get("choose") === "true";
+      const queryClient =
+        (typeof router.query.client === "string" && router.query.client) ||
+        urlParams.get("client") ||
+        "";
+      const matchesClient =
+        !queryClient ||
+        !h.client?.clientName ||
+        String(h.client.clientName).trim().toLowerCase() === String(queryClient).trim().toLowerCase();
+      navHandoffRef.current = isFresh && !isChoose && matchesClient ? h : null;
+    } else {
+      navHandoffRef.current = null;
+    }
+  }
+  const navHandoff = navHandoffRef.current;
 
-  const [clients, setClients] = useState(() => (Array.isArray(initialClients) ? initialClients : []));
+  const baseSsrClient = initialSetupClient || initialSelectedClient || initialUser?.initialSetupClient || null;
+  const ssrActiveClient =
+    baseSsrClient &&
+    !baseSsrClient.clientSheetId &&
+    navHandoff?.client?.clientSheetId &&
+    String(baseSsrClient.clientName || "").trim().toLowerCase() ===
+      String(navHandoff.client.clientName || "").trim().toLowerCase()
+      ? { ...navHandoff.client, ...baseSsrClient, clientSheetId: navHandoff.client.clientSheetId }
+      : baseSsrClient || navHandoff?.client || null;
+
+  const [clients, setClients] = useState(() => {
+    if (Array.isArray(initialClients) && initialClients.length > 0) return initialClients;
+    if (Array.isArray(navHandoff?.clients) && navHandoff.clients.length > 0) return navHandoff.clients;
+    return [];
+  });
   const [selectedClient, setSelectedClient] = useState(() => ssrActiveClient);
+  const selectedClientRef = useRef(selectedClient);
+  selectedClientRef.current = selectedClient;
   const [clientsLoaded, setClientsLoaded] = useState(() => Boolean(Array.isArray(initialClients) && initialClients.length > 0));
   const clientsFetchedRef = useRef(Boolean(Array.isArray(initialClients) && initialClients.length > 0));
   const lastLoggedClientRef = useRef(null);
@@ -426,18 +465,21 @@ export default function PortalPage({
   const handleRefreshPayload = () => {
     if (selectedClient) {
       fetchPayload(selectedClient, true);
+      fetchKeyData(selectedClient, true);
     }
   };
 
   const handleRefreshPerformance = () => {
     if (selectedClient) {
       fetchPerformance(selectedClient, true);
+      fetchKeyData(selectedClient, true);
     }
   };
 
   const handleRefreshCashflow = () => {
     if (selectedClient) {
       fetchCashflow(selectedClient, true);
+      fetchKeyData(selectedClient, true);
     }
   };
 
@@ -546,6 +588,7 @@ export default function PortalPage({
     if (selectedClient) {
       fetchBudget(selectedClient, true);
       fetchPerformance(selectedClient, true);
+      fetchKeyData(selectedClient, true);
     }
   };
 
@@ -566,7 +609,7 @@ export default function PortalPage({
       if (["cash", "cashBreakdown"].includes(activeView)) {
         fetchCashflow(selectedClient, true, true);
       }
-      if (["jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "cashBreakdown", "scenarios", "perfBreakdown"].includes(activeView)) {
+      if (["month", "dashboard", "ytd", "cash", "jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "cashBreakdown", "scenarios", "perfBreakdown"].includes(activeView)) {
         fetchKeyData(selectedClient, true, true);
       }
       if (["viewBudget", "budgetVariance"].includes(activeView)) {
@@ -602,6 +645,47 @@ export default function PortalPage({
       }
     };
   }, [selectedClient, activeView, fetchPayload, fetchPerformance, fetchCashflow, fetchKeyData, fetchBudget]);
+
+  // Clear one-shot PMA -> Pulse handoff once mounted, and clear skeleton epoch once payload renders
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.__PULSE_PORTAL_HANDOFF__) {
+      delete window.__PULSE_PORTAL_HANDOFF__;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (payload && typeof window !== "undefined" && window.__PULSE_SKELETON_T0__) {
+      delete window.__PULSE_SKELETON_T0__;
+    }
+  }, [payload]);
+
+  // Pre-paint localStorage hydration of authorized clients list if SSR & handoff both missed
+  useIsomorphicLayoutEffect(() => {
+    if (typeof window === "undefined" || !isAuthenticated || clients.length > 0) return;
+    try {
+      const raw =
+        localStorage.getItem("pulse_portal_clients_cache") ||
+        localStorage.getItem("pulse_cached_all_clients");
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length === 0) return;
+      const isSysAdmin = Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
+      const filtered = parsed.filter((c) => {
+        if (!c?.clientName || !c?.clientSheetId) return false;
+        if (!isSysAdmin && !String(c.clientSheetId).startsWith("ws_")) return false;
+        if (user?.isAdmin) return true;
+        return (
+          Array.isArray(user?.assignedClients) &&
+          user.assignedClients.some(
+            (a) => String(a || "").trim().toLowerCase() === String(c.clientName || "").trim().toLowerCase()
+          )
+        );
+      });
+      if (filtered.length > 0) {
+        setClients(filtered);
+      }
+    } catch { }
+  }, [isAuthenticated, user, clients.length]);
 
   // Fast client restore on mount from localStorage to eliminate waterfall delay
   useEffect(() => {
@@ -649,10 +733,23 @@ export default function PortalPage({
                 String(curr.clientName || "").trim().toLowerCase() ===
                 String(parsed.clientName || "").trim().toLowerCase()
               ) {
+                const nextSetupMode = Boolean(curr.setupMode ?? parsed.setupMode);
+                const nextSetupStatus = curr.setupStatus || parsed.setupStatus || null;
+                if (
+                  curr.clientSheetId === parsed.clientSheetId &&
+                  (curr.masterSheetId || "") === (parsed.masterSheetId || "") &&
+                  Boolean(curr.setupMode) === nextSetupMode &&
+                  curr.setupStatus === nextSetupStatus
+                ) {
+                  return curr;
+                }
                 return {
                   ...parsed,
-                  setupMode: Boolean(curr.setupMode ?? parsed.setupMode),
-                  setupStatus: curr.setupStatus || parsed.setupStatus || null
+                  ...curr,
+                  clientSheetId: curr.clientSheetId || parsed.clientSheetId,
+                  masterSheetId: curr.masterSheetId || parsed.masterSheetId,
+                  setupMode: nextSetupMode,
+                  setupStatus: nextSetupStatus
                 };
               }
               if (curr.clientSheetId !== parsed.clientSheetId) {
@@ -703,6 +800,9 @@ export default function PortalPage({
         if (data.success && Array.isArray(data.clients)) {
           setClients(data.clients);
           clientsFetchedRef.current = true;
+          try {
+            localStorage.setItem("pulse_portal_clients_cache", JSON.stringify(data.clients));
+          } catch { }
 
           // Check if client specified in legacy URL query or localStorage
           let queryClient = router.query.client;
@@ -711,6 +811,7 @@ export default function PortalPage({
             queryClient = urlParams.get("client");
           }
           let initial = null;
+          const currentSelected = selectedClientRef.current;
 
           const isChooseRequested = router.query.choose === "true" || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("choose") === "true");
           const isPulseOnly = Boolean(
@@ -731,11 +832,11 @@ export default function PortalPage({
                 );
               }
               // Priority 2: Match currently selected client (e.g. from fast restore or SSR setup hydration)
-              if (!initial && (selectedClient?.clientSheetId || selectedClient?.clientName)) {
+              if (!initial && (currentSelected?.clientSheetId || currentSelected?.clientName)) {
                 initial = data.clients.find(
                   (c) =>
-                    (selectedClient.clientSheetId && c.clientSheetId === selectedClient.clientSheetId) ||
-                    c.clientName?.toLowerCase() === selectedClient.clientName?.toLowerCase()
+                    (currentSelected.clientSheetId && c.clientSheetId === currentSelected.clientSheetId) ||
+                    c.clientName?.toLowerCase() === currentSelected.clientName?.toLowerCase()
                 );
               }
               // Priority 3: Check localStorage
@@ -765,8 +866,9 @@ export default function PortalPage({
               curr &&
               initial &&
               curr.clientSheetId === initial.clientSheetId &&
-              curr.setupMode === initial.setupMode &&
-              curr.masterSheetId === initial.masterSheetId
+              Boolean(curr.setupMode) === Boolean(initial.setupMode) &&
+              (curr.masterSheetId || "") === (initial.masterSheetId || "") &&
+              !initial.setupStatus
             ) {
               return curr;
             }
@@ -794,7 +896,7 @@ export default function PortalPage({
     return () => {
       isMounted = false;
     };
-  }, [isAuthenticated, router.query.client, router.query.choose, user, selectedClient, logWorkspaceAccess]);
+  }, [isAuthenticated, router.query.client, router.query.choose, user, logWorkspaceAccess]);
 
   const handleSelectClient = useCallback((client) => {
     if (client?.clientSheetId && client.clientSheetId === selectedClient?.clientSheetId) {
@@ -1116,33 +1218,6 @@ export default function PortalPage({
     );
   }
 
-  // While the client list is still resolving on initial login (before selectedClient is set),
-  // render PortalShell + MonthViewSkeleton immediately unless the user explicitly requested the CompanyChooser (?choose=true).
-  if (!clientsLoaded && !selectedClient && router.query.choose !== "true") {
-    return (
-      <>
-        <Head>
-          <title>Pulse</title>
-        </Head>
-        <PortalShell
-          clientName={typeof router.query.client === "string" ? router.query.client : ""}
-          clients={[]}
-          onSelectClient={handleSelectClient}
-          activeView={activeView}
-          onSelectView={setActiveView}
-          user={user}
-          onLogout={handleLogout}
-          hasBudget={true}
-          hasCash={true}
-          setupStatus={null}
-          onPreviewSetup={() => setIsPreviewSetup(true)}
-        >
-          <MonthViewSkeleton />
-        </PortalShell>
-      </>
-    );
-  }
-
   // Chooser state: If no client selected or choose is requested, show CompanyChooser
   if (clientsLoaded && !selectedClient) {
     return (
@@ -1198,15 +1273,20 @@ export default function PortalPage({
     );
   }
 
+  const resolvedHeaderClientName =
+    selectedClient?.clientName ||
+    (typeof router.query.client === "string" ? router.query.client : "");
+
   return (
     <>
       <Head>
-        <title>{selectedClient?.clientName ? `Pulse - ${selectedClient.clientName}` : "Pulse"}</title>
+        <title>{resolvedHeaderClientName ? `Pulse - ${resolvedHeaderClientName}` : "Pulse"}</title>
       </Head>
 
       <PortalShell
-        clientName={selectedClient?.clientName}
+        clientName={resolvedHeaderClientName}
         clients={clients}
+        clientsLoaded={clientsLoaded}
         onSelectClient={handleSelectClient}
         activeView={activeView}
         onSelectView={setActiveView}
@@ -1224,8 +1304,7 @@ export default function PortalPage({
         <>
           {activeView === "month" && (
             <MonthView
-              key={selectedClient?.clientSheetId || "month"}
-              clientName={selectedClient?.clientName || "Client"}
+              clientName={resolvedHeaderClientName || "Client"}
               clientSheetId={selectedClient?.clientSheetId}
               masterSheetId={selectedClient?.masterSheetId}
               payload={payload}
@@ -1242,7 +1321,11 @@ export default function PortalPage({
             />
           )}
 
-          {activeView === "dashboard" && (
+          {activeView !== "month" && !selectedClient ? (
+            <MonthViewSkeleton />
+          ) : (
+            <>
+              {activeView === "dashboard" && (
             <PerformanceFYView
               key={selectedClient?.clientSheetId || "dashboard"}
               clientName={selectedClient?.clientName || "Client"}
@@ -1281,10 +1364,7 @@ export default function PortalPage({
               thousandsSeparator={thousandsSeparator}
               isLoading={loadingPerformance || (loadingKeyData && !keyData)}
               error={perfError || keyDataError}
-              onRefresh={() => {
-                handleRefreshPerformance();
-                handleRefreshKeyData();
-              }}
+              onRefresh={handleRefreshPerformance}
               isSenior={isSeniorRestricted}
             />
           )}
@@ -1312,10 +1392,7 @@ export default function PortalPage({
               thousandsSeparator={thousandsSeparator}
               isLoading={loadingCashflow || (loadingKeyData && !keyData)}
               error={cashError || keyDataError}
-              onRefresh={() => {
-                handleRefreshCashflow();
-                handleRefreshKeyData();
-              }}
+              onRefresh={handleRefreshCashflow}
               isSenior={isSeniorRestricted}
             />
           )}
@@ -1490,6 +1567,8 @@ export default function PortalPage({
               </p>
             </div>
           )}
+            </>
+          )}
         </>
       </PortalShell>
     </>
@@ -1518,7 +1597,7 @@ function getViewTitle(key) {
 }
 
 import { getSsrSessionUser, getSsrInitialPortalData } from "../../services/ssrSession";
-import { redisClient } from "../../services/redisClient";
+import { redisClient, ensureRedisConnected } from "../../services/redisClient";
 import { getClientSetupStatusForPortal } from "../../services/setupService";
 
 export async function getServerSideProps(context) {
@@ -1548,13 +1627,16 @@ export async function getServerSideProps(context) {
 
       if (candidateClientName) {
         let parsedSetup = ssrPortalData.selectedSetupConfig || null;
-        if (!parsedSetup && (isPreview || !ssrPortalData.initialSelectedClient) && redisClient?.isOpen) {
-          const normKey = `pulse:setup:${candidateClientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`;
-          const rawSetup = await Promise.race([
-            redisClient.get(normKey),
-            new Promise((resolve) => setTimeout(() => resolve(null), 150)),
-          ]);
-          parsedSetup = rawSetup ? JSON.parse(rawSetup) : null;
+        if (!parsedSetup && (isPreview || !ssrPortalData.initialSelectedClient)) {
+          await ensureRedisConnected(400);
+          if (redisClient?.isOpen) {
+            const normKey = `pulse:setup:${candidateClientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`;
+            const rawSetup = await Promise.race([
+              redisClient.get(normKey),
+              new Promise((resolve) => setTimeout(() => resolve(null), 400)),
+            ]);
+            parsedSetup = rawSetup ? JSON.parse(rawSetup) : null;
+          }
         }
         if (parsedSetup?.setupMode === true || ssrPortalData.initialSelectedClient?.setupMode === true || isPreview) {
           initialSetupStatus = await getClientSetupStatusForPortal({

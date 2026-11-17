@@ -1,5 +1,5 @@
 import nodemailer from "nodemailer";
-import { getAllUsers, canAccessPma, getCanonicalAcSheetId } from "./userPermissions.js";
+import { getAllUsers, canAccessPma, canViewSalariesAndDividends, getCanonicalAcSheetId } from "./userPermissions.js";
 import { readAlertMemory, ensureAlertMemoryTab } from "./alertMemory.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
@@ -258,12 +258,15 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
     const isGlobal = isAdminUser || user.assignedClients === "*";
     const assignedList = Array.isArray(user.assignedClients) ? user.assignedClients : [];
 
+    const allowSalaries = canViewSalariesAndDividends(user);
+
     // Filter alerts to this user's authorized clients and exclude admin-only alerts for non-admins
     const userAlerts = allAlerts.filter(a => {
       if (!a.clientName) return false;
       if (!isAdminUser) {
         const aType = a.alertType || a.flagType || a.type || "";
         if (a.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(aType)) return false;
+        if (!allowSalaries && aType === "salary_forecast_in_actual_month") return false;
       }
       if (isGlobal) return true;
       return assignedList.some(assigned => matchesClientName(assigned, a.clientName));

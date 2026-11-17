@@ -10,6 +10,7 @@ import ExcelLinkModal from "../integrations/ExcelLinkModal";
 export default function PortalShell({
   clientName,
   clients = [],
+  clientsLoaded = true,
   onSelectClient,
   activeView,
   onSelectView,
@@ -27,6 +28,16 @@ export default function PortalShell({
 }) {
   const router = useRouter();
   useModalScrollLock();
+  const hadInitialClientNameRef = useRef(Boolean(clientName));
+  const showClientSelectorBox =
+    clients.length > 1 ||
+    (!clientsLoaded &&
+      Boolean(
+        user &&
+          (user.isAdmin ||
+            user.role === "Admin" ||
+            (Array.isArray(user.assignedClients) && user.assignedClients.length > 1))
+      ));
   const [openDropdown, setOpenDropdown] = useState(null); // 'perf' | 'cash' | 'keyData' | 'analysis' | 'user' | 'client' | null
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [navigatingToPma, setNavigatingToPma] = useState(false);
@@ -336,7 +347,7 @@ export default function PortalShell({
                     minHeight: "22px",
                     maxWidth: "100%",
                     minWidth: 0,
-                    animation: "portalFadeIn 0.22s ease-out"
+                    ...(hadInitialClientNameRef.current ? {} : { animation: "portalFadeIn 0.22s ease-out" })
                   }}
                 >
                   <button
@@ -348,9 +359,9 @@ export default function PortalShell({
                     }}
                     style={{
                       background: openDropdown === "client" && clients.length > 1 ? "rgba(255, 255, 255, 0.1)" : "transparent",
-                      border: clients.length > 1 ? "1px solid rgba(255, 255, 255, 0.28)" : "1px solid transparent",
+                      border: showClientSelectorBox ? "1px solid rgba(255, 255, 255, 0.28)" : "1px solid transparent",
                       borderRadius: "4px",
-                      padding: clients.length > 1 ? "2px 6px" : "2px 2px",
+                      padding: showClientSelectorBox ? "2px 6px" : "2px 2px",
                       minHeight: "22px",
                       height: "auto",
                       maxWidth: "100%",
@@ -364,7 +375,7 @@ export default function PortalShell({
                       cursor: clients.length > 1 ? "pointer" : "default",
                       display: "inline-flex",
                       alignItems: "center",
-                      gap: clients.length > 1 ? "4px" : "0px",
+                      gap: showClientSelectorBox ? "4px" : "0px",
                       fontFamily: "inherit",
                       transition: "background 0.18s ease, border-color 0.22s ease, padding 0.22s ease, gap 0.22s ease"
                     }}
@@ -403,8 +414,8 @@ export default function PortalShell({
                     <span
                       style={{
                         fontSize: "9px",
-                        opacity: clients.length > 1 ? 0.75 : 0,
-                        maxWidth: clients.length > 1 ? "12px" : "0px",
+                        opacity: showClientSelectorBox ? 0.75 : 0,
+                        maxWidth: showClientSelectorBox ? "12px" : "0px",
                         overflow: "hidden",
                         lineHeight: 1,
                         flexShrink: 0,

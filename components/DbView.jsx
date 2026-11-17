@@ -6,6 +6,11 @@ import MasterComparisonSheetModal, {
   prefetchComparisonTab,
   invalidateComparisonModalCache,
 } from "./MasterComparisonSheetModal";
+import ClientSheetModal, {
+  prefetchClientSheetTab,
+  invalidateClientSheetModalCache,
+} from "./ClientSheetModal";
+import { CLIENT_SHEET_TABS, CLIENT_SHEET_SPECS } from "../utils/clientSheetSpecs";
 import SupabaseBackupManagerPanel from "./SupabaseBackupManagerPanel";
 
 const SYNC_BUTTONS = [
@@ -86,11 +91,13 @@ export default function DbView({
   const [amManualHash, setAmManualHash] = useState("");
   const [amFlushing, setAmFlushing] = useState(false);
 
-  // Inspector & Formatted Comparison Sheet modals
+  // Inspector & Formatted Comparison / Client Sheet modals
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorInitialRole, setInspectorInitialRole] = useState("master");
   const [comparisonModalOpen, setComparisonModalOpen] = useState(false);
   const [comparisonModalTab, setComparisonModalTab] = useState("InvComp");
+  const [clientSheetModalOpen, setClientSheetModalOpen] = useState(false);
+  const [clientSheetModalTab, setClientSheetModalTab] = useState("Confirmed");
 
   // Elapsed timer tick while an async operation is running
   useEffect(() => {
@@ -196,6 +203,7 @@ export default function DbView({
       const result = await fn();
       if (key !== "refresh") {
         invalidateComparisonModalCache(selectedClient);
+        invalidateClientSheetModalCache(selectedClient);
       }
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
       if (result && result.text) {
@@ -572,8 +580,8 @@ export default function DbView({
   );
   const hasVirtualTabs =
     (stage2Data?.availableTabs?.master?.length || 0) +
-      (stage2Data?.availableTabs?.recon?.length || 0) +
-      (stage2Data?.availableTabs?.client?.length || 0) >
+    (stage2Data?.availableTabs?.recon?.length || 0) +
+    (stage2Data?.availableTabs?.client?.length || 0) >
     0;
   const hasMasterVirtualTabs = (stage2Data?.availableTabs?.master?.length || 0) > 0;
   const hasClientVirtualTabs = (stage2Data?.availableTabs?.client?.length || 0) > 0;
@@ -587,13 +595,13 @@ export default function DbView({
   const visibleOverviewClients = showAllClients
     ? allClients
     : allClients.filter(
-        (c) =>
-          c.master_mode === "supabase" ||
-          c.client_mode === "supabase" ||
-          (c.masterTabCount || 0) + (c.reconTabCount || 0) + (c.clientTabCount || 0) > 0 ||
-          String(c.client_name || "").trim().toUpperCase() ===
-            String(activeClientName || "").trim().toUpperCase()
-      );
+      (c) =>
+        c.master_mode === "supabase" ||
+        c.client_mode === "supabase" ||
+        (c.masterTabCount || 0) + (c.reconTabCount || 0) + (c.clientTabCount || 0) > 0 ||
+        String(c.client_name || "").trim().toUpperCase() ===
+        String(activeClientName || "").trim().toUpperCase()
+    );
 
   const formatFreqLabel = (val) => {
     const s = String(val || "").trim();
@@ -1296,6 +1304,52 @@ export default function DbView({
                   );
                 })}
               </div>
+
+              {(hasClientVirtualTabs || activeClientPortalMode === "supabase") && (
+                <div style={{ marginTop: "10px" }}>
+                  <div style={{ fontSize: "11.5px", fontWeight: 700, color: "#475569", marginBottom: "7px" }}>
+                    Formatted client sheet tabs (Supabase)
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    {CLIENT_SHEET_TABS.map((tab) => {
+                      const disabled = !s2Ready || !hasClientVirtualTabs;
+                      const accent = CLIENT_SHEET_SPECS[tab]?.tabColor || "#2563eb";
+                      return (
+                        <button
+                          key={tab}
+                          type="button"
+                          disabled={disabled}
+                          onMouseEnter={() => {
+                            if (!disabled) prefetchClientSheetTab(activeClientName, tab);
+                          }}
+                          onClick={() => {
+                            setClientSheetModalTab(tab);
+                            setClientSheetModalOpen(true);
+                          }}
+                          style={{
+                            ...actionBtnBase,
+                            color: disabled ? "#9ca3af" : "#0f172a",
+                            background: disabled ? "#f3f4f6" : "#ffffff",
+                            borderColor: disabled ? "#e5e7eb" : "#cbd5e1",
+                            cursor: disabled ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: "inline-block",
+                              width: "7px",
+                              height: "7px",
+                              borderRadius: "2px",
+                              background: disabled ? "#cbd5e1" : accent,
+                            }}
+                          />
+                          <span>{`View ${tab}`}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Sub-group B: Comparisons & Sync Sequences */}
@@ -2208,6 +2262,20 @@ export default function DbView({
           clientName={activeClientName}
           initialTab={comparisonModalTab}
           onAfterMutate={(resData) => {
+            if (resData?.status) setStage2Data(resData.status);
+          }}
+        />
+      )}
+
+      {/* Formatted Client Sheet Modal (Confirmed / Pipeline / Cash / NBtoFind / Outgoings / Salaries / Budget) */}
+      {clientSheetModalOpen && (
+        <ClientSheetModal
+          isOpen={clientSheetModalOpen}
+          onClose={() => setClientSheetModalOpen(false)}
+          clientName={activeClientName}
+          initialTab={clientSheetModalTab}
+          onAfterMutate={(resData) => {
+            invalidateComparisonModalCache(activeClientName);
             if (resData?.status) setStage2Data(resData.status);
           }}
         />

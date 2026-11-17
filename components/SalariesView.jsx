@@ -6,6 +6,7 @@ import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 
 export const parseSheetDate = (dStr) => {
   if (!dStr) return null;
@@ -172,6 +173,7 @@ export default function SalariesView({
   const [savingDividendPct, setSavingDividendPct] = useState(false);
   const [dividendPctInput, setDividendPctInput] = useState(() => salariesData?.dividends?.fyConfigs?.[salariesData?.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
   const [hoveredDividendCell, setHoveredDividendCell] = useState(null); // { sheetRow, colIdx }
+  const [zeroingRow, setZeroingRow] = useState(null);
   const [dividendDragState, setDividendDragState] = useState(null); // { sheetRow, startIdx, currentIdx, sourceValue, colLetters }
   const dividendDragRef = useRef(null);
   const suppressDividendClickRef = useRef(false);
@@ -259,7 +261,7 @@ export default function SalariesView({
       }
     }
 
-    setError(null);
+    if (!silent) setError(null);
     try {
       const res = await fetch(
         `/api/pma/salaries?clientName=${encodeURIComponent(client.clientName)}&masterSheetId=${encodeURIComponent(
@@ -271,15 +273,17 @@ export default function SalariesView({
         throw new Error(data.error || "Failed to load salaries data");
       }
       setSalariesData(data);
-      setSelectedMonthIdx(data.defaultMonthIndex ?? 0);
-      setSelectedFyIdx(data.dividends?.defaultFyIndex ?? 0);
-      setDividendPctInput(data.dividends?.fyConfigs?.[data.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
+      if (!silent) {
+        setSelectedMonthIdx(data.defaultMonthIndex ?? 0);
+        setSelectedFyIdx(data.dividends?.defaultFyIndex ?? 0);
+        setDividendPctInput(data.dividends?.fyConfigs?.[data.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
+      }
       setCachedClientData(client.clientSheetId, "salaries", data);
     } catch (err) {
       console.error("Failed to fetch salaries:", err);
-      setError(err.message || "Failed to load salaries data");
+      if (!silent) setError(err.message || "Failed to load salaries data");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
@@ -291,6 +295,24 @@ export default function SalariesView({
       fetchSalaries(selectedClient);
     }
   }, [selectedClient, fetchSalaries]);
+
+  useFocusRevalidate({
+    enabled: Boolean(selectedClient?.clientSheetId && selectedClient?.masterSheetId),
+    resetKey: selectedClient?.clientSheetId || "",
+    canRevalidate: () =>
+      !loading &&
+      !saving &&
+      !savingDividendPct &&
+      !editingEmployee &&
+      !editingDividendMonth &&
+      !editingDividendPct &&
+      !dividendDragState,
+    onRevalidate: () => {
+      if (selectedClient?.clientSheetId && selectedClient?.masterSheetId) {
+        fetchSalaries(selectedClient, true, true);
+      }
+    },
+  });
 
   // Flash success message helper
   const showSuccess = (msg) => {
@@ -643,6 +665,42 @@ export default function SalariesView({
       return true;
     });
   }, [currentMonth?.employeeAmounts, employeeSearch]);
+
+  const forecastInActualRows = useMemo(() => {
+    if (!currentMonth?.isActualMonth) return [];
+    return activeMonthAmounts.filter((ea) => !ea.isActual);
+  }, [currentMonth?.isActualMonth, activeMonthAmounts]);
+
+  const handleZeroOutMonthEmployee = async (ea) => {
+    if (!selectedClient || !currentMonth?.colStartLetter || !ea?.sheetRow) return;
+    setZeroingRow(ea.sheetRow);
+    setError(null);
+    try {
+      const res = await fetch("/api/pma/salaries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_amount_override",
+          clientName: selectedClient.clientName,
+          masterSheetId: selectedClient.masterSheetId,
+          clientSheetId: selectedClient.clientSheetId,
+          sheetRow: ea.sheetRow,
+          colLetterStart: currentMonth.colStartLetter,
+          amounts: [0, 0, 0, 0, 0, 0, 0],
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to zero out employee amounts");
+      }
+      setSaveSuccessMsg(`Zeroed out ${ea.name} for ${currentMonth.label}.`);
+      await fetchSalaries(selectedClient, true, true);
+    } catch (err) {
+      setError(err.message || "Failed to zero out employee amounts");
+    } finally {
+      setZeroingRow(null);
+    }
+  };
 
   // Helper to render an employee row
   const renderEmployeeRow = (emp, isFormer = false) => {
@@ -1226,6 +1284,21 @@ export default function SalariesView({
                       {currentMonth.isActualMonth ? "Actuals" : "Forecast"}
                     </span>
                   )}
+                  {forecastInActualRows.length > 0 && (
+                    <span
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "12px",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        background: "#fffbeb",
+                        color: "#92400e",
+                        border: "1px solid #fde68a",
+                      }}
+                    >
+                      Partial actuals · {forecastInActualRows.length} on forecast
+                    </span>
+                  )}
                   <span style={{ fontSize: "12px", color: "#64748b" }}>
                     ({activeMonthAmounts.length} with amounts)
                   </span>
@@ -1295,6 +1368,29 @@ export default function SalariesView({
                 </div>
               </div>
 
+              {/* Partial actuals warning banner */}
+              {forecastInActualRows.length > 0 && (
+                <div
+                  style={{
+                    padding: "8px 14px",
+                    background: "#fffbeb",
+                    borderBottom: "1px solid #fde68a",
+                    fontSize: "12px",
+                    color: "#92400e",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "8px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span>
+                    <strong>Partial actuals:</strong> {forecastInActualRows.map((r) => r.name).join(", ")}{" "}
+                    {forecastInActualRows.length === 1 ? "has" : "have"} no actuals entered for {currentMonth?.label} and {forecastInActualRows.length === 1 ? "is" : "are"} still pulling forecast figures.
+                  </span>
+                </div>
+              )}
+
               {/* Amounts Table Container */}
               <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "420px" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", textAlign: "right" }}>
@@ -1346,7 +1442,7 @@ export default function SalariesView({
                             <td style={{ padding: "6px 8px", color: "#475569" }}>{ea.eePension || "-"}</td>
                             <td style={{ padding: "6px 8px", color: "#475569" }}>{ea.erPension || "-"}</td>
                             <td style={{ padding: "6px 8px", color: "#475569" }}>{ea.paye || "-"}</td>
-                            <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                            <td style={{ padding: "6px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
                               <span
                                 style={{
                                   display: "inline-block",
@@ -1360,6 +1456,27 @@ export default function SalariesView({
                               >
                                 {ea.isActual ? "Actual" : "Forecast"}
                               </span>
+                              {currentMonth?.isActualMonth && !ea.isActual && !user?.isReadOnly && isAdmin && (
+                                <button
+                                  type="button"
+                                  disabled={zeroingRow === ea.sheetRow}
+                                  onClick={() => handleZeroOutMonthEmployee(ea)}
+                                  style={{
+                                    marginLeft: "6px",
+                                    padding: "1px 6px",
+                                    fontSize: "10px",
+                                    fontWeight: 700,
+                                    borderRadius: "4px",
+                                    border: "1px solid #fca5a5",
+                                    background: "#fef2f2",
+                                    color: "#b91c1c",
+                                    cursor: zeroingRow === ea.sheetRow ? "default" : "pointer",
+                                  }}
+                                  title={`Zero out ${ea.name} for ${currentMonth.label}`}
+                                >
+                                  {zeroingRow === ea.sheetRow ? "Saving..." : "Zero out"}
+                                </button>
+                              )}
                             </td>
                           </tr>
                         );

@@ -44,6 +44,7 @@ const KNOWN_PROACTIVE_TYPES = new Set([
   "deleted_expense",
   "job_structure_error",
   "part_paid_balance",
+  "salary_forecast_in_actual_month",
 ]);
 
 function AdminBadge({ style = {}, show = true }) {
@@ -438,6 +439,100 @@ export default function AlertSelectionView({
       setPartPaidMsg(prev => ({ ...prev, [alertKey]: `Error: ${err.message}` }));
     } finally {
       setUpdatingPartPaid(prev => ({ ...prev, [alertKey]: false }));
+    }
+  };
+
+  const [salaryForecastStartDates, setSalaryForecastStartDates] = useState({});
+  const [resolvingSalaryForecast, setResolvingSalaryForecast] = useState({});
+  const [salaryForecastMsg, setSalaryForecastMsg] = useState({});
+
+  const handleResolveSalaryForecast = async (alert, resolutionAction) => {
+    const alertKey = alert.alertKey;
+    const m = alert.metadata || {};
+    const chosenStartDate = salaryForecastStartDates[alertKey] ?? m.suggestedNextStartIso ?? alert.suggestedNextStartIso ?? "";
+    const clientName = alert.clientName || selectedClient?.clientName;
+    const clientInfo = getClientInfoForAlert(alert);
+    const targetClientSheetId = m.clientSheetId || clientInfo?.clientSheetId || selectedClient?.clientSheetId;
+    const targetMasterSheetId = m.masterSheetId || clientInfo?.masterSheetId || selectedClient?.masterSheetId;
+
+    setResolvingSalaryForecast(prev => ({ ...prev, [alertKey]: true }));
+    setSalaryForecastMsg(prev => ({ ...prev, [alertKey]: "" }));
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "resolve_salary_forecast_mismatch",
+          clientName,
+          clientSheetId: targetClientSheetId,
+          masterSheetId: targetMasterSheetId,
+          sheetRow: m.sheetRow || alert.sheetRow,
+          colStartLetter: m.colStartLetter || alert.colStartLetter,
+          monthLabel: m.monthLabel || alert.monthLabel,
+          resolutionAction,
+          newStartDate: chosenStartDate,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to update salary forecast item");
+      }
+
+      if (automationCommanderSheetId && alertKey) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "resolve_proactive_alert",
+            automationCommanderSheetId,
+            alertKey,
+            clientName,
+            sessionId,
+            alertData: alert,
+            rowIndex: alert.rowIndex,
+            resolution: data.message || `Resolved salary forecast (${resolutionAction})`,
+          }),
+        }).catch(() => {});
+      }
+
+      const successLabel = resolutionAction === "zero_out"
+        ? "✓ Zeroed out for month"
+        : resolutionAction === "update_start_date"
+          ? `✓ Start date moved to ${data.formattedStartDate || chosenStartDate}`
+          : "✓ Confirmed to keep on forecast";
+
+      setSalaryForecastMsg(prev => ({ ...prev, [alertKey]: successLabel }));
+
+      setTimeout(() => {
+        setProactiveAlerts(prev => {
+          const remaining = prev.filter(a => {
+            if (alert.rowIndex != null && a.rowIndex != null) {
+              return a.rowIndex !== alert.rowIndex;
+            }
+            return a.alertKey !== alertKey;
+          });
+          const counts = {};
+          remaining.forEach(a => {
+            const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+            if (cName) counts[cName] = (counts[cName] || 0) + 1;
+          });
+          setProactiveCountsByClient(counts);
+          try {
+            localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(remaining));
+          } catch {}
+          const remainingClientProactive = remaining.filter(a => a.clientName === selectedClient?.clientName);
+          const infoDone = clientNoActionAlerts.every(na => isNoActionResolved(na) || isStaleInvoiceSuppressedByRetainerAlert(na, remainingClientProactive));
+          if (selectedClient && clientAlerts.length === 0 && infoDone && remainingClientProactive.length === 0) {
+            handlePostClear([], resolvedNoActionFlags);
+          }
+          return remaining;
+        });
+      }, 900);
+    } catch (err) {
+      setSalaryForecastMsg(prev => ({ ...prev, [alertKey]: `Error: ${err.message}` }));
+    } finally {
+      setResolvingSalaryForecast(prev => ({ ...prev, [alertKey]: false }));
     }
   };
 
@@ -3040,6 +3135,95 @@ export default function AlertSelectionView({
                                                 </span>
                                               )}
                                             </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
+
+                                    {alert.alertType === "salary_forecast_in_actual_month" && (() => {
+                                      const empName = m.employeeName || alert.employeeName;
+                                      const empRole = m.role || alert.role;
+                                      const monthLabel = m.monthLabel || alert.monthLabel;
+                                      const forecastTotal = Number(m.forecastEmployerCost ?? alert.forecastEmployerCost ?? 0);
+                                      const forecastSal = Number(m.forecastSalary ?? alert.forecastSalary ?? 0);
+                                      const forecastErNic = Number(m.forecastErNic ?? alert.forecastErNic ?? 0);
+                                      const forecastErPen = Number(m.forecastErPen ?? alert.forecastErPen ?? 0);
+                                      const contractorAmt = Number(m.contractorAmount ?? alert.contractorAmount ?? 0);
+                                      const startDate = m.startDate || alert.startDate;
+                                      const defaultStartIso = m.suggestedNextStartIso || alert.suggestedNextStartIso || "";
+                                      const chosenStart = salaryForecastStartDates[alert.alertKey] ?? defaultStartIso;
+                                      const isBusy = !!resolvingSalaryForecast[alert.alertKey];
+                                      const msg = salaryForecastMsg[alert.alertKey];
+
+                                      return (
+                                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "4px", marginTop: "2px", marginBottom: "4px" }}>
+                                          {empName && <div><strong>Employee:</strong> {empName}{empRole ? ` (${empRole})` : ""}</div>}
+                                          {monthLabel && <div><strong>Period:</strong> {monthLabel}</div>}
+                                          {startDate && <div><strong>Current start date:</strong> {startDate}</div>}
+                                          {isAdmin && (m.sheetRow || alert.sheetRow) && (
+                                            <div><strong>Salaries row:</strong> {m.sheetRow || alert.sheetRow}{(m.colStartLetter || alert.colStartLetter) ? `, col ${m.colStartLetter || alert.colStartLetter}` : ""}</div>
+                                          )}
+                                          <div>
+                                            <strong>Forecast amount included:</strong>{" "}
+                                            <span style={{ fontWeight: "700", color: "#b91c1c" }}>
+                                              £{forecastTotal.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                            </span>{" "}
+                                            <span style={{ color: "#64748b" }}>
+                                              (Salary £{forecastSal.toFixed(2)}, Er NICs £{forecastErNic.toFixed(2)}, Er pension £{forecastErPen.toFixed(2)})
+                                            </span>
+                                          </div>
+                                          {contractorAmt > 0 && (
+                                            <div style={{ color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "5px", padding: "5px 8px", marginTop: "2px" }}>
+                                              Also recorded under Contractors in {monthLabel}: <strong>£{contractorAmt.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                                            </div>
+                                          )}
+                                          {(m.explanation || alert.explanation) && (
+                                            <div style={{ marginTop: "4px", padding: "7px 10px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", color: "#991b1b", lineHeight: "1.4" }}>
+                                              {isAdmin ? (m.explanation || alert.explanation) : sanitizeSpreadsheetTerms(m.explanation || alert.explanation)}
+                                            </div>
+                                          )}
+                                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                            <button
+                                              type="button"
+                                              className="triage-btn"
+                                              onClick={() => handleResolveSalaryForecast(alert, "zero_out")}
+                                              disabled={isBusy}
+                                              style={{ padding: "5px 11px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "5px", cursor: isBusy ? "default" : "pointer", fontSize: "12px", fontWeight: "600", opacity: isBusy ? 0.65 : 1 }}
+                                            >
+                                              {isBusy ? "Saving..." : `Zero out for ${monthLabel || "month"}`}
+                                            </button>
+                                            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                              <input
+                                                type="date"
+                                                value={chosenStart}
+                                                onChange={(e) => setSalaryForecastStartDates(prev => ({ ...prev, [alert.alertKey]: e.target.value }))}
+                                                disabled={isBusy}
+                                                style={{ padding: "4px 6px", borderRadius: "5px", border: "1px solid #cbd5e1", fontSize: "12px", color: "#1e293b", backgroundColor: "#fff" }}
+                                              />
+                                              <button
+                                                type="button"
+                                                className="triage-btn"
+                                                onClick={() => handleResolveSalaryForecast(alert, "update_start_date")}
+                                                disabled={isBusy || !chosenStart}
+                                                style={{ padding: "5px 11px", background: "#0369a1", color: "#fff", border: "none", borderRadius: "5px", cursor: (isBusy || !chosenStart) ? "default" : "pointer", fontSize: "12px", fontWeight: "600", opacity: (isBusy || !chosenStart) ? 0.65 : 1 }}
+                                              >
+                                                Move start date
+                                              </button>
+                                            </div>
+                                            <button
+                                              type="button"
+                                              className="triage-btn"
+                                              onClick={() => handleResolveSalaryForecast(alert, "keep_forecast")}
+                                              disabled={isBusy}
+                                              style={{ padding: "5px 11px", background: "#fff", color: "#475569", border: "1px solid #cbd5e1", borderRadius: "5px", cursor: isBusy ? "default" : "pointer", fontSize: "12px", fontWeight: "600", opacity: isBusy ? 0.65 : 1 }}
+                                            >
+                                              Keep on forecast
+                                            </button>
+                                            {msg && (
+                                              <span style={{ fontSize: "12px", fontWeight: "600", color: msg.startsWith("✓") ? "#16a34a" : "#dc2626" }}>
+                                                {msg}
+                                              </span>
+                                            )}
                                           </div>
                                         </div>
                                       );

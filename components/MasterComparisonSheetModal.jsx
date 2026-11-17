@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
+import { useResizableSheetColumns } from "../hooks/useResizableSheetColumns";
 import {
   COMPARISON_SHEET_SPECS,
   colIndexToLetter,
@@ -185,6 +186,17 @@ export default function MasterComparisonSheetModal({
   }, [isOpen, initialTab, clientName]);
 
   const spec = COMPARISON_SHEET_SPECS[activeTab] || COMPARISON_SHEET_SPECS.InvComp;
+  const {
+    getColWidth,
+    resizingCol,
+    startColumnResize,
+    autoFitColumn,
+    resetTabWidths,
+    hasCustomWidths,
+  } = useResizableSheetColumns({
+    activeTab,
+    defaultWidths: spec.widths,
+  });
 
   const triggerRecomputeInternal = useCallback(
     async ({ autoFromClientEdits = false, tabForReload = activeTab } = {}) => {
@@ -381,10 +393,10 @@ export default function MasterComparisonSheetModal({
     let left = 44;
     for (const c of visibleCols) {
       map.set(c, left);
-      left += spec.widths[c] || 100;
+      left += getColWidth(c);
     }
     return map;
-  }, [visibleCols, spec]);
+  }, [visibleCols, getColWidth]);
 
   const jumpToColumn = (targetCol) => {
     if (!scrollViewportRef.current) return;
@@ -490,8 +502,8 @@ export default function MasterComparisonSheetModal({
       const colSpan = canMergeG1H1 && c === 6 ? 2 : 1;
       const widthPx =
         colSpan === 2
-          ? (spec.widths[6] || 92) + (spec.widths[7] || 92)
-          : spec.widths[c] || 100;
+          ? getColWidth(6) + getColWidth(7)
+          : getColWidth(c);
 
       const rawDispVal = rowVals[c] ?? "";
       const dispVal = isHeaderRow
@@ -946,6 +958,25 @@ export default function MasterComparisonSheetModal({
               />
               <span>Show trailing columns</span>
             </label>
+            {hasCustomWidths && (
+              <button
+                type="button"
+                onClick={resetTabWidths}
+                style={{
+                  padding: "3px 8px",
+                  borderRadius: "5px",
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  color: "#334155",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+                title="Reset column widths for this tab back to template defaults"
+              >
+                Reset column widths
+              </button>
+            )}
           </div>
         </div>
 
@@ -1082,10 +1113,10 @@ export default function MasterComparisonSheetModal({
                       ? "#1d4ed8"
                       : "#b91c1c",
                 border: `1px solid ${feedback.type === "success"
-                    ? "#a7f3d0"
-                    : feedback.type === "info"
-                      ? "#bfdbfe"
-                      : "#fecaca"
+                  ? "#a7f3d0"
+                  : feedback.type === "info"
+                    ? "#bfdbfe"
+                    : "#fecaca"
                   }`,
                 flexShrink: 0,
               }}
@@ -1165,14 +1196,16 @@ export default function MasterComparisonSheetModal({
                       }}
                     />
                     {visibleCols.map((c) => {
-                      const widthPx = spec.widths[c] || 100;
+                      const widthPx = getColWidth(c);
                       const isSelCol = selC === c;
                       const isHiddenCol = spec.hiddenCols.has(c);
+                      const isResizingThis = resizingCol === c;
                       return (
                         <th
                           key={c}
                           onClick={() => setSelectedCell((prev) => ({ ...prev, c }))}
                           style={{
+                            position: "relative",
                             userSelect: "none",
                             textAlign: "center",
                             cursor: "pointer",
@@ -1180,23 +1213,54 @@ export default function MasterComparisonSheetModal({
                             minWidth: `${widthPx}px`,
                             maxWidth: `${widthPx}px`,
                             height: "22px",
-                            backgroundColor: isSelCol ? "#e8f0fe" : isHiddenCol ? "#e2e8f0" : "#f8f9fa",
+                            backgroundColor: isResizingThis
+                              ? "#dbeafe"
+                              : isSelCol
+                                ? "#e8f0fe"
+                                : isHiddenCol
+                                  ? "#e2e8f0"
+                                  : "#f8f9fa",
                             color: isSelCol ? "#1967d2" : "#5f6368",
                             fontWeight: isSelCol ? 700 : 500,
                             fontSize: "11px",
-                            borderRight: isHiddenCol ? "1px dashed #94a3b8" : "1px solid #d0d7de",
+                            borderRight: isResizingThis
+                              ? "2px solid #2563eb"
+                              : isHiddenCol
+                                ? "1px dashed #94a3b8"
+                                : "1px solid #d0d7de",
                             borderBottom: "1px solid #c7ccd1",
                             boxShadow: "0 1px 0 #c7ccd1",
                             boxSizing: "border-box",
                           }}
                           title={
                             isHiddenCol
-                              ? `Column ${colIndexToLetter(c)} (hidden by default in template)`
-                              : `Column ${colIndexToLetter(c)} (${widthPx}px)`
+                              ? `Column ${colIndexToLetter(c)} (hidden by default in template; drag edge to resize)`
+                              : `Column ${colIndexToLetter(c)} (${widthPx}px; drag edge to resize, double-click to auto-fit)`
                           }
                         >
                           {colIndexToLetter(c)}
                           {isHiddenCol ? "*" : ""}
+                          <div
+                            onMouseDown={(e) => startColumnResize(e, c)}
+                            onDoubleClick={(e) =>
+                              autoFitColumn(
+                                e,
+                                c,
+                                [0, 1, 2, 3, 4, ...displayedDataRows],
+                                (rowIdx) => gridData.valuesGrid?.[rowIdx]?.[c] ?? ""
+                              )
+                            }
+                            onClick={(e) => e.stopPropagation()}
+                            style={{
+                              position: "absolute",
+                              top: 0,
+                              right: "-3px",
+                              bottom: 0,
+                              width: "7px",
+                              cursor: "col-resize",
+                              zIndex: 40,
+                            }}
+                          />
                         </th>
                       );
                     })}

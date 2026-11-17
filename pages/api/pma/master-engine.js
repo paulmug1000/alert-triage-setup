@@ -364,6 +364,18 @@ export default async function handler(req, res) {
         colIndex0: Number(colIndex0),
         value: value ?? "",
       });
+      if (sheetRole === "client" && updateRes?.clientSheetId) {
+        scheduleBackgroundWork_(
+          invalidatePmaClientCache(updateRes.clientSheetId, updateRes.masterSheetId, [
+            "jobs",
+            "invoices",
+            "retainers",
+            "outgoings",
+            "views",
+            "cash",
+          ]).catch(() => {})
+        );
+      }
       scheduleBackgroundWork_(
         logPmaActivity(sheets, {
           automationCommanderSheetId: acId,

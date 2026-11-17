@@ -13,6 +13,7 @@ import { useInvoices } from "../hooks/useInvoices";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import { useAuth } from "../hooks/useAuth";
+import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 import { isPlaceholderInvoice, isDraftInvoice, groupSlotItemsForDisplay, getRetainerRowMonthLabel, getRetainerDurationMonths } from "../utils/helpers";
 
 const formatCurrency = (val) => {
@@ -244,6 +245,29 @@ export default function InvoicesView({
   const [selectedJobForDetail, setSelectedJobForDetail] = useState(null);
   const [updateJobNameChecked, setUpdateJobNameChecked] = useState(false);
   const [newJobNameInput, setNewJobNameInput] = useState("");
+
+  useFocusRevalidate({
+    enabled: Boolean(invoicesClient?.clientSheetId),
+    resetKey: `${invoicesClient?.clientSheetId || ""}_${invoicesShowAll ? "all" : "active"}`,
+    canRevalidate: () =>
+      !invoicesJobsLoading &&
+      !invoicesInboxLoading &&
+      !invoicesSavingCell &&
+      !invoicesPlacing &&
+      !placementConfirmPrompt &&
+      !invoicesEditSlot &&
+      !invoicesNewJob &&
+      !clientMismatchPrompt &&
+      !revenueExceedPrompt &&
+      !placeholderChoicePrompt &&
+      !selectedJobForDetail,
+    onRevalidate: () => {
+      if (invoicesClient?.clientSheetId) {
+        loadInvoicesInbox(invoicesClient, true, true);
+        loadInvoicesJobs(invoicesClient, invoicesShowAll, true, true);
+      }
+    },
+  });
 
   const toggleRetainerExpand = (key) => {
     setExpandedRetainerKeys(prev => {

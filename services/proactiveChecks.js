@@ -10,6 +10,12 @@ import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import {
+  findForecastOnlyEmployeesInMonth_,
+  applySalaryForecastResolution_,
+  parseHeaderMonthMeta_,
+  colIdxToLetter,
+} from "./salariesService.js";
+import {
   pushOutgoingsToClientSheetNative,
   syncExpenseBreakdownToClientSheetNative,
 } from "./masterSyncEngine.js";
@@ -3511,4 +3517,179 @@ export async function handleUpdatePartPaidDate(sheets, {
   }
 
   throw new Error(`Unknown itemType: "${itemType}"`);
+}
+
+/**
+ * Checks the Client Sheet "Salaries" tab for recent months where salary actuals have been
+ * captured for some staff, but one or more employees still have blank actuals (rows 4..53)
+ * and are therefore silently pulling non-zero forecast costs (rows 154..203).
+ */
+export async function checkSalaryForecastInActualMonth_(clientName, clientSheetId, masterSheetId, sharedData, sheets) {
+  const alerts = [];
+  if (!clientSheetId || !sheets) return alerts;
+
+  try {
+    const resp = await withRetry(() =>
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientSheetId,
+        ranges: [
+          "Salaries!A1:JC53",
+          "Salaries!L154:JC203",
+          "Performance!A1:AZ2",
+          "Outgoings!A1:AZ112",
+        ],
+        valueRenderOption: "UNFORMATTED_VALUE",
+      })
+    );
+
+    const ranges = resp.data?.valueRanges || [];
+    const salTop = ranges[0]?.values || [];
+    const salForecast = ranges[1]?.values || [];
+    const perfGrid = ranges[2]?.values || [];
+    const outgoingsGrid = ranges[3]?.values || [];
+
+    if (salTop.length < 4) return alerts;
+
+    const salHeaderRow = salTop[0] || [];
+    const employeesRows = salTop.slice(3, 53); // Rows 4..53
+    const actualsRows = employeesRows.map((r) => (r || []).slice(11)); // Col L onwards
+
+    // Build month -> colIndex maps for Performance & Outgoings
+    const perfHeaderRow = perfGrid[0] || [];
+    const perfStatusRow = perfGrid[1] || [];
+    const perfStatusByKey = new Map();
+    for (let c = 6; c < perfHeaderRow.length; c++) {
+      const m = parseHeaderMonthMeta_(perfHeaderRow[c]);
+      if (m) {
+        perfStatusByKey.set(`${m.year}-${m.monthIdx}`, String(perfStatusRow[c] || "").trim().toLowerCase());
+      }
+    }
+
+    const outgHeaderRow = outgoingsGrid[0] || [];
+    const outgColByKey = new Map();
+    for (let c = 6; c < outgHeaderRow.length; c++) {
+      const m = parseHeaderMonthMeta_(outgHeaderRow[c]);
+      if (m) {
+        outgColByKey.set(`${m.year}-${m.monthIdx}`, c);
+      }
+    }
+    const contractorsRows = outgoingsGrid.slice(11, 112); // Outgoings rows 12..112
+
+    const now = new Date();
+    const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const minCheckMonthStart = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+
+    for (let c = 11; c < salHeaderRow.length; c += 7) {
+      const mMeta = parseHeaderMonthMeta_(salHeaderRow[c]);
+      if (!mMeta) continue;
+
+      const monthKey = `${mMeta.year}-${mMeta.monthIdx}`;
+      const monthStart = new Date(mMeta.year, mMeta.monthIdx, 1);
+      if (monthStart < minCheckMonthStart) continue;
+      const perfStatus = perfStatusByKey.get(monthKey) || "";
+
+      const colOffset = c - 11;
+      const outgoingsMonthColIdx = outgColByKey.has(monthKey) ? outgColByKey.get(monthKey) : -1;
+
+      const { actualEmployeeCount, forecastOnlyEmployees } = findForecastOnlyEmployeesInMonth_({
+        employeesRows,
+        actualsRows,
+        forecastRows: salForecast,
+        colOffset,
+        monthMeta: mMeta,
+        contractorsRows,
+        outgoingsMonthColIdx,
+      });
+
+      // Only alert on months where actuals have been captured AND the month is closed/actual
+      if (actualEmployeeCount < 1) continue;
+      if (perfStatus !== "actual" && monthStart >= currentMonthStart) continue;
+      if (forecastOnlyEmployees.length === 0) continue;
+
+      const colStartLetter = colIdxToLetter(c);
+
+      for (const emp of forecastOnlyEmployees) {
+        const contractorNote = emp.contractorAmount > 0
+          ? ` Also has £${emp.contractorAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} recorded under Contractors in ${mMeta.label}.`
+          : "";
+        const rolePart = emp.role ? ` (${emp.role})` : "";
+        const costFmt = emp.forecastEmployerCost.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+        alerts.push({
+          alertType: "salary_forecast_in_actual_month",
+          alertKey: `salary_forecast_in_actual_month|${clientName}|${emp.sheetRow}|${mMeta.label}`,
+          legacyAlertKey: `salary_forecast_in_actual_month|${clientName}|${emp.name}|${mMeta.label}`,
+          heading: `${emp.name} still on salary forecast in ${mMeta.label}`,
+          detail: `${emp.name}${rolePart} has no salary actuals recorded for ${mMeta.label} and is still contributing £${costFmt} from forecast.${contractorNote}`,
+          explanation: `Salary actuals are recorded for ${actualEmployeeCount} team member${actualEmployeeCount !== 1 ? "s" : ""} in ${mMeta.label}, but ${emp.name} has no actuals entered so Pulse is still including £${costFmt} from forecast (Salary £${emp.forecastSalary.toFixed(2)}, Er NICs £${emp.forecastErNic.toFixed(2)}, Er pension £${emp.forecastErPen.toFixed(2)}).${contractorNote}`,
+          clientName,
+          employeeName: emp.name,
+          role: emp.role,
+          monthLabel: mMeta.label,
+          sheetRow: emp.sheetRow,
+          colStartLetter,
+          forecastSalary: emp.forecastSalary,
+          forecastErNic: emp.forecastErNic,
+          forecastErPen: emp.forecastErPen,
+          forecastEmployerCost: emp.forecastEmployerCost,
+          deliveryPct: emp.deliveryPct,
+          startDate: emp.startDate,
+          isoStartDate: emp.isoStartDate,
+          suggestedNextStartIso: emp.suggestedNextStartIso,
+          contractorAmount: emp.contractorAmount,
+          actualEmployeeCount,
+          metadata: {
+            clientName,
+            clientSheetId,
+            masterSheetId,
+            employeeName: emp.name,
+            role: emp.role,
+            monthLabel: mMeta.label,
+            sheetRow: emp.sheetRow,
+            colStartLetter,
+            forecastSalary: emp.forecastSalary,
+            forecastErNic: emp.forecastErNic,
+            forecastErPen: emp.forecastErPen,
+            forecastEmployerCost: emp.forecastEmployerCost,
+            deliveryPct: emp.deliveryPct,
+            startDate: emp.startDate,
+            isoStartDate: emp.isoStartDate,
+            suggestedNextStartIso: emp.suggestedNextStartIso,
+            contractorAmount: emp.contractorAmount,
+            actualEmployeeCount,
+            explanation: `Salary actuals are recorded for ${actualEmployeeCount} team member${actualEmployeeCount !== 1 ? "s" : ""} in ${mMeta.label}, but ${emp.name} has no actuals entered so Pulse is still including £${costFmt} from forecast (Salary £${emp.forecastSalary.toFixed(2)}, Er NICs £${emp.forecastErNic.toFixed(2)}, Er pension £${emp.forecastErPen.toFixed(2)}).${contractorNote}`,
+          },
+        });
+      }
+    }
+  } catch (err) {
+    console.error(`Error in checkSalaryForecastInActualMonth_ for ${clientName}:`, err.message);
+  }
+
+  return alerts;
+}
+
+export async function handleResolveSalaryForecastMismatch(sheets, {
+  clientName,
+  clientSheetId,
+  masterSheetId,
+  sheetRow,
+  colStartLetter,
+  monthLabel,
+  resolutionAction,
+  newStartDate,
+  sessionUser,
+}) {
+  return await applySalaryForecastResolution_({
+    sheets,
+    clientSheetId,
+    masterSheetId,
+    clientName,
+    sheetRow,
+    colStartLetter,
+    monthLabel,
+    resolutionAction,
+    newStartDate,
+    sessionUser,
+  });
 }

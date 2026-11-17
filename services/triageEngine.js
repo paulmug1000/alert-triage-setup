@@ -22,7 +22,7 @@ import {
   checkUninvoicedRevenue_, checkDeletedInvoices_, checkJobStructureErrors_,
   checkDeletedExpenses_, checkUnreceivedExpenses_, checkAutoLogErrors_, checkAutoLogInfiniteLoops_,
   checkStaleUnreconGapExpenses_, checkRetroactiveOutgoingsChanges_, checkQuarantinedPLCategories_,
-  checkPartPaidBalances_, isAutoLogTimestampNewer_
+  checkPartPaidBalances_, checkSalaryForecastInActualMonth_, isAutoLogTimestampNewer_
 } from "./proactiveChecks.js";
 import {
   checkAllGASLocks, setCRMMode, getToleranceValues,
@@ -34,7 +34,7 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
 import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
-import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId } from "./userPermissions.js";
+import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import { runNativeMasterSync, ensureFreshMasterComparisons } from "./masterSyncEngine.js";
@@ -1815,9 +1815,13 @@ export async function handleGetPrecomputed(req, res, sheets) {
 
     if (sessionUser && !sessionUser.isAdmin) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-      const isAllowedAlert = a =>
-        assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
-        !ADMIN_ONLY_ALERT_TYPES.has(a.alertType || a.flagType || a.type);
+      const allowSalaries = canViewSalariesAndDividends(sessionUser);
+      const isAllowedAlert = a => {
+        const aType = a.alertType || a.flagType || a.type;
+        if (!allowSalaries && aType === "salary_forecast_in_actual_month") return false;
+        return assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
+          !ADMIN_ONLY_ALERT_TYPES.has(aType);
+      };
       scopedAlerts = filteredAlerts.filter(isAllowedAlert);
       scopedProactive = filteredProactive.filter(isAllowedAlert);
       scopedNoAction = filteredNoAction.filter(isAllowedAlert);
@@ -3044,7 +3048,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               checkStaleUnreconGapExpenses_(client.clientName, client.clientSheetId, sharedData, sheets),
               checkRetroactiveOutgoingsChanges_(client.clientName, client.masterSheetId, sharedData),
               checkQuarantinedPLCategories_(client.clientName, client.masterSheetId, sharedData, sheets),
-              checkPartPaidBalances_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets)
+              checkPartPaidBalances_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
+              checkSalaryForecastInActualMonth_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets)
             ];
 
             const proResults = await Promise.all(proChecks);
@@ -3071,7 +3076,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_new_job", "uninvoiced_revenue",
               "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses",
               "stale_unrecon_gap", "retroactive_outgoings_update",
-              "unmapped_pl_category", "part_paid_balance"
+              "unmapped_pl_category", "part_paid_balance",
+              "salary_forecast_in_actual_month"
             ];
 
             const groupedProactive = {};

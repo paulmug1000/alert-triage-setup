@@ -17,6 +17,7 @@ import { useOutgoings } from "../hooks/useOutgoings";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import { useAuth } from "../hooks/useAuth";
+import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 import { isPlaceholderExpense, groupSlotItemsForDisplay, getRetainerRowMonthLabel, getRetainerDurationMonths } from "../utils/helpers";
 
 const formatCurrency = (val) => {
@@ -1771,6 +1772,43 @@ export default function OutgoingsView({
     window.addEventListener("mousemove", handleWindowMouseMove);
     window.addEventListener("mouseup", handleWindowMouseUp);
   };
+
+  useFocusRevalidate({
+    enabled: Boolean(outgoingsClient?.clientSheetId),
+    resetKey: `${outgoingsClient?.clientSheetId || ""}_${effectiveSubTab}_${directCostsShowAll ? "all" : "active"}`,
+    canRevalidate: () =>
+      !outgoingsLoading &&
+      !outgoingsInboxLoading &&
+      !directCostsLoading &&
+      !savingContractorCellKey &&
+      !savingCosMonth &&
+      !isEditingTarget &&
+      !isSavingTarget &&
+      !directCostsSavingCell &&
+      !replacingCellAction &&
+      contractorSaveStatus !== "saving" &&
+      pendingContractorUpdatesRef.current.size === 0 &&
+      selectedInboxAppIds.size === 0 &&
+      !outgoingsPlacing &&
+      !outgoingsEditCell &&
+      !outgoingsEstimate &&
+      !outgoingsNewVendor &&
+      !editingContractor &&
+      !outgoingsReplacePrompt &&
+      !vendorMismatchPrompt &&
+      !outgoingsNotice &&
+      !selectedJobForDetail &&
+      !directCostsEditSlot &&
+      !placeholderChoicePrompt,
+    onRevalidate: () => {
+      const client = outgoingsClientRef.current;
+      if (!client?.clientSheetId) return;
+      loadOutgoings(client, true, true);
+      if (effectiveSubTab === "directCosts") {
+        loadDirectCostsJobs(client, directCostsShowAll, true, true);
+      }
+    },
+  });
 
   return (
     <>

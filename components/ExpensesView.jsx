@@ -6,6 +6,7 @@ import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 
 const parseNum = (val) => {
   if (val === null || val === undefined || val === "") return 0;
@@ -262,6 +263,25 @@ export default function ExpensesView({
       fetchExpenses(selectedClient);
     }
   }, [selectedClient, fetchExpenses]);
+
+  useFocusRevalidate({
+    enabled: Boolean(selectedClient?.clientSheetId),
+    resetKey: selectedClient?.clientSheetId || "",
+    canRevalidate: () =>
+      !loading &&
+      !saving &&
+      saveStatus !== "saving" &&
+      pendingUpdatesRef.current.size === 0 &&
+      pendingNotesRef.current.size === 0 &&
+      !editingCell &&
+      !editingCategory &&
+      !newExpName.trim(),
+    onRevalidate: () => {
+      if (selectedClient?.clientSheetId) {
+        fetchExpenses(selectedClient, true, true);
+      }
+    },
+  });
 
   const showSuccess = useCallback((msg) => {
     setSaveSuccessMsg(msg);

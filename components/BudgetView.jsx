@@ -4,6 +4,7 @@ import DeferredSearchInput from "./DeferredSearchInput";
 import { BudgetSkeleton } from "./Skeleton";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 import { formatMoney as universalFormatMoney, parseMoney } from "../services/deepDiveHelper";
 import { downloadCsv } from "../utils/helpers";
 import CellNoteIndicator from "./CellNoteIndicator";
@@ -318,11 +319,11 @@ export default function BudgetView({
   };
 
   // Fetch Budget Data & Key Data with caching
-  const fetchBudgetData = useCallback(async (client, bypassCache = false) => {
+  const fetchBudgetData = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client || (!client.clientSheetId && !client.masterSheetId)) return;
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : client.clientSheetId;
 
-    const cached = !bypassCache ? getCachedClientData(client.clientSheetId, "budget") : null;
+    const cached = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, "budget") : null;
     if (cached?.data) {
       setBudgetData(cached.data);
       if (cached.data.defaultFyIndex !== undefined) {
@@ -330,11 +331,11 @@ export default function BudgetView({
       }
       setLoading(false);
       if (!cached.isStale) return;
-    } else {
+    } else if (!silent) {
       setLoading(true);
     }
 
-    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+    if (!bypassCache && !silent && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`budget_${cleanId}`);
       if (inFlight) {
         try {
@@ -351,7 +352,7 @@ export default function BudgetView({
         } catch { }
       }
     }
-    setError(null);
+    if (!silent) setError(null);
     try {
       const [res, keyRes] = await Promise.all([
         fetch("/api/triage", {
@@ -378,7 +379,7 @@ export default function BudgetView({
         throw new Error(data.error || "Failed to load budget data");
       }
       setBudgetData(data);
-      if (data.defaultFyIndex !== undefined) {
+      if (!silent && data.defaultFyIndex !== undefined) {
         setSelectedFyIdx(data.defaultFyIndex);
       }
       setCachedClientData(client.clientSheetId, "budget", data);
@@ -392,9 +393,9 @@ export default function BudgetView({
       }
     } catch (err) {
       console.error("fetchBudgetData error:", err);
-      setError(err.message || "Failed to load budget data");
+      if (!silent) setError(err.message || "Failed to load budget data");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
@@ -406,6 +407,25 @@ export default function BudgetView({
       fetchBudgetData(selectedClient);
     }
   }, [selectedClient, fetchBudgetData]);
+
+  useFocusRevalidate({
+    enabled: Boolean(selectedClient && (selectedClient.clientSheetId || selectedClient.masterSheetId)),
+    resetKey: selectedClient?.clientSheetId || selectedClient?.masterSheetId || "",
+    canRevalidate: () =>
+      !loading &&
+      !savingKey &&
+      !savingSpread &&
+      !committingRef.current &&
+      !editingCell &&
+      !noteModalData &&
+      !isEditingCosTarget &&
+      !spreadModal.isOpen,
+    onRevalidate: () => {
+      if (selectedClient) {
+        fetchBudgetData(selectedClient, true, true);
+      }
+    },
+  });
 
   const filteredClients = useMemo(() => {
     if (!clientSearch.trim()) return allOutgoingsClients;

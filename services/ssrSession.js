@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { redisClient } from "./redisClient.js";
+import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { memoryCache } from "./cacheService.js";
 import { maskResponseSheetIdsForUser, unwrapSheetId } from "./sheetTokenService.js";
 
@@ -141,6 +141,7 @@ export async function getSsrInitialPmaData(sessionUser) {
   let rawIntegrations = _l1Integrations;
 
   if (!rawClients || (now - _l1CachedAt > L1_TTL_MS)) {
+    await ensureRedisConnected(500);
     if (redisClient?.isOpen) {
       try {
         const res = await Promise.race([
@@ -269,10 +270,14 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
       rawPortalClients = _l1Clients.clientsArray;
     }
 
+    if (!rawPortalClients) {
+      await ensureRedisConnected(500);
+    }
+
     if (!rawPortalClients && redisClient?.isOpen) {
       const rawRes = await Promise.race([
         redisClient.mGet([portalCacheKey, ALL_CLIENTS_CACHE_KEY]),
-        new Promise((resolve) => setTimeout(() => resolve(null), 150)),
+        new Promise((resolve) => setTimeout(() => resolve(null), 600)),
       ]);
       if (Array.isArray(rawRes)) {
         if (rawRes[0]) {
@@ -355,11 +360,14 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
       initialPayload = memoryCache.get(payloadKey) || null;
       initialPerformanceData = memoryCache.get(perfKey) || null;
 
+      if (!initialPayload || !initialPerformanceData) {
+        await ensureRedisConnected(400);
+      }
       if ((!initialPayload || !initialPerformanceData) && redisClient?.isOpen) {
         try {
           const cachedTriple = await Promise.race([
             redisClient.mGet([payloadKey, perfKey, setupKey]),
-            new Promise((resolve) => setTimeout(() => resolve(null), 150)),
+            new Promise((resolve) => setTimeout(() => resolve(null), 600)),
           ]);
           if (Array.isArray(cachedTriple)) {
             if (!initialPayload && cachedTriple[0]) {

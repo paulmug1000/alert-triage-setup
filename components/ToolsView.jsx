@@ -121,7 +121,9 @@ export default function ToolsView({
     handleToolsFilesSelect,
     startToolsBatch,
     updateToolsFile,
-    processOneToolsFile
+    processOneToolsFile,
+    resolvePayrollForecastEmployee,
+    toolsFileStats
   } = useTools({
     automationCommanderSheetId,
     allOutgoingsClients,
@@ -129,18 +131,13 @@ export default function ToolsView({
     setEomStatusOverrides
   });
 
+  const [forecastStartDates, setForecastStartDates] = useState({});
+  const [resolvingForecastKey, setResolvingForecastKey] = useState(null);
+  const [forecastResolveErrors, setForecastResolveErrors] = useState({});
+
   const categoryLabels = {
     grossPay: "Gross pay", eeNic: "Ee NIC", erNic: "Er NIC",
     studLoan: "Student loan", eePension: "Ee pension", erPension: "Er pension", paye: "PAYE",
-  };
-
-  const toolsFileStats = (toolType) => {
-    const files = (toolsFiles || []).filter(f => (f.toolType || "payroll") === toolType);
-    const stillResolving = files.filter(f => f.convertStatus !== "error" && (f.convertStatus !== "ready" || !f.client));
-    const readyToStart = stillResolving.length === 0 && files.some(f => f.convertStatus === "ready" && f.client && f.processStatus === "pending");
-    const completeCount = files.filter(f => f.processStatus === "complete").length;
-    const errorCount = files.filter(f => f.processStatus === "error").length;
-    return { files, stillResolving, readyToStart, completeCount, errorCount };
   };
 
   const isTaskInDefaultList = useCallback((task, defaults) => {
@@ -2400,7 +2397,7 @@ export default function ToolsView({
       })()}
 
       {eomSubView === "payroll" && (() => {
-        const { files: payrollFiles, stillResolving, readyToStart, completeCount, errorCount } = toolsFileStats("payroll");
+        const { files: payrollFiles, stillResolving, readyToStart, completeCount, actionRequiredCount, errorCount } = toolsFileStats("payroll");
         return (<>
           <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
             Payroll import - upload several clients&apos; payroll documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can&apos;t work out is flagged for you to assign.
@@ -2429,7 +2426,9 @@ export default function ToolsView({
                   {toolsBatchRunning ? <><Spinner color="#fff" /> Processing...</> : "Process All"}
                 </button>
                 <span style={{ fontSize: "12px", color: "#888" }}>
-                  {completeCount} of {payrollFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
+                  {completeCount} of {payrollFiles.length} complete
+                  {actionRequiredCount > 0 ? ` · ${actionRequiredCount} action required` : ""}
+                  {errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
                 </span>
                 {stillResolving.length > 0 && (
                   <span style={{ fontSize: "12px", color: "#b45309" }}>
@@ -2514,11 +2513,115 @@ export default function ToolsView({
                     <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.processMsg}</div>
                   )}
 
-                  {f.processStatus === "complete" && f.result && (
+                  {(f.processStatus === "complete" || f.processStatus === "action_required") && f.result && (
                     <div>
-                      <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
-                        ✓ {f.client} - updated {f.result.updateCount} {isAdmin ? `row${f.result.updateCount !== 1 ? "s" : ""} in column ${f.result.startCol}` : `record${f.result.updateCount !== 1 ? "s" : ""}`} for {f.result.targetMonthStr}
-                      </div>
+                      {f.processStatus === "action_required" ? (
+                        <div style={{ fontSize: "13px", color: "#92400e", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: "6px", padding: "8px 12px", marginBottom: "12px" }}>
+                          <strong>Action required before completing:</strong> {f.client} updated {f.result.updateCount} {isAdmin ? `row${f.result.updateCount !== 1 ? "s" : ""} in column ${f.result.startCol}` : `record${f.result.updateCount !== 1 ? "s" : ""}`} for {f.result.targetMonthStr}, but {(f.result.blockingForecastEmployees || []).length} employee{(f.result.blockingForecastEmployees || []).length !== 1 ? "s" : ""} missing from the document still {(f.result.blockingForecastEmployees || []).length !== 1 ? "have" : "has"} a non-zero forecast for {f.result.targetMonthStr}. Choose an action for each person below to complete the import.
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
+                          ✓ {f.client} - updated {f.result.updateCount} {isAdmin ? `row${f.result.updateCount !== 1 ? "s" : ""} in column ${f.result.startCol}` : `record${f.result.updateCount !== 1 ? "s" : ""}`} for {f.result.targetMonthStr}
+                        </div>
+                      )}
+
+                      {f.result.blockingForecastEmployees?.length > 0 && (
+                        <div style={{ marginBottom: "16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "12px 14px" }}>
+                          <div style={{ fontSize: "13px", fontWeight: "700", color: "#991b1b", marginBottom: "8px" }}>
+                            Employees missing from payroll document but still counted in {f.result.targetMonthStr} forecast ({f.result.blockingForecastEmployees.length})
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                            {f.result.blockingForecastEmployees.map((emp) => {
+                              const empKey = `${f.id}:${emp.sheetRow}`;
+                              const isBusy = resolvingForecastKey === empKey;
+                              const chosenStart = forecastStartDates[empKey] ?? emp.suggestedNextStartIso ?? "";
+                              const errText = forecastResolveErrors[empKey];
+                              const runResolve = async (actionType) => {
+                                setResolvingForecastKey(empKey);
+                                setForecastResolveErrors(prev => ({ ...prev, [empKey]: "" }));
+                                try {
+                                  await resolvePayrollForecastEmployee(f.id, emp, actionType, chosenStart);
+                                } catch (err) {
+                                  setForecastResolveErrors(prev => ({ ...prev, [empKey]: err.message || "Failed to update." }));
+                                } finally {
+                                  setResolvingForecastKey(null);
+                                }
+                              };
+                              return (
+                                <div key={emp.sheetRow} style={{ background: "#fff", border: "1px solid #fca5a5", borderRadius: "6px", padding: "10px 12px" }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", flexWrap: "wrap", marginBottom: "6px" }}>
+                                    <div>
+                                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>{emp.name}</span>
+                                      {emp.role && <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "6px" }}>({emp.role})</span>}
+                                      {emp.startDate && <span style={{ fontSize: "11px", color: "#64748b", marginLeft: "8px" }}>Start date: {emp.startDate}</span>}
+                                      {emp.contractorAmount > 0 && (
+                                        <span style={{ marginLeft: "8px", fontSize: "11px", padding: "1px 7px", borderRadius: "10px", background: "#fffbeb", border: "1px solid #fde68a", color: "#92400e", fontWeight: "700" }}>
+                                          Also in Contractors: {fmtCurrency(emp.contractorAmount)}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div style={{ fontSize: "12px", fontWeight: "700", color: "#b91c1c" }}>
+                                      Forecast cost: {fmtCurrency(emp.forecastEmployerCost)}
+                                      <span style={{ fontWeight: "400", color: "#64748b", marginLeft: "6px" }}>
+                                        (Salary {fmtCurrency(emp.forecastSalary)} + Er NICs {fmtCurrency(emp.forecastErNic)} + Er pension {fmtCurrency(emp.forecastErPen)})
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "8px" }}>
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() => runResolve("zero_out")}
+                                      style={{ padding: "5px 11px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "5px", cursor: isBusy ? "default" : "pointer", fontSize: "12px", fontWeight: "600", opacity: isBusy ? 0.65 : 1 }}
+                                    >
+                                      {isBusy ? "Saving..." : `Zero out for ${f.result.targetMonthStr}`}
+                                    </button>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                      <input
+                                        type="date"
+                                        value={chosenStart}
+                                        disabled={isBusy}
+                                        onChange={e => setForecastStartDates(prev => ({ ...prev, [empKey]: e.target.value }))}
+                                        style={{ padding: "4px 6px", border: "1px solid #cbd5e1", borderRadius: "5px", fontSize: "12px", color: "#1e293b" }}
+                                      />
+                                      <button
+                                        type="button"
+                                        disabled={isBusy || !chosenStart}
+                                        onClick={() => runResolve("update_start_date")}
+                                        style={{ padding: "5px 11px", background: "#0369a1", color: "#fff", border: "none", borderRadius: "5px", cursor: (isBusy || !chosenStart) ? "default" : "pointer", fontSize: "12px", fontWeight: "600", opacity: (isBusy || !chosenStart) ? 0.65 : 1 }}
+                                      >
+                                        Move start date
+                                      </button>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() => runResolve("keep_forecast")}
+                                      style={{ padding: "5px 11px", background: "#fff", color: "#475569", border: "1px solid #cbd5e1", borderRadius: "5px", cursor: isBusy ? "default" : "pointer", fontSize: "12px", fontWeight: "600", opacity: isBusy ? 0.65 : 1 }}
+                                    >
+                                      Keep on forecast
+                                    </button>
+                                    {errText && <span style={{ fontSize: "12px", color: "#dc2626", fontWeight: "600" }}>{errText}</span>}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {f.result.resolvedForecastEmployees?.length > 0 && (
+                        <div style={{ marginBottom: "12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#166534", marginBottom: "4px" }}>
+                            Resolved forecast items
+                          </div>
+                          {f.result.resolvedForecastEmployees.map((r, idx) => (
+                            <div key={idx} style={{ fontSize: "12px", color: "#166534" }}>
+                              ✓ <strong>{r.name}</strong>: {r.resolutionSummary}
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       {f.result.importedEmployees && f.result.importedEmployees.length > 0 && (
                         <div style={{ marginBottom: "16px", overflowX: "auto" }}>
@@ -2628,13 +2731,13 @@ export default function ToolsView({
                           {f.result.unmatched.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
                         </div>
                       )}
-                      {f.result.missingFromDoc?.length > 0 && (
+                      {(f.result.inactiveMissingFromDoc ?? f.result.missingFromDoc)?.length > 0 && (
                         <div>
-                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>⚪ In Pulse, missing from document:</div>
-                          {f.result.missingFromDoc.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>Inactive or £0 forecast in {f.result.targetMonthStr}, missing from document:</div>
+                          {(f.result.inactiveMissingFromDoc ?? f.result.missingFromDoc).map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
                         </div>
                       )}
-                      {!f.result.newStarters?.length && !f.result.unmatched?.length && !f.result.missingFromDoc?.length && (
+                      {!f.result.newStarters?.length && !f.result.unmatched?.length && !(f.result.inactiveMissingFromDoc ?? f.result.missingFromDoc)?.length && !f.result.blockingForecastEmployees?.length && (
                         <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly - no discrepancies.</div>
                       )}
                     </div>

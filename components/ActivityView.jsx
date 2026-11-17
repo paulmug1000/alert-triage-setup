@@ -1318,7 +1318,7 @@ export default function ActivityView({
 
       {/* ── LOADING STATE ──────────────────────────────────────────────────── */}
       {isLoading && (!activityData.allEvents || activityData.allEvents.length === 0) ? (
-        <PmaActivitySkeleton />
+        <PmaActivitySkeleton standalone={false} />
       ) : selectedClient !== "ALL" ? (
         /* ── SINGLE CLIENT DEEP FEED ───────────────────────────────────────── */
         <div style={{

@@ -72,7 +72,7 @@ import {
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
-  handleProcessPayrollDocument, handleProcessTimeDocument
+  handleProcessPayrollDocument, handleProcessTimeDocument, handleResolvePayrollImportForecast
 } from "../../services/importTools";
 import { handleGetActivity } from "../../services/activityService";
 import {
@@ -118,7 +118,7 @@ import {
   autoReconcileClientBankTransactions,
   checkClientBankReconciliationStatus
 } from "../../services/bankTransactionsService";
-import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
+import { handleClassifyPLCategory, handleUpdatePartPaidDate, handleResolveSalaryForecastMismatch } from "../../services/proactiveChecks";
 import {
   resolveSupabaseSheetContext,
   getSupabaseClockStatusAndSyncConfig,
@@ -138,6 +138,7 @@ import {
   getCanonicalAcSheetId,
   isReadOnlySession,
   canAccessPma,
+  canViewSalariesAndDividends,
   unwrapRequestSheetIds,
   installSheetIdBoundary
 } from "../../services/userPermissions";
@@ -292,7 +293,7 @@ export default async function handler(req, res) {
 
     const originalJson = res.json.bind(res);
     res.json = function (data) {
-      if (data && data.success && PMA_MUTATION_SCOPES[action]) {
+      if (data && data.success && !data.deferredSheetWrite && PMA_MUTATION_SCOPES[action]) {
         const cId = req.body?.clientSheetId;
         const mId = req.body?.masterSheetId;
         invalidatePmaClientCache(cId, mId, PMA_MUTATION_SCOPES[action]).catch(err => {
@@ -1462,6 +1463,26 @@ export default async function handler(req, res) {
         rowNumber, slot, sendDate, cellCoord, appId, newDate, userEmail
       });
       return res.status(200).json(result);
+    } else if (action === "resolve_salary_forecast_mismatch") {
+      if (isReadOnlySession(sessionUser)) {
+        return res.status(403).json({ success: false, error: "Read-only session cannot modify salaries." });
+      }
+      if (!canViewSalariesAndDividends(sessionUser)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Salary access restricted." });
+      }
+      const {
+        clientName, clientSheetId, masterSheetId, sheetRow,
+        colStartLetter, monthLabel, resolutionAction, newStartDate
+      } = req.body || {};
+      const authorized = await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, masterSheetId]);
+      if (!authorized) {
+        return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
+      }
+      const result = await handleResolveSalaryForecastMismatch(sheets, {
+        clientName, clientSheetId, masterSheetId, sheetRow,
+        colStartLetter, monthLabel, resolutionAction, newStartDate, sessionUser
+      });
+      return res.status(200).json(result);
     } else if (action === "bulk_create_tasks") {
       return await handleBulkCreateTasks(req, res, sheets);
     } else if (action === "create_task") {
@@ -1488,6 +1509,8 @@ export default async function handler(req, res) {
       return await handleIdentifyTimeClient(req, res, sheets);
     } else if (action === "process_payroll_document") {
       return await handleProcessPayrollDocument(req, res, sheets);
+    } else if (action === "resolve_payroll_import_forecast") {
+      return await handleResolvePayrollImportForecast(req, res, sheets);
     } else if (action === "process_time_document") {
       return await handleProcessTimeDocument(req, res, sheets);
     } else if (action === "eom_get_overview_bootstrap") {

@@ -4,7 +4,7 @@ import { getCanonicalAcSheetId, matchesClientName, isPulseOnlyUser, installSheet
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "../../../services/supabaseClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
-import { redisClient } from "../../../services/redisClient.js";
+import { redisClient, ensureRedisConnected } from "../../../services/redisClient.js";
 
 function extractSheetIdFromUrl(url) {
   if (!url) return "";
@@ -107,15 +107,18 @@ export default async function handler(req, res) {
     let allClients = !bypassCache ? memoryCache.get(cacheKey) : null;
     if (allClients) {
       usedCache = true;
-    } else if (!bypassCache && redisClient?.isOpen) {
-      try {
-        const rawCached = await redisClient.get(cacheKey);
-        if (rawCached) {
-          allClients = JSON.parse(rawCached);
-          memoryCache.set(cacheKey, allClients, 300);
-          usedCache = true;
-        }
-      } catch (_) { }
+    } else if (!bypassCache) {
+      await ensureRedisConnected(500);
+      if (redisClient?.isOpen) {
+        try {
+          const rawCached = await redisClient.get(cacheKey);
+          if (rawCached) {
+            allClients = JSON.parse(rawCached);
+            memoryCache.set(cacheKey, allClients, 300);
+            usedCache = true;
+          }
+        } catch (_) { }
+      }
     }
 
     if (!allClients) {

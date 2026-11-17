@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 import EditClientSelector from "./EditClientSelector";
 import PerformanceFYView from "./portal/PerformanceFYView";
 import CashflowView from "./portal/CashflowView";
@@ -110,7 +111,7 @@ export default function ViewsScreen({
   };
 
   // --- API DATA FETCHERS ---
-  const fetchPayload = useCallback(async (client, bypassCache = false) => {
+  const fetchPayload = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
@@ -119,12 +120,14 @@ export default function ViewsScreen({
     if (cached) {
       cacheRef.current.payload[cid] = cached;
       setPayloadCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
-      setLoadingPayload(false);
+      if (!silent) setLoadingPayload(false);
       return cached;
     }
 
-    setLoadingPayload(true);
-    setPayloadError(null);
+    if (!silent) {
+      setLoadingPayload(true);
+      setPayloadError(null);
+    }
 
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_payload_${cleanId}`);
@@ -135,7 +138,7 @@ export default function ViewsScreen({
           if (fresh) {
             cacheRef.current.payload[cid] = fresh;
             setPayloadCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
-            setLoadingPayload(false);
+            if (!silent) setLoadingPayload(false);
             return fresh;
           }
         } catch { }
@@ -154,13 +157,13 @@ export default function ViewsScreen({
       }
     } catch (err) {
       console.error("Payload fetch error:", err);
-      setPayloadError(err.message || "Failed to load client payload");
+      if (!silent) setPayloadError(err.message || "Failed to load client payload");
     } finally {
-      setLoadingPayload(false);
+      if (!silent) setLoadingPayload(false);
     }
   }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
-  const fetchPerformance = useCallback(async (client, bypassCache = false) => {
+  const fetchPerformance = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
@@ -169,12 +172,14 @@ export default function ViewsScreen({
     if (cached) {
       cacheRef.current.perf[cid] = cached;
       setPerfCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
-      setLoadingPerf(false);
+      if (!silent) setLoadingPerf(false);
       return cached;
     }
 
-    setLoadingPerf(true);
-    setPerfError(null);
+    if (!silent) {
+      setLoadingPerf(true);
+      setPerfError(null);
+    }
 
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_perf_${cleanId}`);
@@ -185,7 +190,7 @@ export default function ViewsScreen({
           if (fresh) {
             cacheRef.current.perf[cid] = fresh;
             setPerfCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
-            setLoadingPerf(false);
+            if (!silent) setLoadingPerf(false);
             return fresh;
           }
         } catch { }
@@ -201,18 +206,18 @@ export default function ViewsScreen({
         setCachedClientData(cid, "portal_perf", data.data);
         setPerfCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
-      } else {
+      } else if (!silent) {
         throw new Error(data.error || "Failed to load performance data");
       }
     } catch (err) {
       console.error("Performance fetch error:", err);
-      setPerfError(err.message || "Failed to load performance data");
+      if (!silent) setPerfError(err.message || "Failed to load performance data");
     } finally {
-      setLoadingPerf(false);
+      if (!silent) setLoadingPerf(false);
     }
   }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
-  const fetchCashflow = useCallback(async (client, bypassCache = false) => {
+  const fetchCashflow = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
@@ -221,12 +226,14 @@ export default function ViewsScreen({
     if (cached) {
       cacheRef.current.cash[cid] = cached;
       setCashCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
-      setLoadingCash(false);
+      if (!silent) setLoadingCash(false);
       return cached;
     }
 
-    setLoadingCash(true);
-    setCashError(null);
+    if (!silent) {
+      setLoadingCash(true);
+      setCashError(null);
+    }
 
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_cash_${cleanId}`);
@@ -237,7 +244,7 @@ export default function ViewsScreen({
           if (fresh) {
             cacheRef.current.cash[cid] = fresh;
             setCashCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
-            setLoadingCash(false);
+            if (!silent) setLoadingCash(false);
             return fresh;
           }
         } catch { }
@@ -253,18 +260,18 @@ export default function ViewsScreen({
         setCachedClientData(cid, "portal_cash", data.data);
         setCashCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
-      } else {
+      } else if (!silent) {
         throw new Error(data.error || "Failed to load cashflow data");
       }
     } catch (err) {
       console.error("Cashflow fetch error:", err);
-      setCashError(err.message || "Failed to load cashflow data");
+      if (!silent) setCashError(err.message || "Failed to load cashflow data");
     } finally {
-      setLoadingCash(false);
+      if (!silent) setLoadingCash(false);
     }
   }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
-  const fetchKeyData = useCallback(async (client, bypassCache = false) => {
+  const fetchKeyData = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
@@ -273,12 +280,14 @@ export default function ViewsScreen({
     if (cached) {
       cacheRef.current.keyData[cid] = cached;
       setKeyDataCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
-      setLoadingKeyData(false);
+      if (!silent) setLoadingKeyData(false);
       return cached;
     }
 
-    setLoadingKeyData(true);
-    setKeyDataError(null);
+    if (!silent) {
+      setLoadingKeyData(true);
+      setKeyDataError(null);
+    }
 
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_key_${cleanId}`);
@@ -289,7 +298,7 @@ export default function ViewsScreen({
           if (fresh) {
             cacheRef.current.keyData[cid] = fresh;
             setKeyDataCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
-            setLoadingKeyData(false);
+            if (!silent) setLoadingKeyData(false);
             return fresh;
           }
         } catch { }
@@ -305,18 +314,18 @@ export default function ViewsScreen({
         setCachedClientData(cid, "portal_key_data", data.data);
         setKeyDataCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
-      } else {
+      } else if (!silent) {
         throw new Error(data.error || "Failed to load key data");
       }
     } catch (err) {
       console.error("Key data fetch error:", err);
-      setKeyDataError(err.message || "Failed to load key data");
+      if (!silent) setKeyDataError(err.message || "Failed to load key data");
     } finally {
-      setLoadingKeyData(false);
+      if (!silent) setLoadingKeyData(false);
     }
   }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
-  const fetchBudget = useCallback(async (client, bypassCache = false) => {
+  const fetchBudget = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
@@ -325,12 +334,14 @@ export default function ViewsScreen({
     if (cached) {
       cacheRef.current.budget[cid] = cached;
       setBudgetCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
-      setLoadingBudget(false);
+      if (!silent) setLoadingBudget(false);
       return cached;
     }
 
-    setLoadingBudget(true);
-    setBudgetError(null);
+    if (!silent) {
+      setLoadingBudget(true);
+      setBudgetError(null);
+    }
 
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_budget_${cleanId}`);
@@ -341,7 +352,7 @@ export default function ViewsScreen({
           if (fresh) {
             cacheRef.current.budget[cid] = fresh;
             setBudgetCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
-            setLoadingBudget(false);
+            if (!silent) setLoadingBudget(false);
             return fresh;
           }
         } catch { }
@@ -356,14 +367,14 @@ export default function ViewsScreen({
         setCachedClientData(cid, "portal_budget", data.data);
         setBudgetCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
-      } else {
+      } else if (!silent) {
         throw new Error(data.error || "Failed to load budget data");
       }
     } catch (err) {
       console.error("Budget fetch error:", err);
-      setBudgetError(err.message || "Failed to load budget data");
+      if (!silent) setBudgetError(err.message || "Failed to load budget data");
     } finally {
-      setLoadingBudget(false);
+      if (!silent) setLoadingBudget(false);
     }
   }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
@@ -391,31 +402,38 @@ export default function ViewsScreen({
     }
   }, [selectedClient, activeTab, fetchPayload, fetchPerformance, fetchCashflow, fetchKeyData, fetchBudget]);
 
-  const handleRefreshCurrentView = useCallback(async (tabOverride) => {
+  const handleRefreshCurrentView = useCallback(async (tabOverride, { silent = false } = {}) => {
     if (!selectedClient) return;
     const tab = typeof tabOverride === "string" ? tabOverride : activeTab;
-    setIsRefreshing(true);
-    const minSpin = new Promise((r) => setTimeout(r, 600));
+    if (!silent) setIsRefreshing(true);
+    const minSpin = silent ? Promise.resolve() : new Promise((r) => setTimeout(r, 600));
     try {
-      const tasks = [minSpin, fetchPayload(selectedClient, true)];
+      const tasks = [minSpin, fetchPayload(selectedClient, true, silent)];
       if (tab === "fyPerformance") {
-        tasks.push(fetchPerformance(selectedClient, true), fetchKeyData(selectedClient, true));
+        tasks.push(fetchPerformance(selectedClient, true, silent), fetchKeyData(selectedClient, true, silent));
       } else if (tab === "cashflow") {
-        tasks.push(fetchCashflow(selectedClient, true), fetchKeyData(selectedClient, true));
+        tasks.push(fetchCashflow(selectedClient, true, silent), fetchKeyData(selectedClient, true, silent));
       } else if (tab === "budgetOverview") {
         tasks.push(
-          fetchBudget(selectedClient, true),
-          fetchPerformance(selectedClient, true),
-          fetchKeyData(selectedClient, true)
+          fetchBudget(selectedClient, true, silent),
+          fetchPerformance(selectedClient, true, silent),
+          fetchKeyData(selectedClient, true, silent)
         );
       } else if (["contractors", "expenses", "salaries", "dividends", "nbToFind"].includes(tab)) {
-        tasks.push(fetchKeyData(selectedClient, true));
+        tasks.push(fetchKeyData(selectedClient, true, silent));
       }
       await Promise.all(tasks);
     } finally {
-      setIsRefreshing(false);
+      if (!silent) setIsRefreshing(false);
     }
   }, [selectedClient, activeTab, fetchPayload, fetchPerformance, fetchCashflow, fetchKeyData, fetchBudget]);
+
+  useFocusRevalidate({
+    enabled: Boolean(selectedClient?.clientSheetId),
+    resetKey: `${selectedClient?.clientSheetId || ""}_${activeTab}`,
+    canRevalidate: () => !isRefreshing && !loadingPayload && !loadingPerf && !loadingCash && !loadingKeyData && !loadingBudget,
+    onRevalidate: () => handleRefreshCurrentView(activeTab, { silent: true }),
+  });
 
   const cid = selectedClient?.clientSheetId;
   const payload = cid ? (payloadCache[cid] || getCachedClientData(cid, "portal_payload")?.data) : null;

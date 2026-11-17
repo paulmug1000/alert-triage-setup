@@ -124,6 +124,7 @@ export default function App({ Component, pageProps }) {
           position: relative;
           background-color: #e2e8f0 !important;
           animation: pulse-calm-breathe 1.8s ease-in-out infinite !important;
+          animation-delay: var(--pulse-skeleton-delay, 0s) !important;
         }
         .pulse-skeleton.pulse-skeleton-blue {
           background-color: #dbeafe !important;

@@ -9,7 +9,7 @@ import {
 import { createHash } from "crypto";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient, canAccessPma, DEFAULT_AC_SHEET_ID } from "./userPermissions.js";
+import { isUserAuthorizedForClient, canAccessPma, canViewSalariesAndDividends, DEFAULT_AC_SHEET_ID } from "./userPermissions.js";
 import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat, KNOWN_PROACTIVE_ALERT_TYPES } from "../utils/helpers.js";
 import { getAllClients } from "./workspaces.js";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
@@ -119,9 +119,13 @@ export async function handleGetAlerts(req, res) {
     }
     if (!sessionUser.isAdmin) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-      const isAllowedAlert = (a) =>
-        assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
-        !ADMIN_ONLY_ALERT_TYPES.has(a.alertType || a.flagType || a.type);
+      const allowSalaries = canViewSalariesAndDividends(sessionUser);
+      const isAllowedAlert = (a) => {
+        const aType = a.alertType || a.flagType || a.type;
+        if (!allowSalaries && aType === "salary_forecast_in_actual_month") return false;
+        return assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
+          !ADMIN_ONLY_ALERT_TYPES.has(aType);
+      };
       alerts = (alerts || []).filter(isAllowedAlert);
       noActionAlerts = (noActionAlerts || []).filter(isAllowedAlert);
       proactiveAlerts = (proactiveAlerts || []).filter(isAllowedAlert);
@@ -1206,6 +1210,7 @@ async function removeResolvedProactiveFromCaches_({ sessionId, targetIds, canRem
 
 function getProactiveActivityCategory_(alertKey) {
   const t = String(alertKey || "").toLowerCase();
+  if (t.includes("salar") || t.includes("payroll")) return "SALARIES";
   if (t.includes("inv")) return "INVOICES";
   if (t.includes("exp") || t.includes("dir") || t.includes("cost") || t.includes("vendor") || t.includes("out")) return "EXPENSES";
   if (t.includes("crm")) return "CRM";
@@ -1747,10 +1752,12 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
     }
     if (!sessionUser.isAdmin) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-      active = active.filter(a =>
-        assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
-        !ADMIN_ONLY_ALERT_TYPES.has(a.alertType)
-      );
+      const allowSalaries = canViewSalariesAndDividends(sessionUser);
+      active = active.filter(a => {
+        if (!allowSalaries && a.alertType === "salary_forecast_in_actual_month") return false;
+        return assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
+          !ADMIN_ONLY_ALERT_TYPES.has(a.alertType);
+      });
     }
 
     const countsByClient = {};

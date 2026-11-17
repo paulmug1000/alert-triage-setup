@@ -5087,28 +5087,32 @@ export async function getVirtualTabForInspector({
   const allVals = data.values_grid || [];
   let effectiveMaxRows = maxRows;
   if (trimTrailingEmptyRows) {
-    const scanLimit = Math.min(allVals.length, maxRows);
-    let lastMeaningfulRow = 20;
-    for (let r = scanLimit - 1; r >= 5; r--) {
-      const row = allVals[r];
-      if (!Array.isArray(row)) continue;
-      let hasContent = false;
-      for (let c = 0; c < row.length; c++) {
-        const v = row[c];
-        if (v !== null && v !== undefined && v !== false) {
-          const s = String(v).trim();
-          if (s !== "" && s.toUpperCase() !== "FALSE") {
-            hasContent = true;
-            break;
+    if (sheetRole === "client" && (tabName === "Confirmed" || tabName === "Pipeline")) {
+      effectiveMaxRows = Math.min(maxRows, Math.max(30, findLastActiveClientJobRow_(allVals, 25) + 15));
+    } else {
+      const scanLimit = Math.min(allVals.length, maxRows);
+      let lastMeaningfulRow = 20;
+      for (let r = scanLimit - 1; r >= 5; r--) {
+        const row = allVals[r];
+        if (!Array.isArray(row)) continue;
+        let hasContent = false;
+        for (let c = 0; c < row.length; c++) {
+          const v = row[c];
+          if (v !== null && v !== undefined && v !== false) {
+            const s = String(v).trim();
+            if (s !== "" && s.toUpperCase() !== "FALSE") {
+              hasContent = true;
+              break;
+            }
           }
         }
+        if (hasContent) {
+          lastMeaningfulRow = r;
+          break;
+        }
       }
-      if (hasContent) {
-        lastMeaningfulRow = r;
-        break;
-      }
+      effectiveMaxRows = Math.min(maxRows, Math.max(26, lastMeaningfulRow + 6));
     }
-    effectiveMaxRows = Math.min(maxRows, Math.max(26, lastMeaningfulRow + 6));
   }
 
   const rawSlice = allVals
@@ -5167,8 +5171,15 @@ export async function updateVirtualTabCellFromInspector({
   const a1Coord = `'${tabName}'!${colLetter}${Number(rowIndex0) + 1}`;
   const parsed = parseA1Range(a1Coord, tabName);
 
-  const nextVals = applyWriteToGrid2D_(rec.values_grid || [], parsed, [[value]]);
+  const nextVals = applyWriteToGrid2D_(rec.values_grid || [], parsed, [[value]], {
+    sheetRole,
+    tabName,
+    notesGrid: rec.notes_grid,
+  });
   const nextForms = applyWriteToGrid2D_(rec.formulas_grid || rec.values_grid || [], parsed, [[value]], {
+    sheetRole,
+    tabName,
+    notesGrid: rec.notes_grid,
     isFormulaGrid: true,
   });
   await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid);
@@ -5191,6 +5202,8 @@ export async function updateVirtualTabCellFromInspector({
     tabName,
     cellCoord: `${colLetter}${Number(rowIndex0) + 1}`,
     value,
+    clientSheetId: ctx.clientSheetId || "",
+    masterSheetId: ctx.masterSheetId || "",
   };
 }
 
@@ -5386,9 +5399,9 @@ async function loadRoleSnapshotFromSystemConfig_(supabase, role, expectedTemplat
       tabs,
       ...(role === "client"
         ? {
-            outNotesMap: meta?.clientOutNotesMap || {},
-            anchorFormulas: meta?.clientAnchorFormulas || {},
-          }
+          outNotesMap: meta?.clientOutNotesMap || {},
+          anchorFormulas: meta?.clientAnchorFormulas || {},
+        }
         : {}),
       syncedAt: matching[0]?.value?.syncedAt || meta?.syncedAt || "",
     };
@@ -5453,14 +5466,14 @@ async function fetchMasterTemplateSnapshotFromSheets_(sheets, masterTemplateId) 
         .catch(() => ({ data: { valueRanges: [] } })),
       needsFormatted.length > 0
         ? sheets.spreadsheets.values
-            .batchGet({
-              spreadsheetId: masterTemplateId,
-              ranges: needsFormatted.map((t) => `'${t}'`),
-              valueRenderOption: "FORMATTED_VALUE",
-              _bypassSupabaseVirtualSheet: true,
-              _usePrimaryAccount: true,
-            })
-            .catch(() => ({ data: { valueRanges: [] } }))
+          .batchGet({
+            spreadsheetId: masterTemplateId,
+            ranges: needsFormatted.map((t) => `'${t}'`),
+            valueRenderOption: "FORMATTED_VALUE",
+            _bypassSupabaseVirtualSheet: true,
+            _usePrimaryAccount: true,
+          })
+          .catch(() => ({ data: { valueRanges: [] } }))
         : Promise.resolve({ data: { valueRanges: [] } }),
     ]);
 
@@ -5698,7 +5711,7 @@ export async function syncProvisioningTemplateSnapshots(
   // Clean up any legacy monolithic snapshot keys if present
   try {
     await supabase.from("system_config").delete().in("key", LEGACY_MONOLITHIC_SNAPSHOT_KEYS);
-  } catch (_) {}
+  } catch (_) { }
 
   // Save per-tab compacted snapshots sequentially in small chunks to avoid Cloudflare 520 / PostgREST payload limits
   await saveTemplateSnapshotRows_(supabase, "master", masterSnap, userEmail);
@@ -5803,17 +5816,17 @@ export async function seedNewClientTemplatesToSupabase(
   let snapshotWarmed = false;
   if (needsMasterSnapshot && !masterSnap && masterTemplateId) {
     masterSnap = await fetchMasterTemplateSnapshotFromSheets_(sheets, masterTemplateId);
-    await saveTemplateSnapshotRows_(supabase, "master", masterSnap, "System (Auto-Warm)").catch(() => {});
+    await saveTemplateSnapshotRows_(supabase, "master", masterSnap, "System (Auto-Warm)").catch(() => { });
     snapshotWarmed = true;
   }
   if (needsReconSnapshot && !reconSnap && reconTemplateId) {
     reconSnap = await fetchReconTemplateSnapshotFromSheets_(sheets, reconTemplateId);
-    await saveTemplateSnapshotRows_(supabase, "recon", reconSnap, "System (Auto-Warm)").catch(() => {});
+    await saveTemplateSnapshotRows_(supabase, "recon", reconSnap, "System (Auto-Warm)").catch(() => { });
     snapshotWarmed = true;
   }
   if (needsClientSnapshot && !clientSnap && clientTemplateId) {
     clientSnap = await fetchClientTemplateSnapshotFromSheets_(sheets, clientTemplateId);
-    await saveTemplateSnapshotRows_(supabase, "client", clientSnap, "System (Auto-Warm)").catch(() => {});
+    await saveTemplateSnapshotRows_(supabase, "client", clientSnap, "System (Auto-Warm)").catch(() => { });
     snapshotWarmed = true;
   }
   if (snapshotWarmed) {
@@ -5833,14 +5846,14 @@ export async function seedNewClientTemplatesToSupabase(
         ...(reconSnap ? { reconTabs: reconSnap.tabs.map((t) => t.tabName) } : {}),
         ...(clientSnap
           ? {
-              clientTabs: clientSnap.tabs.map((t) => t.tabName),
-              clientOutNotesMap: clientSnap.outNotesMap || {},
-              clientAnchorFormulas: clientSnap.anchorFormulas || {},
-            }
+            clientTabs: clientSnap.tabs.map((t) => t.tabName),
+            clientOutNotesMap: clientSnap.outNotesMap || {},
+            clientAnchorFormulas: clientSnap.anchorFormulas || {},
+          }
           : {}),
       },
       "System (Auto-Warm)"
-    ).catch(() => {});
+    ).catch(() => { });
   }
 
   // 1. Seed Master & Recon virtual grids from snapshots if masterMode === 'supabase'

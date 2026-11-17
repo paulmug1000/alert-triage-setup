@@ -1,4 +1,6 @@
-import React from "react";
+import React, { useEffect, useLayoutEffect, useRef } from "react";
+
+const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 /**
  * Embedded Global Styles for CPU-compatible gradient shimmer and breathing animation.
@@ -154,8 +156,21 @@ export function SkeletonTable({
  * Low-density structural silhouette with calm breathing animation and 0px layout shift.
  */
 export function MonthViewSkeleton() {
+  const rootRef = useRef(null);
+
+  useIsomorphicLayoutEffect(() => {
+    if (typeof window === "undefined" || !rootRef.current) return;
+    const now = Date.now();
+    const existing = window.__PULSE_SKELETON_T0__;
+    const t0 = typeof existing === "number" && now - existing < 15000 ? existing : now;
+    window.__PULSE_SKELETON_T0__ = t0;
+    const elapsed = Math.max(0, now - t0) % 1800;
+    rootRef.current.style.setProperty("--pulse-skeleton-delay", `-${elapsed}ms`);
+  }, []);
+
   return (
     <div
+      ref={rootRef}
       data-pulse-skeleton="true"
       className="home-view-container"
       style={{
@@ -699,6 +714,27 @@ export function DeepDiveSkeleton({ rows = 4 }) {
   );
 }
 
+const PMA_PAGE_CONTAINER_STYLE = {
+  width: "100%",
+  maxWidth: "1440px",
+  margin: "0 auto",
+  padding: "24px 32px 60px",
+  boxSizing: "border-box",
+  fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+};
+
+function PmaPageSkeletonShell({ children, style = {} }) {
+  return (
+    <div
+      data-pulse-skeleton="true"
+      className="pma-page-container"
+      style={{ ...PMA_PAGE_CONTAINER_STYLE, ...style }}
+    >
+      {children}
+    </div>
+  );
+}
+
 /**
  * Composite Skeleton for the PMA Home Dashboard (HomeView.jsx).
  * Matches HomeView layout:
@@ -709,7 +745,7 @@ export function DeepDiveSkeleton({ rows = 4 }) {
  */
 export function PmaHomeSkeleton() {
   return (
-    <div data-pulse-skeleton="true" className="pma-page-container" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "24px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
+    <PmaPageSkeletonShell>
       {/* Page header */}
       <div style={{ background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)", marginBottom: "20px" }}>
         <h1 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0F172A" }}>
@@ -865,7 +901,7 @@ export function PmaHomeSkeleton() {
           ))}
         </div>
       </div>
-    </div>
+    </PmaPageSkeletonShell>
   );
 }
 
@@ -877,7 +913,7 @@ export function PmaHomeSkeleton() {
  */
 export function PmaAlertsSkeleton() {
   return (
-    <div data-pulse-skeleton="true" className="pma-page-container" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "24px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
+    <PmaPageSkeletonShell>
       {/* Header */}
       <div style={{ background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)", marginBottom: "20px" }}>
         <h1 style={{ fontSize: "20px", fontWeight: "700", color: "#0F172A", margin: "0 0 6px 0" }}>
@@ -929,7 +965,7 @@ export function PmaAlertsSkeleton() {
           <Skeleton width="130px" height="32px" borderRadius="6px" />
         </div>
       </div>
-    </div>
+    </PmaPageSkeletonShell>
   );
 }
 
@@ -1427,9 +1463,10 @@ export function PmaExpensesTableSkeleton({ rows = 8 }) {
  * Composite Skeleton for TasksView.jsx.
  * Matches:
  * - 5 task card silhouettes each with client pill, task title, urgency badge, description, and action buttons
+ * When `standalone` is true (e.g. dynamic route loading fallback), wraps in the standard PMA page container.
  */
-export function PmaTasksSkeleton({ cards = 5 }) {
-  return (
+export function PmaTasksSkeleton({ cards = 5, standalone = false }) {
+  const list = (
     <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
       {Array.from({ length: cards }).map((_, i) => (
         <div
@@ -1475,13 +1512,33 @@ export function PmaTasksSkeleton({ cards = 5 }) {
       ))}
     </div>
   );
+
+  if (!standalone) return list;
+
+  return (
+    <PmaPageSkeletonShell>
+      <div style={{ marginBottom: "20px", background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
+        <Skeleton width="110px" height="24px" style={{ marginBottom: "6px" }} />
+        <Skeleton width="250px" height="14px" />
+      </div>
+      <div style={{ display: "flex", gap: "12px", borderBottom: "1px solid #e2e8f0", marginBottom: "20px", paddingBottom: "10px" }}>
+        <Skeleton width="72px" height="20px" />
+        <Skeleton width="78px" height="20px" />
+        <Skeleton width="84px" height="20px" />
+      </div>
+      <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "24px", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
+        {list}
+      </div>
+    </PmaPageSkeletonShell>
+  );
 }
 
 /**
  * Composite Skeleton for SetupView.jsx (Overview Table).
+ * When `standalone` is true (e.g. dynamic route loading fallback), wraps in the standard PMA page container.
  */
-export function PmaSetupOverviewSkeleton({ rows = 6 }) {
-  return (
+export function PmaSetupOverviewSkeleton({ rows = 6, standalone = false }) {
+  const table = (
     <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "13px" }}>
       <thead>
         <tr style={{ background: "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
@@ -1513,6 +1570,20 @@ export function PmaSetupOverviewSkeleton({ rows = 6 }) {
         ))}
       </tbody>
     </table>
+  );
+
+  if (!standalone) return table;
+
+  return (
+    <PmaPageSkeletonShell>
+      <div style={{ marginBottom: "20px", background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
+        <Skeleton width="160px" height="24px" style={{ marginBottom: "6px" }} />
+        <Skeleton width="280px" height="14px" />
+      </div>
+      <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", overflowX: "auto", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
+        {table}
+      </div>
+    </PmaPageSkeletonShell>
   );
 }
 
@@ -1573,7 +1644,7 @@ export function PmaSetupDetailSkeleton() {
  */
 export function PmaIntegrationsSkeleton() {
   return (
-    <div className="pma-page-container" style={{ width: "100%", maxWidth: "1440px", padding: "24px 32px 60px", margin: "0 auto", boxSizing: "border-box" }}>
+    <PmaPageSkeletonShell>
       {/* Top Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px", background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
         <Skeleton width="240px" height="24px" />
@@ -1647,16 +1718,62 @@ export function PmaIntegrationsSkeleton() {
           ))}
         </div>
       </div>
-    </div>
+    </PmaPageSkeletonShell>
   );
 }
 
 /**
  * Composite Skeleton for ActivityView.jsx.
+ * When `standalone` is true (default, e.g. dynamic route loading fallback), wraps in the standard PMA page container with header and filter bar.
  */
-export function PmaActivitySkeleton() {
+export function PmaActivitySkeleton({ standalone = true }) {
+  const timelineCard = (
+    <div
+      style={{
+        background: "#ffffff",
+        border: "1px solid #e2e8f0",
+        borderRadius: "10px",
+        overflow: "hidden",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+      }}
+    >
+      <div style={{ padding: "14px 18px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", display: "flex", justifyContent: "space-between" }}>
+        <Skeleton width="130px" height="14px" />
+        <Skeleton width="80px" height="12px" />
+      </div>
+
+      {/* 8 Activity Items */}
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div
+          key={i}
+          style={{
+            padding: "14px 18px",
+            borderBottom: i === 7 ? "none" : "1px solid #f1f5f9",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: "14px",
+            background: i % 2 === 1 ? "#fafcff" : "#ffffff",
+          }}
+        >
+          <Skeleton width="32px" height="32px" circle={true} style={{ flexShrink: 0, marginTop: "2px" }} />
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <Skeleton width={`${80 + ((i * 17) % 40)}px`} height="18px" borderRadius="10px" />
+              <Skeleton width={`${70 + ((i * 19) % 35)}px`} height="18px" borderRadius="4px" />
+              <Skeleton width="90px" height="12px" />
+            </div>
+            <Skeleton width={`${75 + ((i * 7) % 20)}%`} height="14px" />
+          </div>
+          <Skeleton width="65px" height="12px" style={{ flexShrink: 0 }} />
+        </div>
+      ))}
+    </div>
+  );
+
+  if (!standalone) return timelineCard;
+
   return (
-    <div className="pma-page-container" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "24px 32px 60px", boxSizing: "border-box" }}>
+    <PmaPageSkeletonShell>
       {/* Header */}
       <div style={{ marginBottom: "20px", background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
         <Skeleton width="180px" height="24px" style={{ marginBottom: "6px" }} />
@@ -1672,48 +1789,8 @@ export function PmaActivitySkeleton() {
         <Skeleton width="110px" height="34px" borderRadius="6px" />
       </div>
 
-      {/* Timeline Card */}
-      <div
-        style={{
-          background: "#ffffff",
-          border: "1px solid #e2e8f0",
-          borderRadius: "10px",
-          overflow: "hidden",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
-        }}
-      >
-        <div style={{ padding: "14px 18px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", display: "flex", justifyContent: "space-between" }}>
-          <Skeleton width="130px" height="14px" />
-          <Skeleton width="80px" height="12px" />
-        </div>
-
-        {/* 8 Activity Items */}
-        {Array.from({ length: 8 }).map((_, i) => (
-          <div
-            key={i}
-            style={{
-              padding: "14px 18px",
-              borderBottom: i === 7 ? "none" : "1px solid #f1f5f9",
-              display: "flex",
-              alignItems: "flex-start",
-              gap: "14px",
-              background: i % 2 === 1 ? "#fafcff" : "#ffffff",
-            }}
-          >
-            <Skeleton width="32px" height="32px" circle={true} style={{ flexShrink: 0, marginTop: "2px" }} />
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                <Skeleton width={`${80 + ((i * 17) % 40)}px`} height="18px" borderRadius="10px" />
-                <Skeleton width={`${70 + ((i * 19) % 35)}px`} height="18px" borderRadius="4px" />
-                <Skeleton width="90px" height="12px" />
-              </div>
-              <Skeleton width={`${75 + ((i * 7) % 20)}%`} height="14px" />
-            </div>
-            <Skeleton width="65px" height="12px" style={{ flexShrink: 0 }} />
-          </div>
-        ))}
-      </div>
-    </div>
+      {timelineCard}
+    </PmaPageSkeletonShell>
   );
 }
 
@@ -2051,18 +2128,9 @@ export function PmaTransitionSkeleton({ user = null, targetNav = "home", clientN
 
       {/* Main Content Area Skeleton */}
       {targetNav === "setup" ? (
-        <div
-          className="pma-page-container"
-          style={{
-            width: "100%",
-            maxWidth: "1440px",
-            margin: "0 auto",
-            padding: "24px 32px 60px",
-            boxSizing: "border-box",
-          }}
-        >
+        <PmaPageSkeletonShell>
           <PmaSetupDetailSkeleton />
-        </div>
+        </PmaPageSkeletonShell>
       ) : (
         <PmaHomeSkeleton />
       )}

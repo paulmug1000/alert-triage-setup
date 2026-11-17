@@ -351,6 +351,9 @@ export default function NavShell({
       .then((d) => {
         if (d.success && Array.isArray(d.clients)) {
           setPortalClients(d.clients);
+          try {
+            localStorage.setItem("pulse_portal_clients_cache", JSON.stringify(d.clients));
+          } catch { }
         }
       })
       .catch((e) => console.error("NavShell: failed to fetch clients", e))
@@ -404,8 +407,16 @@ export default function NavShell({
       setPulseDropdownOpen(false);
       setNavigatingPulseClient(client.clientName || "Pulse");
       if (typeof window !== "undefined") {
+        const now = Date.now();
         localStorage.setItem("pulse_portal_client", client.clientName);
         localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(client));
+        document.cookie = `pulse_portal_client=${encodeURIComponent(client.clientName)}; path=/; max-age=31536000; SameSite=Lax`;
+        window.__PULSE_SKELETON_T0__ = now;
+        window.__PULSE_PORTAL_HANDOFF__ = {
+          client,
+          clients: Array.isArray(portalClients) && portalClients.length > 0 ? portalClients : null,
+          timestamp: now,
+        };
       }
       router.push(`/pulse?client=${encodeURIComponent(client.clientName)}`).catch(() => {
         setNavigatingPulseClient(null);

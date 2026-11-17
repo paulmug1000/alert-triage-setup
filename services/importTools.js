@@ -6,6 +6,13 @@ import { monthStrToEomKey_, eomTargetMonthToWorkMonth_, autoCompleteLinkedEomTas
 import { getSessionUser } from "./authService";
 import { DEFAULT_AC_SHEET_ID, isUserAuthorizedForClient, resolveClientNameBySheetId, verifyUserAuthorizedForSheet, isReadOnlySession } from "./userPermissions";
 import { getAllClients } from "./workspaces";
+import {
+  findForecastOnlyEmployeesInMonth_,
+  applySalaryForecastResolution_,
+  invalidateSalariesCache,
+  parseMonthYearHeader,
+  parseHeaderMonthMeta_,
+} from "./salariesService";
 
 const SAFE_UPLOAD_ID_REGEX = /^[a-zA-Z0-9_-]{4,80}$/;
 
@@ -230,11 +237,36 @@ function normalizePayrollEmployee_(emp) {
 }
 
 async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, targetMonthStr, allEmployeeNames) {
-  const headerResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Salaries!1:1" }));
-  const headers = (headerResp.data.values && headerResp.data.values[0]) || [];
+  const preReadResp = await withRetry(() =>
+    sheets.spreadsheets.values.batchGet({
+      spreadsheetId: clientSheetId,
+      ranges: [
+        "Salaries!A1:JC53",
+        "Salaries!L154:JC203",
+        "Outgoings!A1:AZ112",
+      ],
+      valueRenderOption: "UNFORMATTED_VALUE",
+    })
+  );
+  const preRanges = preReadResp.data?.valueRanges || [];
+  const salTop = preRanges[0]?.values || [];
+  const salForecast = preRanges[1]?.values || [];
+  const outgoingsGrid = preRanges[2]?.values || [];
+
+  const headers = salTop[0] || [];
+  const targetMeta = parseHeaderMonthMeta_(targetMonthStr);
   let startColIdx0 = -1;
-  for (let i = 0; i < headers.length; i++) {
-    if (headers[i] && isDateMatchJs_(headers[i], targetMonthStr)) { startColIdx0 = i; break; }
+  for (let i = 11; i < headers.length; i += 7) {
+    const hVal = headers[i];
+    if (!hVal) continue;
+    if (isDateMatchJs_(hVal, targetMonthStr)) { startColIdx0 = i; break; }
+    if (targetMeta) {
+      const hMeta = parseHeaderMonthMeta_(hVal);
+      if (hMeta && hMeta.year === targetMeta.year && hMeta.monthIdx === targetMeta.monthIdx) {
+        startColIdx0 = i;
+        break;
+      }
+    }
   }
   if (startColIdx0 === -1) return { writeSuccess: false, error: `Could not find column for '${targetMonthStr}' in the Salaries header row.` };
   const startColLetter = columnIndexToLetter_(startColIdx0 + 1);
@@ -446,12 +478,58 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
     return { category: cat, documentTotal: docVal, writtenTotal: writtenVal, diff, reconciled: diff <= TOLERANCE };
   });
 
+  // Detect employees who were NOT written in this import, have blank actuals, and still pull non-zero forecast
+  const writtenEmployeeNames = new Set(importedEmployees.filter(e => e.written).map(e => e.name));
+  const employeesRows = salTop.slice(3, 53);
+  const actualsRows = employeesRows.map(r => (r || []).slice(11));
+  const outgHeaders = outgoingsGrid[0] || [];
+  let outgoingsMonthColIdx = -1;
+  for (let c = 6; c < outgHeaders.length; c++) {
+    const hVal = outgHeaders[c];
+    if (!hVal) continue;
+    if (isDateMatchJs_(hVal, targetMonthStr)) {
+      outgoingsMonthColIdx = c;
+      break;
+    }
+    if (targetMeta) {
+      const hMeta = parseHeaderMonthMeta_(hVal);
+      if (hMeta && hMeta.year === targetMeta.year && hMeta.monthIdx === targetMeta.monthIdx) {
+        outgoingsMonthColIdx = c;
+        break;
+      }
+    }
+  }
+  const monthMeta = targetMeta || parseHeaderMonthMeta_(headers[startColIdx0]);
+  const { forecastOnlyEmployees } = findForecastOnlyEmployeesInMonth_({
+    employeesRows,
+    actualsRows,
+    forecastRows: salForecast,
+    colOffset: startColIdx0 - 11,
+    monthMeta,
+    contractorsRows: outgoingsGrid.slice(11, 112),
+    outgoingsMonthColIdx,
+    excludeEmployeeNames: writtenEmployeeNames,
+  });
+
+  const blockingForecastEmployees = forecastOnlyEmployees.map(emp => ({
+    ...emp,
+    colStartLetter: startColLetter,
+    monthLabel: targetMonthStr,
+  }));
+  const blockingNames = new Set(blockingForecastEmployees.map(e => e.name));
+  const inactiveMissingFromDoc = missingFromDoc.filter(n => !blockingNames.has(n));
+
+  await invalidateSalariesCache(null, clientSheetId);
+
   return {
     writeSuccess: true,
     updateCount,
     targetMonthStr,
     startCol: startColLetter,
     missingFromDoc,
+    inactiveMissingFromDoc,
+    blockingForecastEmployees,
+    requiresForecastResolution: blockingForecastEmployees.length > 0,
     newStarters,
     unmatched,
     totalsSource,
@@ -772,6 +850,15 @@ Return ONLY valid JSON matching this exact structure:
     const writeResult = await writePayrollDataToSheet_(sheets, payrollClientSheetId, extractedData, targetMonthStr, allEmployeeNames);
     await redisClient.del(scopedKey).catch(() => {});
 
+    if (writeResult.writeSuccess && writeResult.requiresForecastResolution) {
+      return res.status(200).json({
+        success: true,
+        status: "ACTION_REQUIRED",
+        extractedData,
+        ...writeResult,
+      });
+    }
+
     if (writeResult.writeSuccess && automationCommanderSheetId) {
       const payrollWorkMonthKey = eomTargetMonthToWorkMonth_(monthStrToEomKey_(targetMonthStr));
       await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, payrollClientName, "salaries", payrollWorkMonthKey);
@@ -780,6 +867,65 @@ Return ONLY valid JSON matching this exact structure:
   } catch (err) {
     if (scopedKey) await redisClient.del(scopedKey).catch(() => {});
     return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleResolvePayrollImportForecast(req, res, sheets) {
+  const {
+    clientSheetId,
+    masterSheetId,
+    clientName,
+    sheetRow,
+    colStartLetter,
+    monthLabel,
+    resolutionAction,
+    newStartDate,
+    completeTask,
+    automationCommanderSheetId,
+  } = req.body || {};
+
+  if (!clientSheetId || !sheetRow || !monthLabel || !resolutionAction) {
+    return res.status(400).json({ success: false, error: "Missing required fields for payroll forecast resolution." });
+  }
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Read-only session cannot modify payroll data." });
+  }
+  if (!sessionUser.isAdmin && (!(await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets)).authorized)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client" });
+  }
+
+  try {
+    const result = await applySalaryForecastResolution_({
+      sheets,
+      clientSheetId,
+      masterSheetId,
+      clientName,
+      sheetRow,
+      colStartLetter,
+      monthLabel,
+      resolutionAction,
+      newStartDate,
+      sessionUser,
+    });
+
+    const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+    let taskCompleted = false;
+    if (completeTask && acId && clientName) {
+      const payrollWorkMonthKey = eomTargetMonthToWorkMonth_(monthStrToEomKey_(monthLabel));
+      await autoCompleteLinkedEomTask_(sheets, acId, clientName, "salaries", payrollWorkMonthKey);
+      taskCompleted = true;
+    }
+
+    return res.status(200).json({
+      success: true,
+      ...result,
+      taskCompleted,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message || "Failed to resolve payroll forecast item." });
   }
 }
 

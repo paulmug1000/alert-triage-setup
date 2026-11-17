@@ -31,7 +31,7 @@ import { getSessionUser } from "./authService.js";
 import { getSettingsRedisKey } from "./clientSettingsService.js";
 import { redisClient } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
-import { resolveSupabaseSheetContext, flushPendingClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, flushPendingClientRecomputes, flushImmediateAndScheduleBackgroundClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
 import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
 import { memoryCache, get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
@@ -1611,6 +1611,186 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
   }
 }
 
+const PENDING_JOB_FIELDS_TTL_SECS = 120;
+const JOB_FIELD_COL_MAP = {
+  0: "client",
+  1: "jobName",
+  2: "projectCode",
+  3: "dateConf",
+  4: "leadSrc",
+  17: "rechargedExpenses",
+  30: "unevenSplit",
+  32: "revenue",
+  33: "directCosts",
+  34: "vat",
+  35: "projectRetainer",
+  36: "prodLine",
+  37: "startDate",
+  38: "endDate",
+  39: "likelihood",
+};
+const JOB_COSTING_COL_MAP = { 5: "startDate", 6: "endDate", 8: "revenue", 10: "directCosts" };
+const INV_SLOT_KEYS = ["amount", "ref", "sentDate", "daysToPay", "status", "ofWhichRechgd", "costMonth"];
+const EXP_SLOT_KEYS = ["description", "amount", "vat", "date", "daysToPay", "status", "transactionId"];
+
+function parseBatchDataToCellEntries_(batchData = [], batchId = "") {
+  const entries = [];
+  const expiresAt = Date.now() + PENDING_JOB_FIELDS_TTL_SECS * 1000;
+  for (const item of batchData) {
+    if (!item?.range || !Array.isArray(item.values)) continue;
+    const bangIdx = item.range.indexOf("!");
+    if (bangIdx === -1) continue;
+    const tabName = item.range.slice(0, bangIdx).replace(/^'+|'+$/g, "").trim();
+    const startPart = item.range.slice(bangIdx + 1).split(":")[0].replace(/\$/g, "").trim().toUpperCase();
+    const m = startPart.match(/^([A-Z]+)(\d+)$/);
+    if (!m) continue;
+    const startCol0 = colLetterToNum(m[1]) - 1;
+    const startRowNum = parseInt(m[2], 10);
+    item.values.forEach((rowVals, rOffset) => {
+      const cells = Array.isArray(rowVals) ? rowVals : [rowVals];
+      cells.forEach((val, cOffset) => {
+        entries.push({
+          batchId,
+          tabName,
+          rowNum: startRowNum + rOffset,
+          colIdx0: startCol0 + cOffset,
+          value: val,
+          expiresAt,
+        });
+      });
+    });
+  }
+  return entries;
+}
+
+async function getPendingJobFieldOverlay_(sheetIdClean) {
+  const key = `pulse:pending_job_fields:${sheetIdClean}`;
+  const now = Date.now();
+  const filterValid = (list) => (Array.isArray(list) ? list.filter((e) => e && e.expiresAt > now) : []);
+  const mem = filterValid(memoryCache.get(key));
+  if (mem.length > 0) return mem;
+  if (redisClient?.isOpen) {
+    try {
+      const raw = await redisClient.get(key);
+      if (raw) {
+        const parsed = filterValid(JSON.parse(raw));
+        if (parsed.length > 0) {
+          memoryCache.set(key, parsed, PENDING_JOB_FIELDS_TTL_SECS);
+          return parsed;
+        }
+      }
+    } catch (_) {}
+  }
+  return [];
+}
+
+async function recordPendingJobFieldOverlay_(sheetIdClean, batchData) {
+  const batchId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const newEntries = parseBatchDataToCellEntries_(batchData, batchId);
+  if (newEntries.length === 0) return batchId;
+
+  const key = `pulse:pending_job_fields:${sheetIdClean}`;
+  const existing = await getPendingJobFieldOverlay_(sheetIdClean);
+  const merged = [...existing, ...newEntries];
+  memoryCache.set(key, merged, PENDING_JOB_FIELDS_TTL_SECS);
+  if (redisClient?.isOpen) {
+    try {
+      await redisClient.set(key, JSON.stringify(merged), { EX: PENDING_JOB_FIELDS_TTL_SECS });
+    } catch (_) {}
+  }
+
+  // Also keep in-memory raw sheet cache warm for immediate subsequent reads
+  const sharedCached = memoryCache.get(`pulse:pma:shared_jobs_raw:${sheetIdClean}`);
+  if (sharedCached) {
+    for (const e of newEntries) {
+      const targetRows = e.tabName === "Pipeline" ? sharedCached.pipeRows : e.tabName === "Confirmed" ? sharedCached.confRows : null;
+      if (Array.isArray(targetRows) && e.rowNum >= 1) {
+        if (!targetRows[e.rowNum - 1]) targetRows[e.rowNum - 1] = [];
+        targetRows[e.rowNum - 1][e.colIdx0] = e.value;
+      }
+    }
+  }
+  return batchId;
+}
+
+async function clearPendingJobFieldOverlay_(sheetIdClean, batchId) {
+  if (!batchId) return;
+  const key = `pulse:pending_job_fields:${sheetIdClean}`;
+  const existing = await getPendingJobFieldOverlay_(sheetIdClean);
+  const remaining = existing.filter((e) => e.batchId !== batchId);
+  if (remaining.length > 0) {
+    memoryCache.set(key, remaining, PENDING_JOB_FIELDS_TTL_SECS);
+    if (redisClient?.isOpen) {
+      try {
+        await redisClient.set(key, JSON.stringify(remaining), { EX: PENDING_JOB_FIELDS_TTL_SECS });
+      } catch (_) {}
+    }
+  } else {
+    memoryCache.del(key);
+    if (redisClient?.isOpen) {
+      try {
+        await redisClient.del(key);
+      } catch (_) {}
+    }
+  }
+}
+
+function applyOverlayToJobRow_(row, entriesForRow) {
+  const next = { ...row };
+  let nextInv = null;
+  let nextExp = null;
+  for (const e of entriesForRow) {
+    const c = e.colIdx0;
+    const directField = (next.isJobCosting && JOB_COSTING_COL_MAP[c]) || JOB_FIELD_COL_MAP[c];
+    if (directField) {
+      next[directField] = directField === "likelihood" ? formatLikelihood(e.value) : e.value;
+    } else if (c >= 41 && c <= 61) {
+      const slotNum = Math.floor((c - 41) / 7) + 1;
+      const key = INV_SLOT_KEYS[(c - 41) % 7];
+      if (!nextInv) nextInv = (next.invoiceSlots || []).map((s) => ({ ...s }));
+      const slot = nextInv.find((s) => s.slotNum === slotNum);
+      if (slot && key) slot[key] = key === "status" ? canonicalizeInvoiceStatus(e.value) : e.value;
+    } else if (c >= 75 && c <= 95) {
+      const slotNum = Math.floor((c - 75) / 7) + 1;
+      const key = EXP_SLOT_KEYS[(c - 75) % 7];
+      if (!nextExp) nextExp = (next.expenseSlots || []).map((s) => ({ ...s }));
+      const slot = nextExp.find((s) => s.slotNum === slotNum);
+      if (slot && key) slot[key] = key === "status" ? canonicalizeExpenseStatus(e.value) : e.value;
+    }
+  }
+  if (nextInv) next.invoiceSlots = nextInv;
+  if (nextExp) next.expenseSlots = nextExp;
+  return next;
+}
+
+function applyPendingJobFieldOverlayToJobs_(jobs, overlayEntries) {
+  if (!Array.isArray(jobs) || !Array.isArray(overlayEntries) || overlayEntries.length === 0) return jobs;
+  const byTabRow = new Map();
+  for (const e of overlayEntries) {
+    const k = `${e.tabName}:${e.rowNum}`;
+    if (!byTabRow.has(k)) byTabRow.set(k, []);
+    byTabRow.get(k).push(e);
+  }
+  return jobs.map((job) => {
+    if (!Array.isArray(job.rows)) return job;
+    let changed = false;
+    const nextRows = job.rows.map((r) => {
+      const matches = byTabRow.get(`${r.tabName || job.tabName}:${r.rowNum}`);
+      if (!matches) return r;
+      changed = true;
+      return applyOverlayToJobRow_(r, matches);
+    });
+    if (!changed) return job;
+    const parent = nextRows[0] || {};
+    return {
+      ...job,
+      client: parent.client !== undefined ? parent.client : job.client,
+      jobName: parent.jobName !== undefined ? parent.jobName : job.jobName,
+      rows: nextRows,
+    };
+  });
+}
+
 export async function handleGetAllClientJobs(req, res, sheets) {
   const { clientSheetId, tabName = "All", bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
@@ -1955,8 +2135,14 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       },
     });
 
+    const overlayEntries = await getPendingJobFieldOverlay_(sheetIdClean);
+    const overlaidJobs = overlayEntries.length > 0
+      ? applyPendingJobFieldOverlayToJobs_(result.data?.jobs, overlayEntries)
+      : result.data?.jobs;
+
     return res.status(200).json({
       ...result.data,
+      ...(overlaidJobs !== undefined ? { jobs: overlaidJobs } : {}),
       clientMode: sbCtx?.clientMode || result.data?.clientMode || "sheet",
     });
   } catch (err) {
@@ -2113,7 +2299,7 @@ export async function handleUpdateJobField(req, res, sheets) {
           valueInputOption: "USER_ENTERED",
           data: combinedBatchData,
         },
-        _deferDownstreamRecompute: true,
+        _skipFormulaRecompute: true,
       });
     } else {
       await sheets.spreadsheets.values.update({
@@ -2121,7 +2307,7 @@ export async function handleUpdateJobField(req, res, sheets) {
         range: `${tabName}!${cellRef}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [[safeValue]] },
-        _deferDownstreamRecompute: true,
+        _skipFormulaRecompute: true,
       });
     }
 
@@ -2192,7 +2378,7 @@ export async function handleUpdateJobField(req, res, sheets) {
 
     waitUntil(
       Promise.all([
-        flushPendingClientRecomputes(sheets, resolvedClient).catch(e =>
+        flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedClient).catch(e =>
           console.warn("Deferred client formula recompute failed in update_job_field:", e.message)
         ),
         invalidatePmaClientCache(sheetIdClean, req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(() => {}),
@@ -2280,7 +2466,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
       (tabName === "Confirmed" || tabName === "Pipeline") &&
       targetRowNum &&
       !isPureConfirmedRetainerDateEdit &&
-      (hasInvoices || revUpdate || rechUpdate || costUpdate || dateUpdate || (tabName === "Confirmed" && req.body.isRetainer === undefined && !typeUpdate));
+      (hasInvoices || revUpdate || rechUpdate || costUpdate || dateUpdate);
     const needsTolerancesPreload =
       (tabName === "Confirmed" || tabName === "Pipeline") && targetRowNum && (hasInvoices || revUpdate || rechUpdate || costUpdate || dateUpdate);
 
@@ -2289,13 +2475,15 @@ export async function handleUpdateJobFields(req, res, sheets) {
     let resolvedMasterSheetId = req.body.masterSheetId || "";
 
     if (needsGroupPreload || needsTolerancesPreload) {
-      if (needsTolerancesPreload && !resolvedMasterSheetId) {
-        resolvedMasterSheetId = await resolveMasterSheetIdForClient_(sheets, sheetIdClean);
-      }
       [preloadedGroup, preloadedTolerances] = await Promise.all([
         needsGroupPreload ? resolveFullJobRowGroup_(sheets, sheetIdClean, tabName, [targetRowNum]) : Promise.resolve(null),
-        needsTolerancesPreload && resolvedMasterSheetId
-          ? getToleranceValues(sheets, resolvedMasterSheetId)
+        needsTolerancesPreload
+          ? (async () => {
+              if (!resolvedMasterSheetId) {
+                resolvedMasterSheetId = await resolveMasterSheetIdForClient_(sheets, sheetIdClean);
+              }
+              return resolvedMasterSheetId ? getToleranceValues(sheets, resolvedMasterSheetId) : null;
+            })()
           : Promise.resolve(null),
       ]);
     }
@@ -2401,6 +2589,9 @@ export async function handleUpdateJobFields(req, res, sheets) {
       (tabName === "Confirmed" || tabName === "Pipeline") &&
       targetRowNum &&
       (isChangingToRetainer || (isExistingRetainer && (startDateUpdate || endDateUpdate)));
+
+    let deferredSheetWrite = false;
+    let pendingBatchDataToWrite = null;
 
     if (isRetainerStructuralOp) {
       if (initialBatchData.length > 0) {
@@ -2629,14 +2820,27 @@ export async function handleUpdateJobFields(req, res, sheets) {
       }
 
       if (combinedBatchData.length > 0) {
-        await sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: sheetIdClean,
-          requestBody: {
-            valueInputOption: "USER_ENTERED",
-            data: combinedBatchData
-          },
-          _deferDownstreamRecompute: true
-        });
+        const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
+        const canDeferGoogleSheetWrite =
+          Boolean(req.body.deferSheetWrite) &&
+          sbCtx?.clientMode !== "supabase" &&
+          !hasInvoices;
+
+        if (canDeferGoogleSheetWrite) {
+          deferredSheetWrite = true;
+          pendingBatchDataToWrite = combinedBatchData;
+        } else {
+          await withRetry(() =>
+            sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: {
+                valueInputOption: "USER_ENTERED",
+                data: combinedBatchData
+              },
+              _skipFormulaRecompute: true
+            })
+          );
+        }
       }
     }
 
@@ -2644,38 +2848,70 @@ export async function handleUpdateJobFields(req, res, sheets) {
     const resolvedJobName = effectiveJobName || jobName || "";
     const jobIdentifier = resolvedEndClient && resolvedJobName ? `"${resolvedEndClient} - ${resolvedJobName}"` : `Row ${rowNum}`;
     const fieldSummary = updates.map(u => u.fieldName || u.colLetter).join(", ");
+    const activityLogPayload = {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "JOB",
+      action: "Job Fields Updated",
+      summary: `Updated ${fieldSummary} for ${jobIdentifier}`,
+      details: {
+        tabName,
+        rowNum,
+        updates,
+        endClient: resolvedEndClient,
+        jobName: resolvedJobName,
+        clientName: resolvedClient,
+        isRetainer: isRetainerJob,
+        trimmed: retainerTrimmed,
+        grown: retainerGrown
+      }
+    };
 
-    waitUntil(
-      Promise.all([
-        flushPendingClientRecomputes(sheets, resolvedClient).catch(e =>
-          console.warn("Deferred client formula recompute failed in update_job_fields:", e.message)
-        ),
-        invalidatePmaClientCache(sheetIdClean, resolvedMasterSheetId || req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(e =>
-          console.warn("Cache invalidate failed in update_job_fields:", e.message)
-        ),
-        logPmaActivity(sheets, {
-          automationCommanderSheetId: req.body.automationCommanderSheetId,
-          clientName: resolvedClient,
-          category: "JOB",
-          action: "Job Fields Updated",
-          summary: `Updated ${fieldSummary} for ${jobIdentifier}`,
-          details: {
-            tabName,
-            rowNum,
-            updates,
-            endClient: resolvedEndClient,
-            jobName: resolvedJobName,
-            clientName: resolvedClient,
-            isRetainer: isRetainerJob,
-            trimmed: retainerTrimmed,
-            grown: retainerGrown
+    if (deferredSheetWrite && pendingBatchDataToWrite) {
+      const pendingBatchId = await recordPendingJobFieldOverlay_(sheetIdClean, pendingBatchDataToWrite);
+      waitUntil(
+        (async () => {
+          try {
+            await withRetry(() =>
+              sheets.spreadsheets.values.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: {
+                  valueInputOption: "USER_ENTERED",
+                  data: pendingBatchDataToWrite
+                },
+                _skipFormulaRecompute: true
+              })
+            );
+          } catch (writeErr) {
+            console.error("❌ Deferred update_job_fields Google Sheet write failed:", writeErr);
+          } finally {
+            await clearPendingJobFieldOverlay_(sheetIdClean, pendingBatchId).catch(() => {});
           }
-        }).catch(e => console.error("PMA log failed:", e))
-      ])
-    );
+          await Promise.all([
+            invalidatePmaClientCache(sheetIdClean, resolvedMasterSheetId || req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(e =>
+              console.warn("Cache invalidate failed in update_job_fields:", e.message)
+            ),
+            logPmaActivity(sheets, activityLogPayload).catch(e => console.error("PMA log failed:", e))
+          ]);
+        })()
+      );
+    } else {
+      waitUntil(
+        Promise.all([
+          flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedClient).catch(e =>
+            console.warn("Deferred client formula recompute failed in update_job_fields:", e.message)
+          ),
+          invalidatePmaClientCache(sheetIdClean, resolvedMasterSheetId || req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(e =>
+            console.warn("Cache invalidate failed in update_job_fields:", e.message)
+          ),
+          logPmaActivity(sheets, activityLogPayload).catch(e => console.error("PMA log failed:", e))
+        ])
+      );
+    }
 
     return res.status(200).json({
       success: true,
+      deferredSheetWrite,
       backgroundProvisioning,
       invoiceSlotUpdates,
       expenseSlotUpdates,
@@ -3321,11 +3557,21 @@ export async function resolveFullJobRowGroup_(sheets, sheetIdClean, targetTab, s
   }
   allRowNums.sort((a, b) => a - b);
 
+  if (!cachedAllRows) {
+    const overlayEntries = await getPendingJobFieldOverlay_(sheetIdClean);
+    for (const e of overlayEntries) {
+      if (e.tabName === targetTab && e.rowNum >= 1) {
+        if (!allRows[e.rowNum - 1]) allRows[e.rowNum - 1] = [];
+        allRows[e.rowNum - 1][e.colIdx0] = e.value;
+      }
+    }
+  }
+
   return {
     parentRowNum: parentIdx0 + 1,
     lastRowNum: allRowNums[allRowNums.length - 1],
     allRowNums,
-    parentRow,
+    parentRow: allRows[parentIdx0] || parentRow,
     allRows
   };
 }

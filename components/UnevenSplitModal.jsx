@@ -215,20 +215,28 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
         });
       }
 
-      await fetch("/api/triage", {
+      const isRetainer = Boolean(String(jobRow.projectRetainer || "").trim().toLowerCase().includes("retainer"));
+      const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_job_fields",
           clientSheetId: client?.clientSheetId,
+          masterSheetId: client?.masterSheetId || "",
           clientName: client?.clientName || client?.name || "",
           tabName,
           rowNum: jobRow.rowNum,
           endClientName: jobRow.client,
           jobName: jobRow.jobName,
+          isRetainer,
+          deferSheetWrite: true,
           updates
         })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || "Failed to save revenue split");
+      }
 
       onUpdateJobsData(jobRow.rowNum, splitStr, {
         startDate: jobRow.hasDraftDates && jobRow.startDate ? formatToSheet(jobRow.startDate) : undefined,

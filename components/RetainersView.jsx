@@ -10,6 +10,7 @@ import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
 import { formatCurrency, toSheetDateFormat } from "./JobsView";
 import { useRetainers } from "../hooks/useRetainers";
 import { useAuth } from "../hooks/useAuth";
+import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 import {
   formatJobEndDateDisplay,
   stripCurrency,
@@ -188,6 +189,24 @@ export default function RetainersView({
   }, [managedClient, initialClient, allOutgoingsClients, retainersClient?.clientSheetId]);
 
   const noRetClient = !retainersClient && !managedClient;
+
+  useFocusRevalidate({
+    enabled: Boolean(retainersClient?.clientSheetId),
+    resetKey: retainersClient?.clientSheetId || "",
+    canRevalidate: () =>
+      !retainersJobsLoading &&
+      !isTidying &&
+      !showTidyConfirm &&
+      !tidyResult &&
+      !showCreateRetainerModal &&
+      !retainersEditJob &&
+      !invoicesEditSlot,
+    onRevalidate: () => {
+      if (retainersClient?.clientSheetId) {
+        loadRetainersJobs(retainersClient, true, true);
+      }
+    },
+  });
 
   return (
     <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>

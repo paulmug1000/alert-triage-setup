@@ -23,6 +23,7 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
 import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
+import { parseSheetDate, toInputDateFormat, toSheetDateFormat } from "../utils/helpers.js";
 
 export function colIdxToLetter(colIdx) {
   let temp = colIdx + 1;
@@ -56,6 +57,22 @@ export function parseMonthYearHeader(label) {
   let year = parseInt(match[2], 10);
   if (year < 100) year += 2000;
   return { monthIdx, year, label: `${match[1]} ${String(year).slice(-2)}` };
+}
+
+export function parseHeaderMonthMeta_(rawVal) {
+  if (rawVal === null || rawVal === undefined || rawVal === "") return null;
+  if (typeof rawVal === "string") {
+    const parsed = parseMonthYearHeader(rawVal);
+    if (parsed) return parsed;
+  }
+  const d = parseSheetDate(rawVal);
+  if (!d) return null;
+  const mNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return {
+    monthIdx: d.getMonth(),
+    year: d.getFullYear(),
+    label: `${mNames[d.getMonth()]} ${String(d.getFullYear()).slice(-2)}`,
+  };
 }
 
 export function getPreviousCalendarMonthLabel() {
@@ -501,8 +518,8 @@ export async function saveEmployeeData({
   employeeData,
   sessionUser,
 }) {
-  if (!masterSheetId || !sheetRow || !employeeData) {
-    throw new Error("masterSheetId, sheetRow, and employeeData are required.");
+  if ((!masterSheetId && !clientSheetId) || !sheetRow || !employeeData) {
+    throw new Error("masterSheetId or clientSheetId, sheetRow, and employeeData are required.");
   }
   if (sheetRow < 4 || sheetRow > 53) {
     throw new Error("sheetRow must be between 4 and 53.");
@@ -595,8 +612,8 @@ export async function saveSalaryAmountOverride({
   amounts,
   sessionUser,
 }) {
-  if (!masterSheetId || !sheetRow || !colLetterStart || !Array.isArray(amounts)) {
-    throw new Error("masterSheetId, sheetRow, colLetterStart, and amounts array are required.");
+  if ((!masterSheetId && !clientSheetId) || !sheetRow || !colLetterStart || !Array.isArray(amounts)) {
+    throw new Error("masterSheetId or clientSheetId, sheetRow, colLetterStart, and amounts array are required.");
   }
   if (sheetRow < 4 || sheetRow > 53) {
     throw new Error("sheetRow must be between 4 and 53.");
@@ -706,4 +723,236 @@ export async function saveDividendsData({
   }).catch(() => { });
 
   return { success: true, message: "Dividends updated successfully." };
+}
+
+function parseSalaryCellNum_(val) {
+  if (val === null || val === undefined || val === "") return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const cleaned = String(val).replace(/[£$€,\s]/g, "").trim();
+  if (!cleaned || cleaned === "-") return 0;
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? 0 : n;
+}
+
+function normalizePersonName_(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseDeliveryFraction_(rawVal) {
+  if (rawVal === null || rawVal === undefined || rawVal === "") return 1;
+  if (typeof rawVal === "number") {
+    return rawVal > 1 ? rawVal / 100 : Math.max(0, rawVal);
+  }
+  const s = String(rawVal).trim();
+  const n = parseSalaryCellNum_(s.replace("%", ""));
+  if (s.includes("%") || n > 1) return Math.max(0, n / 100);
+  return Math.max(0, n);
+}
+
+/**
+ * Finds populated employees in a Salaries month block whose actual cells (rows 4..53)
+ * are completely blank while their forecast cells (rows 154..203) produce a non-zero cost.
+ */
+export function findForecastOnlyEmployeesInMonth_({
+  employeesRows = [],
+  actualsRows = [],
+  forecastRows = [],
+  colOffset = 0,
+  monthMeta = null,
+  contractorsRows = [],
+  outgoingsMonthColIdx = -1,
+  excludeEmployeeNames = null,
+}) {
+  const results = [];
+  let actualEmployeeCount = 0;
+
+  let suggestedNextStartIso = "";
+  if (monthMeta && typeof monthMeta.year === "number" && typeof monthMeta.monthIdx === "number") {
+    const nextMonth = new Date(monthMeta.year, monthMeta.monthIdx + 1, 1);
+    suggestedNextStartIso = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}-01`;
+  }
+
+  for (let i = 0; i < 50; i++) {
+    const empRow = employeesRows[i] || [];
+    const name = String(empRow[0] || "").trim();
+    if (!name) continue;
+
+    const actRow = actualsRows[i] || [];
+    const hasAnyActual = [0, 1, 2, 3, 4, 5, 6].some((k) => {
+      const v = actRow[colOffset + k];
+      return v !== undefined && v !== null && String(v).trim() !== "";
+    });
+
+    if (hasAnyActual) {
+      actualEmployeeCount++;
+      continue;
+    }
+
+    if (excludeEmployeeNames && excludeEmployeeNames.has(name)) {
+      continue;
+    }
+
+    const fcRow = forecastRows[i] || [];
+    const likelRaw = empRow[9];
+    const likel = (likelRaw === undefined || likelRaw === null || String(likelRaw).trim() === "")
+      ? 1
+      : parseSalaryCellNum_(likelRaw);
+    if (likel <= 0) continue;
+
+    const fcSalary = parseSalaryCellNum_(fcRow[colOffset + 0]) * likel;
+    const fcEeNic = parseSalaryCellNum_(fcRow[colOffset + 1]) * likel;
+    const fcErNic = parseSalaryCellNum_(fcRow[colOffset + 2]) * likel;
+    const fcErPen = parseSalaryCellNum_(fcRow[colOffset + 5]) * likel;
+    const fcPaye = parseSalaryCellNum_(fcRow[colOffset + 6]) * likel;
+    const forecastEmployerCost = Math.round((fcSalary + fcErNic + fcErPen) * 100) / 100;
+
+    if (Math.abs(forecastEmployerCost) <= 0.01 && Math.abs(fcEeNic) <= 0.01 && Math.abs(fcPaye) <= 0.01) {
+      continue;
+    }
+
+    // Check whether this employee also appears under Contractors in Outgoings for the same month
+    let contractorAmount = 0;
+    if (outgoingsMonthColIdx >= 0 && Array.isArray(contractorsRows) && contractorsRows.length > 0) {
+      const normEmp = normalizePersonName_(name);
+      for (const cRow of contractorsRows) {
+        const cName = normalizePersonName_(cRow?.[0]);
+        if (!cName) continue;
+        if (cName === normEmp) {
+          contractorAmount += parseSalaryCellNum_(cRow[outgoingsMonthColIdx]);
+        }
+      }
+      contractorAmount = Math.round(contractorAmount * 100) / 100;
+    }
+
+    const parsedStart = parseSheetDate(empRow[4]);
+    const parsedEnd = parseSheetDate(empRow[5]);
+
+    results.push({
+      sheetRow: 4 + i,
+      name,
+      role: String(empRow[1] || "").trim(),
+      startDate: parsedStart ? toSheetDateFormat(parsedStart) : String(empRow[4] || "").trim(),
+      isoStartDate: parsedStart ? toInputDateFormat(parsedStart) : "",
+      endDate: parsedEnd ? toSheetDateFormat(parsedEnd) : String(empRow[5] || "").trim(),
+      isoEndDate: parsedEnd ? toInputDateFormat(parsedEnd) : "",
+      deliveryPct: Math.round(parseDeliveryFraction_(empRow[6]) * 100),
+      likelihood: likel,
+      forecastSalary: Math.round(fcSalary * 100) / 100,
+      forecastErNic: Math.round(fcErNic * 100) / 100,
+      forecastErPen: Math.round(fcErPen * 100) / 100,
+      forecastEmployerCost,
+      contractorAmount,
+      suggestedNextStartIso,
+    });
+  }
+
+  return { actualEmployeeCount, forecastOnlyEmployees: results };
+}
+
+/**
+ * Applies a resolution for a forecast-only employee in an actuals month:
+ * - "zero_out": writes [0, 0, 0, 0, 0, 0, 0] to the month's actual cells (suppressing forecast)
+ * - "update_start_date": updates the employee's Start date (Col E) to move them out of that month's forecast
+ * - "keep_forecast": records explicit confirmation without modifying the sheet
+ */
+export async function applySalaryForecastResolution_({
+  sheets,
+  clientSheetId,
+  masterSheetId,
+  clientName,
+  sheetRow,
+  colStartLetter,
+  monthLabel,
+  resolutionAction,
+  newStartDate,
+  sessionUser,
+}) {
+  if (!clientSheetId && !masterSheetId) {
+    throw new Error("clientSheetId or masterSheetId is required.");
+  }
+  const rowNum = parseInt(sheetRow, 10);
+  if (isNaN(rowNum) || rowNum < 4 || rowNum > 53) {
+    throw new Error("Invalid employee sheetRow.");
+  }
+
+  const targetSheetId = clientSheetId || masterSheetId;
+  const effectiveSheets = sheets || (await getSheetsClient());
+
+  if (resolutionAction === "zero_out") {
+    if (!colStartLetter) throw new Error("colStartLetter is required to zero out monthly actuals.");
+    await saveSalaryAmountOverride({
+      masterSheetId: masterSheetId || clientSheetId,
+      clientSheetId,
+      clientName: clientName || "Client",
+      sheetRow: rowNum,
+      colLetterStart: colStartLetter,
+      amounts: [0, 0, 0, 0, 0, 0, 0],
+      sessionUser,
+    });
+    return {
+      success: true,
+      resolutionAction,
+      message: `Zeroed out ${monthLabel || "month"} actuals for row ${rowNum}.`,
+    };
+  }
+
+  if (resolutionAction === "update_start_date") {
+    if (!newStartDate) throw new Error("newStartDate is required to update employee start date.");
+    const parsed = parseSheetDate(newStartDate);
+    if (!parsed) throw new Error("Invalid start date provided.");
+    const formattedDate = toSheetDateFormat(parsed);
+
+    const rowResp = await withRetry(() =>
+      effectiveSheets.spreadsheets.values.get({
+        spreadsheetId: targetSheetId,
+        range: `Salaries!A${rowNum}:I${rowNum}`,
+        valueRenderOption: "FORMATTED_VALUE",
+      })
+    );
+    const existing = rowResp.data?.values?.[0] || [];
+    await saveEmployeeData({
+      masterSheetId: masterSheetId || clientSheetId,
+      clientSheetId,
+      clientName: clientName || "Client",
+      sheetRow: rowNum,
+      employeeData: {
+        name: existing[0] || "",
+        role: existing[1] || "",
+        fteSalary: existing[2] || "",
+        fte: existing[3] || "",
+        startDate: formattedDate,
+        endDate: existing[5] || "",
+        deliveryPct: existing[6] || "",
+        studentLoan: existing[7] || "",
+        pension: existing[8] || "",
+      },
+      sessionUser,
+    });
+    return {
+      success: true,
+      resolutionAction,
+      formattedStartDate: formattedDate,
+      isoStartDate: toInputDateFormat(parsed),
+      message: `Updated start date to ${formattedDate}.`,
+    };
+  }
+
+  if (resolutionAction === "keep_forecast") {
+    await logPmaActivity({
+      userEmail: sessionUser?.email || "unknown",
+      action: "CONFIRM_SALARY_FORECAST",
+      details: `Confirmed employee row ${rowNum} should remain on forecast for ${monthLabel || "month"} (${clientName || "Client"})`,
+    }).catch(() => {});
+    return {
+      success: true,
+      resolutionAction,
+      message: `Confirmed employee stays on forecast for ${monthLabel || "month"}.`,
+    };
+  }
+
+  throw new Error(`Unsupported resolutionAction: ${resolutionAction}`);
 }

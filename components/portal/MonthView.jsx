@@ -34,6 +34,15 @@ export default function MonthView({
   const thousandsSeparator = propThousandsSeparator || payload?.clientInfo?.thousandsSeparator || payload?.thousandsSeparator || ",";
   const [activePopover, setActivePopover] = useState(null);
   const [activePeriod, setActivePeriod] = useState("curr"); // 'curr' | 'prev' | 'next'
+  const prevClientSheetIdRef = useRef(clientSheetId);
+
+  useEffect(() => {
+    if (prevClientSheetIdRef.current !== clientSheetId) {
+      prevClientSheetIdRef.current = clientSheetId;
+      setActivePopover(null);
+      setActivePeriod("curr");
+    }
+  }, [clientSheetId]);
 
   useEffect(() => {
     if (activePopover?.isOpen && activePopover._clickParams && keyData) {

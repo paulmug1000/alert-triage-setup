@@ -649,6 +649,7 @@ export const PROACTIVE_TYPE_LABELS = {
   retroactive_outgoings_update: "Retroactive P&L outgoings update",
   unmapped_pl_category: "Unmapped P&L category",
   part_paid_balance: "Part-paid balance",
+  salary_forecast_in_actual_month: "Payroll forecast in actual month",
 };
 
 export const KNOWN_PROACTIVE_ALERT_TYPES = new Set(Object.keys(PROACTIVE_TYPE_LABELS));
@@ -1634,6 +1635,13 @@ export function getProactiveCardTitle(alert, isAdmin = true) {
       return isExp
         ? "Remaining balance on part-paid expense needs an expected payment date"
         : "Remaining balance on part-paid invoice needs an expected payment date";
+    }
+    case "salary_forecast_in_actual_month": {
+      const empName = m.employeeName || alert.employeeName;
+      const monthLbl = m.monthLabel || alert.monthLabel;
+      return empName && monthLbl
+        ? `${empName} has no salary actuals and is still on forecast in ${monthLbl}`
+        : "Employee still on salary forecast in an actuals month";
     }
     default:
       return isAdmin ? (alert.heading || "Proactive alert") : sanitizeSpreadsheetTerms(alert.heading || "Proactive alert");

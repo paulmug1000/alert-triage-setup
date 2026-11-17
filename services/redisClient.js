@@ -30,5 +30,42 @@ if (!global._redisClient) {
   redisClient.on('reconnecting', () => console.log('🟠 REDIS: Attempting to reconnect...'));
 
   console.log('🔄 REDIS: Initiating connection attempt...');
-  redisClient.connect().catch((err) => console.log('🔴 REDIS FATAL CONNECT ERROR:', err.message));
+  global._redisConnectPromise = redisClient
+    .connect()
+    .catch((err) => {
+      console.log('🔴 REDIS FATAL CONNECT ERROR:', err.message);
+      return null;
+    })
+    .finally(() => {
+      global._redisConnectPromise = null;
+    });
+}
+
+/**
+ * Waits briefly for the shared Redis client to finish its initial TLS/AUTH handshake
+ * on cold serverless invocations so SSR and API cache reads do not miss unnecessarily.
+ */
+export async function ensureRedisConnected(timeoutMs = 500) {
+  if (!process.env.REDIS_URL) return false;
+  if (redisClient?.isReady) return true;
+  try {
+    if (!global._redisConnectPromise && !redisClient.isOpen) {
+      global._redisConnectPromise = redisClient
+        .connect()
+        .catch((err) => {
+          console.log('🔴 REDIS FATAL CONNECT ERROR:', err.message);
+          return null;
+        })
+        .finally(() => {
+          global._redisConnectPromise = null;
+        });
+    }
+    if (global._redisConnectPromise) {
+      await Promise.race([
+        global._redisConnectPromise,
+        new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+      ]);
+    }
+  } catch { }
+  return Boolean(redisClient?.isOpen);
 }

@@ -5,6 +5,7 @@ import EditClientSelector from "./EditClientSelector";
 import { PmaNBToFindSkeleton } from "./Skeleton";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 
 const formatCurrency = (val) => {
   if (val === null || val === undefined || val === "") return "£0";
@@ -163,7 +164,7 @@ export default function NBToFindView({
       }
     }
 
-    setError(null);
+    if (!silent) setError(null);
     try {
       const res = await fetch(
         `/api/pma/nbtofind?clientName=${encodeURIComponent(client.clientName)}&clientSheetId=${encodeURIComponent(
@@ -175,16 +176,18 @@ export default function NBToFindView({
         throw new Error(data.error || "Failed to load New Business to Find data");
       }
       setNbData(data);
-      setSelectedFyIdx(data.defaultFyIndex ?? 0);
+      if (!silent) {
+        setSelectedFyIdx(data.defaultFyIndex ?? 0);
+      }
       setTargetsSetting(data.settings?.useTargets || "No");
       setBudgetSetting(data.settings?.useBudgetForIncomeTargets || "No");
       setDirectCostsPct(data.settings?.directCostsPercentage || "0%");
       setCachedClientData(client.clientSheetId, "nbtofind", data);
     } catch (err) {
       console.error("Failed to fetch NBtoFind:", err);
-      setError(err.message || "Failed to load New Business to Find data");
+      if (!silent) setError(err.message || "Failed to load New Business to Find data");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
@@ -196,6 +199,22 @@ export default function NBToFindView({
       fetchNBData(selectedClient);
     }
   }, [selectedClient, fetchNBData]);
+
+  useFocusRevalidate({
+    enabled: Boolean(selectedClient?.clientSheetId),
+    resetKey: selectedClient?.clientSheetId || "",
+    canRevalidate: () =>
+      !loading &&
+      !saving &&
+      !savingAction &&
+      !editingTargets &&
+      !editingSingleCell,
+    onRevalidate: () => {
+      if (selectedClient?.clientSheetId) {
+        fetchNBData(selectedClient, true, true);
+      }
+    },
+  });
 
   const showSuccess = (msg) => {
     setSaveSuccessMsg(msg);

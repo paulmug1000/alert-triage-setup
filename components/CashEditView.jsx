@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import { CashflowSkeleton } from "./Skeleton";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 import CellNoteIndicator from "./CellNoteIndicator";
 import CellNoteModal from "./CellNoteModal";
 import EditClientSelector from "./EditClientSelector";
@@ -169,15 +170,15 @@ export default function CashEditView({
   };
 
   // Fetch Cash Data (with Global Preload Cache Integration)
-  const loadCashData = useCallback(async (client, bypassCache = false) => {
+  const loadCashData = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
     const cleanId = cleanSheetId(client.clientSheetId);
 
     // 1. Check L1 Memory / Global Prefetch Cache
-    if (!bypassCache) {
+    if (!bypassCache && !silent) {
       const cached = getCachedClientData(cleanId, "cash");
       if (cached?.data && !cached.isStale) {
-        initDataState(cached.data);
+        initDataState(cached.data, false);
         return;
       }
 
@@ -188,7 +189,7 @@ export default function CashEditView({
             setLoading(true);
             const d = await inFlight;
             if (d?.success) {
-              initDataState(d);
+              initDataState(d, false);
               setLoading(false);
               return;
             }
@@ -199,8 +200,10 @@ export default function CashEditView({
       }
     }
 
-    setLoading(true);
-    setError(null);
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
 
     try {
       const url = `/api/pma/cash?clientSheetId=${encodeURIComponent(cleanId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
@@ -211,18 +214,22 @@ export default function CashEditView({
         throw new Error(json.error || "Failed to load cash data");
       }
 
+      if (silent && (pendingUpdatesRef.current.size > 0 || pendingNotesRef.current.size > 0)) {
+        return;
+      }
+
       setCachedClientData(cleanId, "cash", json);
-      initDataState(json);
+      initDataState(json, silent);
     } catch (err) {
       console.error("loadCashData error:", err);
-      setError(err.message || "Failed to load cash data");
+      if (!silent) setError(err.message || "Failed to load cash data");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
   // Initialize Matrix and Rows from API payload
-  const initDataState = (payload) => {
+  const initDataState = (payload, preserveViewState = false) => {
     setCashData(payload);
     const newMatrix = {};
 
@@ -248,9 +255,11 @@ export default function CashEditView({
     populate(payload.table2Rows);
 
     setMatrix(newMatrix);
-    setUndoStack([]);
-    setRedoStack([]);
-    hasAutoScrolledRef.current = false;
+    if (!preserveViewState) {
+      setUndoStack([]);
+      setRedoStack([]);
+      hasAutoScrolledRef.current = false;
+    }
   };
 
   useEffect(() => {
@@ -258,6 +267,24 @@ export default function CashEditView({
       loadCashData(selectedClient, false);
     }
   }, [selectedClient, loadCashData]);
+
+  useFocusRevalidate({
+    enabled: Boolean(selectedClient?.clientSheetId),
+    resetKey: selectedClient?.clientSheetId || "",
+    canRevalidate: () =>
+      !loading &&
+      saveStatus !== "saving" &&
+      pendingUpdatesRef.current.size === 0 &&
+      pendingNotesRef.current.size === 0 &&
+      !editingCell &&
+      !noteModal.isOpen &&
+      !isDraggingRef.current,
+    onRevalidate: () => {
+      if (selectedClient?.clientSheetId) {
+        loadCashData(selectedClient, true, true);
+      }
+    },
+  });
 
   // Auto-scroll timeline to Previous Month (M-1) on load
   useEffect(() => {

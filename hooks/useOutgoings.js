@@ -80,16 +80,18 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
   const [directCostsSavingCell, setDirectCostsSavingCell] = useState(null);
   const [outgoingsError, setOutgoingsError] = useState("");
 
-  const loadOutgoings = async (client, bypassCache = false) => {
+  const loadOutgoings = async (client, bypassCache = false, silent = false) => {
     if (!client) return;
     if (outgoingsClient?.clientSheetId !== client.clientSheetId) {
       setDirectCostsJobs(null);
     }
     setOutgoingsClient(client);
-    setOutgoingsError("");
+    if (!silent) setOutgoingsError("");
     if (!client.clientSheetId) {
-      setOutgoingsLoading(true);
-      setOutgoingsInboxLoading(true);
+      if (!silent) {
+        setOutgoingsLoading(true);
+        setOutgoingsInboxLoading(true);
+      }
       return;
     }
 
@@ -104,8 +106,8 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
     }
 
     // Check client cache for grid & inbox (0ms instant render)
-    const cachedGrid = !bypassCache ? getCachedClientData(client.clientSheetId, "outgoings") : null;
-    const cachedInbox = !bypassCache ? getCachedClientData(client.clientSheetId, "outgoings_inbox") : null;
+    const cachedGrid = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, "outgoings") : null;
+    const cachedInbox = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, "outgoings_inbox") : null;
 
     const hasGridCached = hasValidContractors(cachedGrid?.data);
     const hasInboxCached = Boolean(cachedInbox?.data?.inbox);
@@ -121,8 +123,8 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
       const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
       const currentIdx = (cachedGrid.data.months || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));
       if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
-      setOutgoingsLoading(false);
-    } else {
+      if (!silent) setOutgoingsLoading(false);
+    } else if (!silent) {
       setOutgoingsLoading(true);
     }
 
@@ -131,8 +133,8 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
       const currentAssigned = new Set([...assignedAppIds, ...serverAssigned]);
       const freshInbox = (cachedInbox.data.inbox || []).filter(exp => !currentAssigned.has(exp.appId));
       setOutgoingsInbox(freshInbox);
-      setOutgoingsInboxLoading(false);
-    } else {
+      if (!silent) setOutgoingsInboxLoading(false);
+    } else if (!silent) {
       setOutgoingsInboxLoading(true);
     }
 
@@ -164,11 +166,13 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
             makingUpCos: gridData.makingUpCos || prev?.makingUpCos || null,
           };
         });
-        const now = new Date();
-        const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-        const currentIdx = (gridData.months || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));
-        if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
-      } else if (!hasGridCached) {
+        if (!silent) {
+          const now = new Date();
+          const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+          const currentIdx = (gridData.months || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));
+          if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
+        }
+      } else if (!hasGridCached && !silent) {
         setOutgoingsError(gridData?.error || "Failed to load expenses data.");
       }
     };
@@ -319,20 +323,20 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
     await Promise.allSettled([runGridTask(), runInboxTask()]);
   };
 
-  const loadDirectCostsJobs = async (client, showAll, bypassCache = false) => {
+  const loadDirectCostsJobs = async (client, showAll, bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
     const cacheKey = showAll ? "direct_costs_jobs_all" : "direct_costs_jobs_active";
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : String(client.clientSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
-    const cached = !bypassCache ? getCachedClientData(client.clientSheetId, cacheKey) : null;
+    const cached = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, cacheKey) : null;
     if (cached?.data?.jobs) {
       setDirectCostsJobs(cached.data.jobs);
-      setDirectCostsLoading(false);
+      if (!silent) setDirectCostsLoading(false);
       if (!cached.isStale) return;
-    } else if (!directCostsJobs || directCostsJobs.length === 0) {
+    } else if (!silent && (!directCostsJobs || directCostsJobs.length === 0)) {
       setDirectCostsLoading(true);
     }
 
-    if (!bypassCache && !showAll && typeof getInFlightPrefetch === "function") {
+    if (!bypassCache && !silent && !showAll && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`direct_costs_jobs_${cleanId}`);
       if (inFlight) {
         try {
@@ -358,7 +362,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
         setDirectCostsJobs(data.jobs);
       }
     } catch (e) { console.error("loadDirectCostsJobs error:", e); }
-    finally { setDirectCostsLoading(false); }
+    finally { if (!silent) setDirectCostsLoading(false); }
   };
 
   return {

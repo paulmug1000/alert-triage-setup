@@ -30,13 +30,13 @@ import ViewsScreen from "../components/ViewsScreen";
 const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: () => <PmaActivitySkeleton /> });
 const ActivityView = dynamic(() => import("../components/ActivityView"), { loading: () => <PmaActivitySkeleton /> });
 const IgnoredAlertsView = dynamic(() => import("../components/IgnoredAlertsView"), { loading: () => <PmaAlertsSkeleton /> });
-const TasksView = dynamic(() => import("../components/TasksView"), { loading: () => <PmaTasksSkeleton /> });
+const TasksView = dynamic(() => import("../components/TasksView"), { loading: () => <PmaTasksSkeleton standalone /> });
 const CreateTaskModal = dynamic(() => import("../components/CreateTaskModal"));
-const ToolsView = dynamic(() => import("../components/ToolsView"), { loading: () => <PmaSetupOverviewSkeleton /> });
-const SettingsView = dynamic(() => import("../components/SettingsView"), { loading: () => <PmaSetupOverviewSkeleton /> });
-const DbView = dynamic(() => import("../components/DbView"), { loading: () => <PmaSetupOverviewSkeleton /> });
+const ToolsView = dynamic(() => import("../components/ToolsView"), { loading: () => <PmaSetupOverviewSkeleton standalone /> });
+const SettingsView = dynamic(() => import("../components/SettingsView"), { loading: () => <PmaSetupOverviewSkeleton standalone /> });
+const DbView = dynamic(() => import("../components/DbView"), { loading: () => <PmaSetupOverviewSkeleton standalone /> });
 const IntegrationsView = dynamic(() => import("../components/IntegrationsView"), { loading: () => <PmaIntegrationsSkeleton /> });
-const SetupView = dynamic(() => import("../components/SetupView"), { loading: () => <PmaSetupOverviewSkeleton /> });
+const SetupView = dynamic(() => import("../components/SetupView"), { loading: () => <PmaSetupOverviewSkeleton standalone /> });
 import { useAuth } from "../hooks/useAuth";
 import { useOverview } from "../hooks/useOverview";
 import { TaskProvider, useTasks } from "../contexts/TaskContext";
@@ -1529,7 +1529,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
 
     // ── DEFAULT FALLBACK SCREEN ─────────────────────────────────────────────────
     return (
-      <div style={styles.container}>
+      <div className="pma-page-container" style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Pulse Management Area</h1>
           <p style={styles.subtitle}>{isLoading ? "Loading..." : error ? error : "Initialising..."}</p>

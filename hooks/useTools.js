@@ -200,6 +200,14 @@ export function useTools({
                   updateToolsFile(id, { processStatus: "confirm_period", pendingConfirm: { extractedData: d.extractedData, fallback: d.fallback }, processMsg: "" });
                   return;
                 }
+                if (d.status === "ACTION_REQUIRED" || d.requiresForecastResolution) {
+                  updateToolsFile(id, {
+                    processStatus: "action_required",
+                    result: { ...d, resolvedForecastEmployees: [] },
+                    processMsg: "",
+                  });
+                  return;
+                }
                 updateToolsFile(id, { processStatus: d.writeSuccess ? "complete" : "error", result: d, processMsg: d.writeSuccess ? "" : (d.error || "Write failed") });
           
                 if (d.writeSuccess) {
@@ -238,13 +246,87 @@ export function useTools({
     setToolsBatchRunning(true);
   }, []);
 
+  const resolvePayrollForecastEmployee = useCallback(async (fileId, emp, resolutionAction, newStartDate) => {
+    const targetFile = (toolsFiles || []).find(f => f.id === fileId);
+    if (!targetFile || !targetFile.result) return;
+    const client = (allOutgoingsClients || []).find(c => c.clientName === targetFile.client);
+    if (!client?.clientSheetId) return;
+
+    const currentBlocking = targetFile.result.blockingForecastEmployees || [];
+    const remainingAfter = currentBlocking.filter(b => b.sheetRow !== emp.sheetRow);
+    const completeTask = remainingAfter.length === 0;
+
+    const res = await fetch("/api/triage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "resolve_payroll_import_forecast",
+        clientSheetId: client.clientSheetId,
+        masterSheetId: client.masterSheetId,
+        clientName: targetFile.client,
+        sheetRow: emp.sheetRow,
+        colStartLetter: emp.colStartLetter || targetFile.result.startCol,
+        monthLabel: emp.monthLabel || targetFile.result.targetMonthStr,
+        resolutionAction,
+        newStartDate,
+        completeTask,
+        automationCommanderSheetId,
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok || !d.success) {
+      throw new Error(d.error || "Failed to apply resolution.");
+    }
+
+    const actionLabels = {
+      zero_out: `Zeroed out for ${emp.monthLabel || targetFile.result.targetMonthStr}`,
+      update_start_date: `Moved start date to ${d.formattedStartDate || newStartDate}`,
+      keep_forecast: `Confirmed to stay on forecast for ${emp.monthLabel || targetFile.result.targetMonthStr}`,
+    };
+
+    setToolsFiles(prev => prev.map(f => {
+      if (f.id !== fileId || !f.result) return f;
+      const nextBlocking = (f.result.blockingForecastEmployees || []).filter(b => b.sheetRow !== emp.sheetRow);
+      const nextResolved = [
+        ...(f.result.resolvedForecastEmployees || []),
+        { ...emp, resolutionAction, resolutionSummary: actionLabels[resolutionAction] || "Resolved" },
+      ];
+      return {
+        ...f,
+        processStatus: nextBlocking.length === 0 ? "complete" : "action_required",
+        result: {
+          ...f.result,
+          blockingForecastEmployees: nextBlocking,
+          resolvedForecastEmployees: nextResolved,
+          requiresForecastResolution: nextBlocking.length > 0,
+        },
+      };
+    }));
+
+    if (completeTask) {
+      fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId }),
+      })
+        .then(r => r.json())
+        .then(statusD => {
+          if (statusD.success && setEomStatusOverrides) setEomStatusOverrides(statusD.statusOverrides || []);
+        })
+        .catch(e => console.error("Auto-refresh status error:", e));
+    }
+
+    return d;
+  }, [allOutgoingsClients, automationCommanderSheetId, eomMonthKey, setEomStatusOverrides, toolsFiles]);
+
   const toolsFileStats = useCallback((toolType) => {
     const files = (toolsFiles || []).filter(f => (f.toolType || "payroll") === toolType);
     const stillResolving = files.filter(f => f.convertStatus !== "error" && (f.convertStatus !== "ready" || !f.client));
     const readyToStart = stillResolving.length === 0 && files.some(f => f.convertStatus === "ready" && f.client && f.processStatus === "pending");
     const completeCount = files.filter(f => f.processStatus === "complete").length;
+    const actionRequiredCount = files.filter(f => f.processStatus === "action_required").length;
     const errorCount = files.filter(f => f.processStatus === "error").length;
-    return { files, stillResolving, readyToStart, completeCount, errorCount };
+    return { files, stillResolving, readyToStart, completeCount, actionRequiredCount, errorCount };
   }, [toolsFiles]);
 
   return {
@@ -255,6 +337,7 @@ export function useTools({
     startToolsBatch,
     updateToolsFile,
     processOneToolsFile,
+    resolvePayrollForecastEmployee,
     toolsFileStats
   };
 }

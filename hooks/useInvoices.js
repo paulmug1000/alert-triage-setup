@@ -96,22 +96,22 @@ export function useInvoices(assignedAppIds, initialClient = null) {
     }
   }, [invoicesClient]);
 
-  const loadInvoicesInbox = useCallback(async (client, bypassCache = false) => {
+  const loadInvoicesInbox = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
     const cacheKey = "invoices_inbox";
     const cleanMasterId = client.masterSheetId ? (cleanSheetId ? cleanSheetId(client.masterSheetId) : String(client.masterSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1")) : null;
 
-    const cached = !bypassCache ? getCachedClientData(client.clientSheetId, cacheKey) : null;
+    const cached = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, cacheKey) : null;
     if (cached?.data?.inbox) {
       const pruned = (cached.data.inbox || []).filter(inv => !isInvoiceAssigned(inv.invoiceNo, client));
       setInvoicesInbox(pruned);
-      setInvoicesInboxLoading(false);
+      if (!silent) setInvoicesInboxLoading(false);
       if (!cached.isStale) return;
-    } else {
+    } else if (!silent) {
       setInvoicesInboxLoading(true);
     }
 
-    if (!bypassCache && cleanMasterId && typeof getInFlightPrefetch === "function") {
+    if (!bypassCache && !silent && cleanMasterId && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`inv_inbox_${cleanMasterId}`);
       if (inFlight) {
         try {
@@ -140,7 +140,7 @@ export function useInvoices(assignedAppIds, initialClient = null) {
     } catch(e) { 
       console.error("loadInvoicesInbox error:", e); 
     } finally { 
-      setInvoicesInboxLoading(false); 
+      if (!silent) setInvoicesInboxLoading(false); 
     }
   }, [isInvoiceAssigned, cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 

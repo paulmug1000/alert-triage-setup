@@ -201,6 +201,7 @@ export function isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid = 
 
   if (tabName === "PLComp") {
     if ((row0 === 0 || row0 === 85) && col0 >= 5 && col0 <= 24 && isPlausibleSerial) return true;
+    if (row0 === 0 && col0 === 2 && isPlausibleSerial) return true; // C1 timestamp
     return false;
   }
 

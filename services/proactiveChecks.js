@@ -2398,12 +2398,28 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
     });
 
     if (plCompCatRow) {
-      for (let c = 5; c < plCompHeaders.length; c++) {
+      // Pass 1: Standard PLFromApp columns (F..K => indices 5..10)
+      for (let c = 5; c <= Math.min(10, plCompHeaders.length - 1); c++) {
         const hStr = plCompHeaders[c];
         if (!hStr) continue;
         const mKey = parseHeaderToMonthKey(hStr);
         if (mKey) {
           const val = parseFloat(String(plCompCatRow[c] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          if (val !== 0 || !monthlyAmounts.has(mKey)) {
+            monthlyAmounts.set(mKey, val);
+          }
+        }
+      }
+      // Pass 2: Combined PLComp columns with PLAdds (T..Y => indices 19..24),
+      // skipping M..R (12..17) which only contain PLAdds adjustments.
+      for (let c = 19; c <= Math.min(24, plCompHeaders.length - 1); c++) {
+        const hStr = plCompHeaders[c];
+        if (!hStr) continue;
+        const rawCell = plCompCatRow[c];
+        if (rawCell === "" || rawCell === null || rawCell === undefined) continue;
+        const mKey = parseHeaderToMonthKey(hStr);
+        if (mKey) {
+          const val = parseFloat(String(rawCell).replace(/[£$€,\s]/g, "")) || 0;
           if (val !== 0 || !monthlyAmounts.has(mKey)) {
             monthlyAmounts.set(mKey, val);
           }

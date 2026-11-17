@@ -277,23 +277,23 @@ async function mutateEomGlobalPayload_(sheets, acSheetId, mutatorFn, updatedBy =
   if (error) throw new Error(error.message);
   const current = (existing?.tasks_payload && typeof existing.tasks_payload === "object")
     ? {
-        schemaVersion: 2,
-        seededAt: existing.tasks_payload.seededAt || new Date().toISOString(),
-        templates: [...(existing.tasks_payload.templates || [])],
-        excludedClients: [...(existing.tasks_payload.excludedClients || [])],
-        defaultTasks: [...(existing.tasks_payload.defaultTasks || [])],
-        bankAccountsByClient: { ...(existing.tasks_payload.bankAccountsByClient || {}) },
-        bankAccountsLoadedAt: existing.tasks_payload.bankAccountsLoadedAt || "",
-      }
+      schemaVersion: 2,
+      seededAt: existing.tasks_payload.seededAt || new Date().toISOString(),
+      templates: [...(existing.tasks_payload.templates || [])],
+      excludedClients: [...(existing.tasks_payload.excludedClients || [])],
+      defaultTasks: [...(existing.tasks_payload.defaultTasks || [])],
+      bankAccountsByClient: { ...(existing.tasks_payload.bankAccountsByClient || {}) },
+      bankAccountsLoadedAt: existing.tasks_payload.bankAccountsLoadedAt || "",
+    }
     : {
-        schemaVersion: 2,
-        seededAt: new Date().toISOString(),
-        templates: [],
-        excludedClients: [],
-        defaultTasks: [],
-        bankAccountsByClient: {},
-        bankAccountsLoadedAt: "",
-      };
+      schemaVersion: 2,
+      seededAt: new Date().toISOString(),
+      templates: [],
+      excludedClients: [],
+      defaultTasks: [],
+      bankAccountsByClient: {},
+      bankAccountsLoadedAt: "",
+    };
 
   const next = await mutatorFn(current);
   const payload = next || current;
@@ -1137,13 +1137,13 @@ export async function handleEomSaveClientTask(req, res, sheets) {
           return list.map((t) =>
             t.taskId === taskId
               ? {
-                  ...t,
-                  clientName: taskClientName,
-                  templateId: taskTemplateId || "",
-                  taskName: taskName || "",
-                  clientNotes: clientNotes || "",
-                  active: taskActive !== false,
-                }
+                ...t,
+                clientName: taskClientName,
+                templateId: taskTemplateId || "",
+                taskName: taskName || "",
+                clientNotes: clientNotes || "",
+                active: taskActive !== false,
+              }
               : t
           );
         }, sessionUser?.email || "System");
@@ -2723,7 +2723,59 @@ export async function handleEomGetPlCompData(req, res, sheets) {
       })).catch(e => { console.warn("Could not read Outgoings tab headers:", e?.message); return null; }) : Promise.resolve(null),
     ]);
 
-    const lastUpdated = c1Resp.data.values?.[0]?.[0] || "";
+    const formatPlLastUpdated_ = (rawVal) => {
+      if (rawVal === null || rawVal === undefined || rawVal === "") return "";
+      const s = String(rawVal).trim();
+      if (!s) return "";
+
+      // Google Sheets serial number (or numeric string)
+      if (typeof rawVal === "number" || /^\d{4,5}(\.\d+)?$/.test(s)) {
+        const serial = typeof rawVal === "number" ? rawVal : parseFloat(s);
+        if (Number.isFinite(serial) && serial > 20000 && serial < 90000) {
+          const intDays = Math.floor(serial);
+          const frac = serial - intDays;
+          const baseDate = new Date(Date.UTC(1899, 11, 30) + intDays * 86400000);
+          if (Math.abs(frac) >= 1e-5) {
+            const totalMins = Math.round(frac * 1440);
+            const totalHours = Math.floor(totalMins / 60);
+            const mins = totalMins % 60;
+            const dt = new Date(baseDate.getTime() + totalHours * 3600000 + mins * 60000);
+            return dt.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
+          }
+          return baseDate.toLocaleDateString("en-GB", { dateStyle: "medium", timeZone: "UTC" });
+        }
+      }
+
+      // Formatted "DD-MMM-YY HH:mm" or "DD-MMM-YYYY HH:mm(:ss)"
+      const dmyMatch = s.match(/^(\d{1,2})[-/\s]([A-Za-z]{3})[a-z]*[-/\s](\d{2,4})(?:,?\s+(\d{1,2}):(\d{2})(?::\d{2})?)?$/i);
+      if (dmyMatch) {
+        const MONTHS_S = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+        const mIdx = MONTHS_S.indexOf(dmyMatch[2].toLowerCase());
+        if (mIdx !== -1) {
+          const day = parseInt(dmyMatch[1], 10);
+          let yr = parseInt(dmyMatch[3], 10);
+          if (yr < 100) yr += 2000;
+          if (dmyMatch[4] !== undefined && dmyMatch[5] !== undefined) {
+            const dt = new Date(Date.UTC(yr, mIdx, day, parseInt(dmyMatch[4], 10), parseInt(dmyMatch[5], 10)));
+            return dt.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
+          }
+          const dt = new Date(Date.UTC(yr, mIdx, day));
+          return dt.toLocaleDateString("en-GB", { dateStyle: "medium", timeZone: "UTC" });
+        }
+      }
+
+      // ISO timestamp
+      if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+        const dt = new Date(s);
+        if (!isNaN(dt.getTime())) {
+          return dt.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/London" });
+        }
+      }
+
+      return s;
+    };
+
+    const lastUpdated = formatPlLastUpdated_(c1Resp.data.values?.[0]?.[0] || "");
     const allData = dataResp.data.values || [];
     const outgoingsData = outgoingsResp?.data?.values || [];
     const outgoingsHdrs = (outgoingsHdrResp?.data?.values?.[0] || []).map(h => String(h || "").trim());
@@ -2750,20 +2802,46 @@ export async function handleEomGetPlCompData(req, res, sheets) {
 
     const MONTH_NAMES_SHORT = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
     const parseMonthYearHdr = (label) => {
-      if (!label) return null;
-      if (typeof label === "number") {
-        const utcDays = Math.floor(label - 25569);
-        const date = new Date(utcDays * 86400 * 1000);
-        return { monthIdx: date.getUTCMonth(), year: date.getUTCFullYear() };
+      if (label === null || label === undefined || label === "") return null;
+      const s = String(label).trim();
+      if (!s) return null;
+      if (typeof label === "number" || /^\d{4,5}(\.\d+)?$/.test(s)) {
+        const num = typeof label === "number" ? label : parseFloat(s);
+        if (Number.isFinite(num) && num > 20000 && num < 90000) {
+          const utcDays = Math.floor(num - 25569);
+          const date = new Date(utcDays * 86400 * 1000);
+          return { monthIdx: date.getUTCMonth(), year: date.getUTCFullYear() };
+        }
       }
-      const match = String(label).trim().match(/^([A-Za-z]{3})[a-z]*[\s\-']?(\d{2,4})$/i);
-      if (!match) return null;
-      const mStr = match[1].toLowerCase();
-      const monthIdx = MONTH_NAMES_SHORT.indexOf(mStr);
-      if (monthIdx === -1) return null;
-      let year = parseInt(match[2], 10);
-      if (year < 100) year += 2000;
-      return { monthIdx, year };
+      // Handles "Jun 26", "Jun-26", "June 2026", "1-Jun-26", "01 Jun 2026", "1st Jun 26", "Jun26"
+      const match =
+        s.match(/^(?:\d{1,2}(?:st|nd|rd|th)?[\s\-/]+)?([A-Za-z]{3})[a-z]*[\s\-',/]+(\d{2,4})$/i) ||
+        s.match(/^([A-Za-z]{3})[a-z]*(\d{2,4})$/i);
+      if (match) {
+        const mStr = match[1].toLowerCase();
+        const monthIdx = MONTH_NAMES_SHORT.indexOf(mStr);
+        if (monthIdx !== -1) {
+          let year = parseInt(match[2], 10);
+          if (year < 100) year += 2000;
+          return { monthIdx, year };
+        }
+      }
+      // Handles ISO "YYYY-MM-DD" or "YYYY-MM"
+      const isoMatch = s.match(/^(\d{4})-(\d{1,2})(?:-\d{1,2})?$/);
+      if (isoMatch) {
+        const year = parseInt(isoMatch[1], 10);
+        const monthIdx = parseInt(isoMatch[2], 10) - 1;
+        if (monthIdx >= 0 && monthIdx <= 11) return { monthIdx, year };
+      }
+      // Handles UK "DD/MM/YYYY" or "DD/MM/YY"
+      const ukMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+      if (ukMatch) {
+        const monthIdx = parseInt(ukMatch[2], 10) - 1;
+        let year = parseInt(ukMatch[3], 10);
+        if (year < 100) year += 2000;
+        if (monthIdx >= 0 && monthIdx <= 11) return { monthIdx, year };
+      }
+      return null;
     };
 
     const findOutgoingsCol = (monthHeader) => {
@@ -2885,7 +2963,17 @@ export async function handleEomGetPlCompData(req, res, sheets) {
       ];
 
       for (const def of sectionDefs) {
-        const rows = extractRows(def.start, def.end, colIndices);
+        // Non-operating income/expenses in PLComp only populate Cols F..K (not T..Y), so fall back to standard cols if T..Y is empty
+        const isNonOp = def.key === "nonOpInc" || def.key === "nonOpExp";
+        let rows = extractRows(def.start, def.end, colIndices);
+        if (isNonOp && colIndices === monthIndicesWithAdds) {
+          const hasAnyNonZeroOrNonEmpty = rows.some(r =>
+            r.values.some(v => v !== "" && v !== "0.00" && parseNumber(v) !== 0)
+          );
+          if (!hasAnyNonZeroOrNonEmpty) {
+            rows = extractRows(def.start, def.end, monthIndicesStandard);
+          }
+        }
         if (rows.length === 0) continue;
 
         const plTotals = monthsList.map((m, mIdx) => {
@@ -4082,7 +4170,7 @@ export async function getEomReportingControlState(sheets) {
           };
         }
       });
-    } catch (_) {}
+    } catch (_) { }
 
     try {
       const batchResp = await withRetry(() =>
@@ -4117,14 +4205,14 @@ export async function getEomReportingControlState(sheets) {
           try {
             const parsed = JSON.parse(String(r[7]));
             if (parsed && typeof parsed === "object") overheadFinalisedByMonth = parsed;
-          } catch (_) {}
+          } catch (_) { }
         }
         let narrativeStatusByMonth = {};
         if (r[8]) {
           try {
             const parsed = JSON.parse(String(r[8]));
             if (parsed && typeof parsed === "object") narrativeStatusByMonth = parsed;
-          } catch (_) {}
+          } catch (_) { }
         }
         const prev = state.configsByClient[cName] || {};
         state.configsByClient[cName] = {
@@ -4200,7 +4288,7 @@ export async function getEomReportingControlState(sheets) {
         if (r[4]) {
           try {
             draftsBySlide = JSON.parse(String(r[4])) || {};
-          } catch (_) {}
+          } catch (_) { }
         }
         state.narrativeDrafts[`${cName.toLowerCase()}::${mKey}`] = {
           clientName: cName,
@@ -4802,7 +4890,7 @@ async function resolveOrCreateClientPresentation_({
           if (gasData && !String(gasData.error || "").includes("Invalid secret token")) {
             break;
           }
-        } catch (_) {}
+        } catch (_) { }
       }
     }
     throw new Error(`Could not duplicate presentation ${templateFile.name}: ${driveCopyErr.message}`);
@@ -4996,7 +5084,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
         gasData = null;
         try {
           gasData = JSON.parse(gasText);
-        } catch (_) {}
+        } catch (_) { }
         if (!gasData || gasData.success || !String(gasData.error || "").includes("Invalid secret token")) {
           break;
         }
@@ -5017,7 +5105,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
         if (resItem.success) {
           try {
             await autoCompleteTaskByKeyword_(sheets, acId, resItem.clientName, effectiveWorkMonth, "data request email");
-          } catch (_) {}
+          } catch (_) { }
         }
       }
 
@@ -5143,7 +5231,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
         await updateReportsLogMatrix_(sheets, REPORTING_CONTROL_SHEET_ID, cName, resItem.reportUrl, effectiveReportMonth);
         try {
           await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "monthly management report");
-        } catch (_) {}
+        } catch (_) { }
       }
     }
 
@@ -5890,7 +5978,7 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
           valueInputOption: "RAW",
           requestBody: { values: colFValues }
         }));
-      } catch (_) {}
+      } catch (_) { }
     }
 
     await computeNativeMgmtRepForClient({
@@ -7213,7 +7301,7 @@ export async function handleEomPreviewMgmtReport(req, res, sheets) {
                   const buf = Buffer.from(await r.arrayBuffer());
                   legacyPngByChartId[item.chartId] = `data:image/png;base64,${buf.toString("base64")}`;
                 }
-              } catch (_) {}
+              } catch (_) { }
             })
           );
         } catch (deckErr) {

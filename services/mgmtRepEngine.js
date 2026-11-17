@@ -671,80 +671,154 @@ export async function computeNativeMgmtRepForClient({
 
   // ============================================================================
   // SECTION D: OVERHEADS (A371:F493 & AB371:AG493)
+  // Verbatim mirror of Master Sheet formulas:
+  //   A372 = FILTER(Outgoings!A125:A228, LEN(Outgoings!A125:A228)>0)
+  //   B372 = FILTER(INDEX(Outgoings!A125:BC228,0,G2), LEN(Outgoings!A125:A228)>0)
+  //   C372 = IFERROR(VLOOKUP(A372, Budget!$A$149:$AV$253, $G$2, FALSE), "")
+  //   D372 = C372 - B372
+  //   E372 = IFERROR(IF(AND(B372=0,C372=0),0,IF(C372=0,"!!!",D372/C372)),"")
+  //   AB372 = {FILTER(A372:C493, F372:F493=TRUE); {"Total", SUMIF(F372:F493,TRUE,B372:B493), SUMIF(F372:F493,TRUE,C372:C493)}}
   // ============================================================================
   if (G2 > 0) {
     const mHeader = getCell(outgoingsGrid, 1, G2) || formatShortMonth(targetYm);
     setCell(371, 2, mHeader);
     setCell(371, 29, mHeader); // Col AC (29)
+    for (let c = 1; c <= 5; c++) setCell(370, c, "");
+
+    // Build VLOOKUP map from Budget!A149:BO253 (first match per category, case-insensitive)
+    const budgetByCatLower = new Map();
+    for (let r1 = 149; r1 <= 253; r1++) {
+      const bCat = String(getCell(budgetGrid, r1, 1) || getCell(budgetUnfmt, r1, 1) || "").trim();
+      if (!bCat) continue;
+      const key = bCat.toLowerCase();
+      if (!budgetByCatLower.has(key)) {
+        budgetByCatLower.set(key, getCell(budgetUnfmt, r1, G2));
+      }
+    }
+
+    // Compact Outgoings!A125:BC228 where LEN(Outgoings!A125:A228) > 0
+    const filteredOutgoings = [];
+    for (let outR = 125; outR <= 228; outR++) {
+      const rawCat = String(getCell(outgoingsGrid, outR, 1) || "").trim();
+      if (!rawCat) continue;
+      filteredOutgoings.push({
+        catName: rawCat,
+        actRaw: getCell(outgoingsUnfmt, outR, G2),
+      });
+    }
+
+    const overrideIsArray = Array.isArray(checkedCategoriesOverride);
+    const overrideIsMap = !overrideIsArray && checkedCategoriesOverride && typeof checkedCategoriesOverride === "object";
+    const overrideArraySet = overrideIsArray
+      ? new Set(checkedCategoriesOverride.map((c) => String(c || "").trim().toLowerCase()).filter(Boolean))
+      : null;
+    const overrideMapLower = overrideIsMap ? new Map() : null;
+    if (overrideMapLower) {
+      for (const [k, v] of Object.entries(checkedCategoriesOverride)) {
+        const cleanK = String(k || "").trim().toLowerCase();
+        if (cleanK) overrideMapLower.set(cleanK, Boolean(v));
+      }
+    }
 
     const checkedRows = [];
-    let totalAct = 0;
-    let totalBud = 0;
+    let checkedActSum = 0;
+    let checkedBudSum = 0;
 
-    // Outgoings!A125:BC228 (104 rows -> MgmtRep rows 372..475)
-    const maxOvhRows = 122;
+    const maxOvhRows = 122; // MgmtRep rows 372..493
     for (let i = 0; i < maxOvhRows; i++) {
       const mgmtR = 372 + i;
-      const outR = 125 + i;
-      const budR = 149 + i;
+      const entry = filteredOutgoings[i];
 
-      const catName = outR <= 228 ? String(getCell(outgoingsGrid, outR, 1) || "").trim() : "";
-      const actRaw = outR <= 228 ? getCell(outgoingsUnfmt, outR, G2) : "";
-      const budRaw = budR <= 252 ? getCell(budgetUnfmt, budR, G2) : "";
-
-      if (!catName) {
+      if (!entry) {
         setCell(mgmtR, 1, "");
         setCell(mgmtR, 2, "");
         setCell(mgmtR, 3, "");
         setCell(mgmtR, 4, "");
         setCell(mgmtR, 5, "");
+        if (overrideIsArray || overrideIsMap) {
+          setCell(mgmtR, 6, "FALSE");
+        }
         continue;
       }
 
+      const { catName, actRaw } = entry;
+      const catLower = catName.toLowerCase();
+      const isTotalRow = /^total other expenses/i.test(catName);
+
       const actVal = parseNumber(actRaw);
-      const budVal = parseNumber(budRaw);
+      const hasBudgetEntry = budgetByCatLower.has(catLower);
+      const budRaw = hasBudgetEntry ? budgetByCatLower.get(catLower) : "";
+      const hasBudget = hasBudgetEntry && hasNumericValue(budRaw);
+      const budVal = hasBudget ? parseNumber(budRaw) : 0;
       const varGbp = budVal - actVal;
-      const varPctStr = budVal === 0 ? (varGbp < 0 ? "!!!" : "0%") : formatPercentWhole(varGbp / budVal);
+
+      let leftPctStr = "";
+      let rightPctStr = "";
+      if (!hasBudget) {
+        leftPctStr = "";
+        rightPctStr = "#DIV/0!";
+      } else if (Math.abs(actVal) < 0.005 && Math.abs(budVal) < 0.005) {
+        leftPctStr = "0%";
+        rightPctStr = "0%";
+      } else if (Math.abs(budVal) < 0.005) {
+        leftPctStr = "!!!";
+        rightPctStr = "!!!";
+      } else {
+        const pct = formatPercentWhole(varGbp / budVal);
+        leftPctStr = pct;
+        rightPctStr = pct;
+      }
 
       setCell(mgmtR, 1, catName);
       setCell(mgmtR, 2, formatCurrencyGBP(actVal));
-      setCell(mgmtR, 3, formatCurrencyGBP(budVal));
+      setCell(mgmtR, 3, hasBudget ? formatCurrencyGBP(budVal) : "");
       setCell(mgmtR, 4, formatCurrencyGBP(varGbp));
-      setCell(mgmtR, 5, varPctStr);
+      setCell(mgmtR, 5, leftPctStr);
 
       let isChecked = false;
-      if (Array.isArray(checkedCategoriesOverride)) {
-        isChecked = checkedCategoriesOverride.some(
-          (c) => String(c || "").trim().toLowerCase() === catName.toLowerCase()
-        );
+      if (isTotalRow) {
+        isChecked = false;
+        if (overrideIsArray || overrideIsMap) setCell(mgmtR, 6, "FALSE");
+      } else if (overrideIsArray) {
+        isChecked = overrideArraySet.has(catLower);
+        setCell(mgmtR, 6, isChecked ? "TRUE" : "FALSE");
+      } else if (overrideIsMap) {
+        if (overrideMapLower.has(catLower)) {
+          isChecked = overrideMapLower.get(catLower);
+        } else {
+          const rawChk = String(getCell(mgmtGrid, mgmtR, 6) || "").trim().toUpperCase();
+          isChecked = rawChk === "TRUE" || rawChk === "1" || rawChk === "YES";
+        }
         setCell(mgmtR, 6, isChecked ? "TRUE" : "FALSE");
       } else {
         const rawChk = String(getCell(mgmtGrid, mgmtR, 6) || "").trim().toUpperCase();
         isChecked = rawChk === "TRUE" || rawChk === "1" || rawChk === "YES";
       }
 
-      totalAct += actVal;
-      totalBud += budVal;
-
       if (isChecked) {
+        checkedActSum += actVal;
+        checkedBudSum += budVal;
         checkedRows.push({
           catName,
           actStr: formatCurrencyGBP(actVal),
-          budStr: formatCurrencyGBP(budVal),
+          budStr: hasBudget ? formatCurrencyGBP(budVal) : "",
           varGbpStr: formatCurrencyGBP(varGbp),
-          varPctStr,
+          varPctStr: rightPctStr,
         });
       }
     }
 
-    const totalVarGbp = totalBud - totalAct;
-    const totalVarPctStr = totalBud !== 0 ? formatPercentWhole(totalVarGbp / totalBud) : "0%";
-    setCell(370, 2, formatCurrencyGBP(totalAct));
-    setCell(370, 3, formatCurrencyGBP(totalBud));
-    setCell(370, 4, formatCurrencyGBP(totalVarGbp));
-    setCell(370, 5, totalVarPctStr);
+    const totalVarGbp = checkedBudSum - checkedActSum;
+    let totalVarPctStr = "0%";
+    if (Math.abs(checkedActSum) < 0.005 && Math.abs(checkedBudSum) < 0.005) {
+      totalVarPctStr = "0%";
+    } else if (Math.abs(checkedBudSum) < 0.005) {
+      totalVarPctStr = "!!!";
+    } else {
+      totalVarPctStr = formatPercentWhole(totalVarGbp / checkedBudSum);
+    }
 
-    // Populate filtered table AB372:AG493 (cols 28..33)
+    // Populate filtered table AB372:AG493 (cols 28..33) with Total row immediately following checked rows
     for (let i = 0; i < maxOvhRows; i++) {
       const mgmtR = 372 + i;
       if (i < checkedRows.length) {
@@ -756,13 +830,10 @@ export async function computeNativeMgmtRepForClient({
         setCell(mgmtR, 32, item.varGbpStr);
         setCell(mgmtR, 33, item.varPctStr);
       } else if (i === checkedRows.length) {
-        // Spacer row before Total
-        for (let c = 28; c <= 33; c++) setCell(mgmtR, c, "");
-      } else if (i === checkedRows.length + 1) {
-        // Total row
+        // Total row directly follows checked rows (matching ={FILTER(...); {"Total", SUMIF(...)}})
         setCell(mgmtR, 28, "Total");
-        setCell(mgmtR, 29, formatCurrencyGBP(totalAct));
-        setCell(mgmtR, 30, formatCurrencyGBP(totalBud));
+        setCell(mgmtR, 29, formatCurrencyGBP(checkedActSum));
+        setCell(mgmtR, 30, formatCurrencyGBP(checkedBudSum));
         setCell(mgmtR, 31, "");
         setCell(mgmtR, 32, formatCurrencyGBP(totalVarGbp));
         setCell(mgmtR, 33, totalVarPctStr);

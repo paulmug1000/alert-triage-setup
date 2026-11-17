@@ -259,6 +259,29 @@ export default function PushOutgoingsTab({
     }
   };
 
+  // Format last updated timestamp defensively (handles Google Sheets serial numbers or formatted strings)
+  const formattedLastUpdated = useMemo(() => {
+    const raw = plData?.lastUpdated;
+    if (raw === null || raw === undefined || raw === "") return "";
+    const s = String(raw).trim();
+    if (!s) return "";
+    if (typeof raw === "number" || /^\d{4,5}(\.\d+)?$/.test(s)) {
+      const serial = typeof raw === "number" ? raw : parseFloat(s);
+      if (Number.isFinite(serial) && serial > 20000 && serial < 90000) {
+        const intDays = Math.floor(serial);
+        const frac = serial - intDays;
+        const baseDate = new Date(Date.UTC(1899, 11, 30) + intDays * 86400000);
+        if (Math.abs(frac) >= 1e-5) {
+          const totalMins = Math.round(frac * 1440);
+          const dt = new Date(baseDate.getTime() + totalMins * 60000);
+          return dt.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
+        }
+        return baseDate.toLocaleDateString("en-GB", { dateStyle: "medium", timeZone: "UTC" });
+      }
+    }
+    return s;
+  }, [plData?.lastUpdated]);
+
   return (
     <div style={{ width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>
       {/* Top Header Card */}
@@ -334,24 +357,8 @@ export default function PushOutgoingsTab({
             flexWrap: "wrap",
             gap: "12px"
           }}>
-            {/* Last Updated Timestamp & Mode Toggle */}
+            {/* Mode Toggle: Including vs Not including unreconciled items */}
             <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-              <div style={{
-                fontSize: "12px",
-                color: plData?.lastUpdated ? "#0369a1" : "#64748b",
-                background: plData?.lastUpdated ? "#e0f2fe" : "#f8fafc",
-                padding: "5px 10px",
-                borderRadius: "6px",
-                border: `1px solid ${plData?.lastUpdated ? "#bae6fd" : "#e2e8f0"}`,
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "5px"
-              }}>
-                <span>🕒</span>
-                <span>P&amp;L last updated: <strong>{plData?.lastUpdated || "-"}</strong>{isAdmin ? " (cell C1)" : ""}</span>
-              </div>
-
-              {/* Mode Toggle: Including vs Not including unreconciled items */}
               <div style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -402,8 +409,25 @@ export default function PushOutgoingsTab({
               </div>
             </div>
 
-            {/* Top Action Buttons */}
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            {/* Last Updated Timestamp & Top Action Buttons */}
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              <div style={{
+                fontSize: "12px",
+                color: formattedLastUpdated ? "#0369a1" : "#64748b",
+                background: formattedLastUpdated ? "#e0f2fe" : "#f8fafc",
+                padding: "6px 10px",
+                borderRadius: "6px",
+                border: `1px solid ${formattedLastUpdated ? "#bae6fd" : "#e2e8f0"}`,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px"
+              }}>
+                <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                </svg>
+                <span>Last updated: <strong>{formattedLastUpdated || "-"}</strong>{isAdmin ? " (cell C1)" : ""}</span>
+              </div>
+
               <button
                 onClick={handlePullFreshPl}
                 disabled={pullingPl || pushingOutgoings || loading}

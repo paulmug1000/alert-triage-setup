@@ -61,6 +61,8 @@ const FORMULA_DEPENDENT_MASTER_TABS = new Set([
   "CRMComp",
   "PLComp",
   "KeyInfo",
+  "Year0Data",
+  "TimeComp",
   "DataChgAlert",
 ]);
 
@@ -68,7 +70,9 @@ const FORMULA_INPUT_MASTER_TABS = new Set([
   "InvFromApp",
   "JnlsFromApp",
   "PLFromApp",
+  "Year0PLFromApp",
   "DataFromCRM",
+  "DataFromTime",
   "ConfCalcs",
   "PipeCalcs",
   "Outgoings",
@@ -76,6 +80,8 @@ const FORMULA_INPUT_MASTER_TABS = new Set([
   "KeyInfo",
   "CRMComp",
   "PLComp",
+  "Year0Data",
+  "TimeComp",
   "DataChgAlert",
 ]);
 
@@ -1262,6 +1268,15 @@ class VirtualSheet {
     this.notesGrid = next;
   }
 
+  insertRowBefore(beforePosition) {
+    return this.insertRowsBefore(beforePosition, 1);
+  }
+
+  insertRowsBefore(beforePosition, howMany = 1) {
+    const pos = Math.max(1, Number(beforePosition) || 1);
+    return this.insertRowsAfter(pos - 1, howMany);
+  }
+
   insertRowAfter(afterPosition) {
     return this.insertRowsAfter(afterPosition, 1);
   }
@@ -1902,6 +1917,8 @@ export async function createGasEnvironment({
       "CRMComp",
       "KeyInfo",
       "PLComp",
+      "Year0Data",
+      "TimeComp",
       "DataChgAlert",
     ]) {
       const sObj = masterSS.getSheetByName(fTab);
@@ -2526,6 +2543,16 @@ export async function createGasEnvironment({
   const CacheService = {
     getScriptCache: () => ({
       get: (k) => envState.scriptCache.get(String(k)) ?? null,
+      getAll: (keys) => {
+        const out = {};
+        if (Array.isArray(keys)) {
+          for (const k of keys) {
+            const ks = String(k);
+            if (envState.scriptCache.has(ks)) out[ks] = envState.scriptCache.get(ks);
+          }
+        }
+        return out;
+      },
       put: (k, v) => envState.scriptCache.set(String(k), String(v ?? "")),
       putAll: (obj) => {
         if (obj && typeof obj === "object") {

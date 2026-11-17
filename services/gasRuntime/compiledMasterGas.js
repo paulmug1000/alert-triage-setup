@@ -1310,6 +1310,7 @@ function writeToAutoLog(category, summary, details) {
 /**
  * PART 2: INTERNAL SHEET MANIPULATION FUNCTIONS
  *
+ * v3.11 (Process Non-Operating Income & Expenses sections in pushOutgoingsWithPLAddsToClientSheet from PLComp F..K, matching pushOutgoingsToClientSheet)
  * v3.10 (Protect Outgoings system rows 225-226 in pushOutgoingsWithPLAddsToClientSheet and support 7-col Confirmed recharged/cost-month slots in processPartPaidInvoices)
  * v3.09 (Protect Outgoings system rows 225-226 in pushOutgoingsToClientSheet, include Confirmed Col R recharged expenses in invoice slot capacity/fillFutureSlots, and widen Confirmed zone check to Col BJ)
  * v3.08 (Prevent block Client name updates in PushInvDetailsToConfirmed when linked invoices resolve to different accounting contacts, and fix UTF-8 currency mojibake in dialogs)
@@ -1765,32 +1766,72 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
     // --- CONFIGURATION ---
     const CHECKBOX_RANGE = 'T87:Y87';
     const DATA_START_COL = 20; 
+    const STANDARD_DATA_START_COL = 6; // F=6 (Non-operating sections in PLComp populate F..K only)
     const MONTH_HEADER_ROW = 1;
     const CATEGORY_COLUMN = 5; 
     
     const COS_START_ROW = 30;
     const COS_ROW_COUNT = 20;
+    const NON_OP_INC_START = 52;
+    const NON_OP_INC_COUNT = 10;
+    const NON_OP_EXP_START = 65;
+    const NON_OP_EXP_COUNT = 10;
     const OTHER_EXPENSES_START_ROW = 89;
     const DEFAULTS_OVERHEAD = ["Yes", "Curr", "Curr", "0%", "100%"];
     const DEFAULTS_COS = ["No", "Curr", "Curr", "100%", "100%"];
+    const DEFAULTS_NON_OP = ["No", "Curr", "Curr", "0%", "100%"];
     const checkboxes = sourceSheet.getRange(CHECKBOX_RANGE).getValues()[0];
     const sourceMonthHeaders = sourceSheet.getRange(MONTH_HEADER_ROW, DATA_START_COL, 1, checkboxes.length).getValues()[0];
     // 1. Gather Categories
     const lastRowSource = sourceSheet.getLastRow();
     const overheadCategories = sourceSheet.getRange(OTHER_EXPENSES_START_ROW, CATEGORY_COLUMN, lastRowSource - OTHER_EXPENSES_START_ROW + 1).getValues().flat();
     const cosCategories = sourceSheet.getRange(COS_START_ROW, CATEGORY_COLUMN, COS_ROW_COUNT).getValues().flat();
+    const nonOpIncCategories = sourceSheet.getRange(NON_OP_INC_START, CATEGORY_COLUMN, NON_OP_INC_COUNT).getValues().flat();
+    const nonOpExpCategories = sourceSheet.getRange(NON_OP_EXP_START, CATEGORY_COLUMN, NON_OP_EXP_COUNT).getValues().flat();
     const categoryTypeMap = new Map();
     cosCategories.forEach(cat => {
-      const name = cat ? cat.toString().trim() : "";
-      if (name) categoryTypeMap.set(name, 'CoS');
+      if (isValidExpenseCategory_(cat)) {
+        categoryTypeMap.set(cat.toString().trim(), 'CoS');
+      }
+    });
+    nonOpIncCategories.forEach(cat => {
+      if (isValidExpenseCategory_(cat)) {
+        const name = cat.toString().trim();
+        if (!categoryTypeMap.has(name)) categoryTypeMap.set(name, 'NonOp');
+      }
+    });
+    nonOpExpCategories.forEach(cat => {
+      if (isValidExpenseCategory_(cat)) {
+        const name = cat.toString().trim();
+        if (!categoryTypeMap.has(name)) categoryTypeMap.set(name, 'NonOp');
+      }
     });
     overheadCategories.forEach(cat => {
-      const name = cat ? cat.toString().trim() : "";
-      if (name && !categoryTypeMap.has(name)) categoryTypeMap.set(name, 'Overhead');
+      if (isValidExpenseCategory_(cat)) {
+        const name = cat.toString().trim();
+        if (!categoryTypeMap.has(name)) categoryTypeMap.set(name, 'Overhead');
+      }
     });
     // 2. Locate Target Sections
     const targetDataA = targetSheet.getRange("A:A").getValues().flat();
     const findTotalRow = (names) => targetDataA.findIndex(val => names.includes(val));
+    const findSectionBounds = (startHeader, endHeader) => {
+      const start = targetDataA.indexOf(startHeader);
+      let end = -1;
+      if (start !== -1) {
+        for (let i = start; i < targetDataA.length; i++) {
+          if (targetDataA[i] === endHeader) { end = i; break; }
+        }
+      }
+      return { start, end };
+    };
+    const defineNonOpRange = (bounds) => {
+      if (bounds.start === -1 || bounds.end === -1) return null;
+      const start = bounds.start + 3;
+      const end = bounds.end - 1;
+      const height = end - start + 1;
+      return height > 0 ? { start, end, height } : null;
+    };
     const otherExpensesRowIndex = targetDataA.indexOf("Other expenses");
     const totalRowIndex = findTotalRow(["Total other expenses", "Total other expenses - delivery"]);
     if (otherExpensesRowIndex === -1 || totalRowIndex === -1) {
@@ -1799,6 +1840,8 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
       notifyUser(msg);
       return { success: false, error: msg };
     }
+    const nonOpIncRange = defineNonOpRange(findSectionBounds("Non-operating income", "Total non-operating income"));
+    const nonOpExpRange = defineNonOpRange(findSectionBounds("Non-operating expenses", "Total non-operating expenses"));
 
     const expenseStartRow = otherExpensesRowIndex + 3;
     // Mirror pushOutgoingsToClientSheet ceiling protection so system rows 225-226 (Recharged expenses) are never overwritten
@@ -1826,6 +1869,12 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
     const rangeHeight = expenseEndRow - expenseStartRow + 1;
     const targetCategoriesRange = targetSheet.getRange(expenseStartRow, 1, rangeHeight, 1);
     const targetCategories = targetCategoriesRange.getValues().flat().map(c => c.toString().trim());
+    const getTargetCats = (rangeDef) => {
+      if (!rangeDef) return [];
+      return targetSheet.getRange(rangeDef.start, 1, rangeDef.height, 1).getValues().flat().map(c => c.toString().trim());
+    };
+    const targetCatsNonOpInc = getTargetCats(nonOpIncRange);
+    const targetCatsNonOpExp = getTargetCats(nonOpExpRange);
 
     // Ensure Depreciation Exists
     const expectedDepreciationName = "Depreciation expense";
@@ -1911,6 +1960,73 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
            .setFontFamily('Arial')
            .setFontSize(9);
       });
+
+      // C. Process Non-Operating Income & Expenses (from PLComp F..K for the same month)
+      const standardColumnToProcess = STANDARD_DATA_START_COL + i;
+      const processNonOpSection = (sourceStart, sourceCount, sourceCats, targetRangeDef, targetCatsList) => {
+        if (!targetRangeDef) return;
+        const values = sourceSheet.getRange(sourceStart, standardColumnToProcess, sourceCount).getValues().flat();
+        const dataMap = new Map();
+        sourceCats.forEach((cat, idx) => {
+          if (isValidExpenseCategory_(cat)) dataMap.set(cat.toString().trim(), values[idx] || 0);
+        });
+
+        const targetSectionRange = targetSheet.getRange(targetRangeDef.start, targetColumn, targetRangeDef.height, 1);
+        const targetSectionData = targetSectionRange.getValues();
+        const targetSectionFormulas = targetSectionRange.getFormulas();
+        const rowsToInit = [];
+
+        dataMap.forEach((val, cat) => {
+          if (!isValidExpenseCategory_(cat)) return;
+          const idx = targetCatsList.indexOf(cat);
+          if (idx !== -1) {
+            targetSectionData[idx][0] = val;
+          } else {
+            const blankIdx = targetCatsList.indexOf('');
+            if (blankIdx !== -1) {
+              targetCatsList[blankIdx] = cat;
+              targetSectionData[blankIdx][0] = val;
+              rowsToInit.push({
+                row: targetRangeDef.start + blankIdx,
+                name: cat,
+                defaults: DEFAULTS_NON_OP
+              });
+            } else {
+              warnings.push(`Warning: No blank rows available for "${cat}" in ${TARGET_SHEET_NAME}.`);
+            }
+          }
+        });
+
+        targetCatsList.forEach((cat, idx) => {
+          if (targetSectionFormulas[idx] && targetSectionFormulas[idx][0]) {
+            targetSectionData[idx][0] = targetSectionFormulas[idx][0];
+          } else if (cat && !dataMap.has(cat)) {
+            targetSectionData[idx][0] = 0;
+          }
+        });
+
+        targetSectionRange.setValues(targetSectionData);
+        targetSectionRange.setBackground(null);
+
+        rowsToInit.forEach(item => {
+          targetSheet.getRange(item.row, 1).setValue(sanitizeSheetCell_(item.name)).setBackground("#ffcc99");
+          const sRange = targetSheet.getRange(item.row, 2, 1, 5);
+          sRange.setValues([item.defaults]);
+          sRange.setBackground("#ffcc99");
+          targetSheet.getRange(item.row, targetColumn).setBackground("#ffcc99");
+          targetSheet.getRange(item.row, 1, 1, targetSheet.getLastColumn())
+            .setFontFamily('Arial')
+            .setFontSize(9);
+        });
+      };
+
+      if (nonOpIncRange) {
+        processNonOpSection(NON_OP_INC_START, NON_OP_INC_COUNT, nonOpIncCategories, nonOpIncRange, targetCatsNonOpInc);
+      }
+      if (nonOpExpRange) {
+        processNonOpSection(NON_OP_EXP_START, NON_OP_EXP_COUNT, nonOpExpCategories, nonOpExpRange, targetCatsNonOpExp);
+      }
+
       // 3. Update Depreciation Total
       const sourceDataE = sourceSheet.getRange("E:E").getValues().flat();
       const depreciationTotalIndex = sourceDataE.indexOf("Depreciation total");

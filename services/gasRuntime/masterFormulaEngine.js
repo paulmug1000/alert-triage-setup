@@ -2246,7 +2246,7 @@ export function evaluateKeyInfoAndPLComp(grids) {
       { plStart: 13, plEnd: 20, kiStart: 35 },   // B13:B20 = KeyInfo!BA35:BA42
       { plStart: 22, plEnd: 24, kiStart: 50 },   // B22:B24 = KeyInfo!BA50:BA52
       { plStart: 26, plEnd: 28, kiStart: 54 },   // B26:B28 = KeyInfo!BA54:BA56
-      { plStart: 30, plEnd: 47, kiStart: 59 },   // B30:B47 = KeyInfo!BA59:BA76
+      { plStart: 30, plEnd: 49, kiStart: 59 },   // B30:B49 = KeyInfo!BA59:BA78
       { plStart: 52, plEnd: 63, kiStart: 81 },   // B52:B63 = KeyInfo!BA81:BA92
       { plStart: 65, plEnd: 74, kiStart: 101 },  // B65:B74 = KeyInfo!BA101:BA110
       { plStart: 81, plEnd: 96, kiStart: 2 },    // B81:B96 = KeyInfo!BA2:BA17
@@ -2391,6 +2391,571 @@ export function evaluateKeyInfoAndPLComp(grids) {
 /**
  * Evaluates all Master Sheet formula pipelines in dependency order.
  */
+function networkdaysSerial_(startSerial, endSerial) {
+  if (startSerial === null || endSerial === null) return 0;
+  const s0 = Math.trunc(startSerial);
+  const s1 = Math.trunc(endSerial);
+  const sign = s1 >= s0 ? 1 : -1;
+  const lo = Math.min(s0, s1);
+  const hi = Math.max(s0, s1);
+  let count = 0;
+  for (let s = lo; s <= hi; s++) {
+    const dow = ((s + 6) % 7 + 7) % 7; // 0=Sun, 6=Sat (1899-12-30=Sat=0)
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return count * sign;
+}
+
+function firstOfNextMonthSerial_(prevSerial) {
+  if (prevSerial === null || prevSerial === "") return null;
+  const eo = eomonthSerial(prevSerial, 1);
+  if (eo === null || eo === "") return null;
+  const ymd = serialToYMD(eo);
+  if (!ymd || !ymd.month1) return null;
+  return ymdToSerial(ymd.year, ymd.month1, 1);
+}
+
+function iferrorDiv_(num, den) {
+  const n = toNumOrNull(num);
+  const d = toNumOrNull(den);
+  if (n === null || d === null || d === 0) return "";
+  return n / d;
+}
+
+function sumRangeCol_(grid, rStart, rEnd, c0) {
+  let total = 0;
+  const maxR = Math.min(rEnd, grid.length - 1);
+  for (let r0 = rStart; r0 <= maxR; r0++) {
+    total += toNumOrZero(getCell(grid, r0, c0));
+  }
+  return total;
+}
+
+export function evaluateTimeComp(grids) {
+  const tc = grids.TimeComp;
+  const ki = grids.KeyInfo;
+  if (!tc || !ki) return;
+
+  const fyStart = toSerialOrNull(getCell(ki, 1, 1)); // KeyInfo!$B$2
+  const workHoursPerDay = toNumOrZero(getCell(ki, 21, 1)); // KeyInfo!$B$22
+
+  // C10 = (SUMPRODUCT($B$12:$B$62, $C$12:$C$62))/count($B$12:$B$62)
+  let countB = 0;
+  let sumProdBC = 0;
+  const maxStaffRow = Math.min(61, tc.length - 1);
+  for (let r0 = 11; r0 <= maxStaffRow; r0++) {
+    const bNum = toNumOrNull(getCell(tc, r0, 1));
+    if (bNum !== null) {
+      countB++;
+      const cNum = toNumOrZero(getCell(tc, r0, 2));
+      sumProdBC += bNum * cNum;
+    }
+  }
+  const c10Val =
+    countB > 0
+      ? sumProdBC / countB
+      : "#DIV/0! (Function DIVIDE parameter 2 cannot be zero.)";
+  setCell(tc, 9, 2, c10Val);
+
+  // Locate month blocks by Row 8 ("Billable hrs logged") or default 36 blocks starting col M (12) every 13 cols
+  const blockCols = [];
+  const row8 = tc[7] || [];
+  for (let c0 = 12; c0 < row8.length; c0++) {
+    if (gsEq(row8[c0], "Billable hrs logged")) {
+      blockCols.push(c0);
+    }
+  }
+  if (blockCols.length === 0) {
+    for (let k = 0; k < 36; k++) {
+      blockCols.push(12 + k * 13);
+    }
+  }
+
+  const a10Blank = isBlankCell(getCell(tc, 9, 0));
+  let prevMonthSerial = fyStart;
+
+  for (let bIdx = 0; bIdx < blockCols.length; bIdx++) {
+    const baseC0 = blockCols[bIdx];
+    const monthSerial = bIdx === 0 ? fyStart : firstOfNextMonthSerial_(prevMonthSerial);
+    prevMonthSerial = monthSerial;
+
+    if (monthSerial !== null) {
+      setCell(tc, 3, baseC0, monthSerial); // R4: month start
+      const mStart = eomonthSerial(monthSerial, -1) + 1;
+      const mEnd = eomonthSerial(monthSerial, 0);
+      setCell(tc, 4, baseC0 + 1, networkdaysSerial_(mStart, mEnd)); // R5: working days
+    }
+
+    const workingDays = toNumOrZero(getCell(tc, 4, baseC0 + 1));
+
+    for (let r0 = 11; r0 <= maxStaffRow; r0++) {
+      const aVal = getCell(tc, r0, 0);
+      if (isBlankCell(aVal)) {
+        for (const off of [2, 4, 5, 6, 7, 8]) {
+          setCell(tc, r0, baseC0 + off, "");
+        }
+        continue;
+      }
+
+      const billableHrs = toNumOrZero(getCell(tc, r0, baseC0 + 0));
+      const totalLoggedHrs = toNumOrZero(getCell(tc, r0, baseC0 + 1));
+      const totalWorkingHrs = workingDays * workHoursPerDay;
+      const holidayHrs = toNumOrZero(getCell(tc, r0, baseC0 + 3));
+      const actualWorkingHrs = totalWorkingHrs - holidayHrs;
+      const missingHrs = actualWorkingHrs - totalLoggedHrs;
+      const missingPct = iferrorDiv_(missingHrs, actualWorkingHrs);
+      const utilPct = iferrorDiv_(billableHrs, actualWorkingHrs);
+      const cTarget = toNumOrNull(getCell(tc, r0, 2));
+      const utilTargetAch =
+        utilPct !== "" && cTarget !== null && cTarget !== 0
+          ? utilPct / cTarget
+          : "";
+
+      setCell(tc, r0, baseC0 + 2, totalWorkingHrs);
+      setCell(tc, r0, baseC0 + 4, actualWorkingHrs);
+      setCell(tc, r0, baseC0 + 5, missingHrs);
+      setCell(tc, r0, baseC0 + 6, missingPct);
+      setCell(tc, r0, baseC0 + 7, utilPct);
+      setCell(tc, r0, baseC0 + 8, utilTargetAch);
+    }
+
+    // Row 10 (r0=9) totals
+    const sums = [];
+    for (let off = 0; off <= 5; off++) {
+      const s = sumRangeCol_(tc, 11, 61, baseC0 + off);
+      sums[off] = s;
+      setCell(tc, 9, baseC0 + off, s);
+    }
+    if (a10Blank) {
+      setCell(tc, 9, baseC0 + 6, "");
+      setCell(tc, 9, baseC0 + 7, "");
+      setCell(tc, 9, baseC0 + 8, "");
+    } else {
+      const missPctTot = iferrorDiv_(sums[5], sums[4]);
+      const utilPctTot = iferrorDiv_(sums[0], sums[4]);
+      const utilAchTot =
+        utilPctTot !== "" && typeof c10Val === "number" && c10Val !== 0
+          ? utilPctTot / c10Val
+          : "";
+      setCell(tc, 9, baseC0 + 6, missPctTot);
+      setCell(tc, 9, baseC0 + 7, utilPctTot);
+      setCell(tc, 9, baseC0 + 8, utilAchTot);
+    }
+  }
+}
+
+export function evaluateYear0Data(grids) {
+  const y0 = grids.Year0Data;
+  const ki = grids.KeyInfo;
+  const y0Pl = grids.Year0PLFromApp;
+  if (!y0 || !ki) return;
+
+  const fyStart = toSerialOrNull(getCell(ki, 1, 1)); // KeyInfo!B2
+  if (fyStart !== null) {
+    const am1 = edateSerial(fyStart, -12);
+    const am2 = eomonthSerial(edateSerial(fyStart, -1), 0);
+    setCell(y0, 0, 38, am1); // AM1
+    setCell(y0, 1, 38, am2); // AM2
+    setCell(y0, 0, 56, am1); // BE1 = AM1
+    let prev = am1;
+    for (let m = 1; m < 12; m++) {
+      prev = firstOfNextMonthSerial_(prev);
+      setCell(y0, 0, 56 + m, prev !== null ? prev : "");
+    }
+  }
+
+  // Modern sheets map KeyInfo!BA2:BA78 -> Year0Data!AW; legacy sheets may have BA2:BA78 completely empty
+  // while Year0Data!AW already holds static category names. Only overwrite AW from KeyInfo!BA when
+  // KeyInfo!BA2:BA78 is populated (or Year0Data!AW has no legacy data).
+  let hasModernKeyInfoMapping = false;
+  for (let kr1 = 2; kr1 <= 78; kr1++) {
+    if (!isBlankCell(getCell(ki, kr1 - 1, 52))) {
+      hasModernKeyInfoMapping = true;
+      break;
+    }
+  }
+  if (!hasModernKeyInfoMapping) {
+    let anyLegacyAw = false;
+    for (let yr1 = 2; yr1 <= 72; yr1++) {
+      if (!isBlankCell(getCell(y0, yr1 - 1, 48))) {
+        anyLegacyAw = true;
+        break;
+      }
+    }
+    if (!anyLegacyAw) hasModernKeyInfoMapping = true;
+  }
+
+  const awKeyInfoSegments = [
+    { y0Start: 2, y0End: 17, kiStart: 2 },
+    { y0Start: 21, y0End: 34, kiStart: 19 },
+    { y0Start: 37, y0End: 48, kiStart: 35 },
+    { y0Start: 51, y0End: 53, kiStart: 50 },
+    { y0Start: 55, y0End: 72, kiStart: 59 },
+    { y0Start: 74, y0End: 104, kiStart: 128 },
+    { y0Start: 108, y0End: 140, kiStart: 162 },
+  ];
+  if (hasModernKeyInfoMapping) {
+    for (const seg of awKeyInfoSegments) {
+      for (let i = 0; i <= seg.y0End - seg.y0Start; i++) {
+        setCell(
+          y0,
+          seg.y0Start + i - 1,
+          48,
+          getCell(ki, seg.kiStart + i - 1, 52)
+        );
+      }
+    }
+  }
+
+  // Mirror AW -> BD for mapped sections (preserving bespoke manual BD labels when AW is blank in legacy mode)
+  const bdCopyRanges = [
+    [2, 19],
+    [21, 34],
+    [37, 48],
+    [51, 53],
+    [55, 72],
+  ];
+  for (const [rStart, rEnd] of bdCopyRanges) {
+    for (let r1 = rStart; r1 <= rEnd; r1++) {
+      const awVal = getCell(y0, r1 - 1, 48);
+      if (hasModernKeyInfoMapping || !isBlankCell(awVal)) {
+        setCell(y0, r1 - 1, 55, awVal);
+      }
+    }
+  }
+  if (isBlankCell(getCell(y0, 34, 55))) {
+    setCell(y0, 34, 55, "Dividends in lieu of salary");
+  }
+  if (isBlankCell(getCell(y0, 48, 55))) {
+    setCell(y0, 48, 55, "Dividends in lieu of salary");
+  }
+  setCell(y0, 19, 55, "Revenue total");
+  setCell(y0, 35, 55, "CoS staff costs total");
+  setCell(y0, 49, 55, "Non-CoS staff costs total");
+  setCell(y0, 53, 55, "Corporation tax total");
+  setCell(y0, 72, 55, "Costs of sale total");
+  setCell(y0, 75, 55, "Overheads total");
+  setCell(y0, 77, 55, "Overheads + corp tax total");
+  setCell(y0, 78, 55, "Operating profit including corp tax");
+  setCell(y0, 80, 55, "Overheads");
+
+  // Unmapped overheads spillover:
+  // CA2:CA502 = KeyInfo!BE2:BE502
+  // CB2:... = UNIQUE(AW2:AW538)
+  // CC2:... = FILTER(CA2:CA502, ISNA(MATCH(CA2:CA502, CB2:CB502, 0)))
+  // BD82:... = FILTER(CC2:CC502, CC2:CC502 <> "")
+  const usedAw = new Set();
+  for (let r0 = 1; r0 <= Math.min(537, y0.length - 1); r0++) {
+    const v = getCell(y0, r0, 48);
+    if (!isBlankCell(v)) usedAw.add(String(v).trim().toLowerCase());
+  }
+  const caList = [];
+  const ccList = [];
+  const kiLen = Math.min(502, ki.length);
+  for (let r0 = 1; r0 < kiLen; r0++) {
+    const v = getCell(ki, r0, 56); // KeyInfo!BE
+    setCell(y0, r0, 78, v); // CA
+    if (!isBlankCell(v)) {
+      caList.push(v);
+      if (!usedAw.has(String(v).trim().toLowerCase())) {
+        ccList.push(v);
+      }
+    }
+  }
+  let cbR0 = 1;
+  for (let r0 = 1; r0 <= Math.min(537, y0.length - 1); r0++) {
+    const v = getCell(y0, r0, 48);
+    if (!isBlankCell(v)) setCell(y0, cbR0++, 79, v); // CB (non-blank subset)
+  }
+  for (let i = 0; i < ccList.length && 1 + i <= 501; i++) {
+    setCell(y0, 1 + i, 80, ccList[i]); // CC
+  }
+  const clearEndCc = Math.min(501, y0.length - 1);
+  for (let r0 = 1 + ccList.length; r0 <= clearEndCc; r0++) {
+    setCell(y0, r0, 80, "");
+  }
+
+  const maxOverheadClearR0 = Math.max(81 + ccList.length - 1, Math.min(588, y0.length - 1));
+  for (let i = 0; i < ccList.length && 81 + i <= 588; i++) {
+    setCell(y0, 81 + i, 55, ccList[i]);
+  }
+  for (let r0 = 81 + ccList.length; r0 <= maxOverheadClearR0; r0++) {
+    setCell(y0, r0, 55, "");
+    for (let m = 0; m < 12; m++) setCell(y0, r0, 56 + m, "");
+    setCell(y0, r0, 69, "");
+  }
+
+  // Build Year0PLFromApp lookup index
+  const plRowMap = new Map();
+  const plColMap = new Map();
+  if (y0Pl && y0Pl.length > 0) {
+    const hRow = y0Pl[0] || [];
+    for (let c0 = 0; c0 < Math.min(104, hRow.length); c0++) {
+      const hVal = hRow[c0];
+      if (!isBlankCell(hVal)) {
+        const ser = toSerialOrNull(hVal);
+        const key = ser !== null ? `N:${ser}` : `S:${String(hVal).trim().toLowerCase()}`;
+        if (!plColMap.has(key)) plColMap.set(key, c0);
+      }
+    }
+    const maxPlR0 = Math.min(299, y0Pl.length - 1);
+    for (let r0 = 0; r0 <= maxPlR0; r0++) {
+      const cat = getCell(y0Pl, r0, 0);
+      if (!isBlankCell(cat)) {
+        const k = String(cat).trim().toLowerCase();
+        if (!plRowMap.has(k)) plRowMap.set(k, r0);
+      }
+    }
+  }
+
+  const beMonthCols = [];
+  for (let m = 0; m < 12; m++) {
+    const hVal = getCell(y0, 0, 56 + m);
+    if (isBlankCell(hVal)) {
+      beMonthCols.push(-1);
+    } else {
+      const ser = toSerialOrNull(hVal);
+      const key = ser !== null ? `N:${ser}` : `S:${String(hVal).trim().toLowerCase()}`;
+      beMonthCols.push(plColMap.has(key) ? plColMap.get(key) : -1);
+    }
+  }
+
+  const fillLookupRow = (r1) => {
+    const r0 = r1 - 1;
+    const cat = getCell(y0, r0, 55);
+    const catKey = !isBlankCell(cat) ? String(cat).trim().toLowerCase() : "";
+    const plR0 = catKey && plRowMap.has(catKey) ? plRowMap.get(catKey) : -1;
+    // Preserve bespoke manual BD rows (e.g. split percentages) when AW is blank in legacy mode
+    if (
+      !hasModernKeyInfoMapping &&
+      isBlankCell(getCell(y0, r0, 48)) &&
+      catKey &&
+      plR0 < 0
+    ) {
+      let existingSum = 0;
+      for (let m = 0; m < 12; m++) existingSum += toNumOrZero(getCell(y0, r0, 56 + m));
+      setCell(y0, r0, 69, existingSum);
+      return;
+    }
+    let rowSum = 0;
+    for (let m = 0; m < 12; m++) {
+      const plC0 = beMonthCols[m];
+      if (plR0 >= 0 && plC0 >= 0) {
+        const raw = getCell(y0Pl, plR0, plC0);
+        const val = isBlankCell(raw) ? "" : raw;
+        setCell(y0, r0, 56 + m, val);
+        rowSum += toNumOrZero(val);
+      } else {
+        setCell(y0, r0, 56 + m, "");
+      }
+    }
+    setCell(y0, r0, 69, rowSum); // BR
+  };
+
+  for (let r1 = 2; r1 <= 19; r1++) fillLookupRow(r1);
+  for (let r1 = 21; r1 <= 34; r1++) fillLookupRow(r1);
+  // BR35 = SUM(BE35:BP35)
+  let sum35 = 0;
+  for (let m = 0; m < 12; m++) sum35 += toNumOrZero(getCell(y0, 34, 56 + m));
+  setCell(y0, 34, 69, sum35);
+
+  for (let r1 = 37; r1 <= 48; r1++) fillLookupRow(r1);
+  let sum49 = 0;
+  for (let m = 0; m < 12; m++) sum49 += toNumOrZero(getCell(y0, 48, 56 + m));
+  setCell(y0, 48, 69, sum49);
+
+  for (let r1 = 51; r1 <= 53; r1++) fillLookupRow(r1);
+  for (let r1 = 55; r1 <= 72; r1++) fillLookupRow(r1);
+  const lastActiveOverheadR1 = Math.min(589, Math.max(81 + ccList.length, 82));
+  for (let r1 = 82; r1 <= lastActiveOverheadR1; r1++) fillLookupRow(r1);
+
+  // Section totals BE..BP (c0=56..67) and BR (c0=69)
+  const writeSectionSum = (targetR1, startR1, endR1) => {
+    const tR0 = targetR1 - 1;
+    let grand = 0;
+    for (let m = 0; m < 12; m++) {
+      const s = sumRangeCol_(y0, startR1 - 1, endR1 - 1, 56 + m);
+      setCell(y0, tR0, 56 + m, s);
+      grand += s;
+    }
+    setCell(y0, tR0, 69, grand);
+  };
+  writeSectionSum(20, 2, 19);
+  writeSectionSum(36, 21, 35);
+  writeSectionSum(50, 37, 49);
+  writeSectionSum(54, 51, 53);
+  writeSectionSum(73, 55, 72);
+  writeSectionSum(76, 82, 589);
+
+  for (let m = 0; m < 12; m++) {
+    const c0 = 56 + m;
+    const r76 = toNumOrZero(getCell(y0, 75, c0));
+    const r54 = toNumOrZero(getCell(y0, 53, c0));
+    setCell(y0, 77, c0, r76 + r54);
+    const op =
+      toNumOrZero(getCell(y0, 19, c0)) -
+      toNumOrZero(getCell(y0, 35, c0)) -
+      toNumOrZero(getCell(y0, 49, c0)) -
+      r54 -
+      toNumOrZero(getCell(y0, 72, c0)) -
+      r76;
+    setCell(y0, 78, c0, op);
+  }
+  let grand78 = 0;
+  for (let m = 0; m < 12; m++) grand78 += toNumOrZero(getCell(y0, 77, 56 + m));
+  setCell(y0, 77, 69, grand78);
+  setCell(
+    y0,
+    78,
+    69,
+    toNumOrZero(getCell(y0, 19, 69)) -
+      toNumOrZero(getCell(y0, 35, 69)) -
+      toNumOrZero(getCell(y0, 49, 69)) -
+      toNumOrZero(getCell(y0, 53, 69)) -
+      toNumOrZero(getCell(y0, 72, 69)) -
+      toNumOrZero(getCell(y0, 75, 69))
+  );
+
+  // Left summary columns G..R (c0=6..17) and T (c0=19)
+  for (let m = 0; m < 12; m++) {
+    setCell(y0, 0, 6 + m, getCell(y0, 0, 56 + m)); // G1:R1 = BE1:BP1
+  }
+  const r1Serial = toSerialOrNull(getCell(y0, 0, 17));
+  if (r1Serial !== null) {
+    const r1Ymd = serialToYMD(r1Serial);
+    if (r1Ymd) {
+      setCell(y0, 0, 19, `FY${String(r1Ymd.year).slice(-2)} total`);
+    }
+  }
+
+  const kiB15 = getCell(ki, 14, 1); // KeyInfo!$B$15
+  const kiB16 = getCell(ki, 15, 1); // KeyInfo!$B$16
+  const kiD8 = getCell(ki, 7, 3); // KeyInfo!$D$8
+  const isIncOrContr = gsEq(kiB15, "Income") || gsEq(kiD8, "Contractors");
+  const b16No = gsEq(kiB16, "No");
+
+  // Optional Performance sync if Performance grid was passed in
+  const perf = grids.Performance;
+  if (perf) {
+    const copyPerfRow = (y0R1, perfR1, cols) => {
+      for (const c0 of cols) setCell(y0, y0R1 - 1, c0, getCell(perf, perfR1 - 1, c0));
+    };
+    const mAndTot = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19];
+    copyPerfRow(2, 2, mAndTot);
+    copyPerfRow(3, 20, [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+    copyPerfRow(11, 28, [0, 1, 2, 3, 4, ...mAndTot]);
+    copyPerfRow(15, 32, mAndTot);
+    copyPerfRow(17, 34, mAndTot);
+    copyPerfRow(19, 36, mAndTot);
+    copyPerfRow(25, 42, mAndTot);
+  }
+
+  const ratioSignVal = (num, den) => {
+    const n = toNumOrNull(num);
+    const d = toNumOrNull(den);
+    if (n === null || d === null || d === 0) return "";
+    return (n / d) * (n < 0 && d < 0 ? -1 : 1);
+  };
+
+  for (let m = 0; m < 12; m++) {
+    const c0 = 6 + m;
+    const beC0 = 56 + m;
+
+    const be20 = getCell(y0, 19, beC0);
+    setCell(y0, 3, c0, be20); // R4
+    const r9 =
+      toNumOrZero(be20) +
+      toNumOrZero(getCell(y0, 4, c0)) +
+      toNumOrZero(getCell(y0, 5, c0)) +
+      toNumOrZero(getCell(y0, 6, c0)) +
+      toNumOrZero(getCell(y0, 7, c0));
+    setCell(y0, 8, c0, r9); // R9
+
+    const be36 = toNumOrZero(getCell(y0, 35, beC0));
+    const be50 = toNumOrZero(getCell(y0, 49, beC0));
+    const be73 = toNumOrZero(getCell(y0, 72, beC0));
+    const be76 = toNumOrZero(getCell(y0, 75, beC0));
+
+    const r12 = b16No ? "" : be36;
+    const r13 = b16No ? "" : isIncOrContr ? be73 : 0;
+    const r14 = b16No ? "" : isIncOrContr ? "" : be73;
+    const r15 = getCell(y0, 14, c0);
+    const r16 = b16No
+      ? ""
+      : toNumOrZero(r12) + toNumOrZero(r13) + toNumOrZero(r14) + toNumOrZero(r15);
+    const r18 = b16No ? "" : r9 - toNumOrZero(r16);
+
+    setCell(y0, 11, c0, r12);
+    setCell(y0, 12, c0, r13);
+    setCell(y0, 13, c0, r14);
+    setCell(y0, 15, c0, r16);
+    setCell(y0, 17, c0, r18);
+    setCell(y0, 19, c0, iferrorDiv_(r18 === "" ? 0 : r18, r9));
+
+    const r23 = b16No ? be36 + be50 : be50;
+    const r24 = b16No ? be73 + be76 : be76;
+    const r25 = getCell(y0, 24, c0);
+    const r26 = r23 + r24 + toNumOrZero(r25);
+    const r30 = b16No ? r9 - r26 : toNumOrZero(r18) - r26;
+
+    setCell(y0, 22, c0, r23);
+    setCell(y0, 23, c0, r24);
+    setCell(y0, 25, c0, r26);
+    setCell(y0, 27, c0, iferrorDiv_(r26, r9));
+    setCell(y0, 29, c0, r30);
+    setCell(y0, 31, c0, ratioSignVal(r30, r9));
+    setCell(y0, 33, c0, iferrorDiv_(b16No ? r23 : toNumOrZero(r12) + r23, r9));
+  }
+
+  // Column T (c0=19) totals & ratios
+  const sumHoriz = (r1) => {
+    const r0 = r1 - 1;
+    let tot = 0;
+    for (let c0 = 6; c0 <= 17; c0++) tot += toNumOrZero(getCell(y0, r0, c0));
+    return tot;
+  };
+  for (const r1 of [4, 5, 6, 9, 12, 13, 14, 16, 18, 23, 24, 26, 30]) {
+    setCell(y0, r1 - 1, 19, sumHoriz(r1));
+  }
+  const t9 = toNumOrZero(getCell(y0, 8, 19));
+  const t12 = toNumOrZero(getCell(y0, 11, 19));
+  const t18 = toNumOrZero(getCell(y0, 17, 19));
+  const t23 = toNumOrZero(getCell(y0, 22, 19));
+  const t26 = toNumOrZero(getCell(y0, 25, 19));
+  const t30 = toNumOrZero(getCell(y0, 29, 19));
+  setCell(y0, 19, 19, iferrorDiv_(t18, t9));
+  setCell(y0, 27, 19, iferrorDiv_(t26, t9));
+  setCell(y0, 31, 19, ratioSignVal(t30, t9));
+  setCell(y0, 33, 19, iferrorDiv_(b16No ? t23 : t12 + t23, t9));
+
+  // Quarterly summary blocks Q1..Q4 (G=6, J=9, M=12, P=15)
+  const quarters = [
+    { targetC0: 6, startC0: 6 },
+    { targetC0: 9, startC0: 9 },
+    { targetC0: 12, startC0: 12 },
+    { targetC0: 15, startC0: 15 },
+  ];
+  for (const q of quarters) {
+    const qSum = (srcR1) => {
+      let s = 0;
+      for (let c = q.startC0; c < q.startC0 + 3; c++) s += toNumOrZero(getCell(y0, srcR1 - 1, c));
+      return s;
+    };
+    const q47 = qSum(9);
+    const q49 = qSum(16);
+    const q51 = qSum(18);
+    const q55 = qSum(26);
+    const q57 = qSum(30);
+    setCell(y0, 46, q.targetC0, q47);
+    setCell(y0, 48, q.targetC0, q49);
+    setCell(y0, 50, q.targetC0, q51);
+    setCell(y0, 52, q.targetC0, b16No ? "" : iferrorDiv_(q51, q47));
+    setCell(y0, 54, q.targetC0, q55);
+    setCell(y0, 56, q.targetC0, q57);
+    setCell(y0, 58, q.targetC0, ratioSignVal(q57, q47));
+  }
+}
+
 export function evaluateAllMasterFormulas(grids, options = {}) {
   const { onlyTabs = null } = options;
   const shouldRun = (t) => !onlyTabs || onlyTabs.includes(t);
@@ -2407,7 +2972,11 @@ export function evaluateAllMasterFormulas(grids, options = {}) {
   if (shouldRun("CRMList") || shouldRun("CRMComp")) evaluateCRMList(grids);
   if (shouldRun("CRMComp")) evaluateCRMComp(grids);
 
-  if (shouldRun("KeyInfo") || shouldRun("PLComp")) evaluateKeyInfoAndPLComp(grids);
+  if (shouldRun("KeyInfo") || shouldRun("PLComp") || shouldRun("Year0Data")) {
+    evaluateKeyInfoAndPLComp(grids);
+  }
+  if (shouldRun("KeyInfo") || shouldRun("Year0Data")) evaluateYear0Data(grids);
+  if (shouldRun("KeyInfo") || shouldRun("TimeComp")) evaluateTimeComp(grids);
 
   for (const tName of [
     "InvAppList",
@@ -2420,6 +2989,8 @@ export function evaluateAllMasterFormulas(grids, options = {}) {
     "CRMComp",
     "PLComp",
     "KeyInfo",
+    "Year0Data",
+    "TimeComp",
   ]) {
     if (grids[tName]) compactGridInPlace(grids[tName]);
   }

@@ -1091,6 +1091,7 @@ export default function ReportingTab({
           action: "eom_add_zero_budget_category",
           masterSheetId: overheadModalClient.masterSheetId || overheadModalClient.masterSheetUrl,
           clientName: overheadModalClient.clientName,
+          reportMonthKey: selectedReportMonthKey,
           categories: list,
           checkboxOverrides,
           automationCommanderSheetId

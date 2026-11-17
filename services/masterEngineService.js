@@ -19,6 +19,8 @@ import {
   evaluateCRMList,
   evaluateCRMComp,
   evaluateKeyInfoAndPLComp,
+  evaluateTimeComp,
+  evaluateYear0Data,
   compactGrid2D,
 } from "./gasRuntime/masterFormulaEngine.js";
 import { recalculateClientGrids } from "./gasRuntime/clientFormulaEngine.js";
@@ -1296,8 +1298,16 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     tabsSet.has("ConfCalcs") ||
     tabsSet.has("Outgoings") ||
     tabsSet.has("OutgNotes");
+  const needsYear0 =
+    tabsSet.has("Year0PLFromApp") ||
+    tabsSet.has("Year0Data") ||
+    tabsSet.has("KeyInfo");
+  const needsTime =
+    tabsSet.has("DataFromTime") ||
+    tabsSet.has("TimeComp") ||
+    tabsSet.has("KeyInfo");
 
-  if (!needsCrm && !needsPl && !needsInv && !needsDir) return;
+  if (!needsCrm && !needsPl && !needsInv && !needsDir && !needsYear0 && !needsTime) return;
 
   const masterTabsNeeded = new Set(["KeyInfo", "DataChgAlert"]);
   if (needsCrm) {
@@ -1315,6 +1325,12 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     ["JnlsFromApp", "JnlAppList", "DirDashList", "DirComp", "ConfCalcs", "Outgoings", "OutgNotes"].forEach((t) =>
       masterTabsNeeded.add(t)
     );
+  }
+  if (needsYear0) {
+    ["Year0Data", "Year0PLFromApp"].forEach((t) => masterTabsNeeded.add(t));
+  }
+  if (needsTime) {
+    ["TimeComp", "DataFromTime"].forEach((t) => masterTabsNeeded.add(t));
   }
 
   const grids = {};
@@ -1370,7 +1386,7 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     dirtyOut.add("CRMList");
     dirtyOut.add("CRMComp");
   }
-  if (needsPl || needsCrm) {
+  if (needsPl || needsCrm || needsYear0) {
     if (tabsSet.has("KeyInfo") || tabsSet.has("Outgoings")) {
       evaluateOutgoingsMasterTab(grids);
       dirtyOut.add("Outgoings");
@@ -1378,6 +1394,14 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     evaluateKeyInfoAndPLComp(grids);
     dirtyOut.add("KeyInfo");
     if (needsPl) dirtyOut.add("PLComp");
+  }
+  if (needsYear0 && grids.Year0Data?.length > 0) {
+    evaluateYear0Data(grids);
+    dirtyOut.add("Year0Data");
+  }
+  if (needsTime && grids.TimeComp?.length > 0) {
+    evaluateTimeComp(grids);
+    dirtyOut.add("TimeComp");
   }
   if (needsInv) {
     evaluateInvAppList(grids);

@@ -19,6 +19,7 @@ import { fetchPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
 import { fetchPulseActivity } from "./pulseLogger.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, filterClientsForUser, matchesClientName, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
+import { getAllClients } from "./workspaces.js";
 import { sanitizeSpreadsheetTerms } from "../utils/helpers.js";
 
 const REDIS_ACTIVITY_PREFIX = "pulse:activity:";
@@ -1431,25 +1432,14 @@ export async function handleGetActivity(req, res, sheets) {
 
     let clientsList = (sessionUser.isAdmin && Array.isArray(clients)) ? clients : [];
 
-    // If client list was not supplied by caller (or caller is non-admin), load canonical list from AutoUpdates
-    if (clientsList.length === 0 && acId) {
-      const resp = await withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: acId,
-          range: "AutoUpdates!A2:N500",
-        })
-      );
-      const rows = resp.data.values || [];
-      for (const row of rows) {
-        const cName = String(row[0] || "").trim();
-        const clientSheetUrl = row[11];
-        const masterSheetUrl = row[12];
-        if (!cName || !clientSheetUrl) continue;
-        if (cName.toLowerCase() === "client" || cName.toLowerCase() === "client name") continue;
-        const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
-        const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
-        clientsList.push({ clientName: cName, clientSheetId, masterSheetId });
-      }
+    // If client list was not supplied by caller (or caller is non-admin), load canonical list from Supabase/workspaces
+    if (clientsList.length === 0) {
+      const allRes = await getAllClients(sheets, sessionUser, false, acId);
+      clientsList = (allRes?.clientsArray || []).map(c => ({
+        clientName: c.clientName,
+        clientSheetId: c.clientSheetId,
+        masterSheetId: c.masterSheetId,
+      }));
     }
 
     // 1. Single Client or System View

@@ -5,6 +5,7 @@ import { logClaudeUsage_ } from "./systemConfig";
 import { monthStrToEomKey_, eomTargetMonthToWorkMonth_, autoCompleteLinkedEomTask_ } from "./eomTools";
 import { getSessionUser } from "./authService";
 import { DEFAULT_AC_SHEET_ID, isUserAuthorizedForClient, resolveClientNameBySheetId, verifyUserAuthorizedForSheet, isReadOnlySession } from "./userPermissions";
+import { getAllClients } from "./workspaces";
 
 const SAFE_UPLOAD_ID_REGEX = /^[a-zA-Z0-9_-]{4,80}$/;
 
@@ -532,10 +533,14 @@ export async function handleIdentifyPayrollClient(req, res, sheets) {
     return res.status(status).json({ success: false, error: err.message });
   }
   try {
-    const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: idAcId, range: "AutoUpdates!A2:N500" });
-    const allClients = (clientResp.data.values || []).map(r => ({
-      clientName: String(r[0] || "").trim(), clientSheetId: extractSheetIdFromUrl(r[11]) || String(r[11]).trim()
-    })).filter(c => c.clientName && c.clientSheetId && c.clientName.toLowerCase() !== "client" && (() => { const u = getSessionUser(req); return u && (u.isAdmin || isUserAuthorizedForClient(u, c.clientName)); })());
+    const sessionUser = getSessionUser(req);
+    const clientsRes = await getAllClients(sheets, sessionUser, false, idAcId);
+    const allClients = (clientsRes?.clientsArray || [])
+      .map(c => ({
+        clientName: String(c.clientName || "").trim(),
+        clientSheetId: String(c.clientSheetId || "").trim(),
+      }))
+      .filter(c => c.clientName && c.clientSheetId && sessionUser && (sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, c.clientName)));
 
     if (fileName) {
       const fnMatch = findClientByNameMatch_(fileName, allClients);
@@ -596,10 +601,14 @@ export async function handleIdentifyTimeClient(req, res, sheets) {
     return res.status(status).json({ success: false, error: err.message });
   }
   try {
-    const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: idAcId, range: "AutoUpdates!A2:N500" });
-    const allClients = (clientResp.data.values || []).map(r => ({
-      clientName: String(r[0] || "").trim(), masterSheetId: extractSheetIdFromUrl(r[12]) || String(r[12]).trim()
-    })).filter(c => c.clientName && c.masterSheetId && c.clientName.toLowerCase() !== "client" && (() => { const u = getSessionUser(req); return u && (u.isAdmin || isUserAuthorizedForClient(u, c.clientName)); })());
+    const sessionUser = getSessionUser(req);
+    const clientsRes = await getAllClients(sheets, sessionUser, false, idAcId);
+    const allClients = (clientsRes?.clientsArray || [])
+      .map(c => ({
+        clientName: String(c.clientName || "").trim(),
+        masterSheetId: String(c.masterSheetId || "").trim(),
+      }))
+      .filter(c => c.clientName && c.masterSheetId && sessionUser && (sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, c.clientName)));
 
     if (fileName) {
       const fnMatch = findClientByNameMatch_(fileName, allClients);

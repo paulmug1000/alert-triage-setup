@@ -15,7 +15,7 @@ import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheets
 import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, resolveClientNameBySheetId, canAccessPma, installSheetIdBoundary } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
 import { getSessionUser } from "../../../services/authService.js";
-import { getSupabaseAdmin } from "../../../services/supabaseClient.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "../../../services/supabaseClient.js";
 import { redisClient } from "../../../services/redisClient.js";
 
 async function getExcludedClientNamesSet_() {
@@ -32,7 +32,7 @@ async function getExcludedClientNamesSet_() {
         excluded.add(String(c.client_name).trim().toLowerCase());
       }
     }
-  } catch (_) {}
+  } catch (_) { }
   return excluded;
 }
 
@@ -191,13 +191,26 @@ export default async function handler(req, res) {
     }
 
     try {
-      const sheets = await getSheetsClient();
-      const resp = await sheets.spreadsheets.values.get({
-        spreadsheetId: DEFAULT_AC_SHEET_ID,
-        range: "AutoUpdates!A2:AJ500"
-      });
-      const rows = resp.data.values || [];
-      let clients = rows
+      const supaActive = isSupabaseConfigured() && await isSupabaseControlPlaneActive();
+      const sheets = await getSheetsClient().catch(() => null);
+      let rows = [];
+      if (sheets) {
+        try {
+          const resp = await sheets.spreadsheets.values.get({
+            spreadsheetId: DEFAULT_AC_SHEET_ID,
+            range: "AutoUpdates!A2:AJ500",
+            _allowRetiredControlPlaneRead: true,
+          });
+          rows = resp.data.values || [];
+        } catch (sheetErr) {
+          if (!supaActive) throw sheetErr;
+          console.warn("AutoUpdates read fallback notice in /api/integrations/status:", sheetErr.message);
+        }
+      } else if (!supaActive) {
+        throw new Error("Unable to initialize Google Sheets client.");
+      }
+
+      const autoUpdatesClients = rows
         .map((r, idx) => {
           const clientName = String(r[0] || "").trim();
           const clientSheetId = extractSheetIdFromUrl(r[11]) || String(r[11] || "").trim();
@@ -233,6 +246,72 @@ export default async function handler(req, res) {
         .filter(c => c.clientName && c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name" && c.masterSheetId);
 
       const excludedClientNamesSet = await getExcludedClientNamesSet_();
+      let clients = [];
+
+      if (supaActive) {
+        const sb = getSupabaseAdmin();
+        const { data: sbClients, error: sbErr } = await sb
+          .from("clients")
+          .select("*")
+          .order("client_name", { ascending: true });
+        if (!sbErr && Array.isArray(sbClients) && sbClients.length > 0) {
+          const autoUpdatesByName = new Map(
+            autoUpdatesClients.map(c => [c.clientName.toLowerCase(), c])
+          );
+          const seenNames = new Set();
+          const defaultAuto = evaluateAutomationHealth({});
+
+          for (const sc of sbClients) {
+            const cName = String(sc?.client_name || "").trim();
+            if (!cName) continue;
+            const eff = String(sc?.metadata?.statusOverride || sc?.status || "live").trim().toLowerCase();
+            if (["inactive", "archived", "suspended"].includes(eff)) continue;
+
+            const normKey = String(sc?.normalized_key || "").trim();
+            const au = autoUpdatesByName.get(cName.toLowerCase());
+            const resolvedClientSheetId =
+              String(sc?.client_sheet_id || "").trim() ||
+              (sc?.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "") ||
+              au?.clientSheetId ||
+              "";
+            const resolvedMasterSheetId =
+              String(sc?.master_sheet_id || "").trim() ||
+              (sc?.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "") ||
+              au?.masterSheetId ||
+              "";
+            if (!resolvedMasterSheetId && sc?.master_mode !== "supabase") continue;
+
+            seenNames.add(cName.toLowerCase());
+            clients.push({
+              clientName: cName,
+              clientSheetId: resolvedClientSheetId,
+              masterSheetId: resolvedMasterSheetId,
+              clientMode: sc?.client_mode || "sheets",
+              masterMode: sc?.master_mode || "sheets",
+              autoUpdatesRow: au?.autoUpdatesRow || null,
+              crmAuto: au?.crmAuto || defaultAuto,
+              accAuto: au?.accAuto || defaultAuto,
+              fallbackConfig: {
+                accountingTool: sc?.metadata?.accountingTool || "None",
+                crmTool: sc?.metadata?.crmTool || "None",
+                crmDrives: sc?.metadata?.crmDrives || "NA",
+                setupMode: Boolean(sc?.metadata?.setupMode),
+              },
+            });
+          }
+
+          for (const au of autoUpdatesClients) {
+            if (!seenNames.has(au.clientName.toLowerCase()) && !excludedClientNamesSet.has(au.clientName.toLowerCase())) {
+              clients.push(au);
+            }
+          }
+        } else {
+          clients = autoUpdatesClients;
+        }
+      } else {
+        clients = autoUpdatesClients;
+      }
+
       if (excludedClientNamesSet.size > 0) {
         clients = clients.filter(
           c => !excludedClientNamesSet.has(String(c?.clientName || "").trim().toLowerCase())
@@ -248,12 +327,17 @@ export default async function handler(req, res) {
 
       const ALL_TOOLS = ["xero", "quickbooks", "monday", "pipedrive", "clickup", "capsule", "close", "hubspot", "googlesheet", "excel"];
 
-      // Fetch configs and integration statuses for each client in exact AutoUpdates order
+      // Fetch configs and integration statuses for each client
       const clientConfigs = await Promise.all(
         clients.map(async (c) => {
           try {
             const [cfg, ...toolStatuses] = await Promise.all([
-              getClientSetupConfig({ clientName: c.clientName, masterSheetId: c.masterSheetId, forceSheetSync: forceRefresh }),
+              getClientSetupConfig({
+                clientName: c.clientName,
+                masterSheetId: c.masterSheetId,
+                clientSheetId: c.clientSheetId,
+                forceSheetSync: forceRefresh,
+              }),
               ...ALL_TOOLS.map(tool => getIntegrationStatus({
                 clientKey: c.clientName,
                 masterSheetId: c.masterSheetId,
@@ -266,9 +350,20 @@ export default async function handler(req, res) {
               integrations[tool] = toolStatuses[idx] || { connected: false, tool };
             });
 
-            const crmToolClean = String(cfg.crmTool || "").toLowerCase();
+            const effectiveAccTool = (cfg.accountingTool && cfg.accountingTool !== "None")
+              ? cfg.accountingTool
+              : (!cfg.updatedAt && c.fallbackConfig?.accountingTool ? c.fallbackConfig.accountingTool : (cfg.accountingTool || "None"));
+            const effectiveCrmTool = (cfg.crmTool && cfg.crmTool !== "None")
+              ? cfg.crmTool
+              : (!cfg.updatedAt && c.fallbackConfig?.crmTool ? c.fallbackConfig.crmTool : (cfg.crmTool || "None"));
+            const effectiveCrmDrives = (cfg.crmDrives && cfg.crmDrives !== "NA")
+              ? cfg.crmDrives
+              : (!cfg.updatedAt && c.fallbackConfig?.crmDrives ? c.fallbackConfig.crmDrives : (cfg.crmDrives || "NA"));
+            const effectiveSetupMode = Boolean(cfg.setupMode || (!cfg.updatedAt && c.fallbackConfig?.setupMode));
+
+            const crmToolClean = String(effectiveCrmTool || "").toLowerCase();
             const crmKey = crmToolClean.includes("sheet") ? "googlesheet" : crmToolClean.includes("excel") ? "excel" : crmToolClean;
-            let crmStatus = integrations[crmKey] || { connected: false, tool: cfg.crmTool };
+            let crmStatus = integrations[crmKey] || { connected: false, tool: effectiveCrmTool };
             if (!crmStatus.connected && cfg.crmStatus?.connected) {
               crmStatus = cfg.crmStatus;
               integrations[crmKey] = crmStatus;
@@ -280,13 +375,13 @@ export default async function handler(req, res) {
               masterSheetId: c.masterSheetId,
               autoUpdatesRow: c.autoUpdatesRow,
               rowNumber: c.autoUpdatesRow,
-              accountingTool: cfg.accountingTool || "None",
-              accountingStatus: integrations[String(cfg.accountingTool || "").toLowerCase()] || { connected: false, tool: cfg.accountingTool },
-              crmTool: cfg.crmTool || "None",
+              accountingTool: effectiveAccTool || "None",
+              accountingStatus: integrations[String(effectiveAccTool || "").toLowerCase()] || { connected: false, tool: effectiveAccTool },
+              crmTool: effectiveCrmTool || "None",
               crmStatus,
-              crmDrives: cfg.crmDrives || "NA",
-              setupMode: Boolean(cfg.setupMode),
-              isSetupMode: Boolean(cfg.setupMode),
+              crmDrives: effectiveCrmDrives || "NA",
+              setupMode: effectiveSetupMode,
+              isSetupMode: effectiveSetupMode,
               requestConnections: Boolean(cfg.requestConnections),
               allRequiredToolsConnected: Boolean(cfg.allRequiredToolsConnected),
               integrations,
@@ -372,30 +467,30 @@ export default async function handler(req, res) {
       const scopedClientConfigs = sessionUser.isAdmin
         ? clientConfigs
         : clientConfigs.map(c => {
-            const copy = { ...c };
-            if (copy.integrations?.xero) {
-              copy.integrations = {
-                ...copy.integrations,
-                xero: {
-                  ...copy.integrations.xero,
-                  availableTenants: [],
-                  metadata: copy.integrations.xero.metadata
-                    ? { ...copy.integrations.xero.metadata, availableTenants: [] }
-                    : copy.integrations.xero.metadata
-                }
-              };
-            }
-            if (copy.accountingStatus) {
-              copy.accountingStatus = {
-                ...copy.accountingStatus,
+          const copy = { ...c };
+          if (copy.integrations?.xero) {
+            copy.integrations = {
+              ...copy.integrations,
+              xero: {
+                ...copy.integrations.xero,
                 availableTenants: [],
-                metadata: copy.accountingStatus.metadata
-                  ? { ...copy.accountingStatus.metadata, availableTenants: [] }
-                  : copy.accountingStatus.metadata
-              };
-            }
-            return copy;
-          });
+                metadata: copy.integrations.xero.metadata
+                  ? { ...copy.integrations.xero.metadata, availableTenants: [] }
+                  : copy.integrations.xero.metadata
+              }
+            };
+          }
+          if (copy.accountingStatus) {
+            copy.accountingStatus = {
+              ...copy.accountingStatus,
+              availableTenants: [],
+              metadata: copy.accountingStatus.metadata
+                ? { ...copy.accountingStatus.metadata, availableTenants: [] }
+                : copy.accountingStatus.metadata
+            };
+          }
+          return copy;
+        });
 
       return res.status(200).json({
         success: true,

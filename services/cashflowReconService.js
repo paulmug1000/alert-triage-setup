@@ -5,6 +5,7 @@ import { parseMonthHeader, FULL_MONTH_NAMES } from "./viewsService.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { matchesClientName } from "./userPermissions.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 
 
 // Google Sheets light green 3 (used on Incredibble Cash tab)
@@ -926,7 +927,24 @@ async function ensureClientReconSheetUrl_(sheets, cleanClientSheetId, automation
     if (curVal && String(curVal).trim().startsWith("http")) return curVal;
 
     let reconUrl = "";
-    if (automationCommanderSheetId) {
+    if (isSupabaseConfigured() && await isSupabaseControlPlaneActive()) {
+      const sb = getSupabaseAdmin();
+      const { data: sbClients } = await sb
+        .from("clients")
+        .select("client_name, client_sheet_id, recon_sheet_url, recon_sheet_id");
+      const sbMatch = (sbClients || []).find(
+        c => matchesClientName(c.client_name, clientName) || (cleanClientSheetId && String(c.client_sheet_id || "").includes(cleanClientSheetId))
+      );
+      if (sbMatch) {
+        const rawRecon = String(sbMatch.recon_sheet_url || sbMatch.recon_sheet_id || "").trim();
+        if (rawRecon && !rawRecon.startsWith("sb-")) {
+          reconUrl = rawRecon.startsWith("http")
+            ? rawRecon
+            : `https://docs.google.com/spreadsheets/d/${rawRecon}/edit`;
+        }
+      }
+    }
+    if (!reconUrl && automationCommanderSheetId) {
       const acRes = await withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: automationCommanderSheetId,
         range: "AutoUpdates!A2:O100"

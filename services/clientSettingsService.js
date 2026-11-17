@@ -18,7 +18,7 @@
 import { getSheetsClient, withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
-import { clearAllClientsMemoryCache } from "./workspaces.js";
+import { clearAllClientsMemoryCache, getClientWebAppUrl } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import { del2TierCache, invalidatePmaClientCache } from "./cacheService.js";
@@ -1425,13 +1425,7 @@ export async function refreshChartOfAccountsService({ clientName, masterSheetId 
     if (supaCtx && supaCtx.masterMode === "supabase") {
       gasResult = await refreshNativeChartOfAccounts(sheets, supaCtx.clientName || clientName);
     } else {
-      const autoUpdatesResp = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
-        range: "AutoUpdates!A2:N50"
-      }));
-      const rows = autoUpdatesResp.data.values || [];
-      const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
-      const webAppUrl = String(clientRow?.[13] || "").trim();
+      const webAppUrl = await getClientWebAppUrl(sheets, clientName, "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M");
 
       if (webAppUrl) {
         const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
@@ -1481,13 +1475,7 @@ export async function pullFreshPlCategoriesService({ clientName, masterSheetId }
     if (supaCtx && supaCtx.masterMode === "supabase") {
       gasResult = await pullLivePLToSupabaseNative(sheets, supaCtx.clientName || clientName);
     } else {
-      const autoUpdatesResp = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
-        range: "AutoUpdates!A2:N50"
-      }));
-      const rows = autoUpdatesResp.data.values || [];
-      const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
-      const webAppUrl = String(clientRow?.[13] || "").trim();
+      const webAppUrl = await getClientWebAppUrl(sheets, clientName, "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M");
 
       if (webAppUrl) {
         const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();

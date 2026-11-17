@@ -19,6 +19,7 @@ import { fetchXeroBankAccounts, fetchXeroAccountTransactions, refreshXeroTokens,
 import { fetchQuickBooksBankAccounts, fetchQuickBooksAccountTransactions, refreshQBTokens } from "./quickbooksService.js";
 import { syncReconBankTransactions, syncReconUnreconciledItems } from "./cashflowReconService.js";
 import { logPmaActivity } from "./pmaLogger.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 
 /**
  * Standard category set matching the Recon Sheet U3:U16 range
@@ -1732,30 +1733,59 @@ export async function autoReconcileClientBankTransactions({
     }
   }
 
-  // 2. Resolve missing clientName, masterSheetId, or reconSheetId from AutoUpdates
+  // 2. Resolve missing clientName, masterSheetId, or reconSheetId from Supabase (or legacy AutoUpdates)
   if ((!resolvedClient || !cleanMasterId || !cleanReconId) && (resolvedClient || cleanMasterId)) {
-    try {
-      const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
-      const resp = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: acId,
-        range: "AutoUpdates!A2:M500"
-      }));
-      const rows = resp.data.values || [];
-      const match = rows.find(r => {
-        const cName = String(r[0] || "").trim().toLowerCase();
-        const mUrl = String(r[12] || "").trim();
-        const mId = extractSheetIdFromUrl(mUrl) || mUrl;
-        if (cleanMasterId && mId === cleanMasterId) return true;
-        if (resolvedClient && cName.includes(resolvedClient.toLowerCase().trim())) return true;
-        return false;
-      });
-      if (match) {
-        if (!resolvedClient) resolvedClient = String(match[0] || "").trim();
-        if (!cleanMasterId) cleanMasterId = extractSheetIdFromUrl(match[12]) || String(match[12] || "").trim();
-        if (!cleanReconId && match[9]) cleanReconId = extractSheetIdFromUrl(match[9]) || String(match[9] || "").trim();
+    let resolvedFromSupa = false;
+    if (isSupabaseConfigured() && await isSupabaseControlPlaneActive()) {
+      try {
+        const sb = getSupabaseAdmin();
+        const { data: sbClients, error: sbErr } = await sb
+          .from("clients")
+          .select("client_name, master_sheet_id, master_sheet_url, recon_sheet_id, recon_sheet_url");
+        if (!sbErr && Array.isArray(sbClients)) {
+          const match = sbClients.find(c => {
+            const cName = String(c.client_name || "").trim().toLowerCase();
+            const mId = extractSheetIdFromUrl(c.master_sheet_url || c.master_sheet_id) || String(c.master_sheet_id || "").trim();
+            if (cleanMasterId && mId === cleanMasterId) return true;
+            if (resolvedClient && (cName === resolvedClient.toLowerCase().trim() || cName.includes(resolvedClient.toLowerCase().trim()))) return true;
+            return false;
+          });
+          if (match) {
+            if (!resolvedClient) resolvedClient = String(match.client_name || "").trim();
+            if (!cleanMasterId) cleanMasterId = extractSheetIdFromUrl(match.master_sheet_url || match.master_sheet_id) || String(match.master_sheet_id || "").trim();
+            if (!cleanReconId) cleanReconId = extractSheetIdFromUrl(match.recon_sheet_url || match.recon_sheet_id) || String(match.recon_sheet_id || "").trim();
+            resolvedFromSupa = Boolean(resolvedClient && cleanMasterId);
+          }
+        }
+      } catch (e) {
+        console.warn("⚠️ Could not lookup client in Supabase:", e.message);
       }
-    } catch (e) {
-      console.warn("⚠️ Could not lookup client in AutoUpdates:", e.message);
+    }
+
+    if (!resolvedFromSupa) {
+      try {
+        const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: acId,
+          range: "AutoUpdates!A2:M500"
+        }));
+        const rows = resp.data.values || [];
+        const match = rows.find(r => {
+          const cName = String(r[0] || "").trim().toLowerCase();
+          const mUrl = String(r[12] || "").trim();
+          const mId = extractSheetIdFromUrl(mUrl) || mUrl;
+          if (cleanMasterId && mId === cleanMasterId) return true;
+          if (resolvedClient && cName.includes(resolvedClient.toLowerCase().trim())) return true;
+          return false;
+        });
+        if (match) {
+          if (!resolvedClient) resolvedClient = String(match[0] || "").trim();
+          if (!cleanMasterId) cleanMasterId = extractSheetIdFromUrl(match[12]) || String(match[12] || "").trim();
+          if (!cleanReconId && match[9]) cleanReconId = extractSheetIdFromUrl(match[9]) || String(match[9] || "").trim();
+        }
+      } catch (e) {
+        console.warn("⚠️ Could not lookup client in AutoUpdates:", e.message);
+      }
     }
   }
 

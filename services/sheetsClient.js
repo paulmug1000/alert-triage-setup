@@ -1,7 +1,123 @@
 import { google } from "googleapis";
 import { unwrapSheetId } from "./sheetTokenService.js";
 import { resolveSupabaseSheetContext, handleVirtualSheetsCall } from "./masterEngineService.js";
+import { isSupabaseControlPlaneActive } from "./supabaseClient.js";
 export { sanitizeFormulaInput } from "../utils/helpers.js";
+
+const RETIRED_CONTROL_PLANE_TAB_RE = /^(AutoUpdates|ClientSetupOverview|ClientSetupTasks|EomClientTasks|AlertMemory|Users|Clients)(!|$)/i;
+const _retiredSheetWarnCache = new Map();
+const _retiredSheetEmailCache = new Map();
+const RETIRED_SHEET_EMAIL_TTL_MS = 24 * 60 * 60 * 1000;
+
+function getRetiredControlPlaneSheetLabel_(spreadsheetId) {
+  if (spreadsheetId === "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co") return "Clients version tracker";
+  if (spreadsheetId === "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s") return "Reporting control";
+  return "Automation Commander";
+}
+
+function getRetiredControlPlaneSheetIds_() {
+  const ids = new Set([
+    "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
+    "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co",
+    "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s",
+  ]);
+  if (process.env.AUTOMATION_COMMANDER_SHEET_ID) {
+    ids.add(process.env.AUTOMATION_COMMANDER_SHEET_ID.trim());
+  }
+  return ids;
+}
+
+async function sendRetiredSheetAlertEmail_({ spreadsheetId, matchedRange, callerLines }) {
+  try {
+    const emailPass = process.env.PMA_EMAIL_APP_PASSWORD;
+    if (!emailPass) return;
+
+    const tabName = String(matchedRange || "").split("!")[0] || "Unknown";
+    const callerHash = hashSpreadsheetId_(callerLines || tabName).toString(36);
+    const dedupeKey = `pulse:retired_sheet_alert:${spreadsheetId}:${tabName}:${callerHash}`;
+    const now = Date.now();
+    if (now - (_retiredSheetEmailCache.get(dedupeKey) || 0) < RETIRED_SHEET_EMAIL_TTL_MS) return;
+    _retiredSheetEmailCache.set(dedupeKey, now);
+
+    try {
+      const { redisClient } = await import("./redisClient.js");
+      if (redisClient?.isOpen) {
+        const acquired = await redisClient.set(dedupeKey, new Date(now).toISOString(), { EX: 86400, NX: true });
+        if (!acquired) return;
+      }
+    } catch { }
+
+    const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
+    const recipient = process.env.RETIRED_SHEET_ALERT_RECIPIENT || process.env.DAILY_ALERTS_RECIPIENT || "paul@gothrive.uk";
+    const sheetLabel = getRetiredControlPlaneSheetLabel_(spreadsheetId);
+    const envName = process.env.VERCEL_ENV || process.env.NODE_ENV || "unknown";
+
+    const { default: nodemailer } = await import("nodemailer");
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: { user: emailUser, pass: emailPass },
+    });
+
+    await transporter.sendMail({
+      from: `"Pulse" <${emailUser}>`,
+      to: recipient,
+      subject: `[Pulse] Retired control-plane sheet read detected: ${tabName}`,
+      text: [
+        "A read against a retired control-plane Google Sheet was detected while Supabase Control Plane is active.",
+        "",
+        `Environment: ${envName}`,
+        `Timestamp: ${new Date(now).toISOString()}`,
+        `Spreadsheet: ${sheetLabel} (${spreadsheetId})`,
+        `Range: ${matchedRange}`,
+        `Caller: ${callerLines || "Unknown"}`,
+        "",
+        "Alerts for the same spreadsheet, tab, and caller are throttled to once every 24 hours.",
+      ].join("\n"),
+    });
+  } catch (err) {
+    console.warn("Retired-sheet email alert notice:", err.message);
+  }
+}
+
+async function warnIfRetiredControlPlaneRead_(spreadsheetId, params) {
+  try {
+    if (!spreadsheetId || !getRetiredControlPlaneSheetIds_().has(spreadsheetId)) return;
+    const rawRanges = [];
+    if (typeof params?.range === "string") rawRanges.push(params.range);
+    if (Array.isArray(params?.ranges)) rawRanges.push(...params.ranges.map(r => String(r || "")));
+    const matchedRange = rawRanges.find(r => RETIRED_CONTROL_PLANE_TAB_RE.test(r.trim()));
+    if (!matchedRange) return;
+
+    const stack = new Error().stack || "";
+    if (stack.includes("controlPlaneMigrationService")) return;
+    if (!(await isSupabaseControlPlaneActive())) return;
+
+    const callerLines = stack
+      .split(/\r?\n/)
+      .slice(2, 8)
+      .map(l => l.trim())
+      .filter(l => !l.includes("sheetsClient.js"))
+      .slice(0, 3)
+      .join(" | ");
+
+    const warnKey = `${spreadsheetId}:${matchedRange.split("!")[0]}`;
+    const now = Date.now();
+    if (now - (_retiredSheetWarnCache.get(warnKey) || 0) >= 60000) {
+      _retiredSheetWarnCache.set(warnKey, now);
+      console.warn(`🚨 RETIRED CONTROL-PLANE SHEET READ while Supabase active: ${spreadsheetId} [${matchedRange}] <- ${callerLines}`);
+    }
+
+    const emailPromise = sendRetiredSheetAlertEmail_({ spreadsheetId, matchedRange, callerLines });
+    try {
+      const { waitUntil } = await import("@vercel/functions");
+      if (typeof waitUntil === "function") {
+        waitUntil(emailPromise);
+      }
+    } catch { }
+  } catch { }
+}
 
 const SCOPES = [
   "https://www.googleapis.com/auth/spreadsheets",
@@ -260,15 +376,20 @@ function createPooledSheetsClient_(poolType = "interactive") {
   const executeCall = async (namespace, method, isReadOnly, params, rest) => {
     const bypassVirtual = Boolean(params && params._bypassSupabaseVirtualSheet);
     const forcePrimary = Boolean(params && params._usePrimaryAccount);
+    const allowRetiredControlPlaneRead = Boolean(params && params._allowRetiredControlPlaneRead);
     let resolvedParams = params;
     let resolvedSheetId = "";
     if (params && typeof params === "object") {
-      const { _bypassSupabaseVirtualSheet, _usePrimaryAccount, ...cleanParams } = params;
+      const { _bypassSupabaseVirtualSheet, _usePrimaryAccount, _allowRetiredControlPlaneRead, ...cleanParams } = params;
       resolvedParams = cleanParams;
       if (typeof cleanParams.spreadsheetId === "string") {
         resolvedSheetId = unwrapSheetId(cleanParams.spreadsheetId);
         resolvedParams = { ...cleanParams, spreadsheetId: resolvedSheetId };
       }
+    }
+
+    if (isReadOnly && resolvedSheetId && !allowRetiredControlPlaneRead) {
+      await warnIfRetiredControlPlaneRead_(resolvedSheetId, resolvedParams);
     }
 
     if (!bypassVirtual && resolvedSheetId) {
@@ -303,8 +424,8 @@ function createPooledSheetsClient_(poolType = "interactive") {
           namespace === "values"
             ? poolEntry.rawSheets.spreadsheets.values
             : namespace === "sheets"
-            ? poolEntry.rawSheets.spreadsheets.sheets
-            : poolEntry.rawSheets.spreadsheets;
+              ? poolEntry.rawSheets.spreadsheets.sheets
+              : poolEntry.rawSheets.spreadsheets;
         return targetObj[method].bind(targetObj);
       };
 
@@ -505,7 +626,7 @@ export async function ensureFreshData(sheets, spreadsheetId, sheetName) {
   await new Promise((resolve) => setTimeout(resolve, 500));
   try {
     await sheets.spreadsheets.values.get({ spreadsheetId: resolvedId, range: `${sheetName}!A1` });
-  } catch (e) {}
+  } catch (e) { }
   await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
@@ -634,4 +755,4 @@ export async function applySheetFontFormat(sheets, spreadsheetId, tabName, start
     console.warn(`[applySheetFontFormat] Failed to apply font format on ${tabName}:`, err.message);
     return { fontFamily: "Arial", fontSize: 9 };
   }
-}
+}

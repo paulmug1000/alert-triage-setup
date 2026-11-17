@@ -8,6 +8,7 @@ import { runNativeMasterSync } from "./masterSyncEngine.js";
 import { isValidGoogleScriptUrl } from "./eomTools.js";
 import { getSessionUser, safeCompareSecret } from "./authService.js";
 import { isUserAuthorizedForClient, getCanonicalAcSheetId } from "./userPermissions.js";
+import { getClientWebAppUrl } from "./workspaces.js";
 
 export const SWEEP_SCHEDULE_TAB = "SweepSchedule";
 export const SWEEP_SCHEDULE_DEFAULTS = {
@@ -658,16 +659,7 @@ export async function handleTriggerAgentRun(req, res, sheets) {
       return res.status(200).json({ success: true, triggered: types, runId, engine: "supabase" });
     }
 
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: acSheetId,
-      range: "AutoUpdates!A2:N1000",
-    });
-    const rows = resp.data.values || [];
-    const row = rows.find(r => String(r[0] || "").trim() === targetClientName);
-    if (!row) {
-      return res.status(404).json({ success: false, error: `Client "${targetClientName}" not found in AutoUpdates` });
-    }
-    const webAppUrl = String(row[13] || "").trim(); // col N
+    const webAppUrl = await getClientWebAppUrl(sheets, targetClientName, acSheetId);
     if (!webAppUrl || !isValidGoogleScriptUrl(webAppUrl)) {
       return res.status(400).json({ success: false, error: `No valid Google Apps Script Web App URL configured for "${targetClientName}"` });
     }

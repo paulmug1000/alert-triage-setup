@@ -44,6 +44,54 @@ function scheduleBg_(promise) {
   return p;
 }
 
+async function resolveClientRoutingRow_(sheets, automationCommanderSheetId, clientName) {
+  if (isSupabaseConfigured() && await isSupabaseControlPlaneActive()) {
+    const sb = getSupabaseAdmin();
+    const { data: dbClients } = await sb
+      .from("clients")
+      .select("client_name, normalized_key, status, metadata, client_mode, master_mode, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, backup_sheet_url, web_app_url, master_deployment_url");
+    const matched = (dbClients || []).find(
+      (c) =>
+        c.client_name &&
+        !["inactive", "archived", "suspended"].includes(String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase()) &&
+        matchesClientName(c.client_name, clientName)
+    );
+    if (matched) {
+      const norm = String(matched.normalized_key || "").trim();
+      const clientSheetId =
+        extractSheetIdFromUrl(matched.client_sheet_url || matched.client_sheet_id) ||
+        String(matched.client_sheet_id || "").trim() ||
+        (matched.client_mode === "supabase" && norm ? `sb-client-${norm}` : "");
+      const masterSheetId =
+        extractSheetIdFromUrl(matched.master_sheet_url || matched.master_sheet_id) ||
+        String(matched.master_sheet_id || "").trim() ||
+        (matched.master_mode === "supabase" && norm ? `sb-master-${norm}` : "");
+      return {
+        clientName: String(matched.client_name).trim(),
+        clientSheetId,
+        masterSheetId,
+        webAppUrl: String(matched.master_deployment_url || matched.web_app_url || "").trim(),
+        backupSheetId: extractSheetIdFromUrl(matched.backup_sheet_url) || String(matched.backup_sheet_url || "").trim(),
+      };
+    }
+  }
+  if (!sheets || !automationCommanderSheetId) return null;
+  const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
+    spreadsheetId: automationCommanderSheetId,
+    range: "AutoUpdates!A2:N500",
+  }));
+  const rows = clientResp.data.values || [];
+  const clientRow = rows.find((r) => matchesClientName(r[0], clientName));
+  if (!clientRow) return null;
+  return {
+    clientName: String(clientRow[0] || clientName).trim(),
+    clientSheetId: extractSheetIdFromUrl(clientRow[11]) || String(clientRow[11] || "").trim(),
+    masterSheetId: extractSheetIdFromUrl(clientRow[12]) || String(clientRow[12] || "").trim(),
+    webAppUrl: String(clientRow[13] || "").trim(),
+    backupSheetId: extractSheetIdFromUrl(clientRow[4]) || String(clientRow[4] || "").trim(),
+  };
+}
+
 function invalidateEomMemoryCache_() {
   try {
     memoryCache.del(`${EOM_SB_CACHE_PREFIX}*`);
@@ -1892,11 +1940,9 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
     }
   }
   try {
-    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:E500" }));
-    const clientRows = clientResp.data.values || [];
-    const row = clientRows.find(r => String(r[0] || "").trim() === backupClientName);
-    if (!row || !row[4]) return res.status(400).json({ success: false, error: "No backup destination is configured for this client." });
-    const backupSheetId = extractSheetIdFromUrl(row[4]) || String(row[4]).trim();
+    const routing = await resolveClientRoutingRow_(sheets, automationCommanderSheetId, backupClientName);
+    const backupSheetId = routing?.backupSheetId || "";
+    if (!backupSheetId) return res.status(400).json({ success: false, error: "No backup destination is configured for this client." });
 
     const sourceMeta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId: clientSheetId, fields: "sheets.properties" }));
     const sourceSheet = sourceMeta.data.sheets.find(s => s.properties.title === "Dashboard");
@@ -2628,22 +2674,15 @@ export async function handleEomGetPlCompData(req, res, sheets) {
   const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
 
   try {
-    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!A2:N500"
-    }));
-    const rows = clientResp.data.values || [];
-    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
-    if (!clientRow) {
+    const routing = await resolveClientRoutingRow_(sheets, automationCommanderSheetId, clientName);
+    if (!routing) {
       return res.status(404).json({
         success: false,
-        error: isAdmin ? `Client "${clientName}" not found in AutoUpdates` : `Client "${clientName}" configuration not found.`
+        error: `Client "${clientName}" configuration not found.`
       });
     }
-    const clientSheetUrl = clientRow[11];
-    const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
-    const masterSheetUrl = clientRow[12];
-    const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
+    const clientSheetId = routing.clientSheetId;
+    const masterSheetId = routing.masterSheetId;
     if (!masterSheetId) {
       return res.status(400).json({
         success: false,
@@ -3062,23 +3101,18 @@ export async function handleEomPullFreshPl(req, res, sheets) {
       return res.status(200).json({ success: true, message: "Fresh P&L pulled successfully" });
     }
 
-    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!A2:N500"
-    }));
-    const rows = clientResp.data.values || [];
-    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
-    if (!clientRow) {
+    const routing = await resolveClientRoutingRow_(sheets, automationCommanderSheetId, clientName);
+    if (!routing) {
       return res.status(404).json({
         success: false,
-        error: isAdmin ? `Client "${clientName}" not found in AutoUpdates` : `Client "${clientName}" configuration not found.`
+        error: `Client "${clientName}" configuration not found.`
       });
     }
-    const webAppUrl = String(clientRow[13] || "").trim();
+    const webAppUrl = routing.webAppUrl;
     if (!webAppUrl) {
       return res.status(400).json({
         success: false,
-        error: isAdmin ? `No Master Web App URL configured for "${clientName}" (AutoUpdates column N)` : `Accounting sync service is not configured for "${clientName}".`
+        error: isAdmin ? `No Master Web App URL configured for "${clientName}"` : `Accounting sync service is not configured for "${clientName}".`
       });
     }
     if (!isValidGoogleScriptUrl(webAppUrl)) {
@@ -3138,23 +3172,16 @@ export async function handleEomPushOutgoings(req, res, sheets) {
   const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
 
   try {
-    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!A2:N500"
-    }));
-    const rows = clientResp.data.values || [];
-    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
-    if (!clientRow) {
+    const routing = await resolveClientRoutingRow_(sheets, automationCommanderSheetId, clientName);
+    if (!routing) {
       return res.status(404).json({
         success: false,
-        error: isAdmin ? `Client "${clientName}" not found in AutoUpdates` : `Client "${clientName}" configuration not found.`
+        error: `Client "${clientName}" configuration not found.`
       });
     }
-    const clientSheetUrl = clientRow[11];
-    const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
-    const masterSheetUrl = clientRow[12];
-    const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
-    const webAppUrl = String(clientRow[13] || "").trim();
+    const clientSheetId = routing.clientSheetId;
+    const masterSheetId = routing.masterSheetId;
+    const webAppUrl = routing.webAppUrl;
     const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
     const isSupabaseMaster = Boolean(supaCtx && supaCtx.masterMode === "supabase");
 

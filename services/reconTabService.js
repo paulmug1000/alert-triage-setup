@@ -17,6 +17,7 @@
 
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 
 /**
  * Returns month formatting strings for a given date.
@@ -263,23 +264,50 @@ export async function autoProvisionAllReconTabs({
   const sheets = await getSheetsClient();
   const monthInfo = getReconMonthInfo(targetDateInput);
 
-  // Read clients from AutoUpdates sheet
-  const resp = await withRetry(() => sheets.spreadsheets.values.get({
-    spreadsheetId: automationCommanderSheetId,
-    range: "AutoUpdates!A3:J50"
-  }));
+  const targetReconClients = [];
 
-  const rows = resp.data.values || [];
+  if (isSupabaseConfigured() && await isSupabaseControlPlaneActive()) {
+    const sb = getSupabaseAdmin();
+    const { data: sbClients, error: sbErr } = await sb
+      .from("clients")
+      .select("client_name, recon_sheet_url, recon_sheet_id, master_mode, status, metadata")
+      .order("client_name", { ascending: true });
+    if (!sbErr && Array.isArray(sbClients)) {
+      for (const c of sbClients) {
+        const effStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+        if (["inactive", "archived", "suspended"].includes(effStatus)) continue;
+        const clientName = String(c.client_name || "").trim();
+        const reconSheetUrl = String(c.recon_sheet_url || "").trim();
+        const rawReconId = String(c.recon_sheet_id || "").trim();
+        const reconSheetId = extractSheetIdFromUrl(reconSheetUrl) || (rawReconId && !rawReconId.startsWith("sb-") ? rawReconId : "");
+        if (!clientName || !reconSheetId) continue;
+        targetReconClients.push({
+          clientName,
+          reconSheetUrl: reconSheetUrl || `https://docs.google.com/spreadsheets/d/${reconSheetId}/edit`,
+          reconSheetId,
+        });
+      }
+    }
+  } else {
+    // Legacy Sheets fallback: Read clients from AutoUpdates sheet
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!A3:J50"
+    }));
+    const rows = resp.data.values || [];
+    for (const row of rows) {
+      const clientName = String(row[0] || "").trim();
+      const reconSheetUrl = String(row[9] || "").trim();
+      if (!clientName || !reconSheetUrl) continue;
+      const reconSheetId = extractSheetIdFromUrl(reconSheetUrl);
+      if (!reconSheetId) continue;
+      targetReconClients.push({ clientName, reconSheetUrl, reconSheetId });
+    }
+  }
+
   const results = [];
 
-  for (const row of rows) {
-    const clientName = String(row[0] || "").trim();
-    const reconSheetUrl = String(row[9] || "").trim();
-
-    if (!clientName || !reconSheetUrl) continue;
-
-    const reconSheetId = extractSheetIdFromUrl(reconSheetUrl);
-    if (!reconSheetId) continue;
+  for (const { clientName, reconSheetUrl, reconSheetId } of targetReconClients) {
 
     try {
       const res = await ensureReconTabExists({

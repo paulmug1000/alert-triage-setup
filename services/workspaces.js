@@ -162,9 +162,9 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
             const hasWebAppUrl = Boolean(webAppUrl) || c.master_mode === "supabase";
             const splitEnabled = Boolean(c.split_enabled);
             const hasClientManager = cmMap.hasManager(clientName);
-            const accountingTool = c.accounting_tool || "None";
-            const crmTool = c.crm_tool || "None";
-            const crmDrives = c.crm_drives || "NA";
+            const accountingTool = c.metadata?.accountingTool || c.accounting_tool || "None";
+            const crmTool = c.metadata?.crmTool || c.crm_tool || "None";
+            const crmDrives = c.metadata?.crmDrives || c.crm_drives || "NA";
             const revFocus = String(c.revenue_focus || "Revenue").trim();
             const rawDcMode = String(c.direct_costs_mode || "Contractors").trim();
             const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");

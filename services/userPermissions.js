@@ -765,6 +765,7 @@ export async function createOrUpdateUser(sheets, {
         sheets.spreadsheets.values.get({
           spreadsheetId: acId,
           range: `${USERS_TAB}!A2:H500`,
+          _allowRetiredControlPlaneRead: true,
         })
       );
       const rows = resp.data.values || [];
@@ -860,6 +861,7 @@ export async function deleteUserByEmail(sheets, { email, actorEmail }) {
         sheets.spreadsheets.values.get({
           spreadsheetId: acId,
           range: `${USERS_TAB}!A2:H500`,
+          _allowRetiredControlPlaneRead: true,
         })
       );
       const rows = resp.data.values || [];

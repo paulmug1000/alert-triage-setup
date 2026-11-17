@@ -16,7 +16,7 @@
 
 import { redisClient } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
-import { getIntegrationStatus } from "./vaultService.js";
+import { getIntegrationStatus, INTEGRATIONS_STATUS_CACHE_KEY } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput, getServiceAccountPoolEmails } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
 import { isUserAuthorizedForClient, resolveMasterSheetIdByClientName, resolveClientSheetIdByClientName, unwrapSheetId } from "./userPermissions.js";
@@ -370,21 +370,23 @@ export async function saveClientSetupConfig({
     updatedBy: updatedBy || existing.updatedBy || "Admin"
   };
 
-  // 1. Persist to Redis
+  // 1. Persist to Redis and invalidate cached multi-client integration status
   try {
     await redisClient.set(redisKey, JSON.stringify(record));
+    await redisClient.del(INTEGRATIONS_STATUS_CACHE_KEY).catch(() => { });
   } catch (err) {
     console.error(`Error writing setup config to Redis for ${clientName}:`, err);
     throw err;
   }
 
-  // 2. Persist tool selections to Master Sheet KeyInfo!Q4, Q8, Q9
-  if (masterSheetId) {
+  // 2. Persist tool selections to Master Sheet KeyInfo!Q4, Q8, Q9 (if spreadsheet-backed) and Supabase
+  const realMasterSheetId = unwrapSheetId(masterSheetId || record.masterSheetId);
+  if (realMasterSheetId) {
     try {
       const sheets = await getSheetsClient();
       await withRetry(() =>
         sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: masterSheetId,
+          spreadsheetId: realMasterSheetId,
           requestBody: {
             valueInputOption: "USER_ENTERED",
             data: [
@@ -399,6 +401,40 @@ export async function saveClientSetupConfig({
     } catch (sheetErr) {
       console.error(`Warning: Failed to update KeyInfo Q4/Q8/Q9 for ${clientName}:`, sheetErr.message);
       // Non-fatal for the web response, but logged
+    }
+  }
+
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const norm = normalizeClientKey(clientName);
+      const { data: existingClient } = await sb
+        .from("clients")
+        .select("id, metadata")
+        .eq("normalized_key", norm)
+        .maybeSingle();
+      if (existingClient?.id) {
+        const nextMeta = {
+          ...(existingClient.metadata || {}),
+          setupMode: Boolean(record.setupMode),
+          requestConnections: Boolean(record.requestConnections),
+          accountingTool: record.accountingTool || "None",
+          crmTool: record.crmTool || "None",
+          crmDrives: record.crmDrives || "NA",
+        };
+        await sb.from("clients").update({ metadata: nextMeta, updated_at: now }).eq("id", existingClient.id);
+        await sb
+          .from("tenant_key_info")
+          .update({
+            accounting_tool: record.accountingTool || "None",
+            crm_tool: record.crmTool || "None",
+            crm_drives: record.crmDrives || "NA",
+            updated_at: now,
+          })
+          .eq("client_id", existingClient.id);
+      }
+    } catch (sbSyncErr) {
+      console.warn("Supabase saveClientSetupConfig metadata sync notice:", sbSyncErr.message);
     }
   }
 
@@ -2824,7 +2860,7 @@ export async function provisionNewClientSystem({
         redisClient.keys("pulse:all_clients:*"),
         redisClient.keys("pulse:portal:allClients:*"),
       ]);
-      const keysToDel = [...allClientKeys, ...portalClientKeys];
+      const keysToDel = [...allClientKeys, ...portalClientKeys, INTEGRATIONS_STATUS_CACHE_KEY];
       if (keysToDel.length > 0) await redisClient.del(keysToDel);
     }
   } catch (_) { }

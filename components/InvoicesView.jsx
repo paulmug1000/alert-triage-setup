@@ -221,6 +221,7 @@ export default function InvoicesView({
       setInvoicesInbox([]);
       setInvoicesJobs(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [managedClient, initialClient, allOutgoingsClients, clientsWithFlags, invoicesClient?.clientSheetId, invoicesJobs]);
 
   const [viewMode, setViewMode] = useState("modern");

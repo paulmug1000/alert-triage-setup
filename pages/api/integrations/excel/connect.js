@@ -68,7 +68,7 @@ export default async function handler(req, res) {
     const nonce = crypto.randomBytes(16).toString("hex");
     const pendingUrl = (req.query?.url || req.body?.url || "").trim();
     let azureTenantId = pendingUrl ? await discoverSharePointTenantId(pendingUrl) : "";
-    if (!azureTenantId && (clientKey || clientName || masterSheetId)) {
+    if (!azureTenantId && !pendingUrl && (clientKey || clientName || masterSheetId)) {
       const existingGrant = await getIntegrationTokens({
         clientKey: clientKey || clientName,
         masterSheetId,

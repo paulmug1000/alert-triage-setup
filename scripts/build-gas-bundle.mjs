@@ -16,7 +16,6 @@ import { createRequire } from "module";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
-const parser = require("../node_modules/@babel/parser");
 
 const GAS_DIR = path.resolve(__dirname, "../../master-GAS-scripts");
 const OUT_FILE = path.resolve(__dirname, "../services/gasRuntime/compiledMasterGas.js");
@@ -36,6 +35,20 @@ function walk(node, parent, fn) {
 }
 
 function buildBundle() {
+  if (!fs.existsSync(GAS_DIR)) {
+    if (fs.existsSync(OUT_FILE)) {
+      const stat = fs.statSync(OUT_FILE);
+      console.log(
+        `ℹ️  Source directory ${GAS_DIR} not present in build context; using pre-compiled ${OUT_FILE} (${(stat.size / 1024).toFixed(1)} KB).`
+      );
+      return;
+    }
+    throw new Error(
+      `Cannot build GAS bundle: neither source directory (${GAS_DIR}) nor pre-compiled bundle (${OUT_FILE}) exists.`
+    );
+  }
+
+  const parser = require("../node_modules/@babel/parser");
   const files = fs
     .readdirSync(GAS_DIR)
     .filter((f) => f.endsWith(".gs"))

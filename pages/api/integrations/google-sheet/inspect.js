@@ -9,8 +9,8 @@
 
 import { getSessionUser } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
-import { inspectGoogleSpreadsheet } from "../../../../services/googleSheetService.js";
-import { getIntegrationTokens } from "../../../../services/vaultService.js";
+import { inspectGoogleSpreadsheet, refreshGoogleSheetTokens } from "../../../../services/googleSheetService.js";
+import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../../services/vaultService.js";
 
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
@@ -37,27 +37,34 @@ export default async function handler(req, res) {
     let accessToken = null;
     if (clientKey) {
       const grant = await getIntegrationTokens({ clientKey, tool: "googlesheet" });
-      if (grant && grant.tokens) {
-        // If expired or expiring within 60s, refresh automatically
-        const isExpiring = grant.expiresAt && Date.now() > (grant.expiresAt - 60000);
+      if (grant?.reconnectRequired) {
+        return res.status(200).json({
+          success: false,
+          reconnectRequired: true,
+          error: "Your Google authorisation has expired or been revoked. Please sign in with Google again to re-authorise access."
+        });
+      }
+      if (grant?.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
+        // If expired or expiring within 5 minutes, refresh automatically with concurrency lock
+        const isExpiring = !grant.expiresAt || Date.now() > (grant.expiresAt - 300000);
         if (isExpiring && grant.tokens.refreshToken) {
           try {
-            const { refreshGoogleSheetTokens } = await import("../../../../services/googleSheetService.js");
-            const { updateRefreshedTokens } = await import("../../../../services/vaultService.js");
-            const refreshed = await refreshGoogleSheetTokens(grant.tokens.refreshToken);
-            await updateRefreshedTokens({
-              clientKey,
+            const refreshed = await refreshStoredIntegrationToken({
+              clientKey: grant.clientKey || clientKey,
+              masterSheetId: grant.masterSheetId || "",
               tool: "googlesheet",
-              tokens: {
-                ...grant.tokens,
-                accessToken: refreshed.accessToken,
-                expiresIn: refreshed.expiresIn,
-                expiresAt: Date.now() + (refreshed.expiresIn * 1000)
-              }
+              refreshFn: (latest) => refreshGoogleSheetTokens(latest.tokens.refreshToken)
             });
             accessToken = refreshed.accessToken;
           } catch (rErr) {
             console.warn("Could not refresh Google Sheet token before inspect:", rErr.message);
+            if (isOAuthReconnectError(rErr)) {
+              return res.status(200).json({
+                success: false,
+                reconnectRequired: true,
+                error: "Your Google authorisation has expired or been revoked. Please sign in with Google again to re-authorise access."
+              });
+            }
             accessToken = grant.tokens.accessToken;
           }
         } else {

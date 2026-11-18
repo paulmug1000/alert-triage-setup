@@ -331,6 +331,7 @@ export default function NavShell({
     } catch { }
   }, [router]);
 
+  const hasManagedClientSelector = Boolean(onSelectManagedClient);
   // Fetch authorized portal clients if not already provided
   useEffect(() => {
     if (clients && clients.length > 0) {
@@ -344,7 +345,7 @@ export default function NavShell({
         if (Array.isArray(parsed) && parsed.length > 0) setPortalClients(parsed);
       }
     } catch { }
-    if (!user || onSelectManagedClient) return;
+    if (!user || hasManagedClientSelector) return;
     setClientsLoading(true);
     fetch("/api/portal/clients")
       .then((r) => r.json())
@@ -358,7 +359,7 @@ export default function NavShell({
       })
       .catch((e) => console.error("NavShell: failed to fetch clients", e))
       .finally(() => setClientsLoading(false));
-  }, [clients, user]);
+  }, [clients, user, hasManagedClientSelector]);
 
   // Close dropdowns when clicking outside
   useEffect(() => {

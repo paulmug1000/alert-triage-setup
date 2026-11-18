@@ -14753,6 +14753,7 @@ async function getBrokerExcelAccessToken_() {
 /**
  * ----------------------------------------------------------------
  * 7_COST_SYNC
+ * v3.51 (Require payee/vendor matching in split-bill unreconciled deduplication and exclude synthetic P&L rows in syncExpenseTransactionBreakdownToClientSheet_)
  * v3.50 (Guard Outgoings system rows 225-226 Recharged expenses forecast/recovery from bill matching, gap audits, overdue rolls, depreciation fallback row target, and P&L category quarantine)
  * v3.49 (Use fetchXeroWithRetry_ across Xero cost/account/P&L fetches, throw on non-200 Bills/BankTransactions/ManualJournals responses instead of truncating pagination, and fix £ mojibake)
  * v3.48 (Apply Net of Credit scaling to Xero and QuickBooks bills in fetchXeroCostTransactions_ and fetchQBCostTransactions_, resolve payment date from actual cash payments rather than credit note allocation date, and self-heal credit-cleared part-payment balance tranches in Outgoings and Confirmed)
@@ -19382,7 +19383,23 @@ async function syncExpenseTransactionBreakdownToClientSheet_(isHeadless = false,
         const uNet = Math.round((u.n || 0) * 100) / 100;
         const uDate = parseDateSafe_(u.d);
         const uDescClean = String(u.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const uPayeeTokens = String(u.s || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, " ")
+          .split(/\s+/)
+          .filter(t => t.length >= 3 && !["ltd", "limited", "inc", "plc", "llc", "the", "and", "for", "trading"].includes(t));
         const isProcessor = (uDescClean.includes("gocardless") || uDescClean.includes("stripe") || uDescClean.includes("paypal") || uDescClean.includes("worldpay"));
+
+        const matchesPayeeForSplit = (bDesc) => {
+          if (isProcessor) return true;
+          const bRaw = String(bDesc || "").toLowerCase();
+          const bClean = bRaw.replace(/[^a-z0-9]/g, "");
+          if (!uDescClean || !bClean) return false;
+          if (uDescClean.includes(bClean) || bClean.includes(uDescClean)) return true;
+          const bBaseClean = bRaw.split("(")[0].replace(/[^a-z0-9]/g, "");
+          if (bBaseClean.length >= 3 && (uDescClean.includes(bBaseClean) || bBaseClean.includes(uDescClean))) return true;
+          return uPayeeTokens.some(tok => bClean.includes(tok));
+        };
 
         let isAlreadyReconciledInActuals = false;
 
@@ -19390,6 +19407,7 @@ async function syncExpenseTransactionBreakdownToClientSheet_(isHeadless = false,
         for (let bIdx = 0; bIdx < monthTxns.length; bIdx++) {
           if (matchedBillIndices.has(bIdx)) continue;
           const bill = monthTxns[bIdx];
+          if (bill.r === "P&L") continue;
           const bGross = Math.round((bill.g || 0) * 100) / 100;
           const bNet = Math.round((bill.n || 0) * 100) / 100;
           const bDescClean = String(bill.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -19433,14 +19451,20 @@ async function syncExpenseTransactionBreakdownToClientSheet_(isHeadless = false,
           for (let bIdx = 0; bIdx < monthTxns.length; bIdx++) {
             if (matchedBillIndices.has(bIdx)) continue;
             const b = monthTxns[bIdx];
+            if (b.r === "P&L") continue;
+            if (!matchesPayeeForSplit(b.s)) continue;
             const bDate = parseDateSafe_(b.d);
             const diffDays = (uDate && bDate) ? Math.abs(uDate.getTime() - bDate.getTime()) / (1000 * 60 * 60 * 24) : 0;
             if (diffDays <= 5) {
-              candidateBills.push({ bIdx, gross: Math.round((b.g || 0) * 100) / 100, net: Math.round((b.n || 0) * 100) / 100 });
+              candidateBills.push({ bIdx, bDate, gross: Math.round((b.g || 0) * 100) / 100, net: Math.round((b.n || 0) * 100) / 100 });
             }
           }
           for (let i = 0; i < candidateBills.length; i++) {
             for (let j = i + 1; j < candidateBills.length; j++) {
+              if (isProcessor && candidateBills[i].bDate && candidateBills[j].bDate) {
+                const pairDays = Math.abs(candidateBills[i].bDate.getTime() - candidateBills[j].bDate.getTime()) / (1000 * 60 * 60 * 24);
+                if (pairDays > 2) continue;
+              }
               const sumGross = Math.round((candidateBills[i].gross + candidateBills[j].gross) * 100) / 100;
               const sumNet = Math.round((candidateBills[i].net + candidateBills[j].net) * 100) / 100;
               if (Math.abs(uGross - sumGross) <= 0.02 || Math.abs(uNet - sumNet) <= 0.02) {

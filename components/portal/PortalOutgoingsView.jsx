@@ -110,6 +110,7 @@ export default function PortalOutgoingsView({
           : null
       );
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [outgoingsData]);
 
   // Close popover when entering edit mode, changing financial year, or switching category

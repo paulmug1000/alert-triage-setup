@@ -48,6 +48,17 @@ export function buildGoogleSheetAuthUrl({ redirectUri, state }) {
   return url.toString();
 }
 
+function formatGoogleOAuthError(data, statusText) {
+  const errCode = String(data?.error || "").trim();
+  const errDesc = String(data?.error_description || "").trim();
+  if (errCode && errDesc) {
+    return errDesc.toLowerCase().includes(errCode.toLowerCase())
+      ? errDesc
+      : `${errCode}: ${errDesc}`;
+  }
+  return errDesc || errCode || statusText || "Unknown Google OAuth error";
+}
+
 /**
  * Exchanges authorization code for access and refresh tokens.
  */
@@ -73,9 +84,9 @@ export async function exchangeGoogleSheetCodeForTokens({ code, redirectUri }) {
     body: body.toString()
   });
 
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
-    throw new Error(`Google token exchange failed: ${data.error_description || data.error || res.statusText}`);
+    throw new Error(`Google token exchange failed: ${formatGoogleOAuthError(data, res.statusText)}`);
   }
 
   return {
@@ -114,13 +125,14 @@ export async function refreshGoogleSheetTokens(refreshToken) {
     body: body.toString()
   });
 
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
-    throw new Error(`Google token refresh failed: ${data.error_description || data.error || res.statusText}`);
+    throw new Error(`Google token refresh failed: ${formatGoogleOAuthError(data, res.statusText)}`);
   }
 
   return {
     accessToken: data.access_token,
+    refreshToken: data.refresh_token || null,
     expiresIn: data.expires_in || 3600
   };
 }

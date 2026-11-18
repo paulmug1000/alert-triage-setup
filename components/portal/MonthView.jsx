@@ -68,6 +68,7 @@ export default function MonthView({
         isLoading: false,
       } : null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyData]);
 
   // Render immediately as soon as payload is ready so the Pulse Home Page never blocks on secondary fetches.

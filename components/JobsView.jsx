@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaJobsTableSkeleton } from "./Skeleton";
@@ -634,8 +634,8 @@ export const getJobExpenseItems = (job, isRetainer) => {
           const expLabel = hasDesc
             ? String(s.description).trim()
             : (hasTx
-                ? `#${String(s.transactionId).trim()}`
-                : (isPlace ? "Placeholder" : `${monthLabel} direct cost`));
+              ? `#${String(s.transactionId).trim()}`
+              : (isPlace ? "Placeholder" : `${monthLabel} direct cost`));
           items.push({
             ...s,
             id: `ret_exp_${r.rowNum}_${s.slotNum}`,
@@ -667,8 +667,8 @@ export const getJobExpenseItems = (job, isRetainer) => {
           const expLabel = hasDesc
             ? String(s.description).trim()
             : (hasTx
-                ? `#${String(s.transactionId).trim()}`
-                : (isPlace ? "Placeholder" : "Direct cost"));
+              ? `#${String(s.transactionId).trim()}`
+              : (isPlace ? "Placeholder" : "Direct cost"));
           items.push({
             ...s,
             id: `proj_exp_${r.rowNum}_${s.slotNum}`,
@@ -1364,6 +1364,7 @@ export default function JobsView({
       recentlyDeletedJobKeysRef.current.clear();
       recentlyDeletedJobRowsRef.current.clear();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [managedClient, initialClient, allOutgoingsClients, jobsClient?.clientSheetId]);
 
   const handlePullJobsFromSheet = async () => {
@@ -1722,10 +1723,10 @@ export default function JobsView({
   };
 
   // Helper to extract a job key
-  const getJobKey = (job) => {
+  const getJobKey = useCallback((job) => {
     if (!job) return "";
     return job.id || `${job.tabName || "confirmed"}_${job.rows?.[0]?.rowNum || 0}`;
-  };
+  }, []);
 
   // Check if a specific job has unsaved changes
   const isJobDirty = (jobKey) => {
@@ -1733,22 +1734,22 @@ export default function JobsView({
   };
 
   // Helper to check if a job belongs to Pipeline
-  const isPipelineJob = (job) => {
+  const isPipelineJob = useCallback((job) => {
     if (!job) return false;
     const tab = String(job.tabName || job.status || job.rows?.[0]?.tabName || "").toLowerCase();
     return tab === "pipeline" || tab.includes("pipe");
-  };
+  }, []);
 
   // Helper to check if a pipeline job was copied to Confirmed tab (Column DD == "Yes")
-  const isJobCopiedToConfirmed = (job) => {
+  const isJobCopiedToConfirmed = useCallback((job) => {
     if (!job || !isPipelineJob(job)) return false;
     const parentRow = job.rows?.[0] || {};
     const copiedVal = String(job.copiedToConf || parentRow.copiedToConf || "").trim().toLowerCase();
     return copiedVal === "yes" || copiedVal === "y";
-  };
+  }, [isPipelineJob]);
 
   // Helper to check if a pipeline job has 0% likelihood
-  const isJobZeroPercent = (job) => {
+  const isJobZeroPercent = useCallback((job) => {
     if (!job || !isPipelineJob(job)) return false;
     const jobKey = getJobKey(job);
     // If the user has an active draft edit on this job, keep it visible while editing so they can save
@@ -1758,10 +1759,10 @@ export default function JobsView({
     const parentRow = job.rows?.[0] || {};
     const lVal = parseLikelihoodValue(parentRow.likelihood ?? job.likelihood);
     return lVal !== null && lVal === 0;
-  };
+  }, [isPipelineJob, getJobKey, draftEdits]);
 
   // Get field value (from draft if edited, otherwise from sheet data)
-  const getJobFieldValue = (job, fieldKey) => {
+  const getJobFieldValue = useCallback((job, fieldKey) => {
     const jobKey = getJobKey(job);
     const parentRow = job?.rows?.[0] || {};
     if (draftEdits[jobKey] && draftEdits[jobKey][fieldKey] !== undefined) {
@@ -1775,17 +1776,17 @@ export default function JobsView({
       return formatLikelihood(raw);
     }
     return raw;
-  };
+  }, [getJobKey, draftEdits]);
 
   // Helper to extract parsed Date Confirmed timestamp for a job on Confirmed tab
-  const getJobDateConfTs = (job) => {
+  const getJobDateConfTs = useCallback((job) => {
     if (!job) return null;
     const tab = String(job.tabName || job.status || job.rows?.[0]?.tabName || "Confirmed").toLowerCase();
     const isConfirmed = tab === "confirmed" || (!tab.includes("pipeline") && !tab.includes("pipe"));
     if (!isConfirmed) return null;
     const rawVal = getJobFieldValue(job, "dateConf") || job.dateConf || job.rows?.[0]?.dateConf;
     return rawVal ? parseSheetDateToTs(rawVal) : null;
-  };
+  }, [getJobFieldValue]);
 
   // Check if at least one confirmed job has a non-empty Date Confirmed
   const hasDateConfirmed = useMemo(() => {
@@ -1798,7 +1799,7 @@ export default function JobsView({
       const s = String(rawVal || "").trim();
       return s !== "" && s !== "-" && s !== "—";
     });
-  }, [jobsData, draftEdits]);
+  }, [jobsData, getJobFieldValue]);
 
   // Update a single draft field for a job
   const handleDraftFieldChange = (job, fieldKey, newValue) => {
@@ -2806,7 +2807,7 @@ export default function JobsView({
       baseMatchedJobs: matched,
       counts: { all: conf + pipe, confirmed: conf, pipeline: pipe }
     };
-  }, [jobsData, showZeroPercentJobs, draftEdits, searchQuery]);
+  }, [jobsData, showZeroPercentJobs, draftEdits, searchQuery, isJobCopiedToConfirmed, isJobZeroPercent, isPipelineJob]);
 
   // Filtered and sorted jobs list
   const processedJobs = useMemo(() => {
@@ -2972,7 +2973,7 @@ export default function JobsView({
         }
       }
     });
-  }, [baseMatchedJobs, effectiveViewMode, filterType, jobsTab, jobsSortBy]);
+  }, [baseMatchedJobs, effectiveViewMode, filterType, jobsTab, jobsSortBy, getJobDateConfTs]);
 
   // Reset progressive render window when filter, tab, client, or search changes
   useEffect(() => {
@@ -2991,7 +2992,7 @@ export default function JobsView({
       }
     }
     return processedJobs.slice(0, limit);
-  }, [processedJobs, visibleJobsCount, expandedJobIds, recentlySavedKeys]);
+  }, [processedJobs, visibleJobsCount, expandedJobIds, recentlySavedKeys, getJobKey]);
 
   const hasMoreVisibleJobs = visibleJobs.length < processedJobs.length;
 
@@ -4463,13 +4464,13 @@ export default function JobsView({
                           );
                           const effectiveJobForDisplay = shouldProjectRetainerPreview
                             ? {
-                                ...job,
-                                rows: projectRetainerRowsForEndDate(
-                                  job,
-                                  endDateVal,
-                                  jobDraft?.revenue !== undefined ? revVal : undefined
-                                ),
-                              }
+                              ...job,
+                              rows: projectRetainerRowsForEndDate(
+                                job,
+                                endDateVal,
+                                jobDraft?.revenue !== undefined ? revVal : undefined
+                              ),
+                            }
                             : job;
 
                           // Calculate real revenue and direct cost metrics strictly excluding gap sweep placeholders (cached when unedited)
@@ -5481,7 +5482,7 @@ export default function JobsView({
                                                                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                                                                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                                                 </svg>
-                                                             )}
+                                                              )}
                                                               {isRetainer && item.row && (
                                                                 <span style={{ fontSize: "10px", color: "#64748b" }}>
                                                                   ({getRetainerRowMonthLabel(item.row, 0, effectiveJobForDisplay)})
@@ -5504,45 +5505,45 @@ export default function JobsView({
                                                             />
                                                           </div>
 
-                                                            {item.isFullyPaid ? (
-                                                              <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
-                                                                {item.receivedTranches.map((t, tIdx) => (
-                                                                  <div key={tIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                                                    <span style={{ color: "#166534", fontWeight: "600" }}>
-                                                                      ✓ Payment {tIdx + 1}: {formatCurrency(parseFloat(stripCurrency(t.slot?.amount)) || 0)}
-                                                                    </span>
-                                                                    <span style={{ color: "#64748b" }}>
-                                                                      {t.slot?.sentDate ? `Sent: ${t.slot.sentDate}` : ""}
-                                                                      {t.slot?.daysToPay ? ` · Paid: ${t.slot.daysToPay}d` : ""}
-                                                                    </span>
-                                                                  </div>
-                                                                ))}
-                                                              </div>
-                                                            ) : (
-                                                              <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
-                                                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                          {item.isFullyPaid ? (
+                                                            <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                                              {item.receivedTranches.map((t, tIdx) => (
+                                                                <div key={tIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                                                   <span style={{ color: "#166534", fontWeight: "600" }}>
-                                                                    ✓ {formatCurrency(item.receivedAmount)} received
+                                                                    ✓ Payment {tIdx + 1}: {formatCurrency(parseFloat(stripCurrency(t.slot?.amount)) || 0)}
                                                                   </span>
                                                                   <span style={{ color: "#64748b" }}>
-                                                                    {item.receivedTranches[0]?.slot?.sentDate ? `Sent: ${item.receivedTranches[0].slot.sentDate}` : ""}
-                                                                    {item.receivedTranches[0]?.slot?.daysToPay ? ` · Paid: ${item.receivedTranches[0].slot.daysToPay}d` : ""}
+                                                                    {t.slot?.sentDate ? `Sent: ${t.slot.sentDate}` : ""}
+                                                                    {t.slot?.daysToPay ? ` · Paid: ${t.slot.daysToPay}d` : ""}
                                                                   </span>
                                                                 </div>
-                                                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                                                  <span style={{ color: "#b45309", fontWeight: "600" }}>
-                                                                    ⏳ {formatCurrency(item.balanceAmount)} balance
-                                                                  </span>
-                                                                  <span style={{ color: "#64748b" }}>
-                                                                    {item.balanceTranche?.slot?.sentDate && calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30) ? (
-                                                                      `Due: ${calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30)} (${item.balanceTranche.slot.daysToPay || 30}d)`
-                                                                    ) : (
-                                                                      item.balanceTranche ? `${item.balanceTranche.slot?.daysToPay || 30} days` : "Fully paid"
-                                                                    )}
-                                                                  </span>
-                                                                </div>
+                                                              ))}
+                                                            </div>
+                                                          ) : (
+                                                            <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                                <span style={{ color: "#166534", fontWeight: "600" }}>
+                                                                  ✓ {formatCurrency(item.receivedAmount)} received
+                                                                </span>
+                                                                <span style={{ color: "#64748b" }}>
+                                                                  {item.receivedTranches[0]?.slot?.sentDate ? `Sent: ${item.receivedTranches[0].slot.sentDate}` : ""}
+                                                                  {item.receivedTranches[0]?.slot?.daysToPay ? ` · Paid: ${item.receivedTranches[0].slot.daysToPay}d` : ""}
+                                                                </span>
                                                               </div>
-                                                            )}
+                                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                                <span style={{ color: "#b45309", fontWeight: "600" }}>
+                                                                  ⏳ {formatCurrency(item.balanceAmount)} balance
+                                                                </span>
+                                                                <span style={{ color: "#64748b" }}>
+                                                                  {item.balanceTranche?.slot?.sentDate && calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30) ? (
+                                                                    `Due: ${calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30)} (${item.balanceTranche.slot.daysToPay || 30}d)`
+                                                                  ) : (
+                                                                    item.balanceTranche ? `${item.balanceTranche.slot?.daysToPay || 30} days` : "Fully paid"
+                                                                  )}
+                                                                </span>
+                                                              </div>
+                                                            </div>
+                                                          )}
                                                         </div>
                                                       );
                                                     }
@@ -5600,16 +5601,16 @@ export default function JobsView({
                                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                                             {isPlaceholder ? (
-                                                                <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
-                                                              ) : slot.ref ? (
-                                                                <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
-                                                                  #<HighlightText text={slot.ref} query={searchQuery} />
-                                                                </span>
-                                                              ) : (
-                                                                <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
-                                                                  Invoice
-                                                                </span>
-                                                              )}
+                                                              <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
+                                                            ) : slot.ref ? (
+                                                              <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                                                #<HighlightText text={slot.ref} query={searchQuery} />
+                                                              </span>
+                                                            ) : (
+                                                              <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
+                                                                Invoice
+                                                              </span>
+                                                            )}
 
                                                             {isPendingPlaceholder && (
                                                               <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" }}>
@@ -5647,8 +5648,8 @@ export default function JobsView({
                                                           </div>
 
                                                           <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
-                                                              {formatCurrency(slot.amount)}
-                                                            </span>
+                                                            {formatCurrency(slot.amount)}
+                                                          </span>
                                                         </div>
 
                                                         {isConfirmed && (parseFloat(String(slot.ofWhichRechgd || "0").replace(/[£$€,\s]/g, "")) || 0) > 0 && (
@@ -5959,19 +5960,19 @@ export default function JobsView({
                                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                                             {isPlaceholder ? (
-                                                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                                                  {slot.description && !String(slot.description).trim().toUpperCase().startsWith("PLACE") && (
-                                                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
-                                                                      <HighlightText text={slot.description} query={searchQuery} />
-                                                                    </span>
-                                                                  )}
-                                                                  <PlaceholderPill isAuto={isAutoPlaceholder(slot.transactionId || slot.description)} size="sm" />
-                                                                </div>
-                                                              ) : (
-                                                                <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
-                                                                  <HighlightText text={slot.description || (slot.transactionId ? `#${slot.transactionId}` : "Expense")} query={searchQuery} />
-                                                                </span>
-                                                              )}
+                                                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                                {slot.description && !String(slot.description).trim().toUpperCase().startsWith("PLACE") && (
+                                                                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                                                    <HighlightText text={slot.description} query={searchQuery} />
+                                                                  </span>
+                                                                )}
+                                                                <PlaceholderPill isAuto={isAutoPlaceholder(slot.transactionId || slot.description)} size="sm" />
+                                                              </div>
+                                                            ) : (
+                                                              <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                                                <HighlightText text={slot.description || (slot.transactionId ? `#${slot.transactionId}` : "Expense")} query={searchQuery} />
+                                                              </span>
+                                                            )}
 
                                                             {hasData && slot.status && (
                                                               <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
@@ -6001,8 +6002,8 @@ export default function JobsView({
                                                           </div>
 
                                                           <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
-                                                              {formatCurrency(slot.amount)}
-                                                            </span>
+                                                            {formatCurrency(slot.amount)}
+                                                          </span>
                                                         </div>
 
                                                         {/* Progress bar (100% green if Paid) */}

@@ -186,6 +186,7 @@ export default function RetainersView({
       setRetainersClient(null);
       setRetainersJobs(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [managedClient, initialClient, allOutgoingsClients, retainersClient?.clientSheetId]);
 
   const noRetClient = !retainersClient && !managedClient;

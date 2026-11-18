@@ -21,7 +21,9 @@ import {
   markIntegrationReconnectRequired,
   getSharedXeroGrant,
   updateSharedXeroGrantTokens,
-  refreshWithConcurrencyLock
+  refreshWithConcurrencyLock,
+  refreshStoredIntegrationToken,
+  isOAuthReconnectError
 } from "../../../services/vaultService.js";
 import { refreshXeroTokens } from "../../../services/xeroService.js";
 import { refreshQBTokens } from "../../../services/quickbooksService.js";
@@ -587,38 +589,18 @@ export default async function handler(req, res) {
       }
     } else if (isExpiringSoon && (tool === "googlesheet" || tool === "google_sheet")) {
       if (record.tokens.refreshToken) {
-        const lockKey = `googlesheet:${record.clientKey}`;
         try {
-          const refreshResult = await refreshWithConcurrencyLock(
-            lockKey,
-            async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "googlesheet" });
-              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
-              if (latestExpiresIn >= 300) {
-                return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
-              }
-              const refreshed = await refreshGoogleSheetTokens(latest?.tokens?.refreshToken || record.tokens.refreshToken);
-              await updateRefreshedTokens({
-                clientKey: record.clientKey,
-                tool: "googlesheet",
-                tokens: refreshed
-              });
-              console.log(`✅ Token Broker: Successfully refreshed Google Sheet token for ${record.clientKey}.`);
-              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
-            },
-            async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "googlesheet" });
-              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
-              return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
-            }
-          );
+          const refreshResult = await refreshStoredIntegrationToken({
+            clientKey: record.clientKey,
+            masterSheetId: canonicalSpreadsheetId || spreadsheetId,
+            tool: "googlesheet",
+            refreshFn: (latest) => refreshGoogleSheetTokens(latest.tokens.refreshToken)
+          });
           accessToken = refreshResult.accessToken;
           expiresIn = refreshResult.expiresIn;
+          console.log(`✅ Token Broker: Successfully refreshed Google Sheet token for ${record.clientKey}.`);
         } catch (refreshErr) {
           console.error(`🚨 Token Broker: Google Sheet refresh failed for ${record.clientKey}:`, refreshErr.message);
-          if (refreshErr.message.includes("invalid_grant") || refreshErr.message.includes("unauthorized") || refreshErr.message.includes("revoked")) {
-            await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "googlesheet", error: refreshErr.message });
-          }
           return res.status(401).json({
             success: false,
             error: `Failed to refresh Google Sheet connection (${refreshErr.message}). Re-authorization required.`,
@@ -628,41 +610,22 @@ export default async function handler(req, res) {
       }
     } else if (isExpiringSoon && tool === "excel") {
       if (record.tokens.refreshToken) {
-        const lockKey = `excel:${record.clientKey}`;
         try {
-          const refreshResult = await refreshWithConcurrencyLock(
-            lockKey,
-            async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "excel" });
-              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
-              if (latestExpiresIn >= 300) {
-                return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
-              }
-              const refreshed = await refreshExcelTokens(
-                latest?.tokens?.refreshToken || record.tokens.refreshToken,
+          const refreshResult = await refreshStoredIntegrationToken({
+            clientKey: record.clientKey,
+            masterSheetId: canonicalSpreadsheetId || spreadsheetId,
+            tool: "excel",
+            refreshFn: (latest) =>
+              refreshExcelTokens(
+                latest.tokens.refreshToken,
                 latest?.metadata?.azureTenantId || record.metadata?.azureTenantId
-              );
-              await updateRefreshedTokens({
-                clientKey: record.clientKey,
-                tool: "excel",
-                tokens: refreshed
-              });
-              console.log(`✅ Token Broker: Successfully refreshed Excel token for ${record.clientKey}.`);
-              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
-            },
-            async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "excel" });
-              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
-              return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
-            }
-          );
+              )
+          });
           accessToken = refreshResult.accessToken;
           expiresIn = refreshResult.expiresIn;
+          console.log(`✅ Token Broker: Successfully refreshed Excel token for ${record.clientKey}.`);
         } catch (refreshErr) {
           console.error(`🚨 Token Broker: Excel refresh failed for ${record.clientKey}:`, refreshErr.message);
-          if (refreshErr.message.includes("invalid_grant") || refreshErr.message.includes("unauthorized") || refreshErr.message.includes("revoked")) {
-            await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "excel", error: refreshErr.message });
-          }
           return res.status(401).json({
             success: false,
             error: `Failed to refresh Excel connection (${refreshErr.message}). Re-authorization required.`,
@@ -1233,16 +1196,51 @@ export default async function handler(req, res) {
               message: `Verified successfully via Google Sheets Service Account for "${record.metadata?.accountName || 'Google Sheet'}"!`
             });
           }
-          const testRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+          let testRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
             headers: { "Authorization": `Bearer ${accessToken}` }
           });
+
+          if (testRes.status === 401 && record.tokens?.refreshToken) {
+            console.log(`⚠️ Token Broker verify: Google returned 401 for ${record.clientName}. Attempting emergency refresh...`);
+            try {
+              const refreshed = await refreshStoredIntegrationToken({
+                clientKey: record.clientKey,
+                masterSheetId: canonicalSpreadsheetId || spreadsheetId,
+                tool: "googlesheet",
+                forceRefresh: true,
+                refreshFn: (latest) => refreshGoogleSheetTokens(latest.tokens.refreshToken)
+              });
+              accessToken = refreshed.accessToken;
+              expiresIn = refreshed.expiresIn;
+              testRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+                headers: { "Authorization": `Bearer ${accessToken}` }
+              });
+            } catch (refErr) {
+              console.error(`🚨 Token Broker: Google Sheet emergency refresh failed:`, refErr.message);
+              if (isOAuthReconnectError(refErr)) {
+                await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "googlesheet", error: refErr.message });
+              }
+              return res.status(401).json({
+                success: false,
+                verified: false,
+                status: 401,
+                error: `Google API Error: HTTP 401 (Unauthorized). Token refresh rejected: ${refErr.message}. Re-authorization required.`,
+                reconnectRequired: true
+              });
+            }
+          }
+
           if (!testRes.ok) {
-            return res.status(testRes.status === 401 ? 401 : 502).json({
+            const errBody = await testRes.text().catch(() => "");
+            if (testRes.status === 401 || testRes.status === 403) {
+              await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "googlesheet", error: `HTTP ${testRes.status}: ${errBody}` });
+            }
+            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json({
               success: false,
               verified: false,
               status: testRes.status,
               error: `Google API Error: HTTP ${testRes.status}. Re-authorization required.`,
-              reconnectRequired: testRes.status === 401
+              reconnectRequired: testRes.status === 401 || testRes.status === 403
             });
           }
           const uData = await testRes.json();
@@ -1279,16 +1277,55 @@ export default async function handler(req, res) {
               message: `Verified successfully via Azure Graph Credentials for "${record.metadata?.accountName || 'Microsoft Excel'}"!`
             });
           }
-          const testRes = await fetch("https://graph.microsoft.com/v1.0/me", {
+          let testRes = await fetch("https://graph.microsoft.com/v1.0/me", {
             headers: { "Authorization": `Bearer ${accessToken}` }
           });
+
+          if (testRes.status === 401 && record.tokens?.refreshToken) {
+            console.log(`⚠️ Token Broker verify: Microsoft Graph returned 401 for ${record.clientName}. Attempting emergency refresh...`);
+            try {
+              const refreshed = await refreshStoredIntegrationToken({
+                clientKey: record.clientKey,
+                masterSheetId: canonicalSpreadsheetId || spreadsheetId,
+                tool: "excel",
+                forceRefresh: true,
+                refreshFn: (latest) =>
+                  refreshExcelTokens(
+                    latest.tokens.refreshToken,
+                    latest?.metadata?.azureTenantId || record.metadata?.azureTenantId
+                  )
+              });
+              accessToken = refreshed.accessToken;
+              expiresIn = refreshed.expiresIn;
+              testRes = await fetch("https://graph.microsoft.com/v1.0/me", {
+                headers: { "Authorization": `Bearer ${accessToken}` }
+              });
+            } catch (refErr) {
+              console.error(`🚨 Token Broker: Excel emergency refresh failed:`, refErr.message);
+              if (isOAuthReconnectError(refErr)) {
+                await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "excel", error: refErr.message });
+              }
+              return res.status(401).json({
+                success: false,
+                verified: false,
+                status: 401,
+                error: `Microsoft Graph Error: HTTP 401 (Unauthorized). Token refresh rejected: ${refErr.message}. Re-authorization required.`,
+                reconnectRequired: true
+              });
+            }
+          }
+
           if (!testRes.ok) {
-            return res.status(testRes.status === 401 ? 401 : 502).json({
+            const errBody = await testRes.text().catch(() => "");
+            if (testRes.status === 401 || testRes.status === 403) {
+              await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "excel", error: `HTTP ${testRes.status}: ${errBody}` });
+            }
+            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json({
               success: false,
               verified: false,
               status: testRes.status,
               error: `Microsoft Graph Error: HTTP ${testRes.status}. Re-authorization required.`,
-              reconnectRequired: testRes.status === 401
+              reconnectRequired: testRes.status === 401 || testRes.status === 403
             });
           }
           const meData = await testRes.json();

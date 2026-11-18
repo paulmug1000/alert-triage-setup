@@ -422,6 +422,7 @@ export default function OutgoingsView({
       setOutgoingsInbox([]);
       if (typeof clearInboxSelection === "function") clearInboxSelection();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [managedClient, initialClient, allOutgoingsClients, clientsWithFlags, outgoingsClient?.clientSheetId, outgoingsData]);
 
   const effectiveClientObj = outgoingsClient || (managedClient?.clientName ? (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName.toLowerCase()) || managedClient : null) || initialClient;
@@ -588,6 +589,7 @@ export default function OutgoingsView({
     if (outgoingsClient?.clientSheetId && !directCostsJobs && !directCostsLoading && (effectiveSubTab === "directCosts" || outgoingsData)) {
       loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveSubTab, outgoingsClient?.clientSheetId, outgoingsData, directCostsJobs, directCostsLoading, directCostsShowAll, loadDirectCostsJobs]);
 
   const toggleInboxSelection = (exp) => {

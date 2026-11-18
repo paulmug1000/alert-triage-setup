@@ -68,7 +68,7 @@ export default function ToolsView({
     } else {
       setEomDetailClient(null);
     }
-  }, [managedClient]);
+  }, [managedClient, setEomDetailClient]);
 
   useEffect(() => {
     if ((eomSubView === "reporting" || eomSubView === "time") && !isAdmin) {
@@ -346,9 +346,9 @@ export default function ToolsView({
       }).then(r => r.json()),
       eomDefaultTasks === null
         ? fetch("/api/triage", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "eom_get_default_tasks", automationCommanderSheetId })
-          }).then(r => r.json())
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "eom_get_default_tasks", automationCommanderSheetId })
+        }).then(r => r.json())
         : Promise.resolve(null)
     ])
       .then(([tasksD, defaultD]) => {
@@ -550,8 +550,8 @@ export default function ToolsView({
     const linkedTask = (eomAllTasks || []).find(t =>
       t.clientName === targetClient &&
       (t.linkedFunction === "revenue_check" ||
-       String(t.name || "").toLowerCase().includes("compare dashboard month to xero") ||
-       String(t.name || "").toLowerCase().includes("revenue comparison"))
+        String(t.name || "").toLowerCase().includes("compare dashboard month to xero") ||
+        String(t.name || "").toLowerCase().includes("revenue comparison"))
     );
     const targetTaskId = linkedTask?.taskId || (typeof clientName === "object" ? clientName.taskId : taskId);
     if (!targetTaskId) return;

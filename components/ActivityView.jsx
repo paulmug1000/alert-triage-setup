@@ -89,6 +89,7 @@ export default function ActivityView({
       setSelectedClient(managedClient.clientName);
       loadActivity({ clientName: managedClient.clientName, includeRoutine });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [managedClient]);
 
   // Instant load: On mount, load from Redis cache (forceRefresh: false).

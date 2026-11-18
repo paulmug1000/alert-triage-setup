@@ -10,10 +10,10 @@
 
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "../../../services/sheetsClient.js";
-import { getIntegrationTokens, updateRefreshedTokens } from "../../../services/vaultService.js";
+import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../services/vaultService.js";
 import { verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../services/userPermissions.js";
 import { assertExternalCrmSpreadsheet, inspectGoogleSpreadsheet, refreshGoogleSheetTokens } from "../../../services/googleSheetService.js";
-import { assertSafeGraphId } from "../../../services/excelIntegrationService.js";
+import { assertSafeGraphId, refreshExcelTokens } from "../../../services/excelIntegrationService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
@@ -97,23 +97,33 @@ export default async function handler(req, res) {
       let gsAccessToken = null;
       if (clientKey || masterSheetId) {
         const grant = await getIntegrationTokens({ clientKey, masterSheetId, tool: "googlesheet" }).catch(() => null);
+        if (grant?.reconnectRequired) {
+          return res.status(200).json({
+            success: false,
+            reconnectRequired: true,
+            error: "Google OAuth authorisation has expired or been revoked. Re-authorisation required."
+          });
+        }
         if (grant && grant.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
-          const isExpiring = grant.expiresAt && Date.now() > (grant.expiresAt - 60000);
+          const isExpiring = !grant.expiresAt || Date.now() > (grant.expiresAt - 300000);
           if (isExpiring && grant.tokens.refreshToken) {
             try {
-              const refreshed = await refreshGoogleSheetTokens(grant.tokens.refreshToken);
-              await updateRefreshedTokens({
+              const refreshed = await refreshStoredIntegrationToken({
                 clientKey: grant.clientKey || clientKey,
+                masterSheetId,
                 tool: "googlesheet",
-                tokens: {
-                  ...grant.tokens,
-                  accessToken: refreshed.accessToken,
-                  expiresIn: refreshed.expiresIn,
-                  expiresAt: Date.now() + (refreshed.expiresIn * 1000)
-                }
+                refreshFn: (latest) => refreshGoogleSheetTokens(latest.tokens.refreshToken)
               });
               gsAccessToken = refreshed.accessToken;
-            } catch {
+            } catch (refErr) {
+              console.warn("Could not refresh Google Sheet token in test-source:", refErr.message);
+              if (isOAuthReconnectError(refErr)) {
+                return res.status(200).json({
+                  success: false,
+                  reconnectRequired: true,
+                  error: `Google OAuth token refresh failed (${refErr.message}). Re-authorisation required.`
+                });
+              }
               gsAccessToken = grant.tokens.accessToken;
             }
           } else {
@@ -191,26 +201,37 @@ export default async function handler(req, res) {
       let accessToken = null;
       if (clientKey || masterSheetId) {
         const grant = await getIntegrationTokens({ clientKey, masterSheetId, tool: "excel" }).catch(() => null);
+        if (grant?.reconnectRequired) {
+          return res.status(200).json({
+            success: false,
+            reconnectRequired: true,
+            error: "Microsoft 365 OAuth authorisation has expired or been revoked. Re-authorisation required."
+          });
+        }
         if (grant && grant.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
           const isExpiring = !grant.expiresAt || Date.now() > (grant.expiresAt - 300000);
           if (isExpiring && grant.tokens.refreshToken) {
             try {
-              const { refreshExcelTokens } = await import("../../../services/excelIntegrationService.js");
-              const refreshed = await refreshExcelTokens(grant.tokens.refreshToken, grant.metadata?.azureTenantId);
-              await updateRefreshedTokens({
+              const refreshed = await refreshStoredIntegrationToken({
                 clientKey: grant.clientKey || clientKey,
+                masterSheetId,
                 tool: "excel",
-                tokens: {
-                  ...grant.tokens,
-                  accessToken: refreshed.accessToken,
-                  refreshToken: refreshed.refreshToken || grant.tokens.refreshToken,
-                  expiresIn: refreshed.expiresIn,
-                  expiresAt: Date.now() + ((refreshed.expiresIn || 3600) * 1000)
-                }
+                refreshFn: (latest) =>
+                  refreshExcelTokens(
+                    latest.tokens.refreshToken,
+                    latest?.metadata?.azureTenantId || grant.metadata?.azureTenantId
+                  )
               });
               accessToken = refreshed.accessToken;
             } catch (refErr) {
               console.warn("Could not refresh Excel token in test-source:", refErr.message);
+              if (isOAuthReconnectError(refErr)) {
+                return res.status(200).json({
+                  success: false,
+                  reconnectRequired: true,
+                  error: `Microsoft 365 OAuth token refresh failed (${refErr.message}). Re-authorisation required.`
+                });
+              }
               accessToken = grant.tokens.accessToken;
             }
           } else {

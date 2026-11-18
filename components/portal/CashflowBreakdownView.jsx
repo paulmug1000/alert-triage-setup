@@ -227,7 +227,7 @@ export default function CashflowBreakdownView({
     if (activeCategory === "cashTaxes") return sumRows(["corporation tax", "corporation tax adjustment", "vat", "vat adjustment"], [19, 20, 21, 22, 61, 62, 63, 64]);
     if (activeCategory === "cashOther") return sumRows(["non-operating income", "non-operating expenses", "other cash movements", "other adjustments"], [24, 25, 26, 27, 29, 30, 66, 67, 68, 69, 71, 72]);
     return null;
-  }, [data, activeCategory, selectedMonthIdx, availableMonths, isNotesMode]);
+  }, [data, activeCategory, selectedMonthIdx, availableMonths]);
 
   // Invoices Sent Data (Confirmed & Pipeline lists)
   const invoicesSentData = useMemo(() => {

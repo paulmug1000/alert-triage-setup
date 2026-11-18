@@ -138,7 +138,7 @@ export default function OutgoingsEstimateModal({ estimateData, outgoingsData, up
       const details = getMonthDetails(selectedMonth);
       setPayDate(computeTargetDate(details.baseDate, contractor?.payTiming, 28));
     }
-  }, [selectedMonthIdx, contractor?.payTiming]);
+  }, [selectedMonth, contractor?.payTiming]);
 
   const save = async () => {
     if (!amount || !selectedMonth) return;

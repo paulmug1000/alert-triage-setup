@@ -46,6 +46,7 @@ export default function PerformanceYTDView({
         isLoading: false,
       } : null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyData]);
   const activeYearIdx = selectedYearIdx !== null ? selectedYearIdx : (data?.currentYearIdx !== undefined ? data.currentYearIdx : (years.length > 1 ? 1 : 0));
   const activeYear = years[activeYearIdx];

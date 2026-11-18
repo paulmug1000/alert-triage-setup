@@ -33,6 +33,12 @@ export default function ExcelLinkModal({
     }
     return "";
   });
+  const isReconnectRequired = Boolean(
+    currentConfig?.reconnectRequired ||
+    client?.integrations?.excel?.reconnectRequired ||
+    currentConfig?.status === "reconnect_required" ||
+    client?.integrations?.excel?.status === "reconnect_required"
+  );
   const [isLinkSubmitted, setIsLinkSubmitted] = useState(() => {
     const hasConfigUrl = Boolean(
       currentConfig?.metadata?.url ||
@@ -40,7 +46,7 @@ export default function ExcelLinkModal({
       client?.integrations?.excel?.metadata?.url
     );
     const hasQueryUrl = Boolean(initialUrl) || (typeof window !== "undefined" && Boolean(new URLSearchParams(window.location.search).get("url")));
-    return (hasConfigUrl && Boolean(currentConfig?.connected || client?.integrations?.excel?.connected)) || hasQueryUrl;
+    return (hasConfigUrl && (Boolean(currentConfig?.connected || client?.integrations?.excel?.connected) || isReconnectRequired)) || hasQueryUrl;
   });
   const [driveId, setDriveId] = useState(currentConfig?.metadata?.driveId || currentConfig?.driveId || "");
   const [fileId, setFileId] = useState(currentConfig?.metadata?.fileId || currentConfig?.fileId || "");
@@ -95,13 +101,15 @@ export default function ExcelLinkModal({
     }
   };
 
-  const isConnected = Boolean(
-    currentConfig?.connected ||
-    client?.integrations?.excel?.connected ||
-    client?.crmStatus?.connected ||
-    currentConfig?.metadata?.userEmail ||
-    client?.integrations?.excel?.metadata?.userEmail
-  );
+  const isConnected =
+    !isReconnectRequired &&
+    Boolean(
+      currentConfig?.connected ||
+      client?.integrations?.excel?.connected ||
+      client?.crmStatus?.connected ||
+      currentConfig?.metadata?.userEmail ||
+      client?.integrations?.excel?.metadata?.userEmail
+    );
   const connectedEmail =
     currentConfig?.metadata?.userEmail ||
     client?.integrations?.excel?.metadata?.userEmail ||
@@ -319,12 +327,14 @@ export default function ExcelLinkModal({
         }
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
   React.useEffect(() => {
     if (isLinkSubmitted && isConnected && excelUrl && excelUrl.trim() && !inspectionData && !inspecting && !isClientView) {
       handleInspect();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLinkSubmitted, isConnected]);
 
   const handleOAuthConnect = () => {
@@ -460,7 +470,7 @@ export default function ExcelLinkModal({
             </div>
           )}
 
-          {error && (
+          {(error || isReconnectRequired) && (
             <div
               style={{
                 background: "#fef2f2",
@@ -472,7 +482,7 @@ export default function ExcelLinkModal({
                 color: "#991b1b"
               }}
             >
-              {error}
+              {error || "Your Microsoft 365 authorisation has expired or been revoked. Please sign in again below to re-authorise access."}
             </div>
           )}
 

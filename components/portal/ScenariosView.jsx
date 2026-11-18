@@ -435,6 +435,7 @@ export default function ScenariosView({
         isLoading: false,
       } : null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyData, mutatedYearData, scenariosConfig, isSenior, isIncomeMode, mutatedRows]);
 
   // Row styling matching PerformanceFYView and WebApp.html

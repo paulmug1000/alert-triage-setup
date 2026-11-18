@@ -98,12 +98,17 @@ export default async function handler(req, res) {
     }).catch(() => null);
 
     // 6. Encrypt and store OAuth tokens in Central Vault (spreadsheet selection occurs via Google Picker in the browser)
+    const resolvedMasterId = masterSheetId || existingGrant?.masterSheetId || "";
+    const mergedTokens = {
+      ...tokens,
+      refreshToken: tokens.refreshToken || existingGrant?.tokens?.refreshToken || ""
+    };
     await saveIntegrationTokens({
       clientKey,
       clientName,
-      masterSheetId,
+      masterSheetId: resolvedMasterId,
       tool: "googlesheet",
-      tokens,
+      tokens: mergedTokens,
       metadata: {
         ...(existingGrant?.metadata || {}),
         userEmail,

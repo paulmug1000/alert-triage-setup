@@ -35,9 +35,11 @@ import { evaluateAllMasterFormulas, compactGrid2D } from "./masterFormulaEngine.
 import {
   getIntegrationTokens,
   updateRefreshedTokens,
+  markIntegrationReconnectRequired,
   getSharedXeroGrant,
   updateSharedXeroGrantTokens,
   refreshWithConcurrencyLock,
+  isOAuthReconnectError,
 } from "../vaultService.js";
 import { refreshXeroTokens } from "../xeroService.js";
 import { refreshQBTokens } from "../quickbooksService.js";
@@ -423,6 +425,7 @@ async function resolveBrokerTokenInProcess(ctx, toolRaw) {
           accessToken: latest.tokens.accessToken,
           expiresIn: latestExpiresIn,
           refreshToken: latest.tokens.refreshToken,
+          metadata: latest.metadata || {},
         };
       };
 
@@ -445,7 +448,7 @@ async function resolveBrokerTokenInProcess(ctx, toolRaw) {
             }
             const refreshFn = normalizedTool === "xero" ? refreshXeroTokens : OAUTH_REFRESHERS[normalizedTool];
             const refreshed = normalizedTool === "excel"
-              ? await refreshExcelTokens(refreshTokenToUse, record.metadata?.azureTenantId)
+              ? await refreshExcelTokens(refreshTokenToUse, latest?.metadata?.azureTenantId || record.metadata?.azureTenantId)
               : await refreshFn(refreshTokenToUse);
             await updateRefreshedTokens({ clientKey: record.clientKey, tool: normalizedTool, tokens: refreshed });
             const defaultExp = normalizedTool === "xero" || normalizedTool === "hubspot" ? 1800 : 3600;
@@ -461,6 +464,17 @@ async function resolveBrokerTokenInProcess(ctx, toolRaw) {
           expiresIn = refreshResult.expiresIn ?? expiresIn;
         }
       } catch (refreshErr) {
+        if (isOAuthReconnectError(refreshErr)) {
+          try {
+            await markIntegrationReconnectRequired({
+              clientKey: record.clientKey,
+              masterSheetId: ctx.masterSheetId,
+              tool: normalizedTool,
+              error: refreshErr.message,
+              isSharedGrant: Boolean(normalizedTool === "xero" && record.isSharedGrant),
+            });
+          } catch (_) { }
+        }
         return {
           status: 401,
           body: {
@@ -2468,18 +2482,28 @@ export async function createGasEnvironment({
             masterSheetId: ctx.masterSheetId,
             reconSheetId: ctx.reconSheetId,
           }).catch((e) => ({ success: false, error: e.message }));
-          // Reload Recon PLAdds into reconSS if updated
-          const { data: plAddsRow } = await supabase
+          // Reload Recon PLAdds and all reconciled monthly tabs into reconSS so downstream reads see cleared items immediately
+          const tabsToReload = new Set([
+            "PLAdds",
+            ...(Array.isArray(resObj?.reconciledMonths) ? resObj.reconciledMonths.map(m => m?.tabName).filter(Boolean) : []),
+          ]);
+          const { data: reloadedRows } = await supabase
             .from("master_sheet_grids")
             .select("*")
             .eq("client_name", ctx.clientName)
             .eq("sheet_role", "recon")
-            .eq("tab_name", "PLAdds")
-            .maybeSingle();
-          if (plAddsRow && Array.isArray(plAddsRow.values_grid)) {
-            const s = reconSS.getSheetByName("PLAdds") || reconSS.insertSheet("PLAdds");
-            s.valuesGrid = cloneGrid2D(plAddsRow.values_grid);
-            envState.masterFormulasDirty = true;
+            .in("tab_name", Array.from(tabsToReload));
+          for (const rRow of reloadedRows || []) {
+            if (Array.isArray(rRow.values_grid)) {
+              const compacted = compactGrid2D(rRow.values_grid);
+              const s = reconSS.getSheetByName(rRow.tab_name) || reconSS.insertSheet(rRow.tab_name);
+              s.valuesGrid = cloneGrid2D(compacted);
+              s.formulasGrid = cloneGrid2D(compacted);
+              s._loadedValuesJson = JSON.stringify(compacted);
+              if (rRow.tab_name === "PLAdds") {
+                envState.masterFormulasDirty = true;
+              }
+            }
           }
           const text = JSON.stringify(resObj || { success: true });
           return {

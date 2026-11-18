@@ -1549,6 +1549,7 @@ export default function CashflowWorkbenchView({
       setBankTxns(mappedBankTxns);
       setUnreconItems(rawUnreconItems);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reconData?.bankTransactions, reconData?.unreconciledItems, defaultAccount]);
 
   useEffect(() => {

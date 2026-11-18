@@ -215,6 +215,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     } else if (asPath && !asPath.includes("subsection=")) {
       setSettingsSubsection("");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router?.isReady, router?.asPath]);
   const [invoicesInitialClient, setInvoicesInitialClient] = useState(null);
   const [outgoingsInitialClient, setOutgoingsInitialClient] = useState(null);
@@ -562,6 +563,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         appGlobals.preloadClientData(resolved);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNav, selectedClient?.clientName, selectedClient?.clientSheetId, allOutgoingsClients?.length]);
 
   // When a user chooses a client on any Edit screen, preload the rest of that client's data in the background
@@ -581,6 +583,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     if (managedClient?.clientSheetId !== resolved.clientSheetId) {
       preloadClientData?.(resolved);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     editStickyClient,
     allOutgoingsClients?.length,
@@ -810,6 +813,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     } else if (!managedClient) {
       lastManagedAlertSelectionRef.current = "";
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNav, managedClient, triageEngine.sessionId, allOutgoingsClients, triageEngine.clientsWithFlags]);
   const handleNavOverview = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); });
   const handleNavTasks = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); });
@@ -908,7 +912,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       lastHandledAsPathRef.current = target;
       window.history.replaceState({ nav: activeNav }, "", target);
     }
-  }, [activeNav, setupClientName, settingsClientName, settingsSection, settingsSubsection, dbClientName, managedClient]);
+  }, [activeNav, setupClientName, settingsClientName, settingsSection, settingsSubsection, dbClientName, managedClient, authChecking, isAuthenticated, isPulseOnly, user?.isReadOnly]);
 
   useEffect(() => {
     const onPopState = (e) => {

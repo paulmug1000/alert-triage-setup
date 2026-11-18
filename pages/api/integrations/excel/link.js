@@ -98,19 +98,19 @@ export default async function handler(req, res) {
     });
 
     // Check if vault record exists; update metadata or create connected status record
-    const existingGrant = await getIntegrationTokens({ clientKey, tool: "excel" });
+    const existingGrant = await getIntegrationTokens({ clientKey, masterSheetId: resolvedMasterSheetId, tool: "excel" });
     if (existingGrant) {
       await saveIntegrationTokens({
         clientKey,
         clientName: existingGrant.clientName || clientKey,
-        masterSheetId: masterSheetId || existingGrant.masterSheetId,
+        masterSheetId: resolvedMasterSheetId || existingGrant.masterSheetId,
         tool: "excel",
         tokens: existingGrant.tokens,
         metadata: {
           ...(existingGrant.metadata || {}),
           sheetName,
-          driveId,
-          fileId,
+          driveId: linkResult.driveId || driveId,
+          fileId: linkResult.fileId || fileId,
           rangeAddress,
           headerRowNum,
           keyHeaders,
@@ -121,7 +121,7 @@ export default async function handler(req, res) {
       await saveIntegrationTokens({
         clientKey,
         clientName: clientKey,
-        masterSheetId,
+        masterSheetId: resolvedMasterSheetId,
         tool: "excel",
         tokens: {
           accessToken: "manual_credentials",
@@ -130,8 +130,8 @@ export default async function handler(req, res) {
         },
         metadata: {
           sheetName,
-          driveId,
-          fileId,
+          driveId: linkResult.driveId || driveId,
+          fileId: linkResult.fileId || fileId,
           rangeAddress,
           headerRowNum,
           keyHeaders,

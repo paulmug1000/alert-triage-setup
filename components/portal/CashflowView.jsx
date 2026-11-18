@@ -46,6 +46,7 @@ export default function CashflowView({
         isLoading: false,
       } : null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyData]);
 
 

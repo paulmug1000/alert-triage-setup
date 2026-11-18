@@ -266,6 +266,8 @@ export default function IntegrationsView({
                     [integration]: {
                       ...(matched.integrations?.[integration] || {}),
                       connected: true,
+                      status: "connected",
+                      reconnectRequired: false,
                       metadata: {
                         ...(matched.integrations?.[integration]?.metadata || {}),
                         userEmail: matched.integrations?.[integration]?.metadata?.userEmail || accountEmail,
@@ -321,6 +323,7 @@ export default function IntegrationsView({
         }
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Jump to specific client

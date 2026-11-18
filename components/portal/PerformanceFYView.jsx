@@ -44,6 +44,7 @@ export default function PerformanceFYView({
         isLoading: false,
       } : null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyData]);
 
   // Default to currentYearIdx from data or fallback to 1 (Year 1)

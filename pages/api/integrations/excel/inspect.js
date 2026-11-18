@@ -9,8 +9,8 @@
 
 import { getSessionUser } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
-import { inspectExcelWorkbook } from "../../../../services/excelIntegrationService.js";
-import { getIntegrationTokens } from "../../../../services/vaultService.js";
+import { inspectExcelWorkbook, refreshExcelTokens } from "../../../../services/excelIntegrationService.js";
+import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../../services/vaultService.js";
 
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
@@ -48,28 +48,38 @@ export default async function handler(req, res) {
 
     if (clientKey) {
       const grant = await getIntegrationTokens({ clientKey, tool: "excel" });
-      if (grant && grant.tokens) {
-        // If expired or expiring within 60s, refresh automatically
-        const isExpiring = grant.expiresAt && Date.now() > (grant.expiresAt - 60000);
+      if (grant?.reconnectRequired) {
+        return res.status(200).json({
+          success: false,
+          reconnectRequired: true,
+          error: "Your Microsoft 365 authorisation has expired or been revoked. Please sign in again to re-authorise access."
+        });
+      }
+      if (grant?.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
+        // If expired or expiring within 5 minutes, refresh automatically with concurrency lock
+        const isExpiring = !grant.expiresAt || Date.now() > (grant.expiresAt - 300000);
         if (isExpiring && grant.tokens.refreshToken) {
           try {
-            const { refreshExcelTokens } = await import("../../../../services/excelIntegrationService.js");
-            const { updateRefreshedTokens } = await import("../../../../services/vaultService.js");
-            const refreshed = await refreshExcelTokens(grant.tokens.refreshToken, grant.metadata?.azureTenantId);
-            await updateRefreshedTokens({
-              clientKey,
+            const refreshed = await refreshStoredIntegrationToken({
+              clientKey: grant.clientKey || clientKey,
+              masterSheetId: grant.masterSheetId || "",
               tool: "excel",
-              tokens: {
-                ...grant.tokens,
-                accessToken: refreshed.accessToken,
-                refreshToken: refreshed.refreshToken || grant.tokens.refreshToken,
-                expiresIn: refreshed.expiresIn,
-                expiresAt: Date.now() + (refreshed.expiresIn * 1000)
-              }
+              refreshFn: (latest) =>
+                refreshExcelTokens(
+                  latest.tokens.refreshToken,
+                  latest?.metadata?.azureTenantId || grant.metadata?.azureTenantId
+                )
             });
             token = refreshed.accessToken;
           } catch (rErr) {
             console.warn("Could not refresh Excel token before inspect:", rErr.message);
+            if (isOAuthReconnectError(rErr)) {
+              return res.status(200).json({
+                success: false,
+                reconnectRequired: true,
+                error: "Your Microsoft 365 authorisation has expired or been revoked. Please sign in again to re-authorise access."
+              });
+            }
             token = grant.tokens.accessToken;
           }
         } else {

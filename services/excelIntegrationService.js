@@ -84,6 +84,17 @@ export function buildExcelAuthUrl({ redirectUri, state, tenantId = "common" }) {
   return url.toString();
 }
 
+function formatMicrosoftOAuthError(data, statusText) {
+  const errCode = String(data?.error || "").trim();
+  const errDesc = String(data?.error_description || "").trim();
+  if (errCode && errDesc) {
+    return errDesc.toLowerCase().includes(errCode.toLowerCase())
+      ? errDesc
+      : `${errCode}: ${errDesc}`;
+  }
+  return errDesc || errCode || statusText || "Unknown Microsoft OAuth error";
+}
+
 /**
  * Exchanges authorization code for Microsoft OAuth access and refresh tokens.
  */
@@ -110,9 +121,9 @@ export async function exchangeExcelCodeForTokens({ code, redirectUri, tenantId =
     body: body.toString()
   });
 
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
-    throw new Error(`Microsoft token exchange failed: ${data.error_description || data.error || res.statusText}`);
+    throw new Error(`Microsoft token exchange failed: ${formatMicrosoftOAuthError(data, res.statusText)}`);
   }
 
   return {
@@ -152,9 +163,9 @@ export async function refreshExcelTokens(refreshToken, tenantId = "common") {
     body: body.toString()
   });
 
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
-    throw new Error(`Microsoft token refresh failed: ${data.error_description || data.error || res.statusText}`);
+    throw new Error(`Microsoft token refresh failed: ${formatMicrosoftOAuthError(data, res.statusText)}`);
   }
 
   return {

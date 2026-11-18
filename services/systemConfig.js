@@ -52,7 +52,7 @@ export async function readSweepSchedule_(sheets, automationCommanderSheetId) {
         }
         return schedule;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   const resp = await sheets.spreadsheets.values.get({
@@ -107,7 +107,7 @@ export async function markCategoryChecked_(sheets, automationCommanderSheetId, c
           description: "Background alert sweep frequencies and last checked timestamps",
         });
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   const updateSheet = async () => {
@@ -128,7 +128,7 @@ export async function markCategoryChecked_(sheets, automationCommanderSheetId, c
     }
   };
   if (await isSupabaseControlPlaneActive()) {
-    updateSheet().catch(() => {});
+    updateSheet().catch(() => { });
   } else {
     await updateSheet();
   }
@@ -520,7 +520,7 @@ export async function handleSaveSweepFrequency(req, res, sheets) {
             description: "Background alert sweep frequencies and last checked timestamps",
           });
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const updateSheet = async () => {
@@ -541,7 +541,7 @@ export async function handleSaveSweepFrequency(req, res, sheets) {
       }
     };
     if (await isSupabaseControlPlaneActive()) {
-      updateSheet().catch(() => {});
+      updateSheet().catch(() => { });
     } else {
       await updateSheet();
     }
@@ -611,7 +611,7 @@ export async function handleTriggerAgentRun(req, res, sheets) {
               });
               await redisClient
                 .set(progressKey, JSON.stringify({ entries: liveEntries, done: Boolean(prog.done) }), { EX: 1800 })
-                .catch(() => {});
+                .catch(() => { });
             },
             userEmail: sessionUser?.email || "System",
           });
@@ -857,38 +857,63 @@ export async function handleSyncAllMasterScriptSecrets(req, res, sheets) {
       return m ? m[1] : String(val).trim();
     };
 
-    // 1. Read AutoUpdates (Col A = clientName, Col D = masterSheetUrl/Id, Col N = webAppUrl)
-    const auResp = await sheets.spreadsheets.values.get({
-      spreadsheetId: acSheetId,
-      range: "AutoUpdates!A2:N500"
-    });
-    const auRows = auResp.data.values || [];
-
-    // 2. Also read Clients tracker sheet (Col A = clientName, Col W = deploymentUrl) as fallback for webAppUrl
-    const trackerUrlByClient = new Map();
-    try {
-      const trackerResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co",
-        range: "Clients!A3:W50"
-      });
-      for (const r of (trackerResp.data.values || [])) {
-        const cName = String(r[0] || "").trim().toLowerCase();
-        const depUrl = String(r[22] || "").trim();
-        if (cName && depUrl) trackerUrlByClient.set(cName, depUrl);
-      }
-    } catch (e) {
-      console.warn("[sync_all_master_script_secrets] Could not read fallback tracker sheet:", e.message);
-    }
-
     const targets = [];
-    for (const r of auRows) {
-      const clientName = String(r[0] || "").trim();
-      if (!clientName || clientName.toLowerCase() === "client") continue;
-      if (clientFilter && !clientName.toLowerCase().includes(clientFilter)) continue;
+    const usingSupabaseControlPlane = isSupabaseConfigured() && (await isSupabaseControlPlaneActive());
 
-      const masterSheetId = extractId(r[12] || r[3]);
-      const webAppUrl = String(r[13] || "").trim() || trackerUrlByClient.get(clientName.toLowerCase()) || "";
-      targets.push({ clientName, masterSheetId, webAppUrl });
+    if (usingSupabaseControlPlane) {
+      const sb = getSupabaseAdmin();
+      const { data: sbClients, error: sbErr } = await sb
+        .from("clients")
+        .select("client_name, status, metadata, master_mode, master_sheet_id, master_sheet_url, web_app_url, master_deployment_url")
+        .order("client_name", { ascending: true });
+      if (sbErr) {
+        throw new Error(`Supabase clients read failed: ${sbErr.message}`);
+      }
+      for (const c of sbClients || []) {
+        const clientName = String(c?.client_name || "").trim();
+        if (!clientName) continue;
+        const effStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+        if (["inactive", "archived", "suspended"].includes(effStatus)) continue;
+        if (String(c?.master_mode || "").trim().toLowerCase() === "supabase") continue;
+        if (clientFilter && !clientName.toLowerCase().includes(clientFilter)) continue;
+
+        const masterSheetId = extractId(c.master_sheet_url || c.master_sheet_id);
+        const webAppUrl = String(c.master_deployment_url || c.web_app_url || "").trim();
+        targets.push({ clientName, masterSheetId, webAppUrl });
+      }
+    } else {
+      // 1. Legacy Sheets fallback: Read AutoUpdates (Col A = clientName, Col D = masterSheetUrl/Id, Col N = webAppUrl)
+      const auResp = await sheets.spreadsheets.values.get({
+        spreadsheetId: acSheetId,
+        range: "AutoUpdates!A2:N500"
+      });
+      const auRows = auResp.data.values || [];
+
+      // 2. Also read Clients tracker sheet (Col A = clientName, Col W = deploymentUrl) as fallback for webAppUrl
+      const trackerUrlByClient = new Map();
+      try {
+        const trackerResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co",
+          range: "Clients!A3:W50"
+        });
+        for (const r of (trackerResp.data.values || [])) {
+          const cName = String(r[0] || "").trim().toLowerCase();
+          const depUrl = String(r[22] || "").trim();
+          if (cName && depUrl) trackerUrlByClient.set(cName, depUrl);
+        }
+      } catch (e) {
+        console.warn("[sync_all_master_script_secrets] Could not read fallback tracker sheet:", e.message);
+      }
+
+      for (const r of auRows) {
+        const clientName = String(r[0] || "").trim();
+        if (!clientName || clientName.toLowerCase() === "client") continue;
+        if (clientFilter && !clientName.toLowerCase().includes(clientFilter)) continue;
+
+        const masterSheetId = extractId(r[12] || r[3]);
+        const webAppUrl = String(r[13] || "").trim() || trackerUrlByClient.get(clientName.toLowerCase()) || "";
+        targets.push({ clientName, masterSheetId, webAppUrl });
+      }
     }
 
     const results = [];
@@ -902,7 +927,9 @@ export async function handleSyncAllMasterScriptSecrets(req, res, sheets) {
           clientName: t.clientName,
           masterSheetId: t.masterSheetId,
           success: false,
-          error: "No valid Google Apps Script WebApp URL configured in AutoUpdates (Col N) or Clients tracker (Col W)."
+          error: usingSupabaseControlPlane
+            ? "No valid Google Apps Script WebApp URL configured in Supabase public.clients (master_deployment_url)."
+            : "No valid Google Apps Script WebApp URL configured in AutoUpdates (Col N) or Clients tracker (Col W)."
         });
         continue;
       }

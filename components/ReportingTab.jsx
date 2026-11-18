@@ -4224,6 +4224,7 @@ export default function ReportingTab({
                               cursor: "zoom-in"
                             }}
                           >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
                               src={`data:image/png;base64,${activeSlide.slidePreviewBase64}`}
                               alt={`Slide ${activeSlide.slideNumber}: ${activeSlide.slideTitle}`}
@@ -4271,6 +4272,7 @@ export default function ReportingTab({
                                 background: "#ffffff"
                               }}>
                                 {activeSlide.chartImages.map((img, idx) => (
+                                  // eslint-disable-next-line @next/next/no-img-element
                                   <img
                                     key={idx}
                                     src={`data:${img.mimeType || "image/png"};base64,${img.base64}`}
@@ -4992,6 +4994,7 @@ export default function ReportingTab({
                     </button>
                   </div>
                   <div style={{ padding: "14px", background: "#cbd5e1", display: "flex", justifyContent: "center" }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={`data:image/png;base64,${zoomedSlidePreview.base64}`}
                       alt={`Slide ${zoomedSlidePreview.slideNumber}: ${zoomedSlidePreview.slideTitle}`}
@@ -5181,6 +5184,7 @@ export default function ReportingTab({
                               {sp.legacyPngDataUri && (
                                 <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "6px", textAlign: "center" }}>
                                   <div style={{ fontSize: "10px", color: "#64748b", marginBottom: "4px" }}>Current deck chart</div>
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
                                   <img src={sp.legacyPngDataUri} alt={sp.label} style={{ height: "44px", objectFit: "contain" }} />
                                 </div>
                               )}
@@ -5211,6 +5215,7 @@ export default function ReportingTab({
                                 justifyContent: "center",
                                 alignItems: "center"
                               }}>
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
                                 <img src={ch.legacyPngDataUri} alt={ch.title} style={{ maxWidth: "100%", maxHeight: "360px", objectFit: "contain" }} />
                               </div>
                             </div>

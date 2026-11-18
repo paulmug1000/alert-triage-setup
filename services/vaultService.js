@@ -1164,3 +1164,111 @@ export async function refreshWithConcurrencyLock(lockKey, refreshFn, getLatestTo
   return await promise;
 }
 
+/**
+ * Returns true if an OAuth refresh error indicates the stored grant/refresh token
+ * is invalid, expired, revoked, or otherwise requires interactive re-authorisation.
+ */
+export function isOAuthReconnectError(errOrMessage) {
+  const msg = String(errOrMessage?.message || errOrMessage || "").toLowerCase();
+  return (
+    msg.includes("invalid_grant") ||
+    msg.includes("invalid_client") ||
+    msg.includes("invalid_token") ||
+    msg.includes("unauthorized") ||
+    msg.includes("revoked") ||
+    msg.includes("consumed") ||
+    msg.includes("expired") ||
+    msg.includes("re-authorize") ||
+    msg.includes("re-authorise") ||
+    msg.includes("aadsts") ||
+    msg.includes("no refresh token")
+  );
+}
+
+/**
+ * Concurrency-safe OAuth refresh helper for stored Vault integrations.
+ * Acquires the distributed Redis/in-memory lock, re-checks token freshness,
+ * invokes `refreshFn(latestRecord)`, persists new tokens, and marks the Vault
+ * record as `reconnect_required` if an OAuth grant failure occurs.
+ */
+export async function refreshStoredIntegrationToken({
+  clientKey,
+  masterSheetId = "",
+  tool,
+  refreshFn,
+  bufferSeconds = 300,
+  forceRefresh = false,
+  markOnAuthFailure = true
+}) {
+  const cleanTool = normalizeKey(tool);
+  const initialRecord = await getIntegrationTokens({ clientKey, masterSheetId, tool: cleanTool });
+  if (!initialRecord?.tokens?.accessToken) {
+    throw new Error(`No active ${cleanTool} connection found for this client.`);
+  }
+
+  const resolvedClientKey = initialRecord.clientKey || normalizeKey(clientKey);
+  const lockKey = `${cleanTool}:${resolvedClientKey}`;
+
+  const getLatest = async () => {
+    const latest = await getIntegrationTokens({
+      clientKey: resolvedClientKey,
+      masterSheetId: masterSheetId || initialRecord.masterSheetId,
+      tool: cleanTool
+    });
+    if (!latest?.tokens?.accessToken) return null;
+    const latestExpiresIn = Math.max(0, Math.round(((latest.expiresAt || 0) - Date.now()) / 1000));
+    return {
+      ...latest,
+      accessToken: latest.tokens.accessToken,
+      expiresIn: latestExpiresIn
+    };
+  };
+
+  try {
+    return await refreshWithConcurrencyLock(
+      lockKey,
+      async () => {
+        const latest = await getLatest();
+        if (!latest) {
+          throw new Error(`No active ${cleanTool} connection found for this client.`);
+        }
+        if (!forceRefresh && latest.expiresIn >= bufferSeconds) {
+          return {
+            accessToken: latest.accessToken,
+            expiresIn: latest.expiresIn
+          };
+        }
+        if (!latest.tokens?.refreshToken) {
+          throw new Error(`No refresh token available for ${cleanTool} connection. Please re-authorise in Pulse.`);
+        }
+        const refreshed = await refreshFn(latest);
+        await updateRefreshedTokens({
+          clientKey: resolvedClientKey,
+          tool: cleanTool,
+          tokens: refreshed
+        });
+        return {
+          accessToken: refreshed.accessToken,
+          expiresIn: refreshed.expiresIn || 3600
+        };
+      },
+      async () => {
+        const latest = await getLatest();
+        return latest ? { accessToken: latest.accessToken, expiresIn: latest.expiresIn } : null;
+      }
+    );
+  } catch (err) {
+    if (markOnAuthFailure && isOAuthReconnectError(err)) {
+      try {
+        await markIntegrationReconnectRequired({
+          clientKey: resolvedClientKey,
+          masterSheetId: masterSheetId || initialRecord.masterSheetId,
+          tool: cleanTool,
+          error: err.message
+        });
+      } catch (_) {}
+    }
+    throw err;
+  }
+}
+

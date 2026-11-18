@@ -140,19 +140,24 @@ export default async function handler(req, res) {
 
     // 6. Encrypt and store tokens in Central Vault ONLY after file access is verified (preserving existing link metadata on reconnect)
     const prevMeta = existingGrant?.metadata || {};
+    const resolvedMasterId = masterSheetId || existingGrant?.masterSheetId || "";
+    const mergedTokens = {
+      ...tokens,
+      refreshToken: tokens.refreshToken || existingGrant?.tokens?.refreshToken || ""
+    };
     await saveIntegrationTokens({
       clientKey,
       clientName,
-      masterSheetId,
+      masterSheetId: resolvedMasterId,
       tool: "excel",
-      tokens,
+      tokens: mergedTokens,
       metadata: {
         ...prevMeta,
         userEmail,
         displayName,
         accountName: accountLabel,
         tenantName: accountLabel,
-        azureTenantId: azureTenantId || prevMeta.azureTenantId || "",
+        azureTenantId: azureTenantId || (statePayload?.url && statePayload.url !== prevMeta.url ? "" : (prevMeta.azureTenantId || "")),
         url: statePayload?.url || prevMeta.url || "",
         driveId: inspectData?.driveId || prevMeta.driveId || "",
         fileId: inspectData?.fileId || prevMeta.fileId || ""
@@ -160,7 +165,7 @@ export default async function handler(req, res) {
     });
 
     // 7. Auto-link Excel workbook behind the scenes
-    if (statePayload?.url && masterSheetId && inspectData) {
+    if (statePayload?.url && resolvedMasterId && inspectData) {
       try {
         const defaultSheet = inspectData.defaultWorksheet || inspectData.worksheets?.[0]?.name || "Sheet1";
         const candidateRow = inspectData.candidateHeaderRow || 1;
@@ -176,7 +181,7 @@ export default async function handler(req, res) {
 
         await linkExcelToClient({
           clientKey,
-          masterSheetId,
+          masterSheetId: resolvedMasterId,
           url: statePayload.url,
           driveId: inspectData.driveId,
           fileId: inspectData.fileId,
@@ -196,7 +201,7 @@ export default async function handler(req, res) {
       clientName,
       tool: "excel",
       tenantName: accountLabel,
-      masterSheetId
+      masterSheetId: resolvedMasterId
     }).catch(err => console.error("Notification email error:", err.message));
 
     const separator = returnUrl.includes("?") ? "&" : "?";

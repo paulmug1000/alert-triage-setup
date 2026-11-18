@@ -600,6 +600,30 @@ export default function CashEditView({
     setUndoStack((prev) => [...prev, actionToRedo]);
   }, [redoStack, applyCellChanges]);
 
+  const openNoteModalForCell = useCallback((sheetRow, colIdx) => {
+    const key = `${sheetRow}_${colIdx}`;
+    const cellData = matrix[key];
+    const colLetter = cellData?.colLetter || colIdxToLetter(colIdx);
+    const monthLabel = cashData?.monthCols?.find((m) => m.colIdx === colIdx)?.label || `Col ${colLetter}`;
+
+    // Find row label from Table 1 or Table 2
+    let rowLabel = `Row ${sheetRow}`;
+    const t1 = cashData?.table1Rows?.find((r) => r.sheetRow === sheetRow);
+    const t2 = cashData?.table2Rows?.find((r) => r.sheetRow === sheetRow);
+    if (t1?.label) rowLabel = t1.label;
+    else if (t2?.label) rowLabel = t2.label;
+
+    setNoteModal({
+      isOpen: true,
+      sheetRow,
+      colIdx,
+      colLetter,
+      title: `${rowLabel} • ${monthLabel}`,
+      subtitle: isSysAdmin ? `Cell Cash!${colLetter}${sheetRow} • ${cellData?.formattedValue || "£0"}` : (cellData?.formattedValue || "£0"),
+      initialNote: cellData?.note || "",
+    });
+  }, [matrix, cashData, isSysAdmin]);
+
   // ─────────────────────────────────────────────────────────────────────────────
   // KEYBOARD NAVIGATION & SHORTCUTS (CTRL+C, CTRL+V, CTRL+Z, SHIFT+F2)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -710,7 +734,7 @@ export default function CashEditView({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeCell, editingCell, matrix, noteModal.isOpen, cashData, handleUndo, handleRedo, applyCellChanges]);
+  }, [activeCell, editingCell, matrix, noteModal.isOpen, cashData, handleUndo, handleRedo, applyCellChanges, openNoteModalForCell]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // DRAG-TO-FILL MOUSE HANDLERS
@@ -774,30 +798,6 @@ export default function CashEditView({
   // ─────────────────────────────────────────────────────────────────────────────
   // NOTE MODAL HANDLERS
   // ─────────────────────────────────────────────────────────────────────────────
-  const openNoteModalForCell = (sheetRow, colIdx) => {
-    const key = `${sheetRow}_${colIdx}`;
-    const cellData = matrix[key];
-    const colLetter = cellData?.colLetter || colIdxToLetter(colIdx);
-    const monthLabel = cashData?.monthCols?.find((m) => m.colIdx === colIdx)?.label || `Col ${colLetter}`;
-
-    // Find row label from Table 1 or Table 2
-    let rowLabel = `Row ${sheetRow}`;
-    const t1 = cashData?.table1Rows?.find((r) => r.sheetRow === sheetRow);
-    const t2 = cashData?.table2Rows?.find((r) => r.sheetRow === sheetRow);
-    if (t1?.label) rowLabel = t1.label;
-    else if (t2?.label) rowLabel = t2.label;
-
-    setNoteModal({
-      isOpen: true,
-      sheetRow,
-      colIdx,
-      colLetter,
-      title: `${rowLabel} • ${monthLabel}`,
-      subtitle: isSysAdmin ? `Cell Cash!${colLetter}${sheetRow} • ${cellData?.formattedValue || "£0"}` : (cellData?.formattedValue || "£0"),
-      initialNote: cellData?.note || "",
-    });
-  };
-
   const handleSaveNote = async (newNoteText) => {
     if (!noteModal.sheetRow || !noteModal.colIdx) return;
     applyCellChanges([{

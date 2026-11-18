@@ -11,7 +11,7 @@
 import { getSessionUser } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
-import { getIntegrationTokens, updateRefreshedTokens } from "../../../../services/vaultService.js";
+import { getIntegrationTokens, refreshStoredIntegrationToken } from "../../../../services/vaultService.js";
 import { refreshGoogleSheetTokens } from "../../../../services/googleSheetService.js";
 
 export default async function handler(req, res) {
@@ -58,7 +58,7 @@ export default async function handler(req, res) {
       tool: "googlesheet"
     });
 
-    if (!grant || !grant.tokens || !grant.tokens.accessToken || grant.tokens.accessToken === "manual_link") {
+    if (!grant || !grant.tokens || !grant.tokens.accessToken || grant.tokens.accessToken.startsWith("manual_")) {
       return res.status(200).json({
         success: false,
         needsAuth: true,
@@ -66,21 +66,25 @@ export default async function handler(req, res) {
       });
     }
 
+    if (grant.reconnectRequired) {
+      return res.status(200).json({
+        success: false,
+        needsAuth: true,
+        reconnectRequired: true,
+        error: "Your Google session has expired. Please click 'Switch account' or 'Authorise with Google' to sign in again."
+      });
+    }
+
     let accessToken = grant.tokens.accessToken;
-    const isExpiring = grant.expiresAt && Date.now() > (grant.expiresAt - 300000);
+    const isExpiring = !grant.expiresAt || Date.now() > (grant.expiresAt - 300000);
 
     if (isExpiring && grant.tokens.refreshToken) {
       try {
-        const refreshed = await refreshGoogleSheetTokens(grant.tokens.refreshToken);
-        await updateRefreshedTokens({
+        const refreshed = await refreshStoredIntegrationToken({
           clientKey: grant.clientKey || targetClient,
+          masterSheetId: masterSheetId || grant.masterSheetId || "",
           tool: "googlesheet",
-          tokens: {
-            ...grant.tokens,
-            accessToken: refreshed.accessToken,
-            expiresIn: refreshed.expiresIn,
-            expiresAt: Date.now() + (refreshed.expiresIn * 1000)
-          }
+          refreshFn: (latest) => refreshGoogleSheetTokens(latest.tokens.refreshToken)
         });
         accessToken = refreshed.accessToken;
       } catch (refreshErr) {
@@ -88,6 +92,7 @@ export default async function handler(req, res) {
         return res.status(200).json({
           success: false,
           needsAuth: true,
+          reconnectRequired: true,
           error: "Your Google session has expired. Please click 'Switch account' or 'Authorise with Google' to sign in again."
         });
       }

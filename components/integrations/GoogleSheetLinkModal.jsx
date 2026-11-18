@@ -114,14 +114,25 @@ export default function GoogleSheetLinkModal({
     return null;
   });
 
-  const isConnected = Boolean(
-    connectedAccount ||
-    currentConfig?.connected ||
-    client?.integrations?.googlesheet?.connected ||
-    client?.crmStatus?.connected ||
-    currentConfig?.metadata?.userEmail ||
-    client?.integrations?.googlesheet?.metadata?.userEmail
-  );
+  const isReconnectRequired =
+    !connectedAccount &&
+    Boolean(
+      currentConfig?.reconnectRequired ||
+      client?.integrations?.googlesheet?.reconnectRequired ||
+      currentConfig?.status === "reconnect_required" ||
+      client?.integrations?.googlesheet?.status === "reconnect_required"
+    );
+
+  const isConnected =
+    !isReconnectRequired &&
+    Boolean(
+      connectedAccount ||
+      currentConfig?.connected ||
+      client?.integrations?.googlesheet?.connected ||
+      client?.crmStatus?.connected ||
+      currentConfig?.metadata?.userEmail ||
+      client?.integrations?.googlesheet?.metadata?.userEmail
+    );
 
   const connectedEmail =
     connectedAccount ||
@@ -577,7 +588,7 @@ export default function GoogleSheetLinkModal({
 
         {/* Content Body */}
         <div style={{ padding: "24px", overflowY: "auto", flex: 1 }}>
-          {error && (
+          {(error || isReconnectRequired) && (
             <div
               style={{
                 background: "#fef2f2",
@@ -590,7 +601,7 @@ export default function GoogleSheetLinkModal({
                 lineHeight: "1.45"
               }}
             >
-              {error}
+              {error || "Your Google authorisation has expired or been revoked. Please sign in with Google again below to re-authorise access."}
             </div>
           )}
 

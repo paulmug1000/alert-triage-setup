@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
 import { stripCurrency, isPlaceholderInvoice, isDraftInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus, calculatePaymentDate, sanitizeSpreadsheetTerms } from "../utils/helpers";
@@ -157,7 +157,7 @@ export default function InvoicesEditModal({
   const [costMonth, setCostMonth] = useState(() => (isConfirmedTab ? (slot.costMonth || "") : ""));
   const [rechargedPrompt, setRechargedPrompt] = useState(null);
 
-  const close = () => { if (!saving) onClose(); };
+  const close = useCallback(() => { if (!saving) onClose(); }, [saving, onClose]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -165,7 +165,7 @@ export default function InvoicesEditModal({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [saving]);
+  }, [close]);
 
   // If availableJobs wasn't passed, load confirmed jobs for this client on demand
   useEffect(() => {
@@ -250,9 +250,9 @@ export default function InvoicesEditModal({
     const rechNum = isConfirmedTab ? (Math.round((parseFloat(ofWhichRechgd) || 0) * 100) / 100) : 0;
     const rechPayload = isConfirmedTab
       ? {
-          ofWhichRechgd: rechNum > 0 ? rechNum : "",
-          costMonth: rechNum > 0 ? String(costMonth || "").trim() : "",
-        }
+        ofWhichRechgd: rechNum > 0 ? rechNum : "",
+        costMonth: rechNum > 0 ? String(costMonth || "").trim() : "",
+      }
       : {};
     try {
       const res = await fetch("/api/triage", {
@@ -283,7 +283,7 @@ export default function InvoicesEditModal({
       const data = await res.json();
       if (!data.success) {
         const rawErr = data.error || "Failed to update invoice";
-      alert(isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr));
+        alert(isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr));
         return;
       }
       if (invoicesClient?.masterSheetId) {
@@ -421,7 +421,7 @@ export default function InvoicesEditModal({
       const resData = await res.json();
       if (!resData.success) {
         const rawErr = resData.error || "Failed to move invoice";
-      alert(isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr));
+        alert(isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr));
         return;
       }
 
@@ -542,12 +542,12 @@ export default function InvoicesEditModal({
         Number(restored.slotNum || 1) === Number(slotNum);
       const slotPayload = isRestoredInDeletedSlot
         ? {
-            ref: restored.ref || "",
-            amount: restored.amount || "",
-            sentDate: restored.sentDate || "",
-            daysToPay: restored.daysToPay || "",
-            status: restored.status || "",
-          }
+          ref: restored.ref || "",
+          amount: restored.amount || "",
+          sentDate: restored.sentDate || "",
+          daysToPay: restored.daysToPay || "",
+          status: restored.status || "",
+        }
         : { ref: "", amount: "", sentDate: "", daysToPay: "", status: "" };
       onUpdateInvoiceJobs(rowNum, slotNum, slotPayload, resData);
       onClose();

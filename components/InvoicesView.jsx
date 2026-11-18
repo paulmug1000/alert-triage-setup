@@ -8,7 +8,7 @@ import EditClientSelector from "./EditClientSelector";
 import JobDetailModal from "./JobDetailModal";
 import PlaceholderChoiceModal from "./PlaceholderChoiceModal";
 import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
-import { getJobInvoiceItems } from "./JobsView";
+import { getJobInvoiceItems } from "../utils/jobItemsHelpers";
 import { useInvoices } from "../hooks/useInvoices";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";

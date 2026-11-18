@@ -12,6 +12,7 @@ import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getMasterKeyInfoSettings, saveMasterKeyInfoSettings } from "../../../services/setupService.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req, res);
@@ -49,6 +50,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
+    if (!assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser) || !sessionUser.isAdmin) {
       return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required to modify KeyInfo financial settings." });
     }

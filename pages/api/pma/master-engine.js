@@ -4,6 +4,7 @@ import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
 import { invalidatePmaClientCache } from "../../../services/cacheService.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
 import {
   getStage2Status,
@@ -18,6 +19,7 @@ import {
   getSupabaseClockStatusAndSyncConfig,
   setSupabaseClockEnabled,
   triggerSupabaseClockNow,
+  backfillNormalizedMirrorTablesFromVirtualGrids,
 } from "../../../services/masterEngineService.js";
 import {
   runNativeMasterSync,
@@ -114,6 +116,7 @@ export default async function handler(req, res) {
     if (req.method !== "POST") {
       return res.status(405).json({ success: false, error: "Method not allowed." });
     }
+    if (!isCronAuth && !assertTrustedOrigin(req, res)) return;
 
     const {
       action,
@@ -314,6 +317,24 @@ export default async function handler(req, res) {
       );
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, amdResult, status });
+    }
+
+    if (action === "backfill_normalized_mirrors") {
+      const sheets = await getSheetsClient();
+      const summary = await backfillNormalizedMirrorTablesFromVirtualGrids(cleanClient);
+      scheduleBackgroundWork_(
+        logPmaActivity(sheets, {
+          automationCommanderSheetId: acId,
+          clientName: cleanClient,
+          category: "SYSTEM",
+          action: "NORMALIZED_MIRROR_TABLES_BACKFILLED",
+          summary: `Backfilled normalised SQL mirror tables for ${cleanClient}`,
+          details: summary,
+          userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+        }).catch(() => { })
+      );
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, summary, status });
     }
 
     if (action === "get_tab_grid") {

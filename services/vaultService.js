@@ -20,6 +20,35 @@ import { getSheetsClient } from "./sheetsClient.js";
 import { resolveClientNameBySheetId } from "./userPermissions.js";
 import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
 
+const MAX_VAULT_L1 = 200;
+const VAULT_L1_TTL_MS = 15000;
+const _vaultL1Cache = new Map();
+
+function getVaultL1_(key) {
+  if (!key) return null;
+  const entry = _vaultL1Cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    _vaultL1Cache.delete(key);
+    return null;
+  }
+  return entry.raw;
+}
+
+function setVaultL1_(key, raw) {
+  if (!key || !raw) return;
+  if (_vaultL1Cache.size >= MAX_VAULT_L1) {
+    const oldest = _vaultL1Cache.keys().next().value;
+    if (oldest !== undefined) _vaultL1Cache.delete(oldest);
+  }
+  _vaultL1Cache.set(key, { raw, expiresAt: Date.now() + VAULT_L1_TTL_MS });
+}
+
+function clearVaultL1_(key) {
+  if (!key) return;
+  _vaultL1Cache.delete(key);
+}
+
 async function syncVaultRecordToSupabase(clientKey, tool, record) {
   if (!isSupabaseConfigured()) return;
   try {
@@ -101,9 +130,12 @@ async function loadVaultRecordFromSupabase_({ clientKey, masterSheetId, tool }) 
           ? SHARED_XERO_KEY
           : getVaultRedisKey(row.client_key || parsed.clientKey, cleanTool);
       await redisClient.set(targetRedisKey, row.encrypted_payload).catch(() => {});
+      setVaultL1_(targetRedisKey, row.encrypted_payload);
       const mId = masterSheetId || row.master_sheet_id || parsed.masterSheetId;
       if (mId && row.client_key !== "__shared_xero__") {
-        await redisClient.set(getSheetIndexRedisKey(mId, cleanTool), targetRedisKey).catch(() => {});
+        const sIdxKey = getSheetIndexRedisKey(mId, cleanTool);
+        await redisClient.set(sIdxKey, targetRedisKey).catch(() => {});
+        setVaultL1_(sIdxKey, targetRedisKey);
       }
     }
     return parsed;
@@ -329,6 +361,7 @@ export async function saveSharedXeroGrant({ tokens, availableTenants = [], conne
   };
 
   await redisClient.set(SHARED_XERO_KEY, JSON.stringify(record));
+  setVaultL1_(SHARED_XERO_KEY, JSON.stringify(record));
   await syncVaultRecordToSupabase("__shared_xero__", "xero", record);
   await invalidateIntegrationsCache();
   console.log(`🔒 Vault: Successfully stored central shared Xero grant with ${verifiedTenants.length} organisations.`);
@@ -339,7 +372,11 @@ export async function saveSharedXeroGrant({ tokens, availableTenants = [], conne
  * Retrieves the Central/Shared Advisor Xero Grant and decrypts its tokens.
  */
 export async function getSharedXeroGrant() {
-  let rawJson = await redisClient.get(SHARED_XERO_KEY);
+  let rawJson = getVaultL1_(SHARED_XERO_KEY);
+  if (!rawJson) {
+    rawJson = await redisClient.get(SHARED_XERO_KEY);
+    if (rawJson) setVaultL1_(SHARED_XERO_KEY, rawJson);
+  }
   let record = null;
   if (rawJson) {
     try {
@@ -397,6 +434,7 @@ export async function updateSharedXeroGrantTokens(tokens) {
   record.reconnectRequired = false;
 
   await redisClient.set(SHARED_XERO_KEY, JSON.stringify(record));
+  setVaultL1_(SHARED_XERO_KEY, JSON.stringify(record));
   await syncVaultRecordToSupabase("__shared_xero__", "xero", record);
   if (!wasConnected) {
     await invalidateIntegrationsCache();
@@ -443,11 +481,13 @@ export async function linkClientToSharedXero({
   };
 
   await redisClient.set(redisKey, JSON.stringify(record));
+  setVaultL1_(redisKey, JSON.stringify(record));
   await syncVaultRecordToSupabase(cleanClient, "xero", record);
 
   if (masterSheetId) {
     const sheetKey = getSheetIndexRedisKey(masterSheetId, "xero");
     await redisClient.set(sheetKey, redisKey);
+    setVaultL1_(sheetKey, redisKey);
   }
 
   console.log(`🔗 Vault: Linked ${cleanClient} to shared Xero tenant: "${tenantName}" (${tenantId})`);
@@ -533,13 +573,16 @@ export async function saveIntegrationTokens({
   };
 
   const redisKey = getVaultRedisKey(cleanClient, cleanTool);
-  await redisClient.set(redisKey, JSON.stringify(record));
+  const recordJson = JSON.stringify(record);
+  await redisClient.set(redisKey, recordJson);
+  setVaultL1_(redisKey, recordJson);
   await syncVaultRecordToSupabase(cleanClient, cleanTool, record);
 
   // If masterSheetId is provided, maintain secondary lookup index for GAS Token Broker
   if (masterSheetId) {
     const sheetKey = getSheetIndexRedisKey(masterSheetId, cleanTool);
     await redisClient.set(sheetKey, redisKey);
+    setVaultL1_(sheetKey, redisKey);
   }
 
   console.log(`🔒 Vault: Successfully stored credentials for ${cleanClient} [${cleanTool}]. Shared: ${isSharedGrant}, Tenant: ${companyName || tenantName || realmId || tenantId || "N/A"}`);
@@ -592,7 +635,11 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
     redisKey = getVaultRedisKey(clientKey, cleanTool);
   } else if (masterSheetId) {
     const sheetIndexKey = getSheetIndexRedisKey(masterSheetId, cleanTool);
-    redisKey = await redisClient.get(sheetIndexKey);
+    redisKey = getVaultL1_(sheetIndexKey);
+    if (!redisKey) {
+      redisKey = await redisClient.get(sheetIndexKey);
+      if (redisKey) setVaultL1_(sheetIndexKey, redisKey);
+    }
 
     // Fallback: If sheet index is missing in Redis, resolve clientName from AutoUpdates
     if (!redisKey) {
@@ -601,10 +648,12 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
         const resolvedName = await resolveClientNameBySheetId(sheets, masterSheetId);
         if (resolvedName) {
           const fallbackKey = getVaultRedisKey(resolvedName, cleanTool);
-          const rawCheck = await redisClient.get(fallbackKey);
+          const rawCheck = getVaultL1_(fallbackKey) || await redisClient.get(fallbackKey);
           if (rawCheck) {
+            setVaultL1_(fallbackKey, rawCheck);
             redisKey = fallbackKey;
             await redisClient.set(sheetIndexKey, fallbackKey);
+            setVaultL1_(sheetIndexKey, fallbackKey);
             console.log(`🔗 Vault: Auto-healed sheet index for "${resolvedName}" [${cleanTool}] -> ${masterSheetId}`);
           }
         }
@@ -616,7 +665,11 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
 
   let record = null;
   if (redisKey) {
-    const rawJson = await redisClient.get(redisKey);
+    let rawJson = getVaultL1_(redisKey);
+    if (!rawJson) {
+      rawJson = await redisClient.get(redisKey);
+      if (rawJson) setVaultL1_(redisKey, rawJson);
+    }
     if (rawJson) {
       try {
         record = JSON.parse(rawJson);
@@ -790,7 +843,9 @@ export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenant
     record.encryptedTokens = encryptPayload(mergedBundle, aad);
   }
 
-  await redisClient.set(redisKey, JSON.stringify(record));
+  const recordJson = JSON.stringify(record);
+  await redisClient.set(redisKey, recordJson);
+  setVaultL1_(redisKey, recordJson);
   await syncVaultRecordToSupabase(cleanClient, cleanTool, record);
   if (!wasConnected) {
     await invalidateIntegrationsCache();
@@ -1008,6 +1063,7 @@ export async function markIntegrationReconnectRequired({ clientKey, masterSheetI
         record.lastError = String(error || "");
         record.updatedAt = new Date().toISOString();
         await redisClient.set(redisKey, JSON.stringify(record));
+        clearVaultL1_(redisKey);
         await syncVaultRecordToSupabase(record.clientKey, cleanTool, record);
         console.log(`⚠️ Vault: Marked ${record.clientKey} [${cleanTool}] as reconnect_required.`);
       } catch (err) {
@@ -1027,6 +1083,7 @@ export async function markIntegrationReconnectRequired({ clientKey, masterSheetI
         sharedRec.lastError = String(error || "");
         sharedRec.updatedAt = new Date().toISOString();
         await redisClient.set(SHARED_XERO_KEY, JSON.stringify(sharedRec));
+        clearVaultL1_(SHARED_XERO_KEY);
         console.log("⚠️ Vault: Marked central shared Xero grant as reconnect_required.");
       } catch {}
     }
@@ -1080,10 +1137,12 @@ export async function deleteIntegrationTokens(arg1, arg2, arg3) {
       } catch {}
     }
     await redisClient.del(redisKey);
+    clearVaultL1_(redisKey);
   }
 
   if (sheetKey) {
     await redisClient.del(sheetKey);
+    clearVaultL1_(sheetKey);
   }
 
   if (isSupabaseConfigured()) {

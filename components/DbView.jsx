@@ -1,22 +1,23 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import dynamic from "next/dynamic";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
-import AdminWorkbookInspectorModal from "./AdminWorkbookInspectorModal";
-import MasterComparisonSheetModal, {
+import {
   prefetchComparisonTab,
   invalidateComparisonModalCache,
-} from "./MasterComparisonSheetModal";
-import ClientSheetModal, {
   prefetchClientSheetTab,
   invalidateClientSheetModalCache,
-} from "./ClientSheetModal";
-import ReconSheetModal, {
   prefetchReconSheetTab,
   invalidateReconSheetModalCache,
-} from "./ReconSheetModal";
+} from "../utils/sheetModalCache";
 import { CLIENT_SHEET_TABS, CLIENT_SHEET_SPECS } from "../utils/clientSheetSpecs";
 import { sortReconMonthTabsDescending } from "../utils/reconSheetSpecs";
 import SupabaseBackupManagerPanel from "./SupabaseBackupManagerPanel";
+
+const AdminWorkbookInspectorModal = dynamic(() => import("./AdminWorkbookInspectorModal"), { ssr: false });
+const MasterComparisonSheetModal = dynamic(() => import("./MasterComparisonSheetModal"), { ssr: false });
+const ClientSheetModal = dynamic(() => import("./ClientSheetModal"), { ssr: false });
+const ReconSheetModal = dynamic(() => import("./ReconSheetModal"), { ssr: false });
 
 const SYNC_BUTTONS = [
   { type: "recompute", label: "Recompute comparisons" },
@@ -440,6 +441,29 @@ export default function DbView({
         type: "success",
         text: `Completed "${label}" on ${targetClient}${compNote}.`,
         uiAlerts: Array.isArray(r.uiAlerts) ? r.uiAlerts : [],
+      };
+    });
+  };
+
+  const handleBackfillMirrors = (clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    runTrackedOperation("backfill_mirrors", `Backfilling SQL mirror tables for ${targetClient}...`, async () => {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "backfill_normalized_mirrors",
+          clientName: targetClient,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Mirror backfill failed.");
+      if (data.status) setStage2Data(data.status);
+      const s = data.summary || {};
+      return {
+        type: "success",
+        text: `Backfilled SQL mirror tables for ${targetClient} (${s.invoicesCount || 0} invoices, ${s.directCostsCount || 0} direct costs, ${s.reconPeriodsCount || 0} recon periods, ${s.clientTabsBackfilled || 0} client tab models).`,
       };
     });
   };
@@ -1362,7 +1386,7 @@ export default function DbView({
                           background: reconDisabled ? "#cbd5e1" : "#0f766e",
                         }}
                       />
-                      <span>View Recon</span>
+                      <span>View recon</span>
                     </button>
                   );
                 })()}
@@ -1453,6 +1477,26 @@ export default function DbView({
                     </button>
                   );
                 })}
+                <button
+                  type="button"
+                  disabled={!s2Ready || !hasVirtualTabs || isBusy}
+                  onClick={() => handleBackfillMirrors(activeClientName)}
+                  style={{
+                    ...actionBtnBase,
+                    background:
+                      activeOp?.key === "backfill_mirrors"
+                        ? "#eff6ff"
+                        : !s2Ready || !hasVirtualTabs
+                          ? "#f3f4f6"
+                          : "#f8fafc",
+                    borderColor: activeOp?.key === "backfill_mirrors" ? "#60a5fa" : "#cbd5e1",
+                    color: !s2Ready || !hasVirtualTabs ? "#9ca3af" : activeOp?.key === "backfill_mirrors" ? "#1e40af" : "#334155",
+                    cursor: !s2Ready || !hasVirtualTabs ? "not-allowed" : isBusy ? "wait" : "pointer",
+                  }}
+                >
+                  {activeOp?.key === "backfill_mirrors" && <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />}
+                  <span>{activeOp?.key === "backfill_mirrors" ? "Backfilling..." : "Backfill SQL mirror tables"}</span>
+                </button>
               </div>
             </div>
 

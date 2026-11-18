@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import dynamic from "next/dynamic";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton from "./Skeleton";
-import ClientSettingsView from "./ClientSettingsView";
 import ClientRegistryCard from "./ClientRegistryCard";
 import UserManagementCard from "./UserManagementCard";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
+
+const ClientSettingsView = dynamic(() => import("./ClientSettingsView"), { ssr: false });
 
 import { SYSTEM_VERSION, getSystemCopyright } from "../config/version";
 
@@ -535,22 +537,22 @@ export default function SettingsView({
                         const visibleFlagSweep = showZeroActivityLogs
                           ? indexedFlagSweep
                           : indexedFlagSweep.filter(({ run }) => (
-                              (run.flagsRaised || 0) > 0 ||
-                              (run.alertsWoken || 0) > 0 ||
-                              (run.alertsDelayed || 0) > 0 ||
-                              (run.errors || 0) > 0 ||
-                              (run.raisedDetail && run.raisedDetail.length > 0)
-                            ));
+                            (run.flagsRaised || 0) > 0 ||
+                            (run.alertsWoken || 0) > 0 ||
+                            (run.alertsDelayed || 0) > 0 ||
+                            (run.errors || 0) > 0 ||
+                            (run.raisedDetail && run.raisedDetail.length > 0)
+                          ));
 
                         const indexedBuildOptions = (buildOptionsLog || []).map((run, origIdx) => ({ run, origIdx }));
                         const visibleBuildOptions = showZeroActivityLogs
                           ? indexedBuildOptions
                           : indexedBuildOptions.filter(({ run }) => (
-                              (run.built || 0) > 0 ||
-                              (run.errors || 0) > 0 ||
-                              (run.notFound || 0) > 0 ||
-                              (run.builtDetail && run.builtDetail.length > 0)
-                            ));
+                            (run.built || 0) > 0 ||
+                            (run.errors || 0) > 0 ||
+                            (run.notFound || 0) > 0 ||
+                            (run.builtDetail && run.builtDetail.length > 0)
+                          ));
 
                         const getPrecomputeSig = (r) => {
                           if (!r) return "";

@@ -4,6 +4,7 @@ import { getClients } from "../../../services/workspaces.js";
 import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
@@ -77,6 +78,7 @@ export default async function handler(req, res) {
 
   // 3. POST: Save Changes (Batch of cells or Note)
   if (req.method === "POST") {
+    if (!assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser)) {
       return res.status(403).json({ success: false, error: "Read-only session cannot modify cash data." });
     }

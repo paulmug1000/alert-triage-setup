@@ -1031,10 +1031,7 @@ export async function handleUpdateCellNote(req, res, sheets) {
 
     // Invalidate caches
     const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
-    memoryCache.del(`pulse:view_data:${cleanId}:*`);
-    if (redisClient?.isOpen) {
-      redisClient.del(`pulse:view_data:${cleanId}:*`).catch(() => { });
-    }
+    await invalidatePmaClientCache(cleanId, null, ["views"]).catch(() => { });
 
     let resolvedClient = clientName || "";
     if (!resolvedClient) {

@@ -130,6 +130,72 @@ function isClientAllowedForUser(user, clientName) {
   return user.assignedClients.some(c => String(c || "").trim().toLowerCase() === target);
 }
 
+async function loadClientsArrayFromSupabaseFallback_() {
+  try {
+    const { getSupabaseAdmin, isSupabaseControlPlaneActive } = await import("./supabaseClient.js");
+    if (!(await isSupabaseControlPlaneActive())) return null;
+    const sb = getSupabaseAdmin();
+    if (!sb) return null;
+    const [{ data: sbClients }, { data: kiRows }] = await Promise.all([
+      sb.from("clients").select("*").order("client_name", { ascending: true }),
+      sb.from("tenant_key_info").select("client_name, normalized_key, revenue_or_income_mode, direct_costs_mode, accounting_tool, crm_tool, crm_drives, invoice_method"),
+    ]);
+    if (!Array.isArray(sbClients) || sbClients.length === 0) return null;
+    const kiByNorm = new Map();
+    const kiByName = new Map();
+    for (const k of kiRows || []) {
+      if (k.normalized_key) kiByNorm.set(String(k.normalized_key).trim().toLowerCase(), k);
+      if (k.client_name) kiByName.set(String(k.client_name).trim().toLowerCase(), k);
+    }
+    const clientsArray = [];
+    for (const c of sbClients) {
+      const eff = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+      if (["inactive", "archived", "suspended"].includes(eff)) continue;
+      const clientName = String(c.client_name || "").trim();
+      const normKey = String(c.normalized_key || clientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")).trim();
+      const ki = kiByNorm.get(normKey.toLowerCase()) || kiByName.get(clientName.toLowerCase()) || null;
+      const clientSheetId =
+        String(c.client_sheet_id || "").trim() ||
+        (c.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "");
+      const masterSheetId =
+        String(c.master_sheet_id || "").trim() ||
+        (c.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "");
+      if (!clientName || (!clientSheetId && c.client_mode !== "supabase")) continue;
+      const reconSheetUrl = String(c.recon_sheet_url || "").trim();
+      const reconSheetId =
+        String(c.recon_sheet_id || "").trim() ||
+        ((c.metadata?.reconMode === "supabase" || c.master_mode === "supabase") && normKey ? `sb-recon-${normKey}` : "");
+      const accountingTool = c.metadata?.accountingTool || ki?.accounting_tool || "None";
+      const crmTool = c.metadata?.crmTool || ki?.crm_tool || "None";
+      const crmDrives = c.metadata?.crmDrives || ki?.crm_drives || "NA";
+      const revFocus = String(ki?.revenue_or_income_mode || c.metadata?.revenueFocus || "Revenue").trim();
+      const rawDcMode = String(ki?.direct_costs_mode || c.metadata?.directCostsMode || "Contractors").trim();
+      const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
+      clientsArray.push({
+        clientName,
+        clientSheetId,
+        masterSheetId,
+        scriptId: String(c.client_script_id || "").trim(),
+        webAppUrl: String(c.master_deployment_url || c.web_app_url || c.metadata?.webAppUrl || "").trim(),
+        hasWebAppUrl: Boolean(c.master_deployment_url || c.web_app_url || c.metadata?.webAppUrl) || c.master_mode === "supabase",
+        splitEnabled: Boolean(c.metadata?.splitEnabled || String(ki?.invoice_method || "").toLowerCase().includes("split")),
+        reconSheetUrl,
+        reconSheetId,
+        accountingTool,
+        crmTool,
+        crmDrives,
+        directCostsMode,
+        hasAccountingIntegration: ["xero", "quickbooks", "qb"].some((t) => String(accountingTool).toLowerCase().includes(t)),
+        clientMode: c.client_mode || "sheet",
+        masterMode: c.master_mode || "sheet",
+      });
+    }
+    return { clientsArray };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fast SSR preloader for PMA client list + integration statuses from L1 memory or Redis (<350ms cap).
  */
@@ -185,6 +251,17 @@ export async function getSsrInitialPmaData(sessionUser) {
           if (rawClients || rawIntegrations) _l1CachedAt = now;
         }
       } catch {}
+    }
+    if (!rawClients || !Array.isArray(rawClients.clientsArray) || rawClients.clientsArray.length === 0) {
+      const sbFallback = await Promise.race([
+        loadClientsArrayFromSupabaseFallback_(),
+        new Promise((resolve) => setTimeout(() => resolve(null), 900)),
+      ]);
+      if (sbFallback && Array.isArray(sbFallback.clientsArray) && sbFallback.clientsArray.length > 0) {
+        rawClients = sbFallback;
+        _l1Clients = sbFallback;
+        _l1CachedAt = now;
+      }
     }
   }
 
@@ -294,6 +371,19 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
             }
           } catch {}
         }
+      }
+    }
+
+    if (!Array.isArray(rawPortalClients) || rawPortalClients.length === 0) {
+      const sbFallback = await Promise.race([
+        loadClientsArrayFromSupabaseFallback_(),
+        new Promise((resolve) => setTimeout(() => resolve(null), 900)),
+      ]);
+      if (sbFallback && Array.isArray(sbFallback.clientsArray) && sbFallback.clientsArray.length > 0) {
+        rawPortalClients = sbFallback.clientsArray;
+        memoryCache.set(portalCacheKey, rawPortalClients, 300);
+        _l1Clients = sbFallback;
+        _l1CachedAt = Date.now();
       }
     }
 

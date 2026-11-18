@@ -12,7 +12,7 @@ import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
 import PlaceholderChoiceModal from "./PlaceholderChoiceModal";
 import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
-import { getJobExpenseItems } from "./JobsView";
+import { getJobExpenseItems } from "../utils/jobItemsHelpers";
 import { useOutgoings } from "../hooks/useOutgoings";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";

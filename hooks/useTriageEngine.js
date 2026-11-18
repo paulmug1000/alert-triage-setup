@@ -778,7 +778,7 @@ export function useTriageEngine({
         const isStale = response.status === 409;
         setAcceptError(isStale
           ? `⚠ ${data.error}`
-          : `Failed to write to sheet: ${data.error || "Unknown error"}`);
+          : `Failed to apply update: ${data.error || "Unknown error"}`);
         return;
       }
 
@@ -831,29 +831,38 @@ export function useTriageEngine({
       setClientAlerts(updatedAlerts);
 
       if (siblingAlertsToRegenerate.length > 0 && automationCommanderSheetId) {
-        siblingAlertsToRegenerate.forEach((sibAlert) => {
-          fetch("/api/triage", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "analyze_alert",
-              alert: sibAlert,
-              automationCommanderSheetId,
-              forceRefresh: true
-            }),
+        const queue = [...siblingAlertsToRegenerate];
+        const workerCount = Math.min(2, queue.length);
+        Promise.all(
+          Array.from({ length: workerCount }, async () => {
+            while (queue.length > 0) {
+              const sibAlert = queue.shift();
+              if (!sibAlert) break;
+              try {
+                const r = await fetch("/api/triage", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    action: "analyze_alert",
+                    alert: sibAlert,
+                    automationCommanderSheetId,
+                    forceRefresh: true,
+                  }),
+                });
+                const resData = await r.json();
+                if (resData?.success && Array.isArray(resData.options)) {
+                  setClientAlerts((prev) =>
+                    prev.map((item) =>
+                      item.sheetName === sibAlert.sheetName && item.rowNumber === sibAlert.rowNumber
+                        ? { ...item, options: resData.options }
+                        : item
+                    )
+                  );
+                }
+              } catch (_) { }
+            }
           })
-            .then(r => r.json())
-            .then(resData => {
-              if (resData?.success && Array.isArray(resData.options)) {
-                setClientAlerts(prev => prev.map(item =>
-                  (item.sheetName === sibAlert.sheetName && item.rowNumber === sibAlert.rowNumber)
-                    ? { ...item, options: resData.options }
-                    : item
-                ));
-              }
-            })
-            .catch(() => { });
-        });
+        );
       }
 
       let acceptedFlagType = alert.flagType || alert.alertType || alert.type || "";

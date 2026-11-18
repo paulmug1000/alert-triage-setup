@@ -7,6 +7,8 @@ import {
 import { getClients } from "../../../services/workspaces.js";
 import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
@@ -19,6 +21,8 @@ export default async function handler(req, res) {
   if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Forbidden: Access restricted to Pulse Portal" });
   }
+
+  installSheetIdBoundary(req, res, sessionUser);
 
   // 2. GET Request: Fetch NBtoFind data
   if (req.method === "GET") {
@@ -64,6 +68,7 @@ export default async function handler(req, res) {
 
   // 3. POST Request: Save changes
   if (req.method === "POST") {
+    if (!assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser)) {
       return res.status(403).json({ success: false, error: "Read-only session cannot modify NB to find data." });
     }

@@ -1,39 +1,18 @@
 import React, { useCallback } from "react";
-import FormattedVirtualSheetModal, {
-  prefetchVirtualTab,
-  invalidateVirtualModalCache,
-} from "./FormattedVirtualSheetModal";
+import FormattedVirtualSheetModal from "./FormattedVirtualSheetModal";
 import {
   getReconTabSpec,
   getReconCellPresentation,
   formatCellForReconSheet,
   formatReconYYMMMonthLabel,
 } from "../utils/reconSheetSpecs";
-
-const RECON_DATA_CACHE = new Map();
-const RECON_DATA_TTL_MS = 300000;
-
-export function invalidateReconSheetModalCache(clientName = "") {
-  invalidateVirtualModalCache("recon", clientName);
-  const clean = String(clientName || "").trim().toLowerCase();
-  if (!clean) {
-    RECON_DATA_CACHE.clear();
-  } else {
-    RECON_DATA_CACHE.delete(clean);
-  }
-}
-
-export async function prefetchReconSheetTab(clientName, tabName) {
-  if (!tabName) return null;
-  const spec = getReconTabSpec(tabName);
-  return prefetchVirtualTab({
-    sheetRole: "recon",
-    clientName,
-    tabName,
-    maxRows: 500,
-    maxCols: spec.totalCols || 119,
-  });
-}
+import {
+  RECON_DATA_CACHE,
+  RECON_DATA_TTL_MS,
+  invalidateReconSheetModalCache,
+  prefetchReconSheetTab,
+} from "../utils/sheetModalCache";
+export { invalidateReconSheetModalCache, prefetchReconSheetTab };
 
 async function fetchReconDynamicLists(clientName, tabName, valuesGrid) {
   const categories = [];

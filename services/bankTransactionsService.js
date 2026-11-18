@@ -95,7 +95,8 @@ export async function fetchClientReconciledBankTransactions({
   clientName,
   masterSheetId,
   reconSheetId,
-  monthKey // "YYYY-MM"
+  monthKey, // "YYYY-MM"
+  prefetchedContext = null,
 }) {
   if (!clientName && !masterSheetId) {
     throw new Error("Missing clientName or masterSheetId");
@@ -126,24 +127,33 @@ export async function fetchClientReconciledBankTransactions({
   const { startDate, endDate } = getMonthDateRange(monthKey);
 
   // 1. Read tracked bank accounts from KeyInfo!H12:H21 (Cash) and KeyInfo!H23:I28 (Non-Cash)
-  const [cashKeyResp, nonCashKeyResp] = await Promise.all([
-    withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: cleanMasterId,
-      range: "KeyInfo!H12:H21"
-    })),
-    withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: cleanMasterId,
-      range: "KeyInfo!H23:I28"
-    })).catch(() => ({ data: { values: [] } }))
-  ]);
+  let trackedAccountNames = prefetchedContext?.trackedAccountNames;
+  let trackedNonCashAccountNames = prefetchedContext?.trackedNonCashAccountNames;
+  if (!Array.isArray(trackedAccountNames) || !Array.isArray(trackedNonCashAccountNames)) {
+    const [cashKeyResp, nonCashKeyResp] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: cleanMasterId,
+        range: "KeyInfo!H12:H21"
+      })),
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: cleanMasterId,
+        range: "KeyInfo!H23:I28"
+      })).catch(() => ({ data: { values: [] } }))
+    ]);
 
-  const trackedAccountNames = (cashKeyResp.data.values || [])
-    .map(r => String(r[0] || "").trim())
-    .filter(name => name && !name.toLowerCase().includes("non-cash") && !name.endsWith(":"));
+    trackedAccountNames = (cashKeyResp.data.values || [])
+      .map(r => String(r[0] || "").trim())
+      .filter(name => name && !name.toLowerCase().includes("non-cash") && !name.endsWith(":"));
 
-  const trackedNonCashAccountNames = (nonCashKeyResp.data.values || [])
-    .map(r => String(r[0] || "").trim())
-    .filter(name => name && !name.toLowerCase().includes("non-cash bank accounts") && !name.endsWith(":"));
+    trackedNonCashAccountNames = (nonCashKeyResp.data.values || [])
+      .map(r => String(r[0] || "").trim())
+      .filter(name => name && !name.toLowerCase().includes("non-cash bank accounts") && !name.endsWith(":"));
+
+    if (prefetchedContext) {
+      prefetchedContext.trackedAccountNames = trackedAccountNames;
+      prefetchedContext.trackedNonCashAccountNames = trackedNonCashAccountNames;
+    }
+  }
 
   if (trackedAccountNames.length === 0 && trackedNonCashAccountNames.length === 0) {
     return {
@@ -236,8 +246,12 @@ export async function fetchClientReconciledBankTransactions({
       }
     };
 
-    // Fetch tenant accounts
-    const allXeroAccounts = await withXeroRetry((tok) => fetchXeroBankAccounts(tok, tenantId));
+    // Fetch tenant accounts (hoisted across months when prefetchedContext is shared)
+    let allXeroAccounts = prefetchedContext?.xeroAccounts;
+    if (!Array.isArray(allXeroAccounts)) {
+      allXeroAccounts = await withXeroRetry((tok) => fetchXeroBankAccounts(tok, tenantId));
+      if (prefetchedContext) prefetchedContext.xeroAccounts = allXeroAccounts;
+    }
 
     // Match tracked cash account names
     const matchedAccounts = allXeroAccounts.filter(acc => {
@@ -349,7 +363,11 @@ export async function fetchClientReconciledBankTransactions({
       }
     };
 
-    const allQBAccounts = await withQBRetry((tok) => fetchQuickBooksBankAccounts(tok, realmId));
+    let allQBAccounts = prefetchedContext?.qbAccounts;
+    if (!Array.isArray(allQBAccounts)) {
+      allQBAccounts = await withQBRetry((tok) => fetchQuickBooksBankAccounts(tok, realmId));
+      if (prefetchedContext) prefetchedContext.qbAccounts = allQBAccounts;
+    }
     const matchedAccounts = allQBAccounts.filter(acc => {
       return trackedAccountNames.some(tracked => {
         const tLower = tracked.toLowerCase();
@@ -443,15 +461,19 @@ export async function fetchClientReconciledBankTransactions({
     return true;
   });
 
-  // Train learning map from historical recon tabs if reconSheetId provided
-  let learningMap = new Map();
-  if (reconSheetId) {
-    try {
-      const cleanReconId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
-      learningMap = await buildLearningMapFromReconSheet(cleanReconId, sheets);
-    } catch (learnErr) {
-      console.warn("⚠️ Could not build historical learning map:", learnErr.message);
+  // Train learning map from historical recon tabs once and share across months
+  let learningMap = prefetchedContext?.learningMap || null;
+  if (!learningMap) {
+    learningMap = new Map();
+    if (reconSheetId) {
+      try {
+        const cleanReconId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
+        learningMap = await buildLearningMapFromReconSheet(cleanReconId, sheets);
+      } catch (learnErr) {
+        console.warn("⚠️ Could not build historical learning map:", learnErr.message);
+      }
     }
+    if (prefetchedContext) prefetchedContext.learningMap = learningMap;
   }
 
   // Assign unique IDs and predict categories for every transaction
@@ -1881,6 +1903,7 @@ export async function autoReconcileClientBankTransactions({
   }
 
   const results = [];
+  const sharedReconcileContext = {};
 
   for (const tabName of targetTabs) {
     const yy = parseInt(tabName.slice(0, 2), 10);
@@ -1888,11 +1911,11 @@ export async function autoReconcileClientBankTransactions({
     const fullYear = yy < 100 ? 2000 + yy : yy;
     const tabMonthKey = `${fullYear}-${String(mm).padStart(2, "0")}`;
 
-    // Read existing bank transactions, unreconciled items, tracked bank accounts, and DA1 platform
+    // Read existing bank transactions, unreconciled items, tracked bank accounts (cached after iteration 1), and DA1 platform
     const rangesToFetch = [
       `'${tabName}'!A3:Q200`,
       `'${tabName}'!CD4:CN60`,
-      `'KeyInfo'!H12:H21`,
+      ...(Array.isArray(sharedReconcileContext.loopTrackedAccounts) ? [] : [`'KeyInfo'!H12:H21`]),
       `'${tabName}'!DA1`
     ];
 
@@ -1902,15 +1925,22 @@ export async function autoReconcileClientBankTransactions({
       valueRenderOption: "FORMATTED_VALUE"
     }));
 
-    const rawTx = batchRes.data.valueRanges?.[0]?.values || [];
-    const rawUnrecon = batchRes.data.valueRanges?.[1]?.values || [];
-    const rawAccounts = batchRes.data.valueRanges?.[2]?.values || [];
-    const da1Raw = String(batchRes.data.valueRanges?.[3]?.values?.[0]?.[0] || "").trim();
+    const vRanges = batchRes.data.valueRanges || [];
+    const rawTx = vRanges[0]?.values || [];
+    const rawUnrecon = vRanges[1]?.values || [];
+    let trackedBankAccounts = sharedReconcileContext.loopTrackedAccounts;
+    let da1Raw = "";
+    if (!Array.isArray(trackedBankAccounts)) {
+      const rawAccounts = vRanges[2]?.values || [];
+      trackedBankAccounts = rawAccounts
+        .map(r => String(r[0] || "").trim())
+        .filter(acc => acc && !acc.toLowerCase().includes("non-cash") && !acc.endsWith(":"));
+      sharedReconcileContext.loopTrackedAccounts = trackedBankAccounts;
+      da1Raw = String(vRanges[3]?.values?.[0]?.[0] || "").trim();
+    } else {
+      da1Raw = String(vRanges[2]?.values?.[0]?.[0] || "").trim();
+    }
     const isQbDa1 = da1Raw.toLowerCase().includes("quick");
-
-    const trackedBankAccounts = rawAccounts
-      .map(r => String(r[0] || "").trim())
-      .filter(acc => acc && !acc.toLowerCase().includes("non-cash") && !acc.endsWith(":"));
 
     const defaultAccount = trackedBankAccounts[0] || "";
 
@@ -1968,7 +1998,8 @@ export async function autoReconcileClientBankTransactions({
         clientName: resolvedClient,
         masterSheetId: cleanMasterId,
         reconSheetId: cleanReconId,
-        monthKey: tabMonthKey
+        monthKey: tabMonthKey,
+        prefetchedContext: sharedReconcileContext
       });
     } catch (apiErr) {
       console.warn(`⚠️ Failed to fetch API bank transactions for ${resolvedClient} (${tabMonthKey}):`, apiErr.message);

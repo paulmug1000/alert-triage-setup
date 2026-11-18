@@ -132,7 +132,7 @@ export async function notifyStaffOnClientConnection({
     timeZone: "Europe/London"
   }).format(new Date());
 
-  const subject = `[Pulse] Connection Authorised: ${clientName} connected ${toolDisplayName}`;
+  const subject = `[Pulse] Connection authorised: ${clientName} connected ${toolDisplayName}`;
 
   const htmlBody = `
     <!DOCTYPE html>
@@ -159,10 +159,10 @@ export async function notifyStaffOnClientConnection({
       <div class="card">
         <div class="header">
           <div style="font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; opacity: 0.85; margin-bottom: 6px;">
-            Integration Update
+            Integration update
           </div>
           <h1 style="margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.3px;">
-            Tool Connection Authorised
+            Tool connection authorised
           </h1>
         </div>
         <div class="content">
@@ -178,39 +178,39 @@ export async function notifyStaffOnClientConnection({
             <div class="detail-row">
               <span class="detail-label">Tool</span>
               <span class="detail-value">
-                <span class="badge-success">✓ ${escapeHtml(toolDisplayName)}</span>
+                <span class="badge-success">${escapeHtml(toolDisplayName)}</span>
               </span>
             </div>
             ${tenantName ? `
             <div class="detail-row">
-              <span class="detail-label">Organisation / Account</span>
+              <span class="detail-label">Organisation / account</span>
               <span class="detail-value">${escapeHtml(tenantName)}</span>
             </div>
             ` : ""}
             <div class="detail-row" style="border-bottom: none;">
-              <span class="detail-label">Authorised At</span>
+              <span class="detail-label">Authorised at</span>
               <span class="detail-value">${escapeHtml(nowFormatted)}</span>
             </div>
           </div>
 
           ${allConnected ? `
             <div class="status-box status-complete">
-              <strong>✓ Setup Complete:</strong> All required tool connections for <strong>${escapeHtml(clientName)}</strong> are now active and ready for sync.
+              <strong>Setup complete:</strong> All required tool connections for <strong>${escapeHtml(clientName)}</strong> are now active and ready for sync.
             </div>
           ` : remainingTools.length > 0 ? `
             <div class="status-box status-pending">
-              <strong>⏳ Setup Still in Progress:</strong> Remaining integration pending connection: <strong>${escapeHtml(remainingTools.join(", "))}</strong>.
+              <strong>Setup still in progress:</strong> Remaining integration pending connection: <strong>${escapeHtml(remainingTools.join(", "))}</strong>.
             </div>
           ` : ""}
 
           <div style="text-align: center; margin-top: 24px;">
             <a href="${appUrl}/pma?nav=integrations&client=${encodeURIComponent(clientName)}" class="button">
-              View in Pulse Management Area →
+              View in Pulse Management Area
             </a>
           </div>
         </div>
         <div class="footer">
-          <div>Pulse Ecosystem • Automated Integrations Notification</div>
+          <div>Pulse Ecosystem • Automated integrations notification</div>
           <div style="margin-top: 4px;">Sent to Admins and assigned Client Managers for ${escapeHtml(clientName)}.</div>
         </div>
       </div>
@@ -219,13 +219,13 @@ export async function notifyStaffOnClientConnection({
   `;
 
   const textBody = `
-[Pulse] Tool Connection Authorised
+[Pulse] Tool connection authorised
 ----------------------------------
 A new third-party integration has been authorised for ${clientName}.
 
 Client: ${clientName}
 Tool: ${toolDisplayName}
-${tenantName ? `Organisation: ${tenantName}\n` : ""}Authorised At: ${nowFormatted}
+${tenantName ? `Organisation: ${tenantName}\n` : ""}Authorised at: ${nowFormatted}
 ${allConnected ? "Status: All required tool connections for this client are now active.\n" : remainingTools.length > 0 ? `Status: Remaining pending connection: ${remainingTools.join(", ")}\n` : ""}
 View in Pulse Management Area:
 ${appUrl}/pma?nav=integrations&client=${encodeURIComponent(clientName)}
@@ -267,7 +267,7 @@ ${appUrl}/pma?nav=integrations&client=${encodeURIComponent(clientName)}
           message: notifSummary,
           status: "SUCCESS",
         },
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     return { success: true, recipients: recipientEmails };

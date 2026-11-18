@@ -310,6 +310,7 @@ export async function queryAlertMemoryTargeted(
     status = "",
     statuses = [],
     category = "",
+    includeJson = true,
   } = {}
 ) {
   const supabaseActive = await isSupabaseControlPlaneActive();
@@ -328,6 +329,22 @@ export async function queryAlertMemoryTargeted(
     return readAlertMemory(sheets, automationCommanderSheetId);
   }
 
+  const selectCols = includeJson
+    ? "*"
+    : "fingerprint_hash, alert_type, client_name, alert_summary, status, ignore_reason, first_seen, last_seen, last_rechecked, category, sheet_row_index";
+
+  const applySecondaryFilters = (q) => {
+    let outQ = q;
+    if (cleanClients.length === 1) outQ = outQ.eq("client_name", cleanClients[0]);
+    else if (cleanClients.length > 1) outQ = outQ.in("client_name", cleanClients);
+    if (cleanTypes.length === 1) outQ = outQ.eq("alert_type", cleanTypes[0]);
+    else if (cleanTypes.length > 1) outQ = outQ.in("alert_type", cleanTypes);
+    if (cleanStatuses.length === 1) outQ = outQ.eq("status", cleanStatuses[0]);
+    else if (cleanStatuses.length > 1) outQ = outQ.in("status", cleanStatuses);
+    if (category) outQ = outQ.eq("category", category);
+    return outQ;
+  };
+
   try {
     const queries = [];
     if (cleanHashes.length > 0) {
@@ -335,29 +352,17 @@ export async function queryAlertMemoryTargeted(
         const chunk = cleanHashes.slice(i, i + 200);
         queries.push(
           fetchAllSupabaseRows_(() =>
-            sb
-              .from("alert_memory")
-              .select("*")
-              .in("fingerprint_hash", chunk)
-              .order("sheet_row_index", { ascending: true })
+            applySecondaryFilters(
+              sb.from("alert_memory").select(selectCols).in("fingerprint_hash", chunk)
+            ).order("sheet_row_index", { ascending: true })
           )
         );
       }
-    }
-
-    if (hasSecondaryFilters) {
+    } else if (hasSecondaryFilters) {
       queries.push(
-        fetchAllSupabaseRows_(() => {
-          let q = sb.from("alert_memory").select("*");
-          if (cleanClients.length === 1) q = q.eq("client_name", cleanClients[0]);
-          else if (cleanClients.length > 1) q = q.in("client_name", cleanClients);
-          if (cleanTypes.length === 1) q = q.eq("alert_type", cleanTypes[0]);
-          else if (cleanTypes.length > 1) q = q.in("alert_type", cleanTypes);
-          if (cleanStatuses.length === 1) q = q.eq("status", cleanStatuses[0]);
-          else if (cleanStatuses.length > 1) q = q.in("status", cleanStatuses);
-          if (category) q = q.eq("category", category);
-          return q.order("sheet_row_index", { ascending: true });
-        })
+        fetchAllSupabaseRows_(() =>
+          applySecondaryFilters(sb.from("alert_memory").select(selectCols)).order("sheet_row_index", { ascending: true })
+        )
       );
     }
 
@@ -404,9 +409,6 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
         const parsed = dbRows.map((r, i) => mapSupabaseAlertMemoryRow_(r, i));
         _alertMemoryMemoryCache = parsed;
         _alertMemoryCachedAt = now;
-        if (redisClient?.isOpen && automationCommanderSheetId) {
-          redisClient.set(cacheKey, JSON.stringify(parsed), { EX: 86400 * 7 }).catch(() => { });
-        }
         return [...parsed];
       }
     } catch (sbErr) {
@@ -731,17 +733,24 @@ export async function updateAlertMemoryCacheInPlace(automationCommanderSheetId, 
   const now = Date.now();
   let cache = _alertMemoryMemoryCache;
   if (!cache && redisClient?.isOpen && automationCommanderSheetId) {
-    try {
-      const cached = await redisClient.get(`pulse:alert_memory:${automationCommanderSheetId}`);
-      if (cached) cache = JSON.parse(cached);
-    } catch (e) { }
+    const supabaseActive = await isSupabaseControlPlaneActive();
+    // In Supabase mode, readAlertMemory/queryAlertMemoryTargeted read Supabase directly and never read this 3.6MB Redis blob.
+    if (!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) {
+      try {
+        const cached = await redisClient.get(`pulse:alert_memory:${automationCommanderSheetId}`);
+        if (cached) cache = JSON.parse(cached);
+      } catch (e) { }
+    }
   }
   if (cache) {
     updateFn(cache);
     _alertMemoryMemoryCache = cache;
     _alertMemoryCachedAt = now;
     if (redisClient?.isOpen && automationCommanderSheetId) {
-      redisClient.set(`pulse:alert_memory:${automationCommanderSheetId}`, JSON.stringify(cache), { EX: 86400 * 7 }).catch(() => { });
+      const supabaseActive = await isSupabaseControlPlaneActive();
+      if (!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) {
+        redisClient.set(`pulse:alert_memory:${automationCommanderSheetId}`, JSON.stringify(cache), { EX: 86400 * 7 }).catch(() => { });
+      }
     }
   }
 }
@@ -763,8 +772,13 @@ function parseAppendedStartRow_(updatedRange, cache) {
   return 2;
 }
 
+function shouldSyncPmaTasksMirror_() {
+  const v = String(process.env.PULSE_SYNC_NORMALIZED_MIRROR_TABLES || "").trim().toLowerCase();
+  return v === "true" || v === "1";
+}
+
 async function syncPmaTaskRowsToSupabase_(sb, sbRows) {
-  if (!sb || !Array.isArray(sbRows) || sbRows.length === 0) return;
+  if (!shouldSyncPmaTasksMirror_() || !sb || !Array.isArray(sbRows) || sbRows.length === 0) return;
   try {
     const tasksToUpsert = [];
     const hashesToRemoveFromTasks = [];
@@ -875,19 +889,21 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
           data_snapshot: dataSnapshot || "",
           category: normalizedCategory,
         };
-        await sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" });
-        await syncPmaTaskRowsToSupabase_(sb, [sbRow]);
+        await Promise.all([
+          sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" }),
+          syncPmaTaskRowsToSupabase_(sb, [sbRow]),
+        ]);
       }
     } catch (sbErr) {
       console.warn("⚠️ Supabase appendAlertMemoryRow upsert warning:", sbErr.message);
     }
   }
 
-  if (fingerprintHash && (targetStatus === "accepted" || targetStatus === "ignored" || targetStatus === "task" || targetStatus === "superseded" || targetStatus === "task_resolved")) {
-    await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, targetStatus);
-  }
-
   const supabaseActive = await isSupabaseControlPlaneActive();
+  const isHandledStatus = Boolean(
+    fingerprintHash &&
+    (targetStatus === "accepted" || targetStatus === "ignored" || targetStatus === "task" || targetStatus === "superseded" || targetStatus === "task_resolved")
+  );
   if (supabaseActive && !shouldDualWriteLegacyControlPlaneSheets()) {
     const constructedRow = {
       ...payload,
@@ -905,15 +921,24 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
       dataSnapshot: dataSnapshot || "",
       category: normalizedCategory,
     };
-    await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
-      const existingIdx = fingerprintHash ? cache.findIndex(r => r.fingerprintHash === fingerprintHash) : -1;
-      if (existingIdx !== -1) {
-        cache[existingIdx] = { ...cache[existingIdx], ...constructedRow };
-      } else {
-        cache.push(constructedRow);
-      }
-    });
+    await Promise.all([
+      isHandledStatus
+        ? updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, targetStatus)
+        : Promise.resolve(),
+      updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
+        const existingIdx = fingerprintHash ? cache.findIndex(r => r.fingerprintHash === fingerprintHash) : -1;
+        if (existingIdx !== -1) {
+          cache[existingIdx] = { ...cache[existingIdx], ...constructedRow };
+        } else {
+          cache.push(constructedRow);
+        }
+      }),
+    ]);
     return constructedRow;
+  }
+
+  if (isHandledStatus) {
+    await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, targetStatus);
   }
 
   const response = await withRetry(() => sheets.spreadsheets.values.append({
@@ -1149,11 +1174,14 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
   if (supabaseActive && !shouldDualWriteLegacyControlPlaneSheets()) {
     const statusByHash = {};
     for (const item of normalizedItems) {
-      if (item.rowObj.fingerprintHash && item.rowObj.status) {
-        statusByHash[item.rowObj.fingerprintHash] = item.rowObj.status;
+      const fp = item.rowObj.fingerprintHash;
+      const st = item.rowObj.status;
+      if (fp && st && st !== "cached" && st !== "pending_automation") {
+        statusByHash[fp] = st;
       }
     }
-    if (Object.keys(statusByHash).length > 0) {
+    const pendingEarly = Object.keys(statusByHash).some((fp) => !handledStatusByHashEarly[fp]);
+    if (pendingEarly) {
       await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
     }
     const constructedRows = normalizedItems.map(({ rowObj }) => ({
@@ -1290,64 +1318,80 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
   });
   const oldHash = (detectedOldHash && cleanUpdates.fingerprintHash && detectedOldHash !== cleanUpdates.fingerprintHash) ? detectedOldHash : "";
   const oldStatus = effectiveStatus === "cached" ? "superseded" : effectiveStatus;
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  const rowIoTasks = [];
+
   if (cleanUpdates.fingerprintHash || oldHash) {
     const statusByHash = {};
     if (cleanUpdates.fingerprintHash) statusByHash[cleanUpdates.fingerprintHash] = effectiveStatus;
     if (oldHash) statusByHash[oldHash] = oldStatus;
-    await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
+    rowIoTasks.push(updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash));
   }
 
   if (isSupabaseConfigured() && (cleanUpdates.fingerprintHash || oldHash)) {
-    try {
-      const sb = getSupabaseAdmin();
-      if (sb) {
-        if (cleanUpdates.fingerprintHash) {
-          const sbRow = {
-            fingerprint_hash: cleanUpdates.fingerprintHash,
-            alert_type: cleanUpdates.alertType || "",
-            client_name: cleanUpdates.clientName || "",
-            alert_summary: cleanUpdates.alertSummary || "",
-            cached_options_json: compressedOptions || "",
-            status: effectiveStatus || "cached",
-            ignore_reason: cleanUpdates.ignoreReason || "",
-            first_seen: firstSeenVal,
-            last_seen: now,
-            last_rechecked: lastRecheckedVal,
-            data_snapshot: cleanUpdates.dataSnapshot || "",
-            category: targetCategory,
-            sheet_row_index: rowIndex,
-          };
-          await sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" });
-          await syncPmaTaskRowsToSupabase_(sb, [sbRow]);
-        }
-        if (oldHash) {
-          await sb
-            .from("alert_memory")
-            .update({
-              status: oldStatus || "superseded",
+    rowIoTasks.push((async () => {
+      try {
+        const sb = getSupabaseAdmin();
+        if (sb) {
+          const subTasks = [];
+          if (cleanUpdates.fingerprintHash) {
+            const sbRow = {
+              fingerprint_hash: cleanUpdates.fingerprintHash,
+              alert_type: cleanUpdates.alertType || "",
+              client_name: cleanUpdates.clientName || "",
+              alert_summary: cleanUpdates.alertSummary || "",
+              cached_options_json: compressedOptions || "",
+              status: effectiveStatus || "cached",
               ignore_reason: cleanUpdates.ignoreReason || "",
+              first_seen: firstSeenVal,
               last_seen: now,
               last_rechecked: lastRecheckedVal,
-            })
-            .eq("fingerprint_hash", oldHash);
-          if (effectiveStatus !== "task") {
-            await sb.from("pma_tasks").delete().eq("fingerprint_hash", oldHash);
+              data_snapshot: cleanUpdates.dataSnapshot || "",
+              category: targetCategory,
+              sheet_row_index: rowIndex,
+            };
+            subTasks.push(sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" }));
+            subTasks.push(syncPmaTaskRowsToSupabase_(sb, [sbRow]));
+          }
+          if (oldHash) {
+            subTasks.push(
+              sb
+                .from("alert_memory")
+                .update({
+                  status: oldStatus || "superseded",
+                  ignore_reason: cleanUpdates.ignoreReason || "",
+                  last_seen: now,
+                  last_rechecked: lastRecheckedVal,
+                })
+                .eq("fingerprint_hash", oldHash)
+            );
+            if (effectiveStatus !== "task" && shouldSyncPmaTasksMirror_()) {
+              subTasks.push(sb.from("pma_tasks").delete().eq("fingerprint_hash", oldHash));
+            }
+          }
+          if (subTasks.length > 0) {
+            await Promise.all(subTasks);
           }
         }
+      } catch (sbErr) {
+        console.warn("⚠️ Supabase updateAlertMemoryRow warning:", sbErr.message);
       }
-    } catch (sbErr) {
-      console.warn("⚠️ Supabase updateAlertMemoryRow warning:", sbErr.message);
-    }
+    })());
   }
 
-  const supabaseActive = await isSupabaseControlPlaneActive();
   if ((!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && rowIndex != null) {
-    await withRetry(() => sheets.spreadsheets.values.update({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${ALERT_MEMORY_TAB}!A${rowIndex}:L${rowIndex}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [values] },
-    }));
+    rowIoTasks.push(
+      withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${ALERT_MEMORY_TAB}!A${rowIndex}:L${rowIndex}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [values] },
+      }))
+    );
+  }
+
+  if (rowIoTasks.length > 0) {
+    await Promise.all(rowIoTasks);
   }
 }
 
@@ -1433,55 +1477,6 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
       }
     }
   });
-  await updateHandledAlertHashesBatch(automationCommanderSheetId, { ...statusByHash, ...oldHashToStatus });
-
-  if (isSupabaseConfigured()) {
-    try {
-      const sb = getSupabaseAdmin();
-      if (sb) {
-        const sbRows = normalizedUpdateItems
-          .filter(x => x.updates?.fingerprintHash)
-          .map(({ rowIndex, updates }) => ({
-            fingerprint_hash: updates.fingerprintHash,
-            alert_type: updates.alertType || "",
-            client_name: updates.clientName || "",
-            alert_summary: updates.alertSummary || "",
-            cached_options_json: compressOptionsJSON_(updates.cachedOptionsJSON) || "",
-            status: updates.status || "cached",
-            ignore_reason: updates.ignoreReason || "",
-            first_seen: updates.firstSeen || now,
-            last_seen: now,
-            last_rechecked: updates.lastRechecked || now,
-            data_snapshot: updates.dataSnapshot || "",
-            category: normalizeCategoryForType(updates.alertType, updates.category),
-            sheet_row_index: rowIndex,
-          }));
-        if (sbRows.length > 0) {
-          await sb.from("alert_memory").upsert(sbRows, { onConflict: "fingerprint_hash" });
-          await syncPmaTaskRowsToSupabase_(sb, sbRows);
-        }
-        const oldHashesByStatus = {};
-        const oldHashesToRemoveFromTasks = [];
-        for (const [oldHash, oldSt] of Object.entries(oldHashToStatus)) {
-          const stKey = oldSt || "superseded";
-          if (!oldHashesByStatus[stKey]) oldHashesByStatus[stKey] = [];
-          oldHashesByStatus[stKey].push(oldHash);
-          if (stKey !== "task") oldHashesToRemoveFromTasks.push(oldHash);
-        }
-        for (const [stKey, hashes] of Object.entries(oldHashesByStatus)) {
-          await sb
-            .from("alert_memory")
-            .update({ status: stKey, last_seen: now, last_rechecked: now })
-            .in("fingerprint_hash", hashes);
-        }
-        if (oldHashesToRemoveFromTasks.length > 0) {
-          await sb.from("pma_tasks").delete().in("fingerprint_hash", oldHashesToRemoveFromTasks);
-        }
-      }
-    } catch (sbErr) {
-      console.warn("⚠️ Supabase updateAlertMemoryRowsBatch warning:", sbErr.message);
-    }
-  }
 
   const supabaseActive = await isSupabaseControlPlaneActive();
   const validSheetData = data.filter((_, i) => {
@@ -1489,15 +1484,84 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
     return rIdx != null && rIdx !== "" && Number.isFinite(Number(rIdx)) && Number(rIdx) >= 2;
   });
 
-  if ((!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && validSheetData.length > 0) {
-    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: automationCommanderSheetId,
-      requestBody: {
-        valueInputOption: "RAW",
-        data: validSheetData,
-      },
-    }));
+  const batchIoTasks = [
+    updateHandledAlertHashesBatch(automationCommanderSheetId, { ...statusByHash, ...oldHashToStatus }),
+  ];
+
+  if (isSupabaseConfigured()) {
+    batchIoTasks.push((async () => {
+      try {
+        const sb = getSupabaseAdmin();
+        if (sb) {
+          const sbRowsByHash = new Map();
+          for (const { rowIndex, updates } of normalizedUpdateItems) {
+            if (!updates?.fingerprintHash) continue;
+            sbRowsByHash.set(updates.fingerprintHash, {
+              fingerprint_hash: updates.fingerprintHash,
+              alert_type: updates.alertType || "",
+              client_name: updates.clientName || "",
+              alert_summary: updates.alertSummary || "",
+              cached_options_json: compressOptionsJSON_(updates.cachedOptionsJSON) || "",
+              status: updates.status || "cached",
+              ignore_reason: updates.ignoreReason || "",
+              first_seen: updates.firstSeen || now,
+              last_seen: now,
+              last_rechecked: updates.lastRechecked || now,
+              data_snapshot: updates.dataSnapshot || "",
+              category: normalizeCategoryForType(updates.alertType, updates.category),
+              sheet_row_index: rowIndex,
+            });
+          }
+          const sbRows = [...sbRowsByHash.values()];
+          const subTasks = [];
+          if (sbRows.length > 0) {
+            for (let i = 0; i < sbRows.length; i += 200) {
+              subTasks.push(sb.from("alert_memory").upsert(sbRows.slice(i, i + 200), { onConflict: "fingerprint_hash" }));
+            }
+            subTasks.push(syncPmaTaskRowsToSupabase_(sb, sbRows));
+          }
+          const oldHashesByStatus = {};
+          const oldHashesToRemoveFromTasks = [];
+          for (const [oldHash, oldSt] of Object.entries(oldHashToStatus)) {
+            const stKey = oldSt || "superseded";
+            if (!oldHashesByStatus[stKey]) oldHashesByStatus[stKey] = [];
+            oldHashesByStatus[stKey].push(oldHash);
+            if (stKey !== "task") oldHashesToRemoveFromTasks.push(oldHash);
+          }
+          for (const [stKey, hashes] of Object.entries(oldHashesByStatus)) {
+            subTasks.push(
+              sb
+                .from("alert_memory")
+                .update({ status: stKey, last_seen: now, last_rechecked: now })
+                .in("fingerprint_hash", hashes)
+            );
+          }
+          if (oldHashesToRemoveFromTasks.length > 0 && shouldSyncPmaTasksMirror_()) {
+            subTasks.push(sb.from("pma_tasks").delete().in("fingerprint_hash", oldHashesToRemoveFromTasks));
+          }
+          if (subTasks.length > 0) {
+            await Promise.all(subTasks);
+          }
+        }
+      } catch (sbErr) {
+        console.warn("⚠️ Supabase updateAlertMemoryRowsBatch warning:", sbErr.message);
+      }
+    })());
   }
+
+  if ((!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && validSheetData.length > 0) {
+    batchIoTasks.push(
+      withRetry(() => sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: {
+          valueInputOption: "RAW",
+          data: validSheetData,
+        },
+      }))
+    );
+  }
+
+  await Promise.all(batchIoTasks);
 }
 
 export async function compactAlertMemory(sheets, automationCommanderSheetId, options = {}) {
@@ -1868,7 +1932,9 @@ export async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, 
         for (let i = 0; i < directHashes.length; i += 200) {
           const chunk = directHashes.slice(i, i + 200);
           await sb.from("alert_memory").delete().in("fingerprint_hash", chunk);
-          await sb.from("pma_tasks").delete().in("fingerprint_hash", chunk);
+          if (shouldSyncPmaTasksMirror_()) {
+            await sb.from("pma_tasks").delete().in("fingerprint_hash", chunk);
+          }
         }
 
         if (numericRowIndices.length > 0) {
@@ -1898,8 +1964,10 @@ export async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, 
               }
             }
             const orphanedHashes = rowCandidateList.filter(h => !remainingSet.has(h));
-            for (let i = 0; i < orphanedHashes.length; i += 200) {
-              await sb.from("pma_tasks").delete().in("fingerprint_hash", orphanedHashes.slice(i, i + 200));
+            if (shouldSyncPmaTasksMirror_()) {
+              for (let i = 0; i < orphanedHashes.length; i += 200) {
+                await sb.from("pma_tasks").delete().in("fingerprint_hash", orphanedHashes.slice(i, i + 200));
+              }
             }
             for (const h of orphanedHashes) {
               hashesToEvict.add(h);
@@ -2107,8 +2175,11 @@ export async function deleteAlertMemoryEntryByHash(sheets, automationCommanderSh
     }
   }
 
-  // 3. Flush in-memory and Redis caches so the deleted entry takes effect immediately
-  await flushAllAlertMemoryCaches(automationCommanderSheetId);
+  // 3. Evict only this unignored/deleted hash from L1 + Redis handled map without flushing unrelated caches or SCANning
+  if (cleanHash) {
+    await updateHandledAlertHash(automationCommanderSheetId, cleanHash, "cached");
+  }
+  await invalidateAlertMemoryCache(automationCommanderSheetId);
 
   return {
     success: true,

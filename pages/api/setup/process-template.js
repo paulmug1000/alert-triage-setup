@@ -15,6 +15,7 @@ import {
   saveSetupProcessTemplate,
   seedDefaultSetupProcessTemplate
 } from "../../../services/setupService.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
@@ -42,6 +43,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
+    if (!assertTrustedOrigin(req, res)) return;
     const { action } = req.body || {};
 
     try {

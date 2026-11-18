@@ -324,11 +324,14 @@ export default function NavShell({
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // Prefetch /pulse route bundle so PMA -> Pulse transitions mount rapidly
+  // Prefetch /pulse route bundle during idle browser time so it doesn't compete with initial PMA render
   useEffect(() => {
-    try {
-      router.prefetch("/pulse");
-    } catch { }
+    const timerId = setTimeout(() => {
+      try {
+        router.prefetch("/pulse");
+      } catch { }
+    }, 2500);
+    return () => clearTimeout(timerId);
   }, [router]);
 
   const hasManagedClientSelector = Boolean(onSelectManagedClient);

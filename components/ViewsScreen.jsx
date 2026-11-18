@@ -34,7 +34,7 @@ export default function ViewsScreen({
   onSelectClient,
 }) {
   const { user } = useAuth();
-  const isAdmin = propIsAdmin !== undefined ? propIsAdmin : !!(user?.isAdmin || user?.role === "Admin");
+  const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!user?.isReadOnly && !!(user?.isAdmin || user?.role === "Admin"));
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   const [selectedClient, setSelectedClient] = useState(() => {
@@ -557,8 +557,7 @@ export default function ViewsScreen({
               }}
               title={activeTab === "budgetOverview" ? "Open Master Sheet in Google Sheets" : "Open Client Sheet in Google Sheets"}
             >
-              <span>📊</span>
-              <span>Open in Sheets</span>
+              <span>Open in sheets</span>
             </a>
           </div>
         )}

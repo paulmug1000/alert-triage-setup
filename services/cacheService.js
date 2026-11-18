@@ -74,6 +74,68 @@ import { waitUntil } from "@vercel/functions";
 import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
 
+const CACHE_IDX_PREFIX = "pulse:cache_idx:";
+
+function extractSheetIdFromCacheKey_(key) {
+  const s = String(key || "");
+  if (s.startsWith("pulse:view_data:")) {
+    const rest = s.slice("pulse:view_data:".length);
+    const sep = rest.indexOf(":");
+    return sep >= 0 ? rest.slice(0, sep) : rest;
+  }
+  if (s.startsWith("pulse:portal:keydata:")) {
+    const rest = s.slice("pulse:portal:keydata:".length);
+    const sep = rest.indexOf(":");
+    return sep >= 0 ? rest.slice(0, sep) : rest;
+  }
+  if (s.startsWith("pulse:portal:")) {
+    const parts = s.split(":");
+    return parts[3] || null;
+  }
+  if (s.startsWith("pulse:pma:")) {
+    const parts = s.split(":");
+    return parts[3] || null;
+  }
+  if (s.startsWith("pma_expenses_")) return s.slice("pma_expenses_".length);
+  if (s.startsWith("pma_nbtofind_")) return s.slice("pma_nbtofind_".length);
+  if (s.startsWith("pma_cash_")) return s.slice("pma_cash_".length);
+  if (s.startsWith("portal_cash_")) return s.slice("portal_cash_".length);
+  if (s.startsWith("salaries_data:")) return s.slice("salaries_data:".length);
+  return null;
+}
+
+function trackRedisKeyForClient_(cacheKey) {
+  try {
+    if (!redisClient?.isOpen) return;
+    const rawId = extractSheetIdFromCacheKey_(cacheKey);
+    const id = rawId ? unwrapSheetId(rawId) || rawId : null;
+    if (!id) return;
+    const idxKey = `${CACHE_IDX_PREFIX}${id}`;
+    redisClient.sAdd(idxKey, cacheKey).catch(() => { });
+    redisClient.expire(idxKey, 90000).catch(() => { });
+  } catch { }
+}
+
+/**
+ * Deletes known all-clients & portal all-clients Redis keys without running SCAN.
+ */
+export async function invalidateAllClientsRedisKeys(extraAcIds = []) {
+  try {
+    if (!redisClient?.isOpen) return;
+    const defaultAc = process.env.AUTOMATION_COMMANDER_SHEET_ID || "1k9a5r9M9X-bP5G2pL6kY7X3g-r2Q1dC4fW8tV9oP0xE";
+    const acIds = new Set([defaultAc, process.env.AUTOMATION_COMMANDER_SHEET_ID, ...extraAcIds].filter(Boolean));
+    const keys = [];
+    for (const id of acIds) {
+      keys.push(`pulse:all_clients:${id}`, `pulse:portal:allClients:${id}`);
+    }
+    if (keys.length > 0) {
+      await redisClient.del(keys);
+    }
+  } catch (err) {
+    console.warn("[invalidateAllClientsRedisKeys] Redis delete error:", err?.message);
+  }
+}
+
 /**
  * Get item from 2-tier cache: checks L1 in-memory first (<1ms), then L2 Redis (~3-5ms).
  */
@@ -111,6 +173,7 @@ export async function set2TierCache(key, value, ttlSeconds = 60) {
     if (redisClient?.isOpen) {
       redisClient
         .set(key, JSON.stringify(value), { EX: ttl })
+        .then(() => trackRedisKeyForClient_(key))
         .catch((err) => console.warn(`[set2TierCache] Redis error for key ${key}:`, err?.message));
     }
   } catch (err) {
@@ -173,6 +236,7 @@ export async function resolvePortalCache({
       if (redisClient?.isOpen) {
         redisClient
           .set(cacheKey, JSON.stringify(data), { EX: redisTtlSecs })
+          .then(() => trackRedisKeyForClient_(cacheKey))
           .catch((err) => console.warn(`[resolvePortalCache] Redis write warning for ${cacheKey}:`, err?.message));
       }
     } catch (_) { }
@@ -236,7 +300,7 @@ export async function resolvePortalCache({
           }
 
           // When bypassCache=true: coalesce if another tab/user already refreshed within the window
-          const minBypassAgeMs = isAutoRefresh ? 45000 : isReadOnly ? 15000 : 0;
+          const minBypassAgeMs = isAutoRefresh ? 120000 : isReadOnly ? 15000 : 0;
           if (minBypassAgeMs > 0 && ageMs < minBypassAgeMs) {
             memoryCache.set(cacheKey, parsed, l1TtlSecs);
             return {
@@ -269,7 +333,8 @@ export async function resolvePortalCache({
 }
 
 /**
- * Granular PMA client cache invalidation across all matching L1/L2 keys.
+ * Granular PMA & Portal client cache invalidation across L1 memory & L2 Redis
+ * using deterministic exact keys + per-client Redis Set index (0 SCAN roundtrips).
  */
 export async function invalidatePmaClientCache(clientSheetId, masterSheetId, scopes = []) {
   const rawClient = clientSheetId
@@ -281,121 +346,190 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
   const cleanClientId = rawClient ? unwrapSheetId(rawClient) || rawClient : null;
   const cleanMasterId = rawMaster ? unwrapSheetId(rawMaster) || rawMaster : null;
 
-  const patterns = [];
+  const l1Patterns = [];
+  const exactKeys = new Set();
   const allScopes = !scopes || scopes.length === 0;
 
+  const addPortalKeys = (id) => {
+    exactKeys.add(`pulse:portal:payload:${id}`);
+    exactKeys.add(`pulse:portal:performance:${id}`);
+    exactKeys.add(`pulse:portal:budget:${id}`);
+    exactKeys.add(`pulse:portal:cash:${id}`);
+    exactKeys.add(`portal_cash_${id}`);
+    exactKeys.add(`pulse:portal:keydata:${id}`);
+    exactKeys.add(`pulse:portal:key-data:${id}`);
+    for (const kt of ["all", "confirmed", "pipeline", "outgoings", "salaries", "nbtofind", "overview"]) {
+      exactKeys.add(`pulse:portal:keydata:${id}:${kt}`);
+      exactKeys.add(`pulse:portal:key-data:${id}:${kt}`);
+    }
+  };
+
+  const addViewKeys = (id) => {
+    for (const tab of ["dashboard", "cash", "contractors", "outgoings", "budget", "fy", "salaries", "nbtofind"]) {
+      exactKeys.add(`pulse:view_data:${id}:${tab}`);
+    }
+  };
+
   if (cleanClientId) {
-    memoryCache.del(`pulse:pma:shared_jobs_raw:${cleanClientId}*`);
+    l1Patterns.push(`pulse:pma:shared_jobs_raw:${cleanClientId}*`);
+    exactKeys.add(`pulse:pma:shared_jobs_raw:${cleanClientId}`);
+
     if (allScopes || scopes.includes("jobs")) {
-      patterns.push(`pulse:pma:jobs:${cleanClientId}*`);
-      patterns.push(`pulse:pma:invoice_jobs:${cleanClientId}*`);
-      patterns.push(`pulse:pma:direct_costs_jobs:${cleanClientId}*`);
-      patterns.push(`pulse:portal:*:${cleanClientId}*`);
-      patterns.push(`pulse:view_data:${cleanClientId}:*`);
-      patterns.push(`pma_nbtofind_${cleanClientId}*`);
+      l1Patterns.push(
+        `pulse:pma:jobs:${cleanClientId}*`,
+        `pulse:pma:invoice_jobs:${cleanClientId}*`,
+        `pulse:pma:direct_costs_jobs:${cleanClientId}*`,
+        `pulse:portal:*:${cleanClientId}*`,
+        `pulse:view_data:${cleanClientId}:*`,
+        `pma_nbtofind_${cleanClientId}*`
+      );
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:All`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Confirmed`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Pipeline`);
+      exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:all`);
+      exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:active`);
+      exactKeys.add(`pulse:pma:direct_costs_jobs:${cleanClientId}:all`);
+      exactKeys.add(`pulse:pma:direct_costs_jobs:${cleanClientId}:active`);
+      exactKeys.add(`pma_nbtofind_${cleanClientId}`);
+      addPortalKeys(cleanClientId);
+      addViewKeys(cleanClientId);
     }
     if (allScopes || scopes.includes("invoices")) {
-      patterns.push(`pulse:pma:invoice_jobs:${cleanClientId}*`);
-      patterns.push(`pulse:pma:jobs:${cleanClientId}*`);
-      patterns.push(`pulse:portal:keydata:${cleanClientId}*`);
-      patterns.push(`pulse:portal:key-data:${cleanClientId}*`);
-      patterns.push(`pulse:portal:payload:${cleanClientId}*`);
-      patterns.push(`pulse:portal:performance:${cleanClientId}*`);
+      l1Patterns.push(
+        `pulse:pma:invoice_jobs:${cleanClientId}*`,
+        `pulse:pma:jobs:${cleanClientId}*`,
+        `pulse:portal:keydata:${cleanClientId}*`,
+        `pulse:portal:key-data:${cleanClientId}*`,
+        `pulse:portal:payload:${cleanClientId}*`,
+        `pulse:portal:performance:${cleanClientId}*`
+      );
+      exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:all`);
+      exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:active`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:All`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Confirmed`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Pipeline`);
+      addPortalKeys(cleanClientId);
     }
-    if (allScopes || scopes.includes("outgoings")) {
-      patterns.push(`pulse:pma:outgoings:${cleanClientId}*`);
-      patterns.push(`pulse:pma:direct_costs_jobs:${cleanClientId}*`);
-      patterns.push(`pulse:pma:jobs:${cleanClientId}*`);
-      patterns.push(`pulse:portal:keydata:${cleanClientId}*`);
-      patterns.push(`pulse:portal:key-data:${cleanClientId}*`);
-      patterns.push(`pulse:portal:payload:${cleanClientId}*`);
-      patterns.push(`pulse:portal:performance:${cleanClientId}*`);
-      patterns.push(`pma_expenses_${cleanClientId}*`);
-      patterns.push(`salaries_data:${cleanClientId}*`);
+    if (allScopes || scopes.includes("outgoings") || scopes.includes("expenses")) {
+      l1Patterns.push(
+        `pulse:pma:outgoings:${cleanClientId}*`,
+        `pulse:pma:direct_costs_jobs:${cleanClientId}*`,
+        `pulse:pma:jobs:${cleanClientId}*`,
+        `pulse:portal:keydata:${cleanClientId}*`,
+        `pulse:portal:key-data:${cleanClientId}*`,
+        `pulse:portal:payload:${cleanClientId}*`,
+        `pulse:portal:performance:${cleanClientId}*`,
+        `pma_expenses_${cleanClientId}*`,
+        `salaries_data:${cleanClientId}*`
+      );
+      exactKeys.add(`pulse:pma:outgoings:${cleanClientId}`);
+      exactKeys.add(`pulse:pma:direct_costs_jobs:${cleanClientId}:all`);
+      exactKeys.add(`pulse:pma:direct_costs_jobs:${cleanClientId}:active`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:All`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Confirmed`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Pipeline`);
+      exactKeys.add(`pma_expenses_${cleanClientId}`);
+      exactKeys.add(`salaries_data:${cleanClientId}`);
+      addPortalKeys(cleanClientId);
     }
     if (allScopes || scopes.includes("retainers")) {
-      patterns.push(`pulse:pma:retainer_jobs:${cleanClientId}*`);
-      patterns.push(`pulse:pma:jobs:${cleanClientId}*`);
-      patterns.push(`pulse:pma:invoice_jobs:${cleanClientId}*`);
-      patterns.push(`pulse:portal:keydata:${cleanClientId}*`);
-      patterns.push(`pulse:portal:key-data:${cleanClientId}*`);
-      patterns.push(`pulse:portal:payload:${cleanClientId}*`);
-      patterns.push(`pulse:portal:performance:${cleanClientId}*`);
+      l1Patterns.push(
+        `pulse:pma:retainer_jobs:${cleanClientId}*`,
+        `pulse:pma:jobs:${cleanClientId}*`,
+        `pulse:pma:invoice_jobs:${cleanClientId}*`,
+        `pulse:portal:keydata:${cleanClientId}*`,
+        `pulse:portal:key-data:${cleanClientId}*`,
+        `pulse:portal:payload:${cleanClientId}*`,
+        `pulse:portal:performance:${cleanClientId}*`
+      );
+      exactKeys.add(`pulse:pma:retainer_jobs:${cleanClientId}`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:All`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Confirmed`);
+      exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Pipeline`);
+      exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:all`);
+      exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:active`);
+      addPortalKeys(cleanClientId);
     }
     if (allScopes || scopes.includes("views")) {
-      patterns.push(`pulse:view_data:${cleanClientId}:*`);
-      patterns.push(`pulse:portal:*:${cleanClientId}*`);
-      patterns.push(`pma_expenses_${cleanClientId}*`);
-      patterns.push(`pma_nbtofind_${cleanClientId}*`);
-      patterns.push(`salaries_data:${cleanClientId}*`);
+      l1Patterns.push(
+        `pulse:view_data:${cleanClientId}:*`,
+        `pulse:portal:*:${cleanClientId}*`,
+        `pma_expenses_${cleanClientId}*`,
+        `pma_nbtofind_${cleanClientId}*`,
+        `salaries_data:${cleanClientId}*`
+      );
+      exactKeys.add(`pma_expenses_${cleanClientId}`);
+      exactKeys.add(`pma_nbtofind_${cleanClientId}`);
+      exactKeys.add(`salaries_data:${cleanClientId}`);
+      addViewKeys(cleanClientId);
+      addPortalKeys(cleanClientId);
     }
     if (allScopes || scopes.includes("cash")) {
-      patterns.push(`pma_cash_${cleanClientId}*`);
-      patterns.push(`portal_cash_${cleanClientId}*`);
-      patterns.push(`pulse:portal:cash:${cleanClientId}*`);
-      patterns.push(`pulse:portal:payload:${cleanClientId}*`);
+      l1Patterns.push(
+        `pma_cash_${cleanClientId}*`,
+        `portal_cash_${cleanClientId}*`,
+        `pulse:portal:cash:${cleanClientId}*`,
+        `pulse:portal:payload:${cleanClientId}*`
+      );
+      exactKeys.add(`pma_cash_${cleanClientId}`);
+      exactKeys.add(`portal_cash_${cleanClientId}`);
+      exactKeys.add(`pulse:portal:cash:${cleanClientId}`);
+      exactKeys.add(`pulse:portal:payload:${cleanClientId}`);
     }
   }
 
   if (cleanMasterId) {
     if (allScopes || scopes.includes("invoices")) {
-      patterns.push(`pulse:pma:invoices_inbox:${cleanMasterId}*`);
+      l1Patterns.push(`pulse:pma:invoices_inbox:${cleanMasterId}*`);
+      exactKeys.add(`pulse:pma:invoices_inbox:${cleanMasterId}`);
     }
-    if (allScopes || scopes.includes("outgoings")) {
-      patterns.push(`pulse:pma:outgoings_inbox:${cleanMasterId}*`);
+    if (allScopes || scopes.includes("outgoings") || scopes.includes("expenses")) {
+      l1Patterns.push(`pulse:pma:outgoings_inbox:${cleanMasterId}*`);
+      exactKeys.add(`pulse:pma:outgoings_inbox:${cleanMasterId}`);
     }
   }
 
-  const uniquePatterns = [...new Set(patterns)];
-  for (const p of uniquePatterns) {
+  for (const p of new Set(l1Patterns)) {
     memoryCache.del(p);
   }
+  for (const k of exactKeys) {
+    memoryCache.del(k);
+  }
 
-  if (redisClient?.isOpen && uniquePatterns.length > 0) {
-    const scanKeysMatching_ = async (pattern) => {
-      if (typeof redisClient.scan !== "function") {
-        return typeof redisClient.keys === "function" ? redisClient.keys(pattern).catch(() => []) : [];
-      }
-      const matched = [];
-      let cursor = 0;
-      try {
-        do {
-          const reply = await redisClient.scan(cursor, { MATCH: pattern, COUNT: 250 });
-          const nextCursor = Array.isArray(reply) ? reply[0] : reply?.cursor;
-          const keys = Array.isArray(reply) ? reply[1] : reply?.keys;
-          if (Array.isArray(keys) && keys.length > 0) {
-            matched.push(...keys);
-          }
-          cursor = Number(nextCursor) || 0;
-        } while (cursor !== 0);
-      } catch (_) { }
-      return matched;
-    };
-    const redisCleanup = (async () => {
-      try {
-        const keyLists = await Promise.all(
-          uniquePatterns.map((p) =>
-            p.includes("*")
-              ? scanKeysMatching_(p)
-              : Promise.resolve([p])
-          )
+  if (redisClient?.isOpen && (exactKeys.size > 0 || cleanClientId || cleanMasterId)) {
+    try {
+      const idxKeys = [];
+      if (cleanClientId) idxKeys.push(`${CACHE_IDX_PREFIX}${cleanClientId}`);
+      if (cleanMasterId) idxKeys.push(`${CACHE_IDX_PREFIX}${cleanMasterId}`);
+
+      if (allScopes && idxKeys.length > 0) {
+        const dynamicMembers = await Promise.all(
+          idxKeys.map((ik) => redisClient.sMembers(ik).catch(() => []))
         );
-        const allKeysToDel = [...new Set(keyLists.flat().filter(Boolean))];
-        if (allKeysToDel.length > 0) {
-          await redisClient.del(allKeysToDel);
+        for (const m of dynamicMembers.flat()) {
+          if (m) exactKeys.add(m);
         }
-      } catch (err) {
-        console.warn("[invalidatePmaClientCache] Redis delete error:", err?.message);
+        for (const ik of idxKeys) exactKeys.add(ik);
+      } else if (idxKeys.length > 0 && exactKeys.size > 0) {
+        const dynamicMembers = await Promise.all(
+          idxKeys.map((ik) => redisClient.sMembers(ik).catch(() => []))
+        );
+        const flatDynamic = dynamicMembers.flat().filter(Boolean);
+        for (const k of flatDynamic) {
+          if (k.startsWith(`pulse:view_data:`) && (allScopes || scopes.includes("views") || scopes.includes("jobs"))) {
+            exactKeys.add(k);
+          } else if (k.startsWith(`pulse:portal:keydata:`) && (allScopes || scopes.includes("jobs") || scopes.includes("invoices") || scopes.includes("outgoings") || scopes.includes("retainers"))) {
+            exactKeys.add(k);
+          }
+        }
       }
-    })();
-    if (typeof waitUntil === "function") {
-      try {
-        waitUntil(redisCleanup);
-      } catch (_) { }
+
+      const allKeysToDel = [...exactKeys].filter(Boolean);
+      if (allKeysToDel.length > 0) {
+        await redisClient.del(allKeysToDel);
+      }
+    } catch (err) {
+      console.warn("[invalidatePmaClientCache] Redis delete error:", err?.message);
     }
-    await Promise.race([
-      redisCleanup,
-      new Promise((resolve) => setTimeout(resolve, 400)),
-    ]);
   }
 }

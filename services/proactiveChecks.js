@@ -5,7 +5,7 @@ import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid, sanitiz
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
 import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { ensureAlertMemoryTab, queryAlertMemoryTargeted, updateAlertMemoryRowsBatch, appendAlertMemoryRow, updateHandledAlertHashesBatch, invalidateAlertMemoryCache } from "./alertMemory.js";
-import { applyAlertRemovalToTriageData, PRECOMPUTED_KEY } from "./alertState.js";
+import { applyAlertRemovalToTriageData, PRECOMPUTED_KEY, scheduleWaitUntil_ } from "./alertState.js";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { logPmaActivity } from "./pmaLogger.js";
@@ -2319,76 +2319,62 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
  * Pushes historical and forecast P&L amounts for a category directly from Master Sheet (PLFromApp / PLComp)
  * to the newly created row on Outgoings (Columns G onwards).
  */
-export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, clientSheetId, categoryName, targetSheetRow) {
-  if (!masterSheetId || !clientSheetId || !categoryName || !targetSheetRow) return;
-  if (Number(targetSheetRow) === 225 || Number(targetSheetRow) === 226) return;
-  const normClean = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
-  if (normClean === "recharged expenses (forecast)" || normClean === "recharged expenses recovery") return;
-
-  // Helper to parse header labels into standardized 'YYYY-MM'
-  function parseHeaderToMonthKey(str) {
-    if (!str) return null;
-    const s = String(str).trim();
-    // 1. Match 'Jul 26' or 'Jul-26'
-    const m = s.match(/^([A-Za-z]{3})[\s\-_]*(\d{2})$/);
-    if (m) {
-      const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-      const mIdx = monthNames.indexOf(m[1].toLowerCase());
-      if (mIdx !== -1) {
-        const yr = 2000 + parseInt(m[2], 10);
-        return `${yr}-${String(mIdx + 1).padStart(2, '0')}`;
-      }
+/**
+ * Parses P&L / Outgoings header strings like "Jul 26", "July 2026", or ISO dates into "YYYY-MM".
+ */
+function parsePLHeaderToMonthKey_(str) {
+  if (!str) return null;
+  const s = String(str).trim();
+  const m = s.match(/^([A-Za-z]{3})[\s\-_]*(\d{2})$/);
+  if (m) {
+    const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const mIdx = monthNames.indexOf(m[1].toLowerCase());
+    if (mIdx !== -1) {
+      const yr = 2000 + parseInt(m[2], 10);
+      return `${yr}-${String(mIdx + 1).padStart(2, '0')}`;
     }
-    // 2. Match 'July 2026' or 'July 26'
-    const mLong = s.match(/^([A-Za-z]+)[\s\-_]*(\d{2,4})$/);
-    if (mLong) {
-      const monthNamesLong = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-      const mIdx = monthNamesLong.indexOf(mLong[1].toLowerCase());
-      if (mIdx !== -1) {
-        let yr = parseInt(mLong[2], 10);
-        if (yr < 100) yr += 2000;
-        return `${yr}-${String(mIdx + 1).padStart(2, '0')}`;
-      }
-    }
-    // 3. Fallback standard Date
-    const d = new Date(s);
-    if (!isNaN(d.getTime()) && d.getFullYear() > 2010) {
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    }
-    return null;
   }
+  const mLong = s.match(/^([A-Za-z]+)[\s\-_]*(\d{2,4})$/);
+  if (mLong) {
+    const monthNamesLong = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    const mIdx = monthNamesLong.indexOf(mLong[1].toLowerCase());
+    if (mIdx !== -1) {
+      let yr = parseInt(mLong[2], 10);
+      if (yr < 100) yr += 2000;
+      return `${yr}-${String(mIdx + 1).padStart(2, '0')}`;
+    }
+  }
+  const d = new Date(s);
+  if (!isNaN(d.getTime()) && d.getFullYear() > 2010) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+  return null;
+}
+
+/**
+ * Converts a 1-indexed column number to an A1 notation column letter.
+ */
+function colIndexToA1_(colIdx) {
+  let temp = colIdx;
+  let letter = "";
+  while (temp > 0) {
+    const rem = (temp - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    temp = Math.floor((temp - 1) / 26);
+  }
+  return letter;
+}
+
+/**
+ * Computes monthly P&L columns (G onwards) and currency formatting targets for an Outgoings row.
+ */
+function computeOutgoingsPLRowValues_(categoryName, targetSheetRow, plAppRows, plCompRows, outHeaders, templateRow) {
+  const normClean = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+  if (!outHeaders || outHeaders.length <= 6) return null;
 
   const monthlyAmounts = new Map(); // 'YYYY-MM' -> number
 
-  // 1-3. Read PLFromApp, PLComp, and Outgoings headers/template row in parallel
-  const [plAppRes, plCompRes, outHRes, tmplRes] = await Promise.all([
-    withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: masterSheetId,
-      range: "PLFromApp!A1:AZ100"
-    })).catch((e) => {
-      console.warn("[P&L Amount Push] Could not read PLFromApp:", e.message);
-      return null;
-    }),
-    withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: masterSheetId,
-      range: "PLComp!A1:AZ200"
-    })).catch((e) => {
-      console.warn("[P&L Amount Push] Could not read PLComp:", e.message);
-      return null;
-    }),
-    withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: clientSheetId,
-      range: "Outgoings!1:1"
-    })),
-    withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: clientSheetId,
-      range: "Outgoings!126:126",
-      valueRenderOption: "FORMULA"
-    }))
-  ]);
-
-  if (plAppRes) {
-    const plAppRows = plAppRes.data.values || [];
+  if (Array.isArray(plAppRows) && plAppRows.length > 0) {
     const plAppHeaders = plAppRows[0] || [];
     const plAppCatRow = plAppRows.find(r => {
       const name = String(r[0] || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
@@ -2397,7 +2383,7 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
 
     if (plAppCatRow) {
       for (let c = 1; c < plAppHeaders.length; c++) {
-        const mKey = parseHeaderToMonthKey(plAppHeaders[c]);
+        const mKey = parsePLHeaderToMonthKey_(plAppHeaders[c]);
         if (mKey) {
           const val = parseFloat(String(plAppCatRow[c] || "0").replace(/[£$€,\s]/g, "")) || 0;
           monthlyAmounts.set(mKey, val);
@@ -2406,8 +2392,7 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
     }
   }
 
-  if (plCompRes) {
-    const plCompRows = plCompRes.data.values || [];
+  if (Array.isArray(plCompRows) && plCompRows.length > 0) {
     const plCompHeaders = plCompRows[0] || [];
     const plCompCatRow = plCompRows.find(r => {
       const bVal = String(r[1] || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
@@ -2420,7 +2405,7 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
       for (let c = 5; c <= Math.min(10, plCompHeaders.length - 1); c++) {
         const hStr = plCompHeaders[c];
         if (!hStr) continue;
-        const mKey = parseHeaderToMonthKey(hStr);
+        const mKey = parsePLHeaderToMonthKey_(hStr);
         if (mKey) {
           const val = parseFloat(String(plCompCatRow[c] || "0").replace(/[£$€,\s]/g, "")) || 0;
           if (val !== 0 || !monthlyAmounts.has(mKey)) {
@@ -2435,7 +2420,7 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
         if (!hStr) continue;
         const rawCell = plCompCatRow[c];
         if (rawCell === "" || rawCell === null || rawCell === undefined) continue;
-        const mKey = parseHeaderToMonthKey(hStr);
+        const mKey = parsePLHeaderToMonthKey_(hStr);
         if (mKey) {
           const val = parseFloat(String(rawCell).replace(/[£$€,\s]/g, "")) || 0;
           if (val !== 0 || !monthlyAmounts.has(mKey)) {
@@ -2445,10 +2430,6 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
       }
     }
   }
-
-  const outHeaders = outHRes.data.values?.[0] || [];
-  const templateRow = tmplRes.data.values?.[0] || [];
-  if (outHeaders.length <= 6) return false;
 
   const maxCols = Math.max(outHeaders.length, templateRow.length, 50);
   const rowValues = [];
@@ -2466,7 +2447,7 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
     }
 
     // B. If column header is empty/spacer or not a month, keep it completely blank ("")
-    const mKey = parseHeaderToMonthKey(headerStr);
+    const mKey = parsePLHeaderToMonthKey_(headerStr);
     if (!mKey) {
       rowValues.push("");
       continue;
@@ -2484,30 +2465,17 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
     }
   }
 
-  // Helper to convert 1-indexed column number to A1 notation column letter
-  function colIndexToA1(colIdx) {
-    let temp = colIdx;
-    let letter = "";
-    while (temp > 0) {
-      let rem = (temp - 1) % 26;
-      letter = String.fromCharCode(65 + rem) + letter;
-      temp = Math.floor((temp - 1) / 26);
-    }
-    return letter;
-  }
+  return {
+    rowValues,
+    decimalColIndices,
+    endColLetter: colIndexToA1_(6 + rowValues.length),
+  };
+}
 
-  const startColLetter = "G";
-  const endColLetter = colIndexToA1(6 + rowValues.length);
-
-  await withRetry(() => sheets.spreadsheets.values.update({
-    spreadsheetId: clientSheetId,
-    range: `Outgoings!${startColLetter}${targetSheetRow}:${endColLetter}${targetSheetRow}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [rowValues] },
-    _deferBackgroundRecompute: true,
-  }));
-
-  // 4. Consolidate formatting into a single batchUpdate: format whole row as Arial 9pt, and any decimal cells with currency pattern
+/**
+ * Applies Arial 9pt font and optional currency decimal formatting to an Outgoings row.
+ */
+async function applyOutgoingsRowFormatting_(sheets, clientSheetId, targetSheetRow, decimalColIndices = []) {
   try {
     const outSheetId = await getSheetGid(sheets, clientSheetId, "Outgoings");
     const requests = [
@@ -2560,13 +2528,75 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
   } catch (fmtErr) {
     console.warn("[P&L Amount Push] Could not apply row formatting:", fmtErr.message);
   }
+}
+
+export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, clientSheetId, categoryName, targetSheetRow, options = {}) {
+  if (!masterSheetId || !clientSheetId || !categoryName || !targetSheetRow) return false;
+  if (Number(targetSheetRow) === 225 || Number(targetSheetRow) === 226) return false;
+  const normClean = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+  if (normClean === "recharged expenses (forecast)" || normClean === "recharged expenses recovery") return false;
+
+  const [plAppRes, plCompRes, outHRes, tmplRes] = await Promise.all([
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "PLFromApp!A1:AZ100"
+    })).catch((e) => {
+      console.warn("[P&L Amount Push] Could not read PLFromApp:", e.message);
+      return null;
+    }),
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "PLComp!A1:AZ200"
+    })).catch((e) => {
+      console.warn("[P&L Amount Push] Could not read PLComp:", e.message);
+      return null;
+    }),
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Outgoings!1:1"
+    })),
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Outgoings!126:126",
+      valueRenderOption: "FORMULA"
+    }))
+  ]);
+
+  const computed = computeOutgoingsPLRowValues_(
+    categoryName,
+    targetSheetRow,
+    plAppRes?.data?.values || [],
+    plCompRes?.data?.values || [],
+    outHRes.data.values?.[0] || [],
+    tmplRes.data.values?.[0] || []
+  );
+  if (!computed) return false;
+
+  const { rowValues, decimalColIndices, endColLetter } = computed;
+  const startColLetter = "G";
+
+  await withRetry(() => sheets.spreadsheets.values.update({
+    spreadsheetId: clientSheetId,
+    range: `Outgoings!${startColLetter}${targetSheetRow}:${endColLetter}${targetSheetRow}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [rowValues] },
+    _deferBackgroundRecompute: true,
+  }));
+
+  if (Array.isArray(options?.deferredFormattingTasks)) {
+    options.deferredFormattingTasks.push(() =>
+      applyOutgoingsRowFormatting_(sheets, clientSheetId, targetSheetRow, decimalColIndices)
+    );
+  } else {
+    await applyOutgoingsRowFormatting_(sheets, clientSheetId, targetSheetRow, decimalColIndices);
+  }
 
   const nonZeroCount = rowValues.filter(v => typeof v === "number" && v !== 0).length;
   console.log(`[P&L Amount Push] Successfully populated row ${targetSheetRow} (${nonZeroCount} actual months, formulas preserved, spacers blank) into Outgoings!${startColLetter}${targetSheetRow}:${endColLetter}${targetSheetRow} for "${categoryName}".`);
   return true;
 }
 
-export async function ensureCategoryInOutgoings_(sheets, clientSheetId, categoryName, isDeliveryExpense = false, masterSheetId = null) {
+export async function ensureCategoryInOutgoings_(sheets, clientSheetId, categoryName, isDeliveryExpense = false, masterSheetId = null, options = {}) {
   if (!clientSheetId || !categoryName) return null;
   const cleanName = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim();
   const normClean = cleanName.toLowerCase();
@@ -2574,14 +2604,60 @@ export async function ensureCategoryInOutgoings_(sheets, clientSheetId, category
 
   const MIN_CATEGORY_ROW = 126;
   const MAX_CATEGORY_ROW = 223; // Fixed: Last usable row of the Other expenses section is Row 223
+  const prefetched = options?.prefetched || null;
+  const deferredFormattingTasks = Array.isArray(options?.deferredFormattingTasks) ? options.deferredFormattingTasks : null;
 
-  // Read Outgoings!A124:A225 to inspect existing categories
-  const res = await withRetry(() => sheets.spreadsheets.values.get({
-    spreadsheetId: clientSheetId,
-    range: `Outgoings!A124:A${MAX_CATEGORY_ROW + 2}`
-  }));
-  const rows = res.data.values || [];
+  let rows = prefetched?.outRows || null;
+  let outHeaders = prefetched?.outHeaders || null;
+  let templateRow = prefetched?.templateRow || null;
+  let jnlsRows = prefetched?.jnlsRows ?? null;
+  let plAppRows = prefetched?.plAppRows ?? null;
+  let plCompRows = prefetched?.plCompRows ?? null;
 
+  // Read Client Outgoings and Master inputs in one parallel wave when not already prefetched
+  if (!rows || (masterSheetId && (!outHeaders || !templateRow || jnlsRows === null || plAppRows === null || plCompRows === null))) {
+    const [clientBatchRes, clientTmplRes, masterBatchRes] = await Promise.all([
+      (!rows || (masterSheetId && !outHeaders))
+        ? withRetry(() => sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientSheetId,
+          ranges: masterSheetId
+            ? [`Outgoings!A124:A${MAX_CATEGORY_ROW + 2}`, "Outgoings!1:1"]
+            : [`Outgoings!A124:A${MAX_CATEGORY_ROW + 2}`],
+        }))
+        : Promise.resolve(null),
+      masterSheetId && !templateRow
+        ? withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: "Outgoings!126:126",
+          valueRenderOption: "FORMULA",
+        })).catch(() => null)
+        : Promise.resolve(null),
+      masterSheetId && (jnlsRows === null || plAppRows === null || plCompRows === null)
+        ? withRetry(() => sheets.spreadsheets.values.batchGet({
+          spreadsheetId: masterSheetId,
+          ranges: ["JnlsFromApp!A2:G500", "PLFromApp!A1:AZ100", "PLComp!A1:AZ200"],
+        })).catch((err) => {
+          console.warn(`[Outgoings Provision] Batch master read warning: ${err.message}`);
+          return null;
+        })
+        : Promise.resolve(null),
+    ]);
+
+    if (clientBatchRes?.data?.valueRanges) {
+      if (!rows) rows = clientBatchRes.data.valueRanges[0]?.values || [];
+      if (masterSheetId && !outHeaders) outHeaders = clientBatchRes.data.valueRanges[1]?.values?.[0] || [];
+    }
+    if (clientTmplRes && !templateRow) {
+      templateRow = clientTmplRes.data?.values?.[0] || [];
+    }
+    if (masterBatchRes?.data?.valueRanges) {
+      if (jnlsRows === null) jnlsRows = masterBatchRes.data.valueRanges[0]?.values || [];
+      if (plAppRows === null) plAppRows = masterBatchRes.data.valueRanges[1]?.values || [];
+      if (plCompRows === null) plCompRows = masterBatchRes.data.valueRanges[2]?.values || [];
+    }
+  }
+
+  rows = rows || [];
   const existingCats = new Set();
   const populatedCategoryRows = [];
 
@@ -2630,13 +2706,8 @@ export async function ensureCategoryInOutgoings_(sheets, clientSheetId, category
   // - If matching transactions exist and all have VAT == 0, set "No".
   // - If no matching transactions exist, default to "Yes".
   let vatSetting = "Yes";
-  if (masterSheetId) {
+  if (masterSheetId && Array.isArray(jnlsRows)) {
     try {
-      const jnlsRes = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "JnlsFromApp!A2:G500"
-      }));
-      const jnlsRows = jnlsRes.data.values || [];
       const matchingTxns = jnlsRows.filter(r => {
         const acc = String(r[6] || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
         const desc = String(r[1] || "").toLowerCase();
@@ -2665,37 +2736,60 @@ export async function ensureCategoryInOutgoings_(sheets, clientSheetId, category
     isDeliveryExpense ? "100%" : "0%",
     "100%"
   ];
+  const metaCells = [sanitizeFormulaInput(String(cleanName || "")), ...defaults];
 
-  const payload = [[sanitizeFormulaInput(String(cleanName || "")), ...defaults]];
-
-  // Write header metadata (Columns A through F). Defer Outgoings formula recompute when
-  // pushCategoryPLAmountsToOutgoings_ will immediately follow with the monthly values write.
-  await withRetry(() => sheets.spreadsheets.values.update({
-    spreadsheetId: clientSheetId,
-    range: `Outgoings!A${targetSheetRow}:F${targetSheetRow}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: payload },
-    _skipFormulaRecompute: Boolean(masterSheetId),
-  }));
-
-  // P&L Amount Push: Extract monthly amounts from PLFromApp and PLComp on Master Sheet and write to Columns G onwards
-  // pushCategoryPLAmountsToOutgoings_ automatically formats the entire row as Arial 9pt in its consolidated batchUpdate
-  if (masterSheetId) {
-    let pushedAmounts = false;
+  let computedPL = null;
+  if (masterSheetId && Array.isArray(outHeaders) && Array.isArray(templateRow)) {
     try {
-      pushedAmounts = Boolean(
-        await pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, clientSheetId, cleanName, targetSheetRow)
+      computedPL = computeOutgoingsPLRowValues_(
+        cleanName,
+        targetSheetRow,
+        plAppRows || [],
+        plCompRows || [],
+        outHeaders,
+        templateRow
       );
     } catch (plErr) {
-      console.warn(`[Outgoings Provision] Could not push P&L amounts for "${cleanName}":`, plErr.message);
-      await applySheetFontFormat(sheets, clientSheetId, "Outgoings", targetSheetRow - 1, targetSheetRow, 0, 50, "Arial", 9);
+      console.warn(`[Outgoings Provision] Could not compute P&L amounts for "${cleanName}":`, plErr.message);
+      computedPL = null;
     }
-    if (!pushedAmounts) {
-      await flushImmediateAndScheduleBackgroundClientRecomputes(null, null).catch(() => { });
+  }
+
+  // Write Columns A:F + G onwards in ONE atomic values.update so Client Sheet / Supabase only persists and recomputes once
+  if (computedPL) {
+    const combinedRow = [...metaCells, ...computedPL.rowValues];
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: clientSheetId,
+      range: `Outgoings!A${targetSheetRow}:${computedPL.endColLetter}${targetSheetRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [combinedRow] },
+      _deferBackgroundRecompute: true,
+    }));
+
+    const nonZeroCount = computedPL.rowValues.filter(v => typeof v === "number" && v !== 0).length;
+    console.log(`[P&L Amount Push] Successfully populated row ${targetSheetRow} (${nonZeroCount} actual months, formulas preserved, spacers blank) into Outgoings!A${targetSheetRow}:${computedPL.endColLetter}${targetSheetRow} for "${cleanName}".`);
+
+    const fmtTask = () => applyOutgoingsRowFormatting_(sheets, clientSheetId, targetSheetRow, computedPL.decimalColIndices);
+    if (deferredFormattingTasks) {
+      deferredFormattingTasks.push(fmtTask);
+    } else {
+      await fmtTask();
     }
   } else {
-    // If no masterSheetId, apply Arial 9pt font formatting directly
-    await applySheetFontFormat(sheets, clientSheetId, "Outgoings", targetSheetRow - 1, targetSheetRow, 0, 50, "Arial", 9);
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: clientSheetId,
+      range: `Outgoings!A${targetSheetRow}:F${targetSheetRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [metaCells] },
+      _deferBackgroundRecompute: true,
+    }));
+
+    const fmtTask = () => applySheetFontFormat(sheets, clientSheetId, "Outgoings", targetSheetRow - 1, targetSheetRow, 0, 50, "Arial", 9);
+    if (deferredFormattingTasks) {
+      deferredFormattingTasks.push(fmtTask);
+    } else {
+      await fmtTask();
+    }
   }
 
   console.log(`[Outgoings Provision] Successfully inserted "${cleanName}" into Outgoings!Row ${targetSheetRow} (${isDeliveryExpense ? "CoS" : "Overhead"}, VAT: ${vatSetting}).`);
@@ -2790,22 +2884,122 @@ export async function handleClassifyPLCategory(sheets, {
     throw new Error(`Master sheet configuration is protected: KeyInfo restricts editing. Please ensure '${primarySa}' has editor access to the KeyInfo sheet protection on the Master Sheet for '${clientName}' (or run 'Sync Protection Editors' in Bulk Updater).`);
   };
 
-  const mutatedMasterTabs = new Set();
+  const SECTION_MAPPING = {
+    revenue: { label: "Revenue", fallbackStart: 2, fallbackEnd: 17 },
+    cos_staff: { label: "CoS staff costs", fallbackStart: 19, fallbackEnd: 28 },
+    non_cos_staff: { label: "Non-CoS staff costs", fallbackStart: 35, fallbackEnd: 43 },
+    corporation_tax: { label: "Corporation tax", fallbackStart: 50, fallbackEnd: 52 },
+    depreciation: { label: "Depreciation", fallbackStart: 54, fallbackEnd: 56 },
+    delivery_expense: { label: "Other costs of sale", fallbackStart: 59, fallbackEnd: 78 },
+    non_operating_income: { label: "Non-operating income", fallbackStart: 81, fallbackEnd: 93 },
+    non_operating_expense: { label: "Non-operating expenses", fallbackStart: 101, fallbackEnd: 110 },
+    ignore: { label: "Ignore", fallbackStart: 128, fallbackEnd: 180 }
+  };
 
-  // 2. Apply mapping based on classification
-  if (classification === "contractor") {
-    // Read KeyInfo!AW2:AW161 and KeyInfo!AT4:AT22 in parallel
-    const [awRes, atRes] = await Promise.all([
-      withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "KeyInfo!AW2:AW161"
-      })),
-      withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "KeyInfo!AT4:AT22"
+  const needsOutgoingsProvision = Boolean(
+    targetClientSheetId && (classification === "non_delivery_expense" || classification === "delivery_expense")
+  );
+  const needsContractorKeyInfo = classification === "contractor";
+  const needsSectionKeyInfo = !needsContractorKeyInfo && classification !== "non_delivery_expense";
+
+  if (needsSectionKeyInfo && !SECTION_MAPPING[classification]) {
+    throw new Error(`Unknown classification: "${classification}"`);
+  }
+
+  const alertKey = providedAlertKey || `unmapped_pl_category|${clientName}|${categoryName}`;
+  const legacyAlertKey = `unmapped_pl_category|${clientName}|${cleanName}`;
+  const fp = providedFp || createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
+  const legacyFp = createHash("sha256").update(legacyAlertKey).digest("hex").substring(0, 16);
+
+  const acId = (!automationCommanderSheetId || automationCommanderSheetId === "default")
+    ? (process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M")
+    : automationCommanderSheetId;
+
+  // Stage 1: Single parallel prefetch across Master Sheet, Client Sheet, AlertMemory, Supabase context, and caller Redis session
+  const tPrefetchStart = Date.now();
+  const masterRanges = ["PLComp!B180:B229"];
+  if (needsContractorKeyInfo) {
+    masterRanges.push("KeyInfo!AW2:AW161", "KeyInfo!AT4:AT22");
+  } else if (needsSectionKeyInfo) {
+    masterRanges.push("KeyInfo!AZ1:BA185");
+  }
+  if (needsOutgoingsProvision) {
+    masterRanges.push("JnlsFromApp!A2:G500", "PLFromApp!A1:AZ100", "PLComp!A1:AZ200");
+  }
+
+  const [
+    masterBatchRes,
+    clientBatchRes,
+    clientTmplRes,
+    supaCtx,
+    supabaseActive,
+    prefetchedMemoryRows,
+    callerSessionRaw,
+  ] = await Promise.all([
+    withRetry(() => sheets.spreadsheets.values.batchGet({
+      spreadsheetId: masterSheetId,
+      ranges: masterRanges,
+    })),
+    needsOutgoingsProvision
+      ? withRetry(() => sheets.spreadsheets.values.batchGet({
+        spreadsheetId: targetClientSheetId,
+        ranges: ["Outgoings!A124:A225", "Outgoings!1:1"],
       }))
-    ]);
-    const awRows = (awRes.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+      : Promise.resolve(null),
+    needsOutgoingsProvision
+      ? withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: targetClientSheetId,
+        range: "Outgoings!126:126",
+        valueRenderOption: "FORMULA",
+      })).catch(() => null)
+      : Promise.resolve(null),
+    resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId }),
+    acId && sheets ? isSupabaseControlPlaneActive() : Promise.resolve(false),
+    acId && sheets
+      ? queryAlertMemoryTargeted(sheets, acId, {
+        hashes: [fp, legacyFp],
+        clientName,
+        alertType: "unmapped_pl_category",
+      }).catch((amErr) => {
+        console.warn("Could not query AlertMemory row for classified category:", amErr.message);
+        return [];
+      })
+      : Promise.resolve([]),
+    sessionId && redisClient?.isOpen
+      ? redisClient.get(`triage_alerts:${sessionId}`).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+  timings.prefetchMs = Date.now() - tPrefetchStart;
+
+  const masterValueRanges = masterBatchRes?.data?.valueRanges || [];
+  let mrIdx = 0;
+  const plCompQuarantineRows = masterValueRanges[mrIdx++]?.values || [];
+  const awRawRows = needsContractorKeyInfo ? (masterValueRanges[mrIdx++]?.values || []) : [];
+  const atRows = needsContractorKeyInfo ? (masterValueRanges[mrIdx++]?.values || []) : [];
+  const azBaRows = needsSectionKeyInfo ? (masterValueRanges[mrIdx++]?.values || []) : [];
+  const jnlsRows = needsOutgoingsProvision ? (masterValueRanges[mrIdx++]?.values || []) : null;
+  const plAppRows = needsOutgoingsProvision ? (masterValueRanges[mrIdx++]?.values || []) : null;
+  const plCompRows = needsOutgoingsProvision ? (masterValueRanges[mrIdx++]?.values || []) : null;
+
+  const clientValueRanges = clientBatchRes?.data?.valueRanges || [];
+  const outgoingsPrefetched = needsOutgoingsProvision
+    ? {
+      outRows: clientValueRanges[0]?.values || [],
+      outHeaders: clientValueRanges[1]?.values?.[0] || [],
+      templateRow: clientTmplRes?.data?.values?.[0] || [],
+      jnlsRows,
+      plAppRows,
+      plCompRows,
+    }
+    : null;
+
+  const mutatedMasterTabs = new Set();
+  const deferredFormattingTasks = [];
+
+  // Validate slots synchronously before firing any parallel writes
+  let keyInfoUpdatePromise = null;
+  if (needsContractorKeyInfo) {
+    const awRows = awRawRows.map(r => String(r[0] || "").trim()).filter(Boolean);
     let contractorEntry = awRows.find(item => {
       const itemClean = item.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
       return itemClean === cleanName.toLowerCase() || item.toLowerCase() === categoryName.toLowerCase();
@@ -2814,7 +3008,6 @@ export async function handleClassifyPLCategory(sheets, {
       contractorEntry = awRows.find(item => item.toLowerCase().includes(cleanName.toLowerCase())) || categoryName;
     }
 
-    const atRows = atRes.data.values || [];
     let targetAtRow = -1;
     for (let i = 0; i < 19; i++) {
       const val = String(atRows[i]?.[0] || "").trim();
@@ -2827,59 +3020,25 @@ export async function handleClassifyPLCategory(sheets, {
       throw new Error("No empty slots available in KeyInfo!AT4:AT22 for Contractors.");
     }
 
-    try {
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: masterSheetId,
-        range: `KeyInfo!AT${targetAtRow}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[sanitizeFormulaInput(String(contractorEntry || ""))]] },
-        _skipMasterFormulaRecompute: true,
-      }));
-      mutatedMasterTabs.add("KeyInfo");
-    } catch (writeErr) {
-      throwProtectedKeyInfoError_(writeErr);
-    }
-
-  } else if (classification === "non_delivery_expense") {
-    // Non-delivery expense: Auto-provision as Overhead on Client Sheet Outgoings tab
-    if (targetClientSheetId) {
-      await ensureCategoryInOutgoings_(sheets, targetClientSheetId, cleanName, false, masterSheetId);
-    }
-  } else {
-    // Target sections in KeyInfo!AZ -> KeyInfo!BA
-    const SECTION_MAPPING = {
-      revenue: { label: "Revenue", fallbackStart: 2, fallbackEnd: 17 },
-      cos_staff: { label: "CoS staff costs", fallbackStart: 19, fallbackEnd: 28 },
-      non_cos_staff: { label: "Non-CoS staff costs", fallbackStart: 35, fallbackEnd: 43 },
-      corporation_tax: { label: "Corporation tax", fallbackStart: 50, fallbackEnd: 52 },
-      depreciation: { label: "Depreciation", fallbackStart: 54, fallbackEnd: 56 },
-      delivery_expense: { label: "Other costs of sale", fallbackStart: 59, fallbackEnd: 78 },
-      non_operating_income: { label: "Non-operating income", fallbackStart: 81, fallbackEnd: 93 },
-      non_operating_expense: { label: "Non-operating expenses", fallbackStart: 101, fallbackEnd: 110 },
-      ignore: { label: "Ignore", fallbackStart: 128, fallbackEnd: 180 }
-    };
-
-    const targetConfig = SECTION_MAPPING[classification];
-    if (!targetConfig) {
-      throw new Error(`Unknown classification: "${classification}"`);
-    }
-
-    // Read KeyInfo!AZ1:BA185
-    const azBaRes = await withRetry(() => sheets.spreadsheets.values.get({
+    mutatedMasterTabs.add("KeyInfo");
+    keyInfoUpdatePromise = withRetry(() => sheets.spreadsheets.values.update({
       spreadsheetId: masterSheetId,
-      range: "KeyInfo!AZ1:BA185"
-    }));
-    const rows = azBaRes.data.values || [];
-
+      range: `KeyInfo!AT${targetAtRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [[sanitizeFormulaInput(String(contractorEntry || ""))]] },
+      _skipMasterFormulaRecompute: true,
+    })).catch((writeErr) => throwProtectedKeyInfoError_(writeErr));
+  } else if (needsSectionKeyInfo) {
+    const targetConfig = SECTION_MAPPING[classification];
     let sectionStartRow = -1;
     let sectionEndRow = 185;
 
-    for (let i = 0; i < rows.length; i++) {
-      const azVal = String(rows[i]?.[0] || "").trim().toLowerCase();
+    for (let i = 0; i < azBaRows.length; i++) {
+      const azVal = String(azBaRows[i]?.[0] || "").trim().toLowerCase();
       if (azVal === targetConfig.label.toLowerCase()) {
         sectionStartRow = i + 1; // 1-indexed
-        for (let j = i + 1; j < rows.length; j++) {
-          const nextAz = String(rows[j]?.[0] || "").trim();
+        for (let j = i + 1; j < azBaRows.length; j++) {
+          const nextAz = String(azBaRows[j]?.[0] || "").trim();
           if (nextAz) {
             sectionEndRow = j; // 1-indexed
             break;
@@ -2896,7 +3055,7 @@ export async function handleClassifyPLCategory(sheets, {
 
     let targetBaRow = -1;
     for (let r = sectionStartRow; r <= sectionEndRow; r++) {
-      const baVal = String(rows[r - 1]?.[1] || "").trim();
+      const baVal = String(azBaRows[r - 1]?.[1] || "").trim();
       if (!baVal) {
         targetBaRow = r;
         break;
@@ -2907,35 +3066,20 @@ export async function handleClassifyPLCategory(sheets, {
       throw new Error(`No available slots in KeyInfo section "${targetConfig.label}".`);
     }
 
-    // Write cleanName (without code prefix) to KeyInfo!BA
-    try {
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: masterSheetId,
-        range: `KeyInfo!BA${targetBaRow}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[sanitizeFormulaInput(String(cleanName || ""))]] },
-        _skipMasterFormulaRecompute: true,
-      }));
-      mutatedMasterTabs.add("KeyInfo");
-    } catch (writeErr) {
-      throwProtectedKeyInfoError_(writeErr);
-    }
-
-    // If classified as Delivery expense (Other costs of sale), auto-provision onto Outgoings tab as CoS
-    if (classification === "delivery_expense" && targetClientSheetId) {
-      await ensureCategoryInOutgoings_(sheets, targetClientSheetId, cleanName, true, masterSheetId);
-    }
+    mutatedMasterTabs.add("KeyInfo");
+    keyInfoUpdatePromise = withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: masterSheetId,
+      range: `KeyInfo!BA${targetBaRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [[sanitizeFormulaInput(String(cleanName || ""))]] },
+      _skipMasterFormulaRecompute: true,
+    })).catch((writeErr) => throwProtectedKeyInfoError_(writeErr));
   }
 
-  // 3. Clear from quarantine in PLComp!B180:B229 in a single batchUpdate
-  const plCompRes = await withRetry(() => sheets.spreadsheets.values.get({
-    spreadsheetId: masterSheetId,
-    range: "PLComp!B180:B229"
-  }));
-  const plCompRows = plCompRes.data.values || [];
+  // Prepare PLComp quarantine clear
   const plCompClearData = [];
-  for (let i = 0; i < plCompRows.length; i++) {
-    const val = String(plCompRows[i]?.[0] || "").trim();
+  for (let i = 0; i < plCompQuarantineRows.length; i++) {
+    const val = String(plCompQuarantineRows[i]?.[0] || "").trim();
     const valClean = val.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
     if (valClean === cleanName.toLowerCase() || val.toLowerCase() === categoryName.toLowerCase()) {
       const clearRow = 180 + i;
@@ -2946,150 +3090,150 @@ export async function handleClassifyPLCategory(sheets, {
     }
   }
   if (plCompClearData.length > 0) {
-    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+    mutatedMasterTabs.add("PLComp");
+  }
+  const plCompClearPromise = plCompClearData.length > 0
+    ? withRetry(() => sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: masterSheetId,
       requestBody: {
         valueInputOption: "USER_ENTERED",
         data: plCompClearData,
       },
       _skipMasterFormulaRecompute: true,
-    }));
-    mutatedMasterTabs.add("PLComp");
-  }
+    }))
+    : Promise.resolve();
 
-  // 4 & 5. Auto-resolve the alert in AlertMemory, caller Redis session, and precomputed cache
-  const alertKey = providedAlertKey || `unmapped_pl_category|${clientName}|${categoryName}`;
-  const legacyAlertKey = `unmapped_pl_category|${clientName}|${cleanName}`;
-  const fp = providedFp || createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
-  const legacyFp = createHash("sha256").update(legacyAlertKey).digest("hex").substring(0, 16);
+  // Prepare Outgoings provisioning write
+  const outgoingsPromise = needsOutgoingsProvision
+    ? ensureCategoryInOutgoings_(
+      sheets,
+      targetClientSheetId,
+      cleanName,
+      classification === "delivery_expense",
+      masterSheetId,
+      { prefetched: outgoingsPrefetched, deferredFormattingTasks }
+    )
+    : Promise.resolve();
 
-  const acId = (!automationCommanderSheetId || automationCommanderSheetId === "default")
-    ? (process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M")
-    : automationCommanderSheetId;
+  // Prepare AlertMemory + handled hashes update
+  const memoryRows = Array.isArray(prefetchedMemoryRows) ? prefetchedMemoryRows : [];
+  const matchingRows = memoryRows.filter(r =>
+    r.alertType === "unmapped_pl_category" &&
+    r.clientName === clientName &&
+    (r.fingerprintHash === fp ||
+      r.fingerprintHash === legacyFp ||
+      r.alertSummary.toLowerCase().includes(cleanName.toLowerCase()) ||
+      r.alertSummary.toLowerCase().includes(categoryName.toLowerCase()))
+  );
 
-  let matchingRows = [];
-  if (acId && sheets) {
-    try {
-      await ensureAlertMemoryTab(sheets, acId);
-      const supabaseActive = await isSupabaseControlPlaneActive();
-      const memoryRows = await queryAlertMemoryTargeted(sheets, acId, {
-        hashes: [fp, legacyFp],
-        clientName,
-        alertType: "unmapped_pl_category",
-      });
-
-      matchingRows = memoryRows.filter(r =>
-        r.alertType === "unmapped_pl_category" &&
-        r.clientName === clientName &&
-        (r.fingerprintHash === fp ||
-          r.fingerprintHash === legacyFp ||
-          r.alertSummary.toLowerCase().includes(cleanName.toLowerCase()) ||
-          r.alertSummary.toLowerCase().includes(categoryName.toLowerCase()))
-      );
-
-      if (matchingRows.length > 0) {
-        const nowIso = new Date().toISOString();
-        await updateAlertMemoryRowsBatch(
-          sheets,
-          acId,
-          matchingRows.map(row => ({
-            rowIndex: row.rowIndex,
-            updates: {
-              ...row,
-              status: "accepted",
-              lastRechecked: nowIso,
-            },
-          }))
-        );
-      } else {
-        await appendAlertMemoryRow(sheets, acId, {
-          fingerprintHash: fp,
-          alertType: "unmapped_pl_category",
-          clientName,
-          alertSummary: `Unmapped P&L category: "${cleanName}"`,
-          cachedOptionsJSON: "",
-          status: "accepted",
-          category: "proactive",
-          dataSnapshot: JSON.stringify({
-            alertType: "unmapped_pl_category",
-            alertKey,
-            legacyAlertKey,
-            clientName,
-            categoryName: cleanName,
-            cleanName,
-            status: "accepted"
-          })
-        });
-      }
-
-      const handledStatusByHash = {};
-      if (fp) handledStatusByHash[fp] = "accepted";
-      if (legacyFp && legacyFp !== fp) handledStatusByHash[legacyFp] = "accepted";
-      for (const mr of matchingRows) {
-        if (mr.fingerprintHash) {
-          handledStatusByHash[mr.fingerprintHash] = "accepted";
-        }
-      }
-      await updateHandledAlertHashesBatch(acId, handledStatusByHash);
-
-      if (!supabaseActive) {
-        invalidateAlertMemoryCache(acId);
-      }
-    } catch (amErr) {
-      console.warn("Could not update AlertMemory row for classified category:", amErr.message);
-    }
-  }
-
-  // Prune immediately from caller's Redis session and PRECOMPUTED_KEY (other active sessions swept in background)
   const targetIds = [alertKey, legacyAlertKey, fp, legacyFp].filter(Boolean);
-  if (matchingRows && matchingRows.length > 0) {
-    for (const mr of matchingRows) {
-      if (mr.fingerprintHash) targetIds.push(mr.fingerprintHash);
-      if (mr.rowIndex != null) targetIds.push(String(mr.rowIndex));
-    }
+  for (const mr of matchingRows) {
+    if (mr.fingerprintHash) targetIds.push(mr.fingerprintHash);
+    if (mr.rowIndex != null) targetIds.push(String(mr.rowIndex));
   }
 
-  if (redisClient?.isOpen) {
-    await Promise.all([
-      sessionId
-        ? (async () => {
-          try {
-            const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
-            if (sessionData) {
-              const parsed = JSON.parse(sessionData);
-              applyAlertRemovalToTriageData(parsed, targetIds);
-              await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
-            }
-          } catch (sErr) {
-            console.warn("Could not prune classified category from session:", sErr.message);
+  const alertMemoryWritePromise = (acId && sheets)
+    ? (async () => {
+      try {
+        await ensureAlertMemoryTab(sheets, acId);
+        const alreadyCoveredHashes = new Set();
+        if (matchingRows.length > 0) {
+          const nowIso = new Date().toISOString();
+          for (const mr of matchingRows) {
+            if (mr.fingerprintHash) alreadyCoveredHashes.add(mr.fingerprintHash);
           }
-        })()
-        : Promise.resolve(),
-      (async () => {
-        try {
-          const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-          if (preRaw) {
-            const pre = JSON.parse(preRaw);
-            applyAlertRemovalToTriageData(pre, targetIds);
-            await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-          }
-        } catch (pErr) {
-          console.warn("Could not prune classified category from precomputed cache:", pErr.message);
+          await updateAlertMemoryRowsBatch(
+            sheets,
+            acId,
+            matchingRows.map(row => ({
+              rowIndex: row.rowIndex,
+              updates: {
+                ...row,
+                status: "accepted",
+                lastRechecked: nowIso,
+              },
+            }))
+          );
+        } else {
+          alreadyCoveredHashes.add(fp);
+          await appendAlertMemoryRow(sheets, acId, {
+            fingerprintHash: fp,
+            alertType: "unmapped_pl_category",
+            clientName,
+            alertSummary: `Unmapped P&L category: "${cleanName}"`,
+            cachedOptionsJSON: "",
+            status: "accepted",
+            category: "proactive",
+            dataSnapshot: JSON.stringify({
+              alertType: "unmapped_pl_category",
+              alertKey,
+              legacyAlertKey,
+              clientName,
+              categoryName: cleanName,
+              cleanName,
+              status: "accepted"
+            })
+          });
         }
-      })(),
-    ]);
-  }
+
+        // Only make a separate handled-hashes call for hashes not already updated above
+        const missingHandledByHash = {};
+        if (fp && !alreadyCoveredHashes.has(fp)) missingHandledByHash[fp] = "accepted";
+        if (legacyFp && legacyFp !== fp && !alreadyCoveredHashes.has(legacyFp)) missingHandledByHash[legacyFp] = "accepted";
+        if (Object.keys(missingHandledByHash).length > 0) {
+          await updateHandledAlertHashesBatch(acId, missingHandledByHash);
+        }
+
+        if (!supabaseActive) {
+          invalidateAlertMemoryCache(acId);
+        }
+      } catch (amErr) {
+        console.warn("Could not update AlertMemory row for classified category:", amErr.message);
+      }
+    })()
+    : Promise.resolve();
+
+  // Prepare caller's Redis session prune
+  const sessionWritePromise = (sessionId && redisClient?.isOpen && callerSessionRaw)
+    ? (async () => {
+      try {
+        const parsed = JSON.parse(callerSessionRaw);
+        const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds);
+        if (removedCount > 0) {
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
+        }
+      } catch (sErr) {
+        console.warn("Could not prune classified category from session:", sErr.message);
+      }
+    })()
+    : Promise.resolve();
+
+  // Stage 2: Execute all critical Master, Outgoings, AlertMemory, and caller session writes in parallel
+  const tWriteStart = Date.now();
+  await Promise.all([
+    keyInfoUpdatePromise || Promise.resolve(),
+    outgoingsPromise,
+    plCompClearPromise,
+    alertMemoryWritePromise,
+    sessionWritePromise,
+  ]);
+  timings.writeMs = Date.now() - tWriteStart;
   invalidatePrecomputedMemoryCache();
 
-  // 6. Run AutoLog append, cross-session Redis sweep, deferred Master formula recompute,
-  //    and Outgoings/Expense Breakdown sync in the background via waitUntil
-  const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+  // Stage 3: Non-critical formatting, PRECOMPUTED_KEY pruning, AutoLog, other Redis sessions, Master formula recompute,
+  //          and full Outgoings/Expense Breakdown sync run cleanly in background via waitUntil
   const nowStr = new Date().toLocaleString("en-GB", { timeZone: "Europe/London" });
 
   const runBackgroundWork = async (yieldBeforeStart = false) => {
     if (yieldBeforeStart) {
       await new Promise((r) => setTimeout(r, 75));
     }
+
+    // 0. Cosmetic row font/currency formatting on Client Outgoings
+    for (const fmtTask of deferredFormattingTasks) {
+      await fmtTask().catch(() => { });
+    }
+
     // A. Log to AutoLog on Master Sheet
     try {
       await withRetry(() => sheets.spreadsheets.values.append({
@@ -3109,8 +3253,21 @@ export async function handleClassifyPLCategory(sheets, {
       console.warn("⚠️ Could not write classification to AutoLog:", logErr.message);
     }
 
-    // B. Sweep other active Redis sessions with non-blocking SCAN + parallel chunks
+    // B. Prune PRECOMPUTED_KEY and sweep other active Redis sessions with non-blocking SCAN + parallel chunks
     if (redisClient?.isOpen) {
+      try {
+        const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+        if (preRaw) {
+          const pre = JSON.parse(preRaw);
+          const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds);
+          if (removedCount > 0) {
+            await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+          }
+        }
+      } catch (pErr) {
+        console.warn("Could not prune classified category from precomputed cache:", pErr.message);
+      }
+
       try {
         const allSessionKeys = await scanRedisKeys("triage_alerts:*");
         const otherKeys = allSessionKeys.filter((sk) => sk && sk !== `triage_alerts:${sessionId}`);
@@ -3139,17 +3296,6 @@ export async function handleClassifyPLCategory(sheets, {
     // C. Master Sheet full sync (shared single gasEnvironment in Supabase mode, or WebApp trigger in Sheet mode)
     if (supaCtx && supaCtx.masterMode === "supabase") {
       const targetClient = supaCtx.clientName || clientName;
-      if (mutatedMasterTabs.size > 0) {
-        try {
-          await recomputeMasterFormulasForTabs(
-            { ...supaCtx, sheetRole: "master" },
-            [...mutatedMasterTabs],
-            sheets
-          );
-        } catch (mErr) {
-          console.warn("⚠️ Background Master formula recompute error:", mErr.message);
-        }
-      }
       try {
         await pushOutgoingsAndExpenseBreakdownNative(sheets, targetClient);
       } catch (err) {
@@ -3195,13 +3341,17 @@ export async function handleClassifyPLCategory(sheets, {
     await runBackgroundWork(false);
   }
 
+  const tInvStart = Date.now();
   await invalidatePmaClientCache(
     supaCtx?.clientSheetId || null,
     supaCtx?.masterSheetId || masterSheetId || null,
     ["outgoings", "expenses", "cash", "views"]
   ).catch(() => { });
+  timings.invMs = Date.now() - tInvStart;
 
-  console.log(`[classify_pl_category timing] client="${clientName}" cat="${cleanName}" totalMs=${Date.now() - tStart} beforeBgMs=${timings.beforeBgMs}`);
+  console.log(
+    `[classify_pl_category timing] client="${clientName}" cat="${cleanName}" preMs=${timings.prefetchMs} writeMs=${timings.writeMs} invMs=${timings.invMs} beforeBgMs=${timings.beforeBgMs} totalMs=${Date.now() - tStart}`
+  );
 
   return {
     success: true,
@@ -3466,61 +3616,64 @@ export async function handleUpdatePartPaidDate(sheets, {
     const parsedSendDate = parseConfirmedDate_(sendDate) || now;
     const newDaysToPay = Math.max(0, Math.round((parsedNewDate.getTime() - parsedSendDate.getTime()) / 86400000));
 
-    // 1. Update Days to Pay in Confirmed sheet
+    // 1. Update Days to Pay in Confirmed sheet (defer downstream Client tab recompute)
     await withRetry(() => sheets.spreadsheets.values.update({
       spreadsheetId: clientSheetId,
       range: `Confirmed!${colLetter}${rowNumber}`,
       valueInputOption: "RAW",
+      _deferBackgroundRecompute: true,
       requestBody: { values: [[newDaysToPay]] }
     }));
 
-    // 2. Append cell note for audit trail
-    try {
-      const metaResp = await sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        fields: "sheets(properties.sheetId,properties.title)"
-      });
-      const confSheet = metaResp.data?.sheets?.find(s => s.properties.title === "Confirmed");
-      if (confSheet) {
-        const gridSheetId = confSheet.properties.sheetId;
-        const colIdx = (slot === 1 ? 44 : (slot === 2 ? 51 : 58)); // 0-indexed column
-        const auditNote = `${timestamp}: Expected payment date adjusted to ${formattedNewDate} (${newDaysToPay} days to pay) by ${userEmail || "user"}.`;
-        await sheets.spreadsheets.batchUpdate({
+    // 2. Append cell note and log activity cleanly in background via waitUntil
+    scheduleWaitUntil_(async () => {
+      try {
+        const metaResp = await sheets.spreadsheets.get({
           spreadsheetId: clientSheetId,
-          requestBody: {
-            requests: [{
-              updateCells: {
-                range: {
-                  sheetId: gridSheetId,
-                  startRowIndex: rowNumber - 1,
-                  endRowIndex: rowNumber,
-                  startColumnIndex: colIdx,
-                  endColumnIndex: colIdx + 1
-                },
-                rows: [{
-                  values: [{
-                    note: auditNote
-                  }]
-                }],
-                fields: "note"
-              }
-            }]
-          }
+          fields: "sheets(properties.sheetId,properties.title)"
         });
+        const confSheet = metaResp.data?.sheets?.find(s => s.properties.title === "Confirmed");
+        if (confSheet) {
+          const gridSheetId = confSheet.properties.sheetId;
+          const colIdx = (slot === 1 ? 44 : (slot === 2 ? 51 : 58)); // 0-indexed column
+          const auditNote = `${timestamp}: Expected payment date adjusted to ${formattedNewDate} (${newDaysToPay} days to pay) by ${userEmail || "user"}.`;
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: clientSheetId,
+            requestBody: {
+              requests: [{
+                updateCells: {
+                  range: {
+                    sheetId: gridSheetId,
+                    startRowIndex: rowNumber - 1,
+                    endRowIndex: rowNumber,
+                    startColumnIndex: colIdx,
+                    endColumnIndex: colIdx + 1
+                  },
+                  rows: [{
+                    values: [{
+                      note: auditNote
+                    }]
+                  }],
+                  fields: "note"
+                }
+              }]
+            }
+          });
+        }
+      } catch (noteErr) {
+        console.warn("Could not append audit note on Confirmed cell:", noteErr.message);
       }
-    } catch (noteErr) {
-      console.warn("Could not append audit note on Confirmed cell:", noteErr.message);
-    }
 
-    await logPmaActivity({
-      userEmail: userEmail || "system",
-      sessionId,
-      alertKey: providedAlertKey,
-      fingerprintHash: providedFp,
-      action: "UPDATE_PART_PAID_INVOICE_DATE",
-      clientName: clientName || "Unknown",
-      details: `Updated part-paid invoice expected payment date to ${formattedNewDate} (${newDaysToPay} days to pay) on Confirmed row ${rowNumber} slot ${slot}.`
-    });
+      await logPmaActivity({
+        userEmail: userEmail || "system",
+        sessionId,
+        alertKey: providedAlertKey,
+        fingerprintHash: providedFp,
+        action: "UPDATE_PART_PAID_INVOICE_DATE",
+        clientName: clientName || "Unknown",
+        details: `Updated part-paid invoice expected payment date to ${formattedNewDate} (${newDaysToPay} days to pay) on Confirmed row ${rowNumber} slot ${slot}.`
+      });
+    }, 25);
 
     await invalidatePmaClientCache(
       clientSheetId || null,
@@ -3597,6 +3750,7 @@ export async function handleUpdatePartPaidDate(sheets, {
 
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: clientSheetId,
+      _deferBackgroundRecompute: true,
       requestBody: {
         requests: [{
           updateCells: {
@@ -3618,15 +3772,17 @@ export async function handleUpdatePartPaidDate(sheets, {
       }
     });
 
-    await logPmaActivity({
-      userEmail: userEmail || "system",
-      sessionId,
-      alertKey: providedAlertKey,
-      fingerprintHash: providedFp,
-      action: "UPDATE_PART_PAID_EXPENSE_DATE",
-      clientName: clientName || "Unknown",
-      details: `Updated part-paid expense expected payment date to ${formattedNewDate} on Outgoings cell ${cellCoord}.`
-    });
+    scheduleWaitUntil_(() =>
+      logPmaActivity({
+        userEmail: userEmail || "system",
+        sessionId,
+        alertKey: providedAlertKey,
+        fingerprintHash: providedFp,
+        action: "UPDATE_PART_PAID_EXPENSE_DATE",
+        clientName: clientName || "Unknown",
+        details: `Updated part-paid expense expected payment date to ${formattedNewDate} on Outgoings cell ${cellCoord}.`
+      })
+      , 25);
 
     await invalidatePmaClientCache(
       clientSheetId || null,

@@ -1764,23 +1764,36 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
     const newRows = [];
     const newMap = {};
     const failedClients = [];
-    for (const c of clients) {
+
+    const supaKiByClient = new Map();
+    const supaNames = clients.filter((c) => c.clientMode === "supabase").map((c) => c.clientName);
+    if (supaNames.length > 0 && sb) {
+      try {
+        const { data: kiGrids } = await sb
+          .from("master_sheet_grids")
+          .select("client_name, values_grid")
+          .eq("sheet_role", "client")
+          .eq("tab_name", "KeyInfo")
+          .in("client_name", supaNames);
+        for (const row of (kiGrids || [])) {
+          if (row.client_name && Array.isArray(row.values_grid)) {
+            supaKiByClient.set(row.client_name, row.values_grid);
+          }
+        }
+      } catch (kiErr) {
+        console.warn("handleEomLoadBankAccounts batch Supabase read warning:", kiErr.message);
+      }
+    }
+
+    const processClient = async (c) => {
       try {
         let accountNames = [];
-        if (c.clientMode === "supabase" && sb) {
-          const { data: kiGrid } = await sb
-            .from("master_sheet_grids")
-            .select("values_grid")
-            .eq("client_name", c.clientName)
-            .eq("sheet_role", "client")
-            .eq("tab_name", "KeyInfo")
-            .maybeSingle();
-          if (Array.isArray(kiGrid?.values_grid)) {
-            accountNames = kiGrid.values_grid
-              .slice(11, 21)
-              .map(r => String(r?.[7] || "").trim())
-              .filter(Boolean);
-          }
+        const cachedGrid = supaKiByClient.get(c.clientName);
+        if (Array.isArray(cachedGrid)) {
+          accountNames = cachedGrid
+            .slice(11, 21)
+            .map(r => String(r?.[7] || "").trim())
+            .filter(Boolean);
         }
         if (accountNames.length === 0 && sheets && c.clientSheetUrl) {
           const clientSheetId = extractSheetIdFromUrl(c.clientSheetUrl) || String(c.clientSheetUrl).trim();
@@ -1792,6 +1805,11 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
       } catch (clientErr) {
         failedClients.push(c.clientName);
       }
+    };
+
+    const CHUNK = 8;
+    for (let i = 0; i < clients.length; i += CHUNK) {
+      await Promise.all(clients.slice(i, i + CHUNK).map(processClient));
     }
 
     const mirrorSheets = async () => {
@@ -2015,10 +2033,8 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
     const backupSheetId = routing?.backupSheetId || "";
     if (!backupSheetId) return res.status(400).json({ success: false, error: "No backup destination is configured for this client." });
 
-    const sourceMeta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId: clientSheetId, fields: "sheets.properties" }));
-    const sourceSheet = sourceMeta.data.sheets.find(s => s.properties.title === "Dashboard");
-    if (!sourceSheet) return res.status(400).json({ success: false, error: "Client dashboard configuration not found." });
-    const sourceSheetId = sourceSheet.properties.sheetId;
+    const clientCtx = await resolveSupabaseSheetContext({ spreadsheetId: clientSheetId, clientName: backupClientName }).catch(() => null);
+    const isVirtualClient = Boolean(clientCtx?.sheetRole === "client" && clientCtx?.clientMode === "supabase");
 
     const now = new Date();
     const yy = String(now.getFullYear()).slice(2);
@@ -2035,17 +2051,31 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
       }));
     }
 
-    const copyResp = await withRetry(() => sheets.spreadsheets.sheets.copyTo({
-      spreadsheetId: clientSheetId, sheetId: sourceSheetId, requestBody: { destinationSpreadsheetId: backupSheetId }
-    }));
-    const newSheetId = copyResp.data.sheetId;
+    if (isVirtualClient) {
+      await withRetry(() => sheets.spreadsheets.batchUpdate({
+        spreadsheetId: backupSheetId,
+        requestBody: {
+          requests: [{ addSheet: { properties: { title: tabName, index: 0 } } }]
+        }
+      }));
+    } else {
+      const sourceMeta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId: clientSheetId, fields: "sheets.properties" }));
+      const sourceSheet = sourceMeta.data.sheets.find(s => s.properties.title === "Dashboard");
+      if (!sourceSheet) return res.status(400).json({ success: false, error: "Client dashboard configuration not found." });
+      const sourceSheetId = sourceSheet.properties.sheetId;
 
-    await withRetry(() => sheets.spreadsheets.batchUpdate({
-      spreadsheetId: backupSheetId,
-      requestBody: {
-        requests: [{ updateSheetProperties: { properties: { sheetId: newSheetId, title: tabName, index: 0 }, fields: "title,index" } }]
-      }
-    }));
+      const copyResp = await withRetry(() => sheets.spreadsheets.sheets.copyTo({
+        spreadsheetId: clientSheetId, sheetId: sourceSheetId, requestBody: { destinationSpreadsheetId: backupSheetId }
+      }));
+      const newSheetId = copyResp.data.sheetId;
+
+      await withRetry(() => sheets.spreadsheets.batchUpdate({
+        spreadsheetId: backupSheetId,
+        requestBody: {
+          requests: [{ updateSheetProperties: { properties: { sheetId: newSheetId, title: tabName, index: 0 }, fields: "title,index" } }]
+        }
+      }));
+    }
 
     const sourceDataResp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: clientSheetId, range: "Dashboard!A1:ZZ", valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "SERIAL_NUMBER"
@@ -2053,7 +2083,9 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
     const sourceData = sourceDataResp.data.values || [];
 
     if (sourceData.length > 0) {
-      await withRetry(() => sheets.spreadsheets.values.clear({ spreadsheetId: backupSheetId, range: `'${tabName}'!A1:ZZ` }));
+      if (!isVirtualClient) {
+        await withRetry(() => sheets.spreadsheets.values.clear({ spreadsheetId: backupSheetId, range: `'${tabName}'!A1:ZZ` }));
+      }
       await withRetry(() => sheets.spreadsheets.values.update({
         spreadsheetId: backupSheetId, range: `'${tabName}'!A1`, valueInputOption: "RAW", requestBody: { values: sourceData }
       }));
@@ -2831,25 +2863,10 @@ export async function handleEomGetPlCompData(req, res, sheets) {
       });
     }
 
-    const [c1Resp, dataResp, f87Resp, t87Resp, outgoingsResp, outgoingsHdrResp] = await Promise.all([
-      withRetry(() => sheets.spreadsheets.values.get({
+    const [plBatchResp, outgoingsResp, outgoingsHdrResp] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.batchGet({
         spreadsheetId: masterSheetId,
-        range: "PLComp!C1",
-        valueRenderOption: "FORMATTED_VALUE"
-      })),
-      withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "PLComp!D1:Y595",
-        valueRenderOption: "FORMATTED_VALUE"
-      })),
-      withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "PLComp!F87:K87",
-        valueRenderOption: "FORMATTED_VALUE"
-      })),
-      withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "PLComp!T87:Y87",
+        ranges: ["PLComp!C1", "PLComp!D1:Y595", "PLComp!F87:K87", "PLComp!T87:Y87"],
         valueRenderOption: "FORMATTED_VALUE"
       })),
       clientSheetId ? withRetry(() => sheets.spreadsheets.values.get({
@@ -2863,6 +2880,11 @@ export async function handleEomGetPlCompData(req, res, sheets) {
         valueRenderOption: "FORMATTED_VALUE"
       })).catch(e => { console.warn("Could not read Outgoings tab headers:", e?.message); return null; }) : Promise.resolve(null),
     ]);
+    const plRanges = plBatchResp?.data?.valueRanges || [];
+    const c1Resp = { data: { values: plRanges[0]?.values || [] } };
+    const dataResp = { data: { values: plRanges[1]?.values || [] } };
+    const f87Resp = { data: { values: plRanges[2]?.values || [] } };
+    const t87Resp = { data: { values: plRanges[3]?.values || [] } };
 
     const formatPlLastUpdated_ = (rawVal) => {
       if (rawVal === null || rawVal === undefined || rawVal === "") return "";
@@ -3478,7 +3500,9 @@ export async function handleEomPushOutgoings(req, res, sheets) {
         console.error(`❌ Master Web App ${action} failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
         return res.status(502).json({
           success: false,
-          error: `Client Master Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify deployment permissions.`
+          error: isAdmin
+            ? `Client Master Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify deployment permissions.`
+            : "Accounting sync service is temporarily unavailable. Please try again."
         });
       }
       if (!gasData.success) {
@@ -7312,8 +7336,13 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
 
     await saveRevenueCheckToStore_(sheets, automationCommanderSheetId, clientName, monthKey, payloadToSave, sessionUser?.email);
 
-    // Auto-complete linked EoM task
-    await autoCompleteRevenueCheckTask_(sheets, automationCommanderSheetId, clientName, monthKey);
+    // Auto-complete linked EoM task (workMonthKey is month following EoM target month)
+    await autoCompleteRevenueCheckTask_(
+      sheets,
+      automationCommanderSheetId,
+      clientName,
+      eomTargetMonthToWorkMonth_(monthKey) || monthKey
+    );
 
     logPmaActivity(sheets, {
       automationCommanderSheetId,

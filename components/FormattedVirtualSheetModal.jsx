@@ -3,10 +3,15 @@ import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
 import { useResizableSheetColumns } from "../hooks/useResizableSheetColumns";
 import { colIndexToLetter } from "../utils/masterComparisonSheetSpec";
-
-const VIRTUAL_TAB_CACHE = new Map();
-const VIRTUAL_INFLIGHT = new Map();
-const CACHE_TTL_MS = 60000;
+import {
+  VIRTUAL_TAB_CACHE,
+  VIRTUAL_CACHE_TTL_MS as CACHE_TTL_MS,
+  makeVirtualCacheKey as makeCacheKey,
+  invalidateVirtualModalCache,
+  fetchVirtualTabPayload,
+  prefetchVirtualTab,
+} from "../utils/sheetModalCache";
+export { invalidateVirtualModalCache, fetchVirtualTabPayload, prefetchVirtualTab };
 
 function normalizeGridPayload(data) {
   return {
@@ -21,92 +26,6 @@ function normalizeGridPayload(data) {
         : {},
     updatedAt: data.updatedAt || null,
   };
-}
-
-function makeCacheKey(sheetRole, clientName, tabName) {
-  return `${sheetRole}::${String(clientName || "").trim().toLowerCase()}::${tabName}`;
-}
-
-export function invalidateVirtualModalCache(sheetRole = "", clientName = "") {
-  const cleanClient = String(clientName || "").trim().toLowerCase();
-  if (!sheetRole && !cleanClient) {
-    VIRTUAL_TAB_CACHE.clear();
-    return;
-  }
-  const prefix = sheetRole
-    ? cleanClient
-      ? `${sheetRole}::${cleanClient}::`
-      : `${sheetRole}::`
-    : "";
-  for (const key of VIRTUAL_TAB_CACHE.keys()) {
-    if (prefix) {
-      if (key.startsWith(prefix)) VIRTUAL_TAB_CACHE.delete(key);
-    } else if (cleanClient && key.includes(`::${cleanClient}::`)) {
-      VIRTUAL_TAB_CACHE.delete(key);
-    }
-  }
-}
-
-export async function fetchVirtualTabPayload({
-  sheetRole,
-  clientName,
-  tabName,
-  maxRows,
-  maxCols,
-}) {
-  const key = makeCacheKey(sheetRole, clientName, tabName);
-  if (VIRTUAL_INFLIGHT.has(key)) {
-    return VIRTUAL_INFLIGHT.get(key);
-  }
-  const promise = (async () => {
-    const res = await fetch("/api/pma/master-engine", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "get_tab_grid",
-        clientName,
-        sheetRole,
-        tabName,
-        maxRows,
-        maxCols,
-        includeFormulas: true,
-        includeRawValues: true,
-        includeNotes: true,
-        trimTrailingEmptyRows: true,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      throw new Error(data.error || `Failed to load ${tabName}.`);
-    }
-    const payload = normalizeGridPayload(data);
-    VIRTUAL_TAB_CACHE.set(key, { payload, cachedAt: Date.now() });
-    return payload;
-  })().finally(() => {
-    VIRTUAL_INFLIGHT.delete(key);
-  });
-  VIRTUAL_INFLIGHT.set(key, promise);
-  return promise;
-}
-
-export async function prefetchVirtualTab({
-  sheetRole,
-  clientName,
-  tabName,
-  maxRows,
-  maxCols,
-}) {
-  if (!clientName || !tabName) return null;
-  const key = makeCacheKey(sheetRole, clientName, tabName);
-  const cached = VIRTUAL_TAB_CACHE.get(key);
-  if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
-    return cached.payload;
-  }
-  try {
-    return await fetchVirtualTabPayload({ sheetRole, clientName, tabName, maxRows, maxCols });
-  } catch (_) {
-    return null;
-  }
 }
 
 export default function FormattedVirtualSheetModal({

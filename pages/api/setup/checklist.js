@@ -12,7 +12,7 @@ import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientChecklistState, updateClientChecklistTask } from "../../../services/setupService.js";
-import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
+import { sanitizeSpreadsheetTerms, assertTrustedOrigin } from "../../../utils/helpers.js";
 
 function sanitizeChecklistStateForUser(state, sessionUser) {
   if (!state || sessionUser?.isAdmin) return state;
@@ -101,6 +101,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
+    if (!assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser)) {
       return res.status(403).json({ success: false, error: "Read-only session cannot modify checklist." });
     }

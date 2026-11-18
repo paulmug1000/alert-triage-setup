@@ -18,6 +18,63 @@ import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
 
 export const PRECOMPUTED_KEY = "triage_precomputed";
 
+/**
+ * Schedules non-critical background work via Vercel waitUntil with a short macrotask yield
+ * so HTTP responses flush cleanly before heavy background work executes.
+ */
+export function scheduleWaitUntil_(workFn, delayMs = 50) {
+  const runner = (async () => {
+    if (delayMs > 0) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+    return await workFn();
+  })().catch((err) => {
+    console.warn("[scheduleWaitUntil_] background task warning:", err?.message || err);
+  });
+
+  try {
+    if (typeof waitUntil === "function") {
+      waitUntil(runner);
+    }
+  } catch { }
+  return runner;
+}
+
+let _precomputedPruneChain = Promise.resolve();
+
+/**
+ * Prunes alerts from the shared multi-KB PRECOMPUTED_KEY blob in the background via waitUntil.
+ * Serialized sequentially so concurrent accepts/ignores never clobber each other's updates.
+ */
+export function prunePrecomputedInBackground_({ targetIds = [], canRemoveClient = null, transformPreFn = null, label = "cache sync" } = {}) {
+  if (!redisClient?.isOpen) return;
+  const chained = _precomputedPruneChain
+    .catch(() => { })
+    .then(async () => {
+      try {
+        const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+        if (!preRaw) return;
+        const pre = JSON.parse(preRaw);
+        let modified = false;
+        if (Array.isArray(targetIds) && targetIds.length > 0) {
+          const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
+          if (removedCount > 0) modified = true;
+        }
+        if (typeof transformPreFn === "function") {
+          const customModified = transformPreFn(pre);
+          if (customModified !== false) modified = true;
+        }
+        if (modified) {
+          await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+        }
+      } catch (e) {
+        console.warn(`Could not sync PRECOMPUTED_KEY in ${label}:`, e.message);
+      }
+    });
+  _precomputedPruneChain = chained;
+  scheduleWaitUntil_(() => chained, 20);
+}
+
 export async function handleBustCache(req, res, sheets) {
   const { fingerprintHash, rowNumber, sheetName, automationCommanderSheetId: acId } = req.body;
   if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
@@ -360,13 +417,20 @@ export async function restoreAlertToCacheAndSession(alert, category, sessionId) 
       }
     }
     if (redisClient?.isOpen) {
-      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-      if (preRaw) {
-        const pre = JSON.parse(preRaw);
-        restoreAlertToTriageData(pre, alert, category);
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-        invalidatePrecomputedMemoryCache();
-      }
+      invalidatePrecomputedMemoryCache();
+      scheduleWaitUntil_(async () => {
+        try {
+          const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+          if (preRaw) {
+            const pre = JSON.parse(preRaw);
+            restoreAlertToTriageData(pre, alert, category);
+            await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+            invalidatePrecomputedMemoryCache();
+          }
+        } catch (err) {
+          console.warn("restoreAlertToCacheAndSession background PRECOMPUTED_KEY warning:", err.message);
+        }
+      });
     }
   } catch (err) {
     console.warn("restoreAlertToCacheAndSession error:", err.message);
@@ -498,23 +562,6 @@ export async function resolveAssignedAlertsInMemoryAndCache(sheets, {
     };
 
     if (redisClient?.isOpen) {
-      try {
-        const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-        if (preRaw) {
-          const pre = JSON.parse(preRaw);
-          collectMatchingAlertIdsFromData(pre);
-          if (targetAlertIds.size > 0) {
-            const { removedCount } = applyAlertRemovalToTriageData(pre, targetAlertIds);
-            if (removedCount > 0) {
-              await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-              invalidatePrecomputedMemoryCache();
-            }
-          }
-        }
-      } catch (preErr) {
-        console.warn("resolveAssignedAlertsInMemoryAndCache precomputed update failed:", preErr.message);
-      }
-
       if (sessionId) {
         try {
           const sessRaw = await redisClient.get(`triage_alerts:${sessionId}`);
@@ -532,6 +579,17 @@ export async function resolveAssignedAlertsInMemoryAndCache(sheets, {
           console.warn("resolveAssignedAlertsInMemoryAndCache session update failed:", sessErr.message);
         }
       }
+
+      invalidatePrecomputedMemoryCache();
+      prunePrecomputedInBackground_({
+        label: "resolveAssignedAlertsInMemoryAndCache",
+        transformPreFn: (pre) => {
+          collectMatchingAlertIdsFromData(pre);
+          if (targetAlertIds.size === 0) return false;
+          const { removedCount } = applyAlertRemovalToTriageData(pre, targetAlertIds);
+          return removedCount > 0;
+        },
+      });
     }
   } catch (err) {
     console.warn("resolveAssignedAlertsInMemoryAndCache error:", err.message);
@@ -553,18 +611,13 @@ export async function handleRemoveAlert(req, res) {
 
     const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, allowedClientCheck);
     await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
+    invalidatePrecomputedMemoryCache();
 
-    try {
-      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-      if (preRaw) {
-        const pre = JSON.parse(preRaw);
-        applyAlertRemovalToTriageData(pre, targetIds, allowedClientCheck);
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-        invalidatePrecomputedMemoryCache();
-      }
-    } catch (e) {
-      console.warn("Could not sync PRECOMPUTED_KEY in handleRemoveAlert:", e.message);
-    }
+    prunePrecomputedInBackground_({
+      targetIds,
+      canRemoveClient: allowedClientCheck,
+      label: "handleRemoveAlert",
+    });
 
     return res.status(200).json({ success: true, removed: removedCount });
   } catch (err) {
@@ -599,35 +652,36 @@ export async function handleUpdateSessionFlags(req, res) {
       }
       await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
     }
-    const precomputed = await redisClient.get(PRECOMPUTED_KEY);
-    if (precomputed) {
-      const parsed = JSON.parse(precomputed);
-      parsed.alerts = (parsed.alerts || []).filter(a => { if (a.clientName !== clientName) return true; return !keysToZero.has(a.flagType || a.type); });
-      if (parsed.noActionAlerts) {
-        parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
-          if (na.clientName && na.clientName !== clientName) return true;
-          const precompTargetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
-          if (!na.clientName && na.clientId !== precompTargetClientId) return true;
-          return !keysToZero.has(na.flagType);
-        });
-      }
-      if (parsed.clientsWithFlags) {
-        parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
-          if (c.clientName !== clientName) return c;
-          const updatedFlags = { ...c.flags };
-          keysToZero.forEach(k => { updatedFlags[k] = false; });
-          return { ...c, flags: updatedFlags };
-        });
-      }
-      parsed.totalAlerts = (parsed.alerts || []).length;
-      parsed.noActionCount = (parsed.noActionAlerts || []).length;
-      if (parsed.noActionAnalysisResults) {
-        const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
-        richFlags.forEach(flagType => { if (keysToZero.has(flagType)) delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`]; });
-      }
-      await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 86400 * 7 });
-      invalidatePrecomputedMemoryCache();
-    }
+    invalidatePrecomputedMemoryCache();
+    prunePrecomputedInBackground_({
+      label: "handleUpdateSessionFlags",
+      transformPreFn: (parsed) => {
+        parsed.alerts = (parsed.alerts || []).filter(a => { if (a.clientName !== clientName) return true; return !keysToZero.has(a.flagType || a.type); });
+        if (parsed.noActionAlerts) {
+          parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
+            if (na.clientName && na.clientName !== clientName) return true;
+            const precompTargetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
+            if (!na.clientName && na.clientId !== precompTargetClientId) return true;
+            return !keysToZero.has(na.flagType);
+          });
+        }
+        if (parsed.clientsWithFlags) {
+          parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
+            if (c.clientName !== clientName) return c;
+            const updatedFlags = { ...c.flags };
+            keysToZero.forEach(k => { updatedFlags[k] = false; });
+            return { ...c, flags: updatedFlags };
+          });
+        }
+        parsed.totalAlerts = (parsed.alerts || []).length;
+        parsed.noActionCount = (parsed.noActionAlerts || []).length;
+        if (parsed.noActionAnalysisResults) {
+          const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
+          richFlags.forEach(flagType => { if (keysToZero.has(flagType)) delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`]; });
+        }
+        return true;
+      },
+    });
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -650,19 +704,13 @@ export async function handleResolveNoActionFlag(req, res, sheets) {
     if (!parsed.resolvedNoActionFlags.includes(key)) parsed.resolvedNoActionFlags.push(key);
     applyAlertRemovalToTriageData(parsed, targetIds, canRemoveFlagClient);
     await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
+    invalidatePrecomputedMemoryCache();
 
-    try {
-      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-      if (preRaw) {
-        const pre = JSON.parse(preRaw);
-        const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds, canRemoveFlagClient);
-        if (removedCount > 0) {
-          await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-        }
-      }
-    } catch (preErr) {
-      console.warn("⚠️ Failed updating PRECOMPUTED_KEY in handleResolveNoActionFlag:", preErr.message);
-    }
+    prunePrecomputedInBackground_({
+      targetIds,
+      canRemoveClient: canRemoveFlagClient,
+      label: "handleResolveNoActionFlag",
+    });
 
     if (acIdResolve) {
       try {
@@ -778,14 +826,12 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
     }
 
     if (clearedFlagKeys.length > 0 || flagTargetIds.length > 0) {
-      try {
-        const keysToZero = new Set(clearedFlagKeys);
-        const precomputed = await redisClient.get(PRECOMPUTED_KEY);
-        if (precomputed) {
-          const parsed = JSON.parse(precomputed);
-          if (flagTargetIds.length > 0) {
-            applyAlertRemovalToTriageData(parsed, flagTargetIds, canRemoveFlagClient);
-          }
+      const keysToZero = new Set(clearedFlagKeys);
+      prunePrecomputedInBackground_({
+        targetIds: flagTargetIds,
+        canRemoveClient: canRemoveFlagClient,
+        label: "handleBulkResolveNoActionFlags",
+        transformPreFn: (parsed) => {
           if (keysToZero.size > 0) {
             parsed.alerts = (parsed.alerts || []).filter(a => { if (a.clientName !== clientName) return true; return !keysToZero.has(a.flagType || a.type); });
             if (parsed.noActionAlerts) {
@@ -811,11 +857,9 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
           }
           parsed.totalAlerts = (parsed.alerts || []).length;
           parsed.noActionCount = (parsed.noActionAlerts || []).length;
-          await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 86400 * 7 });
-        }
-      } catch (preErr) {
-        console.warn("⚠️ Failed updating PRECOMPUTED_KEY in handleBulkResolveNoActionFlags:", preErr.message);
-      }
+          return true;
+        },
+      });
     }
 
     if (acIdResolve) {
@@ -950,13 +994,6 @@ export async function handleRecordDecision(req, res, sheets) {
         const txnId = alert.summary?.transactionId || alert.summary?.appId || "";
         const targetIds = [alertId, fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`, txnId].filter(Boolean);
 
-        const preRaw = await redisClient?.get(PRECOMPUTED_KEY);
-        if (preRaw) {
-          const pre = JSON.parse(preRaw);
-          applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
-          await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-          invalidatePrecomputedMemoryCache();
-        }
         if (req.body.sessionId) {
           const sRaw = await redisClient?.get(`triage_alerts:${req.body.sessionId}`);
           if (sRaw) {
@@ -965,6 +1002,12 @@ export async function handleRecordDecision(req, res, sheets) {
             await redisClient?.set(`triage_alerts:${req.body.sessionId}`, JSON.stringify(sData), { EX: 86400 * 7 });
           }
         }
+        invalidatePrecomputedMemoryCache();
+        prunePrecomputedInBackground_({
+          targetIds,
+          canRemoveClient,
+          label: "handleRecordDecision",
+        });
       } catch (rErr) {
         console.warn(`  ⚠️ Could not sync Redis in handleRecordDecision: ${rErr.message}`);
       }
@@ -1060,16 +1103,11 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
           }
         } catch (e) { }
       }
-      try {
-        const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-        if (preRaw) {
-          const pre = JSON.parse(preRaw);
-          const { removedCount } = applyAlertRemovalToTriageData(pre, targetIdsToRemove, canRemoveClient);
-          if (removedCount > 0) {
-            await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-          }
-        }
-      } catch (e) { }
+      prunePrecomputedInBackground_({
+        targetIds: targetIdsToRemove,
+        canRemoveClient,
+        label: "handleBulkIgnoreAlerts",
+      });
     }
     invalidatePrecomputedMemoryCache();
 
@@ -1195,42 +1233,34 @@ function findMatchingProactiveMemoryCandidates_(memoryRows, {
 
 async function removeResolvedProactiveFromCaches_({ sessionId, targetIds, canRemoveClient }) {
   const activeSessionRedisKey = sessionId ? `triage_alerts:${sessionId}` : null;
-  if (redisClient?.isOpen) {
-    await Promise.all([
-      activeSessionRedisKey
-        ? (async () => {
-          try {
-            const sessionData = await redisClient.get(activeSessionRedisKey);
-            if (sessionData) {
-              const parsed = JSON.parse(sessionData);
-              const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, canRemoveClient);
-              if (removedCount > 0) {
-                await redisClient.set(activeSessionRedisKey, JSON.stringify(parsed), { EX: 86400 * 7 });
-              }
-            }
-          } catch (e) { }
-        })()
-        : Promise.resolve(),
-      (async () => {
-        try {
-          const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-          if (preRaw) {
-            const pre = JSON.parse(preRaw);
-            const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
-            if (removedCount > 0) {
-              await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-            }
-          }
-        } catch (e) { }
-      })(),
-    ]);
+  if (redisClient?.isOpen && activeSessionRedisKey) {
+    try {
+      const sessionData = await redisClient.get(activeSessionRedisKey);
+      if (sessionData) {
+        const parsed = JSON.parse(sessionData);
+        const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, canRemoveClient);
+        if (removedCount > 0) {
+          await redisClient.set(activeSessionRedisKey, JSON.stringify(parsed), { EX: 86400 * 7 });
+        }
+      }
+    } catch (e) { }
   }
   invalidatePrecomputedMemoryCache();
 
-  // Sweep other active sessions in the background using non-blocking SCAN + parallel chunks
+  // Prune PRECOMPUTED_KEY (277 KB) and sweep other active sessions in the background via waitUntil
   if (redisClient?.isOpen) {
-    const sweepOtherSessions = async () => {
-      await new Promise((r) => setTimeout(r, 50));
+    scheduleWaitUntil_(async () => {
+      try {
+        const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+        if (preRaw) {
+          const pre = JSON.parse(preRaw);
+          const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
+          if (removedCount > 0) {
+            await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+          }
+        }
+      } catch (_) { }
+
       try {
         const allSessionKeys = await scanRedisKeys("triage_alerts:*");
         const otherKeys = allSessionKeys.filter((sKey) => sKey && sKey !== activeSessionRedisKey);
@@ -1251,16 +1281,7 @@ async function removeResolvedProactiveFromCaches_({ sessionId, targetIds, canRem
           );
         }
       } catch (_) { }
-    };
-    try {
-      if (typeof waitUntil === "function") {
-        waitUntil(sweepOtherSessions());
-      } else {
-        sweepOtherSessions();
-      }
-    } catch {
-      sweepOtherSessions();
-    }
+    });
   }
 }
 

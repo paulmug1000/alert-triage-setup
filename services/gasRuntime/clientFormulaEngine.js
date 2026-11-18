@@ -1,4 +1,4 @@
-//Version 1.08 - Parse MMM-YY as 1st of 20YY, support ISTEXT/FIND/SEARCH, fix N() for 2D arrays, REGEXEXTRACT multi-group & recharged active row detection
+//Version 1.09 - R1C1 relative AST template cache, targeted range-cache invalidation, Europe/London TODAY(), and Year0Data/ContrPayments/OutgNotes DAG parity
 // Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -397,10 +397,295 @@ function colIndexToLetters(c0) {
 }
 
 // ============================================================================
-// FORMULA TOKENIZER & AST PARSER (CACHED BY FORMULA STRING)
+// FORMULA TOKENIZER & AST PARSER (EXACT + R1C1-RELATIVE TEMPLATE CACHE)
 // ============================================================================
 
+const MAX_AST_CACHE = 80000;
+const MAX_R1C1_CACHE = 20000;
 const astCache = new Map();
+const r1c1AstCache = new Map();
+
+function setBoundedCache_(map, key, val, limit = MAX_AST_CACHE) {
+  if (map.size >= limit) {
+    let toEvict = Math.floor(limit * 0.2);
+    for (const k of map.keys()) {
+      map.delete(k);
+      if (--toEvict <= 0) break;
+    }
+  }
+  map.set(key, val);
+}
+
+function buildR1C1TemplateKey_(raw, originR, originC) {
+  const len = raw.length;
+  const parts = [];
+  let segStart = 0;
+  let i = 0;
+  let prevNonSpaceCode = 0;
+
+  while (i < len) {
+    const cc = raw.charCodeAt(i);
+
+    // String literal "..."
+    if (cc === 34) {
+      i++;
+      while (i < len) {
+        if (raw.charCodeAt(i) === 34) {
+          if (i + 1 < len && raw.charCodeAt(i + 1) === 34) {
+            i += 2;
+          } else {
+            i++;
+            break;
+          }
+        } else {
+          i++;
+        }
+      }
+      prevNonSpaceCode = 34;
+      continue;
+    }
+
+    // Quoted sheet prefix '...'!
+    if (cc === 39) {
+      i++;
+      while (i < len) {
+        if (raw.charCodeAt(i) === 39) {
+          if (i + 1 < len && raw.charCodeAt(i + 1) === 39) {
+            i += 2;
+          } else {
+            i++;
+            break;
+          }
+        } else {
+          i++;
+        }
+      }
+      if (i < len && raw.charCodeAt(i) === 33) {
+        i++;
+        prevNonSpaceCode = 33;
+      } else {
+        prevNonSpaceCode = 39;
+      }
+      continue;
+    }
+
+    // Error literal (#REF!, #N/A, etc.)
+    if (cc === 35) {
+      let matchedLen = 0;
+      for (let e = 0; e < ERROR_PREFIXES.length; e++) {
+        const p = ERROR_PREFIXES[e];
+        if (raw.slice(i, i + p.length).toUpperCase() === p) {
+          matchedLen = p.length;
+          break;
+        }
+      }
+      if (matchedLen > 0) {
+        i += matchedLen;
+        prevNonSpaceCode = raw.charCodeAt(i - 1);
+        continue;
+      }
+    }
+
+    // Number literal (including scientific notation 1e5)
+    if ((cc >= 48 && cc <= 57) || (cc === 46 && i + 1 < len && raw.charCodeAt(i + 1) >= 48 && raw.charCodeAt(i + 1) <= 57)) {
+      let j = i;
+      while (j < len) {
+        const c = raw.charCodeAt(j);
+        if (c >= 48 && c <= 57) j++;
+        else break;
+      }
+      if (j < len && raw.charCodeAt(j) === 46) {
+        j++;
+        while (j < len) {
+          const c = raw.charCodeAt(j);
+          if (c >= 48 && c <= 57) j++;
+          else break;
+        }
+      }
+      if (j < len && (raw.charCodeAt(j) === 101 || raw.charCodeAt(j) === 69)) {
+        let k = j + 1;
+        if (k < len && (raw.charCodeAt(k) === 43 || raw.charCodeAt(k) === 45)) k++;
+        if (k < len && raw.charCodeAt(k) >= 48 && raw.charCodeAt(k) <= 57) {
+          j = k + 1;
+          while (j < len) {
+            const c = raw.charCodeAt(j);
+            if (c >= 48 && c <= 57) j++;
+            else break;
+          }
+        }
+      }
+      i = j;
+      prevNonSpaceCode = raw.charCodeAt(i - 1);
+      continue;
+    }
+
+    // Identifier, sheet prefix, function name, or cell/col reference: starts with A-Z, a-z, _, $
+    if ((cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122) || cc === 95 || cc === 36) {
+      let j = i + 1;
+      while (j < len) {
+        const c = raw.charCodeAt(j);
+        if (
+          (c >= 65 && c <= 90) ||
+          (c >= 97 && c <= 122) ||
+          (c >= 48 && c <= 57) ||
+          c === 95 ||
+          c === 36 ||
+          c === 46
+        ) {
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      let k = j;
+      while (k < len) {
+        const wc = raw.charCodeAt(k);
+        if (wc === 32 || wc === 9 || wc === 13 || wc === 10) k++;
+        else break;
+      }
+      const nextCode = k < len ? raw.charCodeAt(k) : 0;
+
+      // Only inspect for cell/col ref if NOT followed by '!' (33) or '(' (40)
+      if (nextCode !== 33 && nextCode !== 40) {
+        let p = i;
+        let absCol = false;
+        if (raw.charCodeAt(p) === 36) {
+          absCol = true;
+          p++;
+        }
+        const colStart = p;
+        while (p < j) {
+          const c = raw.charCodeAt(p);
+          if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) p++;
+          else break;
+        }
+        const colLen = p - colStart;
+        if (colLen >= 1 && colLen <= 3) {
+          if (p < j) {
+            // Possibly cell ref: optional '$' then digits to end j
+            let absRow = false;
+            if (raw.charCodeAt(p) === 36) {
+              absRow = true;
+              p++;
+            }
+            const rowStart = p;
+            let digitsOk = rowStart < j;
+            let rowNum = 0;
+            while (p < j) {
+              const d = raw.charCodeAt(p) - 48;
+              if (d < 0 || d > 9) {
+                digitsOk = false;
+                break;
+              }
+              rowNum = rowNum * 10 + d;
+              p++;
+            }
+            if (digitsOk && rowNum >= 1 && (!absCol || !absRow)) {
+              let colIdx = 0;
+              for (let x = colStart; x < colStart + colLen; x++) {
+                let lc = raw.charCodeAt(x);
+                if (lc >= 97) lc -= 32;
+                colIdx = colIdx * 26 + (lc - 64);
+              }
+              colIdx -= 1;
+              if (segStart < i) parts.push(raw.slice(segStart, i));
+              parts.push(absCol ? "$" + raw.slice(colStart, colStart + colLen).toUpperCase() : "C[" + (colIdx - originC) + "]");
+              parts.push(absRow ? "$" + raw.slice(rowStart, j) : "R[" + (rowNum - 1 - originR) + "]");
+              segStart = j;
+            }
+          } else if (!absCol && (prevNonSpaceCode === 58 || nextCode === 58)) {
+            // Whole column ref adjacent to ':' (like A:A), excluding TRUE/FALSE
+            const colWord = raw.slice(colStart, colStart + colLen).toUpperCase();
+            if (colWord !== "TRUE" && colWord !== "FALSE") {
+              let colIdx = 0;
+              for (let x = 0; x < colWord.length; x++) {
+                colIdx = colIdx * 26 + (colWord.charCodeAt(x) - 64);
+              }
+              colIdx -= 1;
+              if (segStart < i) parts.push(raw.slice(segStart, i));
+              parts.push("C[" + (colIdx - originC) + "]");
+              segStart = j;
+            }
+          }
+        }
+      }
+
+      i = j;
+      prevNonSpaceCode = raw.charCodeAt(i - 1);
+      continue;
+    }
+
+    if (cc !== 32 && cc !== 9 && cc !== 13 && cc !== 10) {
+      prevNonSpaceCode = cc;
+    }
+    i++;
+  }
+
+  if (parts.length === 0) return raw;
+  if (segStart < len) parts.push(raw.slice(segStart));
+  return parts.join("");
+}
+
+function relativizeAST_(node, originR, originC) {
+  if (!node || typeof node !== "object") return node;
+  switch (node.type) {
+    case "Ref":
+    case "VarOrRef": {
+      if (node.coord) {
+        const c = node.coord;
+        if (c.kind === "cell") {
+          return {
+            ...node,
+            coord: {
+              kind: "cell",
+              col: c.col,
+              row: c.row,
+              colRel: !c.absCol,
+              dCol: c.col - originC,
+              rowRel: !c.absRow,
+              dRow: c.row - originR,
+            },
+          };
+        }
+        if (c.kind === "col") {
+          return {
+            ...node,
+            coord: {
+              kind: "col",
+              col: c.col,
+              colRel: !c.absCol,
+              dCol: c.col - originC,
+            },
+          };
+        }
+      }
+      return node;
+    }
+    case "UnaryOp":
+    case "PostfixPercent":
+      return { ...node, arg: relativizeAST_(node.arg, originR, originC) };
+    case "BinaryOp":
+    case "RangeOp":
+      return {
+        ...node,
+        left: relativizeAST_(node.left, originR, originC),
+        right: relativizeAST_(node.right, originR, originC),
+      };
+    case "ArrayLiteral":
+      return {
+        ...node,
+        rows: node.rows.map((r) => r.map((cell) => relativizeAST_(cell, originR, originC))),
+      };
+    case "Call":
+      return {
+        ...node,
+        args: node.args.map((a) => relativizeAST_(a, originR, originC)),
+      };
+    default:
+      return node;
+  }
+}
 
 function tokenizeFormula(src) {
   const tokens = [];
@@ -544,36 +829,57 @@ function tokenizeFormula(src) {
 function parseCoordToken(ident) {
   const s = String(ident);
   // Standard cell ref: $A$1, A1, $BC12
-  const mCell = s.match(/^\$?([A-Za-z]{1,3})\$?(\d+)$/);
+  const mCell = s.match(/^(\$?)([A-Za-z]{1,3})(\$?)(\d+)$/);
   if (mCell) {
     return {
       kind: "cell",
-      col: colLettersToIndex(mCell[1]),
-      row: parseInt(mCell[2], 10) - 1,
+      col: colLettersToIndex(mCell[2]),
+      row: parseInt(mCell[4], 10) - 1,
+      absCol: mCell[1] === "$",
+      absRow: mCell[3] === "$",
     };
   }
   // Whole-column ref: $A, A
-  const mCol = s.match(/^\$?([A-Za-z]{1,3})$/);
+  const mCol = s.match(/^(\$?)([A-Za-z]{1,3})$/);
   if (mCol) {
     return {
       kind: "col",
-      col: colLettersToIndex(mCol[1]),
+      col: colLettersToIndex(mCol[2]),
+      absCol: mCol[1] === "$",
     };
   }
   // Whole-row ref: $1, 1
-  const mRow = s.match(/^\$?(\d+)$/);
+  const mRow = s.match(/^(\$?)(\d+)$/);
   if (mRow) {
     return {
       kind: "row",
-      row: parseInt(mRow[1], 10) - 1,
+      row: parseInt(mRow[2], 10) - 1,
+      absRow: mRow[1] === "$",
     };
   }
   return null;
 }
 
-function parseFormulaToAST(formulaStr) {
+function parseFormulaToAST(formulaStr, originR = -1, originC = -1) {
   const raw = String(formulaStr).startsWith("=") ? String(formulaStr).slice(1).trim() : String(formulaStr).trim();
-  if (astCache.has(raw)) return astCache.get(raw);
+  const exactHit = astCache.get(raw);
+  if (exactHit && (!exactHit.isRel || (exactHit.r === originR && exactHit.c === originC))) {
+    return exactHit.ast;
+  }
+
+  const useR1C1 =
+    originR >= 0 &&
+    originC >= 0 &&
+    !/\b(?:LET|LAMBDA)\s*\(/i.test(raw);
+  let r1c1Key = null;
+  if (useR1C1) {
+    r1c1Key = buildR1C1TemplateKey_(raw, originR, originC);
+    const r1c1Hit = r1c1AstCache.get(r1c1Key);
+    if (r1c1Hit) {
+      setBoundedCache_(astCache, raw, { ast: r1c1Hit, r: originR, c: originC, isRel: true }, MAX_AST_CACHE);
+      return r1c1Hit;
+    }
+  }
 
   const tokens = tokenizeFormula(raw);
   let pos = 0;
@@ -783,8 +1089,25 @@ function parseFormulaToAST(formulaStr) {
   }
 
   const ast = parseExpr();
-  astCache.set(raw, ast);
+  if (r1c1Key) {
+    const relAst = relativizeAST_(ast, originR, originC);
+    setBoundedCache_(r1c1AstCache, r1c1Key, relAst, MAX_R1C1_CACHE);
+    setBoundedCache_(astCache, raw, { ast: relAst, r: originR, c: originC, isRel: true }, MAX_AST_CACHE);
+    return relAst;
+  }
+  setBoundedCache_(astCache, raw, { ast, isRel: false }, MAX_AST_CACHE);
   return ast;
+}
+
+function getLondonTodaySerial_() {
+  const iso = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const parts = iso.split("-");
+  return utcDateToSerial(parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2], 10));
 }
 
 // ============================================================================
@@ -799,7 +1122,7 @@ export function recalculateClientGrids(grids, options = {}) {
   const todaySerial =
     typeof options.todaySerial === "number"
       ? options.todaySerial
-      : Math.floor(Date.now() / MS_PER_DAY) + EPOCH_OFFSET_DAYS;
+      : getLondonTodaySerial_();
 
   // 1. Sync Outgoings notes into OutgNotes.values (rows 12..111, cols G..AV) if Outgoings.notes is present
   if (grids.Outgoings?.notes && grids.OutgNotes?.values) {
@@ -864,17 +1187,14 @@ export function recalculateClientGrids(grids, options = {}) {
     const changedSet = new Set(options.changedTabs);
     if (!changedSet.has("KeyInfo")) {
       unaffectedTabs = new Set(["KeyInfo"]);
-      if (!changedSet.has("Year0Data")) {
-        unaffectedTabs.add("Year0Data");
-      }
       if (!changedSet.has("Salaries")) {
         unaffectedTabs.add("Salaries");
-        if (!changedSet.has("Budget")) {
-          unaffectedTabs.add("Budget");
-        }
       }
-      if (!changedSet.has("Outgoings") && !changedSet.has("OutgNotes")) {
-        unaffectedTabs.add("OutgNotes");
+      if (!changedSet.has("Budget")) {
+        unaffectedTabs.add("Budget");
+      }
+      if (!changedSet.has("DataForReport") && !changedSet.has("Report")) {
+        unaffectedTabs.add("DataForReport");
       }
       if (!changedSet.has("Confirmed") && !changedSet.has("ConfCalcs") && !changedSet.has("RevenueConf")) {
         unaffectedTabs.add("Confirmed");
@@ -882,9 +1202,6 @@ export function recalculateClientGrids(grids, options = {}) {
         unaffectedTabs.add("RevenueConf");
         if (!changedSet.has("CashIncomingConf")) unaffectedTabs.add("CashIncomingConf");
         if (!changedSet.has("InvoicesSent")) unaffectedTabs.add("InvoicesSent");
-        if (!changedSet.has("ContrPayments") && !changedSet.has("Outgoings") && !changedSet.has("OutgNotes")) {
-          unaffectedTabs.add("ContrPayments");
-        }
       }
       if (!changedSet.has("Pipeline") && !changedSet.has("PipeCalcs") && !changedSet.has("RevenuePipe")) {
         unaffectedTabs.add("Pipeline");
@@ -909,17 +1226,20 @@ export function recalculateClientGrids(grids, options = {}) {
         }
         if (
           unaffectedTabs.has("Salaries") &&
-          unaffectedTabs.has("OutgNotes") &&
           unaffectedTabs.has("NBtoFind") &&
           !changedSet.has("Outgoings") &&
+          !changedSet.has("OutgNotes") &&
           !changedSet.has("Monthly") &&
           !changedSet.has("Performance") &&
           !changedSet.has("Dashboard")
         ) {
           unaffectedTabs.add("Outgoings");
+          unaffectedTabs.add("OutgNotes");
           unaffectedTabs.add("Monthly");
           unaffectedTabs.add("Performance");
           unaffectedTabs.add("Dashboard");
+          if (!changedSet.has("ContrPayments")) unaffectedTabs.add("ContrPayments");
+          if (!changedSet.has("Year0Data")) unaffectedTabs.add("Year0Data");
           if (!changedSet.has("VAT")) unaffectedTabs.add("VAT");
           if (!changedSet.has("GPbyPL")) unaffectedTabs.add("GPbyPL");
         }
@@ -1044,6 +1364,7 @@ export function recalculateClientGrids(grids, options = {}) {
   const spillOriginsByTab = {};
   for (const [tab, t] of Object.entries(grids)) {
     if (!t?.formulas) continue;
+    if (unaffectedTabs && unaffectedTabs.has(tab)) continue;
     const origins = [];
     const maxR = activeRowLimitByTab[tab] !== undefined ? activeRowLimitByTab[tab] : t.formulas.length - 1;
     for (let r = 0; r <= maxR && r < t.formulas.length; r++) {
@@ -1124,8 +1445,17 @@ export function recalculateClientGrids(grids, options = {}) {
     if (dims && r < dims.rows && c < dims.cols) {
       cellState[tab][r * dims.cols + c] = 2;
     }
-    if (rangeCacheByTab[tab]?.size > 0) {
-      rangeCacheByTab[tab].clear();
+    const rCache = rangeCacheByTab[tab];
+    if (rCache && rCache.size > 0) {
+      if (rCache.size > 24) {
+        rCache.clear();
+      } else {
+        for (const [ck, entry] of rCache) {
+          if (r >= entry.r0 && r <= entry.r1 && c >= entry.c0 && c <= entry.c1) {
+            rCache.delete(ck);
+          }
+        }
+      }
     }
   }
 
@@ -1150,7 +1480,7 @@ export function recalculateClientGrids(grids, options = {}) {
     const cacheKey = rCache && (endR - startR > 4 || endC - startC > 4) ? `${startR}:${endR}:${startC}:${endC}` : null;
     if (cacheKey) {
       const hit = rCache.get(cacheKey);
-      if (hit) return hit;
+      if (hit) return hit.val;
     }
 
     const out = [];
@@ -1163,7 +1493,7 @@ export function recalculateClientGrids(grids, options = {}) {
     }
     const res = out.length > 0 ? out : [[null]];
     if (cacheKey) {
-      rCache.set(cacheKey, res);
+      rCache.set(cacheKey, { val: res, r0: startR, r1: endR, c0: startC, c1: endC });
     }
     return res;
   }
@@ -1173,7 +1503,7 @@ export function recalculateClientGrids(grids, options = {}) {
     const key = `nz:${r0}:${r1}:${c0}`;
     if (rCache) {
       const hit = rCache.get(key);
-      if (hit) return hit;
+      if (hit) return hit.val;
     }
     const nz = [];
     const rows = r1 - r0 + 1;
@@ -1184,7 +1514,7 @@ export function recalculateClientGrids(grids, options = {}) {
       }
     }
     if (rCache) {
-      rCache.set(key, nz);
+      rCache.set(key, { val: nz, r0, r1, c0, c1: c0 });
     }
     return nz;
   }
@@ -1228,7 +1558,7 @@ export function recalculateClientGrids(grids, options = {}) {
 
     let result;
     try {
-      const ast = parseFormulaToAST(f);
+      const ast = parseFormulaToAST(f, r, c);
       const ctx = {
         tab,
         r,
@@ -1308,10 +1638,13 @@ export function recalculateClientGrids(grids, options = {}) {
     const coord = refNode.coord;
     if (!coord) throw new SheetError("#REF!", "Reference does not exist.");
     if (coord.kind === "cell") {
-      return { tab: targetTab, r0: coord.row, r1: coord.row, c0: coord.col, c1: coord.col, isSingle: true };
+      const r0 = coord.rowRel ? ctx.r + coord.dRow : coord.row;
+      const c0 = coord.colRel ? ctx.c + coord.dCol : coord.col;
+      return { tab: targetTab, r0, r1: r0, c0, c1: c0, isSingle: true };
     }
     if (coord.kind === "col") {
-      return { tab: targetTab, r0: 0, r1: dims.rows - 1, c0: coord.col, c1: coord.col, isSingle: false };
+      const c0 = coord.colRel ? ctx.c + coord.dCol : coord.col;
+      return { tab: targetTab, r0: 0, r1: dims.rows - 1, c0, c1: c0, isSingle: false };
     }
     if (coord.kind === "row") {
       return { tab: targetTab, r0: coord.row, r1: coord.row, c0: 0, c1: dims.cols - 1, isSingle: false };
@@ -1554,7 +1887,7 @@ export function recalculateClientGrids(grids, options = {}) {
               : null;
             if (binKey) {
               const hit = rCache.get(binKey);
-              if (hit) return hit;
+              if (hit) return hit.val;
             }
             const lv = getRange2D(bLeft.tab, bLeft.r0, bLeft.r1, bLeft.c0, bLeft.c1, true);
             const res = broadcastBinaryOp(op, lv, rv, (a, b) => {
@@ -1573,7 +1906,7 @@ export function recalculateClientGrids(grids, options = {}) {
               if (op === "^") return Math.pow(toNumberOrZero(a), toNumberOrZero(b));
               return compareSheetValues(a, b, op);
             });
-            if (binKey) rCache.set(binKey, res);
+            if (binKey) rCache.set(binKey, { val: res, r0: bLeft.r0, r1: bLeft.r1, c0: bLeft.c0, c1: bLeft.c1 });
             return res;
           }
         }
@@ -3227,21 +3560,38 @@ export function recalculateClientGrids(grids, options = {}) {
         evaluateTabFormulasPass("Dashboard", true);
       }
       if (anyOutgoingsChange) {
-        // Re-evaluate downstream cells that depend on Outgoings / Performance / Dashboard:
-        // In Monthly, only columns 132..140 (EC..EK) depend on Outgoings!
+        // Re-evaluate OutgNotes (depends on Outgoings!G13:AV111 incl. Row 111) before Monthly!FT:GD,
+        // plus Monthly cols 132..140 (EC..EK) and 175..185 (FT..GD) and downstream tabs:
+        if (!onlyTabs || onlyTabs.has("OutgNotes")) {
+          evaluateTabFormulasPass("OutgNotes", true);
+        }
         const mTab = grids.Monthly;
         const mDims = tabDims.Monthly;
-        if (mTab && mDims) {
+        if (mTab && mDims && (!onlyTabs || onlyTabs.has("Monthly"))) {
           rangeCacheByTab.Monthly?.clear();
+          const ecEnd = Math.min(140, mDims.cols - 1);
+          const ftStart = 175;
+          const ftEnd = Math.min(185, mDims.cols - 1);
           for (let r = 0; r < mDims.rows; r++) {
-            for (let c = 132; c <= Math.min(140, mDims.cols - 1); c++) {
+            for (let c = 132; c <= ecEnd; c++) {
+              cellState.Monthly[r * mDims.cols + c] = 0;
+            }
+            for (let c = ftStart; c <= ftEnd; c++) {
               cellState.Monthly[r * mDims.cols + c] = 0;
             }
           }
           for (let r = 0; r < mTab.formulas.length; r++) {
             const rowF = mTab.formulas[r];
             if (!rowF) continue;
-            for (let c = 132; c <= Math.min(140, rowF.length - 1); c++) {
+            const rowEcEnd = Math.min(140, rowF.length - 1);
+            for (let c = 132; c <= rowEcEnd; c++) {
+              const f = rowF[c];
+              if (typeof f === "string" && f.startsWith("=")) {
+                evalCell("Monthly", r, c);
+              }
+            }
+            const rowFtEnd = Math.min(185, rowF.length - 1);
+            for (let c = ftStart; c <= rowFtEnd; c++) {
               const f = rowF[c];
               if (typeof f === "string" && f.startsWith("=")) {
                 evalCell("Monthly", r, c);
@@ -3249,8 +3599,10 @@ export function recalculateClientGrids(grids, options = {}) {
             }
           }
         }
-        for (const downstreamTab of ["VAT", "Cash"]) {
-          evaluateTabFormulasPass(downstreamTab, true);
+        for (const downstreamTab of ["VAT", "Cash", "GPbyPL", "Year0Data", "ContrPayments"]) {
+          if (!onlyTabs || onlyTabs.has(downstreamTab)) {
+            evaluateTabFormulasPass(downstreamTab, true);
+          }
         }
       }
     }

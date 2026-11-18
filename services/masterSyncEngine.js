@@ -255,6 +255,7 @@ export async function processPartPaidInvoicesNative(sheets, ctxOrName) {
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    includeReconMonthly: false,
     executionMeta: { functionName: "processPartPaidInvoices", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
@@ -277,6 +278,7 @@ export async function pushMatchedInvoicesToConfirmedNative(sheets, ctxOrName) {
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    includeReconMonthly: false,
     executionMeta: { functionName: "PushInvDetailsToConfirmed", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
@@ -299,6 +301,7 @@ export async function updateStaleUnsentInvoicesNative(sheets, ctxOrName) {
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    includeReconMonthly: false,
     executionMeta: { functionName: "updateStaleUnsentInvoices", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
@@ -321,6 +324,7 @@ export async function updateOverdueInvoicesInConfirmedNative(sheets, ctxOrName) 
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    includeReconMonthly: false,
     executionMeta: { functionName: "updateOverdueInvoicesInConfirmed", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
@@ -343,6 +347,7 @@ export async function pushMatchedDirectCostsNative(sheets, ctxOrName) {
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    includeReconMonthly: false,
     executionMeta: { functionName: "syncDirectCostsToClientSheet", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
@@ -362,6 +367,7 @@ export async function refreshNativeChartOfAccounts(sheets, clientName) {
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    includeReconMonthly: false,
     executionMeta: { functionName: "refreshAccountingToolChartOfAccounts", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
@@ -405,6 +411,7 @@ export async function pullLivePLToSupabaseNative(sheets, clientName) {
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    includeReconMonthly: false,
     executionMeta: { functionName: "PullPLBasedOn", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
@@ -653,6 +660,7 @@ export async function pullLiveCrmDealsToSupabaseNative(sheets, ctxOrName) {
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    includeReconMonthly: false,
     executionMeta: { functionName: "PullCRMBasedOn", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
@@ -767,6 +775,7 @@ export async function runNativeMasterSync({
     sheets,
     onProgress,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    includeReconMonthly: runExp,
     executionMeta: {
       functionName: fnLabel,
       triggerSource: triggerLabel,

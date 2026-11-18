@@ -11,7 +11,7 @@ import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
 import { matchesClientName, isUserAuthorizedForClient } from "./userPermissions";
 import { ADMIN_ONLY_ALERT_TYPES, KNOWN_PROACTIVE_ALERT_TYPES } from "../utils/helpers";
-import { restoreAlertToCacheAndSession, applyAlertRemovalToTriageData, PRECOMPUTED_KEY } from "./alertState";
+import { restoreAlertToCacheAndSession, applyAlertRemovalToTriageData, PRECOMPUTED_KEY, prunePrecomputedInBackground_ } from "./alertState";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine";
 
 function findMatchingTaskMemoryCandidates_(memoryRows, {
@@ -62,7 +62,7 @@ function findMatchingTaskMemoryCandidates_(memoryRows, {
 
 async function pruneTaskAlertsFromRedisCaches_({ sessionId, targetIds, canRemoveClient }) {
   if (!targetIds || targetIds.length === 0) return;
-  if (sessionId) {
+  if (sessionId && redisClient?.isOpen) {
     try {
       const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
       if (sessionData) {
@@ -74,17 +74,12 @@ async function pruneTaskAlertsFromRedisCaches_({ sessionId, targetIds, canRemove
       }
     } catch (e) { }
   }
-  try {
-    const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-    if (preRaw) {
-      const pre = JSON.parse(preRaw);
-      const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
-      if (removedCount > 0) {
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-      }
-    }
-  } catch (e) { }
   invalidatePrecomputedMemoryCache();
+  prunePrecomputedInBackground_({
+    targetIds,
+    canRemoveClient,
+    label: "pruneTaskAlertsFromRedisCaches_",
+  });
 }
 
 let _tasksMemoryCache = null;
@@ -537,7 +532,7 @@ export async function handleCreateTask(req, res, sheets) {
 }
 
 export async function handleGetTasks(req, res, sheets) {
-  const { automationCommanderSheetId: acId, filter, bypassCache, clientName, forceRefresh } = req.body;
+  const { automationCommanderSheetId: acId, filter, bypassCache, clientName, forceRefresh, countsOnly = false } = req.body;
   if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
 
   const sessionUser = getSessionUser(req);
@@ -664,20 +659,22 @@ export async function handleGetTasks(req, res, sheets) {
     const requestedFilter = filter || "active";
     let filtered = [];
 
-    if (requestedFilter === "snoozed") {
-      filtered = accessibleTasks.filter(t => checkIsMine(t) && t.isSnoozed && !t.isResolved);
-    } else if (requestedFilter === "other_active") {
-      filtered = isAdmin ? accessibleTasks.filter(t => !checkIsMine(t) && !t.isSnoozed && !t.isResolved) : [];
-    } else if (requestedFilter === "other_snoozed") {
-      filtered = isAdmin ? accessibleTasks.filter(t => !checkIsMine(t) && t.isSnoozed && !t.isResolved) : [];
-    } else if (requestedFilter === "resolved") {
-      filtered = accessibleTasks.filter(t => t.isResolved && (isAdmin || checkIsMine(t)));
-    } else {
-      // "active" (default)
-      filtered = accessibleTasks.filter(t => checkIsMine(t) && !t.isSnoozed && !t.isResolved);
-    }
+    if (!countsOnly) {
+      if (requestedFilter === "snoozed") {
+        filtered = accessibleTasks.filter(t => checkIsMine(t) && t.isSnoozed && !t.isResolved);
+      } else if (requestedFilter === "other_active") {
+        filtered = isAdmin ? accessibleTasks.filter(t => !checkIsMine(t) && !t.isSnoozed && !t.isResolved) : [];
+      } else if (requestedFilter === "other_snoozed") {
+        filtered = isAdmin ? accessibleTasks.filter(t => !checkIsMine(t) && t.isSnoozed && !t.isResolved) : [];
+      } else if (requestedFilter === "resolved") {
+        filtered = accessibleTasks.filter(t => t.isResolved && (isAdmin || checkIsMine(t)));
+      } else {
+        // "active" (default)
+        filtered = accessibleTasks.filter(t => checkIsMine(t) && !t.isSnoozed && !t.isResolved);
+      }
 
-    filtered.sort((a, b) => new Date(a.taskCreatedAt || 0) - new Date(b.taskCreatedAt || 0));
+      filtered.sort((a, b) => new Date(a.taskCreatedAt || 0) - new Date(b.taskCreatedAt || 0));
+    }
 
     return res.status(200).json({
       success: true,

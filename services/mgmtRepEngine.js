@@ -1672,14 +1672,14 @@ export async function computeNativeMgmtRepForClient({
         sheet_role: "master",
         tab_name: "MgmtRep",
         values_grid: mgmtGrid,
-        formulas_grid: mgmtGrid,
+        formulas_grid: [],
         row_count: mgmtGrid.length,
         col_count: mgmtGrid.reduce((max, r) => Math.max(max, Array.isArray(r) ? r.length : 0), 35),
         updated_at: new Date().toISOString(),
       },
       { onConflict: "client_name,sheet_role,tab_name" }
     );
-    invalidateMasterEngineCache(resolvedClientName);
+    invalidateMasterEngineCache(resolvedClientName, "master", ["MgmtRep"]);
   }
 
   const charts = renderMgmtRepChartsFromGrid(mgmtGrid);

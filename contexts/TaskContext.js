@@ -1,11 +1,14 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useTasks as useBaseTasks } from '../hooks/useTasks';
 
 const TaskContext = createContext();
 
 export function TaskProvider({ children, automationCommanderSheetId, managedClient }) {
   const taskState = useBaseTasks();
-  
+  const inFlightLoadRef = useRef(null);
+  const inFlightCountRef = useRef(null);
+  const lastFetchedAtRef = useRef(0);
+
   const [navTaskCount, setNavTaskCount] = useState(0);
   const [snoozedTaskCount, setSnoozedTaskCount] = useState(0);
   const [otherActiveTaskCount, setOtherActiveTaskCount] = useState(0);
@@ -22,36 +25,57 @@ export function TaskProvider({ children, automationCommanderSheetId, managedClie
     taskState.setTaskActionError("");
   };
 
+  const applyCountsFromResponse_ = useCallback((data) => {
+    if (data?.counts) {
+      setNavTaskCount(data.counts.active || 0);
+      setSnoozedTaskCount(data.counts.snoozed || 0);
+      setOtherActiveTaskCount(data.counts.otherActive || 0);
+      setOtherSnoozedTaskCount(data.counts.otherSnoozed || 0);
+      setResolvedTaskCount(data.counts.resolved || 0);
+    } else if (Array.isArray(data?.tasks)) {
+      setNavTaskCount(data.tasks.length);
+    }
+  }, []);
+
   const refreshTaskCount = useCallback(async (bypassCache = false) => {
     if (!automationCommanderSheetId) return;
-    try {
-      const res = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "get_tasks",
-          automationCommanderSheetId,
-          filter: "active",
-          clientName: managedClient?.clientName || "",
-          bypassCache
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        if (data.counts) {
-          setNavTaskCount(data.counts.active || 0);
-          setSnoozedTaskCount(data.counts.snoozed || 0);
-          setOtherActiveTaskCount(data.counts.otherActive || 0);
-          setOtherSnoozedTaskCount(data.counts.otherSnoozed || 0);
-          setResolvedTaskCount(data.counts.resolved || 0);
-        } else if (Array.isArray(data.tasks)) {
-          setNavTaskCount(data.tasks.length);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to load task counts:", e);
+    if (!bypassCache && inFlightLoadRef.current) {
+      return inFlightLoadRef.current;
     }
-  }, [automationCommanderSheetId, managedClient?.clientName]);
+    if (!bypassCache && Date.now() - lastFetchedAtRef.current < 5000) {
+      return;
+    }
+    if (inFlightCountRef.current && !bypassCache) {
+      return inFlightCountRef.current;
+    }
+    const p = (async () => {
+      try {
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "get_tasks",
+            automationCommanderSheetId,
+            filter: "active",
+            clientName: managedClient?.clientName || "",
+            bypassCache,
+            countsOnly: true
+          }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          applyCountsFromResponse_(data);
+          lastFetchedAtRef.current = Date.now();
+        }
+      } catch (e) {
+        console.error("Failed to load task counts:", e);
+      } finally {
+        if (inFlightCountRef.current === p) inFlightCountRef.current = null;
+      }
+    })();
+    inFlightCountRef.current = p;
+    return p;
+  }, [automationCommanderSheetId, managedClient?.clientName, applyCountsFromResponse_]);
 
   const {
     tasksFilter,
@@ -61,42 +85,47 @@ export function TaskProvider({ children, automationCommanderSheetId, managedClie
   } = taskState;
 
   const loadTasks = useCallback(async (filter = "active", bypassCache = false) => {
-    try {
-      setTasksLoading(true);
-      setTaskActionError("");
-      const res = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "get_tasks",
-          automationCommanderSheetId,
-          filter,
-          clientName: managedClient?.clientName || "",
-          bypassCache
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setTasks(data.tasks || []);
-        if (data.counts) {
-          setNavTaskCount(data.counts.active || 0);
-          setSnoozedTaskCount(data.counts.snoozed || 0);
-          setOtherActiveTaskCount(data.counts.otherActive || 0);
-          setOtherSnoozedTaskCount(data.counts.otherSnoozed || 0);
-          setResolvedTaskCount(data.counts.resolved || 0);
-        }
-      } else {
-        setTaskActionError(data.error || "Failed to load tasks");
-      }
-      
-      // Always update timestamp to prevent infinite retry loops on API failure
-      setTasksLoadedAt(Date.now());
-    } catch (e) {
-      setTaskActionError(e.message);
-    } finally {
-      setTasksLoading(false);
+    const reqKey = `${automationCommanderSheetId || ""}:${filter || "active"}:${managedClient?.clientName || ""}`;
+    if (!bypassCache && inFlightLoadRef.current && inFlightLoadRef.current._reqKey === reqKey) {
+      return inFlightLoadRef.current;
     }
-  }, [automationCommanderSheetId, managedClient?.clientName, setTasks, setTasksLoading, setTaskActionError]);
+    const p = (async () => {
+      try {
+        setTasksLoading(true);
+        setTaskActionError("");
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "get_tasks",
+            automationCommanderSheetId,
+            filter,
+            clientName: managedClient?.clientName || "",
+            bypassCache
+          }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          setTasks(data.tasks || []);
+          applyCountsFromResponse_(data);
+          lastFetchedAtRef.current = Date.now();
+        } else {
+          setTaskActionError(data.error || "Failed to load tasks");
+        }
+
+        // Always update timestamp to prevent infinite retry loops on API failure
+        setTasksLoadedAt(Date.now());
+      } catch (e) {
+        setTaskActionError(e.message);
+      } finally {
+        setTasksLoading(false);
+        if (inFlightLoadRef.current === p) inFlightLoadRef.current = null;
+      }
+    })();
+    p._reqKey = reqKey;
+    inFlightLoadRef.current = p;
+    return p;
+  }, [automationCommanderSheetId, managedClient?.clientName, setTasks, setTasksLoading, setTaskActionError, applyCountsFromResponse_]);
 
   useEffect(() => {
     if (automationCommanderSheetId) {

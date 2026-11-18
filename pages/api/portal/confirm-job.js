@@ -12,7 +12,8 @@ import {
   NO_END_DATE_SHEET_VALUE,
   isNoEndDateSentinel,
   isJobCostingStyle,
-  rewriteRowFormulasToTargetRow
+  rewriteRowFormulasToTargetRow,
+  assertTrustedOrigin
 } from "../../../utils/helpers.js";
 import { buildRetainerChildRowsWritePlan } from "../../../services/retainers.js";
 import { getToleranceValues } from "../../../services/sharedHelpers.js";
@@ -34,6 +35,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
@@ -342,7 +344,7 @@ export default async function handler(req, res) {
           verifiedClientName || clientName || ""
         );
         tolerance = await getToleranceValues(sheets, resolvedMasterId || clientSheetId);
-      } catch (_) {}
+      } catch (_) { }
 
       const retainerPlan = buildRetainerChildRowsWritePlan({
         parentRowNum: targetParentRow,
@@ -535,6 +537,7 @@ export default async function handler(req, res) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: confirmedBatchData,
@@ -570,12 +573,12 @@ export default async function handler(req, res) {
       confirmedRow: targetParentRow,
       childRows: confirmedChildRows,
       backgroundProvisioning: false,
-      message: `Successfully confirmed job to row ${targetParentRow}`,
+      message: "Successfully confirmed job",
     });
   } catch (err) {
     console.error("❌ /api/portal/confirm-job error:", err);
     return res.status(500).json({ success: false, error: err.message });
   } finally {
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
   }
 }

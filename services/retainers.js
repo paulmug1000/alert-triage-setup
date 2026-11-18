@@ -2794,6 +2794,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
       await withRetry(() =>
         sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: sheetIdClean,
+          _deferBackgroundRecompute: true,
           requestBody: {
             valueInputOption: "USER_ENTERED",
             data: allWrites,
@@ -2811,13 +2812,6 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
         "invoices",
         "cash",
       ]);
-    } catch (_) { }
-    try {
-      memoryCache.del(`pulse:portal:*:${sheetIdClean}*`);
-      if (redisClient?.isOpen) {
-        const keys = await scanRedisKeys(`pulse:portal:*:${sheetIdClean}*`);
-        if (keys.length > 0) await redisClient.del(keys);
-      }
     } catch (_) { }
 
     return {

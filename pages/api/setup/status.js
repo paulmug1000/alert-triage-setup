@@ -12,6 +12,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET") {
@@ -22,6 +23,7 @@ export default async function handler(req, res) {
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
+  installSheetIdBoundary(req, res, sessionUser);
 
   const { clientName, masterSheetId, clientSheetId } = req.query;
   if (!clientName) {

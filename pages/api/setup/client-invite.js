@@ -20,6 +20,7 @@ import {
   getCanonicalAcSheetId,
 } from "../../../services/userPermissions.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 function escapeHtml(str) {
   if (!str) return "";
@@ -59,6 +60,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed." });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
   const sessionUser = getSessionUser(req, res);
   if (!sessionUser) {

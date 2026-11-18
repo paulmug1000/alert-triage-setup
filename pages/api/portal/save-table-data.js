@@ -44,7 +44,7 @@ export default async function handler(req, res) {
   if (!canonicalSheetName) {
     return res.status(400).json({
       success: false,
-      error: "Invalid sheetName. Allowed tabs: Outgoings, Salaries, NBtoFind.",
+      error: "Invalid section specified.",
     });
   }
 
@@ -117,25 +117,25 @@ export default async function handler(req, res) {
         }
       } else if (canonicalSheetName === "Salaries") {
         if (minRow < 4 || maxRow > 53) {
-          return res.status(403).json({ success: false, error: "This row is not within an editable Salaries range." });
+          return res.status(403).json({ success: false, error: "This entry is not within an editable Salaries range." });
         }
         for (const cl of colLetters) {
           const cIdx = colLetterToNum(cl) - 1;
           if (cIdx < 0 || cIdx > 8) {
-            return res.status(403).json({ success: false, error: "Formula and total columns cannot be modified." });
+            return res.status(403).json({ success: false, error: "Calculated totals cannot be modified." });
           }
         }
       } else if (canonicalSheetName === "NBtoFind") {
         const ALLOWED_NB_ROWS = new Set([3, 12, 20, 21, 25]);
         for (let r = minRow; r <= maxRow; r++) {
           if (!ALLOWED_NB_ROWS.has(r)) {
-            return res.status(403).json({ success: false, error: "This row is not within an editable NBtoFind range." });
+            return res.status(403).json({ success: false, error: "This entry is not within an editable NB to find range." });
           }
         }
         for (const cl of colLetters) {
           const cIdx = colLetterToNum(cl) - 1;
           if (cIdx < 0 || cIdx > 49) {
-            return res.status(403).json({ success: false, error: "Column is outside the editable NBtoFind range." });
+            return res.status(403).json({ success: false, error: "Field is outside the editable NB to find range." });
           }
         }
       }
@@ -150,6 +150,7 @@ export default async function handler(req, res) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data,
@@ -159,12 +160,7 @@ export default async function handler(req, res) {
 
     // Invalidate caches for this client across both Portal and PMA
     try {
-      await Promise.all([
-        del2TierCache(`pma_expenses_${clientSheetId}*`),
-        del2TierCache(`pma_nbtofind_${clientSheetId}*`),
-        del2TierCache(`salaries_data:*:${clientSheetId}*`),
-        invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash", "jobs"]),
-      ]);
+      await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "expenses", "salaries", "views", "cash", "jobs"]);
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }
@@ -209,6 +205,6 @@ export default async function handler(req, res) {
     console.error("❌ /api/portal/save-table-data error:", err);
     return res.status(500).json({ success: false, error: err.message });
   } finally {
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
   }
 }

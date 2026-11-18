@@ -16,6 +16,7 @@ import {
   verifyUserAuthorizedForSheet
 } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 import {
   getIntegrationTokens,
@@ -36,6 +37,8 @@ export default async function handler(req, res) {
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
+
+  installSheetIdBoundary(req, res, sessionUser);
 
   // 2. Staff authorization check (Admin or ClientManager)
   if (!canAccessPma(sessionUser)) {

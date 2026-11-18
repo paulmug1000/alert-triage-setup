@@ -16,12 +16,12 @@
  */
 
 import { getSheetsClient, withRetry } from "./sheetsClient.js";
-import { redisClient, scanRedisKeys } from "./redisClient.js";
-import { sanitizeFormulaInput } from "./userPermissions.js";
+import { redisClient } from "./redisClient.js";
+import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
 import { clearAllClientsMemoryCache, getClientWebAppUrl } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
-import { del2TierCache, invalidatePmaClientCache } from "./cacheService.js";
+import { del2TierCache, invalidatePmaClientCache, invalidateAllClientsRedisKeys } from "./cacheService.js";
 import { getSupabaseAdmin } from "./supabaseClient.js";
 import {
   refreshNativeChartOfAccounts,
@@ -672,8 +672,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
           String(existingSetup.googleSheetUrl || "") !== String(nextSetup.googleSheetUrl || "");
         if (existingSetup.revenueFocus !== revFocus || existingSetup.directCostsMode !== dcMode || excelChanged || gsheetChanged) {
           await redisClient.set(setupKey, JSON.stringify(nextSetup));
-          const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
-          if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+          await invalidateAllClientsRedisKeys();
           clearAllClientsMemoryCache();
           clearSsrClientsMemoryCache();
         }
@@ -1234,6 +1233,7 @@ export async function saveClientSettings({
   if (clientUpdates.length > 0 && clientSheetId) {
     await withRetry(() => sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: clientSheetId,
+      _deferBackgroundRecompute: true,
       requestBody: {
         valueInputOption: "USER_ENTERED",
         data: clientUpdates
@@ -1244,20 +1244,32 @@ export async function saveClientSettings({
   // Invalidate Redis cache so next GET loads complete merged settings from Sheets
   const savedAt = new Date().toISOString();
   const redisKey = getSettingsRedisKey(clientName);
+  const cleanClientId = clientSheetId ? unwrapSheetId(clientSheetId) : "";
+  const invalidationOps = [];
   if (redisClient?.isOpen) {
-    try {
-      await redisClient.del(redisKey);
-      if (clientSheetId) {
-        await redisClient.del(`pulse:portal:payload:${clientSheetId}`);
-        await redisClient.del(`pulse:portal:performance:${clientSheetId}`);
+    const keysToDelete = [redisKey];
+    if (clientSheetId) {
+      keysToDelete.push(
+        `pulse:portal:payload:${clientSheetId}`,
+        `pulse:portal:performance:${clientSheetId}`
+      );
+      if (cleanClientId && cleanClientId !== clientSheetId) {
+        keysToDelete.push(
+          `pulse:portal:payload:${cleanClientId}`,
+          `pulse:portal:performance:${cleanClientId}`
+        );
       }
-    } catch { }
+    }
+    invalidationOps.push(redisClient.del(keysToDelete).catch(() => { }));
   }
   if (clientSheetId) {
-    try {
-      await del2TierCache(`pma_expenses_${clientSheetId}*`);
-      await invalidatePmaClientCache(clientSheetId, masterSheetId, ["outgoings", "views", "cash", "jobs"]);
-    } catch { }
+    invalidationOps.push(del2TierCache(`pma_expenses_${cleanClientId}`).catch(() => { }));
+    invalidationOps.push(
+      invalidatePmaClientCache(cleanClientId || clientSheetId, masterSheetId, ["outgoings", "views", "cash", "jobs"]).catch(() => { })
+    );
+  }
+  if (invalidationOps.length > 0) {
+    await Promise.all(invalidationOps);
   }
   if (redisClient?.isOpen) {
     try {
@@ -1276,9 +1288,10 @@ export async function saveClientSettings({
           masterSheetId,
           savedAt
         );
-        await redisClient.set(setupKey, JSON.stringify(nextSetup));
-        const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
-        if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+        await Promise.all([
+          redisClient.set(setupKey, JSON.stringify(nextSetup)),
+          invalidateAllClientsRedisKeys(),
+        ]);
         clearAllClientsMemoryCache();
         clearSsrClientsMemoryCache();
       }

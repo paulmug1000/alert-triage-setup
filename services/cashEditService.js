@@ -14,8 +14,9 @@ import { getSheetsClient, withRetry, getSheetGid, colLetterToNum, extractSheetId
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeCashAdjustmentInput } from "./cashflowReconService.js";
 import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
-import { unwrapSheetId } from "./userPermissions.js";
+import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
+import { scheduleWaitUntil_ } from "./alertState.js";
 
 export function colIdxToLetter(colIdx) {
   let temp = colIdx + 1;
@@ -276,13 +277,17 @@ export async function saveCashBatch({
     }
 
     let cleanVal = sanitizeCashAdjustmentInput(String(up.value ?? "").trim());
-    if (!isAdmin && typeof cleanVal === "string" && cleanVal.startsWith("=") && /^=[0-9+\-*/().\s]+$/.test(cleanVal)) {
-      try {
-        const evaluated = Function(`"use strict"; return (${cleanVal.slice(1)});`)();
-        if (typeof evaluated === "number" && isFinite(evaluated)) {
-          cleanVal = Math.round(evaluated * 100) / 100;
-        }
-      } catch (_) { }
+    if (!isAdmin && typeof cleanVal === "string" && cleanVal.startsWith("=")) {
+      let resolved = null;
+      if (/^=[0-9+\-*/().\s]+$/.test(cleanVal)) {
+        try {
+          const evaluated = Function(`"use strict"; return (${cleanVal.slice(1)});`)();
+          if (typeof evaluated === "number" && isFinite(evaluated)) {
+            resolved = Math.round(evaluated * 100) / 100;
+          }
+        } catch (_) { }
+      }
+      cleanVal = resolved !== null ? resolved : sanitizeFormulaInput(cleanVal.replace(/^=+/, ""));
     }
     validValueUpdates.push({
       range: `Cash!${colLetter}${rowNum}`,
@@ -332,11 +337,12 @@ export async function saveCashBatch({
     }
   }
 
-  // Execute value batch update SECOND
+  // Execute value batch update SECOND (defer downstream tab recomputes so response flushes promptly)
   if (validValueUpdates.length > 0) {
     await withRetry(async () => {
       return await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: cleanId,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: validValueUpdates.map((v) => ({
@@ -353,7 +359,7 @@ export async function saveCashBatch({
     await invalidatePmaClientCache(cleanId, null, ["cash"]);
   } catch { }
 
-  // Log activity
+  // Log activity in background
   if (validValueUpdates.length > 0 || validNoteRequests.length > 0) {
     const changeSummary = [];
     if (validValueUpdates.length > 0) {
@@ -363,13 +369,15 @@ export async function saveCashBatch({
       changeSummary.push(`${validNoteRequests.length} note${validNoteRequests.length > 1 ? "s" : ""}`);
     }
 
-    await logPmaActivity({
-      userEmail: userEmail || "system",
-      action: "UPDATE_CASH_CELLS",
-      clientName: clientName || "Client",
-      details: `Updated ${changeSummary.join(" and ")} on Cash tab`,
-      automationCommanderSheetId,
-    });
+    scheduleWaitUntil_(() =>
+      logPmaActivity({
+        userEmail: userEmail || "system",
+        action: "UPDATE_CASH_CELLS",
+        clientName: clientName || "Client",
+        details: `Updated ${changeSummary.join(" and ")} on Cash tab`,
+        automationCommanderSheetId,
+      })
+      , 25);
   }
 
   return {
@@ -434,13 +442,15 @@ export async function saveCashCellNote({
     await invalidatePmaClientCache(cleanId, null, ["cash"]);
   } catch { }
 
-  await logPmaActivity({
-    userEmail: userEmail || "system",
-    action: "UPDATE_CASH_NOTE",
-    clientName: clientName || "Client",
-    details: `${cleanNote ? "Updated" : "Cleared"} note on Cash!${finalColLetter}${rowNum}`,
-    automationCommanderSheetId,
-  });
+  scheduleWaitUntil_(() =>
+    logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "UPDATE_CASH_NOTE",
+      clientName: clientName || "Client",
+      details: `${cleanNote ? "Updated" : "Cleared"} note on Cash!${finalColLetter}${rowNum}`,
+      automationCommanderSheetId,
+    }).catch(() => { })
+    , 25);
 
   return {
     success: true,

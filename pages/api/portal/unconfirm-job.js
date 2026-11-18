@@ -11,7 +11,8 @@ import {
   buildJobRowClearAndRestorePlan,
   rewriteRowFormulasToTargetRow,
   normalizeLikelihoodInput,
-  formatLikelihood
+  formatLikelihood,
+  assertTrustedOrigin
 } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
@@ -30,6 +31,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
@@ -504,6 +506,7 @@ export default async function handler(req, res) {
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
         _skipFormulaRecompute: batchClearRanges.length > 0,
+        _deferBackgroundRecompute: batchClearRanges.length === 0,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: pipelineBatchData,
@@ -515,6 +518,7 @@ export default async function handler(req, res) {
         sheets.spreadsheets.values.batchClear({
           spreadsheetId: clientSheetId,
           _skipFormulaRecompute: batchRestoreData.length > 0,
+          _deferBackgroundRecompute: batchRestoreData.length === 0,
           requestBody: {
             ranges: batchClearRanges,
           },
@@ -524,6 +528,7 @@ export default async function handler(req, res) {
         await withRetry(() =>
           sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: clientSheetId,
+            _deferBackgroundRecompute: true,
             requestBody: {
               valueInputOption: "USER_ENTERED",
               data: batchRestoreData,
@@ -560,12 +565,12 @@ export default async function handler(req, res) {
       success: true,
       pipelineRow,
       childRows: pipelineChildRows,
-      message: `Successfully moved job to Pipeline row ${pipelineRow}`,
+      message: "Successfully moved job to pipeline",
     });
   } catch (err) {
     console.error("❌ /api/portal/unconfirm-job error:", err);
     return res.status(500).json({ success: false, error: err.message });
   } finally {
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
   }
 }

@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * PULSE GAS RUNTIME ENVIRONMENT (services/gasRuntime/gasEnvironment.js)
- * Version: 1.04 — Comparisons-only fast load, snapshot diffing, batch upserts, UI alert capture
+ * Version: 1.06 — Align Master ConfCalcs/PipeCalcs zero-row trim check columns with direct-cost & start-date slots
  * ============================================================================
  * Provides a 100% faithful Google Apps Script execution environment for the
  * verbatim compiled Master GAS scripts (`compiledMasterGas.js`), backed by:
@@ -31,7 +31,22 @@ import {
   MONTHS_SHORT,
   MONTHS_FULL,
 } from "./sheetValueUtils.js";
-import { evaluateAllMasterFormulas, compactGrid2D } from "./masterFormulaEngine.js";
+import {
+  evaluateAllMasterFormulas,
+  evaluateOutgoingsMasterTab,
+  evaluateInvAppList,
+  evaluateInvDashList,
+  evaluateInvComp,
+  evaluateJnlAppList,
+  evaluateDirDashList,
+  evaluateDirComp,
+  evaluateCRMList,
+  evaluateCRMComp,
+  evaluateKeyInfoAndPLComp,
+  evaluateTimeComp,
+  evaluateYear0Data,
+  compactGrid2D,
+} from "./masterFormulaEngine.js";
 import {
   getIntegrationTokens,
   updateRefreshedTokens,
@@ -1413,9 +1428,11 @@ class VirtualSheet {
     this.formulasGrid = wrappedForms.map((fObj, newR0) => {
       const newR1 = newR0 + 1;
       if (fObj.oldR1 === newR1) return fObj.cells;
-      const re = new RegExp(`(?<![A-Z0-9_$])(\\$?[A-Z]{1,3})${fObj.oldR1}(?!\\d)`, "g");
+      const re = new RegExp(`(?<![A-Za-z0-9_$'!])(\\$?[A-Za-z]{1,3})${fObj.oldR1}(?![0-9(])`, "g");
       return fObj.cells.map((cell) =>
-        typeof cell === "string" && cell.startsWith("=") ? cell.replace(re, `$1${newR1}`) : cell
+        typeof cell === "string" && cell.startsWith("=")
+          ? cell.replace(re, (m, colPart) => (/^PL$/i.test(colPart) ? m : `${colPart}${newR1}`))
+          : cell
       );
     });
     this._remapNotesRows((oldR0) => {
@@ -1579,7 +1596,23 @@ class VirtualSpreadsheet {
   _beforeSheetRead(tabName) {
     if (this.sheetRole === "master" && this.env.masterFormulasDirty) {
       if (FORMULA_DEPENDENT_MASTER_TABS.has(tabName)) {
-        this.env.recomputeMasterFormulasSync();
+        const dirty = this.env.dirtyInputMasterTabs;
+        if (!dirty || dirty.size === 0) return;
+        const needsForRead =
+          ((tabName === "InvAppList" || tabName === "InvDashList" || tabName === "InvComp") &&
+            (dirty.has("InvFromApp") || dirty.has("InvComp") || dirty.has("ConfCalcs") || dirty.has("KeyInfo") || dirty.has("InvAppList") || dirty.has("InvDashList"))) ||
+          ((tabName === "JnlAppList" || tabName === "DirDashList" || tabName === "DirComp") &&
+            (dirty.has("JnlsFromApp") || dirty.has("DirComp") || dirty.has("ConfCalcs") || dirty.has("Outgoings") || dirty.has("OutgNotes") || dirty.has("KeyInfo") || dirty.has("JnlAppList") || dirty.has("DirDashList"))) ||
+          ((tabName === "CRMList" || tabName === "CRMComp") &&
+            (dirty.has("DataFromCRM") || dirty.has("CRMComp") || dirty.has("CRMList") || dirty.has("KeyInfo") || dirty.has("ConfCalcs") || dirty.has("PipeCalcs") || dirty.has("DataChgAlert"))) ||
+          ((tabName === "Outgoings" || tabName === "KeyInfo" || tabName === "PLComp") &&
+            (dirty.has("PLFromApp") || dirty.has("Year0PLFromApp") || dirty.has("PLAdds") || dirty.has("PLComp") || dirty.has("KeyInfo") || dirty.has("Outgoings") || dirty.has("DataFromCRM"))) ||
+          (tabName === "Year0Data" && (dirty.has("Year0PLFromApp") || dirty.has("Year0Data") || dirty.has("KeyInfo"))) ||
+          (tabName === "TimeComp" && (dirty.has("DataFromTime") || dirty.has("TimeComp") || dirty.has("KeyInfo"))) ||
+          tabName === "DataChgAlert";
+        if (needsForRead) {
+          this.env.recomputeMasterFormulasSync(true);
+        }
       }
     }
   }
@@ -1590,8 +1623,19 @@ class VirtualSpreadsheet {
         (FORMULA_INPUT_MASTER_TABS.has(tabName) || tabName === "OutgNotes" || tabName === "Year0PLFromApp")) ||
       (this.sheetRole === "recon" && tabName === "PLAdds")
     ) {
-      this.env.masterFormulasDirty = true;
-      this.env.gridsMutatedAfterRecompute = true;
+      // Ignore lock/timestamp status writes in DataChgAlert rows 1..50 (only rows >= 50 hold ignore flags used by CRMComp)
+      let isIgnoredLockWrite = false;
+      if (tabName === "DataChgAlert" && mutation?.range) {
+        const mRow = String(mutation.range).match(/![A-Z]+(\d+)/i);
+        if (mRow && parseInt(mRow[1], 10) < 50) {
+          isIgnoredLockWrite = true;
+        }
+      }
+      if (!isIgnoredLockWrite) {
+        this.env.dirtyInputMasterTabs?.add(this.sheetRole === "recon" ? "PLAdds" : tabName);
+        this.env.masterFormulasDirty = true;
+        this.env.gridsMutatedAfterRecompute = true;
+      }
     }
 
     if (this.isRemoteGoogleSheet && mutation) {
@@ -1638,6 +1682,7 @@ export async function createGasEnvironment({
   autoReconcileFn = null,
   executionMeta = null,
   loadTabsMode = "all",
+  includeReconMonthly = true,
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -1692,6 +1737,7 @@ export async function createGasEnvironment({
     ctx,
     sheets,
     masterFormulasDirty: false,
+    dirtyInputMasterTabs: new Set(),
     gridsMutatedAfterRecompute: false,
     uiAlerts,
     masterSS: null,
@@ -1727,13 +1773,18 @@ export async function createGasEnvironment({
   // Recon tabs (monthly MMYY tabs, KeyInfo, PLAdds, etc.) are all loaded for full GAS runtime runs,
   // or narrowed to `PLAdds` when `loadTabsMode === "comparisons_only"`.
   const isComparisonsOnly = loadTabsMode === "comparisons_only";
+  const skipReconMonthly = isComparisonsOnly || includeReconMonthly === false;
   const masterTabsFilter = isComparisonsOnly ? COMPARISON_ONLY_MASTER_TABS : ACTIVE_GAS_MASTER_TABS;
   const reconQuery = supabase
     .from("master_sheet_grids")
     .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
     .eq("client_name", ctx.clientName)
     .eq("sheet_role", "recon");
-  const filteredReconQuery = isComparisonsOnly ? reconQuery.eq("tab_name", "PLAdds") : reconQuery;
+  const filteredReconQuery = isComparisonsOnly
+    ? reconQuery.eq("tab_name", "PLAdds")
+    : skipReconMonthly
+      ? reconQuery.in("tab_name", ["KeyInfo", "PLAdds"])
+      : reconQuery;
 
   const [masterGridResp, reconGridResp, y0FormulaResp] = await Promise.all([
     supabase
@@ -1743,7 +1794,7 @@ export async function createGasEnvironment({
       .eq("sheet_role", "master")
       .in("tab_name", masterTabsFilter),
     filteredReconQuery,
-    isComparisonsOnly
+    skipReconMonthly
       ? Promise.resolve({ data: null })
       : supabase
         .from("master_sheet_grids")
@@ -1880,7 +1931,7 @@ export async function createGasEnvironment({
       const trimCalcsGrid_ = (rawRows) => {
         const compacted = compactGrid2D(rawRows);
         let lastActive = 119;
-        const checkCols = [0, 1, 17, 32, 35, 41, 48, 55];
+        const checkCols = [0, 1, 17, 32, 35, 37, 41, 48, 55, 76, 83, 90];
         const isAct = (v) => v !== "" && v !== null && v !== undefined && v !== 0 && v !== "0" && v !== false;
         for (let r = compacted.length - 1; r >= 120; r--) {
           const row = compacted[r];
@@ -1935,6 +1986,10 @@ export async function createGasEnvironment({
         }
       }
       if (anyTabChanged) {
+        if (masterSS.getSheetByName("ConfCalcs")?.dirty) envState.dirtyInputMasterTabs.add("ConfCalcs");
+        if (masterSS.getSheetByName("PipeCalcs")?.dirty) envState.dirtyInputMasterTabs.add("PipeCalcs");
+        if (masterSS.getSheetByName("Outgoings")?.dirty) envState.dirtyInputMasterTabs.add("Outgoings");
+        if (masterSS.getSheetByName("OutgNotes")?.dirty) envState.dirtyInputMasterTabs.add("OutgNotes");
         envState.masterFormulasDirty = true;
       }
     } catch (err) {
@@ -1944,8 +1999,8 @@ export async function createGasEnvironment({
 
   await syncClientLinkedMasterTabsFromLiveSheet();
 
-  // Synchronous in-memory Master formula evaluator
-  envState.recomputeMasterFormulasSync = () => {
+  // Synchronous in-memory Master formula evaluator (selective DAG when triggered by dirty tabs)
+  envState.recomputeMasterFormulasSync = (onlyDirty = false) => {
     const gridsObj = {};
     for (const [tName, sObj] of masterSS.sheetsByName.entries()) {
       gridsObj[tName] = sObj.valuesGrid;
@@ -1958,29 +2013,91 @@ export async function createGasEnvironment({
       gridsObj.PLAdds = masterPlAdds.valuesGrid;
       masterPlAdds.dirty = true;
     }
-    evaluateAllMasterFormulas(gridsObj);
-    for (const fTab of [
-      "Outgoings",
-      "InvAppList",
-      "InvDashList",
-      "InvComp",
-      "JnlAppList",
-      "DirDashList",
-      "DirComp",
-      "CRMList",
-      "CRMComp",
-      "KeyInfo",
-      "PLComp",
-      "Year0Data",
-      "TimeComp",
-      "DataChgAlert",
-    ]) {
+    let evaluatedTabs;
+    if (!onlyDirty || envState.dirtyInputMasterTabs.size === 0) {
+      evaluateAllMasterFormulas(gridsObj);
+      evaluatedTabs = [
+        "Outgoings",
+        "InvAppList",
+        "InvDashList",
+        "InvComp",
+        "JnlAppList",
+        "DirDashList",
+        "DirComp",
+        "CRMList",
+        "CRMComp",
+        "KeyInfo",
+        "PLComp",
+        "Year0Data",
+        "TimeComp",
+        "DataChgAlert",
+      ];
+    } else {
+      const d = envState.dirtyInputMasterTabs;
+      const outSet = new Set();
+      const needsCrm =
+        d.has("CRMComp") || d.has("DataFromCRM") || d.has("CRMList") || d.has("KeyInfo") ||
+        d.has("ConfCalcs") || d.has("PipeCalcs") || d.has("DataChgAlert");
+      const needsPl =
+        d.has("PLComp") || d.has("PLFromApp") || d.has("Year0PLFromApp") ||
+        d.has("PLAdds") || d.has("KeyInfo") || d.has("Outgoings");
+      const needsInv =
+        d.has("InvFromApp") || d.has("InvAppList") || d.has("InvDashList") || d.has("InvComp") || d.has("ConfCalcs");
+      const needsDir =
+        d.has("JnlsFromApp") || d.has("JnlAppList") || d.has("DirDashList") || d.has("DirComp") ||
+        d.has("ConfCalcs") || d.has("Outgoings") || d.has("OutgNotes");
+      const needsYear0 = d.has("Year0PLFromApp") || d.has("Year0Data") || d.has("KeyInfo");
+      const needsTime = d.has("DataFromTime") || d.has("TimeComp") || d.has("KeyInfo");
+
+      if (needsCrm) {
+        evaluateCRMList(gridsObj);
+        evaluateCRMComp(gridsObj);
+        outSet.add("CRMList");
+        outSet.add("CRMComp");
+      }
+      if (needsPl || needsCrm || needsYear0) {
+        if (d.has("KeyInfo") || d.has("Outgoings")) {
+          evaluateOutgoingsMasterTab(gridsObj);
+          outSet.add("Outgoings");
+        }
+        evaluateKeyInfoAndPLComp(gridsObj);
+        outSet.add("KeyInfo");
+        if (needsPl) outSet.add("PLComp");
+      }
+      if (needsYear0 && gridsObj.Year0Data?.length > 0) {
+        evaluateYear0Data(gridsObj);
+        outSet.add("Year0Data");
+      }
+      if (needsTime && gridsObj.TimeComp?.length > 0) {
+        evaluateTimeComp(gridsObj);
+        outSet.add("TimeComp");
+      }
+      if (needsInv) {
+        evaluateInvAppList(gridsObj);
+        evaluateInvDashList(gridsObj);
+        evaluateInvComp(gridsObj);
+        outSet.add("InvAppList");
+        outSet.add("InvDashList");
+        outSet.add("InvComp");
+      }
+      if (needsDir) {
+        evaluateJnlAppList(gridsObj);
+        evaluateDirDashList(gridsObj);
+        evaluateDirComp(gridsObj);
+        outSet.add("JnlAppList");
+        outSet.add("DirDashList");
+        outSet.add("DirComp");
+      }
+      evaluatedTabs = [...outSet];
+    }
+    for (const fTab of evaluatedTabs) {
       const sObj = masterSS.getSheetByName(fTab);
       if (sObj && gridsObj[fTab]) {
         sObj.valuesGrid = gridsObj[fTab];
         sObj.dirty = true;
       }
     }
+    envState.dirtyInputMasterTabs.clear();
     envState.masterFormulasDirty = false;
     envState.gridsMutatedAfterRecompute = false;
   };
@@ -2248,7 +2365,7 @@ export async function createGasEnvironment({
     }
 
     if (envState.masterFormulasDirty || envState.gridsMutatedAfterRecompute) {
-      envState.recomputeMasterFormulasSync();
+      envState.recomputeMasterFormulasSync(true);
     }
 
     if (persistSupabase) {
@@ -2311,7 +2428,14 @@ export async function createGasEnvironment({
       }
 
       if (upserts.length > 0) {
-        invalidateMasterEngineCache(ctx.clientName);
+        const masterMutatedTabs = upserts.filter((u) => u.sheet_role === "master").map((u) => u.tab_name);
+        const reconMutatedTabs = upserts.filter((u) => u.sheet_role === "recon").map((u) => u.tab_name);
+        if (masterMutatedTabs.length > 0) {
+          invalidateMasterEngineCache(ctx.clientName, "master", masterMutatedTabs);
+        }
+        if (reconMutatedTabs.length > 0) {
+          invalidateMasterEngineCache(ctx.clientName, "recon", reconMutatedTabs);
+        }
       }
 
       // Mirror KeyInfo!E21 and KeyInfo!I29 to Client Sheet if they changed

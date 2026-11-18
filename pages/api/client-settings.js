@@ -17,6 +17,8 @@ import {
   verifyUserAuthorizedForSheet
 } from "../../services/userPermissions.js";
 import { getSheetsClient } from "../../services/sheetsClient.js";
+import { installSheetIdBoundary } from "../../services/sheetTokenService.js";
+import { assertTrustedOrigin } from "../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../services/masterEngineService.js";
 import {
   getClientSettings,
@@ -36,6 +38,8 @@ export default async function handler(req, res) {
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
+
+  installSheetIdBoundary(req, res, sessionUser);
 
   // 2. Staff authorization check (Admin or ClientManager)
   if (!canAccessPma(sessionUser)) {
@@ -87,6 +91,23 @@ export default async function handler(req, res) {
         bypassCache: bypassCache === "true" || bypassCache === true
       });
 
+      if (!sessionUser.isAdmin && data && typeof data === "object") {
+        const safeSettings = { ...data };
+        delete safeSettings.main;
+        delete safeSettings.automation;
+        if (safeSettings.accounting && typeof safeSettings.accounting === "object") {
+          const safeAccounting = { ...safeSettings.accounting };
+          delete safeAccounting.expenseStatusMapping;
+          safeSettings.accounting = safeAccounting;
+        }
+        if (safeSettings.customisation?.kpiColouring && typeof safeSettings.customisation.kpiColouring === "object") {
+          const safeKpi = { ...safeSettings.customisation.kpiColouring };
+          delete safeKpi.parentTemplateUrl;
+          safeSettings.customisation = { ...safeSettings.customisation, kpiColouring: safeKpi };
+        }
+        return res.status(200).json({ success: true, settings: safeSettings });
+      }
+
       return res.status(200).json({ success: true, settings: data });
     } catch (err) {
       console.error("GET /api/client-settings error:", err);
@@ -96,6 +117,7 @@ export default async function handler(req, res) {
 
   // 4. POST: Save settings or test CRM mappings
   if (req.method === "POST") {
+    if (!assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser)) {
       return res.status(403).json({
         success: false,

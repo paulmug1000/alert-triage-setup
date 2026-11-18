@@ -528,14 +528,27 @@ export async function restoreClientSnapshot({
     const batch = tabsToRestore.slice(i, i + 3);
     await Promise.all(
       batch.map(async (tab) => {
+        const rawNotes = tab.notes_grid && typeof tab.notes_grid === "object" ? { ...tab.notes_grid } : {};
+        const legacyEmbeddedForms = Array.isArray(rawNotes.__formulas_grid) ? rawNotes.__formulas_grid : null;
+        if (tab.sheet_role === "client") {
+          delete rawNotes.__formulas_grid;
+        }
+        const resolvedFormulas =
+          Array.isArray(tab.formulas_grid) && tab.formulas_grid.length > 0
+            ? tab.formulas_grid
+            : tab.sheet_role === "client" && legacyEmbeddedForms
+              ? legacyEmbeddedForms
+              : Array.isArray(tab.formulas_grid)
+                ? tab.formulas_grid
+                : null;
         const record = {
           client_id: clientId,
           client_name: canonicalClient,
           sheet_role: tab.sheet_role,
           tab_name: tab.tab_name,
           values_grid: Array.isArray(tab.values_grid) ? tab.values_grid : [],
-          formulas_grid: Array.isArray(tab.formulas_grid) ? tab.formulas_grid : null,
-          notes_grid: tab.notes_grid && typeof tab.notes_grid === "object" ? tab.notes_grid : {},
+          formulas_grid: resolvedFormulas,
+          notes_grid: rawNotes,
           row_count: Number(tab.row_count) || (Array.isArray(tab.values_grid) ? tab.values_grid.length : 0),
           col_count: Number(tab.col_count) || 0,
           updated_at: nowIso,
@@ -659,8 +672,10 @@ export async function runDailyAutoBackupSweep({
     for (let from = 0; ; from += 1000) {
       const { data: page, error: pErr } = await sb
         .from("master_sheet_grids")
-        .select("id, client_name")
-        .order("id", { ascending: true })
+        .select("client_name")
+        .order("client_name", { ascending: true })
+        .order("sheet_role", { ascending: true })
+        .order("tab_name", { ascending: true })
         .range(from, from + 999);
       if (pErr || !Array.isArray(page) || page.length === 0) break;
       gridClients.push(...page);

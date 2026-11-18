@@ -17,6 +17,7 @@
  * ============================================================================
  */
 
+import { waitUntil } from "@vercel/functions";
 import { getSheetsClient, withRetry, getSheetGid, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
@@ -301,7 +302,7 @@ export async function saveNBToFindSettings({
   directCostsPercentage, // e.g. "0%", "15%" (Cell A21)
   userEmail,
 }) {
-  if (!clientSheetId) throw new Error("Client Sheet ID is required");
+  if (!clientSheetId) throw new Error("Client identifier is required.");
 
   const updates = [];
 
@@ -337,6 +338,7 @@ export async function saveNBToFindSettings({
   await withRetry(async () => {
     return await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: clientSheetId,
+      _deferBackgroundRecompute: true,
       requestBody: {
         valueInputOption: "USER_ENTERED",
         data: updates,
@@ -345,25 +347,30 @@ export async function saveNBToFindSettings({
   });
 
   // Invalidate cache
-  const cacheKey = `pma_nbtofind_${clientSheetId}`;
+  const cleanId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
+  const cacheKeys = new Set([`pma_nbtofind_${cleanId}`, `pma_nbtofind_${clientSheetId}`]);
   try {
-    memoryCache.del(cacheKey);
-    if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    await invalidatePmaClientCache(clientSheetId, null, ["views", "jobs"]);
+    for (const k of cacheKeys) {
+      memoryCache.del(k);
+      if (redisClient?.isOpen) await redisClient.del(k);
+    }
+    await invalidatePmaClientCache(cleanId, null, ["views", "jobs"]);
   } catch { }
 
-  await logPmaActivity({
-    userEmail: userEmail || "system",
-    action: "UPDATE_NBTOFIND_SETTINGS",
-    clientName,
-    details: `Updated NBtoFind settings (Targets A9: ${useTargets}, Budget A12: ${useBudgetForIncomeTargets}, Direct Costs A21: ${directCostsPercentage})`,
-  });
+  waitUntil(
+    logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "UPDATE_NBTOFIND_SETTINGS",
+      clientName,
+      details: `Updated NB to find settings (Targets: ${useTargets}, Budget: ${useBudgetForIncomeTargets}, Direct costs: ${directCostsPercentage})`,
+    }).catch(() => { })
+  );
 
   return { success: true, updated: updates.length };
 }
 
 /**
- * Save monthly amounts for a given row in NBtoFind (Row 3 manual targets, Row 10 income targets, or Row 25 Yes/No)
+ * Save monthly amounts for a given row in NBtoFind (Row 3, 5, 10, or 25)
  */
 export async function saveNBToFindMonthlyValues({
   clientName,
@@ -373,10 +380,10 @@ export async function saveNBToFindMonthlyValues({
   cellNotes, // { [colLetter]: note }
   userEmail,
 }) {
-  if (!clientSheetId) throw new Error("Client Sheet ID is required");
+  if (!clientSheetId) throw new Error("Client identifier is required.");
   const rowNum = parseInt(sheetRow, 10);
   if (![3, 5, 10, 25].includes(rowNum)) {
-    throw new Error(`Invalid NBtoFind editable row: ${sheetRow}. Allowed rows are 3, 5, 10, or 25.`);
+    throw new Error("Invalid NB to find entry specified.");
   }
 
   const isNbMonthlyCol = (colIdx) =>
@@ -418,6 +425,7 @@ export async function saveNBToFindMonthlyValues({
       return await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
         _skipFormulaRecompute: hasNoteUpdates,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: updates,
@@ -454,6 +462,7 @@ export async function saveNBToFindMonthlyValues({
       await withRetry(async () => {
         return await sheets.spreadsheets.batchUpdate({
           spreadsheetId: clientSheetId,
+          _deferBackgroundRecompute: true,
           requestBody: { requests: noteRequests },
         });
       });
@@ -465,19 +474,24 @@ export async function saveNBToFindMonthlyValues({
   }
 
   // Invalidate cache
-  const cacheKey = `pma_nbtofind_${clientSheetId}`;
+  const cleanId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
+  const cacheKeys = new Set([`pma_nbtofind_${cleanId}`, `pma_nbtofind_${clientSheetId}`]);
   try {
-    memoryCache.del(cacheKey);
-    if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    await invalidatePmaClientCache(clientSheetId, null, ["views", "jobs"]);
+    for (const k of cacheKeys) {
+      memoryCache.del(k);
+      if (redisClient?.isOpen) await redisClient.del(k);
+    }
+    await invalidatePmaClientCache(cleanId, null, ["views", "jobs"]);
   } catch { }
 
-  await logPmaActivity({
-    userEmail: userEmail || "system",
-    action: "UPDATE_NBTOFIND_VALUES",
-    clientName,
-    details: `Updated ${updates.length} monthly value(s) in NBtoFind Row ${rowNum}`,
-  });
+  waitUntil(
+    logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "UPDATE_NBTOFIND_VALUES",
+      clientName,
+      details: `Updated ${updates.length} monthly NB to find value(s)`,
+    }).catch(() => { })
+  );
 
   return { success: true, sheetRow: rowNum, updated: updates.length };
 }

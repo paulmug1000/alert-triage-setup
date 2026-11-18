@@ -11,6 +11,7 @@ import { memoryCache } from "../../../services/cacheService.js";
 import { flushAllAlertMemoryCaches, searchAlertMemoryEntries, deleteAlertMemoryEntryByHash } from "../../../services/alertMemory.js";
 import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
 import { syncProvisioningTemplateSnapshots, getProvisioningTemplateSnapshotsMeta } from "../../../services/masterEngineService.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 const VALID_CLIENT_STATUSES = new Set(["live", "setup", "paused", "suspended", "archived"]);
 const VALID_ENGINE_MODES = new Set(["sheet", "supabase", "shadow"]);
@@ -261,7 +262,7 @@ async function invalidateClientsCache_(acId) {
   clearSsrClientsMemoryCache();
   invalidatePrecomputedMemoryCache();
   await import("../../../services/masterEngineService.js")
-    .then((m) => m.invalidateMasterEngineCache?.())
+    .then((m) => m.invalidateSheetContextCache?.())
     .catch(() => {});
   const canonicalAcId = acId || getCanonicalAcSheetId();
   if (canonicalAcId) {
@@ -369,6 +370,7 @@ export default async function handler(req, res) {
     if (req.method !== "POST") {
       return res.status(405).json({ success: false, error: "Method not allowed." });
     }
+    if (!assertTrustedOrigin(req, res)) return;
 
     const { action, mode, automationCommanderSheetId } = req.body || {};
 

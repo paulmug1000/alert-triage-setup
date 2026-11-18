@@ -1,28 +1,30 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import Head from "next/head";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/router";
 import { useAuth } from "../../hooks/useAuth";
 import AuthGateView from "../../components/AuthGateView";
 import PortalShell from "../../components/portal/PortalShell";
 import MonthView from "../../components/portal/MonthView";
-import PerformanceFYView from "../../components/portal/PerformanceFYView";
-import PerformanceYTDView from "../../components/portal/PerformanceYTDView";
-import PerformanceBreakdownView from "../../components/portal/PerformanceBreakdownView";
-import CashflowView from "../../components/portal/CashflowView";
-import CashflowBreakdownView from "../../components/portal/CashflowBreakdownView";
-import PortalJobsView from "../../components/portal/PortalJobsView";
-import PortalOutgoingsView from "../../components/portal/PortalOutgoingsView";
-import PortalSalariesView from "../../components/portal/PortalSalariesView";
-import PortalNBToFindView from "../../components/portal/PortalNBToFindView";
-import BudgetView from "../../components/portal/BudgetView";
-import BudgetVarianceView from "../../components/portal/BudgetVarianceView";
-import ScenariosView from "../../components/portal/ScenariosView";
 import {
   MonthViewSkeleton
 } from "../../components/Skeleton";
 import CompanyChooser from "../../components/portal/CompanyChooser";
 import SetupHoldingGate from "../../components/portal/SetupHoldingGate";
 import Spinner from "../../components/Spinner";
+
+const PerformanceFYView = dynamic(() => import("../../components/portal/PerformanceFYView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const PerformanceYTDView = dynamic(() => import("../../components/portal/PerformanceYTDView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const PerformanceBreakdownView = dynamic(() => import("../../components/portal/PerformanceBreakdownView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const CashflowView = dynamic(() => import("../../components/portal/CashflowView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const CashflowBreakdownView = dynamic(() => import("../../components/portal/CashflowBreakdownView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const PortalJobsView = dynamic(() => import("../../components/portal/PortalJobsView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const PortalOutgoingsView = dynamic(() => import("../../components/portal/PortalOutgoingsView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const PortalSalariesView = dynamic(() => import("../../components/portal/PortalSalariesView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const PortalNBToFindView = dynamic(() => import("../../components/portal/PortalNBToFindView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const BudgetView = dynamic(() => import("../../components/portal/BudgetView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const BudgetVarianceView = dynamic(() => import("../../components/portal/BudgetVarianceView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const ScenariosView = dynamic(() => import("../../components/portal/ScenariosView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
 
 const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
@@ -65,9 +67,9 @@ export default function PortalPage({
   const baseSsrClient = initialSetupClient || initialSelectedClient || initialUser?.initialSetupClient || null;
   const ssrActiveClient =
     baseSsrClient &&
-    !baseSsrClient.clientSheetId &&
-    navHandoff?.client?.clientSheetId &&
-    String(baseSsrClient.clientName || "").trim().toLowerCase() ===
+      !baseSsrClient.clientSheetId &&
+      navHandoff?.client?.clientSheetId &&
+      String(baseSsrClient.clientName || "").trim().toLowerCase() ===
       String(navHandoff.client.clientName || "").trim().toLowerCase()
       ? { ...navHandoff.client, ...baseSsrClient, clientSheetId: navHandoff.client.clientSheetId }
       : baseSsrClient || navHandoff?.client || null;
@@ -601,19 +603,19 @@ export default function PortalPage({
 
     const triggerSilentRefresh = () => {
       lastAutoRefreshAtRef.current = Date.now();
-      fetchPayload(selectedClient, true, true);
+      fetchPayload(selectedClient, false, true);
 
       if (["dashboard", "ytd", "perfBreakdown", "scenarios"].includes(activeView)) {
-        fetchPerformance(selectedClient, true, true);
+        fetchPerformance(selectedClient, false, true);
       }
       if (["cash", "cashBreakdown"].includes(activeView)) {
-        fetchCashflow(selectedClient, true, true);
+        fetchCashflow(selectedClient, false, true);
       }
       if (["month", "dashboard", "ytd", "cash", "jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "cashBreakdown", "scenarios", "perfBreakdown"].includes(activeView)) {
-        fetchKeyData(selectedClient, true, true);
+        fetchKeyData(selectedClient, false, true);
       }
       if (["viewBudget", "budgetVariance"].includes(activeView)) {
-        fetchBudget(selectedClient, true, true);
+        fetchBudget(selectedClient, false, true);
       }
     };
 
@@ -1326,247 +1328,247 @@ export default function PortalPage({
           ) : (
             <>
               {activeView === "dashboard" && (
-            <PerformanceFYView
-              key={selectedClient?.clientSheetId || "dashboard"}
-              clientName={selectedClient?.clientName || "Client"}
-              data={performanceData}
-              keyData={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingPerformance}
-              error={perfError}
-              onRefresh={handleRefreshPerformance}
-              isSenior={isSeniorRestricted}
-            />
-          )}
+                <PerformanceFYView
+                  key={selectedClient?.clientSheetId || "dashboard"}
+                  clientName={selectedClient?.clientName || "Client"}
+                  data={performanceData}
+                  keyData={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingPerformance}
+                  error={perfError}
+                  onRefresh={handleRefreshPerformance}
+                  isSenior={isSeniorRestricted}
+                />
+              )}
 
-          {activeView === "ytd" && (
-            <PerformanceYTDView
-              key={selectedClient?.clientSheetId || "ytd"}
-              clientName={selectedClient?.clientName || "Client"}
-              data={performanceData}
-              keyData={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingPerformance}
-              error={perfError}
-              onRefresh={handleRefreshPerformance}
-              isSenior={isSeniorRestricted}
-            />
-          )}
+              {activeView === "ytd" && (
+                <PerformanceYTDView
+                  key={selectedClient?.clientSheetId || "ytd"}
+                  clientName={selectedClient?.clientName || "Client"}
+                  data={performanceData}
+                  keyData={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingPerformance}
+                  error={perfError}
+                  onRefresh={handleRefreshPerformance}
+                  isSenior={isSeniorRestricted}
+                />
+              )}
 
-          {activeView === "perfBreakdown" && (
-            <PerformanceBreakdownView
-              clientName={selectedClient?.clientName || "Client"}
-              data={performanceData}
-              keyData={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingPerformance || (loadingKeyData && !keyData)}
-              error={perfError || keyDataError}
-              onRefresh={handleRefreshPerformance}
-              isSenior={isSeniorRestricted}
-            />
-          )}
+              {activeView === "perfBreakdown" && (
+                <PerformanceBreakdownView
+                  clientName={selectedClient?.clientName || "Client"}
+                  data={performanceData}
+                  keyData={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingPerformance || (loadingKeyData && !keyData)}
+                  error={perfError || keyDataError}
+                  onRefresh={handleRefreshPerformance}
+                  isSenior={isSeniorRestricted}
+                />
+              )}
 
-          {activeView === "cash" && (
-            <CashflowView
-              clientName={selectedClient?.clientName || "Client"}
-              data={cashflowData}
-              keyData={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingCashflow}
-              error={cashError}
-              onRefresh={handleRefreshCashflow}
-              isSenior={isSeniorRestricted}
-            />
-          )}
+              {activeView === "cash" && (
+                <CashflowView
+                  clientName={selectedClient?.clientName || "Client"}
+                  data={cashflowData}
+                  keyData={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingCashflow}
+                  error={cashError}
+                  onRefresh={handleRefreshCashflow}
+                  isSenior={isSeniorRestricted}
+                />
+              )}
 
-          {activeView === "cashBreakdown" && (
-            <CashflowBreakdownView
-              clientName={selectedClient?.clientName || "Client"}
-              data={cashflowData}
-              keyData={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingCashflow || (loadingKeyData && !keyData)}
-              error={cashError || keyDataError}
-              onRefresh={handleRefreshCashflow}
-              isSenior={isSeniorRestricted}
-            />
-          )}
+              {activeView === "cashBreakdown" && (
+                <CashflowBreakdownView
+                  clientName={selectedClient?.clientName || "Client"}
+                  data={cashflowData}
+                  keyData={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingCashflow || (loadingKeyData && !keyData)}
+                  error={cashError || keyDataError}
+                  onRefresh={handleRefreshCashflow}
+                  isSenior={isSeniorRestricted}
+                />
+              )}
 
-          {activeView === "jobs" && (
-            <PortalJobsView
-              clientName={selectedClient?.clientName || "Client"}
-              clientSheetId={selectedClient?.clientSheetId}
-              data={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingKeyData}
-              error={keyDataError}
-              onRefresh={handleRefreshKeyData}
-              isReadOnly={isReadOnly}
-            />
-          )}
+              {activeView === "jobs" && (
+                <PortalJobsView
+                  clientName={selectedClient?.clientName || "Client"}
+                  clientSheetId={selectedClient?.clientSheetId}
+                  data={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingKeyData}
+                  error={keyDataError}
+                  onRefresh={handleRefreshKeyData}
+                  isReadOnly={isReadOnly}
+                />
+              )}
 
-          {activeView === "contractors" && (
-            <PortalOutgoingsView
-              category="contractors"
-              clientName={selectedClient?.clientName || "Client"}
-              clientSheetId={selectedClient?.clientSheetId}
-              data={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingKeyData}
-              error={keyDataError}
-              onRefresh={handleRefreshKeyData}
-              isReadOnly={isReadOnly}
-            />
-          )}
+              {activeView === "contractors" && (
+                <PortalOutgoingsView
+                  category="contractors"
+                  clientName={selectedClient?.clientName || "Client"}
+                  clientSheetId={selectedClient?.clientSheetId}
+                  data={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingKeyData}
+                  error={keyDataError}
+                  onRefresh={handleRefreshKeyData}
+                  isReadOnly={isReadOnly}
+                />
+              )}
 
-          {activeView === "expenses" && (
-            <PortalOutgoingsView
-              category="expenses"
-              clientName={selectedClient?.clientName || "Client"}
-              clientSheetId={selectedClient?.clientSheetId}
-              data={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingKeyData}
-              error={keyDataError}
-              onRefresh={handleRefreshKeyData}
-              isReadOnly={isReadOnly}
-            />
-          )}
+              {activeView === "expenses" && (
+                <PortalOutgoingsView
+                  category="expenses"
+                  clientName={selectedClient?.clientName || "Client"}
+                  clientSheetId={selectedClient?.clientSheetId}
+                  data={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingKeyData}
+                  error={keyDataError}
+                  onRefresh={handleRefreshKeyData}
+                  isReadOnly={isReadOnly}
+                />
+              )}
 
-          {activeView === "dividends" && (
-            <PortalOutgoingsView
-              category="dividends"
-              clientName={selectedClient?.clientName || "Client"}
-              clientSheetId={selectedClient?.clientSheetId}
-              data={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingKeyData}
-              error={keyDataError}
-              onRefresh={handleRefreshKeyData}
-              isReadOnly={isReadOnly}
-            />
-          )}
+              {activeView === "dividends" && (
+                <PortalOutgoingsView
+                  category="dividends"
+                  clientName={selectedClient?.clientName || "Client"}
+                  clientSheetId={selectedClient?.clientSheetId}
+                  data={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingKeyData}
+                  error={keyDataError}
+                  onRefresh={handleRefreshKeyData}
+                  isReadOnly={isReadOnly}
+                />
+              )}
 
-          {activeView === "salaries" && (
-            <PortalSalariesView
-              clientName={selectedClient?.clientName || "Client"}
-              clientSheetId={selectedClient?.clientSheetId}
-              data={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingKeyData}
-              error={keyDataError}
-              onRefresh={handleRefreshKeyData}
-              isReadOnly={isReadOnly}
-            />
-          )}
+              {activeView === "salaries" && (
+                <PortalSalariesView
+                  clientName={selectedClient?.clientName || "Client"}
+                  clientSheetId={selectedClient?.clientSheetId}
+                  data={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingKeyData}
+                  error={keyDataError}
+                  onRefresh={handleRefreshKeyData}
+                  isReadOnly={isReadOnly}
+                />
+              )}
 
-          {activeView === "nbtofind" && (
-            <PortalNBToFindView
-              clientName={selectedClient?.clientName || "Client"}
-              clientSheetId={selectedClient?.clientSheetId}
-              data={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingKeyData}
-              error={keyDataError}
-              onRefresh={handleRefreshKeyData}
-              isReadOnly={isReadOnly}
-            />
-          )}
+              {activeView === "nbtofind" && (
+                <PortalNBToFindView
+                  clientName={selectedClient?.clientName || "Client"}
+                  clientSheetId={selectedClient?.clientSheetId}
+                  data={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingKeyData}
+                  error={keyDataError}
+                  onRefresh={handleRefreshKeyData}
+                  isReadOnly={isReadOnly}
+                />
+              )}
 
-          {activeView === "viewBudget" && (
-            <BudgetView
-              clientName={selectedClient?.clientName || "Client"}
-              data={budgetData}
-              allFYData={performanceData}
-              keyData={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingBudget || loadingPerformance}
-              error={budgetError || perfError}
-              onRefresh={handleRefreshBudget}
-            />
-          )}
+              {activeView === "viewBudget" && (
+                <BudgetView
+                  clientName={selectedClient?.clientName || "Client"}
+                  data={budgetData}
+                  allFYData={performanceData}
+                  keyData={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingBudget || loadingPerformance}
+                  error={budgetError || perfError}
+                  onRefresh={handleRefreshBudget}
+                />
+              )}
 
-          {activeView === "budgetVariance" && (
-            <BudgetVarianceView
-              clientName={selectedClient?.clientName || "Client"}
-              data={budgetData}
-              allFYData={performanceData}
-              keyData={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingBudget || loadingPerformance}
-              error={budgetError || perfError}
-              onRefresh={handleRefreshBudget}
-            />
-          )}
+              {activeView === "budgetVariance" && (
+                <BudgetVarianceView
+                  clientName={selectedClient?.clientName || "Client"}
+                  data={budgetData}
+                  allFYData={performanceData}
+                  keyData={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingBudget || loadingPerformance}
+                  error={budgetError || perfError}
+                  onRefresh={handleRefreshBudget}
+                />
+              )}
 
-          {activeView === "scenarios" && (
-            <ScenariosView
-              key={selectedClient?.clientSheetId || "scenarios"}
-              clientName={selectedClient?.clientName || "Client"}
-              performanceData={performanceData}
-              keyData={keyData}
-              currencySymbol={currencySymbol}
-              thousandsSeparator={thousandsSeparator}
-              isLoading={loadingPerformance || loadingKeyData}
-              error={perfError || keyDataError}
-              onRefresh={() => {
-                if (selectedClient) {
-                  fetchPerformance(selectedClient, true);
-                  fetchKeyData(selectedClient, true);
-                }
-              }}
-              isSenior={isSeniorRestricted}
-            />
-          )}
+              {activeView === "scenarios" && (
+                <ScenariosView
+                  key={selectedClient?.clientSheetId || "scenarios"}
+                  clientName={selectedClient?.clientName || "Client"}
+                  performanceData={performanceData}
+                  keyData={keyData}
+                  currencySymbol={currencySymbol}
+                  thousandsSeparator={thousandsSeparator}
+                  isLoading={loadingPerformance || loadingKeyData}
+                  error={perfError || keyDataError}
+                  onRefresh={() => {
+                    if (selectedClient) {
+                      fetchPerformance(selectedClient, true);
+                      fetchKeyData(selectedClient, true);
+                    }
+                  }}
+                  isSenior={isSeniorRestricted}
+                />
+              )}
 
-          {!["month", "dashboard", "ytd", "perfBreakdown", "cash", "cashBreakdown", "jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "scenarios", "viewBudget", "budgetVariance"].includes(activeView) && (
-            <div
-              style={{
-                background: "#ffffff",
-                borderRadius: "12px",
-                padding: "2.5rem 2rem",
-                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-                border: "1px solid #e2e8f0",
-                textAlign: "center"
-              }}
-            >
-              <div
-                style={{
-                  width: "48px",
-                  height: "48px",
-                  borderRadius: "12px",
-                  background: "rgba(0, 71, 171, 0.08)",
-                  color: "#0047AB",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  margin: "0 auto 1rem auto",
-                  fontSize: "20px"
-                }}
-              >
-                ⚡
-              </div>
-              <h3 style={{ margin: "0 0 6px 0", fontSize: "1.25rem", fontWeight: 700, color: "#1e293b" }}>
-                {getViewTitle(activeView)}
-              </h3>
-              <p style={{ margin: 0, color: "#64748b", fontSize: "0.95rem" }}>
-                Ready to port for <strong>{selectedClient?.clientName}</strong> in next phase.
-              </p>
-            </div>
-          )}
+              {!["month", "dashboard", "ytd", "perfBreakdown", "cash", "cashBreakdown", "jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "scenarios", "viewBudget", "budgetVariance"].includes(activeView) && (
+                <div
+                  style={{
+                    background: "#ffffff",
+                    borderRadius: "12px",
+                    padding: "2.5rem 2rem",
+                    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+                    border: "1px solid #e2e8f0",
+                    textAlign: "center"
+                  }}
+                >
+                  <div
+                    style={{
+                      width: "48px",
+                      height: "48px",
+                      borderRadius: "12px",
+                      background: "rgba(0, 71, 171, 0.08)",
+                      color: "#0047AB",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      margin: "0 auto 1rem auto",
+                      fontSize: "20px"
+                    }}
+                  >
+                    ⚡
+                  </div>
+                  <h3 style={{ margin: "0 0 6px 0", fontSize: "1.25rem", fontWeight: 700, color: "#1e293b" }}>
+                    {getViewTitle(activeView)}
+                  </h3>
+                  <p style={{ margin: 0, color: "#64748b", fontSize: "0.95rem" }}>
+                    Ready to port for <strong>{selectedClient?.clientName}</strong> in next phase.
+                  </p>
+                </div>
+              )}
             </>
           )}
         </>

@@ -1227,12 +1227,6 @@ export default async function handler(req, res) {
         if (supaCtx && supaCtx.masterMode === "supabase") {
           const nativeRes = await syncExpenseBreakdownToClientSheetNative(sheets, supaCtx.clientName || clientName);
           await invalidatePmaClientCache(clientSheetId, masterSheetId, ["outgoings", "expenses", "cash", "views"]).catch(() => { });
-          if (clientSheetId && redisClient?.isOpen) {
-            await Promise.all([
-              redisClient.del(`pulse:portal:keydata:${clientSheetId}`).catch(() => { }),
-              redisClient.del(`pulse:portal:cash:${clientSheetId}`).catch(() => { })
-            ]);
-          }
           return res.status(200).json({ success: true, engine: "supabase", result: nativeRes });
         }
         const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
@@ -1256,12 +1250,6 @@ export default async function handler(req, res) {
 
           // Bust PMA & Portal caches so Outgoings, Expenses, and Cashflow immediately reflect updated actuals
           await invalidatePmaClientCache(clientSheetId, masterSheetId, ["outgoings", "expenses", "cash", "views"]).catch(() => { });
-          if (clientSheetId && redisClient?.isOpen) {
-            await Promise.all([
-              redisClient.del(`pulse:portal:keydata:${clientSheetId}`).catch(() => { }),
-              redisClient.del(`pulse:portal:cash:${clientSheetId}`).catch(() => { })
-            ]);
-          }
 
           return res.status(200).json({ success: true, gasResult: gasData || gasText });
         }

@@ -1,44 +1,18 @@
 import React, { useCallback } from "react";
-import FormattedVirtualSheetModal, {
-  prefetchVirtualTab,
-  invalidateVirtualModalCache,
-} from "./FormattedVirtualSheetModal";
+import FormattedVirtualSheetModal from "./FormattedVirtualSheetModal";
 import {
   CLIENT_SHEET_TABS,
   CLIENT_SHEET_SPECS,
   getClientCellPresentation,
   formatCellForClientSheet,
 } from "../utils/clientSheetSpecs";
-
-const CLIENT_KEYINFO_CACHE = new Map();
-const KEYINFO_CACHE_TTL_MS = 300000;
-
-export function invalidateClientSheetModalCache(clientName = "") {
-  invalidateVirtualModalCache("client", clientName);
-  const clean = String(clientName || "").trim().toLowerCase();
-  if (!clean) {
-    CLIENT_KEYINFO_CACHE.clear();
-  } else {
-    CLIENT_KEYINFO_CACHE.delete(clean);
-  }
-}
-
-function getMaxRowsForTab(tabName) {
-  if (tabName === "Confirmed") return 5002;
-  if (tabName === "Pipeline") return 1000;
-  return 1200;
-}
-
-export async function prefetchClientSheetTab(clientName, tabName) {
-  const spec = CLIENT_SHEET_SPECS[tabName] || CLIENT_SHEET_SPECS.Confirmed;
-  return prefetchVirtualTab({
-    sheetRole: "client",
-    clientName,
-    tabName,
-    maxRows: getMaxRowsForTab(tabName),
-    maxCols: spec?.totalCols || 200,
-  });
-}
+import {
+  CLIENT_KEYINFO_CACHE,
+  KEYINFO_CACHE_TTL_MS,
+  invalidateClientSheetModalCache,
+  prefetchClientSheetTab,
+} from "../utils/sheetModalCache";
+export { invalidateClientSheetModalCache, prefetchClientSheetTab };
 
 async function fetchClientKeyInfoLists(clientName, tabName) {
   if (tabName !== "Confirmed" && tabName !== "Pipeline") return {};

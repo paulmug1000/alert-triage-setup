@@ -11,22 +11,22 @@ import { calculateIntegrationsAttentionCount } from "../utils/integrationsBadge"
 
 // Core initial views loaded statically for instant render
 import ClientSelectionView from "../components/ClientSelectionView";
-import AlertSelectionView from "../components/AlertSelectionView";
-import TriageAnalysisView from "../components/TriageAnalysisView";
 import HomeView from "../components/HomeView";
 import AuthGateView from "../components/AuthGateView";
-import InvoicesView from "../components/InvoicesView";
-import OutgoingsView from "../components/OutgoingsView";
-import JobsView from "../components/JobsView";
-import RetainersView from "../components/RetainersView";
-import SalariesView from "../components/SalariesView";
-import ExpensesView from "../components/ExpensesView";
-import NBToFindView from "../components/NBToFindView";
-import BudgetView from "../components/BudgetView";
-import CashEditView from "../components/CashEditView";
-import ViewsScreen from "../components/ViewsScreen";
 
 // Secondary views code-split via next/dynamic to reduce PMA bundle size
+const AlertSelectionView = dynamic(() => import("../components/AlertSelectionView"), { ssr: false, loading: () => <PmaAlertsSkeleton /> });
+const TriageAnalysisView = dynamic(() => import("../components/TriageAnalysisView"), { ssr: false, loading: () => <PmaAlertsSkeleton /> });
+const InvoicesView = dynamic(() => import("../components/InvoicesView"), { ssr: false, loading: () => <PmaInvoicesTableSkeleton /> });
+const OutgoingsView = dynamic(() => import("../components/OutgoingsView"), { ssr: false, loading: () => <PmaOutgoingsTableSkeleton /> });
+const JobsView = dynamic(() => import("../components/JobsView"), { ssr: false, loading: () => <PmaJobsTableSkeleton /> });
+const RetainersView = dynamic(() => import("../components/RetainersView"), { ssr: false, loading: () => <PmaRetainersTableSkeleton /> });
+const SalariesView = dynamic(() => import("../components/SalariesView"), { ssr: false, loading: () => <PmaSalariesSkeleton /> });
+const ExpensesView = dynamic(() => import("../components/ExpensesView"), { ssr: false, loading: () => <PmaExpensesTableSkeleton /> });
+const NBToFindView = dynamic(() => import("../components/NBToFindView"), { ssr: false, loading: () => <PmaNBToFindSkeleton /> });
+const BudgetView = dynamic(() => import("../components/BudgetView"), { ssr: false, loading: () => <BudgetSkeleton /> });
+const CashEditView = dynamic(() => import("../components/CashEditView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const ViewsScreen = dynamic(() => import("../components/ViewsScreen"), { ssr: false, loading: () => <MonthViewSkeleton /> });
 const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: () => <PmaActivitySkeleton /> });
 const ActivityView = dynamic(() => import("../components/ActivityView"), { loading: () => <PmaActivitySkeleton /> });
 const IgnoredAlertsView = dynamic(() => import("../components/IgnoredAlertsView"), { loading: () => <PmaAlertsSkeleton /> });
@@ -474,10 +474,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     if (prevAuthEmailRef.current !== currentAuthEmail) {
       prevAuthEmailRef.current = currentAuthEmail;
       startTriage();
-      refreshTaskCount?.();
     } else if (!sessionId && !isLoading) {
       startTriage();
-      refreshTaskCount?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, authChecking, isPulseOnly, currentAuthEmail, sessionId]);

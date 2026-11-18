@@ -118,10 +118,12 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
 
   let clientsArray = null;
   let clientsObj = null;
+  let servedFromMemoryCache = false;
 
   if (!effectiveBypass && _allClientsMemoryCache && (now - _allClientsCachedAt < 600000)) {
     clientsArray = _allClientsMemoryCache.clientsArray;
     clientsObj = _allClientsMemoryCache.clientsObj;
+    servedFromMemoryCache = true;
   } else if (!effectiveBypass && redisClient?.isOpen) {
     try {
       const cached = await redisClient.get(cacheKey);
@@ -268,7 +270,7 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
   }
 
   // Enrich clientsArray and clientsObj with accountingTool, directCostsMode, and hasAccountingIntegration from Redis setup config
-  if (redisClient?.isOpen && clientsArray && clientsArray.length > 0) {
+  if (!servedFromMemoryCache && redisClient?.isOpen && clientsArray && clientsArray.length > 0) {
     try {
       const normalizeClientKey = (str) => String(str || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
       const setupKeys = clientsArray.map(c => `pulse:setup:${normalizeClientKey(c.clientName)}`);
@@ -284,12 +286,14 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
         if (raw) {
           try {
             const cfg = JSON.parse(raw);
-            c.accountingTool = cfg.accountingTool || "None";
-            c.crmTool = cfg.crmTool || "None";
-            c.crmDrives = cfg.crmDrives || "NA";
+            c.accountingTool = cfg.accountingTool || c.accountingTool || "None";
+            c.crmTool = cfg.crmTool || c.crmTool || "None";
+            c.crmDrives = cfg.crmDrives || c.crmDrives || "NA";
             const revFocus = String(cfg.revenueFocus || "Revenue").trim();
-            const rawDcMode = String(cfg.directCostsMode || "Contractors").trim();
-            c.directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
+            const rawDcMode = String(cfg.directCostsMode || c.directCostsMode || "Contractors").trim();
+            c.directCostsMode = cfg.revenueFocus
+              ? (revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors"))
+              : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
             c.hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => String(c.accountingTool).toLowerCase().includes(t));
             if (clientsObj[c.clientName]) {
               clientsObj[c.clientName].accountingTool = c.accountingTool;
@@ -315,6 +319,7 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
         }
       });
       _allClientsMemoryCache = { clientsArray, clientsObj };
+      _allClientsCachedAt = now;
       if (anyConfigChanged) {
         redisClient.set(cacheKey, JSON.stringify({ clientsArray, clientsObj }), { EX: 86400 * 7 }).catch(() => { });
       }
@@ -1826,8 +1831,8 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     const cacheKey = `pulse:pma:jobs:${sheetIdClean}:${tabName || "All"}`;
     const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
 
-    if (bypassCache) {
-      invalidateMasterEngineCache(sbCtx?.clientName || null);
+    if (bypassCache && sbCtx?.clientName) {
+      invalidateMasterEngineCache(sbCtx.clientName, "client", tabName === "All" ? ["Confirmed", "Pipeline", "ConfCalcs", "PipeCalcs", "Outgoings"] : [tabName]);
       await invalidatePmaClientCache(sheetIdClean, sbCtx?.masterSheetId || null, ["jobs"]).catch(() => {});
     }
 
@@ -8450,7 +8455,7 @@ export async function handleMarkPipelineCopied(req, res, sheets) {
       requestBody: { values: [["Yes"]] },
     });
 
-    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "retainers", "cash"]);
+    await invalidatePmaClientCache(pipeClientSheetId, null, ["jobs", "retainers", "cash"]);
 
     console.log(`  ✅ mark_pipeline_copied: wrote Yes to Pipeline!DD${parsedPipeRow}`);
     return res.status(200).json({ success: true });
@@ -8792,11 +8797,7 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
     );
 
     // Invalidate caches
-    memoryCache.del(`pulse:portal:*:${sheetIdClean}*`);
-    try {
-      const keys = await scanRedisKeys(`pulse:portal:*:${sheetIdClean}*`);
-      if (keys.length > 0) await redisClient.del(...keys);
-    } catch (e) { }
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "retainers", "invoices", "cash"]).catch(() => {});
 
     // Log activity
     const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));

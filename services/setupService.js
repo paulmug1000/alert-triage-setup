@@ -15,6 +15,7 @@
  */
 
 import { redisClient, scanRedisKeys } from "./redisClient.js";
+import { invalidateAllClientsRedisKeys } from "./cacheService.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
 import { getIntegrationStatus, INTEGRATIONS_STATUS_CACHE_KEY } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput, getServiceAccountPoolEmails } from "./sheetsClient.js";
@@ -224,8 +225,7 @@ export async function getClientSetupConfig({ clientName, masterSheetId, clientSh
         };
         await redisClient.set(redisKey, JSON.stringify(updatedRecord));
         if (sheetD8 !== config?.directCostsMode || sheetB15 !== config?.revenueFocus) {
-          const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
-          if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+          await invalidateAllClientsRedisKeys();
           clearAllClientsMemoryCache();
           clearSsrClientsMemoryCache();
         }
@@ -763,8 +763,7 @@ export function revalidateClientsSetupInBackground(clients = []) {
       }
       if (anyClientChanged) {
         try {
-          const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
-          if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+          await invalidateAllClientsRedisKeys();
           clearAllClientsMemoryCache();
           clearSsrClientsMemoryCache();
         } catch { }
@@ -1380,7 +1379,7 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
     }
   }
 
-  const results = [];
+  const filteredClients = [];
   for (const c of allOutgoingsClients) {
     if (!c.clientName) continue;
     const cMeta = clientMetaMap.get(normalizeKey(c.clientName)) || clientMetaMap.get(c.clientName.trim().toLowerCase());
@@ -1391,11 +1390,23 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
     if (sessionUser && !isUserAuthorizedForClient(sessionUser, c.clientName)) {
       continue;
     }
+    filteredClients.push(c);
+  }
 
-    const redisKey = getSetupRedisKey(c.clientName);
+  let cachedRawValues = [];
+  if (filteredClients.length > 0 && redisClient?.isOpen) {
+    try {
+      const setupKeys = filteredClients.map((c) => getSetupRedisKey(c.clientName));
+      cachedRawValues = (await redisClient.mGet(setupKeys)) || [];
+    } catch { }
+  }
+
+  const results = [];
+  for (let i = 0; i < filteredClients.length; i++) {
+    const c = filteredClients[i];
     let cached = null;
     try {
-      const raw = await redisClient.get(redisKey);
+      const raw = cachedRawValues[i];
       if (raw) cached = JSON.parse(raw);
     } catch { }
 
@@ -2067,8 +2078,7 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
           directCostsMode: dcm,
           sheetSyncedAt: new Date().toISOString()
         }));
-        const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
-        if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+        await invalidateAllClientsRedisKeys();
         clearAllClientsMemoryCache();
         clearSsrClientsMemoryCache();
       } catch { }
@@ -2925,12 +2935,10 @@ export async function provisionNewClientSystem({
     clearAllClientsMemoryCache();
     clearSsrClientsMemoryCache();
     if (redisClient?.isOpen) {
-      const [allClientKeys, portalClientKeys] = await Promise.all([
-        scanRedisKeys("pulse:all_clients:*"),
-        scanRedisKeys("pulse:portal:allClients:*"),
+      await Promise.all([
+        invalidateAllClientsRedisKeys(),
+        redisClient.del(INTEGRATIONS_STATUS_CACHE_KEY),
       ]);
-      const keysToDel = [...allClientKeys, ...portalClientKeys, INTEGRATIONS_STATUS_CACHE_KEY];
-      if (keysToDel.length > 0) await redisClient.del(keysToDel);
     }
   } catch (_) { }
 

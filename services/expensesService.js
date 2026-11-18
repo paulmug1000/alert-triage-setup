@@ -14,6 +14,7 @@
  * ============================================================================
  */
 
+import { waitUntil } from "@vercel/functions";
 import { getSheetsClient, withRetry, getSheetGid, getSheetTitles, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
@@ -337,10 +338,10 @@ export async function saveExpenseMetadata({
   userEmail,
   _skipFormulaRecompute = false,
 }) {
-  if (!clientSheetId) throw new Error("Client Sheet ID is required");
+  if (!clientSheetId) throw new Error("Client identifier is required.");
   const rowNum = parseInt(sheetRow, 10);
   if (isNaN(rowNum) || rowNum < 126 || rowNum > 224) {
-    throw new Error(`Invalid or system-managed expense row: ${sheetRow}. Editable rows are 126 to 224.`);
+    throw new Error("Invalid or system-managed expense entry.");
   }
 
   const cleanCategory = sanitizeFormulaInput(category || "");
@@ -368,23 +369,20 @@ export async function saveExpenseMetadata({
         ],
       },
       _skipFormulaRecompute,
+      _deferBackgroundRecompute: !_skipFormulaRecompute,
     });
   });
 
-  // Invalidate cache
-  const cacheKey = `pma_expenses_${clientSheetId}`;
-  try {
-    memoryCache.del(cacheKey);
-    if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash"]);
-  } catch { }
+  await invalidateExpensesCaches(clientSheetId);
 
-  await logPmaActivity({
-    userEmail: userEmail || "system",
-    action: "UPDATE_EXPENSE_ROW",
-    clientName,
-    details: `Updated expense row ${rowNum}: "${cleanCategory}" (VAT: ${cleanVat}, Del: ${cleanDelPct})`,
-  });
+  waitUntil(
+    logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "UPDATE_EXPENSE_ROW",
+      clientName,
+      details: `Updated expense entry "${cleanCategory}" (VAT: ${cleanVat}, Del: ${cleanDelPct})`,
+    }).catch(() => {})
+  );
 
   return { success: true, sheetRow: rowNum };
 }
@@ -399,10 +397,10 @@ export async function toggleExpenseDelivery({
   targetDelivery, // boolean or "100%" / "0%"
   userEmail,
 }) {
-  if (!clientSheetId) throw new Error("Client Sheet ID is required");
+  if (!clientSheetId) throw new Error("Client identifier is required.");
   const rowNum = parseInt(sheetRow, 10);
   if (isNaN(rowNum) || rowNum < 126 || rowNum > 224) {
-    throw new Error(`Invalid or system-managed expense row: ${sheetRow}. Editable rows are 126 to 224.`);
+    throw new Error("Invalid or system-managed expense entry.");
   }
 
   const isDel = targetDelivery === true || targetDelivery === "100%" || targetDelivery === "delivery";
@@ -415,26 +413,23 @@ export async function toggleExpenseDelivery({
       spreadsheetId: clientSheetId,
       range: `Outgoings!E${rowNum}`,
       valueInputOption: "USER_ENTERED",
+      _deferBackgroundRecompute: true,
       requestBody: {
         values: [[newDelPct]],
       },
     });
   });
 
-  // Invalidate cache
-  const cacheKey = `pma_expenses_${clientSheetId}`;
-  try {
-    memoryCache.del(cacheKey);
-    if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash"]);
-  } catch { }
+  await invalidateExpensesCaches(clientSheetId);
 
-  await logPmaActivity({
-    userEmail: userEmail || "system",
-    action: "MOVE_EXPENSE_CATEGORY",
-    clientName,
-    details: `Moved expense row ${rowNum} to ${isDel ? "Delivery" : "Non-delivery"} (${newDelPct})`,
-  });
+  waitUntil(
+    logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "MOVE_EXPENSE_CATEGORY",
+      clientName,
+      details: `Moved expense entry to ${isDel ? "Delivery" : "Non-delivery"} (${newDelPct})`,
+    }).catch(() => {})
+  );
 
   return { success: true, sheetRow: rowNum, deliveryPct: newDelPct };
 }
@@ -464,15 +459,16 @@ export async function saveExpenseAmount({
   monthlyAmounts, // { [colLetter]: value }
   cellNotes, // { [colLetter]: note }
   userEmail,
+  prefetchedData = null,
 }) {
-  if (!clientSheetId) throw new Error("Client Sheet ID is required");
+  if (!clientSheetId) throw new Error("Client identifier is required.");
   const rowNum = parseInt(sheetRow, 10);
   if (isNaN(rowNum) || rowNum < 126 || rowNum > 224) {
-    throw new Error(`Invalid or system-managed expense row: ${sheetRow}. Editable rows are 126 to 224.`);
+    throw new Error("Invalid or system-managed expense entry.");
   }
 
   // Verify CR2 gate: if any target column belongs to a reconciled month, reject modification
-  const currentData = await fetchExpensesData(clientName, clientSheetId, false);
+  const currentData = prefetchedData || (await fetchExpensesData(clientName, clientSheetId, false));
   const reconciledColLetters = new Set();
   (currentData?.fyConfigs || []).forEach((fy) => {
     (fy.monthCols || []).forEach((m) => {
@@ -489,7 +485,7 @@ export async function saveExpenseAmount({
 
   for (const c of targetCols) {
     if (reconciledColLetters.has(c)) {
-      throw new Error(`Cannot modify expenses for a reconciled month. Column ${c} is locked.`);
+      throw new Error("Cannot modify expenses for a reconciled month.");
     }
   }
 
@@ -524,6 +520,7 @@ export async function saveExpenseAmount({
       return await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
         _skipFormulaRecompute: hasNoteUpdates,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: dataUpdates,
@@ -560,6 +557,7 @@ export async function saveExpenseAmount({
       await withRetry(async () => {
         return await sheets.spreadsheets.batchUpdate({
           spreadsheetId: clientSheetId,
+          _deferBackgroundRecompute: true,
           requestBody: {
             requests: noteRequests,
           },
@@ -574,12 +572,14 @@ export async function saveExpenseAmount({
 
   await invalidateExpensesCaches(clientSheetId);
 
-  await logPmaActivity({
-    userEmail: userEmail || "system",
-    action: "UPDATE_EXPENSE_AMOUNTS",
-    clientName,
-    details: `Updated ${dataUpdates.length} monthly amount(s) on row ${rowNum}`,
-  });
+  waitUntil(
+    logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "UPDATE_EXPENSE_AMOUNTS",
+      clientName,
+      details: `Updated ${dataUpdates.length} monthly expense amount(s)`,
+    }).catch(() => {})
+  );
 
   return { success: true, sheetRow: rowNum, updated: dataUpdates.length };
 }
@@ -594,7 +594,7 @@ export async function saveExpenseBatch({
   cellNotes = [], // [{ sheetRow, colLetter, note }]
   userEmail,
 }) {
-  if (!clientSheetId) throw new Error("Client Sheet ID is required");
+  if (!clientSheetId) throw new Error("Client identifier is required.");
 
   const currentData = await fetchExpensesData(clientName, clientSheetId, false);
   const reconciledColLetters = new Set();
@@ -621,7 +621,7 @@ export async function saveExpenseBatch({
     const colIdx = colLetterToNum(cleanLetter) - 1;
     if (!isOutgoingsMonthlyCol(colIdx)) continue;
     if (reconciledColLetters.has(cleanLetter)) {
-      throw new Error(`Cannot modify expenses for a reconciled month. Column ${cleanLetter} is locked.`);
+      throw new Error("Cannot modify expenses for a reconciled month.");
     }
     const cleanVal = sanitizeFormulaInput(String(up?.value ?? "").trim());
     dedupedValues.set(`${rowNum}_${cleanLetter}`, {
@@ -639,7 +639,7 @@ export async function saveExpenseBatch({
     const colIdx = colLetterToNum(cleanLetter) - 1;
     if (!isOutgoingsMonthlyCol(colIdx)) continue;
     if (reconciledColLetters.has(cleanLetter)) {
-      throw new Error(`Cannot modify expenses for a reconciled month. Column ${cleanLetter} is locked.`);
+      throw new Error("Cannot modify expenses for a reconciled month.");
     }
     dedupedNotes.set(`${rowNum}_${cleanLetter}`, {
       rowNum,
@@ -688,6 +688,7 @@ export async function saveExpenseBatch({
     await withRetry(async () => {
       return await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: dataUpdates,
@@ -700,18 +701,20 @@ export async function saveExpenseBatch({
 
   const summary = [];
   if (dataUpdates.length > 0) {
-    summary.push(`${dataUpdates.length} cell${dataUpdates.length > 1 ? "s" : ""}`);
+    summary.push(`${dataUpdates.length} amount${dataUpdates.length > 1 ? "s" : ""}`);
   }
   if (noteItems.length > 0) {
     summary.push(`${noteItems.length} note${noteItems.length > 1 ? "s" : ""}`);
   }
 
-  await logPmaActivity({
-    userEmail: userEmail || "system",
-    action: "UPDATE_EXPENSE_AMOUNTS",
-    clientName,
-    details: `Batch updated ${summary.join(" and ")} in Outgoings`,
-  });
+  waitUntil(
+    logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "UPDATE_EXPENSE_AMOUNTS",
+      clientName,
+      details: `Batch updated ${summary.join(" and ")} in expenses`,
+    }).catch(() => {})
+  );
 
   return {
     success: true,
@@ -732,15 +735,15 @@ export async function addExpenseCategory({
   monthlyAmounts = {},
   userEmail,
 }) {
-  if (!clientSheetId) throw new Error("Client Sheet ID is required");
+  if (!clientSheetId) throw new Error("Client identifier is required.");
   const cleanCategory = sanitizeFormulaInput(String(category || "").trim());
-  if (!cleanCategory) throw new Error("Expense category name is required");
+  if (!cleanCategory) throw new Error("Expense category name is required.");
 
   // First fetch current data to find the first empty row
   const currentData = await fetchExpensesData(clientName, clientSheetId, true);
   const targetRow = currentData.firstAvailableRow;
   if (!targetRow || targetRow > 224) {
-    throw new Error("All editable expense rows (126-224) are currently full.");
+    throw new Error("All editable expense slots are currently full.");
   }
 
   const hasMonthlyAmounts = Boolean(monthlyAmounts && Object.keys(monthlyAmounts).length > 0);
@@ -757,7 +760,7 @@ export async function addExpenseCategory({
     _skipFormulaRecompute: hasMonthlyAmounts,
   });
 
-  // If monthly amounts provided, save them too
+  // If monthly amounts provided, save them too (reuse already-fetched currentData)
   if (hasMonthlyAmounts) {
     await saveExpenseAmount({
       clientName,
@@ -765,6 +768,7 @@ export async function addExpenseCategory({
       sheetRow: targetRow,
       monthlyAmounts,
       userEmail,
+      prefetchedData: currentData,
     });
   }
 

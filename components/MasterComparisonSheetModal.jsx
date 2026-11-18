@@ -11,6 +11,15 @@ import {
   formatCellForComparisonSheet,
   isRowDiscrepancy,
 } from "../utils/masterComparisonSheetSpec";
+import {
+  COMPARISON_TAB_CACHE,
+  COMPARISON_CACHE_TTL_MS,
+  COMPARISON_STALE_REFRESH_MS,
+  invalidateComparisonModalCache,
+  fetchComparisonTabPayload,
+  prefetchComparisonTab,
+} from "../utils/sheetModalCache";
+export { invalidateComparisonModalCache, prefetchComparisonTab };
 
 const HEADER_CELL_REF_RE = /^=\s*\$?([A-Za-z]+)\$?(\d+)\s*$/;
 
@@ -30,11 +39,6 @@ function resolveHeaderFormulaValue(val, valuesGrid) {
 
 const COMPARISON_TABS = ["InvComp", "DirComp", "CRMComp"];
 
-const COMPARISON_TAB_CACHE = new Map();
-const COMPARISON_INFLIGHT = new Map();
-const COMPARISON_CACHE_TTL_MS = 60000;
-const COMPARISON_STALE_REFRESH_MS = 15000;
-
 function normalizeGridPayload(data) {
   return {
     rowCount: data.rowCount || 0,
@@ -48,71 +52,6 @@ function normalizeGridPayload(data) {
     staleAgainstClientEdits: Boolean(data.staleAgainstClientEdits),
     updatedAt: data.updatedAt || null,
   };
-}
-
-export function invalidateComparisonModalCache(clientName = "") {
-  const clean = String(clientName || "").trim().toLowerCase();
-  if (!clean) {
-    COMPARISON_TAB_CACHE.clear();
-    return;
-  }
-  const prefix = `${clean}::`;
-  for (const key of COMPARISON_TAB_CACHE.keys()) {
-    if (key.startsWith(prefix)) {
-      COMPARISON_TAB_CACHE.delete(key);
-    }
-  }
-}
-
-async function fetchComparisonTabPayload(clientName, tabName) {
-  const targetSpec = COMPARISON_SHEET_SPECS[tabName] || COMPARISON_SHEET_SPECS.InvComp;
-  const key = `${String(clientName || "").trim().toLowerCase()}::${tabName}`;
-  if (COMPARISON_INFLIGHT.has(key)) {
-    return COMPARISON_INFLIGHT.get(key);
-  }
-  const promise = (async () => {
-    const res = await fetch("/api/pma/master-engine", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "get_tab_grid",
-        clientName,
-        sheetRole: "master",
-        tabName,
-        maxRows: 1000,
-        maxCols: targetSpec.totalCols,
-        includeFormulas: false,
-        includeRawValues: true,
-        includeNotes: true,
-        trimTrailingEmptyRows: true,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      throw new Error(data.error || `Failed to load ${tabName}.`);
-    }
-    const payload = normalizeGridPayload(data);
-    COMPARISON_TAB_CACHE.set(key, { payload, cachedAt: Date.now() });
-    return payload;
-  })().finally(() => {
-    COMPARISON_INFLIGHT.delete(key);
-  });
-  COMPARISON_INFLIGHT.set(key, promise);
-  return promise;
-}
-
-export async function prefetchComparisonTab(clientName, tabName) {
-  if (!clientName || !tabName) return null;
-  const key = `${String(clientName).trim().toLowerCase()}::${tabName}`;
-  const cached = COMPARISON_TAB_CACHE.get(key);
-  if (cached && Date.now() - cached.cachedAt < COMPARISON_CACHE_TTL_MS) {
-    return cached.payload;
-  }
-  try {
-    return await fetchComparisonTabPayload(clientName, tabName);
-  } catch (_) {
-    return null;
-  }
 }
 
 function getLastNonEmptyRowIdx(valuesGrid) {

@@ -1,6 +1,6 @@
 import zlib from "zlib";
 import { getDriveClient, getSlidesClient, getGoogleAuth, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
-import { redisClient } from "./redisClient.js";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { anthropic } from "./claudeClient.js";
 import { logClaudeUsage_ } from "./systemConfig.js";
 import { logPmaActivity } from "./pmaLogger.js";
@@ -2478,15 +2478,20 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
       pageId: u.pageId || pageIdBySlide.get(Number(u.slideNumber)) || ""
     }));
 
-    // Invalidate stale Redis slide preview cache for updated slides
-    for (const item of previewInput) {
-      if (item.pageId) {
-        try {
-          if (redisClient && redisClient.isOpen) {
-            await redisClient.del(`slide_preview:${presentationId}:${item.pageId}`);
-          }
-        } catch (_) {}
-      }
+    // Invalidate stale Redis slide preview cache for updated slides (single SCAN before matching pageIds)
+    const targetPageIds = new Set(previewInput.map((item) => item?.pageId).filter(Boolean));
+    if (targetPageIds.size > 0 && redisClient && redisClient.isOpen) {
+      try {
+        const allPreviewKeys = await scanRedisKeys(`slide_preview:${presentationId}:*`);
+        const matchingKeys = allPreviewKeys.filter((k) => {
+          const lastColon = k.lastIndexOf(":");
+          const pId = lastColon >= 0 ? k.slice(lastColon + 1) : "";
+          return targetPageIds.has(pId);
+        });
+        if (matchingKeys.length > 0) {
+          await redisClient.del(matchingKeys);
+        }
+      } catch (_) {}
     }
 
     const refreshedPreviewMap = await fetchSlidePreviewsMap_(presentationId, previewInput);

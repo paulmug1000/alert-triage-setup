@@ -4,12 +4,14 @@ import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession }
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache, del2TierCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
@@ -92,7 +94,7 @@ export default async function handler(req, res) {
     if (!targetRow || targetRow > endRow) {
       return res.status(400).json({
         success: false,
-        error: `${isContractor ? "Contractors" : "Expenses"} section is full (max row ${endRow})`,
+        error: `${isContractor ? "Contractors" : "Expenses"} list is full.`,
       });
     }
 
@@ -115,6 +117,7 @@ export default async function handler(req, res) {
         spreadsheetId: clientSheetId,
         range: `Outgoings!A${targetRow}:E${targetRow}`,
         valueInputOption: "USER_ENTERED",
+        _deferBackgroundRecompute: true,
         requestBody: {
           values: [[nameClean, vatClean, invClean, payClean, pctClean]],
         },
@@ -123,10 +126,7 @@ export default async function handler(req, res) {
 
     // Invalidate caches for this client across both Portal and PMA
     try {
-      await Promise.all([
-        del2TierCache(`pma_expenses_${clientSheetId}*`),
-        invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash"]),
-      ]);
+      await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "expenses", "views", "cash"]);
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }

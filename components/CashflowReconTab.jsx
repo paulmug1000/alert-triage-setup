@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import dynamic from "next/dynamic";
 import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
-import CashflowWorkbenchView, { buildAlignedComparison, summarizeSettlementVariances } from "./CashflowWorkbenchView";
+import { buildAlignedComparison, summarizeSettlementVariances } from "../utils/cashflowComparisonHelpers";
 import EditClientSelector from "./EditClientSelector";
+
+const CashflowWorkbenchView = dynamic(() => import("./CashflowWorkbenchView"), { ssr: false });
 
 const DARK_GREEN = "#14532d";
 const RESOLVED_GREEN = "#d9ead3";

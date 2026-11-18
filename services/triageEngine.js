@@ -16,7 +16,7 @@ import {
   isAutoInvoicePlaceholderRef_, isAutoExpensePlaceholderId_
 } from "./workspaces.js";
 import { provisionRetainerScheduleInBackground } from "./retainers.js";
-import { applyAlertRemovalToTriageData } from "./alertState.js";
+import { applyAlertRemovalToTriageData, prunePrecomputedInBackground_, scheduleWaitUntil_ } from "./alertState.js";
 import {
   checkRetainerInvoices_, checkCRMWipe_, checkRevenueMismatch_, checkDirectCostsMismatch_,
   checkPipelineConfirmedOverlap_, checkRetainerShrinkBlocked_, checkUninvoicedNewJobs_,
@@ -36,8 +36,8 @@ import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemL
 import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
-import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
-import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { getSupabaseAdmin, isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
+import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId } from "./masterEngineService.js";
 import { runNativeMasterSync, ensureFreshMasterComparisons } from "./masterSyncEngine.js";
 import { logClaudeUsage_ } from "./systemConfig.js";
 export { logClaudeUsage_ };
@@ -574,7 +574,17 @@ export function isValidFrequency(freq) {
   return /^\d+\s*(?:hr|hrs|min|mins|day|days)$/i.test(s);
 }
 
-export async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
+const _autoUpdatesRowsL1 = new Map();
+const AUTO_UPDATES_L1_TTL_MS = 10000;
+
+export async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId, options = {}) {
+  const cacheKey = String(automationCommanderSheetId || "default");
+  if (!options?.bypassCache) {
+    const cached = _autoUpdatesRowsL1.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.value;
+    }
+  }
   const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
   const sb = getSupabaseAdmin();
 
@@ -673,7 +683,9 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
         }
 
         console.log(`📊 Loaded ${clientRows.length} active client row(s) from Supabase control plane`);
-        return { rows, clientRows };
+        const resVal = { rows, clientRows };
+        _autoUpdatesRowsL1.set(cacheKey, { value: resVal, expiresAt: Date.now() + AUTO_UPDATES_L1_TTL_MS });
+        return resVal;
       }
     } catch (sbErr) {
       console.warn("⚠️ readAutoUpdatesClientRows_ Supabase fallback warning:", sbErr.message);
@@ -725,7 +737,9 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
       expAutoLastRunMs: parseAutomationTime_(row[34]),
     });
   }
-  return { rows, clientRows };
+  const resVal = { rows, clientRows };
+  _autoUpdatesRowsL1.set(cacheKey, { value: resVal, expiresAt: Date.now() + AUTO_UPDATES_L1_TTL_MS });
+  return resVal;
 }
 
 export function buildInvCompSummary(alert) {
@@ -3127,7 +3141,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
         console.error(`  run_flag_sweep: error for ${client.clientName}: ${clientErr.message}`);
       }
 
-      await new Promise(r => setTimeout(r, 1200));
+      if (!isVirtualSupabaseSheetId(client.masterSheetId)) {
+        await new Promise(r => setTimeout(r, 1200));
+      }
     }
 
     if (sweepItems.length > 0) {
@@ -4039,7 +4055,9 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
             console.log(`  ❌ ${clientName}/${alertType}: analyze_alert call failed - ${fetchErr.message}`);
           }
 
-          await new Promise(r => setTimeout(r, 1200));
+          if (!isVirtualSupabaseSheetId(client?.masterSheetId)) {
+            await new Promise(r => setTimeout(r, 1200));
+          }
         }
       } catch (groupErr) {
         errors += rows.length;
@@ -4113,7 +4131,9 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           richErrors++;
           console.log(`  ❌ ${row.clientName}/${row.alertType}: analyze_noaction_flag call failed - ${richErr.message}`);
         }
-        await new Promise(r => setTimeout(r, 1200));
+        if (!isVirtualSupabaseSheetId(client?.masterSheetId)) {
+          await new Promise(r => setTimeout(r, 1200));
+        }
       }
       console.log(`build_cached_alert_options: rich informational analysis - ${richAnalyzed} analyzed, ${richErrors} errors`);
     }
@@ -8214,14 +8234,16 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
 function appendTriageLogBackground_(sheets, automationCommanderSheetId, rowValues) {
   if (!sheets || !automationCommanderSheetId || !Array.isArray(rowValues)) return;
-  const p = sheets.spreadsheets.values
-    .append({
+  const p = (async () => {
+    const supabaseActive = await isSupabaseControlPlaneActive().catch(() => false);
+    if (supabaseActive && !shouldDualWriteLegacyControlPlaneSheets()) return;
+    await sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
       range: "TriageLog!A:H",
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [rowValues] },
-    })
-    .catch((e) => console.warn("⚠️ Background TriageLog append warning:", e.message));
+    });
+  })().catch((e) => console.warn("⚠️ Background TriageLog append warning:", e.message));
   try {
     if (typeof waitUntil === "function") waitUntil(p);
   } catch { }
@@ -8304,17 +8326,17 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         sanitizeFormulaInput(String(option.title || ""))
       ]);
 
-      // Synchronize removal from precomputed cache so it disappears immediately
+      // Clear RAM cache immediately and prune shared precomputed cache in background via waitUntil
       try {
         const sessionUser = getSessionUser(req);
         const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
         const targetIds = [fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
-        const preRaw = await redisClient?.get(PRECOMPUTED_KEY);
-        if (preRaw) {
-          const pre = JSON.parse(preRaw);
-          applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
-          await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-        }
+        invalidatePrecomputedMemoryCache();
+        prunePrecomputedInBackground_({
+          targetIds,
+          canRemoveClient,
+          label: "handleAcceptOption(ignore)",
+        });
       } catch (rErr) { }
 
       return res.status(200).json({ success: true, message: "Alert marked as ignored", cellsWritten: 0 });
@@ -8359,10 +8381,12 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         spreadsheetId: alert.clientId,
         requestBody: { ranges: clearRanges },
         _skipFormulaRecompute: restoreData.length > 0,
+        _deferBackgroundRecompute: restoreData.length === 0,
       });
       if (restoreData.length > 0) {
         await sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: alert.clientId,
+          _deferBackgroundRecompute: true,
           requestBody: {
             valueInputOption: "USER_ENTERED",
             data: restoreData,
@@ -8395,6 +8419,24 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         "ACCEPTED",
         sanitizeFormulaInput(String(option.title || ""))
       ]);
+
+      try {
+        const sessionUser = getSessionUser(req);
+        const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
+        const targetIds = [fp2, `${alert.sheetName}-${alert.rowNumber}`, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
+        invalidatePrecomputedMemoryCache();
+        prunePrecomputedInBackground_({
+          targetIds,
+          canRemoveClient,
+          label: "handleAcceptOption(delete)",
+        });
+      } catch (rErr) { }
+
+      await invalidatePmaClientCache(
+        alert.clientId,
+        alert.masterSheetId || alert.masterId || null,
+        ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]
+      ).catch(() => {});
 
       return res.status(200).json({ success: true, message: `Cleared ${rowsToClear.length} row(s) from ${tabName} tab`, cellsWritten: clearRanges.length });
     }
@@ -8435,7 +8477,10 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
       const alertSummary = alert.summary?.summary || `Expense ${alert.summary?.date || outgoingsData.recDate || ""} • £${alert.summary?.amount || outgoingsData.amount || ""} • ${alert.summary?.description || outgoingsData.description || ""}`.trim();
       try {
         await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-        const memRows = await readAlertMemory(sheets, automationCommanderSheetId);
+        const memRows = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, {
+          hashes: [fp],
+          clientName: alert.clientName || "",
+        });
         const mr = findMemoryRow(memRows, fp);
         if (mr) {
           await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "accepted" });
@@ -8453,7 +8498,6 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
             dataSnapshot: "",
           });
         }
-        await updateHandledAlertHash(automationCommanderSheetId, fp, "accepted");
       } catch (memErr) {
         console.warn(`  ⚠️ Could not update AlertMemory on outgoings accept: ${memErr.message}`);
       }
@@ -8473,18 +8517,12 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         }
       }
 
-      // Remove alert from active Redis sessions & precomputed cache
+      // Remove alert from caller Redis session synchronously; prune shared precomputed cache in background
       const alertId = `${alert.sheetName}-${alert.rowNumber}`;
       const targetIds = [alertId, fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`, String(rawTxnId).trim()].filter(Boolean);
       try {
         const sessionUser = getSessionUser(req);
         const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
-        const preRaw = await redisClient?.get(PRECOMPUTED_KEY);
-        if (preRaw) {
-          const pre = JSON.parse(preRaw);
-          applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
-          await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-        }
         if (req.body.sessionId) {
           const sRaw = await redisClient?.get(`triage_alerts:${req.body.sessionId}`);
           if (sRaw) {
@@ -8493,6 +8531,12 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
             await redisClient?.set(`triage_alerts:${req.body.sessionId}`, JSON.stringify(sData), { EX: 86400 * 7 });
           }
         }
+        invalidatePrecomputedMemoryCache();
+        prunePrecomputedInBackground_({
+          targetIds,
+          canRemoveClient,
+          label: "handleAcceptOption(outgoings)",
+        });
       } catch (rErr) {
         console.warn(`  ⚠️ Could not sync Redis on outgoings accept: ${rErr.message}`);
       }
@@ -8504,7 +8548,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         }, { status: () => ({ json: () => { } }) }, sheets).catch(() => { });
       }
 
-      // Log to TriageLog
+      // Log to TriageLog in background (gated to legacy/dual-write) and invalidate caches
       const timestamp = new Date().toISOString();
       const logRow = [
         timestamp,
@@ -8516,12 +8560,13 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         "ACCEPTED",
         sanitizeFormulaInput(`Option: ${option.title}`),
       ];
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: automationCommanderSheetId,
-        range: "TriageLog!A:H",
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [logRow] },
-      });
+      appendTriageLogBackground_(sheets, automationCommanderSheetId, logRow);
+
+      await invalidatePmaClientCache(
+        alert.clientId,
+        alert.masterSheetId || alert.masterId || null,
+        ["outgoings", "expenses", "cash", "views"]
+      ).catch(() => {});
 
       return res.status(200).json({
         success: true,
@@ -8860,8 +8905,15 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         return true;
       });
 
+      const createdTypeCell = safeCreateUpdates.find(u => String(u.cell || "").toUpperCase() === `AJ${newRow}`);
+      const isCreatedRetainer =
+        writeTab === "Confirmed" &&
+        (String(option?.newJobData?.projectType || "").trim().toLowerCase() === "retainer" ||
+          String(createdTypeCell?.value || "").trim().toLowerCase() === "retainer");
+
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: alert.clientId,
+        _deferBackgroundRecompute: !isCreatedRetainer,
         requestBody: {
           data: [
             ...safeCreateUpdates.map(({ cell, value }) => ({
@@ -8879,11 +8931,6 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
 
       console.log(`  ✅ Created new job at row ${newRow} with ${safeCreateUpdates.length + jobCostingFormulaUpdates.length} fields`);
 
-      const createdTypeCell = safeCreateUpdates.find(u => String(u.cell || "").toUpperCase() === `AJ${newRow}`);
-      const isCreatedRetainer =
-        writeTab === "Confirmed" &&
-        (String(option?.newJobData?.projectType || "").trim().toLowerCase() === "retainer" ||
-          String(createdTypeCell?.value || "").trim().toLowerCase() === "retainer");
       if (isCreatedRetainer) {
         provisionRetainerScheduleInBackground(sheets, {
           clientSheetId: alert.clientId,
@@ -8895,31 +8942,45 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         });
       }
 
-      // Log to TriageLog and update AlertMemory in background so job creation returns immediately
+      // Update handled hash & caches synchronously before returning so immediate reloads don't flash this alert
+      const fingerprintHash2 = alert.fingerprintHash || buildAlertFingerprint(alert);
+      await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash2, "accepted").catch(() => {});
+      try {
+        const sessionUser = getSessionUser(req);
+        const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
+        const targetIds = [fingerprintHash2, `${alert.sheetName}-${alert.rowNumber}`, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
+        invalidatePrecomputedMemoryCache();
+        prunePrecomputedInBackground_({
+          targetIds,
+          canRemoveClient,
+          label: "handleAcceptOption(isCreateNew)",
+        });
+      } catch (rErr) { }
+      await invalidatePmaClientCache(
+        alert.clientId,
+        alert.masterSheetId || alert.masterId || null,
+        ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]
+      ).catch(() => {});
+
+      appendTriageLogBackground_(sheets, automationCommanderSheetId, [
+        new Date().toISOString(),
+        sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+        sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+        sanitizeFormulaInput(String(alert.clientName || "")),
+        sanitizeFormulaInput(String(alert.summary?.amount || "")),
+        sanitizeFormulaInput(JSON.stringify({ matchAnalysis: option.matchAnalysis })),
+        "ACCEPTED",
+        sanitizeFormulaInput(`Created new job at row ${newRow}: ${option.title}`),
+      ]);
+
+      // Sync full AlertMemory row in background via waitUntil
       const postLogPromise = (async () => {
         try {
-          const timestamp = new Date().toISOString();
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: automationCommanderSheetId,
-            range: "TriageLog!A:H",
-            valueInputOption: "USER_ENTERED",
-            requestBody: {
-              values: [[
-                timestamp,
-                sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
-                sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
-                sanitizeFormulaInput(String(alert.clientName || "")),
-                sanitizeFormulaInput(String(alert.summary?.amount || "")),
-                sanitizeFormulaInput(JSON.stringify({ matchAnalysis: option.matchAnalysis })),
-                "ACCEPTED",
-                sanitizeFormulaInput(`Created new job at row ${newRow}: ${option.title}`),
-              ]]
-            },
-          });
-
           await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-          const memoryRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
-          const fingerprintHash2 = alert.fingerprintHash || buildAlertFingerprint(alert);
+          const memoryRows2 = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, {
+            hashes: [fingerprintHash2],
+            clientName: alert.clientName || "",
+          });
           const memoryRow2 = findMemoryRow(memoryRows2, fingerprintHash2);
           const alertSummary2 = alert.summary?.summary || `${alert.type} ${fingerprintHash2}`;
           if (memoryRow2 && (!memoryRow2.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow2.clientName))) {
@@ -9461,34 +9522,41 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         spreadsheetId: alert.clientId,
         requestBody: batchRequest,
         _skipFormulaRecompute: willAdjustPlaceholders,
+        _deferBackgroundRecompute: !willAdjustPlaceholders,
       });
       console.log(`  ✅ Cells written successfully`);
 
-      // Apply bold + italic formatting to all written cells
-      const writeTabSheetId = await getSheetId(sheets, alert.clientId, writeTab);
-      const formatReqs = safeCellUpdates.map(({ cell }) => {
-        // Parse cell reference e.g. "B23" → row 22, col 1 (0-indexed)
-        const colMatch = cell.match(/^([A-Z]+)(\d+)$/);
-        if (!colMatch) return null;
-        const colNum = colMatch[1].split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-        const rowNum = parseInt(colMatch[2], 10) - 1;
-        return {
-          repeatCell: {
-            range: { sheetId: writeTabSheetId, startRowIndex: rowNum, endRowIndex: rowNum + 1, startColumnIndex: colNum, endColumnIndex: colNum + 1 },
-            cell: { userEnteredFormat: { textFormat: { bold: true, italic: true } } },
-            fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.italic",
-          },
-        };
-      }).filter(Boolean);
+      // Apply bold + italic formatting to all written cells in background via waitUntil
+      scheduleWaitUntil_(async () => {
+        try {
+          const writeTabSheetId = await getSheetId(sheets, alert.clientId, writeTab);
+          const formatReqs = safeCellUpdates.map(({ cell }) => {
+            // Parse cell reference e.g. "B23" → row 22, col 1 (0-indexed)
+            const colMatch = cell.match(/^([A-Z]+)(\d+)$/);
+            if (!colMatch) return null;
+            const colNum = colMatch[1].split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+            const rowNum = parseInt(colMatch[2], 10) - 1;
+            return {
+              repeatCell: {
+                range: { sheetId: writeTabSheetId, startRowIndex: rowNum, endRowIndex: rowNum + 1, startColumnIndex: colNum, endColumnIndex: colNum + 1 },
+                cell: { userEnteredFormat: { textFormat: { bold: true, italic: true } } },
+                fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.italic",
+              },
+            };
+          }).filter(Boolean);
 
-      if (formatReqs.length > 0) {
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId: alert.clientId,
-          requestBody: { requests: formatReqs },
-          _skipFormulaRecompute: true,
-        });
-        console.log(`  ✅ Formatting applied (bold+italic) to ${formatReqs.length} cells`);
-      }
+          if (formatReqs.length > 0) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: alert.clientId,
+              requestBody: { requests: formatReqs },
+              _skipFormulaRecompute: true,
+            });
+            console.log(`  ✅ Formatting applied (bold+italic) to ${formatReqs.length} cells`);
+          }
+        } catch (fmtErr) {
+          console.warn("handleAcceptOption formatting warning:", fmtErr.message);
+        }
+      }, 50);
 
       // Adjust automatic placeholders (PLACE-INV / PLACE-EXP) on the job after Triage placement
       if (willAdjustPlaceholders) {
@@ -9523,6 +9591,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
             spreadsheetId: alert.clientId,
             requestBody: { requests: [] },
             _flushPendingRecompute: true,
+            _deferBackgroundRecompute: true,
           }).catch(() => { });
         }
       }
@@ -9559,19 +9628,19 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
     appendTriageLogBackground_(sheets, automationCommanderSheetId, logRow);
 
     // Update AlertMemory to "accepted" so runFullSweep doesn't re-raise this flag
+    let fpHashFinal = alert.fingerprintHash || buildAlertFingerprint(alert);
     try {
       await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-      const fpHash = alert.fingerprintHash || buildAlertFingerprint(alert);
-      const memoryRowsFinal = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [fpHash] });
-      const memRowFinal = findMemoryRow(memoryRowsFinal, fpHash);
-      const alertSummaryFinal = alert.summary?.summary || `${alert.type || alert.flagType} ${fpHash}`;
+      const memoryRowsFinal = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [fpHashFinal] });
+      const memRowFinal = findMemoryRow(memoryRowsFinal, fpHashFinal);
+      const alertSummaryFinal = alert.summary?.summary || `${alert.type || alert.flagType} ${fpHashFinal}`;
       if (memRowFinal && (!memRowFinal.clientName || !alert.clientName || matchesClientName(alert.clientName, memRowFinal.clientName))) {
         await updateAlertMemoryRow(sheets, automationCommanderSheetId, memRowFinal.rowIndex, {
           ...memRowFinal, status: "accepted",
         });
       } else {
         await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-          fingerprintHash: fpHash,
+          fingerprintHash: fpHashFinal,
           alertType: alert.type || alert.flagType || "unknown",
           clientName: alert.clientName || "",
           alertSummary: alertSummaryFinal,
@@ -9582,6 +9651,18 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
     } catch (memErr) {
       console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
     }
+
+    try {
+      const sessionUser = getSessionUser(req);
+      const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
+      const targetIds = [fpHashFinal, `${alert.sheetName}-${alert.rowNumber}`, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
+      invalidatePrecomputedMemoryCache();
+      prunePrecomputedInBackground_({
+        targetIds,
+        canRemoveClient,
+        label: "handleAcceptOption(final)",
+      });
+    } catch (rErr) { }
 
     const alertCat = (() => {
       const t = String(alert.type || alert.alertType || alert.flagType || "").toLowerCase();
@@ -9733,10 +9814,12 @@ export async function handleDeleteJob(req, res, sheets) {
       spreadsheetId: clientSheetId,
       requestBody: { ranges: clearRanges },
       _skipFormulaRecompute: restoreData.length > 0,
+      _deferBackgroundRecompute: restoreData.length === 0,
     });
     if (restoreData.length > 0) {
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: restoreData,
@@ -9758,18 +9841,18 @@ export async function handleDeleteJob(req, res, sheets) {
     ]);
 
     // Update AlertMemory so runFullSweep doesn't re-raise this flag
+    let delFpHash = alert.fingerprintHash || buildAlertFingerprint(alert);
     try {
       await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-      const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
-      const memoryRows = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [fingerprintHash] });
-      const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+      const memoryRows = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [delFpHash] });
+      const memoryRow = findMemoryRow(memoryRows, delFpHash);
       if (memoryRow && (!memoryRow.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow.clientName))) {
         await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
           ...memoryRow, status: "accepted",
         });
       } else {
         await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-          fingerprintHash,
+          fingerprintHash: delFpHash,
           alertType: alert.alertType || alert.type || "crm",
           clientName: alert.clientName || "",
           alertSummary: `Deleted: ${option.jobName}`,
@@ -9779,6 +9862,18 @@ export async function handleDeleteJob(req, res, sheets) {
     } catch (memErr) {
       console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
     }
+
+    try {
+      const sessionUser = getSessionUser(req);
+      const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
+      const targetIds = [delFpHash, `${alert.sheetName}-${alert.rowNumber}`, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
+      invalidatePrecomputedMemoryCache();
+      prunePrecomputedInBackground_({
+        targetIds,
+        canRemoveClient,
+        label: "handleDeleteJob",
+      });
+    } catch (rErr) { }
 
     logPmaActivity(sheets, {
       automationCommanderSheetId,
@@ -9902,7 +9997,10 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
       let foundClear = false;
 
       try {
-        const memoryRows = await readAlertMemory(sheets, acIdClean);
+        const memoryRows = await queryAlertMemoryTargeted(sheets, acIdClean, {
+          clientName,
+          alertType: flagType,
+        });
         const resolvedRows = memoryRows
           .filter(r => r.clientName === clientName && r.alertType === flagType && r.status !== "cached")
           .sort((a, b) => new Date(b.lastSeen || 0).getTime() - new Date(a.lastSeen || 0).getTime());
@@ -11902,45 +12000,51 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
     const responsePayload = { success: true, flagType, results, overallOk };
 
     if (targetLine && acIdClean && clientName && !req.body.secret) {
-      try {
-        const memoryRows = await readAlertMemory(sheets, acIdClean);
-        const matchRow = memoryRows.find(r =>
-          r.clientName === clientName &&
-          r.alertType === flagType &&
-          r.status === "cached" &&
-          String(r.alertSummary || "").trim() === String(targetLine).trim()
-        );
-        if (matchRow) {
-          await updateAlertMemoryRow(sheets, acIdClean, matchRow.rowIndex, {
-            ...matchRow,
-            cachedOptionsJSON: JSON.stringify(responsePayload),
+      scheduleWaitUntil_(async () => {
+        try {
+          const memoryRows = await queryAlertMemoryTargeted(sheets, acIdClean, {
+            clientName,
+            alertType: flagType,
+            status: "cached",
           });
-        }
-        if (!redisClient?.isOpen) await redisClient.connect();
-        const rawPrecomputed = await redisClient.get(PRECOMPUTED_KEY);
-        const precomputed = rawPrecomputed ? JSON.parse(rawPrecomputed) : null;
-        if (precomputed && Array.isArray(precomputed.noActionAlerts)) {
-          let updatedCache = false;
-          precomputed.noActionAlerts = precomputed.noActionAlerts.map(na => {
-            if (na.clientName === clientName && na.flagType === flagType && String(na.flagDetail || "").trim() === String(targetLine).trim()) {
-              updatedCache = true;
-              return { ...na, analysisResult: responsePayload };
-            }
-            return na;
-          });
-          if (updatedCache) {
-            if (matchRow?.fingerprintHash && precomputed.noActionAnalysisResults) {
-              precomputed.noActionAnalysisResults[`${clientName}___${matchRow.fingerprintHash}`] = responsePayload;
-            }
-            const serializedPrecomputed = JSON.stringify(precomputed);
-            await redisClient.set(PRECOMPUTED_KEY, serializedPrecomputed, { EX: 86400 * 7 });
-            _precomputedMemoryCache = serializedPrecomputed;
-            _precomputedCachedAt = Date.now();
+          const matchRow = memoryRows.find(r =>
+            r.clientName === clientName &&
+            r.alertType === flagType &&
+            r.status === "cached" &&
+            String(r.alertSummary || "").trim() === String(targetLine).trim()
+          );
+          if (matchRow) {
+            await updateAlertMemoryRow(sheets, acIdClean, matchRow.rowIndex, {
+              ...matchRow,
+              cachedOptionsJSON: JSON.stringify(responsePayload),
+            });
           }
+          if (!redisClient?.isOpen) await redisClient.connect();
+          const rawPrecomputed = await redisClient.get(PRECOMPUTED_KEY);
+          const precomputed = rawPrecomputed ? JSON.parse(rawPrecomputed) : null;
+          if (precomputed && Array.isArray(precomputed.noActionAlerts)) {
+            let updatedCache = false;
+            precomputed.noActionAlerts = precomputed.noActionAlerts.map(na => {
+              if (na.clientName === clientName && na.flagType === flagType && String(na.flagDetail || "").trim() === String(targetLine).trim()) {
+                updatedCache = true;
+                return { ...na, analysisResult: responsePayload };
+              }
+              return na;
+            });
+            if (updatedCache) {
+              if (matchRow?.fingerprintHash && precomputed.noActionAnalysisResults) {
+                precomputed.noActionAnalysisResults[`${clientName}___${matchRow.fingerprintHash}`] = responsePayload;
+              }
+              const serializedPrecomputed = JSON.stringify(precomputed);
+              await redisClient.set(PRECOMPUTED_KEY, serializedPrecomputed, { EX: 86400 * 7 });
+              _precomputedMemoryCache = serializedPrecomputed;
+              _precomputedCachedAt = Date.now();
+            }
+          }
+        } catch (cacheUpdateErr) {
+          console.warn(`  ⚠ Could not persist updated no-action analysis to cache: ${cacheUpdateErr.message}`);
         }
-      } catch (cacheUpdateErr) {
-        console.warn(`  ⚠ Could not persist updated no-action analysis to cache: ${cacheUpdateErr.message}`);
-      }
+      }, 25);
     }
 
     return res.status(200).json(responsePayload);

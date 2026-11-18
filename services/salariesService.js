@@ -23,6 +23,7 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
 import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
+import { scheduleWaitUntil_ } from "./alertState.js";
 import { parseSheetDate, toInputDateFormat, toSheetDateFormat } from "../utils/helpers.js";
 
 export function colIdxToLetter(colIdx) {
@@ -588,19 +589,25 @@ export async function saveEmployeeData({
       spreadsheetId: targetSheetId,
       range: `Salaries!A${sheetRow}:I${sheetRow}`,
       valueInputOption: "USER_ENTERED",
+      _deferBackgroundRecompute: Boolean(clientSheetId),
       requestBody: { values: [vals] },
     })
   );
 
   await invalidateSalariesCache(masterSheetId, clientSheetId);
 
-  await logPmaActivity({
-    userEmail: sessionUser?.email || "unknown",
-    action: "UPDATE_EMPLOYEE",
-    details: `Updated employee row ${sheetRow} (${employeeData.name || "Unnamed"}) for client ${clientName}`,
-  }).catch(() => { });
+  scheduleWaitUntil_(() =>
+    logPmaActivity({
+      clientName: clientName || "Client",
+      category: "SALARIES",
+      userEmail: sessionUser?.email || "unknown",
+      action: "UPDATE_EMPLOYEE",
+      summary: `Updated employee "${employeeData.name || "Unnamed"}" for ${clientName || "Client"}`,
+      details: `Updated employee row ${sheetRow} (${employeeData.name || "Unnamed"}) for client ${clientName}`,
+    })
+  , 25);
 
-  return { success: true, message: `Employee row ${sheetRow} updated successfully.` };
+  return { success: true, message: "Employee updated successfully." };
 }
 
 export async function saveSalaryAmountOverride({
@@ -636,17 +643,23 @@ export async function saveSalaryAmountOverride({
       spreadsheetId: targetSheetId,
       range: `Salaries!${cleanStartLetter}${targetRow}:${endColLetter}${targetRow}`,
       valueInputOption: "USER_ENTERED",
+      _deferBackgroundRecompute: Boolean(clientSheetId),
       requestBody: { values: [sanitized] },
     })
   );
 
   await invalidateSalariesCache(masterSheetId, clientSheetId);
 
-  await logPmaActivity({
-    userEmail: sessionUser?.email || "unknown",
-    action: "UPDATE_SALARY_OVERRIDE",
-    details: `Updated salary override row ${targetRow} col ${colLetterStart} for client ${clientName}`,
-  }).catch(() => { });
+  scheduleWaitUntil_(() =>
+    logPmaActivity({
+      clientName: clientName || "Client",
+      category: "SALARIES",
+      userEmail: sessionUser?.email || "unknown",
+      action: "UPDATE_SALARY_OVERRIDE",
+      summary: `Updated salary amount override for ${clientName || "Client"}`,
+      details: `Updated salary override row ${targetRow} col ${colLetterStart} for client ${clientName}`,
+    })
+  , 25);
 
   return { success: true, message: "Salary amount override saved." };
 }
@@ -706,6 +719,7 @@ export async function saveDividendsData({
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
+        _deferBackgroundRecompute: Boolean(clientSheetId),
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data,
@@ -716,11 +730,16 @@ export async function saveDividendsData({
 
   await invalidateSalariesCache(masterSheetId, clientSheetId);
 
-  await logPmaActivity({
-    userEmail: sessionUser?.email || "unknown",
-    action: "UPDATE_DIVIDENDS",
-    details: `Updated dividends row ${sheetRow} for client ${clientName}`,
-  }).catch(() => { });
+  scheduleWaitUntil_(() =>
+    logPmaActivity({
+      clientName: clientName || "Client",
+      category: "DIVIDENDS",
+      userEmail: sessionUser?.email || "unknown",
+      action: "UPDATE_DIVIDENDS",
+      summary: `Updated dividends for ${clientName || "Client"}`,
+      details: `Updated dividends row ${sheetRow} for client ${clientName}`,
+    }).catch(() => { })
+  , 25);
 
   return { success: true, message: "Dividends updated successfully." };
 }

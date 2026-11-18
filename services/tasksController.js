@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient";
 import {
-  buildAlertFingerprint, ensureAlertMemoryTab, readAlertMemory,
+  buildAlertFingerprint, ensureAlertMemoryTab, queryAlertMemoryTargeted,
   findMemoryRow, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow,
   appendAlertMemoryRowsBatch, updateHandledAlertHash, updateHandledAlertHashesBatch,
   updateAlertMemoryCacheInPlace
@@ -99,7 +99,7 @@ export async function updateTasksInCache(taskRows, remove = false) {
     try {
       const cached = await redisClient.get("triage_tasks_cache");
       if (cached) tasks = JSON.parse(cached);
-    } catch (e) {}
+    } catch (e) { }
   }
   if (!tasks) tasks = [];
 
@@ -121,7 +121,7 @@ export async function updateTasksInCache(taskRows, remove = false) {
   if (redisClient?.isOpen) {
     try {
       await redisClient.set("triage_tasks_cache", JSON.stringify(tasks), { EX: 86400 * 7 });
-    } catch (e) {}
+    } catch (e) { }
   }
 }
 
@@ -135,7 +135,7 @@ export async function invalidateTasksCache() {
   if (redisClient?.isOpen) {
     try {
       await redisClient.del("triage_tasks_cache");
-    } catch (e) {}
+    } catch (e) { }
   }
 }
 
@@ -172,7 +172,7 @@ export async function handleBulkCreateTasks(req, res, sheets) {
         const isInfoAlert = Boolean(alert.isInfo || alert.category === "informational");
         const category = isProactiveAlert ? "proactive" : (isInfoAlert ? "informational" : "discrepancy");
 
-        const taskRef = `TASK-${Date.now()}-${Math.random().toString(36).slice(2,7).toUpperCase()}`;
+        const taskRef = `TASK-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
         const taskKey = `${alert.clientName}||${alertType || "alert"}||${taskRef}`;
         const alertSummary = alert.summary?.summary || alert.heading || `${alertType || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
         const isAdminOnly = ADMIN_ONLY_ALERT_TYPES.has(alertType);
@@ -257,7 +257,12 @@ export async function handleBulkCreateTasks(req, res, sheets) {
     const syncBulkToSheets = async () => {
       try {
         await ensureAlertMemoryTab(sheets, acId);
-        const memoryRows = await readAlertMemory(sheets, acId);
+        const taskHashes = taskMetaEntries.flatMap(m => [m.fingerprintHash, m.legacyHash]).filter(Boolean);
+        const taskClients = taskMetaEntries.map(m => m.clientName).filter(Boolean);
+        const memoryRows = await queryAlertMemoryTargeted(sheets, acId, {
+          hashes: taskHashes,
+          clientNames: taskClients,
+        });
         const toUpdate = [];
         const toAppend = [];
         const queuedRowIndices = new Set();
@@ -368,7 +373,7 @@ export async function handleCreateTask(req, res, sheets) {
       try {
         const cached = await redisClient.get("triage_tasks_cache");
         if (cached) currentTasks = JSON.parse(cached);
-      } catch (e) {}
+      } catch (e) { }
     }
     if (currentTasks) {
       const existingTask = currentTasks.find(r => r.status === "task" && (r.taskKey === taskKey || r.fingerprintHash === fingerprintHash));
@@ -381,29 +386,29 @@ export async function handleCreateTask(req, res, sheets) {
 
     const alertFieldsSnapshot = {
       alertType,
-      invoiceNo:     alert.summary?.invoiceNo     || "",
-      reference:     alert.summary?.reference     || "",
-      amount:        String(alert.summary?.amount || ""),
-      status:        alert.summary?.status        || "",
-      flagType:      alert.flagType               || "",
-      masterSheetId: alert.masterSheetId          || "",
+      invoiceNo: alert.summary?.invoiceNo || "",
+      reference: alert.summary?.reference || "",
+      amount: String(alert.summary?.amount || ""),
+      status: alert.summary?.status || "",
+      flagType: alert.flagType || "",
+      masterSheetId: alert.masterSheetId || "",
       taskKey,
     };
 
     const taskMeta = {
-      taskNote:          taskNote || "",
-      taskCreatedAt:     now,
+      taskNote: taskNote || "",
+      taskCreatedAt: now,
       createdByEmail,
       createdByName,
       isAdminOnly,
-      snoozedUntil:      snoozedUntil || "",
-      furtherNotes:      [], 
+      snoozedUntil: snoozedUntil || "",
+      furtherNotes: [],
       taskKey,
-      isProactive:       effectiveIsProactive,
+      isProactive: effectiveIsProactive,
       proactiveAlertKey: effectiveAlertKey,
-      alertKey:          effectiveAlertKey || undefined,
-      legacyAlertKey:    rawLegacyKey || undefined,
-      alertData:         JSON.stringify(alert), 
+      alertKey: effectiveAlertKey || undefined,
+      legacyAlertKey: rawLegacyKey || undefined,
+      alertData: JSON.stringify(alert),
     };
 
     const createdRow = {
@@ -473,7 +478,10 @@ export async function handleCreateTask(req, res, sheets) {
     const syncToSheets = async () => {
       try {
         await ensureAlertMemoryTab(sheets, acId);
-        const memoryRows = await readAlertMemory(sheets, acId);
+        const memoryRows = await queryAlertMemoryTargeted(sheets, acId, {
+          hashes: [matchCriteria.fingerprintHash, matchCriteria.legacyHash].filter(Boolean),
+          ...(matchCriteria.clientName ? { clientName: matchCriteria.clientName } : {}),
+        });
         const candidates = findMatchingTaskMemoryCandidates_(memoryRows, matchCriteria);
 
         if (candidates.length > 0) {
@@ -550,12 +558,14 @@ export async function handleGetTasks(req, res, sheets) {
       try {
         const cached = await redisClient.get(TASK_CACHE_KEY);
         if (cached) allTasks = JSON.parse(cached);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     if (!allTasks) {
       await ensureAlertMemoryTab(sheets, acId);
-      const rows = await readAlertMemory(sheets, acId);
+      const rows = await queryAlertMemoryTargeted(sheets, acId, {
+        statuses: ["task", "task_resolved"],
+      });
       allTasks = rows.filter(r => r.status === "task" || r.status === "task_resolved");
       if (redisClient?.isOpen) {
         await redisClient.set(TASK_CACHE_KEY, JSON.stringify(allTasks), { EX: TASK_CACHE_TTL_S });
@@ -567,7 +577,7 @@ export async function handleGetTasks(req, res, sheets) {
     const now = new Date();
     const parsed = allTasks.map(r => {
       let taskMeta = {};
-      try { taskMeta = JSON.parse(r.dataSnapshot || "{}"); } catch (e) {}
+      try { taskMeta = JSON.parse(r.dataSnapshot || "{}"); } catch (e) { }
       const snoozedUntil = taskMeta.snoozedUntil ? new Date(taskMeta.snoozedUntil) : null;
       const isSnoozed = snoozedUntil && snoozedUntil > now;
       const isResolved = r.status === "task_resolved";
@@ -577,26 +587,26 @@ export async function handleGetTasks(req, res, sheets) {
       const createdByName = taskMeta.createdByName || "";
 
       return {
-        fingerprintHash:   r.fingerprintHash,
+        fingerprintHash: r.fingerprintHash,
         alertType,
-        clientName:        r.clientName,
-        alertSummary:      r.alertSummary,
-        firstSeen:         r.firstSeen,
-        lastSeen:          r.lastSeen,
-        taskNote:          taskMeta.taskNote || "",
-        taskCreatedAt:     taskMeta.taskCreatedAt || r.firstSeen || "",
-        snoozedUntil:      taskMeta.snoozedUntil || "",
+        clientName: r.clientName,
+        alertSummary: r.alertSummary,
+        firstSeen: r.firstSeen,
+        lastSeen: r.lastSeen,
+        taskNote: taskMeta.taskNote || "",
+        taskCreatedAt: taskMeta.taskCreatedAt || r.firstSeen || "",
+        snoozedUntil: taskMeta.snoozedUntil || "",
         isSnoozed,
         isResolved,
         isAdminOnly,
         createdByEmail,
         createdByName,
-        furtherNotes:      taskMeta.furtherNotes || [],
-        taskKey:           taskMeta.taskKey || "",
-        isProactive:       !!taskMeta.isProactive,
+        furtherNotes: taskMeta.furtherNotes || [],
+        taskKey: taskMeta.taskKey || "",
+        isProactive: !!taskMeta.isProactive,
         cachedOptionsJSON: r.cachedOptionsJSON || "",
-        alertDataJSON:     taskMeta.alertData || "",
-        resolvedAt:        taskMeta.resolvedAt || "",
+        alertDataJSON: taskMeta.alertData || "",
+        resolvedAt: taskMeta.resolvedAt || "",
       };
     });
 
@@ -691,7 +701,7 @@ export async function handleAddTaskNote(req, res, sheets) {
   if (!fingerprintHash || !noteText || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, acId, { hashes: [fingerprintHash] });
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     if (!memoryRow || (memoryRow.status !== "task" && memoryRow.status !== "task_resolved")) {
       return res.status(404).json({ success: false, error: "Task not found" });
@@ -704,12 +714,12 @@ export async function handleAddTaskNote(req, res, sheets) {
     }
 
     let taskMeta = {};
-    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
     const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
     if (!sessionUser.isAdmin && isAdminOnly) {
       return res.status(403).json({ success: false, error: "Access denied: task belongs to an Admin-only alert" });
     }
-    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
     const notes = Array.isArray(taskMeta.furtherNotes) ? taskMeta.furtherNotes : [];
     notes.push({ text: noteText, timestamp: new Date().toISOString() });
     taskMeta.furtherNotes = notes;
@@ -741,7 +751,7 @@ export async function handleSnoozeTask(req, res, sheets) {
   if (hashes.length === 0 || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, acId, { hashes });
     const sessionUser = getSessionUser(req);
     if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
 
@@ -757,7 +767,7 @@ export async function handleSnoozeTask(req, res, sheets) {
       }
 
       let taskMeta = {};
-      try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+      try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
       const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
       if (!sessionUser.isAdmin && isAdminOnly) {
         continue;
@@ -823,7 +833,7 @@ export async function handleRevertTaskToAlert(req, res, sheets) {
   if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, acId, { hashes: [fingerprintHash] });
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     if (!memoryRow || (memoryRow.status !== "task" && memoryRow.status !== "task_resolved")) {
       return res.status(404).json({ success: false, error: "Task not found" });
@@ -835,7 +845,7 @@ export async function handleRevertTaskToAlert(req, res, sheets) {
       return res.status(403).json({ success: false, error: "Access denied to this client's tasks" });
     }
     let taskMeta = {};
-    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
     const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
     if (!sessionUser.isAdmin && isAdminOnly) {
       return res.status(403).json({ success: false, error: "Access denied: task belongs to an Admin-only alert" });
@@ -920,7 +930,7 @@ export async function handleResolveTask(req, res, sheets) {
   if (hashes.length === 0 || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, acId, { hashes });
     const sessionUser = getSessionUser(req);
     if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
 
@@ -936,7 +946,7 @@ export async function handleResolveTask(req, res, sheets) {
       }
 
       let taskMeta = {};
-      try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+      try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
       const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
       if (!sessionUser.isAdmin && isAdminOnly) {
         continue;
@@ -990,7 +1000,7 @@ export async function handleUpdateTask(req, res, sheets) {
   const sessionUser = getSessionUser(req);
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, acId, { hashes: [fingerprintHash] });
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     if (!memoryRow || (memoryRow.status !== "task" && memoryRow.status !== "task_resolved")) {
       return res.status(404).json({ success: false, error: "Task not found" });
@@ -1004,7 +1014,7 @@ export async function handleUpdateTask(req, res, sheets) {
     }
 
     let taskMeta = {};
-    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
     const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
     if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && isAdminOnly) {
       return res.status(403).json({ success: false, error: "Forbidden: Access denied to Admin-only task." });
@@ -1041,24 +1051,27 @@ export async function handleCheckExistingTask(req, res, sheets) {
       try {
         const cached = await redisClient.get("triage_tasks_cache");
         if (cached) tasksList = JSON.parse(cached);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     let match = null;
     if (tasksList && tasksList.length > 0) {
-      match = tasksList.find(r => (r.status === "task") && (() => { try { return JSON.parse(r.dataSnapshot || "{}").taskKey === taskKey; } catch(e) { return false; } })());
+      match = tasksList.find(r => (r.status === "task") && (() => { try { return JSON.parse(r.dataSnapshot || "{}").taskKey === taskKey; } catch (e) { return false; } })());
     }
 
     if (!match && !tasksList) {
       await ensureAlertMemoryTab(sheets, acId);
-      const memoryRows = await readAlertMemory(sheets, acId);
-      match = memoryRows.find(r => (r.status === "task") && (() => { try { return JSON.parse(r.dataSnapshot || "{}").taskKey === taskKey; } catch(e) { return false; } })());
+      const memoryRows = await queryAlertMemoryTargeted(sheets, acId, {
+        status: "task",
+        ...(alert.clientName ? { clientName: alert.clientName } : {}),
+      });
+      match = memoryRows.find(r => (r.status === "task") && (() => { try { return JSON.parse(r.dataSnapshot || "{}").taskKey === taskKey; } catch (e) { return false; } })());
     }
 
     if (!match) return res.status(200).json({ success: true, found: false });
 
     let taskMeta = {};
-    try { taskMeta = JSON.parse(match.dataSnapshot || "{}"); } catch (e) {}
+    try { taskMeta = JSON.parse(match.dataSnapshot || "{}"); } catch (e) { }
     const snoozedUntil = taskMeta.snoozedUntil ? new Date(taskMeta.snoozedUntil) : null;
 
     return res.status(200).json({

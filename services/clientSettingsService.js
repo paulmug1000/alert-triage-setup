@@ -16,7 +16,7 @@
  */
 
 import { getSheetsClient, withRetry } from "./sheetsClient.js";
-import { redisClient } from "./redisClient.js";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { clearAllClientsMemoryCache, getClientWebAppUrl } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
@@ -672,7 +672,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
           String(existingSetup.googleSheetUrl || "") !== String(nextSetup.googleSheetUrl || "");
         if (existingSetup.revenueFocus !== revFocus || existingSetup.directCostsMode !== dcMode || excelChanged || gsheetChanged) {
           await redisClient.set(setupKey, JSON.stringify(nextSetup));
-          const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+          const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
           if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
           clearAllClientsMemoryCache();
           clearSsrClientsMemoryCache();
@@ -1277,7 +1277,7 @@ export async function saveClientSettings({
           savedAt
         );
         await redisClient.set(setupKey, JSON.stringify(nextSetup));
-        const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+        const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
         if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
         clearAllClientsMemoryCache();
         clearSsrClientsMemoryCache();

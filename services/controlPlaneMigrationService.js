@@ -12,7 +12,7 @@ import fs from "fs";
 import path from "path";
 import { getSupabaseAdmin, isSupabaseConfigured, getControlPlaneSource } from "./supabaseClient.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
-import { redisClient } from "./redisClient.js";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { getCanonicalAcSheetId } from "./userPermissions.js";
 import { TRACKER_SHEET_ID } from "./setupService.js";
 import { ALERT_MEMORY_RANGE, normalizeCategoryForType } from "./alertMemory.js";
@@ -560,7 +560,7 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
   let vaultCount = 0;
   if (redisClient?.isOpen) {
     try {
-      const vaultKeys = await redisClient.keys("pulse:vault:client:*");
+      const vaultKeys = await scanRedisKeys("pulse:vault:client:*");
       const sharedXero = await redisClient.get("pulse:vault:shared:xero");
       const vaultRows = [];
 

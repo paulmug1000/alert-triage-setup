@@ -71,7 +71,7 @@ if (!global._pulseMemoryCache) {
 }
 
 import { waitUntil } from "@vercel/functions";
-import { redisClient } from "./redisClient.js";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
 
 /**
@@ -127,7 +127,7 @@ export async function del2TierCache(keyOrPattern) {
   try {
     if (redisClient?.isOpen) {
       if (keyOrPattern.includes("*")) {
-        const keys = await redisClient.keys(keyOrPattern);
+        const keys = await scanRedisKeys(keyOrPattern);
         if (keys && keys.length > 0) {
           await redisClient.del(keys);
         }

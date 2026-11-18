@@ -1,7 +1,8 @@
-import { redisClient } from "./redisClient.js";
+import { waitUntil } from "@vercel/functions";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { getSheetsClient, extractSheetIdFromUrl, sanitizeFormulaInput } from "./sheetsClient.js";
 import {
-  readAlertMemory, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow, appendAlertMemoryRowsBatch,
+  queryAlertMemoryTargeted, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow, appendAlertMemoryRowsBatch,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
   extractCrmComparisonSnapshot, deleteAlertMemoryRows, deleteAlertMemoryEntryByHash,
   updateHandledAlertHash, updateHandledAlertHashesBatch, readHandledAlertHashes
@@ -25,7 +26,11 @@ export async function handleBustCache(req, res, sheets) {
     return res.status(403).json({ success: false, error: "Forbidden" });
   }
   try {
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const memoryRows = await queryAlertMemoryTargeted(
+      sheets,
+      acId,
+      fingerprintHash ? { hashes: [fingerprintHash] } : { status: "cached" }
+    );
     let row = null;
     if (fingerprintHash) {
       row = findMemoryRow(memoryRows, fingerprintHash);
@@ -398,7 +403,15 @@ export async function resolveAssignedAlertsInMemoryAndCache(sheets, {
 
     if (sheets && targetAcId) {
       try {
-        const memoryRows = await readAlertMemory(sheets, targetAcId);
+        const targetTypes = [
+          ...(cleanExpIds.size > 0 ? ["contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr", "expense"] : []),
+          ...(cleanInvNos.size > 0 ? ["invoiceDashboardDiscr", "invoice"] : []),
+        ];
+        const memoryRows = await queryAlertMemoryTargeted(sheets, targetAcId, {
+          ...(clientName ? { clientName } : {}),
+          alertTypes: targetTypes,
+          statuses: ["cached", "pending_automation"],
+        });
         const nowIso = new Date().toISOString();
         const batchUpdates = [];
 
@@ -655,7 +668,12 @@ export async function handleResolveNoActionFlag(req, res, sheets) {
       try {
         const acIdClean = extractSheetIdFromUrl(acIdResolve) || acIdResolve;
         const [memoryRows, handledMap] = await Promise.all([
-          readAlertMemory(sheets, acIdClean),
+          queryAlertMemoryTargeted(sheets, acIdClean, {
+            hashes: fingerprintHash ? [fingerprintHash] : [],
+            clientName,
+            alertType: flagType,
+            statuses: ["cached", "pending_automation"],
+          }),
           readHandledAlertHashes(sheets, acIdClean, false),
         ]);
         const toAccept = memoryRows.filter(r => {
@@ -664,9 +682,11 @@ export async function handleResolveNoActionFlag(req, res, sheets) {
           if (fingerprintHash) return r.fingerprintHash === fingerprintHash;
           return true;
         });
-        for (const row of toAccept) {
-          if (preserveTaskStatus && row.fingerprintHash && handledMap?.[row.fingerprintHash] === "task") continue;
-          await updateAlertMemoryRow(sheets, acIdClean, row.rowIndex, { ...row, status: "accepted" });
+        const validUpdates = toAccept
+          .filter(row => !(preserveTaskStatus && row.fingerprintHash && handledMap?.[row.fingerprintHash] === "task"))
+          .map(row => ({ rowIndex: row.rowIndex, updates: { ...row, status: "accepted" } }));
+        if (validUpdates.length > 0) {
+          await updateAlertMemoryRowsBatch(sheets, acIdClean, validUpdates);
         }
         if (!preserveTaskStatus && fingerprintHash && handledMap?.[fingerprintHash] !== "task") {
           await updateHandledAlertHash(acIdClean, fingerprintHash, "accepted");
@@ -801,8 +821,13 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
     if (acIdResolve) {
       try {
         const acIdClean = extractSheetIdFromUrl(acIdResolve) || acIdResolve;
+        const flagHashes = flags.map(f => f.fingerprintHash).filter(Boolean);
         const [memoryRows, handledMap] = await Promise.all([
-          readAlertMemory(sheets, acIdClean),
+          queryAlertMemoryTargeted(sheets, acIdClean, {
+            hashes: flagHashes,
+            clientName,
+            statuses: ["cached", "pending_automation"],
+          }),
           readHandledAlertHashes(sheets, acIdClean, false),
         ]);
         const hashesSet = new Set(flags.map(f => f.fingerprintHash).filter(Boolean));
@@ -891,8 +916,8 @@ export async function handleRecordDecision(req, res, sheets) {
     if (decision.action === "ACCEPTED") {
       try {
         await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-        const memRows = await readAlertMemory(sheets, automationCommanderSheetId);
         const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
+        const memRows = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [fp] });
         const mr = findMemoryRow(memRows, fp);
         const alertSummary = alert.summary?.summary || `${alert.type || alert.flagType || "alert"} ${alert.summary?.invoiceNo || alert.summary?.description || ""} £${alert.summary?.amount || ""}`.trim();
         const isMrClientMatch = mr && (
@@ -966,7 +991,8 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
   const sessionUser = getSessionUser(req, res);
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const batchHashes = alertsToIgnore.map(a => a?.fingerprintHash || buildAlertFingerprint(a)).filter(Boolean);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, acId, { hashes: batchHashes });
     const rowsToAppend = [];
     const rowsToUpdate = [];
     const targetIdsToRemove = [];
@@ -1169,46 +1195,73 @@ function findMatchingProactiveMemoryCandidates_(memoryRows, {
 
 async function removeResolvedProactiveFromCaches_({ sessionId, targetIds, canRemoveClient }) {
   const activeSessionRedisKey = sessionId ? `triage_alerts:${sessionId}` : null;
-  if (activeSessionRedisKey) {
-    try {
-      const sessionData = await redisClient.get(activeSessionRedisKey);
-      if (sessionData) {
-        const parsed = JSON.parse(sessionData);
-        const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, canRemoveClient);
-        if (removedCount > 0) {
-          await redisClient.set(activeSessionRedisKey, JSON.stringify(parsed), { EX: 86400 * 7 });
-        }
-      }
-    } catch (e) { }
-  }
-  try {
-    if (redisClient?.isOpen) {
-      const allSessionKeys = await redisClient.keys("triage_alerts:*").catch(() => []);
-      for (const sKey of allSessionKeys) {
-        if (sKey === activeSessionRedisKey) continue;
+  if (redisClient?.isOpen) {
+    await Promise.all([
+      activeSessionRedisKey
+        ? (async () => {
+          try {
+            const sessionData = await redisClient.get(activeSessionRedisKey);
+            if (sessionData) {
+              const parsed = JSON.parse(sessionData);
+              const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, canRemoveClient);
+              if (removedCount > 0) {
+                await redisClient.set(activeSessionRedisKey, JSON.stringify(parsed), { EX: 86400 * 7 });
+              }
+            }
+          } catch (e) { }
+        })()
+        : Promise.resolve(),
+      (async () => {
         try {
-          const sData = await redisClient.get(sKey);
-          if (!sData) continue;
-          const parsed = JSON.parse(sData);
-          const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, canRemoveClient);
-          if (removedCount > 0) {
-            await redisClient.set(sKey, JSON.stringify(parsed), { EX: 86400 * 7 });
+          const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+          if (preRaw) {
+            const pre = JSON.parse(preRaw);
+            const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
+            if (removedCount > 0) {
+              await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+            }
           }
-        } catch (_) { }
-      }
-    }
-  } catch (e) { }
-  try {
-    const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-    if (preRaw) {
-      const pre = JSON.parse(preRaw);
-      const { removedCount } = applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
-      if (removedCount > 0) {
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-      }
-    }
-  } catch (e) { }
+        } catch (e) { }
+      })(),
+    ]);
+  }
   invalidatePrecomputedMemoryCache();
+
+  // Sweep other active sessions in the background using non-blocking SCAN + parallel chunks
+  if (redisClient?.isOpen) {
+    const sweepOtherSessions = async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      try {
+        const allSessionKeys = await scanRedisKeys("triage_alerts:*");
+        const otherKeys = allSessionKeys.filter((sKey) => sKey && sKey !== activeSessionRedisKey);
+        for (let i = 0; i < otherKeys.length; i += 10) {
+          const chunk = otherKeys.slice(i, i + 10);
+          await Promise.all(
+            chunk.map(async (sKey) => {
+              try {
+                const sData = await redisClient.get(sKey);
+                if (!sData) return;
+                const parsed = JSON.parse(sData);
+                const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, canRemoveClient);
+                if (removedCount > 0) {
+                  await redisClient.set(sKey, JSON.stringify(parsed), { EX: 86400 * 7 });
+                }
+              } catch (_) { }
+            })
+          );
+        }
+      } catch (_) { }
+    };
+    try {
+      if (typeof waitUntil === "function") {
+        waitUntil(sweepOtherSessions());
+      } else {
+        sweepOtherSessions();
+      }
+    } catch {
+      sweepOtherSessions();
+    }
+  }
 }
 
 function getProactiveActivityCategory_(alertKey) {
@@ -1237,7 +1290,10 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
     const legacyFingerprintHash = rawLegacyKey ? createHash("sha256").update(rawLegacyKey).digest("hex").substring(0, 16) : null;
 
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, acId, {
+      hashes: [fingerprintHash, legacyFingerprintHash].filter(Boolean),
+      ...(clientName ? { clientName } : {}),
+    });
     const candidateMatches = findMatchingProactiveMemoryCandidates_(memoryRows, {
       alertKey: effectiveAlertKey,
       fingerprintHash,
@@ -1276,23 +1332,26 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
       try { snap = JSON.parse(primaryRow.dataSnapshot || "{}"); } catch (e) { }
       if (alertData) snap = { ...snap, ...alertData };
 
-      // Supersede duplicates first so primaryRow remains authoritative in Supabase and cache
+      const batchUpdates = [];
       for (const dup of candidateMatches.slice(1)) {
         if (dup.rowIndex === primaryRow.rowIndex) continue;
-        await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
-          ...dup,
-          status: "superseded"
+        batchUpdates.push({
+          rowIndex: dup.rowIndex,
+          updates: { ...dup, status: "superseded" },
         });
       }
-
-      await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, {
-        ...primaryRow,
-        _previousFingerprintHash: primaryRow.fingerprintHash,
-        fingerprintHash,
-        status: "accepted",
-        clientName: clientName || primaryRow.clientName || "",
-        dataSnapshot: JSON.stringify(snap)
+      batchUpdates.push({
+        rowIndex: primaryRow.rowIndex,
+        updates: {
+          ...primaryRow,
+          _previousFingerprintHash: primaryRow.fingerprintHash,
+          fingerprintHash,
+          status: "accepted",
+          clientName: clientName || primaryRow.clientName || "",
+          dataSnapshot: JSON.stringify(snap),
+        },
       });
+      await updateAlertMemoryRowsBatch(sheets, acId, batchUpdates);
     } else {
       const snapStr = alertData ? JSON.stringify(alertData) : "";
       await appendAlertMemoryRow(sheets, acId, {
@@ -1301,8 +1360,12 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
       });
     }
 
+    const handledByHash = {};
     for (const h of hashesToMark) {
-      await updateHandledAlertHash(acId, h, "accepted");
+      if (h) handledByHash[h] = "accepted";
+    }
+    if (Object.keys(handledByHash).length > 0) {
+      await updateHandledAlertHashesBatch(acId, handledByHash);
     }
 
     const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
@@ -1339,7 +1402,10 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
     const legacyFingerprintHash = rawLegacyKey ? createHash("sha256").update(rawLegacyKey).digest("hex").substring(0, 16) : null;
 
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, acId, {
+      hashes: [fingerprintHash, legacyFingerprintHash].filter(Boolean),
+      ...(clientName ? { clientName } : {}),
+    });
     const candidateMatches = findMatchingProactiveMemoryCandidates_(memoryRows, {
       alertKey: effectiveAlertKey,
       fingerprintHash,
@@ -1379,23 +1445,26 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
       if (alertData) snapObj = { ...snapObj, ...alertData };
       snapObj.resolution = resolution;
 
-      // Supersede duplicates first so primaryRow remains authoritative in Supabase and cache
+      const batchUpdates = [];
       for (const dup of candidateMatches.slice(1)) {
         if (dup.rowIndex === primaryRow.rowIndex) continue;
-        await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
-          ...dup,
-          status: "superseded"
+        batchUpdates.push({
+          rowIndex: dup.rowIndex,
+          updates: { ...dup, status: "superseded" },
         });
       }
-
-      await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, {
-        ...primaryRow,
-        _previousFingerprintHash: primaryRow.fingerprintHash,
-        fingerprintHash,
-        status: "accepted",
-        clientName: clientName || primaryRow.clientName || "",
-        dataSnapshot: JSON.stringify(snapObj)
+      batchUpdates.push({
+        rowIndex: primaryRow.rowIndex,
+        updates: {
+          ...primaryRow,
+          _previousFingerprintHash: primaryRow.fingerprintHash,
+          fingerprintHash,
+          status: "accepted",
+          clientName: clientName || primaryRow.clientName || "",
+          dataSnapshot: JSON.stringify(snapObj),
+        },
       });
+      await updateAlertMemoryRowsBatch(sheets, acId, batchUpdates);
     } else {
       const snapObj = alertData ? { ...alertData, resolution } : { resolution };
       await appendAlertMemoryRow(sheets, acId, {
@@ -1404,8 +1473,12 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
       });
     }
 
+    const handledByHash = {};
     for (const h of hashesToMark) {
-      await updateHandledAlertHash(acId, h, "accepted");
+      if (h) handledByHash[h] = "accepted";
+    }
+    if (Object.keys(handledByHash).length > 0) {
+      await updateHandledAlertHashesBatch(acId, handledByHash);
     }
 
     const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
@@ -1470,7 +1543,21 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
   }
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
+    const bulkHashes = new Set();
+    const bulkClients = new Set();
+    if (clientName) bulkClients.add(clientName);
+    for (const item of itemsToProcess) {
+      const ek = item.alertKey || item.alertData?.alertKey || "";
+      const lk = item.alertData?.legacyAlertKey || item.alertData?.metadata?.legacyAlertKey || "";
+      if (ek) bulkHashes.add(createHash("sha256").update(ek).digest("hex").substring(0, 16));
+      if (lk) bulkHashes.add(createHash("sha256").update(lk).digest("hex").substring(0, 16));
+      if (item.alertData?.fingerprintHash) bulkHashes.add(item.alertData.fingerprintHash);
+      if (item.clientName) bulkClients.add(item.clientName);
+    }
+    const memoryRows = await queryAlertMemoryTargeted(sheets, acId, {
+      hashes: [...bulkHashes],
+      clientNames: [...bulkClients],
+    });
     const hashesToRemoveSet = new Set();
     const hashesToMarkHandled = {};
     const updateBatchItems = [];
@@ -1599,7 +1686,9 @@ export async function handleUnignoreAlert(req, res, sheets) {
   const sessionUser = getSessionUser(req);
   try {
     await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-    const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, {
+      hashes: [fingerprintHash],
+    });
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     if (!memoryRow) return res.status(404).json({ success: false, error: "Alert not found in memory" });
     if (!req.isSystemAuthorized && (!sessionUser || (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)))) {
@@ -1636,7 +1725,9 @@ export async function handleGetIgnoredAlerts(req, res, sheets) {
   if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
   try {
     await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-    const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, {
+      statuses: ["ignored", "superseded"],
+    });
     let ignoredAlerts = memoryRows
       .filter(r => r.status === "ignored" || (r.status === "superseded" && r.ignoreReason))
       .map(r => ({
@@ -1674,7 +1765,10 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
   try {
     await ensureAlertMemoryTab(sheets, acId);
     const [all, handledMap] = await Promise.all([
-      readAlertMemory(sheets, acId),
+      queryAlertMemoryTargeted(sheets, acId, {
+        category: "proactive",
+        ...(req.body?.clientName ? { clientName: req.body.clientName } : {}),
+      }),
       readHandledAlertHashes(sheets, acId, false),
     ]);
     const PROACTIVE_HANDLED_STATUSES = new Set(["accepted", "ignored", "task", "task_resolved", "superseded"]);

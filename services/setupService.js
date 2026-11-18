@@ -14,7 +14,7 @@
  *     KeyInfo!Q9: CRM Drives ('NA', 'Pipeline', 'PipeAndConf')
  */
 
-import { redisClient } from "./redisClient.js";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
 import { getIntegrationStatus, INTEGRATIONS_STATUS_CACHE_KEY } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput, getServiceAccountPoolEmails } from "./sheetsClient.js";
@@ -224,7 +224,7 @@ export async function getClientSetupConfig({ clientName, masterSheetId, clientSh
         };
         await redisClient.set(redisKey, JSON.stringify(updatedRecord));
         if (sheetD8 !== config?.directCostsMode || sheetB15 !== config?.revenueFocus) {
-          const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+          const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
           if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
           clearAllClientsMemoryCache();
           clearSsrClientsMemoryCache();
@@ -763,7 +763,7 @@ export function revalidateClientsSetupInBackground(clients = []) {
       }
       if (anyClientChanged) {
         try {
-          const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+          const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
           if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
           clearAllClientsMemoryCache();
           clearSsrClientsMemoryCache();
@@ -1158,7 +1158,7 @@ export async function saveSetupProcessTemplate(sheets, { phases, tasks }, userEm
 
   // Clear client checklist caches so updated template displays immediately
   try {
-    const keys = await redisClient.keys("pulse:setup:checklist:*");
+    const keys = await scanRedisKeys("pulse:setup:checklist:*");
     if (keys && keys.length > 0) {
       await redisClient.del(keys);
     }
@@ -2067,7 +2067,7 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
           directCostsMode: dcm,
           sheetSyncedAt: new Date().toISOString()
         }));
-        const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+        const allClientKeys = await scanRedisKeys("pulse:all_clients:*");
         if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
         clearAllClientsMemoryCache();
         clearSsrClientsMemoryCache();
@@ -2926,8 +2926,8 @@ export async function provisionNewClientSystem({
     clearSsrClientsMemoryCache();
     if (redisClient?.isOpen) {
       const [allClientKeys, portalClientKeys] = await Promise.all([
-        redisClient.keys("pulse:all_clients:*"),
-        redisClient.keys("pulse:portal:allClients:*"),
+        scanRedisKeys("pulse:all_clients:*"),
+        scanRedisKeys("pulse:portal:allClients:*"),
       ]);
       const keysToDel = [...allClientKeys, ...portalClientKeys, INTEGRATIONS_STATUS_CACHE_KEY];
       if (keysToDel.length > 0) await redisClient.del(keysToDel);

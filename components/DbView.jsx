@@ -10,7 +10,12 @@ import ClientSheetModal, {
   prefetchClientSheetTab,
   invalidateClientSheetModalCache,
 } from "./ClientSheetModal";
+import ReconSheetModal, {
+  prefetchReconSheetTab,
+  invalidateReconSheetModalCache,
+} from "./ReconSheetModal";
 import { CLIENT_SHEET_TABS, CLIENT_SHEET_SPECS } from "../utils/clientSheetSpecs";
+import { sortReconMonthTabsDescending } from "../utils/reconSheetSpecs";
 import SupabaseBackupManagerPanel from "./SupabaseBackupManagerPanel";
 
 const SYNC_BUTTONS = [
@@ -116,6 +121,7 @@ export default function DbView({
   const [comparisonModalTab, setComparisonModalTab] = useState("InvComp");
   const [clientSheetModalOpen, setClientSheetModalOpen] = useState(false);
   const [clientSheetModalTab, setClientSheetModalTab] = useState("Confirmed");
+  const [reconModalOpen, setReconModalOpen] = useState(false);
 
   // Elapsed timer tick while an async operation is running
   useEffect(() => {
@@ -222,6 +228,7 @@ export default function DbView({
       if (key !== "refresh") {
         invalidateComparisonModalCache(selectedClient);
         invalidateClientSheetModalCache(selectedClient);
+        invalidateReconSheetModalCache(selectedClient);
       }
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
       if (result && result.text) {
@@ -607,6 +614,8 @@ export default function DbView({
     0;
   const hasMasterVirtualTabs = (stage2Data?.availableTabs?.master?.length || 0) > 0;
   const hasClientVirtualTabs = (stage2Data?.availableTabs?.client?.length || 0) > 0;
+  const reconMonthTabs = sortReconMonthTabsDescending(stage2Data?.availableTabs?.recon || []);
+  const hasReconVirtualTabs = reconMonthTabs.length > 0;
 
   const supabaseEngineClientsCount = allClients.filter((c) => c.master_mode === "supabase").length;
   const supabasePortalClientsCount = allClients.filter((c) => c.client_mode === "supabase").length;
@@ -1325,6 +1334,38 @@ export default function DbView({
                     </button>
                   );
                 })}
+
+                {(() => {
+                  const reconDisabled = !s2Ready || !hasReconVirtualTabs;
+                  return (
+                    <button
+                      type="button"
+                      disabled={reconDisabled}
+                      onMouseEnter={() => {
+                        if (!reconDisabled) prefetchReconSheetTab(activeClientName, reconMonthTabs[0]);
+                      }}
+                      onClick={() => setReconModalOpen(true)}
+                      style={{
+                        ...actionBtnBase,
+                        color: reconDisabled ? "#9ca3af" : "#115e59",
+                        background: reconDisabled ? "#f3f4f6" : "#ffffff",
+                        borderColor: reconDisabled ? "#e5e7eb" : "#5eead4",
+                        cursor: reconDisabled ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: "7px",
+                          height: "7px",
+                          borderRadius: "2px",
+                          background: reconDisabled ? "#cbd5e1" : "#0f766e",
+                        }}
+                      />
+                      <span>View Recon</span>
+                    </button>
+                  );
+                })()}
               </div>
 
               {(hasClientVirtualTabs || activeClientPortalMode === "supabase") && (
@@ -2298,6 +2339,20 @@ export default function DbView({
           initialTab={clientSheetModalTab}
           onAfterMutate={(resData) => {
             invalidateComparisonModalCache(activeClientName);
+            if (resData?.status) setStage2Data(resData.status);
+          }}
+        />
+      )}
+
+      {/* Formatted Recon Sheet Modal (Monthly YYMM tabs, newest on the left) */}
+      {reconModalOpen && (
+        <ReconSheetModal
+          isOpen={reconModalOpen}
+          onClose={() => setReconModalOpen(false)}
+          clientName={activeClientName}
+          reconTabs={reconMonthTabs}
+          initialTab={reconMonthTabs[0] || ""}
+          onAfterMutate={(resData) => {
             if (resData?.status) setStage2Data(resData.status);
           }}
         />

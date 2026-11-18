@@ -69,3 +69,29 @@ export async function ensureRedisConnected(timeoutMs = 500) {
   } catch { }
   return Boolean(redisClient?.isOpen);
 }
+
+/**
+ * Non-blocking Redis key lookup using cursor SCAN (falling back to KEYS only if scan is unavailable).
+ */
+export async function scanRedisKeys(pattern, count = 250) {
+  if (!redisClient?.isOpen || !pattern) return [];
+  if (typeof redisClient.scan !== "function") {
+    return typeof redisClient.keys === "function" ? redisClient.keys(pattern).catch(() => []) : [];
+  }
+  const matched = [];
+  let cursor = 0;
+  try {
+    do {
+      const reply = await redisClient.scan(cursor, { MATCH: pattern, COUNT: count });
+      const nextCursor = Array.isArray(reply) ? reply[0] : reply?.cursor;
+      const keys = Array.isArray(reply) ? reply[1] : reply?.keys;
+      if (Array.isArray(keys) && keys.length > 0) {
+        matched.push(...keys);
+      }
+      cursor = Number(nextCursor) || 0;
+    } while (cursor !== 0);
+  } catch {
+    return [];
+  }
+  return [...new Set(matched)];
+}

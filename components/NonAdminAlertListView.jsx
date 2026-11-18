@@ -135,14 +135,6 @@ export default function NonAdminAlertListView({
       }
       setClassificationMsg(prev => ({ ...prev, [alertKey]: "✓ Applied and synced!" }));
 
-      if (sessionId && alertKey) {
-        fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
-        }).catch(() => { });
-      }
-
       setTimeout(() => {
         if (typeof acknowledgeProactiveAlert === "function") {
           acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex);

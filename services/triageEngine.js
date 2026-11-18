@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter, applySheetFontFormat, sanitizeFormulaInput } from "./sheetsClient.js";
 import {
-  buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory,
+  buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory, queryAlertMemoryTargeted,
   readHandledAlertHashes, findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow,
   deleteAlertMemoryRows, purgeOldAlertMemoryRows, compactAlertMemory, updateHandledAlertHash,
   getHandledFingerprintHashes_, findPreviousIgnoreReason,
@@ -4495,7 +4495,9 @@ export async function handleAnalyzeAlert(req, res, sheets) {
     // recompute here in case alert came from a stale Redis session)
     const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
     await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-    const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+    const memoryRows = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, {
+      hashes: [fingerprintHash],
+    });
 
     // NEVER trust client-supplied req.body.memoryRow; always look up from AlertMemory and verify tenant match
     const foundMemoryRow = findMemoryRow(memoryRows, fingerprintHash);
@@ -8210,6 +8212,21 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
   }
 }
 
+function appendTriageLogBackground_(sheets, automationCommanderSheetId, rowValues) {
+  if (!sheets || !automationCommanderSheetId || !Array.isArray(rowValues)) return;
+  const p = sheets.spreadsheets.values
+    .append({
+      spreadsheetId: automationCommanderSheetId,
+      range: "TriageLog!A:H",
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    })
+    .catch((e) => console.warn("⚠️ Background TriageLog append warning:", e.message));
+  try {
+    if (typeof waitUntil === "function") waitUntil(p);
+  } catch { }
+}
+
 export async function handleAcceptOption(req, res, sheets, sessionUserArg = null) {
   const { alert, option, automationCommanderSheetId } = req.body;
 
@@ -8231,8 +8248,8 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
     if (option.matchType === "ignore") {
       console.log(`  → Ignoring alert (${alert.clientName} - ${option.title || "discrepancy ignored"})`);
       await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-      const memRows = await readAlertMemory(sheets, automationCommanderSheetId);
       const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
+      const memRows = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [fp] });
       const mr = findMemoryRow(memRows, fp);
       const alertSummary = alert.summary?.summary || alert.summary || mr?.alertSummary || `${alert.type || alert.flagType || "Alert"} - ${alert.clientName || ""}`.trim();
       const ignoreReason = option.title || "Accepted IGNORE option";
@@ -8276,22 +8293,16 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
           ignoreReason, dataSnapshot,
         });
       }
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H",
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[
-            new Date().toISOString(),
-            sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
-            sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
-            sanitizeFormulaInput(String(alert.clientName || "")),
-            "",
-            sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName })),
-            "IGNORED",
-            sanitizeFormulaInput(String(option.title || ""))
-          ]]
-        },
-      });
+      appendTriageLogBackground_(sheets, automationCommanderSheetId, [
+        new Date().toISOString(),
+        sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+        sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+        sanitizeFormulaInput(String(alert.clientName || "")),
+        "",
+        sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName })),
+        "IGNORED",
+        sanitizeFormulaInput(String(option.title || ""))
+      ]);
 
       // Synchronize removal from precomputed cache so it disappears immediately
       try {
@@ -8347,6 +8358,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
       await sheets.spreadsheets.values.batchClear({
         spreadsheetId: alert.clientId,
         requestBody: { ranges: clearRanges },
+        _skipFormulaRecompute: restoreData.length > 0,
       });
       if (restoreData.length > 0) {
         await sheets.spreadsheets.values.batchUpdate({
@@ -8360,8 +8372,8 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
 
       // Mark alert as accepted in AlertMemory
       await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-      const memRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
       const fp2 = alert.fingerprintHash || buildAlertFingerprint(alert);
+      const memRows2 = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [fp2] });
       const mr2 = findMemoryRow(memRows2, fp2);
       const summary2 = `CRM ${alert.alertType} ${alert.clientName} - ${option.jobName || ""}`.trim();
       if (mr2) {
@@ -8373,22 +8385,16 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
           cachedOptionsJSON: "", status: "accepted", ignoreReason: "", dataSnapshot: "",
         });
       }
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H",
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[
-            new Date().toISOString(),
-            sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
-            sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
-            sanitizeFormulaInput(String(alert.clientName || "")),
-            "",
-            sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName, rowsCleared: rowsToClear })),
-            "ACCEPTED",
-            sanitizeFormulaInput(String(option.title || ""))
-          ]]
-        },
-      });
+      appendTriageLogBackground_(sheets, automationCommanderSheetId, [
+        new Date().toISOString(),
+        sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+        sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+        sanitizeFormulaInput(String(alert.clientName || "")),
+        "",
+        sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName, rowsCleared: rowsToClear })),
+        "ACCEPTED",
+        sanitizeFormulaInput(String(option.title || ""))
+      ]);
 
       return res.status(200).json({ success: true, message: `Cleared ${rowsToClear.length} row(s) from ${tabName} tab`, cellsWritten: clearRanges.length });
     }
@@ -9550,22 +9556,13 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
       sanitizeFormulaInput(`Option: ${option.title}`),
     ];
 
-    console.log(`  Writing to TriageLog...`);
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: automationCommanderSheetId,
-      range: "TriageLog!A:H",
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [logRow],
-      },
-    });
-    console.log(`  ✅ Decision logged to TriageLog`);
+    appendTriageLogBackground_(sheets, automationCommanderSheetId, logRow);
 
     // Update AlertMemory to "accepted" so runFullSweep doesn't re-raise this flag
     try {
       await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-      const memoryRowsFinal = await readAlertMemory(sheets, automationCommanderSheetId);
       const fpHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+      const memoryRowsFinal = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [fpHash] });
       const memRowFinal = findMemoryRow(memoryRowsFinal, fpHash);
       const alertSummaryFinal = alert.summary?.summary || `${alert.type || alert.flagType} ${fpHash}`;
       if (memRowFinal && (!memRowFinal.clientName || !alert.clientName || matchesClientName(alert.clientName, memRowFinal.clientName))) {
@@ -9735,6 +9732,7 @@ export async function handleDeleteJob(req, res, sheets) {
     await sheets.spreadsheets.values.batchClear({
       spreadsheetId: clientSheetId,
       requestBody: { ranges: clearRanges },
+      _skipFormulaRecompute: restoreData.length > 0,
     });
     if (restoreData.length > 0) {
       await sheets.spreadsheets.values.batchUpdate({
@@ -9748,29 +9746,22 @@ export async function handleDeleteJob(req, res, sheets) {
     console.log(`  ✅ Cleared ${rowsToBlank.length} rows (${clearRanges.length} ranges)`);
 
     // Log to TriageLog
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: automationCommanderSheetId,
-      range: "TriageLog!A:H",
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [[
-          new Date().toISOString(),
-          sanitizeFormulaInput(String(alert.alertType || alert.type || "crm")),
-          sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
-          sanitizeFormulaInput(String(alert.clientName || "")),
-          "",
-          sanitizeFormulaInput(JSON.stringify({ deletedJob: option.jobName, tabName, rowsBlank: rowsToBlank.map(r => r + 1) })),
-          "ACCEPTED",
-          sanitizeFormulaInput(`Deleted job: ${option.jobName} from ${tabName} tab`),
-        ]],
-      },
-    });
+    appendTriageLogBackground_(sheets, automationCommanderSheetId, [
+      new Date().toISOString(),
+      sanitizeFormulaInput(String(alert.alertType || alert.type || "crm")),
+      sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+      sanitizeFormulaInput(String(alert.clientName || "")),
+      "",
+      sanitizeFormulaInput(JSON.stringify({ deletedJob: option.jobName, tabName, rowsBlank: rowsToBlank.map(r => r + 1) })),
+      "ACCEPTED",
+      sanitizeFormulaInput(`Deleted job: ${option.jobName} from ${tabName} tab`),
+    ]);
 
     // Update AlertMemory so runFullSweep doesn't re-raise this flag
     try {
       await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-      const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
       const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+      const memoryRows = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [fingerprintHash] });
       const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
       if (memoryRow && (!memoryRow.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow.clientName))) {
         await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {

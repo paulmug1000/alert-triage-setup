@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { withRetry } from "./sheetsClient.js";
-import { redisClient } from "./redisClient.js";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
 import {
   getSupabaseAdmin,
   isSupabaseConfigured,
@@ -159,8 +159,10 @@ export async function flushAllAlertMemoryCaches(automationCommanderSheetId) {
           `pulse:alert_memory_handled:${automationCommanderSheetId}`
         );
       }
-      const wildcardKeys = await redisClient.keys("pulse:alert_memory*").catch(() => []);
-      const precompKeys = await redisClient.keys("pulse:triage_precomputed:*").catch(() => []);
+      const [wildcardKeys, precompKeys] = await Promise.all([
+        scanRedisKeys("pulse:alert_memory*"),
+        scanRedisKeys("pulse:triage_precomputed:*"),
+      ]);
       const allKeys = [...new Set([...keysToDel, ...wildcardKeys, ...precompKeys])];
       if (allKeys.length > 0) {
         await redisClient.del(allKeys);
@@ -273,6 +275,110 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
   return handledMap;
 }
 
+function mapSupabaseAlertMemoryRow_(r, i = 0) {
+  return {
+    rowIndex: r.sheet_row_index || i + 2,
+    fingerprintHash: r.fingerprint_hash || "",
+    alertType: r.alert_type || "",
+    clientName: r.client_name || "",
+    alertSummary: r.alert_summary || "",
+    cachedOptionsJSON: r.cached_options_json || "",
+    status: r.status || "cached",
+    ignoreReason: r.ignore_reason || "",
+    firstSeen: r.first_seen || "",
+    lastSeen: r.last_seen || "",
+    lastRechecked: r.last_rechecked || "",
+    dataSnapshot: r.data_snapshot || "",
+    category: normalizeCategoryForType(r.alert_type || "", r.category || "discrepancy"),
+  };
+}
+
+/**
+ * Targeted alert_memory lookup when Supabase Control Plane is active, avoiding full-table
+ * scans on interactive single-alert or client-scoped actions. Falls back to readAlertMemory
+ * in Sheets mode or on query error.
+ */
+export async function queryAlertMemoryTargeted(
+  sheets,
+  automationCommanderSheetId,
+  {
+    hashes = [],
+    clientName = "",
+    clientNames = [],
+    alertType = "",
+    alertTypes = [],
+    status = "",
+    statuses = [],
+    category = "",
+  } = {}
+) {
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  const sb = supabaseActive ? getSupabaseAdmin() : null;
+  if (!sb) {
+    return readAlertMemory(sheets, automationCommanderSheetId);
+  }
+
+  const cleanHashes = [...new Set((Array.isArray(hashes) ? hashes : [hashes]).filter(Boolean))];
+  const cleanClients = [...new Set([clientName, ...(Array.isArray(clientNames) ? clientNames : [])].filter(Boolean))];
+  const cleanTypes = [...new Set([alertType, ...(Array.isArray(alertTypes) ? alertTypes : [])].filter(Boolean))];
+  const cleanStatuses = [...new Set([status, ...(Array.isArray(statuses) ? statuses : [])].filter(Boolean))];
+  const hasSecondaryFilters = Boolean(cleanClients.length > 0 || cleanTypes.length > 0 || cleanStatuses.length > 0 || category);
+
+  if (cleanHashes.length === 0 && !hasSecondaryFilters) {
+    return readAlertMemory(sheets, automationCommanderSheetId);
+  }
+
+  try {
+    const queries = [];
+    if (cleanHashes.length > 0) {
+      for (let i = 0; i < cleanHashes.length; i += 200) {
+        const chunk = cleanHashes.slice(i, i + 200);
+        queries.push(
+          fetchAllSupabaseRows_(() =>
+            sb
+              .from("alert_memory")
+              .select("*")
+              .in("fingerprint_hash", chunk)
+              .order("sheet_row_index", { ascending: true })
+          )
+        );
+      }
+    }
+
+    if (hasSecondaryFilters) {
+      queries.push(
+        fetchAllSupabaseRows_(() => {
+          let q = sb.from("alert_memory").select("*");
+          if (cleanClients.length === 1) q = q.eq("client_name", cleanClients[0]);
+          else if (cleanClients.length > 1) q = q.in("client_name", cleanClients);
+          if (cleanTypes.length === 1) q = q.eq("alert_type", cleanTypes[0]);
+          else if (cleanTypes.length > 1) q = q.in("alert_type", cleanTypes);
+          if (cleanStatuses.length === 1) q = q.eq("status", cleanStatuses[0]);
+          else if (cleanStatuses.length > 1) q = q.in("status", cleanStatuses);
+          if (category) q = q.eq("category", category);
+          return q.order("sheet_row_index", { ascending: true });
+        })
+      );
+    }
+
+    const resultSets = await Promise.all(queries);
+    const seen = new Set();
+    const out = [];
+    for (const rows of resultSets) {
+      for (const r of rows || []) {
+        const dedupKey = r.fingerprint_hash || `row:${r.sheet_row_index}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+        out.push(mapSupabaseAlertMemoryRow_(r, out.length));
+      }
+    }
+    return out;
+  } catch (sbErr) {
+    console.warn("⚠️ Supabase queryAlertMemoryTargeted fallback:", sbErr.message);
+    return readAlertMemory(sheets, automationCommanderSheetId);
+  }
+}
+
 export async function readAlertMemory(sheets, automationCommanderSheetId) {
   const now = Date.now();
   const supabaseActive = await isSupabaseControlPlaneActive();
@@ -295,21 +401,7 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
           .order("sheet_row_index", { ascending: true })
       );
       if (Array.isArray(dbRows)) {
-        const parsed = dbRows.map((r, i) => ({
-          rowIndex: r.sheet_row_index || i + 2,
-          fingerprintHash: r.fingerprint_hash || "",
-          alertType: r.alert_type || "",
-          clientName: r.client_name || "",
-          alertSummary: r.alert_summary || "",
-          cachedOptionsJSON: r.cached_options_json || "",
-          status: r.status || "cached",
-          ignoreReason: r.ignore_reason || "",
-          firstSeen: r.first_seen || "",
-          lastSeen: r.last_seen || "",
-          lastRechecked: r.last_rechecked || "",
-          dataSnapshot: r.data_snapshot || "",
-          category: normalizeCategoryForType(r.alert_type || "", r.category || "discrepancy"),
-        }));
+        const parsed = dbRows.map((r, i) => mapSupabaseAlertMemoryRow_(r, i));
         _alertMemoryMemoryCache = parsed;
         _alertMemoryCachedAt = now;
         if (redisClient?.isOpen && automationCommanderSheetId) {

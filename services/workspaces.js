@@ -29,7 +29,7 @@ export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
 import { getSettingsRedisKey } from "./clientSettingsService.js";
-import { redisClient } from "./redisClient.js";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext, flushPendingClientRecomputes, flushImmediateAndScheduleBackgroundClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
 import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
@@ -8794,7 +8794,7 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
     // Invalidate caches
     memoryCache.del(`pulse:portal:*:${sheetIdClean}*`);
     try {
-      const keys = await redisClient.keys(`pulse:portal:*:${sheetIdClean}*`);
+      const keys = await scanRedisKeys(`pulse:portal:*:${sheetIdClean}*`);
       if (keys.length > 0) await redisClient.del(...keys);
     } catch (e) { }
 

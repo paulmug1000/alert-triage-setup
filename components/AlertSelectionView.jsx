@@ -334,14 +334,6 @@ export default function AlertSelectionView({
       }
       setClassificationMsg(prev => ({ ...prev, [alertKey]: "✓ Applied and synced!" }));
 
-      if (sessionId && alertKey) {
-        fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
-        }).catch(() => { });
-      }
-
       setTimeout(() => {
         setProactiveAlerts(prev => {
           const remaining = prev.filter(a => {

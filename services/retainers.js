@@ -7,7 +7,7 @@ import { isPlaceholderInvoice, isPlaceholderExpense, formatInvoiceRefForSheet, c
 import { getSessionUser } from "./authService.js";
 import { get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
-import { redisClient } from "./redisClient.js";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
 
 const RET_MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
@@ -2815,7 +2815,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     try {
       memoryCache.del(`pulse:portal:*:${sheetIdClean}*`);
       if (redisClient?.isOpen) {
-        const keys = await redisClient.keys(`pulse:portal:*:${sheetIdClean}*`);
+        const keys = await scanRedisKeys(`pulse:portal:*:${sheetIdClean}*`);
         if (keys.length > 0) await redisClient.del(keys);
       }
     } catch (_) { }

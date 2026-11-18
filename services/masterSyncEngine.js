@@ -477,6 +477,51 @@ export async function syncExpenseBreakdownToClientSheetNative(sheets, clientName
 }
 
 /**
+ * Runs pushOutgoingsToClientSheet and syncExpenseTransactionBreakdownToClientSheet_
+ * in a single shared gasEnvironment execution so Master/Recon/Client grids are loaded
+ * and flushed once rather than twice.
+ */
+export async function pushOutgoingsAndExpenseBreakdownNative(
+  sheets,
+  clientName,
+  { includeUnreconciled = false } = {}
+) {
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx) throw new Error(`Client "${clientName}" not found.`);
+
+  const fnName = includeUnreconciled ? "pushOutgoingsWithPLAddsToClientSheet" : "pushOutgoingsToClientSheet";
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: `${fnName} + syncExpenseBreakdown`, triggerSource: "Manual (PMA)" },
+  });
+  const gas = createMasterGasInstance(env);
+
+  let pushRes = null;
+  try {
+    pushRes = includeUnreconciled
+      ? await gas.pushOutgoingsWithPLAddsToClientSheet(true)
+      : await gas.pushOutgoingsToClientSheet(true);
+  } catch (pushErr) {
+    console.warn("⚠️ Combined pushOutgoings warning:", pushErr.message);
+  }
+
+  let breakdownRes = null;
+  try {
+    breakdownRes = await gas.syncExpenseTransactionBreakdownToClientSheet_(true);
+  } catch (bdErr) {
+    console.warn("⚠️ Combined syncExpenseBreakdown warning:", bdErr.message);
+  }
+
+  await env.finalizeExecution({
+    summary: pushRes?.message || "Pushed Outgoings & synced expense breakdown to Client Sheet",
+  });
+  await invalidateClientActivityCache(ctx.clientName);
+  return { success: true, pushRes, breakdownRes };
+}
+
+/**
  * Calculates Beyond the Blueprint's active conversation count from CRMExcelCopy
  * and updates cell Delivered!D81 in the client Google Sheet.
  * Target sections:

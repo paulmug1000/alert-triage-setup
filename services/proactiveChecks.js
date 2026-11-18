@@ -3,23 +3,25 @@ import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputD
 import { serialToDate } from "./gasRuntime/sheetValueUtils.js";
 import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid, sanitizeFormulaInput } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
-import { redisClient } from "./redisClient.js";
-import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, appendAlertMemoryRow, findMemoryRow, updateHandledAlertHash, invalidateAlertMemoryCache } from "./alertMemory.js";
+import { redisClient, scanRedisKeys } from "./redisClient.js";
+import { ensureAlertMemoryTab, queryAlertMemoryTargeted, updateAlertMemoryRowsBatch, appendAlertMemoryRow, updateHandledAlertHashesBatch, invalidateAlertMemoryCache } from "./alertMemory.js";
 import { applyAlertRemovalToTriageData, PRECOMPUTED_KEY } from "./alertState.js";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { logPmaActivity } from "./pmaLogger.js";
-import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import {
+  resolveSupabaseSheetContext,
+  recomputeMasterFormulasForTabs,
+  flushImmediateAndScheduleBackgroundClientRecomputes,
+} from "./masterEngineService.js";
 import {
   findForecastOnlyEmployeesInMonth_,
   applySalaryForecastResolution_,
   parseHeaderMonthMeta_,
   colIdxToLetter,
 } from "./salariesService.js";
-import {
-  pushOutgoingsToClientSheetNative,
-  syncExpenseBreakdownToClientSheetNative,
-} from "./masterSyncEngine.js";
+import { pushOutgoingsAndExpenseBreakdownNative } from "./masterSyncEngine.js";
 
 export function parseConfirmedDate_(val) {
   if (!val) return null;
@@ -2358,12 +2360,34 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
 
   const monthlyAmounts = new Map(); // 'YYYY-MM' -> number
 
-  // 1. Read PLFromApp (historical P&L report actuals)
-  try {
-    const plAppRes = await withRetry(() => sheets.spreadsheets.values.get({
+  // 1-3. Read PLFromApp, PLComp, and Outgoings headers/template row in parallel
+  const [plAppRes, plCompRes, outHRes, tmplRes] = await Promise.all([
+    withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: masterSheetId,
       range: "PLFromApp!A1:AZ100"
-    }));
+    })).catch((e) => {
+      console.warn("[P&L Amount Push] Could not read PLFromApp:", e.message);
+      return null;
+    }),
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "PLComp!A1:AZ200"
+    })).catch((e) => {
+      console.warn("[P&L Amount Push] Could not read PLComp:", e.message);
+      return null;
+    }),
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Outgoings!1:1"
+    })),
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Outgoings!126:126",
+      valueRenderOption: "FORMULA"
+    }))
+  ]);
+
+  if (plAppRes) {
     const plAppRows = plAppRes.data.values || [];
     const plAppHeaders = plAppRows[0] || [];
     const plAppCatRow = plAppRows.find(r => {
@@ -2380,16 +2404,9 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
         }
       }
     }
-  } catch (e) {
-    console.warn("[P&L Amount Push] Could not read PLFromApp:", e.message);
   }
 
-  // 2. Read PLComp (Master calculation & comparison sheet)
-  try {
-    const plCompRes = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: masterSheetId,
-      range: "PLComp!A1:AZ200"
-    }));
+  if (plCompRes) {
     const plCompRows = plCompRes.data.values || [];
     const plCompHeaders = plCompRows[0] || [];
     const plCompCatRow = plCompRows.find(r => {
@@ -2427,26 +2444,11 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
         }
       }
     }
-  } catch (e) {
-    console.warn("[P&L Amount Push] Could not read PLComp:", e.message);
   }
-
-  // 3. Read Outgoings Row 1 month headers & template row formulas (Row 126)
-  const [outHRes, tmplRes] = await Promise.all([
-    withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: clientSheetId,
-      range: "Outgoings!1:1"
-    })),
-    withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: clientSheetId,
-      range: "Outgoings!126:126",
-      valueRenderOption: "FORMULA"
-    }))
-  ]);
 
   const outHeaders = outHRes.data.values?.[0] || [];
   const templateRow = tmplRes.data.values?.[0] || [];
-  if (outHeaders.length <= 6) return;
+  if (outHeaders.length <= 6) return false;
 
   const maxCols = Math.max(outHeaders.length, templateRow.length, 50);
   const rowValues = [];
@@ -2501,7 +2503,8 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
     spreadsheetId: clientSheetId,
     range: `Outgoings!${startColLetter}${targetSheetRow}:${endColLetter}${targetSheetRow}`,
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [rowValues] }
+    requestBody: { values: [rowValues] },
+    _deferBackgroundRecompute: true,
   }));
 
   // 4. Consolidate formatting into a single batchUpdate: format whole row as Arial 9pt, and any decimal cells with currency pattern
@@ -2560,6 +2563,7 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
 
   const nonZeroCount = rowValues.filter(v => typeof v === "number" && v !== 0).length;
   console.log(`[P&L Amount Push] Successfully populated row ${targetSheetRow} (${nonZeroCount} actual months, formulas preserved, spacers blank) into Outgoings!${startColLetter}${targetSheetRow}:${endColLetter}${targetSheetRow} for "${categoryName}".`);
+  return true;
 }
 
 export async function ensureCategoryInOutgoings_(sheets, clientSheetId, categoryName, isDeliveryExpense = false, masterSheetId = null) {
@@ -2664,22 +2668,30 @@ export async function ensureCategoryInOutgoings_(sheets, clientSheetId, category
 
   const payload = [[sanitizeFormulaInput(String(cleanName || "")), ...defaults]];
 
-  // Write header metadata (Columns A through F)
+  // Write header metadata (Columns A through F). Defer Outgoings formula recompute when
+  // pushCategoryPLAmountsToOutgoings_ will immediately follow with the monthly values write.
   await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: clientSheetId,
     range: `Outgoings!A${targetSheetRow}:F${targetSheetRow}`,
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: payload }
+    requestBody: { values: payload },
+    _skipFormulaRecompute: Boolean(masterSheetId),
   }));
 
   // P&L Amount Push: Extract monthly amounts from PLFromApp and PLComp on Master Sheet and write to Columns G onwards
   // pushCategoryPLAmountsToOutgoings_ automatically formats the entire row as Arial 9pt in its consolidated batchUpdate
   if (masterSheetId) {
+    let pushedAmounts = false;
     try {
-      await pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, clientSheetId, cleanName, targetSheetRow);
+      pushedAmounts = Boolean(
+        await pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, clientSheetId, cleanName, targetSheetRow)
+      );
     } catch (plErr) {
       console.warn(`[Outgoings Provision] Could not push P&L amounts for "${cleanName}":`, plErr.message);
       await applySheetFontFormat(sheets, clientSheetId, "Outgoings", targetSheetRow - 1, targetSheetRow, 0, 50, "Arial", 9);
+    }
+    if (!pushedAmounts) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(null, null).catch(() => { });
     }
   } else {
     // If no masterSheetId, apply Arial 9pt font formatting directly
@@ -2706,6 +2718,8 @@ export async function handleClassifyPLCategory(sheets, {
   if (!clientName || !categoryName || !classification) {
     throw new Error("Missing clientName, categoryName, or classification");
   }
+  const tStart = Date.now();
+  const timings = {};
 
   // Sanitize category name if a formatted heading was passed
   let cleanCategory = String(categoryName || "").trim();
@@ -2776,13 +2790,21 @@ export async function handleClassifyPLCategory(sheets, {
     throw new Error(`Master sheet configuration is protected: KeyInfo restricts editing. Please ensure '${primarySa}' has editor access to the KeyInfo sheet protection on the Master Sheet for '${clientName}' (or run 'Sync Protection Editors' in Bulk Updater).`);
   };
 
+  const mutatedMasterTabs = new Set();
+
   // 2. Apply mapping based on classification
   if (classification === "contractor") {
-    // Read KeyInfo!AW2:AW161 to find full nominal code prefix (e.g. "318 - Contractor")
-    const awRes = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: masterSheetId,
-      range: "KeyInfo!AW2:AW161"
-    }));
+    // Read KeyInfo!AW2:AW161 and KeyInfo!AT4:AT22 in parallel
+    const [awRes, atRes] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "KeyInfo!AW2:AW161"
+      })),
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "KeyInfo!AT4:AT22"
+      }))
+    ]);
     const awRows = (awRes.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
     let contractorEntry = awRows.find(item => {
       const itemClean = item.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
@@ -2792,11 +2814,6 @@ export async function handleClassifyPLCategory(sheets, {
       contractorEntry = awRows.find(item => item.toLowerCase().includes(cleanName.toLowerCase())) || categoryName;
     }
 
-    // Append to first empty cell in KeyInfo!AT4:AT22
-    const atRes = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: masterSheetId,
-      range: "KeyInfo!AT4:AT22"
-    }));
     const atRows = atRes.data.values || [];
     let targetAtRow = -1;
     for (let i = 0; i < 19; i++) {
@@ -2815,8 +2832,10 @@ export async function handleClassifyPLCategory(sheets, {
         spreadsheetId: masterSheetId,
         range: `KeyInfo!AT${targetAtRow}`,
         valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[sanitizeFormulaInput(String(contractorEntry || ""))]] }
+        requestBody: { values: [[sanitizeFormulaInput(String(contractorEntry || ""))]] },
+        _skipMasterFormulaRecompute: true,
       }));
+      mutatedMasterTabs.add("KeyInfo");
     } catch (writeErr) {
       throwProtectedKeyInfoError_(writeErr);
     }
@@ -2894,8 +2913,10 @@ export async function handleClassifyPLCategory(sheets, {
         spreadsheetId: masterSheetId,
         range: `KeyInfo!BA${targetBaRow}`,
         valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[sanitizeFormulaInput(String(cleanName || ""))]] }
+        requestBody: { values: [[sanitizeFormulaInput(String(cleanName || ""))]] },
+        _skipMasterFormulaRecompute: true,
       }));
+      mutatedMasterTabs.add("KeyInfo");
     } catch (writeErr) {
       throwProtectedKeyInfoError_(writeErr);
     }
@@ -2906,47 +2927,37 @@ export async function handleClassifyPLCategory(sheets, {
     }
   }
 
-  // 3. Clear from quarantine in PLComp!B180:B229
+  // 3. Clear from quarantine in PLComp!B180:B229 in a single batchUpdate
   const plCompRes = await withRetry(() => sheets.spreadsheets.values.get({
     spreadsheetId: masterSheetId,
     range: "PLComp!B180:B229"
   }));
   const plCompRows = plCompRes.data.values || [];
+  const plCompClearData = [];
   for (let i = 0; i < plCompRows.length; i++) {
     const val = String(plCompRows[i]?.[0] || "").trim();
     const valClean = val.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
     if (valClean === cleanName.toLowerCase() || val.toLowerCase() === categoryName.toLowerCase()) {
       const clearRow = 180 + i;
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: masterSheetId,
+      plCompClearData.push({
         range: `PLComp!B${clearRow}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[""]] }
-      }));
+        values: [[""]],
+      });
     }
   }
-
-  // 4. Log to AutoLog on Master Sheet
-  try {
-    const nowStr = new Date().toLocaleString("en-GB", { timeZone: "Europe/London" });
-    await withRetry(() => sheets.spreadsheets.values.append({
+  if (plCompClearData.length > 0) {
+    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: masterSheetId,
-      range: "AutoLog!A:D",
-      valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [[
-          nowStr,
-          "EXPENSES",
-          sanitizeFormulaInput(`P&L Category Classified: "${cleanName}" -> ${classificationLabel}`),
-          sanitizeFormulaInput(`User ${userEmail || "admin"} classified quarantined category "${categoryName}" as ${classificationLabel}. Added to KeyInfo and cleared from PLComp quarantine. Full expense & Outgoings sync triggered.`)
-        ]]
-      }
+        valueInputOption: "USER_ENTERED",
+        data: plCompClearData,
+      },
+      _skipMasterFormulaRecompute: true,
     }));
-  } catch (logErr) {
-    console.warn("⚠️ Could not write classification to AutoLog:", logErr.message);
+    mutatedMasterTabs.add("PLComp");
   }
 
-  // 5. Auto-resolve the alert in AlertMemory, Redis session(s), and precomputed cache
+  // 4 & 5. Auto-resolve the alert in AlertMemory, caller Redis session, and precomputed cache
   const alertKey = providedAlertKey || `unmapped_pl_category|${clientName}|${categoryName}`;
   const legacyAlertKey = `unmapped_pl_category|${clientName}|${cleanName}`;
   const fp = providedFp || createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
@@ -2960,7 +2971,13 @@ export async function handleClassifyPLCategory(sheets, {
   if (acId && sheets) {
     try {
       await ensureAlertMemoryTab(sheets, acId);
-      const memoryRows = await readAlertMemory(sheets, acId);
+      const supabaseActive = await isSupabaseControlPlaneActive();
+      const memoryRows = await queryAlertMemoryTargeted(sheets, acId, {
+        hashes: [fp, legacyFp],
+        clientName,
+        alertType: "unmapped_pl_category",
+      });
+
       matchingRows = memoryRows.filter(r =>
         r.alertType === "unmapped_pl_category" &&
         r.clientName === clientName &&
@@ -2971,13 +2988,19 @@ export async function handleClassifyPLCategory(sheets, {
       );
 
       if (matchingRows.length > 0) {
-        for (const row of matchingRows) {
-          await updateAlertMemoryRow(sheets, acId, row.rowIndex, {
-            ...row,
-            status: "accepted",
-            lastRechecked: new Date().toISOString()
-          });
-        }
+        const nowIso = new Date().toISOString();
+        await updateAlertMemoryRowsBatch(
+          sheets,
+          acId,
+          matchingRows.map(row => ({
+            rowIndex: row.rowIndex,
+            updates: {
+              ...row,
+              status: "accepted",
+              lastRechecked: nowIso,
+            },
+          }))
+        );
       } else {
         await appendAlertMemoryRow(sheets, acId, {
           fingerprintHash: fp,
@@ -2999,22 +3022,25 @@ export async function handleClassifyPLCategory(sheets, {
         });
       }
 
-      await updateHandledAlertHash(acId, fp, "accepted");
-      if (legacyFp && legacyFp !== fp) {
-        await updateHandledAlertHash(acId, legacyFp, "accepted");
-      }
+      const handledStatusByHash = {};
+      if (fp) handledStatusByHash[fp] = "accepted";
+      if (legacyFp && legacyFp !== fp) handledStatusByHash[legacyFp] = "accepted";
       for (const mr of matchingRows) {
         if (mr.fingerprintHash) {
-          await updateHandledAlertHash(acId, mr.fingerprintHash, "accepted");
+          handledStatusByHash[mr.fingerprintHash] = "accepted";
         }
       }
-      invalidateAlertMemoryCache(acId);
+      await updateHandledAlertHashesBatch(acId, handledStatusByHash);
+
+      if (!supabaseActive) {
+        invalidateAlertMemoryCache(acId);
+      }
     } catch (amErr) {
       console.warn("Could not update AlertMemory row for classified category:", amErr.message);
     }
   }
 
-  // Prune from Redis: caller session, all active sessions, and precomputed cache
+  // Prune immediately from caller's Redis session and PRECOMPUTED_KEY (other active sessions swept in background)
   const targetIds = [alertKey, legacyAlertKey, fp, legacyFp].filter(Boolean);
   if (matchingRows && matchingRows.length > 0) {
     for (const mr of matchingRows) {
@@ -3024,113 +3050,158 @@ export async function handleClassifyPLCategory(sheets, {
   }
 
   if (redisClient?.isOpen) {
-    // 1. Remove from caller's session if provided
-    if (sessionId) {
-      try {
-        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
-        if (sessionData) {
-          const parsed = JSON.parse(sessionData);
-          applyAlertRemovalToTriageData(parsed, targetIds);
-          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
-        }
-      } catch (sErr) {
-        console.warn("Could not prune classified category from session:", sErr.message);
-      }
-    }
-
-    // 2. Remove across all active sessions in Redis
-    try {
-      const allSessionKeys = await redisClient.keys("triage_alerts:*");
-      for (const sk of allSessionKeys) {
-        if (sk === `triage_alerts:${sessionId}`) continue;
-        try {
-          const sData = await redisClient.get(sk);
-          if (sData) {
-            const parsed = JSON.parse(sData);
-            const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds);
-            if (removedCount > 0) {
-              await redisClient.set(sk, JSON.stringify(parsed), { EX: 86400 * 7 });
+    await Promise.all([
+      sessionId
+        ? (async () => {
+          try {
+            const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+            if (sessionData) {
+              const parsed = JSON.parse(sessionData);
+              applyAlertRemovalToTriageData(parsed, targetIds);
+              await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
             }
+          } catch (sErr) {
+            console.warn("Could not prune classified category from session:", sErr.message);
           }
-        } catch (_) { }
-      }
-    } catch (keysErr) {
-      console.warn("Could not sweep active sessions for classified category:", keysErr.message);
-    }
-
-    // 3. Remove from PRECOMPUTED_KEY
-    try {
-      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
-      if (preRaw) {
-        const pre = JSON.parse(preRaw);
-        applyAlertRemovalToTriageData(pre, targetIds);
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
-      }
-    } catch (pErr) {
-      console.warn("Could not prune classified category from precomputed cache:", pErr.message);
-    }
+        })()
+        : Promise.resolve(),
+      (async () => {
+        try {
+          const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+          if (preRaw) {
+            const pre = JSON.parse(preRaw);
+            applyAlertRemovalToTriageData(pre, targetIds);
+            await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+          }
+        } catch (pErr) {
+          console.warn("Could not prune classified category from precomputed cache:", pErr.message);
+        }
+      })(),
+    ]);
   }
   invalidatePrecomputedMemoryCache();
 
-  // 6. Trigger Master Sheet Full Sync natively (when in Supabase engine mode) or via webAppUrl in background
+  // 6. Run AutoLog append, cross-session Redis sweep, deferred Master formula recompute,
+  //    and Outgoings/Expense Breakdown sync in the background via waitUntil
   const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
-  if (supaCtx && supaCtx.masterMode === "supabase") {
-    const targetClient = supaCtx.clientName || clientName;
-    const runSeq = async () => {
-      try {
-        await pushOutgoingsToClientSheetNative(sheets, targetClient);
-      } catch (err) {
-        console.warn("⚠️ Native pushOutgoings error:", err.message);
-      }
-      try {
-        await syncExpenseBreakdownToClientSheetNative(sheets, targetClient);
-      } catch (err) {
-        console.warn("⚠️ Native syncExpenseBreakdown error:", err.message);
-      }
-      try {
-        const { flushImmediateAndScheduleBackgroundClientRecomputes } = await import("./masterEngineService.js");
-        await flushImmediateAndScheduleBackgroundClientRecomputes();
-      } catch (_) {}
-    };
-    try {
-      const { waitUntil } = await import("@vercel/functions");
-      if (typeof waitUntil === "function") {
-        waitUntil(runSeq());
-      } else {
-        await runSeq();
-      }
-    } catch (_) {
-      await runSeq();
-    }
-  } else {
-    const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
-    if (webAppUrl) {
-      const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
-      if (secret) {
-        fetch(webAppUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ secret, action: "push_outgoings", clientName })
-        }).catch(err => {
-          console.warn("⚠️ Master WebApp push_outgoings error:", err.message);
-        });
+  const nowStr = new Date().toLocaleString("en-GB", { timeZone: "Europe/London" });
 
-        fetch(webAppUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
-        }).catch(syncErr => {
-          console.warn("⚠️ Master WebApp sync_expense_breakdown error:", syncErr.message);
-        });
+  const runBackgroundWork = async (yieldBeforeStart = false) => {
+    if (yieldBeforeStart) {
+      await new Promise((r) => setTimeout(r, 75));
+    }
+    // A. Log to AutoLog on Master Sheet
+    try {
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: masterSheetId,
+        range: "AutoLog!A:D",
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[
+            nowStr,
+            "EXPENSES",
+            sanitizeFormulaInput(`P&L Category Classified: "${cleanName}" -> ${classificationLabel}`),
+            sanitizeFormulaInput(`User ${userEmail || "admin"} classified quarantined category "${categoryName}" as ${classificationLabel}. Added to KeyInfo and cleared from PLComp quarantine. Full expense & Outgoings sync triggered.`)
+          ]]
+        }
+      }));
+    } catch (logErr) {
+      console.warn("⚠️ Could not write classification to AutoLog:", logErr.message);
+    }
+
+    // B. Sweep other active Redis sessions with non-blocking SCAN + parallel chunks
+    if (redisClient?.isOpen) {
+      try {
+        const allSessionKeys = await scanRedisKeys("triage_alerts:*");
+        const otherKeys = allSessionKeys.filter((sk) => sk && sk !== `triage_alerts:${sessionId}`);
+        for (let i = 0; i < otherKeys.length; i += 10) {
+          const chunk = otherKeys.slice(i, i + 10);
+          await Promise.all(
+            chunk.map(async (sk) => {
+              try {
+                const sData = await redisClient.get(sk);
+                if (sData) {
+                  const parsed = JSON.parse(sData);
+                  const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds);
+                  if (removedCount > 0) {
+                    await redisClient.set(sk, JSON.stringify(parsed), { EX: 86400 * 7 });
+                  }
+                }
+              } catch (_) { }
+            })
+          );
+        }
+      } catch (keysErr) {
+        console.warn("Could not sweep active sessions for classified category:", keysErr.message);
       }
     }
+
+    // C. Master Sheet full sync (shared single gasEnvironment in Supabase mode, or WebApp trigger in Sheet mode)
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      const targetClient = supaCtx.clientName || clientName;
+      if (mutatedMasterTabs.size > 0) {
+        try {
+          await recomputeMasterFormulasForTabs(
+            { ...supaCtx, sheetRole: "master" },
+            [...mutatedMasterTabs],
+            sheets
+          );
+        } catch (mErr) {
+          console.warn("⚠️ Background Master formula recompute error:", mErr.message);
+        }
+      }
+      try {
+        await pushOutgoingsAndExpenseBreakdownNative(sheets, targetClient);
+      } catch (err) {
+        console.warn("⚠️ Native combined Outgoings & ExpenseBreakdown sync error:", err.message);
+      }
+      try {
+        await flushImmediateAndScheduleBackgroundClientRecomputes();
+      } catch (_) { }
+    } else {
+      const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
+      if (webAppUrl) {
+        const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
+        if (secret) {
+          fetch(webAppUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ secret, action: "push_outgoings", clientName })
+          }).catch(err => {
+            console.warn("⚠️ Master WebApp push_outgoings error:", err.message);
+          });
+
+          fetch(webAppUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
+          }).catch(syncErr => {
+            console.warn("⚠️ Master WebApp sync_expense_breakdown error:", syncErr.message);
+          });
+        }
+      }
+    }
+  };
+
+  timings.beforeBgMs = Date.now() - tStart;
+  try {
+    const { waitUntil } = await import("@vercel/functions");
+    if (typeof waitUntil === "function") {
+      waitUntil(runBackgroundWork(true));
+    } else {
+      await runBackgroundWork(false);
+    }
+  } catch (_) {
+    await runBackgroundWork(false);
   }
 
   await invalidatePmaClientCache(
     supaCtx?.clientSheetId || null,
     supaCtx?.masterSheetId || masterSheetId || null,
     ["outgoings", "expenses", "cash", "views"]
-  ).catch(() => {});
+  ).catch(() => { });
+
+  console.log(`[classify_pl_category timing] client="${clientName}" cat="${cleanName}" totalMs=${Date.now() - tStart} beforeBgMs=${timings.beforeBgMs}`);
 
   return {
     success: true,
@@ -3455,7 +3526,7 @@ export async function handleUpdatePartPaidDate(sheets, {
       clientSheetId || null,
       masterSheetId || null,
       ["jobs", "invoices", "outgoings", "cash", "views"]
-    ).catch(() => {});
+    ).catch(() => { });
 
     return {
       success: true,
@@ -3561,7 +3632,7 @@ export async function handleUpdatePartPaidDate(sheets, {
       clientSheetId || null,
       masterSheetId || null,
       ["jobs", "invoices", "outgoings", "cash", "views"]
-    ).catch(() => {});
+    ).catch(() => { });
 
     return {
       success: true,

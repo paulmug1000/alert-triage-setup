@@ -830,16 +830,16 @@ async function getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi 
       const { data: metaRow } =
         sheetRole === "client"
           ? await q
-              .or(`and(sheet_role.eq.client,tab_name.eq.${tabName}),and(sheet_role.eq.master,tab_name.eq.Client::${tabName})`)
-              .limit(1)
-              .maybeSingle()
+            .or(`and(sheet_role.eq.client,tab_name.eq.${tabName}),and(sheet_role.eq.master,tab_name.eq.Client::${tabName})`)
+            .limit(1)
+            .maybeSingle()
           : await q.eq("sheet_role", sheetRole).eq("tab_name", tabName).maybeSingle();
       const dbUpdatedMs = metaRow?.updated_at ? new Date(metaRow.updated_at).getTime() : 0;
       const cachedUpdatedMs = cached.record?.updated_at ? new Date(cached.record.updated_at).getTime() : 0;
       if (dbUpdatedMs > 0 && (!cachedUpdatedMs || dbUpdatedMs > cachedUpdatedMs)) {
         _gridMemoryCache.delete(cacheKey);
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi, options);
 }
@@ -1314,6 +1314,10 @@ function getCashEffectiveFormat_(r0, c0) {
   };
 }
 
+export async function recomputeMasterFormulasForTabs(ctx, updatedTabNames = [], rawSheetsApi = null) {
+  return recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, rawSheetsApi);
+}
+
 async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, rawSheetsApi) {
   const tabsSet = new Set(updatedTabNames);
   const needsCrm =
@@ -1574,9 +1578,13 @@ function queuePendingClientTabs_(clientNameOrCtx, tabNames, { isSkippedStep = fa
 }
 
 function scheduleBackgroundClientRecompute_(ctx, rawSheetsApi = null) {
-  const bgPromise = recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
-    console.warn("[masterEngineService] Background client formula recompute warning:", e.message)
-  );
+  // Yield briefly so the active HTTP response can flush over the socket before
+  // synchronous recalculateClientGrids CPU work occupies the Node.js event loop.
+  const bgPromise = new Promise((resolve) => setTimeout(resolve, 75))
+    .then(() => recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi))
+    .catch((e) =>
+      console.warn("[masterEngineService] Background client formula recompute warning:", e.message)
+    );
   try {
     waitUntil(bgPromise);
   } catch {
@@ -1789,7 +1797,7 @@ async function recomputeAndPersistImmediateClientTabs_(
   ctx,
   targetTabNames,
   rawSheetsApi = null,
-  { notesChangedTabs = new Set() } = {}
+  { notesChangedTabs = new Set(), deferBackgroundRecompute = false } = {}
 ) {
   const clientKey = String(ctx.clientName || "").toLowerCase();
   _lastClientEditTimestampMap.set(clientKey, Date.now());
@@ -1937,7 +1945,9 @@ async function recomputeAndPersistImmediateClientTabs_(
   syncStructuredClientTablesFromGrids_(ctx, localGrids, allImmediateTabs).catch((e) =>
     console.warn("[masterEngineService] Immediate Stage 4 relational sync warning:", e.message)
   );
-  scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
+  if (!deferBackgroundRecompute) {
+    scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
+  }
 }
 
 async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, rawSheetsApi) {
@@ -2260,7 +2270,7 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
       .then(({ invalidatePmaClientCache }) =>
         invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId)
       )
-      .catch(() => {});
+      .catch(() => { });
   }
 
   // Refresh memory cache TTL for all loaded tabs of this client so consecutive operations stay warm
@@ -2527,7 +2537,7 @@ export async function handleVirtualSheetsCall({
       memoryOnly: isDeferredClientSave,
     });
 
-    if (sheetRole === "master") {
+    if (sheetRole === "master" && !params._skipMasterFormulaRecompute) {
       await recomputeMasterFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
         console.warn("[masterEngineService] Formula recompute warning:", e.message)
       );
@@ -2545,6 +2555,7 @@ export async function handleVirtualSheetsCall({
       } else {
         await recomputeAndPersistImmediateClientTabs_(ctx, [parsed.tabName], rawSheetsApi, {
           notesChangedTabs: formulasChanged ? new Set([parsed.tabName]) : new Set(),
+          deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
         }).catch((e) =>
           console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
         );
@@ -2618,7 +2629,7 @@ export async function handleVirtualSheetsCall({
       });
     }
 
-    if (sheetRole === "master" && actuallyChangedTabs.length > 0) {
+    if (sheetRole === "master" && actuallyChangedTabs.length > 0 && !params._skipMasterFormulaRecompute) {
       await recomputeMasterFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
         console.warn("[masterEngineService] Formula recompute warning:", e.message)
       );
@@ -2641,6 +2652,7 @@ export async function handleVirtualSheetsCall({
         } else {
           await recomputeAndPersistImmediateClientTabs_(ctx, actuallyChangedTabs, rawSheetsApi, {
             notesChangedTabs: formulasChangedTabs,
+            deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
           }).catch((e) =>
             console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
           );
@@ -4492,7 +4504,7 @@ async function syncStructuredClientTablesFromGrids_(ctx, grids, changedTabs = nu
   }
   const prev = _inFlightStage4SyncByClient.get(clientKey) || Promise.resolve();
   const next = prev
-    .catch(() => {})
+    .catch(() => { })
     .then(() => syncStructuredClientTablesFromGridsImpl_(ctx, grids, changedTabs));
   _inFlightStage4SyncByClient.set(clientKey, next);
   try {

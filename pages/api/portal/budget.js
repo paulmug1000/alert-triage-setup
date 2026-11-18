@@ -230,13 +230,43 @@ export default async function handler(req, res) {
       });
     }
 
+    const SENSITIVE_BUDGET_RE = /dividend|director|salar|wages|remuneration|paye|nic|pension/i;
+    const isSenior = Boolean(
+      sessionUser.isSenior ||
+      sessionUser.role === "Senior (Restricted)" ||
+      String(sessionUser.role || "").toLowerCase().includes("senior")
+    );
+    let responseData = result.data;
+    if (isSenior && responseData && typeof responseData === "object") {
+      responseData = { ...responseData };
+      if (Array.isArray(responseData.years)) {
+        responseData.years = responseData.years.map((yr) => ({
+          ...yr,
+          rows: Array.isArray(yr.rows)
+            ? yr.rows.filter((r) => !SENSITIVE_BUDGET_RE.test(String(r?.label || "")))
+            : yr.rows,
+        }));
+      }
+      const maskBudgetGrid = (grid) =>
+        Array.isArray(grid)
+          ? grid.map((r, rIdx) => {
+              if (rIdx >= 2 && Array.isArray(r) && SENSITIVE_BUDGET_RE.test(String(r[0] || ""))) {
+                return [r[0], ...r.slice(1).map(() => "")];
+              }
+              return r;
+            })
+          : grid;
+      if (Array.isArray(responseData.rawVals)) responseData.rawVals = maskBudgetGrid(responseData.rawVals);
+      if (Array.isArray(responseData.mathVals)) responseData.mathVals = maskBudgetGrid(responseData.mathVals);
+    }
+
     return res.status(200).json({
       success: true,
       fromCache: result.fromCache,
       fromMemory: result.fromMemory,
       fromRedis: result.fromRedis,
       staleRevalidating: result.staleRevalidating,
-      data: result.data,
+      data: responseData,
       cachedAt: result.cachedAt,
     });
   } catch (err) {

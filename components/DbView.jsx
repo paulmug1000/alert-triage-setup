@@ -32,6 +32,24 @@ const AMD_BUTTONS = [
   { amdAction: "pull_outgoings_notes", label: "Pull outgoings notes" },
 ];
 
+function formatCronScheduleLabel(schedule) {
+  const s = String(schedule || "").trim();
+  const everyMins = s.match(/^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$/);
+  if (everyMins) {
+    const n = Number(everyMins[1]);
+    return { adjective: `${n}-minute`, interval: `every ${n} min${n === 1 ? "" : "s"}` };
+  }
+  const everyHours = s.match(/^0\s+\*\/(\d+)\s+\*\s+\*\s+\*$/);
+  if (everyHours) {
+    const n = Number(everyHours[1]);
+    return { adjective: `${n}-hour`, interval: `every ${n} hour${n === 1 ? "" : "s"}` };
+  }
+  if (s) {
+    return { adjective: "scheduled", interval: s };
+  }
+  return { adjective: "10-minute", interval: "every 10 mins" };
+}
+
 const cardStyle = {
   background: "#ffffff",
   borderRadius: "10px",
@@ -420,9 +438,10 @@ export default function DbView({
   };
 
   const handleSetClockEnabled = (enabled) => {
+    const schedLabel = formatCronScheduleLabel(stage2Data?.clockStatus?.schedule).adjective;
     runTrackedOperation(
       enabled ? "clock_enable" : "clock_pause",
-      enabled ? "Enabling Supabase 30-minute cron scheduler..." : "Pausing Supabase 30-minute cron scheduler...",
+      enabled ? `Enabling Supabase ${schedLabel} cron scheduler...` : `Pausing Supabase ${schedLabel} cron scheduler...`,
       async () => {
         const res = await fetch("/api/pma/master-engine", {
           method: "POST",
@@ -436,18 +455,20 @@ export default function DbView({
         const data = await res.json();
         if (!data.success) throw new Error(data.error || "Could not update clock status.");
         if (data.status) setStage2Data(data.status);
+        const updatedLabel = formatCronScheduleLabel(data?.status?.clockStatus?.schedule || stage2Data?.clockStatus?.schedule).adjective;
         return {
           type: "success",
           text: enabled
-            ? "Supabase 30-minute cron scheduler enabled."
-            : "Supabase 30-minute cron scheduler paused.",
+            ? `Supabase ${updatedLabel} cron scheduler enabled.`
+            : `Supabase ${updatedLabel} cron scheduler paused.`,
         };
       }
     );
   };
 
   const handleTriggerClockNow = () => {
-    runTrackedOperation("clock_trigger", "Triggering Supabase 30-minute cron scheduler now...", async () => {
+    const schedLabel = formatCronScheduleLabel(stage2Data?.clockStatus?.schedule).adjective;
+    runTrackedOperation("clock_trigger", `Triggering Supabase ${schedLabel} cron scheduler now...`, async () => {
       const res = await fetch("/api/pma/master-engine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -463,9 +484,10 @@ export default function DbView({
       if (tr.success === false) {
         throw new Error(tr.error || "Scheduler trigger returned an error.");
       }
+      const updatedLabel = formatCronScheduleLabel(data?.status?.clockStatus?.schedule || stage2Data?.clockStatus?.schedule).adjective;
       return {
         type: "success",
-        text: `Triggered Supabase 30-minute cron scheduler (request #${tr.requestId ?? "ok"} -> ${tr.targetUrl || "/api/cron"}).`,
+        text: `Triggered Supabase ${updatedLabel} cron scheduler (request #${tr.requestId ?? "ok"} -> ${tr.targetUrl || "/api/cron"}).`,
       };
     });
   };
@@ -1164,7 +1186,7 @@ export default function DbView({
       {/* Initial Full-Screen Loading Skeleton (never flashes "No data available") */}
       {isInitialLoading ? (
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          {["Manage client", "Client engine overview", "Migration", "Supabase 30-minute cron scheduler", "Client workbook backups & granular restore"].map((secTitle) => (
+          {["Manage client", "Client engine overview", "Migration", `Supabase ${formatCronScheduleLabel(cs?.schedule).adjective} cron scheduler`, "Client workbook backups & granular restore"].map((secTitle) => (
             <div key={secTitle} style={cardStyle}>
               <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
                 <Spinner size={14} color="#0047AB" style={{ marginRight: 0 }} />
@@ -2073,7 +2095,7 @@ export default function DbView({
             >
               <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                 <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
-                  Supabase 30-minute cron scheduler
+                  Supabase {formatCronScheduleLabel(cs?.schedule).adjective} cron scheduler
                 </h2>
                 <span
                   style={{
@@ -2085,7 +2107,7 @@ export default function DbView({
                     color: activeAndRunning ? "#166534" : "#92400e",
                   }}
                 >
-                  {activeAndRunning ? "Active (every 30 mins)" : "Paused"}
+                  {activeAndRunning ? `Active (${formatCronScheduleLabel(cs?.schedule).interval})` : "Paused"}
                 </span>
                 {cs?.lastWebhookReceivedAt && (
                   <span style={{ fontSize: "11.5px", color: "#64748b" }}>

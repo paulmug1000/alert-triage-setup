@@ -24,6 +24,9 @@ export default async function handler(req, res) {
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ error: "Read-only session cannot initiate OAuth connections." });
   }
+  if (sessionUser.role === "Senior (Restricted)" || sessionUser.isSenior) {
+    return res.status(403).json({ error: "Forbidden: Senior (Restricted) users cannot connect integrations." });
+  }
 
   const { clientKey, clientName, masterSheetId, clientSheetId, redirectBack } = req.method === "POST" ? req.body : req.query;
 

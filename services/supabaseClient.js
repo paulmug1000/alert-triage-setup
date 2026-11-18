@@ -141,6 +141,10 @@ export async function isSupabaseControlPlaneActive() {
 /**
  * Sets the active Control Plane source ('sheets' | 'supabase') across memory, Redis, and Supabase.
  */
+export function shouldDualWriteLegacyControlPlaneSheets() {
+  return process.env.PULSE_DUAL_WRITE_LEGACY_SHEETS === "true";
+}
+
 export async function setControlPlaneSource(mode, updatedBy = "Admin") {
   const cleanMode = mode === "supabase" ? "supabase" : "sheets";
   if (cleanMode === "supabase" && !isSupabaseConfigured()) {
@@ -158,7 +162,11 @@ export async function setControlPlaneSource(mode, updatedBy = "Admin") {
   if (sb) {
     await sb.from("system_config").upsert({
       key: "control_plane_source",
-      value: { mode: cleanMode, dualWriteSheets: true, updatedAt: new Date().toISOString() },
+      value: {
+        mode: cleanMode,
+        dualWriteSheets: shouldDualWriteLegacyControlPlaneSheets(),
+        updatedAt: new Date().toISOString(),
+      },
       description: "Active primary data source for Control Plane reads (sheets vs supabase)",
       updated_by: updatedBy,
     });
@@ -202,18 +210,6 @@ export async function withTenantScope(sessionUser, clientName, callback) {
     .select("*")
     .eq("normalized_key", normKey)
     .maybeSingle();
-
-  if (clientRecord?.id) {
-    try {
-      await sb.rpc("set_pulse_tenant_context", {
-        p_client_id: clientRecord.id,
-        p_user_email: String(sessionUser.email || ""),
-        p_user_role: String(sessionUser.role || ""),
-      });
-    } catch (_) {
-      // RPC optional if migration function hasn't been applied yet
-    }
-  }
 
   return callback(sb, clientRecord, normKey);
 }

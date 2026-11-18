@@ -192,74 +192,79 @@ export default async function handler(req, res) {
 
     try {
       const supaActive = isSupabaseConfigured() && await isSupabaseControlPlaneActive();
-      const sheets = await getSheetsClient().catch(() => null);
-      let rows = [];
-      if (sheets) {
-        try {
-          const resp = await sheets.spreadsheets.values.get({
-            spreadsheetId: DEFAULT_AC_SHEET_ID,
-            range: "AutoUpdates!A2:AJ500",
-            _allowRetiredControlPlaneRead: true,
-          });
-          rows = resp.data.values || [];
-        } catch (sheetErr) {
-          if (!supaActive) throw sheetErr;
-          console.warn("AutoUpdates read fallback notice in /api/integrations/status:", sheetErr.message);
+      const loadLegacyAutoUpdatesClients_ = async () => {
+        const sheets = await getSheetsClient().catch(() => null);
+        if (!sheets) {
+          throw new Error("Unable to initialize Google Sheets client.");
         }
-      } else if (!supaActive) {
-        throw new Error("Unable to initialize Google Sheets client.");
-      }
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: DEFAULT_AC_SHEET_ID,
+          range: "AutoUpdates!A2:AJ500",
+          _allowRetiredControlPlaneRead: true,
+        });
+        const rows = resp.data.values || [];
+        return rows
+          .map((r, idx) => {
+            const clientName = String(r[0] || "").trim();
+            const clientSheetId = extractSheetIdFromUrl(r[11]) || String(r[11] || "").trim();
+            const masterSheetId = extractSheetIdFromUrl(r[12]) || String(r[12] || "").trim();
 
-      const autoUpdatesClients = rows
-        .map((r, idx) => {
-          const clientName = String(r[0] || "").trim();
-          const clientSheetId = extractSheetIdFromUrl(r[11]) || String(r[11] || "").trim();
-          const masterSheetId = extractSheetIdFromUrl(r[12]) || String(r[12] || "").trim();
+            const crmAuto = evaluateAutomationHealth({
+              frequency: r[15],
+              isRunning: String(r[20] || "").trim().toUpperCase() === "YES",
+              lastCommandTime: r[27],
+              signalFeedback: r[28],
+              lastRunEndTime: r[29],
+              summary: r[30]
+            });
 
-          const crmAuto = evaluateAutomationHealth({
-            frequency: r[15],
-            isRunning: String(r[20] || "").trim().toUpperCase() === "YES",
-            lastCommandTime: r[27],
-            signalFeedback: r[28],
-            lastRunEndTime: r[29],
-            summary: r[30]
-          });
+            const accAuto = evaluateAutomationHealth({
+              frequency: r[14],
+              isRunning: String(r[19] || "").trim().toUpperCase() === "YES",
+              lastCommandTime: r[22],
+              signalFeedback: r[23],
+              lastRunEndTime: r[24],
+              summary: r[25]
+            });
 
-          const accAuto = evaluateAutomationHealth({
-            frequency: r[14],
-            isRunning: String(r[19] || "").trim().toUpperCase() === "YES",
-            lastCommandTime: r[22],
-            signalFeedback: r[23],
-            lastRunEndTime: r[24],
-            summary: r[25]
-          });
-
-          return {
-            clientName,
-            clientSheetId,
-            masterSheetId,
-            autoUpdatesRow: idx + 2,
-            crmAuto,
-            accAuto
-          };
-        })
-        .filter(c => c.clientName && c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name" && c.masterSheetId);
+            return {
+              clientName,
+              clientSheetId,
+              masterSheetId,
+              autoUpdatesRow: idx + 2,
+              crmAuto,
+              accAuto
+            };
+          })
+          .filter(c => c.clientName && c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name" && c.masterSheetId);
+      };
 
       const excludedClientNamesSet = await getExcludedClientNamesSet_();
       let clients = [];
+      let loadedFromSupabase = false;
 
       if (supaActive) {
         const sb = getSupabaseAdmin();
-        const { data: sbClients, error: sbErr } = await sb
-          .from("clients")
-          .select("*")
-          .order("client_name", { ascending: true });
+        const [
+          { data: sbClients, error: sbErr },
+          { data: sbSchedules, error: schedErr },
+        ] = await Promise.all([
+          sb.from("clients").select("*").order("client_name", { ascending: true }),
+          sb.from("sync_schedules").select("*"),
+        ]);
+
         if (!sbErr && Array.isArray(sbClients) && sbClients.length > 0) {
-          const autoUpdatesByName = new Map(
-            autoUpdatesClients.map(c => [c.clientName.toLowerCase(), c])
-          );
-          const seenNames = new Set();
+          loadedFromSupabase = true;
+          const schedByName = new Map();
+          if (!schedErr && Array.isArray(sbSchedules)) {
+            for (const s of sbSchedules) {
+              const key = String(s?.client_name || "").trim().toLowerCase();
+              if (key) schedByName.set(key, s);
+            }
+          }
+
           const defaultAuto = evaluateAutomationHealth({});
+          const healthPriority = { error: 5, running: 4, pending: 3, healthy: 2, inactive: 1 };
 
           for (const sc of sbClients) {
             const cName = String(sc?.client_name || "").trim();
@@ -268,29 +273,61 @@ export default async function handler(req, res) {
             if (["inactive", "archived", "suspended"].includes(eff)) continue;
 
             const normKey = String(sc?.normalized_key || "").trim();
-            const au = autoUpdatesByName.get(cName.toLowerCase());
             const resolvedClientSheetId =
               String(sc?.client_sheet_id || "").trim() ||
-              (sc?.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "") ||
-              au?.clientSheetId ||
-              "";
+              (sc?.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "");
             const resolvedMasterSheetId =
               String(sc?.master_sheet_id || "").trim() ||
-              (sc?.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "") ||
-              au?.masterSheetId ||
-              "";
+              (sc?.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "");
             if (!resolvedMasterSheetId && sc?.master_mode !== "supabase") continue;
 
-            seenNames.add(cName.toLowerCase());
+            const sched = schedByName.get(cName.toLowerCase()) || null;
+            const flags = (sched?.flags && typeof sched.flags === "object") ? sched.flags : {};
+            const inFlightMs = flags.in_flight_since ? Date.parse(flags.in_flight_since) : NaN;
+            const hasActiveInFlight = !Number.isNaN(inFlightMs) && (Date.now() - inFlightMs) < 310_000;
+            const inFlightSeqs = Array.isArray(flags.in_flight_seqs) ? flags.in_flight_seqs : null;
+
+            const crmAuto = sched
+              ? evaluateAutomationHealth({
+                  frequency: sched.crm_freq,
+                  isRunning: hasActiveInFlight && (!inFlightSeqs || inFlightSeqs.includes("crm")),
+                  lastCommandTime: sched.last_crm_run || "",
+                  signalFeedback: sched.crm_status || "",
+                  lastRunEndTime: sched.last_crm_run || "",
+                  summary: sched.crm_status || "",
+                })
+              : defaultAuto;
+            const invAuto = sched
+              ? evaluateAutomationHealth({
+                  frequency: sched.inv_freq,
+                  isRunning: hasActiveInFlight && (!inFlightSeqs || inFlightSeqs.includes("invoice")),
+                  lastCommandTime: sched.last_inv_run || "",
+                  signalFeedback: sched.inv_status || "",
+                  lastRunEndTime: sched.last_inv_run || "",
+                  summary: sched.inv_status || "",
+                })
+              : defaultAuto;
+            const expAuto = sched
+              ? evaluateAutomationHealth({
+                  frequency: sched.exp_freq,
+                  isRunning: hasActiveInFlight && (!inFlightSeqs || inFlightSeqs.includes("expense")),
+                  lastCommandTime: sched.last_exp_run || "",
+                  signalFeedback: sched.exp_status || "",
+                  lastRunEndTime: sched.last_exp_run || "",
+                  summary: sched.exp_status || "",
+                })
+              : defaultAuto;
+            const accAuto = (healthPriority[expAuto.status] || 0) > (healthPriority[invAuto.status] || 0) ? expAuto : invAuto;
+
             clients.push({
               clientName: cName,
               clientSheetId: resolvedClientSheetId,
               masterSheetId: resolvedMasterSheetId,
               clientMode: sc?.client_mode || "sheets",
               masterMode: sc?.master_mode || "sheets",
-              autoUpdatesRow: au?.autoUpdatesRow || null,
-              crmAuto: au?.crmAuto || defaultAuto,
-              accAuto: au?.accAuto || defaultAuto,
+              autoUpdatesRow: sc?.metadata?.autoUpdatesRow ?? null,
+              crmAuto,
+              accAuto,
               fallbackConfig: {
                 accountingTool: sc?.metadata?.accountingTool || "None",
                 crmTool: sc?.metadata?.crmTool || "None",
@@ -299,17 +336,13 @@ export default async function handler(req, res) {
               },
             });
           }
-
-          for (const au of autoUpdatesClients) {
-            if (!seenNames.has(au.clientName.toLowerCase()) && !excludedClientNamesSet.has(au.clientName.toLowerCase())) {
-              clients.push(au);
-            }
-          }
-        } else {
-          clients = autoUpdatesClients;
+        } else if (sbErr) {
+          console.warn("Supabase clients read fallback notice in /api/integrations/status:", sbErr.message);
         }
-      } else {
-        clients = autoUpdatesClients;
+      }
+
+      if (!loadedFromSupabase) {
+        clients = await loadLegacyAutoUpdatesClients_();
       }
 
       if (excludedClientNamesSet.size > 0) {

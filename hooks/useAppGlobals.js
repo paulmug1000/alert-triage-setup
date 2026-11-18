@@ -153,6 +153,9 @@ export function AppGlobalsProvider({ children }) {
   const [assignedByClient, setAssignedByClient] = useState({});
   
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const p = window.location.pathname || "";
+    if (p.startsWith("/pulse") || p.startsWith("/portal")) return;
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "get_assigned_expenses", automationCommanderSheetId }) })
       .then(r => r.json())

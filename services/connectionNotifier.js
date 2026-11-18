@@ -258,12 +258,16 @@ ${appUrl}/pma?nav=integrations&client=${encodeURIComponent(clientName)}
     console.log(`📧 Sent connection notification email to ${recipientEmails.length} staff (${recipientEmails.join(", ")}) for ${clientName} [${toolDisplayName}].`);
 
     if (sheets) {
-      logPmaActivity({
+      const notifSummary = `Notified ${recipientEmails.length} staff of ${toolDisplayName} connection (${recipientEmails.join(", ")})`;
+      logPmaActivity(sheets, {
         action: "INTEGRATION_AUTH_NOTIFIED",
         clientName,
-        details: `Notified ${recipientEmails.length} staff of ${toolDisplayName} connection (${recipientEmails.join(", ")})`,
-        status: "SUCCESS"
-      }, sheets).catch(() => {});
+        summary: notifSummary,
+        details: {
+          message: notifSummary,
+          status: "SUCCESS",
+        },
+      }).catch(() => {});
     }
 
     return { success: true, recipients: recipientEmails };

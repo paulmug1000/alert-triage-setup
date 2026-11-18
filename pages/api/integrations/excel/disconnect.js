@@ -5,7 +5,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, matchesClientName } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, matchesClientName, canAccessPma } from "../../../../services/userPermissions.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
 import { deleteIntegrationTokens, invalidateIntegrationsCache } from "../../../../services/vaultService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
@@ -25,6 +25,9 @@ export default async function handler(req, res) {
 
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ success: false, error: "Read-only session cannot disconnect integrations." });
+  }
+  if (!canAccessPma(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Only PMA staff can disconnect active integrations." });
   }
 
   const { clientKey, clientName, masterSheetId } = req.body;

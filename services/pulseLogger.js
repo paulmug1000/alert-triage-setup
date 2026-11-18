@@ -1,7 +1,12 @@
 import { withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { parseLogDate, formatRelativeTime, isWithin30Days, appendLiveActivityToCache } from "./activityService.js";
-import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import {
+  getSupabaseAdmin,
+  isSupabaseConfigured,
+  isSupabaseControlPlaneActive,
+  shouldDualWriteLegacyControlPlaneSheets,
+} from "./supabaseClient.js";
 
 export const DEFAULT_AC_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 export const PULSE_ACTIVITY_LOG_TAB = "PulseActivityLog";
@@ -69,7 +74,6 @@ export async function logPulseActivity(sheets, {
 }) {
   try {
     const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
-    await ensurePulseActivityLogTab(sheets, acId);
 
     const nowISO = new Date().toISOString();
     const cleanClient = String(clientName || "System").trim();
@@ -101,9 +105,10 @@ export async function logPulseActivity(sheets, {
       }
     }
 
-    // 1. Append row to Automation Commander (background mirror if Supabase is active)
-    const appendToSheet = () =>
-      withRetry(() =>
+    // 1. Append row to Automation Commander (only in legacy mode or explicit dual-write)
+    const appendToSheet = async () => {
+      await ensurePulseActivityLogTab(sheets, acId);
+      return withRetry(() =>
         sheets.spreadsheets.values.append({
           spreadsheetId: acId,
           range: `${PULSE_ACTIVITY_LOG_TAB}!A:G`,
@@ -113,11 +118,18 @@ export async function logPulseActivity(sheets, {
           }
         })
       );
+    };
 
-    if (await isSupabaseControlPlaneActive()) {
-      appendToSheet().catch(e => console.warn("⚠️ Background PulseActivityLog mirror warning:", e.message));
-    } else {
-      await appendToSheet();
+    const supaActive = await isSupabaseControlPlaneActive();
+    if (!supaActive || shouldDualWriteLegacyControlPlaneSheets()) {
+      if (supaActive) {
+        appendToSheet().catch(e => console.warn("⚠️ Background PulseActivityLog mirror warning:", e.message));
+      } else {
+        await appendToSheet();
+      }
+      // 3. Optional periodic pruning: check row count and trim oldest if > MAX_ROWS
+      // Run asynchronously without awaiting to keep caller fast
+      prunePulseActivityLogIfNeeded(sheets, acId).catch(() => {});
     }
 
     console.log(`📝 [Pulse Log] ${cleanCategory} (${cleanClient}): ${cleanAction} - ${cleanSummary}`);
@@ -148,9 +160,7 @@ export async function logPulseActivity(sheets, {
       console.warn("⚠️ Could not update live Redis cache in logPulseActivity:", cacheErr.message);
     }
 
-    // 3. Optional periodic pruning: check row count and trim oldest if > MAX_ROWS
-    // Run asynchronously without awaiting to keep caller fast
-    prunePulseActivityLogIfNeeded(sheets, acId).catch(() => {});
+    // 3. Optional periodic pruning handled above when writing to legacy PulseActivityLog tab
   } catch (err) {
     console.error("❌ logPulseActivity error:", err.message);
   }
@@ -211,14 +221,31 @@ export async function fetchPulseActivity(sheets, automationCommanderSheetId = DE
     try {
       const sb = getSupabaseAdmin();
       const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
-      const { data: rows, error } = await sb
-        .from("activity_logs")
-        .select("*")
-        .eq("source", "PULSE")
-        .gte("logged_at", thirtyDaysAgo)
-        .order("logged_at", { ascending: false })
-        .limit(1500);
-      if (!error && Array.isArray(rows)) {
+      const PAGE_SIZE = 1000;
+      const MAX_FETCH_ROWS = 5000;
+      const rows = [];
+      let fetchError = null;
+      for (let from = 0; from < MAX_FETCH_ROWS; from += PAGE_SIZE) {
+        let query = sb
+          .from("activity_logs")
+          .select("*")
+          .eq("source", "PULSE")
+          .gte("logged_at", thirtyDaysAgo)
+          .order("logged_at", { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+        if (targetClientName && targetClientName !== "ALL" && targetClientName !== "SYSTEM") {
+          query = query.ilike("client_name", targetClientName);
+        }
+        const { data: pageRows, error } = await query;
+        if (error) {
+          fetchError = error;
+          break;
+        }
+        if (!Array.isArray(pageRows) || pageRows.length === 0) break;
+        rows.push(...pageRows);
+        if (pageRows.length < PAGE_SIZE) break;
+      }
+      if (!fetchError) {
         const events = [];
         rows.forEach((r, idx) => {
           const client = String(r.client_name || "").trim();
@@ -371,18 +398,26 @@ export async function fetchSecurityAuditLogs(sheets, automationCommanderSheetId 
   if (await isSupabaseControlPlaneActive()) {
     try {
       const sb = getSupabaseAdmin();
-      const { data: rows, error } = await sb
-        .from("activity_logs")
-        .select("*")
-        .eq("source", "PULSE")
-        .order("logged_at", { ascending: false })
-        .limit(500);
-      if (!error && Array.isArray(rows)) {
-        const authLogs = [];
+      const PAGE_SIZE = 1000;
+      const MAX_FETCH_ROWS = 5000;
+      const authLogs = [];
+      let fetchError = null;
+      for (let from = 0; from < MAX_FETCH_ROWS && authLogs.length < limit; from += PAGE_SIZE) {
+        const { data: rows, error } = await sb
+          .from("activity_logs")
+          .select("*")
+          .or('category.in.("AUTH","SECURITY"),action.ilike.USER_%,action.ilike.%LOGIN%,action.ilike.%AUTH%,action.ilike.%PORTAL%')
+          .order("logged_at", { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+        if (error) {
+          fetchError = error;
+          break;
+        }
+        if (!Array.isArray(rows) || rows.length === 0) break;
         for (const r of rows) {
           const category = String(r.category || "").trim().toUpperCase();
           const action = String(r.action || "").trim();
-          const isAuthEvent = category === "AUTH" || action.includes("LOGIN") || action.includes("AUTH") || action.includes("PORTAL");
+          const isAuthEvent = category === "AUTH" || category === "SECURITY" || action.includes("LOGIN") || action.includes("AUTH") || action.includes("PORTAL") || action.startsWith("USER_");
           if (!isAuthEvent) continue;
           const structuredDetails = typeof r.details === "object" && r.details !== null ? r.details : {};
           authLogs.push({
@@ -399,6 +434,9 @@ export async function fetchSecurityAuditLogs(sheets, automationCommanderSheetId 
           });
           if (authLogs.length >= limit) break;
         }
+        if (rows.length < PAGE_SIZE) break;
+      }
+      if (!fetchError) {
         return authLogs;
       }
     } catch (sbErr) {

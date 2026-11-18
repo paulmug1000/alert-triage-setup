@@ -476,13 +476,16 @@ export function evaluateInvAppList(grids) {
     const K = getVal(idxK2); // Type
     const L = getVal(idxL2); // Currency
     const M = getVal(idxM2); // Currency Rate
-    const rawN = r < 4588 ? getVal(idxF2) : ""; // Invoice no (N4)
+    const rawN = getVal(idxF2); // Invoice no (N4)
 
     // Skip rows where client, invoice no, and type are all blank
     if (isBlankCell(A) && isBlankCell(rawN) && isBlankCell(K)) continue;
     const N = typeof rawN === "number" ? (() => {
-      const { year, month1 } = serialToYMD(rawN);
-      return `${year}-${month1}`;
+      if (Number.isInteger(rawN) && rawN >= 36526 && rawN <= 55153) {
+        const { year, month1, day } = serialToYMD(rawN);
+        if (day === 1 && year >= 2000 && year <= 2050) return `${year}-${month1}`;
+      }
+      return String(rawN);
     })() : rawN;
     const O = getVal(idxO2); // Fully paid on
     const P = getVal(idxP2); // Status
@@ -517,10 +520,22 @@ export function evaluateInvAppList(grids) {
     let I = "";
     if (!isBlankCell(O)) {
       if (gsEq(accountingSystem, "Xero")) {
-        const oStr = String(O);
-        const mid10 = oStr.slice(6, 16);
-        const numMid = Number(mid10);
-        I = Number.isFinite(numMid) && mid10.trim() !== "" ? numMid / 86400 + EPOCH_OFFSET_DAYS : "";
+        if (typeof O === "number" && Number.isFinite(O)) {
+          I = O;
+        } else {
+          const oStr = String(O).trim();
+          if (oStr.includes("/Date(")) {
+            const m = oStr.match(/\/Date\((-?\d+)/);
+            const msNum = m ? Number(m[1]) : Number(oStr.slice(6, 16)) * 1000;
+            I = Number.isFinite(msNum) ? msNum / 86400000 + EPOCH_OFFSET_DAYS : "";
+          } else if (/^\d{4}-\d{2}-\d{2}/.test(oStr)) {
+            const ser = toSerialOrNull(oStr);
+            I = ser !== null ? ser : "";
+          } else {
+            const ser = toSerialOrNull(oStr);
+            I = ser !== null ? ser : oStr;
+          }
+        }
       } else {
         I = O;
       }

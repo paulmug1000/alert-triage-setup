@@ -5,6 +5,7 @@ import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 import { provisionRetainerChildRows_ } from "../../../services/retainers.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 import {
   canonicalizeInvoiceStatus,
   canonicalizeExpenseStatus,
@@ -229,7 +230,7 @@ async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, in
  * Writes parent row values into rowArray preserving formulas in unmapped columns.
  */
 function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, options = {}) {
-  const { isJobCosting = false, sheetName = "Confirmed", rowNum = 2 } = options;
+  const { isJobCosting = false, sheetName = "Confirmed", rowNum = 2, canEnterFormulas = false } = options;
 
   // Basic Info
   if (cols.client !== -1 && job.client !== undefined) rowArray[cols.client] = parseText(job.client);
@@ -293,7 +294,7 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, o
         if (rawCc === "") {
           rowArray[cols.contractorCosts] = sheetName === "Confirmed" ? `=M${rowNum}*KeyInfo!$D$13` : "";
         } else if (rawCc.startsWith("=")) {
-          rowArray[cols.contractorCosts] = rawCc;
+          rowArray[cols.contractorCosts] = canEnterFormulas ? rawCc : sanitizeFormulaInput(rawCc);
         } else {
           rowArray[cols.contractorCosts] = parseMoney(rawCc);
         }
@@ -1011,10 +1012,14 @@ export default async function handler(req, res) {
       }
     }
 
+    const canEnterFormulas = Boolean(
+      !sessionUser?.isReadOnly && (sessionUser?.isAdmin || sessionUser?.role === "Admin")
+    );
     applyParentRowValues(updatedParentRow, job, cols, parentInvoices, parentExpenses, {
       isJobCosting,
       sheetName,
       rowNum: parentRow,
+      canEnterFormulas,
     });
 
     const batchUpdateData = [
@@ -1320,14 +1325,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 8. INVALIDATE CACHES FOR THIS CLIENT (BOTH PORTAL AND PMA)
-    try {
-      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
-    } catch (cacheErr) {
-      console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
-    }
-
-    // 9. LOG ACTIVITY (NON-BLOCKING)
+    // 8. LOG ACTIVITY (NON-BLOCKING)
     const jobName = job.jobName || "Untitled Job";
     const action = isNewJob ? "JOB_CREATED" : "JOB_MODIFIED";
     const summary = isNewJob
@@ -1366,6 +1364,13 @@ export default async function handler(req, res) {
       });
     }
 
+    // 9. INVALIDATE CACHES FOR THIS CLIENT AFTER ALL WRITES & RETAINER PROVISIONING COMPLETE
+    try {
+      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
+    } catch (cacheErr) {
+      console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
+    }
+
     return res.status(200).json({
       success: true,
       rowNumber: parentRow,
@@ -1376,5 +1381,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("❌ /api/portal/save-job error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  } finally {
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
   }
 }

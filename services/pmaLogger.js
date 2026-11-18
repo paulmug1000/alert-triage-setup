@@ -1,7 +1,12 @@
 import { withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { parseLogDate, formatRelativeTime, isWithin30Days, appendLiveActivityToCache } from "./activityService.js";
-import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import {
+  getSupabaseAdmin,
+  isSupabaseConfigured,
+  isSupabaseControlPlaneActive,
+  shouldDualWriteLegacyControlPlaneSheets,
+} from "./supabaseClient.js";
 
 export const DEFAULT_AC_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 export const PMA_ACTIVITY_LOG_TAB = "PmaActivityLog";
@@ -126,11 +131,14 @@ export async function logPmaActivity(sheetsOrOptions, maybeOptions = {}) {
       );
     };
 
-    // 1. Append row to Automation Commander (non-blocking mirror if Supabase is active)
-    if (await isSupabaseControlPlaneActive()) {
-      appendToSheet().catch(e => console.warn("⚠️ Background PmaActivityLog mirror warning:", e.message));
-    } else {
-      await appendToSheet();
+    // 1. Append row to Automation Commander only if legacy mode or explicit dual-write enabled
+    const supaActive = await isSupabaseControlPlaneActive();
+    if (!supaActive || shouldDualWriteLegacyControlPlaneSheets()) {
+      if (supaActive) {
+        appendToSheet().catch(e => console.warn("⚠️ Background PmaActivityLog mirror warning:", e.message));
+      } else {
+        await appendToSheet();
+      }
     }
 
     console.log(`📝 [PMA Log] ${cleanCategory} (${cleanClient || "All"}): ${cleanAction} - ${cleanSummary}`);
@@ -173,18 +181,31 @@ export async function fetchPmaActivity(sheets, automationCommanderSheetId = DEFA
     try {
       const sb = getSupabaseAdmin();
       const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
-      let query = sb
-        .from("activity_logs")
-        .select("*")
-        .eq("source", "PMA")
-        .gte("logged_at", thirtyDaysAgo)
-        .order("logged_at", { ascending: false })
-        .limit(1000);
-      if (targetClientName && targetClientName !== "ALL") {
-        query = query.ilike("client_name", targetClientName);
+      const PAGE_SIZE = 1000;
+      const MAX_FETCH_ROWS = 5000;
+      const rows = [];
+      let fetchError = null;
+      for (let from = 0; from < MAX_FETCH_ROWS; from += PAGE_SIZE) {
+        let query = sb
+          .from("activity_logs")
+          .select("*")
+          .eq("source", "PMA")
+          .gte("logged_at", thirtyDaysAgo)
+          .order("logged_at", { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+        if (targetClientName && targetClientName !== "ALL") {
+          query = query.ilike("client_name", targetClientName);
+        }
+        const { data: pageRows, error } = await query;
+        if (error) {
+          fetchError = error;
+          break;
+        }
+        if (!Array.isArray(pageRows) || pageRows.length === 0) break;
+        rows.push(...pageRows);
+        if (pageRows.length < PAGE_SIZE) break;
       }
-      const { data: rows, error } = await query;
-      if (!error && Array.isArray(rows)) {
+      if (!fetchError) {
         return rows.map((r, idx) => {
           const date = new Date(r.logged_at);
           const client = String(r.client_name || "").trim();

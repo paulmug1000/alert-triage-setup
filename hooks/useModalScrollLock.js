@@ -95,37 +95,16 @@ export function useModalScrollLock() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
 
     let isLocked = false;
+    let listenersAttached = false;
+    let openModalsCache = [];
+    let rafId = null;
     let prevBodyOverflow = "";
     let prevHtmlOverflow = "";
     let prevBodyOverscroll = "";
     let prevHtmlOverscroll = "";
 
-    const applyLockState = () => {
-      const openModals = getOpenModals();
-      const shouldLock = openModals.length > 0;
-
-      if (shouldLock && !isLocked) {
-        prevBodyOverflow = document.body.style.overflow;
-        prevHtmlOverflow = document.documentElement.style.overflow;
-        prevBodyOverscroll = document.body.style.overscrollBehavior;
-        prevHtmlOverscroll = document.documentElement.style.overscrollBehavior;
-
-        document.body.style.overflow = "hidden";
-        document.documentElement.style.overflow = "hidden";
-        document.body.style.overscrollBehavior = "none";
-        document.documentElement.style.overscrollBehavior = "none";
-        isLocked = true;
-      } else if (!shouldLock && isLocked) {
-        document.body.style.overflow = prevBodyOverflow;
-        document.documentElement.style.overflow = prevHtmlOverflow;
-        document.body.style.overscrollBehavior = prevBodyOverscroll;
-        document.documentElement.style.overscrollBehavior = prevHtmlOverscroll;
-        isLocked = false;
-      }
-    };
-
     const handleWheel = (e) => {
-      const openModals = getOpenModals();
+      const openModals = openModalsCache;
       if (openModals.length === 0) return;
 
       const target = e.target instanceof HTMLElement ? e.target : null;
@@ -158,7 +137,7 @@ export function useModalScrollLock() {
     };
 
     const handleTouchMove = (e) => {
-      const openModals = getOpenModals();
+      const openModals = openModalsCache;
       if (openModals.length === 0) return;
 
       const target = e.target instanceof HTMLElement ? e.target : null;
@@ -194,10 +173,62 @@ export function useModalScrollLock() {
       e.preventDefault();
     };
 
+    const attachScrollBlockers = () => {
+      if (listenersAttached) return;
+      window.addEventListener("wheel", handleWheel, { passive: false });
+      window.addEventListener("touchmove", handleTouchMove, { passive: false });
+      listenersAttached = true;
+    };
+
+    const detachScrollBlockers = () => {
+      if (!listenersAttached) return;
+      window.removeEventListener("wheel", handleWheel);
+      window.removeEventListener("touchmove", handleTouchMove);
+      listenersAttached = false;
+    };
+
+    const applyLockState = () => {
+      openModalsCache = getOpenModals();
+      const shouldLock = openModalsCache.length > 0;
+
+      if (shouldLock) {
+        attachScrollBlockers();
+      } else {
+        detachScrollBlockers();
+      }
+
+      if (shouldLock && !isLocked) {
+        prevBodyOverflow = document.body.style.overflow;
+        prevHtmlOverflow = document.documentElement.style.overflow;
+        prevBodyOverscroll = document.body.style.overscrollBehavior;
+        prevHtmlOverscroll = document.documentElement.style.overscrollBehavior;
+
+        document.body.style.overflow = "hidden";
+        document.documentElement.style.overflow = "hidden";
+        document.body.style.overscrollBehavior = "none";
+        document.documentElement.style.overscrollBehavior = "none";
+        isLocked = true;
+      } else if (!shouldLock && isLocked) {
+        document.body.style.overflow = prevBodyOverflow;
+        document.documentElement.style.overflow = prevHtmlOverflow;
+        document.body.style.overscrollBehavior = prevBodyOverscroll;
+        document.documentElement.style.overscrollBehavior = prevHtmlOverscroll;
+        isLocked = false;
+      }
+    };
+
+    const scheduleLockSync = () => {
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        applyLockState();
+      });
+    };
+
     applyLockState();
 
     const observer = new MutationObserver(() => {
-      applyLockState();
+      scheduleLockSync();
     });
 
     observer.observe(document.body, {
@@ -207,13 +238,13 @@ export function useModalScrollLock() {
       attributeFilter: ["style", "class", "hidden"]
     });
 
-    window.addEventListener("wheel", handleWheel, { passive: false });
-    window.addEventListener("touchmove", handleTouchMove, { passive: false });
-
     return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+        rafId = null;
+      }
       observer.disconnect();
-      window.removeEventListener("wheel", handleWheel);
-      window.removeEventListener("touchmove", handleTouchMove);
+      detachScrollBlockers();
       if (isLocked) {
         document.body.style.overflow = prevBodyOverflow;
         document.documentElement.style.overflow = prevHtmlOverflow;

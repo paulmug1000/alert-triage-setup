@@ -51,9 +51,6 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Unauthorised" });
   }
 
-  const currentStatus = await getTriageRefreshStatus().catch(() => null);
-  const triageAlreadyRunning = Boolean(currentStatus && currentStatus.status === "running");
-
   const forceProactive = Boolean(req.body?.forceProactive === true || req.query?.forceProactive === "true");
   const forceAll = Boolean(req.body?.forceAll === true || req.query?.forceAll === "true");
   const triggerSource = String(req.body?.source || req.query?.source || "cron").trim();
@@ -71,7 +68,6 @@ export default async function handler(req, res) {
     source: triggerSource,
     forceProactive,
     forceAll,
-    triageAlreadyRunning,
   });
 
   const host = req.headers["x-forwarded-host"] || req.headers.host || `127.0.0.1:${process.env.PORT || 3000}`;
@@ -122,6 +118,8 @@ export default async function handler(req, res) {
         console.warn("⚠️ CRON: Error in dispatchDueNativeMasterSyncs:", syncErr.message);
       }
 
+      const currentStatus = await getTriageRefreshStatus().catch(() => null);
+      const triageAlreadyRunning = Boolean(currentStatus && currentStatus.status === "running");
       if (triageAlreadyRunning) {
         console.log("⏭️ CRON: Triage refresh is already running; native sync sweep completed, skipping overlapping triage run.");
       } else {
@@ -168,18 +166,38 @@ export default async function handler(req, res) {
         console.warn("⚠️ CRON: Non-fatal error refreshing activity feed:", actErr.message);
       }
 
-      // Auto-provision monthly Recon tabs if today is on or after 20th of the month
-      const currentDay = new Date().getDate();
+      // Auto-provision monthly Recon tabs once per day on or after 20th of the month (UK time)
+      const currentDay = Number(
+        new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", day: "numeric" }).format(new Date())
+      );
       if (currentDay >= 20) {
-        console.log(`CRON: Today is ${currentDay}th (>= 20th) - Checking monthly Recon tabs auto-provisioning...`);
-        try {
-          await fetch(`${baseUrl}/api/triage`, {
-            method: "POST",
-            headers: cronHeaders,
-            body: JSON.stringify({ action: "auto_provision_recon_tabs", secret: cronSecret, automationCommanderSheetId: acId }),
-          });
-        } catch (tabErr) {
-          console.warn("⚠️ CRON: Non-fatal error in auto_provision_recon_tabs:", tabErr.message);
+        const ukDateStr = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Europe/London",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(new Date());
+        let shouldProvisionToday = true;
+        if (redisClient?.isOpen) {
+          try {
+            const setRes = await redisClient.set(`pulse:cron:recon_provision:${ukDateStr}`, "1", {
+              NX: true,
+              EX: 86400,
+            });
+            shouldProvisionToday = setRes === "OK";
+          } catch (_) {}
+        }
+        if (shouldProvisionToday) {
+          console.log(`CRON: Today is ${currentDay}th (>= 20th) - Running daily Recon tabs auto-provisioning check...`);
+          try {
+            await fetch(`${baseUrl}/api/triage`, {
+              method: "POST",
+              headers: cronHeaders,
+              body: JSON.stringify({ action: "auto_provision_recon_tabs", secret: cronSecret, automationCommanderSheetId: acId }),
+            });
+          } catch (tabErr) {
+            console.warn("⚠️ CRON: Non-fatal error in auto_provision_recon_tabs:", tabErr.message);
+          }
         }
       }
 

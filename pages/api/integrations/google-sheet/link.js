@@ -30,6 +30,9 @@ export default async function handler(req, res) {
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ success: false, error: "Read-only session cannot link spreadsheets." });
   }
+  if (sessionUser.role === "Senior (Restricted)" || sessionUser.isSenior) {
+    return res.status(403).json({ success: false, error: "Forbidden: Senior (Restricted) users cannot link integrations." });
+  }
 
   const { clientKey, masterSheetId, url, tabName, headerRowNum = 1, keyHeaders = "", spreadsheetTitle = "" } = req.body;
 

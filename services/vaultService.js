@@ -25,7 +25,31 @@ async function syncVaultRecordToSupabase(clientKey, tool, record) {
   try {
     const sb = getSupabaseAdmin();
     if (!sb) return;
-    await sb.from("tenant_integrations").upsert({
+    let clientId = null;
+    if (clientKey && clientKey !== "__shared_xero__") {
+      const norm = normalizeKey(clientKey);
+      let clientRow = null;
+      if (norm) {
+        const { data } = await sb
+          .from("clients")
+          .select("id")
+          .eq("normalized_key", norm)
+          .maybeSingle();
+        clientRow = data;
+      }
+      if (!clientRow && record?.masterSheetId) {
+        const { data } = await sb
+          .from("clients")
+          .select("id")
+          .eq("master_sheet_id", record.masterSheetId)
+          .limit(1)
+          .maybeSingle();
+        clientRow = data;
+      }
+      clientId = clientRow?.id || null;
+    }
+    const { error } = await sb.from("tenant_integrations").upsert({
+      client_id: clientId,
       client_key: clientKey,
       tool,
       master_sheet_id: record.masterSheetId || "",
@@ -34,8 +58,58 @@ async function syncVaultRecordToSupabase(clientKey, tool, record) {
       tenant_org_name: record.tenantName || record.companyName || "",
       status: record.status || "connected",
     }, { onConflict: "client_key,tool" });
+    if (error) {
+      console.warn("⚠️ Vault Supabase dual-write warning:", error.message);
+    }
   } catch (err) {
     console.warn("⚠️ Vault Supabase dual-write warning:", err.message);
+  }
+}
+
+async function loadVaultRecordFromSupabase_({ clientKey, masterSheetId, tool }) {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const sb = getSupabaseAdmin();
+    if (!sb) return null;
+    const cleanTool = normalizeKey(tool);
+    let row = null;
+    if (clientKey) {
+      const cleanClient = clientKey === "__shared_xero__" ? "__shared_xero__" : normalizeKey(clientKey);
+      const { data } = await sb
+        .from("tenant_integrations")
+        .select("client_key, master_sheet_id, encrypted_payload")
+        .eq("client_key", cleanClient)
+        .eq("tool", cleanTool)
+        .maybeSingle();
+      row = data;
+    }
+    if (!row && masterSheetId) {
+      const { data } = await sb
+        .from("tenant_integrations")
+        .select("client_key, master_sheet_id, encrypted_payload")
+        .eq("master_sheet_id", masterSheetId)
+        .eq("tool", cleanTool)
+        .limit(1)
+        .maybeSingle();
+      row = data;
+    }
+    if (!row?.encrypted_payload) return null;
+    const parsed = JSON.parse(row.encrypted_payload);
+    if (redisClient?.isOpen) {
+      const targetRedisKey =
+        row.client_key === "__shared_xero__"
+          ? SHARED_XERO_KEY
+          : getVaultRedisKey(row.client_key || parsed.clientKey, cleanTool);
+      await redisClient.set(targetRedisKey, row.encrypted_payload).catch(() => {});
+      const mId = masterSheetId || row.master_sheet_id || parsed.masterSheetId;
+      if (mId && row.client_key !== "__shared_xero__") {
+        await redisClient.set(getSheetIndexRedisKey(mId, cleanTool), targetRedisKey).catch(() => {});
+      }
+    }
+    return parsed;
+  } catch (err) {
+    console.warn("⚠️ Vault Supabase read-through warning:", err.message);
+    return null;
   }
 }
 
@@ -265,10 +339,18 @@ export async function saveSharedXeroGrant({ tokens, availableTenants = [], conne
  * Retrieves the Central/Shared Advisor Xero Grant and decrypts its tokens.
  */
 export async function getSharedXeroGrant() {
-  const rawJson = await redisClient.get(SHARED_XERO_KEY);
-  if (!rawJson) return null;
+  let rawJson = await redisClient.get(SHARED_XERO_KEY);
+  let record = null;
+  if (rawJson) {
+    try {
+      record = JSON.parse(rawJson);
+    } catch {}
+  }
+  if (!record) {
+    record = await loadVaultRecordFromSupabase_({ clientKey: "__shared_xero__", tool: "xero" });
+  }
+  if (!record) return null;
   try {
-    const record = JSON.parse(rawJson);
     const aad = "shared:xero";
     const decryptedBundle = decryptPayload(record.encryptedTokens, aad);
     return {
@@ -541,6 +623,9 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
       } catch {}
     }
   }
+  if (!record) {
+    record = await loadVaultRecordFromSupabase_({ clientKey, masterSheetId, tool: cleanTool });
+  }
 
   // 1. If tool is Xero: Check if client uses or should use the Central Shared Xero Grant
   if (cleanTool === "xero") {
@@ -756,6 +841,9 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
         record = JSON.parse(rawJson);
       } catch {}
     }
+  }
+  if (!record) {
+    record = await loadVaultRecordFromSupabase_({ clientKey, masterSheetId, tool: cleanTool });
   }
 
   // 1. For Xero: Handle dedicated client grants vs Central Shared Advisor Grant
@@ -996,6 +1084,23 @@ export async function deleteIntegrationTokens(arg1, arg2, arg3) {
 
   if (sheetKey) {
     await redisClient.del(sheetKey);
+  }
+
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        if (clientKey) {
+          const cleanClient = normalizeKey(clientKey);
+          await sb.from("tenant_integrations").delete().eq("client_key", cleanClient).eq("tool", cleanTool);
+        }
+        if (masterSheetId) {
+          await sb.from("tenant_integrations").delete().eq("master_sheet_id", masterSheetId).eq("tool", cleanTool);
+        }
+      }
+    } catch (sbDelErr) {
+      console.warn("⚠️ Vault Supabase delete warning:", sbDelErr.message);
+    }
   }
 
   await invalidateIntegrationsCache();

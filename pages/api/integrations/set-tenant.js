@@ -10,7 +10,7 @@
 
 import { getIntegrationTokens, saveIntegrationTokens, getSharedXeroGrant, linkClientToSharedXero } from "../../../services/vaultService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { getSessionUser } from "../../../services/authService.js";
+import { getSessionUser, safeCompareSecret } from "../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../services/connectionNotifier.js";
 import { isReadOnlySession } from "../../../services/userPermissions.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
@@ -26,7 +26,7 @@ export default async function handler(req, res) {
   const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.body?.secret || "");
 
   const expectedSecret = process.env.PULSE_INTERNAL_SECRET;
-  const isSecretValid = Boolean(expectedSecret && providedSecret && providedSecret === expectedSecret);
+  const isSecretValid = Boolean(expectedSecret && providedSecret && safeCompareSecret(providedSecret, expectedSecret));
 
   const sessionUser = getSessionUser(req);
   const isAdmin = Boolean(sessionUser?.isAdmin && !isReadOnlySession(sessionUser));
@@ -119,14 +119,25 @@ export default async function handler(req, res) {
       tenantSwitchedAt: new Date().toISOString()
     };
 
-    await saveIntegrationTokens({
-      clientKey: effectiveClientKey,
-      clientName: effectiveClientName,
-      masterSheetId: effectiveMasterSheetId,
-      tool,
-      tokens: record.tokens,
-      metadata: updatedMetadata
-    });
+    if (record.isSharedGrant && tool === "xero") {
+      await linkClientToSharedXero({
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        masterSheetId: effectiveMasterSheetId,
+        tenantId: String(tenantId).trim(),
+        tenantName: tenantName || record.tenantName,
+        availableTenants: record.metadata?.availableTenants || []
+      });
+    } else {
+      await saveIntegrationTokens({
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        masterSheetId: effectiveMasterSheetId,
+        tool,
+        tokens: record.tokens,
+        metadata: updatedMetadata
+      });
+    }
 
     // 4. Update KeyInfo!X2 in Master Sheet
     if (effectiveMasterSheetId && tool === "xero") {

@@ -57,7 +57,7 @@ export default function PushOutgoingsTab({
   // Load PLComp data when client changes
   const loadPlCompData = useCallback(async (clientNameToLoad) => {
     const target = clientNameToLoad || selectedClient;
-    if (!target || !automationCommanderSheetId) {
+    if (!target) {
       setPlData(null);
       return;
     }

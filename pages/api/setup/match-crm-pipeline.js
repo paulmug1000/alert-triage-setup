@@ -58,7 +58,8 @@ export default async function handler(req, res) {
         const sheets = await getSheetsClient();
         const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
         if (supaCtx?.masterMode === "supabase") {
-          await runNativeMasterAmdAction(sheets, {
+          await runNativeMasterAmdAction({
+            sheets,
             clientName: supaCtx.clientName || clientName,
             amdAction: "pull_crm",
             userEmail: sessionUser.email || "Admin",

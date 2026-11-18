@@ -70,6 +70,8 @@ export default async function handler(req, res) {
 
   let isAuthorized = isAdmin;
   const redisSecretKey = `pulse:client_secret:${spreadsheetId}`;
+  const sheets = await getSheetsClient();
+  const resolvedSheetClient = await resolveClientNameBySheetId(sheets, spreadsheetId);
 
   if (!isAuthorized) {
     if (!redisClient?.isOpen) {
@@ -83,9 +85,10 @@ export default async function handler(req, res) {
       return res.status(503).json({ success: false, error: "Authentication store error." });
     }
 
-    const sheets = await getSheetsClient();
-    const resolvedSheetClient = await resolveClientNameBySheetId(sheets, spreadsheetId);
-    if (clientName && resolvedSheetClient && !matchesClientName(clientName, resolvedSheetClient)) {
+    if (!resolvedSheetClient) {
+      return res.status(403).json({ success: false, error: "Forbidden: Unrecognized spreadsheet ID." });
+    }
+    if (clientName && !matchesClientName(clientName, resolvedSheetClient)) {
       return res.status(403).json({ success: false, error: "Forbidden: Client name does not match spreadsheet ID." });
     }
 
@@ -129,6 +132,7 @@ export default async function handler(req, res) {
 
   try {
     const cleanTool = String(tool).trim().toLowerCase();
+    const authoritativeClientName = resolvedSheetClient || clientName;
 
     if (cleanTool === "xero") {
       if (!refreshToken) {
@@ -157,8 +161,8 @@ export default async function handler(req, res) {
       }
 
       // 4. Encrypt and persist into Redis Vault
-      const effectiveClientKey = clientName || tenantName || spreadsheetId;
-      const effectiveClientName = clientName || tenantName || effectiveClientKey;
+      const effectiveClientKey = authoritativeClientName || tenantName || spreadsheetId;
+      const effectiveClientName = authoritativeClientName || tenantName || effectiveClientKey;
 
       await saveIntegrationTokens({
         clientKey: effectiveClientKey,
@@ -215,8 +219,8 @@ export default async function handler(req, res) {
         console.warn("⚠️ Note resolving QB company info during import:", infoErr.message);
       }
 
-      const effectiveClientKey = clientName || companyName || spreadsheetId;
-      const effectiveClientName = clientName || companyName || effectiveClientKey;
+      const effectiveClientKey = authoritativeClientName || companyName || spreadsheetId;
+      const effectiveClientName = authoritativeClientName || companyName || effectiveClientKey;
 
       await saveIntegrationTokens({
         clientKey: effectiveClientKey,
@@ -276,8 +280,8 @@ export default async function handler(req, res) {
         });
       }
 
-      const effectiveClientKey = clientName || accountInfo?.accountName || spreadsheetId;
-      const effectiveClientName = clientName || accountInfo?.accountName || effectiveClientKey;
+      const effectiveClientKey = authoritativeClientName || accountInfo?.accountName || spreadsheetId;
+      const effectiveClientName = authoritativeClientName || accountInfo?.accountName || effectiveClientKey;
 
       await saveIntegrationTokens({
         clientKey: effectiveClientKey,
@@ -337,8 +341,8 @@ export default async function handler(req, res) {
         });
       }
 
-      const effectiveClientKey = clientName || accountInfo?.companyName || spreadsheetId;
-      const effectiveClientName = clientName || accountInfo?.companyName || effectiveClientKey;
+      const effectiveClientKey = authoritativeClientName || accountInfo?.companyName || spreadsheetId;
+      const effectiveClientName = authoritativeClientName || accountInfo?.companyName || effectiveClientKey;
 
       await saveIntegrationTokens({
         clientKey: effectiveClientKey,
@@ -391,8 +395,8 @@ export default async function handler(req, res) {
         });
       }
 
-      const effectiveClientKey = clientName || workspaceInfo?.workspaceName || spreadsheetId;
-      const effectiveClientName = clientName || workspaceInfo?.workspaceName || effectiveClientKey;
+      const effectiveClientKey = authoritativeClientName || workspaceInfo?.workspaceName || spreadsheetId;
+      const effectiveClientName = authoritativeClientName || workspaceInfo?.workspaceName || effectiveClientKey;
 
       await saveIntegrationTokens({
         clientKey: effectiveClientKey,
@@ -452,8 +456,8 @@ export default async function handler(req, res) {
         });
       }
 
-      const effectiveClientKey = clientName || accountInfo?.siteName || spreadsheetId;
-      const effectiveClientName = clientName || accountInfo?.siteName || effectiveClientKey;
+      const effectiveClientKey = authoritativeClientName || accountInfo?.siteName || spreadsheetId;
+      const effectiveClientName = authoritativeClientName || accountInfo?.siteName || effectiveClientKey;
 
       await saveIntegrationTokens({
         clientKey: effectiveClientKey,
@@ -513,8 +517,8 @@ export default async function handler(req, res) {
         });
       }
 
-      const effectiveClientKey = clientName || accountInfo?.organizationName || spreadsheetId;
-      const effectiveClientName = clientName || accountInfo?.organizationName || effectiveClientKey;
+      const effectiveClientKey = authoritativeClientName || accountInfo?.organizationName || spreadsheetId;
+      const effectiveClientName = authoritativeClientName || accountInfo?.organizationName || effectiveClientKey;
 
       await saveIntegrationTokens({
         clientKey: effectiveClientKey,
@@ -574,8 +578,8 @@ export default async function handler(req, res) {
         });
       }
 
-      const effectiveClientKey = clientName || accountInfo?.accountName || spreadsheetId;
-      const effectiveClientName = clientName || accountInfo?.accountName || effectiveClientKey;
+      const effectiveClientKey = authoritativeClientName || accountInfo?.accountName || spreadsheetId;
+      const effectiveClientName = authoritativeClientName || accountInfo?.accountName || effectiveClientKey;
 
       await saveIntegrationTokens({
         clientKey: effectiveClientKey,

@@ -144,9 +144,19 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
     const payload = buildClientRegistryPayload_(rawRow, { isUpdate: true });
     const { data: existingRow } = await sb
       .from("clients")
-      .select("id, metadata, client_sheet_id, master_sheet_id, recon_sheet_id, client_mode, master_mode")
+      .select("id, client_name, metadata, client_sheet_id, master_sheet_id, recon_sheet_id, client_mode, master_mode")
       .eq("id", existingId)
       .maybeSingle();
+
+    if (
+      existingRow?.client_name &&
+      payload.client_name &&
+      String(existingRow.client_name).trim() !== String(payload.client_name).trim()
+    ) {
+      throw new Error(
+        `Renaming existing client "${existingRow.client_name}" to "${payload.client_name}" is blocked to prevent orphaning tenant data. Create a new client or run a dedicated tenant rename migration.`
+      );
+    }
 
     if (existingRow) {
       if (!payload.client_sheet_id) {
@@ -250,6 +260,9 @@ async function invalidateClientsCache_(acId) {
   clearAllClientsMemoryCache();
   clearSsrClientsMemoryCache();
   invalidatePrecomputedMemoryCache();
+  await import("../../../services/masterEngineService.js")
+    .then((m) => m.invalidateMasterEngineCache?.())
+    .catch(() => {});
   const canonicalAcId = acId || getCanonicalAcSheetId();
   if (canonicalAcId) {
     memoryCache.del(`pulse:portal:allClients:${canonicalAcId}`);

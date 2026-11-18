@@ -1,7 +1,12 @@
 import { waitUntil } from "@vercel/functions";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
-import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import {
+  getSupabaseAdmin,
+  isSupabaseConfigured,
+  isSupabaseControlPlaneActive,
+  shouldDualWriteLegacyControlPlaneSheets,
+} from "./supabaseClient.js";
 import { memoryCache } from "./cacheService.js";
 import { seedEomControlPlaneFromSheets } from "./controlPlaneMigrationService.js";
 import { logPmaActivity } from "./pmaLogger.js";
@@ -42,6 +47,68 @@ function scheduleBg_(promise) {
     // Ignore outside serverless request context
   }
   return p;
+}
+
+function scheduleSheetMirrorBg_(fn) {
+  return scheduleBg_((async () => {
+    if ((await isSupabaseControlPlaneActive()) && !shouldDualWriteLegacyControlPlaneSheets()) return;
+    await fn();
+  })());
+}
+
+async function loadAllClientRoutingRows_(sheets, automationCommanderSheetId) {
+  if (isSupabaseConfigured() && await isSupabaseControlPlaneActive()) {
+    const sb = getSupabaseAdmin();
+    if (sb) {
+      const { data: dbClients } = await sb
+        .from("clients")
+        .select("client_name, normalized_key, status, metadata, client_mode, master_mode, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, backup_sheet_url, web_app_url, master_deployment_url")
+        .order("client_name", { ascending: true });
+      const activeRows = (dbClients || [])
+        .filter((c) => {
+          const cName = String(c?.client_name || "").trim();
+          const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+          return cName && !["inactive", "archived", "suspended"].includes(st);
+        })
+        .map((matched) => {
+          const norm = String(matched.normalized_key || "").trim();
+          const clientSheetId =
+            extractSheetIdFromUrl(matched.client_sheet_url || matched.client_sheet_id) ||
+            String(matched.client_sheet_id || "").trim() ||
+            (matched.client_mode === "supabase" && norm ? `sb-client-${norm}` : "");
+          const masterSheetId =
+            extractSheetIdFromUrl(matched.master_sheet_url || matched.master_sheet_id) ||
+            String(matched.master_sheet_id || "").trim() ||
+            (matched.master_mode === "supabase" && norm ? `sb-master-${norm}` : "");
+          return {
+            clientName: String(matched.client_name).trim(),
+            clientSheetId,
+            masterSheetId,
+            clientMode: String(matched.client_mode || "sheet").trim().toLowerCase(),
+            masterMode: String(matched.master_mode || "sheet").trim().toLowerCase(),
+            webAppUrl: String(matched.master_deployment_url || matched.web_app_url || "").trim(),
+            backupSheetId: extractSheetIdFromUrl(matched.backup_sheet_url) || String(matched.backup_sheet_url || "").trim(),
+          };
+        });
+      if (activeRows.length > 0) return activeRows;
+    }
+  }
+  if (!sheets || !automationCommanderSheetId) return [];
+  const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
+    spreadsheetId: automationCommanderSheetId,
+    range: "AutoUpdates!A2:N500",
+  }));
+  return (clientResp.data.values || [])
+    .map((r) => ({
+      clientName: String(r[0] || "").trim(),
+      clientSheetId: extractSheetIdFromUrl(r[11]) || String(r[11] || "").trim(),
+      masterSheetId: extractSheetIdFromUrl(r[12]) || String(r[12] || "").trim(),
+      clientMode: "sheet",
+      masterMode: "sheet",
+      webAppUrl: String(r[13] || "").trim(),
+      backupSheetId: extractSheetIdFromUrl(r[4]) || String(r[4] || "").trim(),
+    }))
+    .filter((c) => c.clientName && c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name");
 }
 
 async function resolveClientRoutingRow_(sheets, automationCommanderSheetId, clientName) {
@@ -418,7 +485,8 @@ async function syncEomTaskStatusToSupabase_(clientName, monthKey, taskId, status
 }
 
 function mirrorEomStatusSheetUpdate_(sheets, automationCommanderSheetId, clientName, taskId, workMonthKey, status, completedAt) {
-  return scheduleBg_((async () => {
+  return scheduleSheetMirrorBg_(async () => {
+    if (!sheets || !automationCommanderSheetId) return;
     const statusResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" }));
     const statusRows = statusResp.data.values || [];
     const existingIdx = statusRows.findIndex(r => r[0] === clientName && r[1] === taskId && r[2] === workMonthKey);
@@ -433,7 +501,7 @@ function mirrorEomStatusSheetUpdate_(sheets, automationCommanderSheetId, clientN
         valueInputOption: "RAW", requestBody: { values: [[status, completedAt]] },
       }));
     }
-  })());
+  });
 }
 
 export async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, linkedFunctionValue, workMonthKey) {
@@ -807,7 +875,7 @@ export async function handleEomToggleClientExcluded(req, res, sheets) {
     }, sessionUser?.email || "System");
 
     if (updatedSb) {
-      scheduleBg_(mirrorSheets());
+      scheduleSheetMirrorBg_(mirrorSheets);
       return res.status(200).json({ success: true });
     }
 
@@ -870,7 +938,7 @@ export async function handleEomReorderClients(req, res, sheets) {
     }, sessionUser?.email || "System");
 
     if (updatedSb) {
-      scheduleBg_(mirrorSheets());
+      scheduleSheetMirrorBg_(mirrorSheets);
       return res.status(200).json({ success: true });
     }
 
@@ -924,7 +992,8 @@ export async function handleEomSaveTemplate(req, res, sheets) {
 
       if (notFound) return res.status(404).json({ success: false, error: "Template not found" });
 
-      scheduleBg_((async () => {
+      scheduleSheetMirrorBg_(async () => {
+        if (!sheets) return;
         await ensureEomTabs_(sheets, automationCommanderSheetId);
         const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:H1000" });
         const rows = resp.data.values || [];
@@ -947,7 +1016,7 @@ export async function handleEomSaveTemplate(req, res, sheets) {
             requestBody: { values: [[effectiveId, name, defaultNotes || "", linkedFunction || "", true, nowIso, alertCategories || "", newSortOrder]] },
           });
         }
-      })());
+      });
 
       return res.status(200).json({ success: true, templateId: effectiveId });
     }
@@ -1148,7 +1217,8 @@ export async function handleEomSaveClientTask(req, res, sheets) {
           );
         }, sessionUser?.email || "System");
 
-        scheduleBg_((async () => {
+        scheduleSheetMirrorBg_(async () => {
+          if (!sheets) return;
           await ensureEomTabs_(sheets, automationCommanderSheetId);
           const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }));
           const rowIdx = (resp.data.values || []).findIndex(r => r[0] === taskId);
@@ -1159,7 +1229,7 @@ export async function handleEomSaveClientTask(req, res, sheets) {
               valueInputOption: "RAW", requestBody: { values: [[taskClientName, taskTemplateId || "", taskName || "", clientNotes || "", taskActive !== false]] },
             }));
           }
-        })());
+        });
 
         return res.status(200).json({ success: true, taskId });
       }
@@ -1189,13 +1259,14 @@ export async function handleEomSaveClientTask(req, res, sheets) {
         return list;
       }, sessionUser?.email || "System");
 
-      scheduleBg_((async () => {
+      scheduleSheetMirrorBg_(async () => {
+        if (!sheets) return;
         await ensureEomTabs_(sheets, automationCommanderSheetId);
         await withRetry(() => sheets.spreadsheets.values.append({
           spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A:H", valueInputOption: "RAW",
           requestBody: { values: [[newId, taskClientName, taskTemplateId || "", taskName || "", clientNotes || "", true, nowIso, newSortOrder]] },
         }));
-      })());
+      });
 
       return res.status(200).json({ success: true, taskId: newId });
     }
@@ -1494,7 +1565,7 @@ export async function handleEomUpdateTaskStatusBatch(req, res, sheets) {
         if (upsertErr) throw new Error(upsertErr.message);
       }
       invalidateEomMemoryCache_();
-      scheduleBg_(mirrorSheetsBatch());
+      scheduleSheetMirrorBg_(mirrorSheetsBatch);
       return res.status(200).json({ success: true });
     }
 
@@ -1540,7 +1611,7 @@ export async function handleEomUpdateTaskNotelet(req, res, sheets) {
     }, sessionUser?.email || "System");
 
     if (updatedSb) {
-      scheduleBg_(mirrorSheets());
+      scheduleSheetMirrorBg_(mirrorSheets);
       return res.status(200).json({ success: true });
     }
 
@@ -1590,7 +1661,7 @@ export async function handleEomReorderTasks(req, res, sheets) {
       await mutateEomClientDefinitions_(sheets, automationCommanderSheetId, targetKey, (list) => {
         return list.map((t) => (t.taskId in orderById ? { ...t, sortOrder: orderById[t.taskId] } : t));
       }, sessionUser?.email || "System");
-      scheduleBg_(mirrorSheets());
+      scheduleSheetMirrorBg_(mirrorSheets);
       return res.status(200).json({ success: true });
     }
 
@@ -1634,7 +1705,7 @@ export async function handleEomReorderTemplates(req, res, sheets) {
     }, sessionUser?.email || "System");
 
     if (updatedSb) {
-      scheduleBg_(mirrorSheets());
+      scheduleSheetMirrorBg_(mirrorSheets);
       return res.status(200).json({ success: true });
     }
 
@@ -2492,12 +2563,17 @@ export const EOM_SEED_DATA = {
 export async function handleEomSeedFromChecklist(req, res, sheets) {
   const { automationCommanderSheetId } = req.body;
   if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const sessionUser = getSessionUser(req);
+  const updatedBy = sessionUser?.email || "System";
   try {
-    await ensureEomTabs_(sheets, automationCommanderSheetId);
+    const supaActive = isSupabaseConfigured() && (await isSupabaseControlPlaneActive());
+    if (!supaActive || shouldDualWriteLegacyControlPlaneSheets()) {
+      await ensureEomTabs_(sheets, automationCommanderSheetId);
+    }
 
-    const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:N500" });
-    const liveClients = (clientResp.data.values || [])
-      .map(r => String(r[0] || "").trim())
+    const routedClients = await loadAllClientRoutingRows_(sheets, automationCommanderSheetId);
+    const liveClients = routedClients
+      .map(c => String(c.clientName || "").trim())
       .filter(Boolean)
       .filter(n => n.toLowerCase() !== "client" && n.toLowerCase() !== "client name");
 
@@ -2517,36 +2593,73 @@ export async function handleEomSeedFromChecklist(req, res, sheets) {
       if (full) shortToFull[s] = full; else unmatched.add(s);
     });
 
-    const existingTemplatesResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" });
+    const sbState = supaActive ? await getEomSupabaseState_(sheets, automationCommanderSheetId, []) : null;
     const existingTemplateByName = {};
-    (existingTemplatesResp.data.values || []).forEach(r => { if (r[0]) existingTemplateByName[r[1]] = r[0]; });
+    if (sbState) {
+      (sbState.globalPayload.templates || []).forEach(t => { if (t?.templateId && t?.name) existingTemplateByName[t.name] = t.templateId; });
+    } else if (sheets) {
+      const existingTemplatesResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" });
+      (existingTemplatesResp.data.values || []).forEach(r => { if (r[0]) existingTemplateByName[r[1]] = r[0]; });
+    }
 
+    const nowIso = new Date().toISOString();
     const newTemplateRows = [];
+    const newTemplateObjs = [];
     const templateIdByName = { ...existingTemplateByName };
     for (const t of EOM_SEED_DATA.templates) {
       if (templateIdByName[t.name]) continue;
       const newId = `tmpl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const linkedFunction = t.linkedFunction || (t.name.toLowerCase().includes("salaries") ? "salaries" : "");
-      newTemplateRows.push([newId, t.name, "", linkedFunction, true, new Date().toISOString()]);
+      newTemplateRows.push([newId, t.name, "", linkedFunction, true, nowIso]);
+      newTemplateObjs.push({
+        templateId: newId,
+        name: t.name,
+        defaultNotes: "",
+        linkedFunction,
+        active: true,
+        createdAt: nowIso,
+        alertCategories: "",
+        sortOrder: 1000000 + newTemplateObjs.length,
+      });
       templateIdByName[t.name] = newId;
     }
-    if (newTemplateRows.length > 0) {
+
+    if (sbState && newTemplateObjs.length > 0) {
+      await mutateEomGlobalPayload_(sheets, automationCommanderSheetId, (gp) => {
+        gp.templates = [...(gp.templates || []), ...newTemplateObjs];
+        return gp;
+      }, updatedBy);
+    }
+    if ((!supaActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && newTemplateRows.length > 0) {
       await sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A:F", valueInputOption: "RAW",
         requestBody: { values: newTemplateRows },
       });
     }
 
-    const existingTasksResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" });
     const existingTaskKeys = new Set();
-    (existingTasksResp.data.values || []).forEach(r => {
-      if (r[0]) existingTaskKeys.add(`${r[1]}|||${r[2] || ""}|||${r[3] || ""}`);
-    });
+    if (sbState) {
+      Object.entries(sbState.definitionsByClient || {}).forEach(([cName, list]) => {
+        (list || []).forEach(t => {
+          if (t?.taskId) existingTaskKeys.add(`${cName}|||${t.templateId || ""}|||${t.taskName || t.name || ""}`);
+        });
+      });
+    } else if (sheets) {
+      const existingTasksResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" });
+      (existingTasksResp.data.values || []).forEach(r => {
+        if (r[0]) existingTaskKeys.add(`${r[1]}|||${r[2] || ""}|||${r[3] || ""}`);
+      });
+    }
 
     const newTaskRows = [];
+    const newTasksByClient = {};
     let assignmentsCreated = 0;
     const orderCounter = {};
     const nextOrder = (client) => { orderCounter[client] = (orderCounter[client] || 0) + 1; return orderCounter[client]; };
+    const pushClientTaskObj = (fullName, taskObj) => {
+      if (!newTasksByClient[fullName]) newTasksByClient[fullName] = [];
+      newTasksByClient[fullName].push(taskObj);
+    };
 
     for (const t of EOM_SEED_DATA.templates) {
       const templateId = templateIdByName[t.name];
@@ -2556,7 +2669,18 @@ export async function handleEomSeedFromChecklist(req, res, sheets) {
         const key = `${fullName}|||${templateId}|||`;
         if (existingTaskKeys.has(key)) continue;
         const newId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        newTaskRows.push([newId, fullName, templateId, "", originalText, true, new Date().toISOString(), nextOrder(fullName)]);
+        const sortOrder = nextOrder(fullName);
+        newTaskRows.push([newId, fullName, templateId, "", originalText, true, nowIso, sortOrder]);
+        pushClientTaskObj(fullName, {
+          taskId: newId,
+          clientName: fullName,
+          templateId,
+          taskName: "",
+          clientNotes: originalText || "",
+          active: true,
+          createdAt: nowIso,
+          sortOrder,
+        });
         existingTaskKeys.add(key);
         assignmentsCreated++;
       }
@@ -2568,21 +2692,38 @@ export async function handleEomSeedFromChecklist(req, res, sheets) {
         const key = `${fullName}|||${""}|||${taskName}`;
         if (existingTaskKeys.has(key)) continue;
         const newId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        newTaskRows.push([newId, fullName, "", taskName, "", true, new Date().toISOString(), nextOrder(fullName)]);
+        const sortOrder = nextOrder(fullName);
+        newTaskRows.push([newId, fullName, "", taskName, "", true, nowIso, sortOrder]);
+        pushClientTaskObj(fullName, {
+          taskId: newId,
+          clientName: fullName,
+          templateId: "",
+          taskName,
+          clientNotes: "",
+          active: true,
+          createdAt: nowIso,
+          sortOrder,
+        });
         existingTaskKeys.add(key);
         assignmentsCreated++;
       }
     }
-    if (newTaskRows.length > 0) {
+
+    if (sbState) {
+      for (const [cName, taskObjs] of Object.entries(newTasksByClient)) {
+        await mutateEomClientDefinitions_(sheets, automationCommanderSheetId, cName, (list) => [...list, ...taskObjs], updatedBy);
+      }
+    }
+    if ((!supaActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && newTaskRows.length > 0) {
       await sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A:H", valueInputOption: "RAW",
         requestBody: { values: newTaskRows },
       });
     }
 
-    if (isSupabaseConfigured()) {
+    if (!sbState && isSupabaseConfigured()) {
       const sb = getSupabaseAdmin();
-      if (sb) {
+      if (sb && sheets) {
         await seedEomControlPlaneFromSheets(sheets, automationCommanderSheetId, sb, "seed_from_checklist").catch((e) => {
           console.warn("[eom_seed_from_checklist] Supabase re-seed failed:", e?.message || e);
         });
@@ -3571,7 +3712,8 @@ export async function handleEomSaveDefaultTask(req, res, sheets) {
 
     if (didMutate) {
       if (notFound) return res.status(404).json({ success: false, error: "Default task not found" });
-      scheduleBg_((async () => {
+      scheduleSheetMirrorBg_(async () => {
+        if (!sheets) return;
         await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
         const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" }));
         const rows = resp.data.values || [];
@@ -3617,7 +3759,7 @@ export async function handleEomSaveDefaultTask(req, res, sheets) {
             },
           }));
         }
-      })());
+      });
       return res.status(200).json({ success: true, defaultTaskId: resultId });
     }
 
@@ -3697,7 +3839,8 @@ export async function handleEomDeleteDefaultTask(req, res, sheets) {
 
     if (didMutate) {
       if (notFound) return res.status(404).json({ success: false, error: "Default task not found" });
-      scheduleBg_((async () => {
+      scheduleSheetMirrorBg_(async () => {
+        if (!sheets) return;
         await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
         const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" }));
         const rows = resp.data.values || [];
@@ -3709,7 +3852,7 @@ export async function handleEomDeleteDefaultTask(req, res, sheets) {
             range: `EomDefaultTasks!A${sheetRow}:I${sheetRow}`
           }));
         }
-      })());
+      });
       return res.status(200).json({ success: true });
     }
 
@@ -3749,7 +3892,8 @@ export async function handleEomReorderDefaultTasks(req, res, sheets) {
     }, updatedBy);
 
     if (didMutate) {
-      scheduleBg_((async () => {
+      scheduleSheetMirrorBg_(async () => {
+        if (!sheets) return;
         await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
         const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" }));
         const rows = resp.data.values || [];
@@ -3768,7 +3912,7 @@ export async function handleEomReorderDefaultTasks(req, res, sheets) {
             requestBody: { valueInputOption: "RAW", data: writes },
           }));
         }
-      })());
+      });
       return res.status(200).json({ success: true });
     }
 
@@ -3842,7 +3986,8 @@ export async function handleEomSeedDefaultTasksFromTemplates(req, res, sheets) {
 
     if (didMutate) {
       if (addedRecords.length > 0) {
-        scheduleBg_((async () => {
+        scheduleSheetMirrorBg_(async () => {
+          if (!sheets) return;
           await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
           await withRetry(() => sheets.spreadsheets.values.append({
             spreadsheetId: automationCommanderSheetId,
@@ -3862,7 +4007,7 @@ export async function handleEomSeedDefaultTasksFromTemplates(req, res, sheets) {
               ]),
             },
           }));
-        })());
+        });
       }
       return res.status(200).json({ success: true, seededCount: addedRecords.length });
     }
@@ -3967,12 +4112,15 @@ export async function applyDefaultEomTasksToClient_(sheets, automationCommanderS
       }, "apply_default_tasks");
 
       if (rowsToAppend.length > 0) {
-        scheduleBg_(withRetry(() => sheets.spreadsheets.values.append({
-          spreadsheetId: automationCommanderSheetId,
-          range: "EomClientTasks!A:H",
-          valueInputOption: "RAW",
-          requestBody: { values: rowsToAppend }
-        })));
+        scheduleSheetMirrorBg_(async () => {
+          if (!sheets) return;
+          await withRetry(() => sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId,
+            range: "EomClientTasks!A:H",
+            valueInputOption: "RAW",
+            requestBody: { values: rowsToAppend }
+          }));
+        });
       }
       return { success: true, appliedCount: rowsToAppend.length };
     }
@@ -4111,6 +4259,7 @@ const EOM_REPORTING_STATE_KEY = "eom_reporting_control_state";
 function extractDriveResourceIdLocal_(urlOrId) {
   if (!urlOrId) return "";
   const s = String(urlOrId).trim();
+  if (/^sb-(?:master|client|recon)-[a-z0-9_-]+$/i.test(s)) return s;
   const folderMatch = s.match(/\/folders\/([a-zA-Z0-9-_]+)/);
   if (folderMatch) return folderMatch[1];
   const fileMatch = s.match(/\/d\/([a-zA-Z0-9-_]+)/);
@@ -4384,13 +4533,20 @@ export async function handleEomGetReportingData(req, res, sheets) {
       const narrativeStatusByMonth = conf.narrativeStatusByMonth || {};
       const narrativeStatusForMonth = targetReportMonth ? narrativeStatusByMonth[targetReportMonth] || null : null;
 
+      const synthesizedClientId =
+        c.clientSheetId ||
+        (c.clientMode === "supabase" && c.normalizedKey ? `sb-client-${c.normalizedKey}` : "");
+      const synthesizedMasterId =
+        c.masterSheetId ||
+        (c.masterMode === "supabase" && c.normalizedKey ? `sb-master-${c.normalizedKey}` : "");
+
       return {
         clientName: name,
-        clientSheetId: c.clientSheetId,
-        masterSheetId: c.masterSheetId,
+        clientSheetId: synthesizedClientId,
+        masterSheetId: synthesizedMasterId,
         reconSheetId: conf.reconSheetId || c.reconSheetId || "",
-        masterSheetUrl: c.masterSheetId ? `https://docs.google.com/spreadsheets/d/${c.masterSheetId}/edit` : "",
-        clientSheetUrl: c.clientSheetId ? `https://docs.google.com/spreadsheets/d/${c.clientSheetId}/edit` : "",
+        masterSheetUrl: synthesizedMasterId && !String(synthesizedMasterId).startsWith("sb-") ? `https://docs.google.com/spreadsheets/d/${synthesizedMasterId}/edit` : "",
+        clientSheetUrl: synthesizedClientId && !String(synthesizedClientId).startsWith("sb-") ? `https://docs.google.com/spreadsheets/d/${synthesizedClientId}/edit` : "",
         folderUrl,
         hasDeckConfigured: !!folderUrl,
         emailTo: conf.emailTo || "",
@@ -4571,7 +4727,6 @@ export async function handleEomTestReportingWebApp(req, res) {
       (process.env.CRON_SECRET || "").trim(),
       (process.env.AGENT_TRIGGER_SECRET || "").trim(),
       (process.env.REPORTING_WEBAPP_SECRET || "").trim(),
-      "triage-cron-2026-AY4K2LDMXBV8DS7"
     ].filter(Boolean)));
     if (candidateSecrets.length === 0) {
       return res.status(500).json({
@@ -5046,13 +5201,18 @@ export async function handleEomRunReportingAction(req, res, sheets) {
           (process.env.CRON_SECRET || "").trim(),
           (process.env.AGENT_TRIGGER_SECRET || "").trim(),
           (process.env.REPORTING_WEBAPP_SECRET || "").trim(),
-          "triage-cron-2026-AY4K2LDMXBV8DS7",
         ].filter(Boolean)
       )
     );
 
     // ── EMAIL MODE (delegates to GAS GmailApp.createDraft) ─────────────────────
     if (mode === "EMAIL") {
+      if (candidateSecrets.length === 0) {
+        return res.status(500).json({
+          success: false,
+          error: "Reporting Web App secret is not configured on the server.",
+        });
+      }
       if (!targetWebAppUrl || !isValidGoogleScriptUrl(targetWebAppUrl)) {
         return res.status(400).json({
           success: false,
@@ -5717,7 +5877,11 @@ async function readAndParseOverheadExpenses_(sheets, masterSheetId, checkboxOver
 export async function handleEomGetOverheadExpenses(req, res, sheets) {
   try {
     const { masterSheetId, clientName, reportMonthKey } = req.body || {};
-    const mId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+    let mId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+    if (!mId && clientName) {
+      const routing = await resolveClientRoutingRow_(sheets, getCanonicalAcSheetId(), clientName);
+      mId = routing?.masterSheetId || "";
+    }
     if (!mId) {
       return res.status(400).json({ success: false, error: "Master Sheet ID is required." });
     }
@@ -7030,7 +7194,7 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
     if (supaControlPlane && sb) {
       const { data: dbClients } = await sb
         .from("clients")
-        .select("client_name, status, metadata, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url");
+        .select("client_name, normalized_key, status, metadata, client_mode, master_mode, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url");
       const matched = (dbClients || []).find(
         (c) =>
           c.client_name &&
@@ -7038,9 +7202,16 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
           matchesClientName(c.client_name, clientName)
       );
       if (matched) {
+        const norm = String(matched.normalized_key || "").trim();
         resolvedName = String(matched.client_name).trim();
-        clientSheetId = extractSheetIdFromUrl(matched.client_sheet_url || matched.client_sheet_id) || String(matched.client_sheet_id || "").trim();
-        masterSheetId = extractSheetIdFromUrl(matched.master_sheet_url || matched.master_sheet_id) || String(matched.master_sheet_id || "").trim();
+        clientSheetId =
+          extractSheetIdFromUrl(matched.client_sheet_url || matched.client_sheet_id) ||
+          String(matched.client_sheet_id || "").trim() ||
+          (matched.client_mode === "supabase" && norm ? `sb-client-${norm}` : "");
+        masterSheetId =
+          extractSheetIdFromUrl(matched.master_sheet_url || matched.master_sheet_id) ||
+          String(matched.master_sheet_id || "").trim() ||
+          (matched.master_mode === "supabase" && norm ? `sb-master-${norm}` : "");
         webAppUrl = String(matched.master_deployment_url || matched.web_app_url || "").trim();
       }
     }
@@ -7085,8 +7256,10 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
         (process.env.AGENT_TRIGGER_SECRET || "").replace(/^["']|["']$/g, "").trim(),
         (process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim(),
         (process.env.REPORTING_WEBAPP_SECRET || "").replace(/^["']|["']$/g, "").trim(),
-        "triage-cron-2026-AY4K2LDMXBV8DS7"
       ].filter(Boolean)));
+      if (candidateSecrets.length === 0) {
+        return res.status(500).json({ success: false, error: "Reporting Web App secret is not configured on the server." });
+      }
 
       for (const secret of candidateSecrets) {
         try {

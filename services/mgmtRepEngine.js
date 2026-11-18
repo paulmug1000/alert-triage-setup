@@ -260,16 +260,15 @@ export async function computeNativeMgmtRepForClient({
     }
   }
 
-  // Fallback to Template or any existing MgmtRep base grid if not yet in Supabase
+  // Fallback to immutable template snapshot in system_config (never query across other tenants' grids)
   if (!masterGrids.MgmtRep && sb) {
-    const { data: tplRows } = await sb
-      .from("master_sheet_grids")
-      .select("values_grid")
-      .eq("sheet_role", "master")
-      .eq("tab_name", "MgmtRep")
-      .limit(1);
-    if (tplRows?.[0]?.values_grid) {
-      masterGrids.MgmtRep = tplRows[0].values_grid;
+    const { data: tplCfg } = await sb
+      .from("system_config")
+      .select("value")
+      .eq("key", "template_snapshot::master::MgmtRep")
+      .maybeSingle();
+    if (Array.isArray(tplCfg?.value?.values_grid)) {
+      masterGrids.MgmtRep = tplCfg.value.values_grid;
     }
   }
 

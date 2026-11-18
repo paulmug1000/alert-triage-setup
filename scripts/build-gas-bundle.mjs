@@ -82,7 +82,7 @@ function buildBundle() {
   });
 
   const ASYNC_PRIMITIVE_RE =
-    /^(UrlFetchApp\.(fetch|fetchAll)|SpreadsheetApp\.(openById|openByUrl|flush)|Sheets\.Spreadsheets\.|Utilities\.sleep|DriveApp\.|Drive\.)/;
+    /^(UrlFetchApp\.(fetch|fetchAll)|SpreadsheetApp\.(openById|openByUrl|flush)|Sheets\.Spreadsheets\.|Utilities\.sleep|DriveApp\.|Drive\.|ScriptApp\.getOAuthToken)/;
 
   const isAsyncPrimitiveCall = (callNode) => {
     const calleeStr = combined.slice(callNode.callee.start, callNode.callee.end).replace(/\s+/g, "");

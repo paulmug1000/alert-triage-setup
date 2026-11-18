@@ -1,7 +1,12 @@
 import { createHash } from "crypto";
 import { withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
-import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import {
+  getSupabaseAdmin,
+  isSupabaseConfigured,
+  isSupabaseControlPlaneActive,
+  shouldDualWriteLegacyControlPlaneSheets,
+} from "./supabaseClient.js";
 
 export const ALERT_MEMORY_TAB = "AlertMemory";
 export const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:L`;
@@ -790,6 +795,35 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, targetStatus);
   }
 
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  if (supabaseActive && !shouldDualWriteLegacyControlPlaneSheets()) {
+    const constructedRow = {
+      ...payload,
+      rowIndex: payload?.rowIndex ?? null,
+      fingerprintHash: fingerprintHash || "",
+      alertType: alertType || "",
+      clientName: clientName || "",
+      alertSummary: alertSummary || "",
+      cachedOptionsJSON: cachedOptionsJSON || "",
+      status: targetStatus,
+      ignoreReason: ignoreReason || "",
+      firstSeen,
+      lastSeen,
+      lastRechecked,
+      dataSnapshot: dataSnapshot || "",
+      category: normalizedCategory,
+    };
+    await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
+      const existingIdx = fingerprintHash ? cache.findIndex(r => r.fingerprintHash === fingerprintHash) : -1;
+      if (existingIdx !== -1) {
+        cache[existingIdx] = { ...cache[existingIdx], ...constructedRow };
+      } else {
+        cache.push(constructedRow);
+      }
+    });
+    return constructedRow;
+  }
+
   const response = await withRetry(() => sheets.spreadsheets.values.append({
     spreadsheetId: automationCommanderSheetId,
     range: `${ALERT_MEMORY_TAB}!A:L`,
@@ -896,12 +930,19 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
           .filter(x => (!x.status || x.status === "cached" || x.status === "pending_automation") && x.fingerprintHash)
           .map(x => x.fingerprintHash);
         if (candidateHashes.length > 0) {
-          const { data: existingRows } = await sb
-            .from("alert_memory")
-            .select("fingerprint_hash, status")
-            .in("fingerprint_hash", candidateHashes)
-            .in("status", ["accepted", "ignored", "task"]);
-          if (Array.isArray(existingRows) && existingRows.length > 0) {
+          const existingRows = [];
+          for (let i = 0; i < candidateHashes.length; i += 200) {
+            const chunk = candidateHashes.slice(i, i + 200);
+            const { data: chunkRows } = await sb
+              .from("alert_memory")
+              .select("fingerprint_hash, status")
+              .in("fingerprint_hash", chunk)
+              .in("status", ["accepted", "ignored", "task"]);
+            if (Array.isArray(chunkRows) && chunkRows.length > 0) {
+              existingRows.push(...chunkRows);
+            }
+          }
+          if (existingRows.length > 0) {
             const sbHandledSet = new Set(existingRows.map(r => r.fingerprint_hash));
             filteredInputItems = filteredInputItems.filter(item => {
               if (sbHandledSet.has(item.fingerprintHash)) {
@@ -1010,6 +1051,36 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
   }
   if (Object.keys(handledStatusByHashEarly).length > 0) {
     await updateHandledAlertHashesBatch(automationCommanderSheetId, handledStatusByHashEarly);
+  }
+
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  if (supabaseActive && !shouldDualWriteLegacyControlPlaneSheets()) {
+    const statusByHash = {};
+    for (const item of normalizedItems) {
+      if (item.rowObj.fingerprintHash && item.rowObj.status) {
+        statusByHash[item.rowObj.fingerprintHash] = item.rowObj.status;
+      }
+    }
+    if (Object.keys(statusByHash).length > 0) {
+      await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
+    }
+    const constructedRows = normalizedItems.map(({ rowObj }) => ({
+      ...rowObj,
+      rowIndex: rowObj.rowIndex ?? null,
+    }));
+    await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
+      for (const fullRow of constructedRows) {
+        const existingIdx = fullRow.fingerprintHash
+          ? cache.findIndex(r => r.fingerprintHash === fullRow.fingerprintHash)
+          : -1;
+        if (existingIdx !== -1) {
+          cache[existingIdx] = { ...cache[existingIdx], ...fullRow };
+        } else {
+          cache.push(fullRow);
+        }
+      }
+    });
+    return constructedRows;
   }
 
   const response = await withRetry(() => sheets.spreadsheets.values.append({
@@ -1177,12 +1248,15 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     }
   }
 
-  await withRetry(() => sheets.spreadsheets.values.update({
-    spreadsheetId: automationCommanderSheetId,
-    range: `${ALERT_MEMORY_TAB}!A${rowIndex}:L${rowIndex}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [values] },
-  }));
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  if ((!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && rowIndex != null) {
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${ALERT_MEMORY_TAB}!A${rowIndex}:L${rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [values] },
+    }));
+  }
 }
 
 export async function updateAlertMemoryRowsBatch(sheets, automationCommanderSheetId, updateItems) {
@@ -1317,13 +1391,21 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
     }
   }
 
-  await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: automationCommanderSheetId,
-    requestBody: {
-      valueInputOption: "RAW",
-      data,
-    },
-  }));
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  const validSheetData = data.filter((_, i) => {
+    const rIdx = normalizedUpdateItems[i]?.rowIndex;
+    return rIdx != null && rIdx !== "" && Number.isFinite(Number(rIdx)) && Number(rIdx) >= 2;
+  });
+
+  if ((!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && validSheetData.length > 0) {
+    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: automationCommanderSheetId,
+      requestBody: {
+        valueInputOption: "RAW",
+        data: validSheetData,
+      },
+    }));
+  }
 }
 
 export async function compactAlertMemory(sheets, automationCommanderSheetId, options = {}) {
@@ -1489,86 +1571,90 @@ export async function compactAlertMemory(sheets, automationCommanderSheetId, opt
     return { originalRows: existingRows.length, keptRows: kept.length, prunedRows: prunedCount, optionsClearedCount };
   }
 
-  // Re-assign sequential rowIndex for all kept rows (starting at row 2)
-  for (let idx = 0; idx < kept.length; idx++) {
-    kept[idx].rowIndex = idx + 2;
-  }
+  const dualWriteSheets = !supabaseActive || shouldDualWriteLegacyControlPlaneSheets();
 
-  const rows2D = kept.map(r => [
-    r.fingerprintHash || "",
-    r.alertType || "",
-    r.clientName || "",
-    r.alertSummary || "",
-    r.cachedOptionsJSON || "",
-    r.status || "cached",
-    r.ignoreReason || "",
-    r.firstSeen || "",
-    r.lastSeen || "",
-    r.lastRechecked || "",
-    r.dataSnapshot || "",
-    normalizeCategoryForType(r.alertType || "", r.category || "discrepancy"),
-  ]);
-
-  const targetRange = `${ALERT_MEMORY_TAB}!A2:L${kept.length + 1}`;
-  console.log(`[compactAlertMemory] Overwriting ${targetRange} with ${rows2D.length} compacted rows...`);
-
-  await withRetry(() => sheets.spreadsheets.values.update({
-    spreadsheetId: automationCommanderSheetId,
-    range: targetRange,
-    valueInputOption: "RAW",
-    requestBody: { values: rows2D },
-  }));
-
-  // Clear any leftover rows from the old table
-  const oldRowCount = existingRows.length + 1;
-  const newRowCount = kept.length + 1;
-  if (oldRowCount > newRowCount) {
-    const clearRange = `${ALERT_MEMORY_TAB}!A${newRowCount + 1}:L${oldRowCount}`;
-    console.log(`[compactAlertMemory] Clearing leftover rows: ${clearRange}...`);
-    try {
-      await withRetry(() => sheets.spreadsheets.values.clear({
-        spreadsheetId: automationCommanderSheetId,
-        range: clearRange,
-      }));
-    } catch (clearErr) {
-      console.warn(`[compactAlertMemory] Warning clearing tail rows:`, clearErr.message);
+  if (dualWriteSheets && sheets) {
+    // Re-assign sequential rowIndex for all kept rows (starting at row 2)
+    for (let idx = 0; idx < kept.length; idx++) {
+      kept[idx].rowIndex = idx + 2;
     }
-  }
 
-  // Truncate sheet grid height to keep the Google Sheet compact and fast
-  try {
-    const meta = await withRetry(() => sheets.spreadsheets.get({
+    const rows2D = kept.map(r => [
+      r.fingerprintHash || "",
+      r.alertType || "",
+      r.clientName || "",
+      r.alertSummary || "",
+      r.cachedOptionsJSON || "",
+      r.status || "cached",
+      r.ignoreReason || "",
+      r.firstSeen || "",
+      r.lastSeen || "",
+      r.lastRechecked || "",
+      r.dataSnapshot || "",
+      normalizeCategoryForType(r.alertType || "", r.category || "discrepancy"),
+    ]);
+
+    const targetRange = `${ALERT_MEMORY_TAB}!A2:L${kept.length + 1}`;
+    console.log(`[compactAlertMemory] Overwriting ${targetRange} with ${rows2D.length} compacted rows...`);
+
+    await withRetry(() => sheets.spreadsheets.values.update({
       spreadsheetId: automationCommanderSheetId,
-      fields: "sheets.properties",
+      range: targetRange,
+      valueInputOption: "RAW",
+      requestBody: { values: rows2D },
     }));
-    const sheetTab = meta.data.sheets?.find(s => s.properties.title === ALERT_MEMORY_TAB);
-    if (sheetTab) {
-      const sheetId = sheetTab.properties.sheetId;
-      const currentGridRows = sheetTab.properties.gridProperties?.rowCount || 0;
-      const desiredGridRows = newRowCount + 25; // Keep small 25-row buffer for appends
-      if (currentGridRows > desiredGridRows) {
-        console.log(`[compactAlertMemory] Truncating grid height from ${currentGridRows} to ${desiredGridRows}...`);
-        await withRetry(() => sheets.spreadsheets.batchUpdate({
+
+    // Clear any leftover rows from the old table
+    const oldRowCount = existingRows.length + 1;
+    const newRowCount = kept.length + 1;
+    if (oldRowCount > newRowCount) {
+      const clearRange = `${ALERT_MEMORY_TAB}!A${newRowCount + 1}:L${oldRowCount}`;
+      console.log(`[compactAlertMemory] Clearing leftover rows: ${clearRange}...`);
+      try {
+        await withRetry(() => sheets.spreadsheets.values.clear({
           spreadsheetId: automationCommanderSheetId,
-          requestBody: {
-            requests: [
-              {
-                deleteDimension: {
-                  range: {
-                    sheetId,
-                    dimension: "ROWS",
-                    startIndex: desiredGridRows,
-                    endIndex: currentGridRows,
-                  },
-                },
-              },
-            ],
-          },
+          range: clearRange,
         }));
+      } catch (clearErr) {
+        console.warn(`[compactAlertMemory] Warning clearing tail rows:`, clearErr.message);
       }
     }
-  } catch (truncateErr) {
-    console.warn(`[compactAlertMemory] Warning truncating grid height:`, truncateErr.message);
+
+    // Truncate sheet grid height to keep the Google Sheet compact and fast
+    try {
+      const meta = await withRetry(() => sheets.spreadsheets.get({
+        spreadsheetId: automationCommanderSheetId,
+        fields: "sheets.properties",
+      }));
+      const sheetTab = meta.data.sheets?.find(s => s.properties.title === ALERT_MEMORY_TAB);
+      if (sheetTab) {
+        const sheetId = sheetTab.properties.sheetId;
+        const currentGridRows = sheetTab.properties.gridProperties?.rowCount || 0;
+        const desiredGridRows = newRowCount + 25; // Keep small 25-row buffer for appends
+        if (currentGridRows > desiredGridRows) {
+          console.log(`[compactAlertMemory] Truncating grid height from ${currentGridRows} to ${desiredGridRows}...`);
+          await withRetry(() => sheets.spreadsheets.batchUpdate({
+            spreadsheetId: automationCommanderSheetId,
+            requestBody: {
+              requests: [
+                {
+                  deleteDimension: {
+                    range: {
+                      sheetId,
+                      dimension: "ROWS",
+                      startIndex: desiredGridRows,
+                      endIndex: currentGridRows,
+                    },
+                  },
+                },
+              ],
+            },
+          }));
+        }
+      }
+    } catch (truncateErr) {
+      console.warn(`[compactAlertMemory] Warning truncating grid height:`, truncateErr.message);
+    }
   }
 
   // Synchronize Supabase alert_memory table if configured
@@ -1656,35 +1742,124 @@ export async function compactAlertMemory(sheets, automationCommanderSheetId, opt
 }
 
 export async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, rowIndices) {
-  if (rowIndices.length === 0) return;
+  if (!Array.isArray(rowIndices) || rowIndices.length === 0) return;
 
-  const spreadsheet = await sheets.spreadsheets.get({
-    spreadsheetId: automationCommanderSheetId,
-  });
-  const sheet = spreadsheet.data.sheets.find(
-    s => s.properties.title === ALERT_MEMORY_TAB
-  );
-  if (!sheet) return;
-  const sheetId = sheet.properties.sheetId;
+  const numericRowIndices = [];
+  const directHashes = [];
+  for (const entry of rowIndices) {
+    if (typeof entry === "number" && Number.isFinite(entry)) {
+      numericRowIndices.push(entry);
+    } else if (typeof entry === "string" && /^\d+$/.test(entry.trim())) {
+      numericRowIndices.push(Number(entry.trim()));
+    } else if (typeof entry === "string" && entry.trim()) {
+      directHashes.push(entry.trim());
+    }
+  }
 
-  const sorted = [...rowIndices].sort((a, b) => b - a);
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  const hashesToEvict = new Set(directHashes);
+  const candidateHashesFromRows = new Set();
 
-  const requests = sorted.map(rowIndex => ({
-    deleteDimension: {
-      range: {
-        sheetId,
-        dimension: "ROWS",
-        startIndex: rowIndex - 1,
-        endIndex: rowIndex,
-      },
-    },
-  }));
+  if (_alertMemoryMemoryCache && numericRowIndices.length > 0) {
+    const rowSet = new Set(numericRowIndices);
+    for (const r of _alertMemoryMemoryCache) {
+      if (rowSet.has(Number(r?.rowIndex)) && r?.fingerprintHash) {
+        candidateHashesFromRows.add(r.fingerprintHash);
+      }
+    }
+  }
 
-  await withRetry(() => sheets.spreadsheets.batchUpdate({
-    spreadsheetId: automationCommanderSheetId,
-    requestBody: { requests },
-  }));
-  console.log(`  🗑️ Deleted ${rowIndices.length} stale AlertMemory row(s)`);
+  if (isSupabaseConfigured() && (supabaseActive || numericRowIndices.length > 0 || directHashes.length > 0)) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        for (let i = 0; i < directHashes.length; i += 200) {
+          const chunk = directHashes.slice(i, i + 200);
+          await sb.from("alert_memory").delete().in("fingerprint_hash", chunk);
+          await sb.from("pma_tasks").delete().in("fingerprint_hash", chunk);
+        }
+
+        if (numericRowIndices.length > 0) {
+          for (let i = 0; i < numericRowIndices.length; i += 200) {
+            const chunk = numericRowIndices.slice(i, i + 200);
+            const { data: matched } = await sb
+              .from("alert_memory")
+              .select("fingerprint_hash")
+              .in("sheet_row_index", chunk);
+            for (const r of matched || []) {
+              if (r?.fingerprint_hash) candidateHashesFromRows.add(r.fingerprint_hash);
+            }
+            await sb.from("alert_memory").delete().in("sheet_row_index", chunk);
+          }
+
+          const rowCandidateList = Array.from(candidateHashesFromRows).filter(h => !hashesToEvict.has(h));
+          if (rowCandidateList.length > 0) {
+            const remainingSet = new Set();
+            for (let i = 0; i < rowCandidateList.length; i += 200) {
+              const chunk = rowCandidateList.slice(i, i + 200);
+              const { data: stillPresent } = await sb
+                .from("alert_memory")
+                .select("fingerprint_hash")
+                .in("fingerprint_hash", chunk);
+              for (const r of stillPresent || []) {
+                if (r?.fingerprint_hash) remainingSet.add(r.fingerprint_hash);
+              }
+            }
+            const orphanedHashes = rowCandidateList.filter(h => !remainingSet.has(h));
+            for (let i = 0; i < orphanedHashes.length; i += 200) {
+              await sb.from("pma_tasks").delete().in("fingerprint_hash", orphanedHashes.slice(i, i + 200));
+            }
+            for (const h of orphanedHashes) {
+              hashesToEvict.add(h);
+            }
+          }
+        }
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase deleteAlertMemoryRows warning:", sbErr.message);
+    }
+  } else {
+    for (const h of candidateHashesFromRows) hashesToEvict.add(h);
+  }
+
+  if (hashesToEvict.size > 0) {
+    const evictionMap = {};
+    for (const h of hashesToEvict) {
+      evictionMap[h] = "cached";
+      if (_handledHashesMemoryCache) delete _handledHashesMemoryCache[h];
+    }
+    await updateHandledAlertHashesBatch(automationCommanderSheetId, evictionMap);
+  }
+
+  if ((!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && numericRowIndices.length > 0) {
+    const spreadsheet = await sheets.spreadsheets.get({
+      spreadsheetId: automationCommanderSheetId,
+    });
+    const sheet = spreadsheet.data.sheets.find(
+      s => s.properties.title === ALERT_MEMORY_TAB
+    );
+    if (sheet) {
+      const sheetId = sheet.properties.sheetId;
+      const sorted = [...numericRowIndices].sort((a, b) => b - a);
+      const requests = sorted.map(rowIndex => ({
+        deleteDimension: {
+          range: {
+            sheetId,
+            dimension: "ROWS",
+            startIndex: rowIndex - 1,
+            endIndex: rowIndex,
+          },
+        },
+      }));
+
+      await withRetry(() => sheets.spreadsheets.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: { requests },
+      }));
+      console.log(`  🗑️ Deleted ${numericRowIndices.length} stale AlertMemory row(s)`);
+    }
+  }
+
   await invalidateAlertMemoryCache(automationCommanderSheetId);
 }
 
@@ -1812,9 +1987,10 @@ export async function deleteAlertMemoryEntryByHash(sheets, automationCommanderSh
     }
   }
 
-  // 2. Delete matching rows from Automation Commander!AlertMemory sheet (lightweight Column A:C read)
+  // 2. Delete matching rows from Automation Commander!AlertMemory sheet (only in legacy mode or explicit dual-write)
   let deletedSheetRows = 0;
-  if (sheets && automationCommanderSheetId) {
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  if ((!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && automationCommanderSheetId) {
     try {
       const colAResp = await withRetry(() =>
         sheets.spreadsheets.values.get({

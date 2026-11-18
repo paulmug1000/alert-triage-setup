@@ -1038,42 +1038,22 @@ export default function CashflowReconTab({
         targetEdit.colLetter
       );
 
-      const requests = [
-        fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "update_cash_adjustment",
-            clientSheetId: currentClientInfo.clientSheetId,
-            colLetter: targetEdit.colLetter,
-            sheetRow: targetEdit.sheetRow,
-            value: cleanVal,
-            clientName: selectedClient,
-            automationCommanderSheetId
-          })
-        }).then(r => r.json())
-      ];
-
-      if (noteChanged && reconData?.cashTabSheetId !== undefined && reconData?.cashTabSheetId !== null) {
-        requests.push(
-          fetch("/api/triage", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "update_cash_cell_note",
-              clientSheetId: currentClientInfo.clientSheetId,
-              cashTabSheetId: reconData.cashTabSheetId,
-              sheetRow: targetEdit.sheetRow,
-              colIdx: targetEdit.colIdx,
-              note: finalNote,
-              clientName: selectedClient,
-              automationCommanderSheetId
-            })
-          }).then(r => r.json())
-        );
-      }
-
-      const [res] = await Promise.all(requests);
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_cash_adjustment",
+          clientSheetId: currentClientInfo.clientSheetId,
+          colLetter: targetEdit.colLetter,
+          sheetRow: targetEdit.sheetRow,
+          value: cleanVal,
+          clientName: selectedClient,
+          automationCommanderSheetId,
+          ...(noteChanged && reconData?.cashTabSheetId !== undefined && reconData?.cashTabSheetId !== null
+            ? { note: finalNote, cashTabSheetId: reconData.cashTabSheetId, colIdx: targetEdit.colIdx }
+            : {}),
+        })
+      }).then(r => r.json());
       if (!res.success) throw new Error(res.error || "Failed to save adjustment");
       setEditingCell(null);
       setSuccessMsg(isAdmin ? `Adjustment saved to Cash!${targetEdit.colLetter}${targetEdit.sheetRow}` : "Adjustment saved.");
@@ -2458,7 +2438,7 @@ export default function CashflowReconTab({
                     </button>
                   )}
 
-                  {isAdmin && currentClientInfo?.clientSheetId && (
+                  {isAdmin && currentClientInfo?.clientSheetId && !String(currentClientInfo.clientSheetId).startsWith("sb-") && (
                     <a
                       href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.clientSheetId}`}
                       target="_blank"
@@ -2469,7 +2449,7 @@ export default function CashflowReconTab({
                     </a>
                   )}
 
-                  {isAdmin && currentClientInfo?.reconSheetId && (
+                  {isAdmin && currentClientInfo?.reconSheetId && !String(currentClientInfo.reconSheetId).startsWith("sb-") && (
                     <a
                       href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.reconSheetId}`}
                       target="_blank"
@@ -2707,7 +2687,7 @@ export default function CashflowReconTab({
                       <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                         <button
                           onClick={() => setShowMatchConfirm(true)}
-                          disabled={matchingActuals || !reconData?.reconActuals}
+                          disabled={matchingActuals || !effectiveReconActuals}
                           title="Applies reconciliation figures to adjustments and marks all target month items resolved"
                           style={{
                             padding: "7px 16px",
@@ -2717,7 +2697,7 @@ export default function CashflowReconTab({
                             borderRadius: "6px",
                             fontSize: "12px",
                             fontWeight: "700",
-                            cursor: matchingActuals || !reconData?.reconActuals ? "default" : "pointer",
+                            cursor: matchingActuals || !effectiveReconActuals ? "default" : "pointer",
                             display: "inline-flex",
                             alignItems: "center",
                             gap: "6px",

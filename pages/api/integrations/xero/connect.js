@@ -14,6 +14,8 @@ import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/she
 import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
 import { getSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
 import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
+import { resolveSupabaseSheetContext } from "../../../../services/masterEngineService.js";
+import { isSupabaseControlPlaneActive } from "../../../../services/supabaseClient.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
@@ -27,6 +29,9 @@ export default async function handler(req, res) {
 
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ error: "Read-only session cannot initiate OAuth connections." });
+  }
+  if (sessionUser.role === "Senior (Restricted)" || sessionUser.isSenior) {
+    return res.status(403).json({ error: "Forbidden: Senior (Restricted) users cannot connect integrations." });
   }
 
   const { clientKey, clientName, masterSheetId, clientSheetId, redirectBack, mode } = req.method === "POST" ? req.body : req.query;
@@ -89,19 +94,26 @@ export default async function handler(req, res) {
 
     if ((!resolvedMasterSheetId || !resolvedClientSheetId) && targetName && !isAdvisorTarget) {
       try {
-        const sheets = await getSheetsClient();
-        const resp = await sheets.spreadsheets.values.get({
-          spreadsheetId: DEFAULT_AC_SHEET_ID,
-          range: "AutoUpdates!A2:N500"
-        });
-        const rows = resp.data.values || [];
-        const match = rows.find(r => matchesClientName(r[0], targetName));
-        if (match) {
-          if (!resolvedClientSheetId && match[11]) {
-            resolvedClientSheetId = extractSheetIdFromUrl(match[11]) || String(match[11]).trim();
-          }
-          if (!resolvedMasterSheetId && match[12]) {
-            resolvedMasterSheetId = extractSheetIdFromUrl(match[12]) || String(match[12]).trim();
+        const supaCtx = await resolveSupabaseSheetContext({ clientName: targetName }).catch(() => null);
+        if (supaCtx) {
+          if (!resolvedClientSheetId && supaCtx.clientSheetId) resolvedClientSheetId = supaCtx.clientSheetId;
+          if (!resolvedMasterSheetId && supaCtx.masterSheetId) resolvedMasterSheetId = supaCtx.masterSheetId;
+        }
+        if ((!resolvedMasterSheetId || !resolvedClientSheetId) && !(await isSupabaseControlPlaneActive())) {
+          const sheets = await getSheetsClient();
+          const resp = await sheets.spreadsheets.values.get({
+            spreadsheetId: DEFAULT_AC_SHEET_ID,
+            range: "AutoUpdates!A2:N500"
+          });
+          const rows = resp.data.values || [];
+          const match = rows.find(r => matchesClientName(r[0], targetName));
+          if (match) {
+            if (!resolvedClientSheetId && match[11]) {
+              resolvedClientSheetId = extractSheetIdFromUrl(match[11]) || String(match[11]).trim();
+            }
+            if (!resolvedMasterSheetId && match[12]) {
+              resolvedMasterSheetId = extractSheetIdFromUrl(match[12]) || String(match[12]).trim();
+            }
           }
         }
       } catch (lookupErr) {

@@ -320,7 +320,8 @@ export async function inspectGoogleSpreadsheet({
   tabName = null,
   headerRowNum = null,
   clientKey = null,
-  isAdmin = false
+  isAdmin = false,
+  allowServiceAccountFallback = false
 }) {
   const targetId = sheetId || (url ? extractSheetIdFromUrl(url) : null);
   if (!targetId) {
@@ -351,7 +352,10 @@ export async function inspectGoogleSpreadsheet({
     }
     metadata = metaJson;
   } else {
-    // 2. Fallback to service account
+    if (!allowServiceAccountFallback) {
+      throw new Error("Please sign in with Google or select the spreadsheet using the Google Drive picker so Pulse has permission to read it.");
+    }
+    // 2. Fallback to service account (admin-only)
     const sheets = await getSheetsClient();
     try {
       const res = await sheets.spreadsheets.get({ spreadsheetId: targetId });

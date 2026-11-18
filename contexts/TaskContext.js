@@ -100,10 +100,9 @@ export function TaskProvider({ children, automationCommanderSheetId, managedClie
 
   useEffect(() => {
     if (automationCommanderSheetId) {
-      refreshTaskCount(false);
       loadTasks(tasksFilter || "active", false);
     }
-  }, [automationCommanderSheetId, managedClient?.clientName, refreshTaskCount, loadTasks, tasksFilter]);
+  }, [automationCommanderSheetId, managedClient?.clientName, loadTasks, tasksFilter]);
 
   useEffect(() => {
     const interval = setInterval(() => {

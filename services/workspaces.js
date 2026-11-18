@@ -141,32 +141,56 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
     if (await isSupabaseControlPlaneActive()) {
       try {
         const sb = getSupabaseAdmin();
-        const [{ data: sbClients, error: sbErr }, cmMap] = await Promise.all([
+        const [{ data: sbClients, error: sbErr }, { data: kiRows }, cmMap] = await Promise.all([
           sb.from("clients").select("*").order("client_name", { ascending: true }),
+          sb
+            .from("tenant_key_info")
+            .select("client_name, normalized_key, revenue_or_income_mode, direct_costs_mode, accounting_tool, crm_tool, crm_drives, invoice_method")
+            .then((r) => r)
+            .catch(() => ({ data: [] })),
           getClientManagerClientMap(sheets, acId),
         ]);
         if (!sbErr && Array.isArray(sbClients) && sbClients.length > 0) {
+          const kiByNorm = new Map();
+          const kiByName = new Map();
+          for (const k of kiRows || []) {
+            if (k.normalized_key) kiByNorm.set(String(k.normalized_key).trim().toLowerCase(), k);
+            if (k.client_name) kiByName.set(String(k.client_name).trim().toLowerCase(), k);
+          }
           clientsArray = [];
           clientsObj = {};
           for (const c of sbClients) {
             const effectiveStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
             if (["inactive", "archived", "suspended"].includes(effectiveStatus)) continue;
             const clientName = String(c.client_name || "").trim();
-            const clientSheetId = String(c.client_sheet_id || "").trim();
-            const masterSheetId = String(c.master_sheet_id || "").trim();
+            const normKey = String(
+              c.normalized_key || clientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")
+            ).trim();
+            const ki = kiByNorm.get(normKey.toLowerCase()) || kiByName.get(clientName.toLowerCase()) || null;
+            const clientSheetId =
+              String(c.client_sheet_id || "").trim() ||
+              (c.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "");
+            const masterSheetId =
+              String(c.master_sheet_id || "").trim() ||
+              (c.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "");
             if (!clientName || (!clientSheetId && c.client_mode !== "supabase")) continue;
             const reconSheetUrl = String(c.recon_sheet_url || "").trim();
-            const reconSheetId = String(c.recon_sheet_id || "").trim();
+            const reconSheetId =
+              String(c.recon_sheet_id || "").trim() ||
+              ((c.metadata?.reconMode === "supabase" || c.master_mode === "supabase") && normKey
+                ? `sb-recon-${normKey}`
+                : "");
             const scriptId = String(c.client_script_id || "").trim();
-            const webAppUrl = String(c.master_gas_webapp_url || "").trim();
+            const webAppUrl = String(c.master_deployment_url || c.web_app_url || c.metadata?.webAppUrl || "").trim();
             const hasWebAppUrl = Boolean(webAppUrl) || c.master_mode === "supabase";
-            const splitEnabled = Boolean(c.split_enabled);
+            const invMethod = String(ki?.invoice_method || c.metadata?.invoiceMethod || "").trim();
+            const splitEnabled = Boolean(c.metadata?.splitEnabled || invMethod.toLowerCase().includes("split"));
             const hasClientManager = cmMap.hasManager(clientName);
-            const accountingTool = c.metadata?.accountingTool || c.accounting_tool || "None";
-            const crmTool = c.metadata?.crmTool || c.crm_tool || "None";
-            const crmDrives = c.metadata?.crmDrives || c.crm_drives || "NA";
-            const revFocus = String(c.revenue_focus || "Revenue").trim();
-            const rawDcMode = String(c.direct_costs_mode || "Contractors").trim();
+            const accountingTool = c.metadata?.accountingTool || ki?.accounting_tool || "None";
+            const crmTool = c.metadata?.crmTool || ki?.crm_tool || "None";
+            const crmDrives = c.metadata?.crmDrives || ki?.crm_drives || "NA";
+            const revFocus = String(ki?.revenue_or_income_mode || c.metadata?.revenueFocus || "Revenue").trim();
+            const rawDcMode = String(ki?.direct_costs_mode || c.metadata?.directCostsMode || "Contractors").trim();
             const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
             const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => String(accountingTool).toLowerCase().includes(t));
             const item = {
@@ -185,8 +209,8 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
               crmDrives,
               directCostsMode,
               hasAccountingIntegration,
-              clientMode: c.client_mode || "sheets",
-              masterMode: c.master_mode || "sheets",
+              clientMode: c.client_mode || "sheet",
+              masterMode: c.master_mode || "sheet",
             };
             clientsArray.push(item);
             clientsObj[clientName] = { ...item };
@@ -8425,6 +8449,8 @@ export async function handleMarkPipelineCopied(req, res, sheets) {
       valueInputOption: "RAW",
       requestBody: { values: [["Yes"]] },
     });
+
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "retainers", "cash"]);
 
     console.log(`  ✅ mark_pipeline_copied: wrote Yes to Pipeline!DD${parsedPipeRow}`);
     return res.status(200).json({ success: true });

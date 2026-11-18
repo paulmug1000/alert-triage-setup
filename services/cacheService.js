@@ -352,12 +352,31 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
   }
 
   if (redisClient?.isOpen && uniquePatterns.length > 0) {
+    const scanKeysMatching_ = async (pattern) => {
+      if (typeof redisClient.scan !== "function") {
+        return typeof redisClient.keys === "function" ? redisClient.keys(pattern).catch(() => []) : [];
+      }
+      const matched = [];
+      let cursor = 0;
+      try {
+        do {
+          const reply = await redisClient.scan(cursor, { MATCH: pattern, COUNT: 250 });
+          const nextCursor = Array.isArray(reply) ? reply[0] : reply?.cursor;
+          const keys = Array.isArray(reply) ? reply[1] : reply?.keys;
+          if (Array.isArray(keys) && keys.length > 0) {
+            matched.push(...keys);
+          }
+          cursor = Number(nextCursor) || 0;
+        } while (cursor !== 0);
+      } catch (_) { }
+      return matched;
+    };
     const redisCleanup = (async () => {
       try {
         const keyLists = await Promise.all(
           uniquePatterns.map((p) =>
             p.includes("*")
-              ? redisClient.keys(p).catch(() => [])
+              ? scanKeysMatching_(p)
               : Promise.resolve([p])
           )
         );

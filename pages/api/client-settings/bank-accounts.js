@@ -12,8 +12,11 @@
 import { getSessionUser } from "../../../services/authService.js";
 import {
   canAccessPma,
-  isUserAuthorizedForClient
+  isUserAuthorizedForClient,
+  verifyUserAuthorizedForSheet
 } from "../../../services/userPermissions.js";
+import { getSheetsClient } from "../../../services/sheetsClient.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 import {
   getIntegrationTokens,
   updateRefreshedTokens,
@@ -52,11 +55,23 @@ export default async function handler(req, res) {
   }
 
   // 3. Multi-tenant client authorization check
-  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
-    return res.status(403).json({
-      success: false,
-      error: "Forbidden: Access denied to this client."
-    });
+  if (!sessionUser.isAdmin) {
+    if (!isUserAuthorizedForClient(sessionUser, clientName)) {
+      return res.status(403).json({
+        success: false,
+        error: "Forbidden: Access denied to this client."
+      });
+    }
+    if (masterSheetId) {
+      const sheets = await getSheetsClient();
+      const sheetAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+      if (!sheetAuth.authorized) {
+        return res.status(sheetAuth.status || 403).json({
+          success: false,
+          error: sheetAuth.error || "Forbidden: Spreadsheet access denied for this client."
+        });
+      }
+    }
   }
 
   try {
@@ -173,5 +188,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("GET /api/client-settings/bank-accounts fatal error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  } finally {
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
   }
 }

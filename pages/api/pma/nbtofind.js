@@ -7,6 +7,7 @@ import {
 import { getClients } from "../../../services/workspaces.js";
 import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
   // 1. Authenticate user
@@ -131,6 +132,8 @@ export default async function handler(req, res) {
     } catch (err) {
       console.error("Error in POST /api/pma/nbtofind:", err);
       return res.status(500).json({ success: false, error: err.message || "Failed to save NB to find data" });
+    } finally {
+      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
     }
   }
 

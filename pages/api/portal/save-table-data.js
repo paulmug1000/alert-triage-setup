@@ -5,6 +5,7 @@ import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache, del2TierCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -114,6 +115,29 @@ export default async function handler(req, res) {
             return res.status(403).json({ success: false, error: "Formula and total columns cannot be modified." });
           }
         }
+      } else if (canonicalSheetName === "Salaries") {
+        if (minRow < 4 || maxRow > 53) {
+          return res.status(403).json({ success: false, error: "This row is not within an editable Salaries range." });
+        }
+        for (const cl of colLetters) {
+          const cIdx = colLetterToNum(cl) - 1;
+          if (cIdx < 0 || cIdx > 8) {
+            return res.status(403).json({ success: false, error: "Formula and total columns cannot be modified." });
+          }
+        }
+      } else if (canonicalSheetName === "NBtoFind") {
+        const ALLOWED_NB_ROWS = new Set([3, 12, 20, 21, 25]);
+        for (let r = minRow; r <= maxRow; r++) {
+          if (!ALLOWED_NB_ROWS.has(r)) {
+            return res.status(403).json({ success: false, error: "This row is not within an editable NBtoFind range." });
+          }
+        }
+        for (const cl of colLetters) {
+          const cIdx = colLetterToNum(cl) - 1;
+          if (cIdx < 0 || cIdx > 49) {
+            return res.status(403).json({ success: false, error: "Column is outside the editable NBtoFind range." });
+          }
+        }
       }
       const fullRange = `${canonicalSheetName}!${coordPart.toUpperCase()}`;
       const rawValues = Array.isArray(u.values) ? u.values : [[u.value]];
@@ -184,5 +208,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("❌ /api/portal/save-table-data error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  } finally {
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
   }
 }

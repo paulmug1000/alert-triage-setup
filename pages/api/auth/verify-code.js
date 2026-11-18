@@ -1,6 +1,7 @@
 import { verifyOtp } from "../../../services/authService";
 import { getClientSetupStatusForPortal } from "../../../services/setupService";
 import { redisClient } from "../../../services/redisClient";
+import { installSheetIdBoundary, maskResponseSheetIdsForUser } from "../../../services/userPermissions";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -23,6 +24,7 @@ export default async function handler(req, res) {
 
     const result = await verifyOtp(email, code, null, res, clientIp);
     if (result.success && result.user) {
+      installSheetIdBoundary(req, res, result.user);
       try {
         const assigned = Array.isArray(result.user.assignedClients) ? result.user.assignedClients : [];
         if (assigned.length === 1 && assigned[0] && assigned[0] !== "*") {
@@ -35,14 +37,15 @@ export default async function handler(req, res) {
               clientName: singleClient,
               masterSheetId: parsedSetup.masterSheetId || ""
             });
+            const maskedStatus = maskResponseSheetIdsForUser(initialSetupStatus, result.user);
             result.user = {
               ...result.user,
               initialSetupClient: {
                 clientName: singleClient,
                 setupMode: true,
-                setupStatus: initialSetupStatus
+                setupStatus: maskedStatus
               },
-              initialSetupStatus
+              initialSetupStatus: maskedStatus
             };
           }
         }

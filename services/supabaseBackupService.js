@@ -16,6 +16,7 @@
 import zlib from "zlib";
 import { randomUUID } from "crypto";
 import { getSupabaseAdmin } from "./supabaseClient.js";
+import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { invalidateMasterEngineCache } from "./masterEngineService.js";
 
 const BACKUP_BUCKET = "pulse-backups";
@@ -176,13 +177,20 @@ export async function createClientSnapshot({
 
   await ensureBackupBucket_(sb);
 
-  const { data: cfgRow } = await sb
-    .from("client_master_config")
-    .select("*")
-    .ilike("client_name", cleanClient)
-    .maybeSingle();
+  const [{ data: clientRow }, { data: keyInfoRow }] = await Promise.all([
+    sb
+      .from("clients")
+      .select("id, client_name, normalized_key, status, master_mode, client_mode, metadata")
+      .ilike("client_name", cleanClient)
+      .maybeSingle(),
+    sb
+      .from("tenant_key_info")
+      .select("*")
+      .ilike("client_name", cleanClient)
+      .maybeSingle(),
+  ]);
 
-  const canonicalName = cfgRow?.client_name || cleanClient;
+  const canonicalName = clientRow?.client_name || keyInfoRow?.client_name || cleanClient;
 
   // Fetch tab metadata first so we can load grids without hitting a statement timeout
   const { data: tabMetaRows, error: metaErr } = await sb
@@ -239,12 +247,12 @@ export async function createClientSnapshot({
     formatVersion: 1,
     snapshotId,
     clientName: canonicalName,
-    clientId: cfgRow?.id || null,
+    clientId: clientRow?.id || null,
     createdAt: nowIso,
     createdBy,
     triggerType,
     label: String(label || "").trim(),
-    config: cfgRow || null,
+    config: keyInfoRow || null,
     tabs,
   };
 
@@ -457,8 +465,8 @@ export async function restoreClientSnapshot({
   }
 
   const { data: cfgRow } = await sb
-    .from("client_master_config")
-    .select("*")
+    .from("clients")
+    .select("id, client_name")
     .ilike("client_name", targetClientName)
     .maybeSingle();
 
@@ -545,6 +553,24 @@ export async function restoreClientSnapshot({
     );
   }
 
+  // Restore tenant_key_info config when restoring full workbook or master+recon
+  const keyInfoPayload = payload.config?.keyInfo || (payload.config && !payload.config.master_mode ? payload.config : null);
+  if (keyInfoPayload && typeof keyInfoPayload === "object" && (scope === "all" || scope === "master_recon") && clientId) {
+    const cleanKi = {
+      ...keyInfoPayload,
+      client_id: clientId,
+      client_name: canonicalClient,
+      updated_at: nowIso,
+    };
+    delete cleanKi.id;
+    const { error: kiErr } = await sb
+      .from("tenant_key_info")
+      .upsert([cleanKi], { onConflict: "client_id" });
+    if (kiErr) {
+      console.warn(`[supabaseBackupService] Could not restore tenant_key_info for ${canonicalClient}:`, kiErr.message);
+    }
+  }
+
   // Immediately clear all in-memory workbook caches for this client
   invalidateMasterEngineCache(canonicalClient);
 
@@ -600,99 +626,144 @@ export async function runDailyAutoBackupSweep({
   const sb = getSupabaseAdmin();
   if (!sb) throw new Error("Supabase admin client is not configured.");
 
-  const policy = await getBackupPolicy(sb);
-  const todayStr = getTodayUkDateStr_();
-
-  if (!force) {
-    if (policy.autoDailyEnabled === false) {
-      return { skipped: true, reason: "Automated daily backups are disabled." };
-    }
-    if (policy.lastDailyBackupDate === todayStr) {
-      return { skipped: true, reason: `Daily backup already completed for ${todayStr}.` };
-    }
-  }
-
-  await ensureBackupBucket_(sb);
-
-  // Discover all clients that currently have tabs in master_sheet_grids
-  const { data: gridClients } = await sb
-    .from("master_sheet_grids")
-    .select("client_name");
-
-  const uniqueClients = Array.from(
-    new Set(
-      (gridClients || [])
-        .map((r) => String(r.client_name || "").trim())
-        .filter(Boolean)
-    )
-  ).sort((a, b) => a.localeCompare(b));
-
-  const currentIndex = await readBackupIndex_(sb);
-  const createdSnapshots = [];
-  const errors = [];
-
-  for (const clientName of uniqueClients) {
-    // Unless force=true, skip if this client already has a daily_auto snapshot today
-    if (!force) {
-      const alreadyToday = currentIndex.some(
-        (s) =>
-          s.triggerType === "daily_auto" &&
-          String(s.clientName || "").trim().toUpperCase() === clientName.toUpperCase() &&
-          String(s.createdAt || "").slice(0, 10) === todayStr
-      );
-      if (alreadyToday) continue;
-    }
-
+  await ensureRedisConnected(1000).catch(() => {});
+  const lockKey = "pulse:lock:daily_backup_sweep";
+  let lockAcquired = false;
+  if (redisClient?.isOpen) {
     try {
-      const snap = await createClientSnapshot({
-        clientName,
-        triggerType: "daily_auto",
-        label: `Automated daily snapshot (${todayStr})`,
-        createdBy: triggeredBy,
-      });
-      createdSnapshots.push(snap);
-    } catch (err) {
-      console.warn(`[supabaseBackupService] Daily backup error for ${clientName}:`, err.message);
-      errors.push({ clientName, error: err.message });
-    }
+      const lockRes = await redisClient.set(lockKey, `${Date.now()}`, { NX: true, EX: 900 });
+      lockAcquired = lockRes === "OK";
+      if (!lockAcquired) {
+        return { skipped: true, reason: "Daily backup sweep already in progress on another instance." };
+      }
+    } catch (_) {}
   }
 
-  // Prune automated daily snapshots older than retentionDays (never auto-delete manual snapshots)
-  const retentionDays = Math.max(1, Number(policy.retentionDays) || 14);
-  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  const updatedIndex = await readBackupIndex_(sb);
-  const expiredAutoSnapshots = updatedIndex.filter(
-    (s) =>
-      (s.triggerType === "daily_auto" || s.triggerType === "pre_restore") &&
-      new Date(s.createdAt || 0).getTime() < cutoffMs
-  );
+  try {
+    const policy = await getBackupPolicy(sb);
+    const todayStr = getTodayUkDateStr_();
 
-  if (expiredAutoSnapshots.length > 0) {
-    const pathsToRemove = expiredAutoSnapshots.map((s) => s.storagePath).filter(Boolean);
-    if (pathsToRemove.length > 0) {
-      await sb.storage.from(BACKUP_BUCKET).remove(pathsToRemove).catch(() => { });
+    if (!force) {
+      if (policy.autoDailyEnabled === false) {
+        return { skipped: true, reason: "Automated daily backups are disabled." };
+      }
+      if (policy.lastDailyBackupDate === todayStr) {
+        return { skipped: true, reason: `Daily backup already completed for ${todayStr}.` };
+      }
     }
-    const expiredIds = new Set(expiredAutoSnapshots.map((s) => s.id));
-    const surviving = updatedIndex.filter((s) => !expiredIds.has(s.id));
-    await writeBackupIndex_(sb, surviving, triggeredBy);
+
+    await ensureBackupBucket_(sb);
+
+    // Discover all clients that currently have tabs in master_sheet_grids (paginated past PostgREST 1,000-row cap)
+    const gridClients = [];
+    for (let from = 0; ; from += 1000) {
+      const { data: page, error: pErr } = await sb
+        .from("master_sheet_grids")
+        .select("id, client_name")
+        .order("id", { ascending: true })
+        .range(from, from + 999);
+      if (pErr || !Array.isArray(page) || page.length === 0) break;
+      gridClients.push(...page);
+      if (page.length < 1000) break;
+    }
+
+    // Fetch clients registry (paginated) to exclude archived tenants
+    const archivedClients = new Set();
+    for (let from = 0; ; from += 1000) {
+      const { data: cPage, error: cErr } = await sb
+        .from("clients")
+        .select("id, client_name, status, metadata")
+        .order("id", { ascending: true })
+        .range(from, from + 999);
+      if (cErr || !Array.isArray(cPage) || cPage.length === 0) break;
+      for (const c of cPage) {
+        const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+        if (st === "archived" && c.client_name) {
+          archivedClients.add(String(c.client_name).trim().toLowerCase());
+        }
+      }
+      if (cPage.length < 1000) break;
+    }
+
+    const uniqueClients = Array.from(
+      new Set(
+        gridClients
+          .map((r) => String(r.client_name || "").trim())
+          .filter((name) => name && !archivedClients.has(name.toLowerCase()))
+      )
+    ).sort((a, b) => a.localeCompare(b));
+
+    const currentIndex = await readBackupIndex_(sb);
+    const createdSnapshots = [];
+    const errors = [];
+
+    for (const clientName of uniqueClients) {
+      // Unless force=true, skip if this client already has a daily_auto snapshot today
+      if (!force) {
+        const alreadyToday = currentIndex.some(
+          (s) =>
+            s.triggerType === "daily_auto" &&
+            String(s.clientName || "").trim().toUpperCase() === clientName.toUpperCase() &&
+            String(s.createdAt || "").slice(0, 10) === todayStr
+        );
+        if (alreadyToday) continue;
+      }
+
+      try {
+        const snap = await createClientSnapshot({
+          clientName,
+          triggerType: "daily_auto",
+          label: `Automated daily snapshot (${todayStr})`,
+          createdBy: triggeredBy,
+        });
+        createdSnapshots.push(snap);
+      } catch (err) {
+        console.warn(`[supabaseBackupService] Daily backup error for ${clientName}:`, err.message);
+        errors.push({ clientName, error: err.message });
+      }
+    }
+
+    // Prune automated daily snapshots older than retentionDays (never auto-delete manual snapshots)
+    const retentionDays = Math.max(1, Number(policy.retentionDays) || 14);
+    const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    const updatedIndex = await readBackupIndex_(sb);
+    const expiredAutoSnapshots = updatedIndex.filter(
+      (s) =>
+        (s.triggerType === "daily_auto" || s.triggerType === "pre_restore") &&
+        new Date(s.createdAt || 0).getTime() < cutoffMs
+    );
+
+    if (expiredAutoSnapshots.length > 0) {
+      const pathsToRemove = expiredAutoSnapshots.map((s) => s.storagePath).filter(Boolean);
+      if (pathsToRemove.length > 0) {
+        await sb.storage.from(BACKUP_BUCKET).remove(pathsToRemove).catch(() => { });
+      }
+      const expiredIds = new Set(expiredAutoSnapshots.map((s) => s.id));
+      const surviving = updatedIndex.filter((s) => !expiredIds.has(s.id));
+      await writeBackupIndex_(sb, surviving, triggeredBy);
+    }
+
+    const nextPolicy = await updateBackupPolicy(
+      {
+        lastDailyBackupDate: todayStr,
+        lastDailyBackupAt: new Date().toISOString(),
+        lastDailyBackupCount: createdSnapshots.length,
+      },
+      triggeredBy
+    );
+
+    return {
+      skipped: false,
+      date: todayStr,
+      clientsScanned: uniqueClients.length,
+      snapshotsCreated: createdSnapshots.length,
+      expiredSnapshotsPruned: expiredAutoSnapshots.length,
+      errors,
+      policy: nextPolicy,
+    };
+  } finally {
+    if (lockAcquired && redisClient?.isOpen) {
+      await redisClient.del(lockKey).catch(() => {});
+    }
   }
-
-  const nextPolicy = await updateBackupPolicy(
-    {
-      lastDailyBackupDate: todayStr,
-      lastDailyBackupAt: new Date().toISOString(),
-      lastDailyBackupCount: createdSnapshots.length,
-    },
-    triggeredBy
-  );
-
-  return {
-    skipped: false,
-    date: todayStr,
-    clientsScanned: uniqueClients.length,
-    snapshotsCreated: createdSnapshots.length,
-    expiredSnapshotsPruned: expiredAutoSnapshots.length,
-    errors,
-    policy: nextPolicy,
-  };
 }

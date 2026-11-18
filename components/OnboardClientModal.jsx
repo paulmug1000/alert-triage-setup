@@ -33,7 +33,7 @@ function buildConnectionEmailContent({ contactName, accountingTool, crmTool }) {
     "",
     "To do this, please log in to Pulse by following this link:",
     "",
-    "https://app.pulsedashboard.co.uk/",
+    "https://app.pulsedashboard.co.uk/pulse",
     "",
     "Then choose the service that drives your email account (eg Google or Microsoft), and approve the connection to Pulse.",
     "",

@@ -270,20 +270,29 @@ export async function autoProvisionAllReconTabs({
     const sb = getSupabaseAdmin();
     const { data: sbClients, error: sbErr } = await sb
       .from("clients")
-      .select("client_name, recon_sheet_url, recon_sheet_id, master_mode, status, metadata")
+      .select("client_name, normalized_key, recon_sheet_url, recon_sheet_id, master_mode, status, metadata")
       .order("client_name", { ascending: true });
     if (!sbErr && Array.isArray(sbClients)) {
       for (const c of sbClients) {
         const effStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
         if (["inactive", "archived", "suspended"].includes(effStatus)) continue;
         const clientName = String(c.client_name || "").trim();
+        const normKey = String(
+          c.normalized_key || clientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")
+        ).trim();
         const reconSheetUrl = String(c.recon_sheet_url || "").trim();
         const rawReconId = String(c.recon_sheet_id || "").trim();
-        const reconSheetId = extractSheetIdFromUrl(reconSheetUrl) || (rawReconId && !rawReconId.startsWith("sb-") ? rawReconId : "");
+        const reconSheetId =
+          extractSheetIdFromUrl(reconSheetUrl) ||
+          rawReconId ||
+          (c.master_mode === "supabase" && normKey ? `sb-recon-${normKey}` : "");
         if (!clientName || !reconSheetId) continue;
         targetReconClients.push({
           clientName,
-          reconSheetUrl: reconSheetUrl || `https://docs.google.com/spreadsheets/d/${reconSheetId}/edit`,
+          reconSheetUrl:
+            reconSheetId.startsWith("sb-")
+              ? ""
+              : reconSheetUrl || `https://docs.google.com/spreadsheets/d/${reconSheetId}/edit`,
           reconSheetId,
         });
       }

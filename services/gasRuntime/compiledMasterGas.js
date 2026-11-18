@@ -21756,7 +21756,7 @@ async function executeGeminiRequest(promptText, payloadObj, schema) {
   };
 
   // 2. Generate secure OAuth token
-  const token = ScriptApp.getOAuthToken();
+  const token = (await ScriptApp.getOAuthToken());
 
   const options = {
     method: "post", 

@@ -93,17 +93,28 @@ export default async function handler(req, res) {
   let isAuthorized = false;
   let isBrowserSessionCall = false;
   let canonicalSpreadsheetId = spreadsheetId;
+  let authoritativeClientKey = clientKey;
 
   if (providedClientSecret) {
     const sheets = await getSheetsClient();
+    let resolvedSheetClient = null;
     if (canonicalSpreadsheetId) {
-      const resolvedSheetClient = await resolveClientNameBySheetId(sheets, canonicalSpreadsheetId);
-      if (clientKey && resolvedSheetClient && !matchesClientName(clientKey, resolvedSheetClient)) {
+      resolvedSheetClient = await resolveClientNameBySheetId(sheets, canonicalSpreadsheetId);
+      if (!resolvedSheetClient) {
+        console.warn(`🚨 Token Broker: Unrecognized spreadsheetId ("${canonicalSpreadsheetId}").`);
+        return res.status(403).json({ success: false, error: "Forbidden: Unrecognized spreadsheet ID." });
+      }
+      if (clientKey && !matchesClientName(clientKey, resolvedSheetClient)) {
         console.warn(`🚨 Token Broker: Mismatched clientKey ("${clientKey}") and spreadsheetId ("${canonicalSpreadsheetId}" -> "${resolvedSheetClient}").`);
         return res.status(403).json({ success: false, error: "Forbidden: Client identifier does not match spreadsheet ID." });
       }
+      authoritativeClientKey = resolvedSheetClient;
     } else if (clientKey) {
       canonicalSpreadsheetId = await resolveMasterSheetIdByClientName(sheets, clientKey);
+      if (canonicalSpreadsheetId) {
+        resolvedSheetClient = await resolveClientNameBySheetId(sheets, canonicalSpreadsheetId);
+        if (resolvedSheetClient) authoritativeClientKey = resolvedSheetClient;
+      }
     }
 
     if (!canonicalSpreadsheetId) {
@@ -201,7 +212,7 @@ export default async function handler(req, res) {
   try {
     // 3. Fetch from Vault using verified canonical identifiers
     const record = await getIntegrationTokens({
-      clientKey,
+      clientKey: authoritativeClientKey,
       masterSheetId: canonicalSpreadsheetId || spreadsheetId,
       tool
     });

@@ -13,8 +13,11 @@ import { getSessionUser } from "../../services/authService.js";
 import {
   canAccessPma,
   isUserAuthorizedForClient,
-  isReadOnlySession
+  isReadOnlySession,
+  verifyUserAuthorizedForSheet
 } from "../../services/userPermissions.js";
+import { getSheetsClient } from "../../services/sheetsClient.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../services/masterEngineService.js";
 import {
   getClientSettings,
   saveClientSettings,
@@ -44,11 +47,25 @@ export default async function handler(req, res) {
 
   // 3. Multi-tenant client authorization check
   const targetClient = req.method === "GET" ? req.query.clientName : req.body?.clientName;
-  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, targetClient)) {
-    return res.status(403).json({
-      success: false,
-      error: "Forbidden: Access denied to this client."
-    });
+  const reqMasterSheetId = req.method === "GET" ? req.query.masterSheetId : req.body?.masterSheetId;
+  const reqClientSheetId = req.method === "GET" ? req.query.clientSheetId : req.body?.clientSheetId;
+  if (!sessionUser.isAdmin) {
+    if (!isUserAuthorizedForClient(sessionUser, targetClient)) {
+      return res.status(403).json({
+        success: false,
+        error: "Forbidden: Access denied to this client."
+      });
+    }
+    const sheets = await getSheetsClient();
+    for (const sId of [reqMasterSheetId, reqClientSheetId].filter(Boolean)) {
+      const sheetAuth = await verifyUserAuthorizedForSheet(sessionUser, sId, targetClient, sheets);
+      if (!sheetAuth.authorized) {
+        return res.status(sheetAuth.status || 403).json({
+          success: false,
+          error: sheetAuth.error || "Forbidden: Spreadsheet access denied for this client."
+        });
+      }
+    }
   }
 
   // 3. GET: Fetch settings
@@ -111,8 +128,9 @@ export default async function handler(req, res) {
       }
     }
 
-    // Handle Option B: Test CRM mappings and refresh preview
-    if (action === "test_crm_mappings") {
+    try {
+      // Handle Option B: Test CRM mappings and refresh preview
+      if (action === "test_crm_mappings") {
       try {
         const previewResult = await testCrmMappingsAndGetPreview({
           clientName,
@@ -211,6 +229,9 @@ export default async function handler(req, res) {
     } catch (err) {
       console.error("POST /api/client-settings error:", err);
       return res.status(500).json({ success: false, error: err.message });
+    }
+    } finally {
+      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
     }
   }
 

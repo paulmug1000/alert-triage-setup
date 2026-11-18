@@ -73,7 +73,8 @@ export default async function handler(req, res) {
       tabName,
       headerRowNum,
       clientKey,
-      isAdmin: Boolean(sessionUser.isAdmin)
+      isAdmin: Boolean(sessionUser.isAdmin),
+      allowServiceAccountFallback: Boolean(sessionUser?.isAdmin)
     });
 
     return res.status(200).json({

@@ -1,6 +1,11 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
-import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import {
+  getSupabaseAdmin,
+  isSupabaseConfigured,
+  isSupabaseControlPlaneActive,
+  shouldDualWriteLegacyControlPlaneSheets,
+} from "./supabaseClient.js";
 import {
   wrapSheetId,
   unwrapSheetId,
@@ -147,7 +152,7 @@ export async function getAllUsers(sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID, by
         _usersCachedAt = now;
         try {
           await redisClient.set(REDIS_USERS_KEY, JSON.stringify(users), { EX: REDIS_USERS_TTL_SECS });
-        } catch (_) {}
+        } catch (_) { }
         return users;
       }
     } catch (sbErr) {
@@ -254,22 +259,25 @@ export async function updateUserLastLogin(email, sheets, _ignoredAcId = DEFAULT_
       }
     }
 
-    const acId = getCanonicalAcSheetId();
-    const user = await getUserByEmail(email, sheets, acId, true);
-    if (user && user.rowIndex) {
-      const updateSheet = () =>
-        withRetry(() => sheets.spreadsheets.values.update({
-          spreadsheetId: acId,
-          range: `${USERS_TAB}!G${user.rowIndex}`,
-          valueInputOption: "RAW",
-          requestBody: {
-            values: [[nowIso]]
-          }
-        }));
-      if (await isSupabaseControlPlaneActive()) {
-        updateSheet().catch(() => {});
-      } else {
-        await updateSheet();
+    const supaActive = await isSupabaseControlPlaneActive();
+    if (!supaActive || shouldDualWriteLegacyControlPlaneSheets()) {
+      const acId = getCanonicalAcSheetId();
+      const user = await getUserByEmail(email, sheets, acId, true);
+      if (user && user.rowIndex && sheets) {
+        const updateSheet = () =>
+          withRetry(() => sheets.spreadsheets.values.update({
+            spreadsheetId: acId,
+            range: `${USERS_TAB}!G${user.rowIndex}`,
+            valueInputOption: "RAW",
+            requestBody: {
+              values: [[nowIso]]
+            }
+          }));
+        if (supaActive) {
+          updateSheet().catch(() => { });
+        } else {
+          await updateSheet();
+        }
       }
     }
 
@@ -289,8 +297,9 @@ export async function updateUserLastLogin(email, sheets, _ignoredAcId = DEFAULT_
 export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
   try {
     const acId = getCanonicalAcSheetId();
+    const supaActive = await isSupabaseControlPlaneActive();
     const user = await getUserByEmail(email, sheets, acId, true);
-    if (!user || !user.rowIndex) {
+    if (!user || (!supaActive && !user.rowIndex)) {
       throw new Error(`User not found: ${email}`);
     }
 
@@ -308,7 +317,7 @@ export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets
         console.warn("⚠️ Supabase updateUserDailyAlertsEmail warning:", sbErr.message);
       }
     }
-    if (user.rowIndex) {
+    if (user.rowIndex && sheets && (!supaActive || shouldDualWriteLegacyControlPlaneSheets())) {
       const updateSheet = () =>
         withRetry(() => sheets.spreadsheets.values.update({
           spreadsheetId: acId,
@@ -318,8 +327,8 @@ export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets
             values: [[val]]
           }
         }));
-      if (await isSupabaseControlPlaneActive()) {
-        updateSheet().catch(() => {});
+      if (supaActive) {
+        updateSheet().catch(() => { });
       } else {
         await updateSheet();
       }
@@ -371,13 +380,22 @@ async function refreshAutoUpdatesSheetMappings(sheets) {
       const sb = getSupabaseAdmin();
       const { data: clients, error } = await sb
         .from("clients")
-        .select("client_name, client_sheet_id, master_sheet_id, recon_sheet_id");
+        .select("client_name, normalized_key, client_sheet_id, master_sheet_id, recon_sheet_id, client_mode, master_mode, metadata");
       if (!error && Array.isArray(clients) && clients.length > 0) {
         for (const c of clients) {
           const cName = String(c.client_name || "").trim();
-          const rId = String(c.recon_sheet_id || "").trim();
-          const cId = String(c.client_sheet_id || "").trim();
-          const mId = String(c.master_sheet_id || "").trim();
+          const normKey = String(c.normalized_key || normalizeClientKeyForLookup(cName)).trim();
+          const rId =
+            String(c.recon_sheet_id || "").trim() ||
+            ((c.metadata?.reconMode === "supabase" || c.master_mode === "supabase") && normKey
+              ? `sb-recon-${normKey}`
+              : "");
+          const cId =
+            String(c.client_sheet_id || "").trim() ||
+            (c.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "");
+          const mId =
+            String(c.master_sheet_id || "").trim() ||
+            (c.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "");
           if (rId && cName) clientSheetIdToNameCache.set(rId, cName);
           if (cId && cName) {
             clientSheetIdToNameCache.set(cId, cName);
@@ -389,10 +407,19 @@ async function refreshAutoUpdatesSheetMappings(sheets) {
             clientNameToMasterIdCache.set(cName.toLowerCase(), mId);
             clientNameToMasterIdCache.set(normalizeClientKeyForLookup(cName), mId);
           }
+          if (cName && normKey) {
+            if (c.client_mode === "supabase") {
+              clientSheetIdToNameCache.set(`sb-client-${normKey}`, cName);
+            }
+            if (c.master_mode === "supabase") {
+              clientSheetIdToNameCache.set(`sb-master-${normKey}`, cName);
+              clientSheetIdToNameCache.set(`sb-recon-${normKey}`, cName);
+            }
+          }
         }
         return;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   const acId = getCanonicalAcSheetId();
@@ -692,7 +719,7 @@ export async function invalidateUsersCache() {
   _usersCachedAt = 0;
   try {
     await redisClient.del(REDIS_USERS_KEY);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 /**
@@ -805,10 +832,13 @@ export async function createOrUpdateUser(sheets, {
     }
   };
 
-  if (await isSupabaseControlPlaneActive()) {
-    mirrorToSheet().catch(() => {});
-  } else {
-    await mirrorToSheet();
+  const supaActive = await isSupabaseControlPlaneActive();
+  if ((!supaActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets) {
+    if (supaActive) {
+      mirrorToSheet().catch(() => { });
+    } else {
+      await mirrorToSheet();
+    }
   }
 
   await invalidateUsersCache();
@@ -880,10 +910,13 @@ export async function deleteUserByEmail(sheets, { email, actorEmail }) {
     }
   };
 
-  if (await isSupabaseControlPlaneActive()) {
-    mirrorDeleteToSheet().catch(() => {});
-  } else {
-    await mirrorDeleteToSheet();
+  const supaActive = await isSupabaseControlPlaneActive();
+  if ((!supaActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets) {
+    if (supaActive) {
+      mirrorDeleteToSheet().catch(() => { });
+    } else {
+      await mirrorDeleteToSheet();
+    }
   }
 
   await invalidateUsersCache();

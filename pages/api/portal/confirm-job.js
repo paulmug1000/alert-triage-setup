@@ -17,6 +17,7 @@ import {
 import { buildRetainerChildRowsWritePlan } from "../../../services/retainers.js";
 import { getToleranceValues } from "../../../services/sharedHelpers.js";
 import { resolveMasterSheetIdForClient_ } from "../../../services/workspaces.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 function colToLetter(colIndex) {
   let temp, letter = "";
@@ -574,5 +575,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("❌ /api/portal/confirm-job error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  } finally {
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
   }
 }

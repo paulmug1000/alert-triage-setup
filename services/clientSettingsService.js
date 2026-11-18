@@ -1307,8 +1307,11 @@ export async function testCrmMappingsAndGetPreview({
     settings
   });
 
-  // Short pause to allow Google Sheets formula engine to recalculate array formulas in CRMList
-  await new Promise(resolve => setTimeout(resolve, 1400));
+  // Short pause only for live Google Sheets formula engine to recalculate array formulas in CRMList
+  const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId }).catch(() => null);
+  if (supaCtx?.masterMode !== "supabase") {
+    await new Promise(resolve => setTimeout(resolve, 1400));
+  }
 
   const sheets = await getSheetsClient();
   const previewResp = await withRetry(() => sheets.spreadsheets.values.batchGet({

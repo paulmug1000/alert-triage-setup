@@ -623,6 +623,16 @@ export async function withRetry(operation, maxRetries = 5) {
 
 export async function ensureFreshData(sheets, spreadsheetId, sheetName) {
   const resolvedId = unwrapSheetId(spreadsheetId);
+  try {
+    const ctx = await resolveSupabaseSheetContext({ spreadsheetId: resolvedId }).catch(() => null);
+    if (
+      ctx &&
+      ((ctx.sheetRole === "client" && ctx.clientMode === "supabase") ||
+        ((ctx.sheetRole === "master" || ctx.sheetRole === "recon") && ctx.masterMode === "supabase"))
+    ) {
+      return;
+    }
+  } catch (_) {}
   await new Promise((resolve) => setTimeout(resolve, 500));
   try {
     await sheets.spreadsheets.values.get({ spreadsheetId: resolvedId, range: `${sheetName}!A1` });

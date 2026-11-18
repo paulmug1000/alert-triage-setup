@@ -38,7 +38,7 @@ export default async function handler(req, res) {
           if (sb) {
             const { data: dbClients, error: sbErr } = await sb
               .from("clients")
-              .select("client_name, status, metadata, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, client_mode, master_mode")
+              .select("client_name, normalized_key, status, metadata, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, client_mode, master_mode")
               .order("client_name", { ascending: true });
             if (!sbErr && Array.isArray(dbClients) && dbClients.length > 0) {
               fresh = [];
@@ -46,8 +46,17 @@ export default async function handler(req, res) {
                 const effectiveStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
                 if (["inactive", "archived", "suspended"].includes(effectiveStatus)) continue;
                 const clientName = String(c.client_name || "").trim();
-                const clientSheetId = extractSheetIdFromUrl(c.client_sheet_url || c.client_sheet_id) || String(c.client_sheet_id || "").trim();
-                const masterSheetId = extractSheetIdFromUrl(c.master_sheet_url || c.master_sheet_id) || String(c.master_sheet_id || "").trim();
+                const normKey = String(
+                  c.normalized_key || clientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")
+                ).trim();
+                const clientSheetId =
+                  extractSheetIdFromUrl(c.client_sheet_url || c.client_sheet_id) ||
+                  String(c.client_sheet_id || "").trim() ||
+                  (c.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "");
+                const masterSheetId =
+                  extractSheetIdFromUrl(c.master_sheet_url || c.master_sheet_id) ||
+                  String(c.master_sheet_id || "").trim() ||
+                  (c.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "");
                 if (!clientName) continue;
                 if (!clientSheetId && !masterSheetId && c.client_mode !== "supabase" && c.master_mode !== "supabase") continue;
                 fresh.push({

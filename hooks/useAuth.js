@@ -202,6 +202,14 @@ export function useAuth(initialUser = null) {
       localStorage.removeItem("pma_managed_client");
       localStorage.removeItem("pulse_portal_client");
       localStorage.removeItem("pulse_portal_active_client_obj");
+      localStorage.removeItem("pulse_assignedAppIds");
+      localStorage.removeItem("pulse_portal_clients_cache");
+      localStorage.removeItem("pulse_auth_user_cache");
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith("pulse_cached_") || k.startsWith("pulse_activity_swr_v1:")) {
+          localStorage.removeItem(k);
+        }
+      }
     } catch {}
     setIsAuthenticated(false);
     setUser(null);

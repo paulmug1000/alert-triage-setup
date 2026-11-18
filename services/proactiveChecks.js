@@ -7,6 +7,7 @@ import { redisClient } from "./redisClient.js";
 import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, appendAlertMemoryRow, findMemoryRow, updateHandledAlertHash, invalidateAlertMemoryCache } from "./alertMemory.js";
 import { applyAlertRemovalToTriageData, PRECOMPUTED_KEY } from "./alertState.js";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
+import { invalidatePmaClientCache } from "./cacheService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import {
@@ -3074,12 +3075,33 @@ export async function handleClassifyPLCategory(sheets, {
   // 6. Trigger Master Sheet Full Sync natively (when in Supabase engine mode) or via webAppUrl in background
   const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
   if (supaCtx && supaCtx.masterMode === "supabase") {
-    pushOutgoingsToClientSheetNative(sheets, supaCtx.clientName || clientName).catch((err) => {
-      console.warn("⚠️ Native pushOutgoings error:", err.message);
-    });
-    syncExpenseBreakdownToClientSheetNative(sheets, supaCtx.clientName || clientName).catch((err) => {
-      console.warn("⚠️ Native syncExpenseBreakdown error:", err.message);
-    });
+    const targetClient = supaCtx.clientName || clientName;
+    const runSeq = async () => {
+      try {
+        await pushOutgoingsToClientSheetNative(sheets, targetClient);
+      } catch (err) {
+        console.warn("⚠️ Native pushOutgoings error:", err.message);
+      }
+      try {
+        await syncExpenseBreakdownToClientSheetNative(sheets, targetClient);
+      } catch (err) {
+        console.warn("⚠️ Native syncExpenseBreakdown error:", err.message);
+      }
+      try {
+        const { flushImmediateAndScheduleBackgroundClientRecomputes } = await import("./masterEngineService.js");
+        await flushImmediateAndScheduleBackgroundClientRecomputes();
+      } catch (_) {}
+    };
+    try {
+      const { waitUntil } = await import("@vercel/functions");
+      if (typeof waitUntil === "function") {
+        waitUntil(runSeq());
+      } else {
+        await runSeq();
+      }
+    } catch (_) {
+      await runSeq();
+    }
   } else {
     const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
     if (webAppUrl) {
@@ -3103,6 +3125,12 @@ export async function handleClassifyPLCategory(sheets, {
       }
     }
   }
+
+  await invalidatePmaClientCache(
+    supaCtx?.clientSheetId || null,
+    supaCtx?.masterSheetId || masterSheetId || null,
+    ["outgoings", "expenses", "cash", "views"]
+  ).catch(() => {});
 
   return {
     success: true,
@@ -3423,6 +3451,12 @@ export async function handleUpdatePartPaidDate(sheets, {
       details: `Updated part-paid invoice expected payment date to ${formattedNewDate} (${newDaysToPay} days to pay) on Confirmed row ${rowNumber} slot ${slot}.`
     });
 
+    await invalidatePmaClientCache(
+      clientSheetId || null,
+      masterSheetId || null,
+      ["jobs", "invoices", "outgoings", "cash", "views"]
+    ).catch(() => {});
+
     return {
       success: true,
       itemType: "invoice",
@@ -3522,6 +3556,12 @@ export async function handleUpdatePartPaidDate(sheets, {
       clientName: clientName || "Unknown",
       details: `Updated part-paid expense expected payment date to ${formattedNewDate} on Outgoings cell ${cellCoord}.`
     });
+
+    await invalidatePmaClientCache(
+      clientSheetId || null,
+      masterSheetId || null,
+      ["jobs", "invoices", "outgoings", "cash", "views"]
+    ).catch(() => {});
 
     return {
       success: true,

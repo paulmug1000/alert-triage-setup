@@ -338,7 +338,8 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
         console.log(`  ✅ Daily digest sent to ${user.email} (${userAlerts.length} alerts).`);
         results.sent.push({ email: user.email, alertsCount: userAlerts.length });
 
-        await logPmaActivity(sheets, acId, {
+        await logPmaActivity(sheets, {
+          automationCommanderSheetId: acId,
           user: "Pulse System",
           action: "Daily Digest Sent",
           summary: `Daily alert digest sent to ${user.email} (${userAlerts.length} alerts across ${clientSummaries.length} clients)`
@@ -618,7 +619,8 @@ export async function checkAndNotifyTabErrors({ sheets: providedSheets, automati
       });
       emailed = true;
       console.log(`🚨 [AMD Errors] Sent "${subject}" to ${recipient}: ${errorDetails.join("; ")}`);
-      await logPmaActivity(sheets, acId, {
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
         user: "Pulse System",
         action: "AMD Tab Error Alert Sent",
         summary: `${subject}: ${errorDetails.join("; ")}`,

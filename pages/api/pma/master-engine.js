@@ -185,7 +185,7 @@ export default async function handler(req, res) {
         "outgoings",
         "views",
         "cash",
-      ]).catch(() => {});
+      ]).catch(() => { });
       await logPmaActivity(sheets, {
         automationCommanderSheetId: acId,
         clientName: cleanClient,
@@ -373,7 +373,7 @@ export default async function handler(req, res) {
             "outgoings",
             "views",
             "cash",
-          ]).catch(() => {})
+          ]).catch(() => { })
         );
       }
       scheduleBackgroundWork_(
@@ -405,20 +405,20 @@ export default async function handler(req, res) {
     }
 
     if (action === "sync_clock_config") {
-      await getSupabaseClockStatusAndSyncConfig(sessionUser.email || "Admin");
+      await getSupabaseClockStatusAndSyncConfig(sessionUser?.email || "Admin");
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, status });
     }
 
     if (action === "set_clock_enabled") {
       const enabled = Boolean(req.body?.enabled);
-      await setSupabaseClockEnabled(enabled, sessionUser.email || "Admin");
+      await setSupabaseClockEnabled(enabled, sessionUser?.email || "Admin");
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, status });
     }
 
     if (action === "trigger_clock_now") {
-      const triggerResult = await triggerSupabaseClockNow(sessionUser.email || "Admin");
+      const triggerResult = await triggerSupabaseClockNow(sessionUser?.email || "Admin");
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, triggerResult, status });
     }
@@ -435,7 +435,7 @@ export default async function handler(req, res) {
         clientName: cleanClient,
         triggerType: "manual",
         label,
-        createdBy: sessionUser.email || "Admin",
+        createdBy: sessionUser?.email || "Admin",
       });
       const sheets = await getSheetsClient();
       await logPmaActivity(sheets, {
@@ -473,7 +473,7 @@ export default async function handler(req, res) {
         targetRole,
         targetTabName,
         createPreRestoreBackup,
-        restoredBy: sessionUser.email || "Admin",
+        restoredBy: sessionUser?.email || "Admin",
       });
       const sheets = await getSheetsClient();
       await refreshPrecomputedAlerts_(sheets, acId);
@@ -509,7 +509,7 @@ export default async function handler(req, res) {
         uploadedCompressedBase64,
         clientNameOverride: req.body?.useSelectedClient ? cleanClient : null,
         labelOverride: label,
-        importedBy: sessionUser.email || "Admin",
+        importedBy: sessionUser?.email || "Admin",
       });
 
       let restoreResult = null;
@@ -520,7 +520,7 @@ export default async function handler(req, res) {
           targetRole,
           targetTabName,
           createPreRestoreBackup,
-          restoredBy: sessionUser.email || "Admin",
+          restoredBy: sessionUser?.email || "Admin",
         });
       }
 
@@ -551,7 +551,7 @@ export default async function handler(req, res) {
       const snapshotId = String(req.body?.snapshotId || "").trim();
       const deleted = await deleteClientSnapshot({
         snapshotId,
-        deletedBy: sessionUser.email || "Admin",
+        deletedBy: sessionUser?.email || "Admin",
       });
       const backupList = await listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient });
       return res.status(200).json({ success: true, ...deleted, ...backupList });
@@ -563,7 +563,7 @@ export default async function handler(req, res) {
           autoDailyEnabled: req.body?.autoDailyEnabled,
           retentionDays: req.body?.retentionDays,
         },
-        sessionUser.email || "Admin"
+        sessionUser?.email || "Admin"
       );
       const backupList = await listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient });
       return res.status(200).json({ success: true, ...backupList, policy });
@@ -572,7 +572,7 @@ export default async function handler(req, res) {
     if (action === "run_daily_backup_sweep") {
       const sweepResult = await runDailyAutoBackupSweep({
         force: true,
-        triggeredBy: sessionUser.email || "Admin",
+        triggeredBy: sessionUser?.email || "Admin",
       });
       const backupList = await listClientSnapshots({ clientName: req.body?.allClients ? null : cleanClient });
       return res.status(200).json({ success: true, sweepResult, ...backupList });

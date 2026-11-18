@@ -1312,7 +1312,7 @@ export default function ClientSettingsView({
 
       const data = await res.json();
       if (data.success) {
-        setSaveSuccessMsg("✓ All settings saved successfully to sheets and cache");
+        setSaveSuccessMsg(effectiveIsAdmin ? "✓ All settings saved successfully to sheets and cache" : "All settings saved successfully");
         setIsDirty(false);
         setInitialSettingsSnapshot(JSON.stringify(settings));
         setLastSyncedAt(data.savedAt || new Date().toISOString());
@@ -1383,7 +1383,10 @@ export default function ClientSettingsView({
 
   // KPI reset to system defaults handler
   const handleResetKpi = async () => {
-    if (!window.confirm("Are you sure you want to reset KPI colouring rules to system defaults? This will restore the live template formula.")) {
+    if (!window.confirm(effectiveIsAdmin
+      ? "Are you sure you want to reset KPI colouring rules to system defaults? This will restore the live template formula."
+      : "Are you sure you want to reset KPI colouring rules to system defaults?"
+    )) {
       return;
     }
     await handleSave({ resetKpiToParent: true });
@@ -1561,7 +1564,7 @@ export default function ClientSettingsView({
         }
       }));
       setShowBankModal(false);
-      setBankAccountsSuccess(`Updated non-cash bank accounts list (${tempSelectedBankAccounts.length} selected). Remember to click "Save changes" to persist to sheets.`);
+      setBankAccountsSuccess(`Updated non-cash bank accounts list (${tempSelectedBankAccounts.length} selected). Remember to click "Save changes" to ${effectiveIsAdmin ? "persist to sheets" : "save your updates"}.`);
     } else {
       updateSettingsField(prev => ({
         ...prev,
@@ -1572,7 +1575,7 @@ export default function ClientSettingsView({
         }
       }));
       setShowBankModal(false);
-      setBankAccountsSuccess(`Updated bank accounts list (${tempSelectedBankAccounts.length} selected). Remember to click "Save changes" to persist to sheets.`);
+      setBankAccountsSuccess(`Updated bank accounts list (${tempSelectedBankAccounts.length} selected). Remember to click "Save changes" to ${effectiveIsAdmin ? "persist to sheets" : "save your updates"}.`);
     }
   };
 
@@ -1825,7 +1828,7 @@ export default function ClientSettingsView({
         }
       }));
 
-      setCrmTestSuccessMsg("✓ Settings applied and preview refreshed from Google Sheets!");
+      setCrmTestSuccessMsg(effectiveIsAdmin ? "✓ Settings applied and preview refreshed from Google Sheets!" : "Settings applied and preview refreshed");
       setTimeout(() => setCrmTestSuccessMsg(""), 6000);
     } catch (err) {
       setCrmTestErrorMsg(err.message || "Failed to test CRM mappings");
@@ -2579,7 +2582,7 @@ export default function ClientSettingsView({
               type="button"
               onClick={() => fetchSettings(true)}
               disabled={!selectedClientName || loading || saving}
-              title={selectedClientName ? "Bypass cache and reload fresh data directly from Google Sheets" : "Select a client first"}
+              title={selectedClientName ? (effectiveIsAdmin ? "Bypass cache and reload fresh data directly from Google Sheets" : "Bypass cache and reload latest settings") : "Select a client first"}
               style={{
                 padding: "7px 12px",
                 fontSize: "12px",
@@ -2595,7 +2598,7 @@ export default function ClientSettingsView({
                 opacity: selectedClientName ? 1 : 0.6
               }}
             >
-              {loading ? <Spinner size={12} color="#0066CC" /> : "↻"} Reload sheets
+              {loading ? <Spinner size={12} color="#0066CC" /> : "↻"} {effectiveIsAdmin ? "Reload sheets" : "Reload settings"}
             </button>
 
             {isDirty && (
@@ -4028,8 +4031,8 @@ export default function ClientSettingsView({
                                 className="client-settings-bank-row"
                               >
                                 <div className="client-settings-bank-row-header">
-                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#64748B", fontFamily: "monospace", minWidth: "52px" }}>
-                                    #{idx + 1} <span style={{ fontSize: "10px", color: "#94A3B8" }}>(H{cellRow})</span>
+                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#64748B", fontFamily: "monospace", minWidth: effectiveIsAdmin ? "52px" : "28px" }}>
+                                    #{idx + 1}{effectiveIsAdmin && <span style={{ fontSize: "10px", color: "#94A3B8" }}> (H{cellRow})</span>}
                                   </span>
 
                                   {matchDetail?.id && (
@@ -4045,7 +4048,7 @@ export default function ClientSettingsView({
                                         borderRadius: "4px",
                                         whiteSpace: "nowrap"
                                       }}
-                                      title={`Accounting Tool ID stored in KeyInfo!I${cellRow}`}
+                                      title={effectiveIsAdmin ? `Accounting Tool ID stored in KeyInfo!I${cellRow}` : `Accounting tool ID: ${matchDetail.id}`}
                                     >
                                       ID: {matchDetail.id}
                                     </span>
@@ -4190,7 +4193,7 @@ export default function ClientSettingsView({
                             Non-cash bank accounts
                           </h5>
                           <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
-                            Accounts (e.g. corporate credit cards, Capital on Tap, or loan cards) tracked strictly for matching and clearing unreconciled P&amp;L additions. Transactions from these accounts are never added to the main cash flow bank reconciliation. Names in KeyInfo!H23:H28, Accounting Tool IDs in KeyInfo!I23:I28.
+                            Accounts (e.g. corporate credit cards, Capital on Tap, or loan cards) tracked strictly for matching and clearing unreconciled P&amp;L additions. Transactions from these accounts are never added to the main cash flow bank reconciliation.{effectiveIsAdmin ? " Names in KeyInfo!H23:H28, Accounting Tool IDs in KeyInfo!I23:I28." : ""}
                           </p>
                           {renderCellRef("KeyInfo!H23:I28")}
                         </div>
@@ -4250,8 +4253,8 @@ export default function ClientSettingsView({
                                 className="client-settings-bank-row"
                               >
                                 <div className="client-settings-bank-row-header">
-                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#6B7280", minWidth: "55px" }}>
-                                    H{cellRow}:
+                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#6B7280", minWidth: effectiveIsAdmin ? "55px" : "28px" }}>
+                                    {effectiveIsAdmin ? `H${cellRow}:` : `#${idx + 1}`}
                                   </span>
                                   <span style={{ fontSize: "14px" }}>💳</span>
                                   {matchDetail?.id && (
@@ -4517,9 +4520,11 @@ export default function ClientSettingsView({
                             </option>
                           ))}
                         </select>
-                        <div style={{ fontSize: "11px", color: "#64748B", marginTop: "6px" }}>
-                          Stored in Master Sheet cell <code style={{ background: "#F1F5F9", padding: "1px 4px", borderRadius: "4px" }}>InvAppList!F1</code>
-                        </div>
+                        {effectiveIsAdmin && (
+                          <div style={{ fontSize: "11px", color: "#64748B", marginTop: "6px" }}>
+                            Stored in Master Sheet cell <code style={{ background: "#F1F5F9", padding: "1px 4px", borderRadius: "4px" }}>InvAppList!F1</code>
+                          </div>
+                        )}
                       </div>
 
                       <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: "8px", padding: "14px 18px" }}>
@@ -4994,12 +4999,12 @@ export default function ClientSettingsView({
                         {testingCrm ? (
                           <>
                             <span style={{ display: "inline-block", width: "12px", height: "12px", border: "2px solid #0066CC", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                            <span>Recalculating sheet...</span>
+                            <span>{effectiveIsAdmin ? "Recalculating sheet..." : "Updating preview..."}</span>
                           </>
                         ) : (
                           <>
                             <span>⚡</span>
-                            <span>Apply &amp; Test Mappings</span>
+                            <span>Apply &amp; test mappings</span>
                           </>
                         )}
                       </button>
@@ -5059,7 +5064,7 @@ export default function ClientSettingsView({
                                     <span style={{ fontWeight: "700", color: "#0F172A", fontSize: "12.5px" }}>
                                       {f.label}
                                     </span>
-                                    {showCellRefs && (
+                                    {effectiveIsAdmin && showCellRefs && (
                                       <span style={{ fontSize: "10px", color: "#94A3B8", fontFamily: "monospace" }}>
                                         {f.colLetter} / {f.crmColLetter}
                                       </span>
@@ -5154,7 +5159,7 @@ export default function ClientSettingsView({
                           {displayedMappedJobs.length === 0 ? (
                             <tr>
                               <td colSpan={13} style={{ padding: "36px", textAlign: "center", color: "#94A3B8", fontStyle: "italic" }}>
-                                No deals mapped yet or no raw rows found in DataFromCRM.
+                                {effectiveIsAdmin ? "No deals mapped yet or no raw rows found in DataFromCRM." : "No deals mapped yet or no raw CRM rows found."}
                               </td>
                             </tr>
                           ) : (
@@ -5229,12 +5234,12 @@ export default function ClientSettingsView({
                         {testingCrm ? (
                           <>
                             <span style={{ display: "inline-block", width: "12px", height: "12px", border: "2px solid #0066CC", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                            <span>Recalculating sheet...</span>
+                            <span>{effectiveIsAdmin ? "Recalculating sheet..." : "Updating preview..."}</span>
                           </>
                         ) : (
                           <>
                             <span>⚡</span>
-                            <span>Apply &amp; Test Definitions</span>
+                            <span>Apply &amp; test definitions</span>
                           </>
                         )}
                       </button>

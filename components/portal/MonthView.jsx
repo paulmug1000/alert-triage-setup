@@ -89,7 +89,7 @@ export default function MonthView({
         >
           <div style={{ fontSize: "36px", marginBottom: "12px" }}>⚠️</div>
           <h3 style={{ margin: "0 0 8px 0", color: "#991b1b", fontSize: "1.2rem", fontWeight: 700 }}>
-            Unable to Load Client Data
+            Unable to load data
           </h3>
           <p style={{ margin: "0 0 1.25rem 0", color: "#64748b", fontSize: "14px" }}>
             {error}

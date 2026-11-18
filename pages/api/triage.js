@@ -288,15 +288,42 @@ export default async function handler(req, res) {
       delete_invoice_from_pulse: ["invoices", "jobs", "cash"],
       eom_add_zero_budget_category: ["budget"],
       set_recon_month_ready: ["outgoings", "expenses", "cash", "views"],
-      sync_client_expense_breakdown: ["outgoings", "expenses", "cash", "views"]
+      sync_client_expense_breakdown: ["outgoings", "expenses", "cash", "views"],
+      update_part_paid_date: ["invoices", "jobs", "cash"],
+      eom_push_outgoings: ["outgoings", "expenses", "cash", "views"],
+      eom_save_cash_balance: ["cash"],
+      eom_mark_month_actual: ["cash", "views"],
+      eom_mark_nb_exclude: ["nbtofind", "views"],
+      process_payroll_document: ["salaries", "outgoings", "cash"],
+      resolve_payroll_import_forecast: ["salaries", "outgoings", "cash"],
+      update_cash_adjustment: ["cash", "views"],
+      toggle_cash_cell_resolved: ["cash", "views"],
+      update_cash_cell_note: ["cash", "views"],
+      apply_cash_future_offset: ["cash", "views"],
+      batch_match_cashflow_actuals: ["cash", "views"],
     };
 
     const originalJson = res.json.bind(res);
     res.json = function (data) {
       if (data && data.success && !data.deferredSheetWrite && PMA_MUTATION_SCOPES[action]) {
-        const cId = req.body?.clientSheetId;
-        const mId = req.body?.masterSheetId;
-        invalidatePmaClientCache(cId, mId, PMA_MUTATION_SCOPES[action]).catch(err => {
+        const scopeList = PMA_MUTATION_SCOPES[action];
+        const rawCId = req.body?.clientSheetId || req.body?.payrollClientSheetId || "";
+        const rawMId = req.body?.masterSheetId || req.body?.timeMasterSheetId || "";
+        const fallbackClientName = req.body?.clientName || "";
+        (async () => {
+          let cId = rawCId;
+          let mId = rawMId;
+          if (!cId && fallbackClientName) {
+            const supaCtx = await resolveSupabaseSheetContext({ clientName: fallbackClientName }).catch(() => null);
+            if (supaCtx) {
+              cId = supaCtx.clientSheetId || "";
+              mId = mId || supaCtx.masterSheetId || "";
+            }
+          }
+          if (cId || mId) {
+            await invalidatePmaClientCache(cId, mId, scopeList);
+          }
+        })().catch(err => {
           console.warn(`[PMA Invalidation] Error for ${action}:`, err?.message);
         });
       }
@@ -327,6 +354,7 @@ export default async function handler(req, res) {
       "check_claude_budget",
       "get_sweep_schedule",
       "get_agent_run_progress",
+      "get_active_agent_run",
       "get_all_clients",
       "check_bank_reconciliation_status",
       "get_assigned_expenses",
@@ -484,6 +512,20 @@ export default async function handler(req, res) {
         "eom_reorder_default_tasks",
         "eom_seed_default_tasks",
         "eom_save_reporting_config",
+        "eom_get_reporting_data",
+        "eom_get_overhead_expenses",
+        "eom_preview_overhead_expenses",
+        "eom_add_zero_budget_category",
+        "eom_confirm_overhead_expenses",
+        "eom_get_narrative_workbench",
+        "eom_generate_narrative",
+        "eom_save_narrative_draft",
+        "eom_apply_narrative_to_deck",
+        "eom_preview_mgmt_report",
+        "identify_time_client",
+        "process_time_document",
+        "get_agent_run_progress",
+        "get_active_agent_run",
         "eom_test_reporting_webapp",
         "eom_run_reporting_action",
         "eom_save_chart_ref",
@@ -1419,7 +1461,7 @@ export default async function handler(req, res) {
     } else if (action === "analyze_alert") {
       return await handleAnalyzeAlert(req, res, sheets);
     } else if (action === "accept_option") {
-      return await handleAcceptOption(req, res, sheets);
+      return await handleAcceptOption(req, res, sheets, sessionUser);
     } else if (action === "delete_job") {
       return await handleDeleteJob(req, res, sheets);
     } else if (action === "analyze_noaction_flag") {

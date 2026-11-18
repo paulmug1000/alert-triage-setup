@@ -1599,6 +1599,7 @@ function getViewTitle(key) {
 import { getSsrSessionUser, getSsrInitialPortalData } from "../../services/ssrSession";
 import { redisClient, ensureRedisConnected } from "../../services/redisClient";
 import { getClientSetupStatusForPortal } from "../../services/setupService";
+import { isUserAuthorizedForClient, maskResponseSheetIdsForUser } from "../../services/userPermissions";
 
 export async function getServerSideProps(context) {
   const sessionUser = getSsrSessionUser(context.req);
@@ -1616,6 +1617,10 @@ export async function getServerSideProps(context) {
       ssrPortalData = await getSsrInitialPortalData(context.req, sessionUser, context.query);
 
       const queryClient = typeof context.query?.client === "string" ? context.query.client.trim() : "";
+      const authorizedQueryClient =
+        queryClient && (sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, queryClient))
+          ? queryClient
+          : "";
       const isPreview = context.query?.preview === "setup";
       const assigned = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       const singleAssigned =
@@ -1623,7 +1628,7 @@ export async function getServerSideProps(context) {
           ? String(assigned[0]).trim()
           : "";
       const candidateClientName =
-        queryClient || ssrPortalData.initialSelectedClient?.clientName || singleAssigned;
+        authorizedQueryClient || ssrPortalData.initialSelectedClient?.clientName || singleAssigned;
 
       if (candidateClientName) {
         let parsedSetup = ssrPortalData.selectedSetupConfig || null;
@@ -1658,12 +1663,14 @@ export async function getServerSideProps(context) {
   return {
     props: {
       initialUser: sessionUser || null,
-      initialSetupClient,
-      initialSetupStatus,
+      initialSetupClient: sessionUser ? maskResponseSheetIdsForUser(initialSetupClient, sessionUser) : initialSetupClient,
+      initialSetupStatus: sessionUser ? maskResponseSheetIdsForUser(initialSetupStatus, sessionUser) : initialSetupStatus,
       initialClients: ssrPortalData.initialClients,
       initialSelectedClient: ssrPortalData.initialSelectedClient,
-      initialPayload: ssrPortalData.initialPayload,
-      initialPerformanceData: ssrPortalData.initialPerformanceData,
+      initialPayload: sessionUser ? maskResponseSheetIdsForUser(ssrPortalData.initialPayload, sessionUser) : ssrPortalData.initialPayload,
+      initialPerformanceData: sessionUser
+        ? maskResponseSheetIdsForUser(ssrPortalData.initialPerformanceData, sessionUser)
+        : ssrPortalData.initialPerformanceData,
     },
   };
 }

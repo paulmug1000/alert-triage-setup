@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "build:gas": "node scripts/build-gas-bundle.mjs",
+    "prebuild": "node scripts/build-gas-bundle.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint --dir pages --dir components --dir hooks --dir contexts --dir services"

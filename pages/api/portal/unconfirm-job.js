@@ -13,6 +13,7 @@ import {
   normalizeLikelihoodInput,
   formatLikelihood
 } from "../../../utils/helpers.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 function colToLetter(colIndex) {
   let temp, letter = "";
@@ -564,5 +565,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("❌ /api/portal/unconfirm-job error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  } finally {
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
   }
 }

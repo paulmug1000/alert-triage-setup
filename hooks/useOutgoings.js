@@ -203,7 +203,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
             const now = Date.now();
             if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
               for (const [k, exp] of Object.entries(parsed)) {
-                if (typeof exp === "number" && exp > now) {
+                if (typeof exp === "number" && (now - exp) < 15 * 60 * 1000) {
                   activeLocalAssignedIds.add(k);
                   const rawId = k.includes("::") ? k.split("::").pop() : k;
                   activeLocalAssignedIds.add(rawId);

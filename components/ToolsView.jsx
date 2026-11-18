@@ -156,9 +156,8 @@ export default function ToolsView({
   // --- EOM DATA LOADING & EFFECTS ---
 
   useEffect(() => {
-    if (!automationCommanderSheetId) return;
     let cancelled = false;
-    const bootstrapKey = `${automationCommanderSheetId}::${eomMonthKey || ""}`;
+    const bootstrapKey = `${automationCommanderSheetId || "default"}::${eomMonthKey || ""}`;
     const cached = _eomBootstrapCacheByMonth.get(bootstrapKey);
 
     if (cached) {
@@ -556,10 +555,7 @@ export default function ToolsView({
     );
     const targetTaskId = linkedTask?.taskId || (typeof clientName === "object" ? clientName.taskId : taskId);
     if (!targetTaskId) return;
-    setEomStatusOverrides(prev => {
-      const withoutThis = (prev || []).filter(s => !(s.clientName === targetClient && s.taskId === targetTaskId));
-      return [...withoutThis, { clientName: targetClient, taskId: targetTaskId, status: "done" }];
-    });
+    handleEomStatusChange(targetTaskId, "done", targetClient);
   };
 
   const handleEomMarkActual = (taskId, targetClientName = eomDetailClient) => {
@@ -2151,7 +2147,7 @@ export default function ToolsView({
                         <span onClick={t.templateId ? undefined : () => { setEomEditingNameFor(t.taskId); setEomNameDraft(t.name); }}
                           title={t.templateId ? (isAdmin ? "Shared template - edit via Manage Templates" : "Shared task") : "Click to rename"}
                           style={{ cursor: t.templateId ? "default" : "pointer" }}>
-                          {t.name}
+                          {isAdmin ? t.name : sanitizeSpreadsheetTerms(t.name)}
                         </span>
                       )}
                       {t.templateId && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#888", fontWeight: "400" }}>(shared)</span>}
@@ -2296,7 +2292,7 @@ export default function ToolsView({
                 <summary style={{ cursor: "pointer", color: "#888" }}>{inactiveTasks.length} inactive task{inactiveTasks.length !== 1 ? "s" : ""}</summary>
                 {inactiveTasks.map(t => (
                   <div key={t.taskId} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", color: "#aaa" }}>
-                    <span>{t.name}</span>
+                    <span>{isAdmin ? t.name : sanitizeSpreadsheetTerms(t.name)}</span>
                     <button disabled={eomActionBusy === `toggle_${t.taskId}`} onClick={() => handleEomToggleTaskActive(t)} style={{ background: "none", border: "none", color: "#0066cc", cursor: eomActionBusy === `toggle_${t.taskId}` ? "default" : "pointer", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
                       {eomActionBusy === `toggle_${t.taskId}` ? <><Spinner size={10} /> Reactivating...</> : "Reactivate"}
                     </button>
@@ -2354,7 +2350,7 @@ export default function ToolsView({
                             ))
                           ) : (
                             (eomDefaultTasks || []).filter(t => t.active).map(t => (
-                              <option key={t.defaultTaskId} value={t.templateId || `custom_def:${t.defaultTaskId}`}>{t.name}</option>
+                              <option key={t.defaultTaskId} value={t.templateId || `custom_def:${t.defaultTaskId}`}>{sanitizeSpreadsheetTerms(t.name)}</option>
                             ))
                           )}
                           {isAdmin && <option value="__new__">+ Create new template...</option>}

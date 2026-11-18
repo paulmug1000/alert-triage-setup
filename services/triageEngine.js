@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { waitUntil } from "@vercel/functions";
+import { invalidatePmaClientCache } from "./cacheService.js";
 import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter, applySheetFontFormat, sanitizeFormulaInput } from "./sheetsClient.js";
 import {
   buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory,
@@ -582,7 +583,7 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
       const [{ data: dbClients, error: cErr }, { data: schedRows }, { data: dcaRows }] = await Promise.all([
         sb
           .from("clients")
-          .select("client_name, status, metadata, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url, client_script_id, auto_updates_row_index")
+          .select("client_name, normalized_key, status, metadata, client_mode, master_mode, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url, client_script_id, auto_updates_row_index")
           .order("client_name", { ascending: true }),
         sb.from("sync_schedules").select("*"),
         sb
@@ -612,10 +613,19 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
           if (st === "inactive" || st === "archived" || st === "suspended") continue;
 
           const clientName = String(c.client_name || "").trim();
+          const normKey = String(
+            c.normalized_key || clientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")
+          ).trim();
           const clientSheetUrl = c.client_sheet_url || (c.client_sheet_id ? `https://docs.google.com/spreadsheets/d/${c.client_sheet_id}` : "");
           const masterSheetUrl = c.master_sheet_url || (c.master_sheet_id ? `https://docs.google.com/spreadsheets/d/${c.master_sheet_id}` : "");
-          const clientId = extractSheetIdFromUrl(clientSheetUrl || c.client_sheet_id) || String(c.client_sheet_id || "").trim();
-          const masterId = extractSheetIdFromUrl(masterSheetUrl || c.master_sheet_id) || String(c.master_sheet_id || "").trim();
+          const clientId =
+            extractSheetIdFromUrl(clientSheetUrl || c.client_sheet_id) ||
+            String(c.client_sheet_id || "").trim() ||
+            (c.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "");
+          const masterId =
+            extractSheetIdFromUrl(masterSheetUrl || c.master_sheet_id) ||
+            String(c.master_sheet_id || "").trim() ||
+            (c.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "");
 
           if (!clientName || !clientId || !masterId) continue;
 
@@ -8200,7 +8210,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
   }
 }
 
-export async function handleAcceptOption(req, res, sheets) {
+export async function handleAcceptOption(req, res, sheets, sessionUserArg = null) {
   const { alert, option, automationCommanderSheetId } = req.body;
 
   if (!alert || !option || !automationCommanderSheetId) {
@@ -8240,6 +8250,20 @@ export async function handleAcceptOption(req, res, sheets) {
         });
       } catch (e) {
         dataSnapshot = JSON.stringify({ alertType: alert.type || alert.flagType || "", flagType: alert.flagType || "", masterSheetId: alert.masterSheetId || "" });
+      }
+
+      const callerUser = sessionUserArg || getSessionUser(req);
+      if (
+        mr?.clientName &&
+        !req.isSystemAuthorized &&
+        callerUser &&
+        !callerUser.isAdmin &&
+        !isUserAuthorizedForClient(callerUser, mr.clientName)
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden: Not authorized to modify alerts for this client.",
+        });
       }
 
       if (mr && (!mr.clientName || !alert.clientName || matchesClientName(alert.clientName, mr.clientName))) {
@@ -8857,7 +8881,7 @@ export async function handleAcceptOption(req, res, sheets) {
       if (isCreatedRetainer) {
         provisionRetainerScheduleInBackground(sheets, {
           clientSheetId: alert.clientId,
-          masterSheetId: alert.masterId,
+          masterSheetId: alert.masterSheetId || alert.masterId,
           clientName: alert.clientName || "",
           parentRowNum: newRow,
           client: option?.newJobData?.clientName || "",
@@ -9586,6 +9610,12 @@ export async function handleAcceptOption(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
+    await invalidatePmaClientCache(
+      alert?.clientId || alert?.clientSheetId || null,
+      alert?.masterSheetId || alert?.masterId || null,
+      ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]
+    ).catch(() => {});
+
     return res.status(200).json({
       success: true,
       message: "Option accepted and written to sheet",
@@ -9772,6 +9802,12 @@ export async function handleDeleteJob(req, res, sheets) {
         rowsBlanked: rowsToBlank.length
       }
     }).catch(e => console.error("PMA log failed:", e));
+
+    await invalidatePmaClientCache(
+      clientSheetId || null,
+      alert?.masterSheetId || alert?.masterId || null,
+      ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]
+    ).catch(() => {});
 
     return res.status(200).json({
       success: true,

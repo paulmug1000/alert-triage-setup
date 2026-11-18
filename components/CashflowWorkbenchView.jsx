@@ -2278,12 +2278,17 @@ export default function CashflowWorkbenchView({
     }
   };
 
-  // Register action triggers with parent header bar
+  // Register action triggers with parent header bar via always-fresh refs (prevents stale bankTxns=[] closures)
+  const updateTxnsRef = useRef(handleUpdateBankTransactions);
+  const restartMonthRef = useRef(handleRestartMonth);
+  updateTxnsRef.current = handleUpdateBankTransactions;
+  restartMonthRef.current = handleRestartMonth;
+
   useEffect(() => {
     if (onRegisterActions) {
       onRegisterActions({
-        onUpdateBankTransactions: () => handleUpdateBankTransactions(),
-        onRestartMonth: () => handleRestartMonth(),
+        onUpdateBankTransactions: () => updateTxnsRef.current?.(),
+        onRestartMonth: () => restartMonthRef.current?.(),
         updatingTxns,
         fetchingApi,
         disabled: updatingTxns || fetchingApi

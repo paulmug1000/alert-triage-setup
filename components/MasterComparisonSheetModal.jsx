@@ -451,9 +451,8 @@ export default function MasterComparisonSheetModal({
 
   useEffect(() => {
     const { r, c } = selectedCell;
-    const note = gridData.notesGrid?.[`${r}:${c}`];
     const disp = gridData.valuesGrid?.[r]?.[c] ?? "";
-    setFormulaBarDraft(note ? String(note) : String(disp));
+    setFormulaBarDraft(String(disp));
     setEditingTextCell(false);
   }, [selectedCell, gridData]);
 

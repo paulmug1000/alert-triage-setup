@@ -3,11 +3,12 @@ import { getSheetsClient, extractSheetIdFromUrl, sanitizeFormulaInput } from "./
 import {
   readAlertMemory, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow, appendAlertMemoryRowsBatch,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
-  extractCrmComparisonSnapshot, deleteAlertMemoryRows, updateHandledAlertHash, updateHandledAlertHashesBatch,
-  readHandledAlertHashes
+  extractCrmComparisonSnapshot, deleteAlertMemoryRows, deleteAlertMemoryEntryByHash,
+  updateHandledAlertHash, updateHandledAlertHashesBatch, readHandledAlertHashes
 } from "./alertMemory.js";
 import { createHash } from "crypto";
 import { logPmaActivity } from "./pmaLogger.js";
+import { isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, canAccessPma, canViewSalariesAndDividends, DEFAULT_AC_SHEET_ID } from "./userPermissions.js";
 import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat, KNOWN_PROACTIVE_ALERT_TYPES } from "../utils/helpers.js";
@@ -880,10 +881,12 @@ export async function handleRecordDecision(req, res, sheets) {
       sanitizeFormulaInput(String(decision.action || "")),
       sanitizeFormulaInput(String(decision.notes || "")),
     ];
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H", valueInputOption: "USER_ENTERED",
-      requestBody: { values: [logRow] },
-    });
+    if (!(await isSupabaseControlPlaneActive()) || shouldDualWriteLegacyControlPlaneSheets()) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H", valueInputOption: "USER_ENTERED",
+        requestBody: { values: [logRow] },
+      });
+    }
 
     if (decision.action === "ACCEPTED") {
       try {
@@ -1607,6 +1610,8 @@ export async function handleUnignoreAlert(req, res, sheets) {
       await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
         ...memoryRow, status: "cached", ignoreReason: "",
       });
+    } else if (await isSupabaseControlPlaneActive()) {
+      await deleteAlertMemoryEntryByHash(sheets, automationCommanderSheetId, fingerprintHash);
     } else {
       await deleteAlertMemoryRows(sheets, automationCommanderSheetId, [memoryRow.rowIndex]);
     }

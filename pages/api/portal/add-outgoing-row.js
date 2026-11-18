@@ -4,6 +4,7 @@ import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession }
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache, del2TierCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -176,5 +177,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("❌ /api/portal/add-outgoing-row error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  } finally {
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
   }
 }

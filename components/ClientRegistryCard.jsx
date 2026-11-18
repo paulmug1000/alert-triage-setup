@@ -455,18 +455,32 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
 
     const externalUrl = (col.type === "url" || col.type === "folder") ? buildExternalUrl(val, col.type) : "";
 
+    const isExistingClientName =
+      col.key === "client_name" && Boolean(row?.id && !String(row.id).startsWith("__new_"));
+
     return (
       <div style={{ display: "flex", alignItems: "center", gap: "4px", maxWidth: col.width }}>
         <input
           type="text"
           value={val}
-          title={val || undefined}
+          readOnly={isExistingClientName}
+          title={
+            isExistingClientName
+              ? "Client names are locked after creation because downstream data and credentials key by client name"
+              : (val || undefined)
+          }
           placeholder={col.placeholder || ""}
-          onChange={(e) => handleFieldChange(rowKey, col.key, e.target.value)}
+          onChange={(e) => {
+            if (isExistingClientName) return;
+            handleFieldChange(rowKey, col.key, e.target.value);
+          }}
           style={{
             ...inputBaseStyle,
             minWidth: 0,
             flex: 1,
+            backgroundColor: isExistingClientName ? "#f8fafc" : inputBaseStyle.backgroundColor || "#ffffff",
+            color: isExistingClientName ? "#475569" : undefined,
+            cursor: isExistingClientName ? "not-allowed" : undefined,
             fontFamily: col.type === "mono" ? "ui-monospace, SFMono-Regular, Menlo, monospace" : "inherit",
             fontWeight: col.key === "client_name" ? "600" : "400",
           }}

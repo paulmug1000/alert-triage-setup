@@ -34,9 +34,9 @@ export default function PortalShell({
     (!clientsLoaded &&
       Boolean(
         user &&
-          (user.isAdmin ||
-            user.role === "Admin" ||
-            (Array.isArray(user.assignedClients) && user.assignedClients.length > 1))
+        (user.isAdmin ||
+          user.role === "Admin" ||
+          (Array.isArray(user.assignedClients) && user.assignedClients.length > 1))
       ));
   const [openDropdown, setOpenDropdown] = useState(null); // 'perf' | 'cash' | 'keyData' | 'analysis' | 'user' | 'client' | null
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -136,7 +136,7 @@ export default function PortalShell({
     if (user?.isAdmin || user?.role === "ClientManager") {
       try {
         router.prefetch("/pma");
-      } catch {}
+      } catch { }
     }
   }, [router, user?.isAdmin, user?.role]);
 
@@ -927,7 +927,7 @@ export default function PortalShell({
                               )}
                             </div>
 
-                            {(!t.connected || t.needsReconnect) && (
+                            {!user?.isReadOnly && user?.role !== "Senior (Restricted)" && (!t.connected || t.needsReconnect) && (
                               <button
                                 type="button"
                                 onClick={() => {

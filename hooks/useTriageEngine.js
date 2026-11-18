@@ -86,8 +86,9 @@ export function useTriageEngine({
   const [clientsWithFlags, setClientsWithFlags] = useState(() => {
     if (typeof window !== "undefined") {
       try {
+        if (!user) return [];
         const stored = localStorage.getItem("pulse_cached_clients_with_flags");
-        return stored ? JSON.parse(stored) : [];
+        return stored ? scopeClients(JSON.parse(stored)) : [];
       } catch { return []; }
     }
     return [];
@@ -123,8 +124,9 @@ export function useTriageEngine({
   const [proactiveAlerts, setProactiveAlerts] = useState(() => {
     if (typeof window !== "undefined") {
       try {
+        if (!user) return [];
         const stored = localStorage.getItem("pulse_cached_proactive_alerts");
-        return stored ? JSON.parse(stored) : [];
+        return stored ? scopeProactive(JSON.parse(stored)) : [];
       } catch { return []; }
     }
     return [];
@@ -132,9 +134,10 @@ export function useTriageEngine({
   const [proactiveCountsByClient, setProactiveCountsByClient] = useState(() => {
     if (typeof window !== "undefined") {
       try {
+        if (!user) return {};
         const stored = localStorage.getItem("pulse_cached_proactive_alerts");
         if (stored) {
-          const parsed = JSON.parse(stored);
+          const parsed = scopeProactive(JSON.parse(stored));
           if (Array.isArray(parsed)) {
             const counts = {};
             parsed.forEach(a => { if (a?.clientName) counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
@@ -149,7 +152,7 @@ export function useTriageEngine({
   const [proactiveLoadedAt, setProactiveLoadedAt] = useState(() => {
     if (typeof window !== "undefined") {
       try {
-        return localStorage.getItem("pulse_cached_clients_with_flags") ? Date.now() : 0;
+        return user && localStorage.getItem("pulse_cached_clients_with_flags") ? Date.now() : 0;
       } catch { return 0; }
     }
     return 0;

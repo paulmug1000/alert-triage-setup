@@ -36,8 +36,14 @@ export const VALID_RECON_CATEGORIES = [
   "Transfer",
   "Corp tax",
   "VAT",
+  "Non-operating income",
+  "Non-operating expenses",
   "Other"
 ];
+
+function sortReconMonthTabsNewestFirst_(tabs) {
+  return [...(tabs || [])].sort((a, b) => String(b).localeCompare(String(a)));
+}
 
 const STOP_WORDS = new Set([
   "debit", "credit", "ref", "inv", "invoice", "invoices", "bill", "bills", "voided",
@@ -77,7 +83,8 @@ export function tokenizeText(text = "") {
     .replace(/[^a-z\s]/g, " ")
     .replace(/\b\d+\b/g, " ");
 
-  return clean.split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w));
+  const words = clean.split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w));
+  return [...new Set(words)];
 }
 
 /**
@@ -1049,7 +1056,28 @@ export function autoCategorizeTransaction(tx, learningMap = new Map()) {
     }
   }
 
-  // 1. Hardcoded high-confidence regex rules (only for outflows/transfers)
+  // 1. Learned Word Probability Match first (matching recon-script/Code.gs:186-213, strictly respecting cash direction)
+  const tokens = tokenizeText(combinedText);
+  let bestLearnedCat = null;
+  let highestProb = 0;
+
+  tokens.forEach(word => {
+    if (learningMap.has(word)) {
+      const match = learningMap.get(word);
+      if (isOutflow && match.category === "Revenue") return;
+      if (isInflow && !["Revenue", "Transfer", "Non-operating income", "Other"].includes(match.category)) return;
+      if (match.probability > highestProb && match.probability >= 0.65) {
+        highestProb = match.probability;
+        bestLearnedCat = match.category;
+      }
+    }
+  });
+
+  if (bestLearnedCat && highestProb >= 0.65) {
+    return { category: bestLearnedCat, confidence: highestProb, reason: `Learned (${Math.round(highestProb * 100)}%)` };
+  }
+
+  // 2. Fallback hardcoded regex rules (only for outflows/transfers)
   if (!isInflow) {
     if (/\b(sdds|hmrc paye|paye|hmrc Cumbernauld)\b/i.test(combinedText)) {
       return { category: "PAYE", confidence: 0.99, reason: "Rule: PAYE/SDDS" };
@@ -1069,27 +1097,6 @@ export function autoCategorizeTransaction(tx, learningMap = new Map()) {
     if (/\b(corp tax|corporation tax|hmrc ct)\b/i.test(combinedText)) {
       return { category: "Corp tax", confidence: 0.98, reason: "Rule: Corp Tax" };
     }
-  }
-
-  // 2. Learned Word Probability Match (strictly respecting cash direction)
-  const tokens = tokenizeText(combinedText);
-  let bestLearnedCat = null;
-  let highestProb = 0;
-
-  tokens.forEach(word => {
-    if (learningMap.has(word)) {
-      const match = learningMap.get(word);
-      if (isOutflow && match.category === "Revenue") return;
-      if (isInflow && !["Revenue", "Transfer", "Other"].includes(match.category)) return;
-      if (match.probability > highestProb && match.probability >= 0.70) {
-        highestProb = match.probability;
-        bestLearnedCat = match.category;
-      }
-    }
-  });
-
-  if (bestLearnedCat && highestProb >= 0.70) {
-    return { category: bestLearnedCat, confidence: highestProb, reason: `Learned (${Math.round(highestProb * 100)}%)` };
   }
 
   // 3. Fallback based on cash direction
@@ -1116,10 +1123,11 @@ export async function buildLearningMapFromReconSheet(reconSheetId, sheetsClient)
       fields: "sheets.properties.title"
     }));
 
-    const validTabs = (meta.data.sheets || [])
-      .map(s => s.properties.title)
-      .filter(t => /^\d{4}$/.test(t))
-      .slice(0, 6); // Take the latest 6 historical tabs
+    const validTabs = sortReconMonthTabsNewestFirst_(
+      (meta.data.sheets || [])
+        .map(s => s.properties.title)
+        .filter(t => /^\d{4}$/.test(t))
+    ).slice(0, 6); // Take the latest 6 historical tabs
 
     if (validTabs.length === 0) return learningMap;
 
@@ -1143,9 +1151,9 @@ export async function buildLearningMapFromReconSheet(reconSheetId, sheetsClient)
         // Skip £0.00 / Voided rows and direction-mismatched historical rows
         if (outVal === 0 && inVal === 0) return;
         if (outVal > 0 && inVal === 0 && cat === "Revenue") return;
-        if (inVal > 0 && outVal === 0 && !["Revenue", "Transfer", "Other"].includes(cat)) return;
+        if (inVal > 0 && outVal === 0 && !["Revenue", "Transfer", "Non-operating income", "Other"].includes(cat)) return;
 
-        const text = `${r[1] || ""} ${r[3] || ""} ${r[4] || ""} ${r[6] || ""}`;
+        const text = `${r[1] || ""} ${r[3] || ""} ${r[4] || ""} ${r[5] || ""} ${r[6] || ""}`;
         const tokens = tokenizeText(text);
 
         tokens.forEach(word => {
@@ -1370,10 +1378,11 @@ export async function enrichUnreconciledItemPredictions({
             spreadsheetId: cleanReconId,
             fields: "sheets.properties.title"
           }));
-          const validTabs = (meta.data.sheets || [])
-            .map(s => s.properties.title)
-            .filter(t => /^\d{4}$/.test(t))
-            .slice(0, 6);
+          const validTabs = sortReconMonthTabsNewestFirst_(
+            (meta.data.sheets || [])
+              .map(s => s.properties.title)
+              .filter(t => /^\d{4}$/.test(t))
+          ).slice(0, 6);
 
           if (validTabs.length === 0) return;
 
@@ -1399,8 +1408,8 @@ export async function enrichUnreconciledItemPredictions({
               const inVal = parseFloat(r[9]) || 0;
               if (outVal === 0 && inVal === 0) return;
               if (outVal > 0 && inVal === 0 && cat === "Revenue") return;
-              if (inVal > 0 && outVal === 0 && !["Revenue", "Transfer", "Other"].includes(cat)) return;
-              recordPrimaryObservation(r[3], r[4], r[6], cat, 1);
+              if (inVal > 0 && outVal === 0 && !["Revenue", "Transfer", "Non-operating income", "Other"].includes(cat)) return;
+              recordPrimaryObservation(r[3], r[4], `${r[5] || ""} ${r[6] || ""}`.trim(), cat, 1);
             });
           }
 
@@ -1813,7 +1822,7 @@ export async function autoReconcileClientBankTransactions({
     fields: "sheets.properties.title"
   }));
   const allTabs = (reconMeta.data.sheets || []).map(s => s.properties.title);
-  const monthlyTabs = allTabs.filter(t => /^\d{4}$/.test(t));
+  const monthlyTabs = sortReconMonthTabsNewestFirst_(allTabs.filter(t => /^\d{4}$/.test(t)));
 
   let targetTabs = [];
 
@@ -1998,19 +2007,17 @@ export async function autoReconcileClientBankTransactions({
       continue;
     }
 
-    // Save updated transactions and unreconciled items back to the Recon Sheet
-    await Promise.all([
-      syncReconBankTransactions({
-        reconSheetId: cleanReconId,
-        tabName,
-        transactions: updateResult.nextBankTxns
-      }),
-      syncReconUnreconciledItems({
-        reconSheetId: cleanReconId,
-        tabName,
-        unreconciledItems: updateResult.nextUnreconItems
-      })
-    ]);
+    // Save updated transactions and unreconciled items sequentially on the same YYMM tab
+    await syncReconBankTransactions({
+      reconSheetId: cleanReconId,
+      tabName,
+      transactions: updateResult.nextBankTxns
+    });
+    await syncReconUnreconciledItems({
+      reconSheetId: cleanReconId,
+      tabName,
+      unreconciledItems: updateResult.nextUnreconItems
+    });
 
     results.push({
       tabName,

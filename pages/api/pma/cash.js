@@ -4,6 +4,7 @@ import { getClients } from "../../../services/workspaces.js";
 import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
   // 1. Authenticate user
@@ -144,6 +145,8 @@ export default async function handler(req, res) {
     } catch (err) {
       console.error("Error in POST /api/pma/cash:", err);
       return res.status(500).json({ success: false, error: err.message || "Failed to save cash changes" });
+    } finally {
+      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
     }
   }
 

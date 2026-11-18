@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
 import { useResizableSheetColumns } from "../hooks/useResizableSheetColumns";
+import { downloadCsv } from "../utils/helpers";
 import {
   CLIENT_SHEET_TABS,
   CLIENT_SHEET_SPECS,
@@ -443,23 +444,12 @@ export default function ClientSheetModal({
   const handleExportCsv = () => {
     const values = gridData.valuesGrid || [];
     const lastRow = Math.min(values.length - 1, getLastActiveRowIdx(activeTab, values, spec));
-    const lines = [];
+    const rows = [];
     for (let r = 0; r <= lastRow; r++) {
       const row = values[r] || [];
-      const cols = visibleCols.map((c) => {
-        const disp = row[c] ?? "";
-        const s = String(disp).replace(/"/g, '""');
-        return `"${s}"`;
-      });
-      lines.push(cols.join(","));
+      rows.push(visibleCols.map((c) => row[c] ?? ""));
     }
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${clientName}_${activeTab}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadCsv(`${clientName}_${activeTab}.csv`, rows);
   };
 
   if (!isOpen) return null;

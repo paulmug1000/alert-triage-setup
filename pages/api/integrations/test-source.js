@@ -129,7 +129,8 @@ export default async function handler(req, res) {
           accessToken: gsAccessToken,
           tabName: tabName || null,
           clientKey,
-          isAdmin: Boolean(sessionUser.isAdmin)
+          isAdmin: Boolean(sessionUser.isAdmin),
+          allowServiceAccountFallback: Boolean(sessionUser?.isAdmin)
         });
         const availableTabs = (inspection.tabs || []).map(t => t.title || "");
         if (tabName && !availableTabs.includes(tabName)) {
@@ -186,12 +187,35 @@ export default async function handler(req, res) {
         });
       }
 
-      // Step 1: Obtain Microsoft OAuth token (from Vault or fallback to Azure App Credentials in X33:X35)
+      // Step 1: Obtain Microsoft OAuth token (refresh if expired/expiring, or fallback to Azure App Credentials in X33:X35)
       let accessToken = null;
       if (clientKey || masterSheetId) {
         const grant = await getIntegrationTokens({ clientKey, masterSheetId, tool: "excel" }).catch(() => null);
         if (grant && grant.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
-          accessToken = grant.tokens.accessToken;
+          const isExpiring = !grant.expiresAt || Date.now() > (grant.expiresAt - 300000);
+          if (isExpiring && grant.tokens.refreshToken) {
+            try {
+              const { refreshExcelTokens } = await import("../../../services/excelIntegrationService.js");
+              const refreshed = await refreshExcelTokens(grant.tokens.refreshToken, grant.metadata?.azureTenantId);
+              await updateRefreshedTokens({
+                clientKey: grant.clientKey || clientKey,
+                tool: "excel",
+                tokens: {
+                  ...grant.tokens,
+                  accessToken: refreshed.accessToken,
+                  refreshToken: refreshed.refreshToken || grant.tokens.refreshToken,
+                  expiresIn: refreshed.expiresIn,
+                  expiresAt: Date.now() + ((refreshed.expiresIn || 3600) * 1000)
+                }
+              });
+              accessToken = refreshed.accessToken;
+            } catch (refErr) {
+              console.warn("Could not refresh Excel token in test-source:", refErr.message);
+              accessToken = grant.tokens.accessToken;
+            }
+          } else {
+            accessToken = grant.tokens.accessToken;
+          }
         }
       }
 

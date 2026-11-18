@@ -2395,8 +2395,14 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
     (process.env.CRON_SECRET || "").trim(),
     (process.env.AGENT_TRIGGER_SECRET || "").trim(),
     (process.env.REPORTING_WEBAPP_SECRET || "").trim(),
-    "triage-cron-2026-AY4K2LDMXBV8DS7"
   ].filter(Boolean)));
+
+  if (webAppUrl && isValidGoogleScriptUrl(targetWebAppUrl) && candidateSecrets.length === 0) {
+    return res.status(500).json({
+      success: false,
+      error: "Reporting Web App secret is not configured on the server."
+    });
+  }
 
   try {
     let gasData = null;

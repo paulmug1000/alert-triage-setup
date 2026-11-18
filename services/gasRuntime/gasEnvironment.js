@@ -201,12 +201,12 @@ function getGridLastCol(grid) {
 function formatDateForUserEntered_(val) {
   if (val instanceof Date) {
     if (isNaN(val.getTime())) return "";
-    const y = val.getUTCFullYear();
-    const m = MONTHS_SHORT[val.getUTCMonth()] || "Jan";
-    const d = val.getUTCDate();
-    const hh = val.getUTCHours();
-    const mm = val.getUTCMinutes();
-    const ss = val.getUTCSeconds();
+    const y = val.getFullYear();
+    const m = MONTHS_SHORT[val.getMonth()] || "Jan";
+    const d = val.getDate();
+    const hh = val.getHours();
+    const mm = val.getMinutes();
+    const ss = val.getSeconds();
     if (hh !== 0 || mm !== 0 || ss !== 0) {
       return `${d}-${m}-${y} ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
     }
@@ -1086,6 +1086,11 @@ class VirtualSheet {
     this.rowGroups = Array.isArray(rowGroups) ? JSON.parse(JSON.stringify(rowGroups)) : [];
     this.dirty = false;
     this.textCols = new Set();
+    if (spreadsheet?.sheetRole === "master" && name === "InvFromApp") {
+      this.textCols = new Set([0, 2, 3]);
+    } else if (spreadsheet?.sheetRole === "master" && name === "JnlsFromApp") {
+      this.textCols = new Set([0, 5, 8]);
+    }
   }
 
   _beforeRead() {
@@ -1858,31 +1863,66 @@ export async function createGasEnvironment({
         ).catch(() => null),
       ]);
       const vRanges = resp?.data?.valueRanges || [];
+      const trimCalcsGrid_ = (rawRows) => {
+        const compacted = compactGrid2D(rawRows);
+        let lastActive = 119;
+        const checkCols = [0, 1, 17, 32, 35, 41, 48, 55];
+        const isAct = (v) => v !== "" && v !== null && v !== undefined && v !== 0 && v !== "0" && v !== false;
+        for (let r = compacted.length - 1; r >= 120; r--) {
+          const row = compacted[r];
+          if (!Array.isArray(row)) continue;
+          if (checkCols.some((c) => isAct(row[c]))) {
+            lastActive = r;
+            break;
+          }
+        }
+        const keepCount = Math.min(compacted.length, lastActive + 11);
+        return compactGrid2D(compacted.slice(0, keepCount));
+      };
+      let anyTabChanged = false;
       if (vRanges[0]?.values) {
+        const nextCc = trimCalcsGrid_(vRanges[0].values);
         const ccSheet = masterSS.getSheetByName("ConfCalcs") || masterSS.insertSheet("ConfCalcs");
-        ccSheet.valuesGrid = compactGrid2D(vRanges[0].values);
-        ccSheet.dirty = true;
+        if (JSON.stringify(nextCc) !== JSON.stringify(ccSheet.valuesGrid)) {
+          ccSheet.valuesGrid = nextCc;
+          ccSheet.dirty = true;
+          anyTabChanged = true;
+        }
       }
       if (vRanges[1]?.values) {
+        const nextPc = trimCalcsGrid_(vRanges[1].values);
         const pcSheet = masterSS.getSheetByName("PipeCalcs") || masterSS.insertSheet("PipeCalcs");
-        pcSheet.valuesGrid = compactGrid2D(vRanges[1].values);
-        pcSheet.dirty = true;
+        if (JSON.stringify(nextPc) !== JSON.stringify(pcSheet.valuesGrid)) {
+          pcSheet.valuesGrid = nextPc;
+          pcSheet.dirty = true;
+          anyTabChanged = true;
+        }
       }
       if (vRanges[2]?.values) {
+        const nextOut = compactGrid2D(vRanges[2].values);
         const outSheet = masterSS.getSheetByName("Outgoings") || masterSS.insertSheet("Outgoings");
-        outSheet.valuesGrid = compactGrid2D(vRanges[2].values);
-        outSheet.dirty = true;
+        if (JSON.stringify(nextOut) !== JSON.stringify(outSheet.valuesGrid)) {
+          outSheet.valuesGrid = nextOut;
+          outSheet.dirty = true;
+          anyTabChanged = true;
+        }
       }
       const clientOutgNotes = outgNotesResp?.data?.values;
       if (
         Array.isArray(clientOutgNotes) &&
         clientOutgNotes.some((r) => Array.isArray(r) && r.some((cell) => cell !== "" && cell !== null && cell !== undefined))
       ) {
+        const nextOn = compactGrid2D(clientOutgNotes);
         const onSheet = masterSS.getSheetByName("OutgNotes") || masterSS.insertSheet("OutgNotes");
-        onSheet.valuesGrid = compactGrid2D(clientOutgNotes);
-        onSheet.dirty = true;
+        if (JSON.stringify(nextOn) !== JSON.stringify(onSheet.valuesGrid)) {
+          onSheet.valuesGrid = nextOn;
+          onSheet.dirty = true;
+          anyTabChanged = true;
+        }
       }
-      envState.masterFormulasDirty = true;
+      if (anyTabChanged) {
+        envState.masterFormulasDirty = true;
+      }
     } catch (err) {
       console.warn(`[gasEnvironment] Could not refresh ConfCalcs/PipeCalcs/Outgoings for ${ctx.clientName}:`, err.message);
     }
@@ -1986,8 +2026,8 @@ export async function createGasEnvironment({
 
     const noteRanges = [];
     if (isClientSheet) {
-      if (existingTabNames.has("Outgoings")) noteRanges.push("Outgoings!A1:AZ130");
-      if (existingTabNames.has("Confirmed")) noteRanges.push("Confirmed!A1:CR800");
+      if (existingTabNames.has("Outgoings")) noteRanges.push("Outgoings!A1:AZ230");
+      if (existingTabNames.has("Confirmed")) noteRanges.push("Confirmed!A1:CR5000");
     }
 
     const [chunkResults, notesResp] = await Promise.all([
@@ -2127,6 +2167,7 @@ export async function createGasEnvironment({
                 requestBody: { requests: phase.requests },
                 _bypassSupabaseVirtualSheet: bypassVirtual,
                 _skipFormulaRecompute: skipRecompute,
+                _flushPendingRecompute: !skipRecompute,
               }),
             `spreadsheets.batchUpdate(${remoteId})`
           );
@@ -2135,6 +2176,60 @@ export async function createGasEnvironment({
     }
 
     if (clientSheetWasMutated) {
+      if (ctx.clientMode === "supabase") {
+        try {
+          const { flushPendingClientRecomputes } = await import("../masterEngineService.js");
+          if (typeof flushPendingClientRecomputes === "function") {
+            await flushPendingClientRecomputes(null, ctx.clientName);
+          }
+        } catch (flushErr) {
+          console.warn(`[gasEnvironment] flushPendingClientRecomputes warning for ${ctx.clientName}:`, flushErr.message);
+        }
+        const clientRemoteSS = ctx.clientSheetId ? envState.remoteSpreadsheets.get(ctx.clientSheetId) : null;
+        if (clientRemoteSS) {
+          const refreshTabs = ["Confirmed", "Pipeline", "Outgoings", "ConfCalcs", "PipeCalcs"].filter((t) =>
+            clientRemoteSS.sheetsByName.has(t)
+          );
+          if (refreshTabs.length > 0) {
+            try {
+              const ranges = refreshTabs.map((t) => `'${t}'`);
+              const [valRes, formRes] = await Promise.all([
+                withSheetsRetry_(
+                  () =>
+                    sheets.spreadsheets.values.batchGet({
+                      spreadsheetId: ctx.clientSheetId,
+                      ranges,
+                      valueRenderOption: "UNFORMATTED_VALUE",
+                      _bypassSupabaseVirtualSheet: false,
+                    }),
+                  `refreshRemoteClientValues(${ctx.clientName})`
+                ),
+                withSheetsRetry_(
+                  () =>
+                    sheets.spreadsheets.values.batchGet({
+                      spreadsheetId: ctx.clientSheetId,
+                      ranges,
+                      valueRenderOption: "FORMULA",
+                      _bypassSupabaseVirtualSheet: false,
+                    }),
+                  `refreshRemoteClientFormulas(${ctx.clientName})`
+                ),
+              ]);
+              const vList = valRes?.data?.valueRanges || [];
+              const fList = formRes?.data?.valueRanges || [];
+              refreshTabs.forEach((tName, idx) => {
+                const vs = clientRemoteSS.sheetsByName.get(tName);
+                if (!vs) return;
+                if (Array.isArray(vList[idx]?.values)) vs.valuesGrid = cloneGrid2D(vList[idx].values);
+                if (Array.isArray(fList[idx]?.values)) vs.formulasGrid = cloneGrid2D(fList[idx].values);
+                vs.dirty = false;
+              });
+            } catch (refErr) {
+              console.warn(`[gasEnvironment] Remote client tab refresh warning (${ctx.clientName}):`, refErr.message);
+            }
+          }
+        }
+      }
       await syncClientLinkedMasterTabsFromLiveSheet();
     }
 
@@ -2441,6 +2536,14 @@ export async function createGasEnvironment({
         getAllHeaders: () => respHeaders,
       };
     },
+    fetchAll: async (requests) =>
+      Promise.all(
+        (requests || []).map((req) =>
+          typeof req === "string"
+            ? UrlFetchApp.fetch(req)
+            : UrlFetchApp.fetch(req.url, req)
+        )
+      ),
   };
 
   const PropertiesService = {

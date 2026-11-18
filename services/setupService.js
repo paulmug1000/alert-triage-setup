@@ -15,7 +15,7 @@
  */
 
 import { redisClient } from "./redisClient.js";
-import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
 import { getIntegrationStatus, INTEGRATIONS_STATUS_CACHE_KEY } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput, getServiceAccountPoolEmails } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
@@ -407,7 +407,7 @@ export async function saveClientSetupConfig({
   if (isSupabaseConfigured()) {
     try {
       const sb = getSupabaseAdmin();
-      const norm = normalizeClientKey(clientName);
+      const norm = normalizeKey(clientName);
       const { data: existingClient } = await sb
         .from("clients")
         .select("id, metadata")
@@ -438,25 +438,27 @@ export async function saveClientSetupConfig({
     }
   }
 
-  // 3. Update ClientSetupOverview in Automation Commander
-  try {
-    const sheets = await getSheetsClient();
-    if (!record.setupMode) {
-      await updateClientSetupOverviewRow(sheets, {
-        clientName,
-        status: "LIVE",
-        progressPercent: 100,
-        completedTasks: 34,
-        completedAt: now
-      });
-    } else {
-      await updateClientSetupOverviewRow(sheets, {
-        clientName,
-        status: "IN_PROGRESS"
-      });
+  // 3. Update ClientSetupOverview in Automation Commander (when legacy dual-write or Sheets control plane is active)
+  if (!(await isSupabaseControlPlaneActive()) || shouldDualWriteLegacyControlPlaneSheets()) {
+    try {
+      const sheets = await getSheetsClient();
+      if (!record.setupMode) {
+        await updateClientSetupOverviewRow(sheets, {
+          clientName,
+          status: "LIVE",
+          progressPercent: 100,
+          completedTasks: 34,
+          completedAt: now
+        });
+      } else {
+        await updateClientSetupOverviewRow(sheets, {
+          clientName,
+          status: "IN_PROGRESS"
+        });
+      }
+    } catch (overviewErr) {
+      console.warn("ClientSetupOverview sync notice:", overviewErr.message);
     }
-  } catch (overviewErr) {
-    console.warn("ClientSetupOverview sync notice:", overviewErr.message);
   }
 
   return await getClientSetupConfig({ clientName, masterSheetId });
@@ -2023,12 +2025,23 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
     if (isSupabaseConfigured() && (settings.directCostsMode !== undefined || settings.revenueFocus !== undefined)) {
       try {
         const sb = getSupabaseAdmin();
-        const rf = settings.revenueFocus || "Revenue";
+        const normKey = normalizeKey(clientName);
+        const { data: curClient } = await sb
+          .from("clients")
+          .select("metadata")
+          .eq("normalized_key", normKey)
+          .maybeSingle();
+        const existingMeta = curClient?.metadata && typeof curClient.metadata === "object" ? curClient.metadata : {};
+        const rf = settings.revenueFocus || existingMeta.revenueFocus || "Revenue";
         const dcm = rf === "Income" ? "Pass-through" : (settings.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
         await sb
           .from("clients")
-          .update({ revenue_focus: rf, direct_costs_mode: dcm })
-          .eq("normalized_key", normalizeKey(clientName));
+          .update({ metadata: { ...existingMeta, revenueFocus: rf, directCostsMode: dcm } })
+          .eq("normalized_key", normKey);
+        await sb
+          .from("tenant_key_info")
+          .update({ revenue_or_income_mode: rf, direct_costs_mode: dcm, updated_at: new Date().toISOString() })
+          .eq("normalized_key", normKey);
       } catch (_) { }
     }
     await updateClientChecklistTask(sheets, {

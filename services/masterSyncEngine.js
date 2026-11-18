@@ -12,10 +12,12 @@
  */
 
 import { getSupabaseAdmin } from "./supabaseClient.js";
+import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import {
   resolveSupabaseSheetContext,
   invalidateMasterEngineCache,
   getLastClientEditTimestamp,
+  isVirtualSupabaseSheetId,
 } from "./masterEngineService.js";
 import { getIntegrationTokens } from "./vaultService.js";
 import { logPmaActivity } from "./pmaLogger.js";
@@ -876,184 +878,317 @@ export async function dispatchDueNativeMasterSyncs({
   const supabase = getSupabaseAdmin();
   if (!supabase) return { dispatched: 0, syncs: [] };
 
-  const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }] = await Promise.all([
-    supabase.from("sync_schedules").select("*"),
-    supabase.from("clients").select("client_name, status, metadata, master_mode"),
-    supabase
-      .from("master_sheet_grids")
-      .select("client_name, values_grid")
-      .eq("sheet_role", "master")
-      .eq("tab_name", "DataChgAlert"),
-  ]);
-  if (!Array.isArray(schedRows) || schedRows.length === 0) return { dispatched: 0, syncs: [] };
-
-  const eligibleClients = new Set(
-    (clientRows || [])
-      .filter((c) => {
-        const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
-        return st === "live" && c.master_mode === "supabase";
-      })
-      .map((c) => c.client_name)
-  );
-
-  const dcaMap = new Map();
-  if (Array.isArray(dcaRows)) {
-    for (const r of dcaRows) {
-      if (r.client_name) dcaMap.set(r.client_name, r.values_grid);
-    }
+  await ensureRedisConnected(800).catch(() => {});
+  const lockKey = "pulse:lock:cron_master_dispatch";
+  let lockAcquired = false;
+  if (redisClient?.isOpen) {
+    try {
+      const lockRes = await redisClient.set(lockKey, `${Date.now()}`, { NX: true, EX: 540 });
+      lockAcquired = lockRes === "OK";
+      if (!lockAcquired) {
+        console.log("dispatchDueNativeMasterSyncs: Another cron dispatch wave is currently active; skipping.");
+        return { dispatched: 0, syncs: [], skipped: true };
+      }
+    } catch (_) {}
   }
 
-  const parseFreqMs = (freqStr) => {
-    const s = String(freqStr || "").trim().toLowerCase();
-    const num = parseFloat(s) || 0;
-    if (!num) return 0;
-    if (s.includes("min")) return num * 60 * 1000;
-    if (s.includes("hr")) return num * 3600 * 1000;
-    if (s.includes("day") || s.includes("24")) return 24 * 3600 * 1000;
-    if (s.includes("week")) return 7 * 24 * 3600 * 1000;
-    return 0;
-  };
+  try {
+    const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }] = await Promise.all([
+      supabase.from("sync_schedules").select("*"),
+      supabase.from("clients").select("client_name, status, metadata, master_mode, master_sheet_id"),
+      supabase
+        .from("master_sheet_grids")
+        .select("client_name, values_grid")
+        .eq("sheet_role", "master")
+        .eq("tab_name", "DataChgAlert"),
+    ]);
+    if (!Array.isArray(schedRows) || schedRows.length === 0) return { dispatched: 0, syncs: [] };
 
-  const isSeqDue = (freqStr, lastIso) => {
-    const reqMs = parseFreqMs(freqStr);
-    if (!reqMs) return false;
-    if (!lastIso) return true;
-    const lastMs = new Date(lastIso).getTime();
-    const effectiveReqMs = Math.max(0, reqMs - 3 * 60 * 1000); // 3m grace margin
-    return isNaN(lastMs) || Date.now() - lastMs >= effectiveReqMs;
-  };
-
-  const queue = [];
-  for (const sched of schedRows) {
-    const clientName = sched.client_name;
-    if (sched.automation_enabled === false || !eligibleClients.has(clientName)) {
-      continue;
+    const supabaseClients = new Set();
+    const sheetClientByName = new Map();
+    for (const c of clientRows || []) {
+      const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+      if (st !== "live") continue;
+      if (c.master_mode === "supabase") {
+        supabaseClients.add(c.client_name);
+      } else if (c.master_sheet_id && !isVirtualSupabaseSheetId(c.master_sheet_id)) {
+        sheetClientByName.set(c.client_name, c);
+      }
     }
 
-    const flags = sched.flags && typeof sched.flags === "object" ? sched.flags : {};
-    if (flags.in_flight_since) {
-      const inFlightMs = new Date(flags.in_flight_since).getTime();
-      const ageMs = Date.now() - inFlightMs;
-      if (!Number.isNaN(inFlightMs) && ageMs < 310_000) {
-        console.log(
-          `dispatchDueNativeMasterSyncs: Skipping ${clientName} (already in-flight for ${Math.round(ageMs / 1000)}s).`
-        );
-        continue;
+    const dcaMap = new Map();
+    if (Array.isArray(dcaRows)) {
+      for (const r of dcaRows) {
+        if (r.client_name) dcaMap.set(r.client_name, r.values_grid);
       }
-      console.warn(
-        `dispatchDueNativeMasterSyncs: Clearing stale in_flight_since lease for ${clientName} (${flags.in_flight_since}).`
-      );
+    }
+
+    const fmtUkParts = (dt) => {
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/London",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        hour12: false,
+      }).formatToParts(dt);
+      const get = (t) => parts.find((p) => p.type === t)?.value || "";
+      const hRaw = parseInt(get("hour"), 10);
+      return {
+        ymd: `${get("year")}${get("month")}${get("day")}`,
+        day: parseInt(get("day"), 10),
+        hour: hRaw === 24 ? 0 : hRaw,
+      };
+    };
+
+    const nowDate = new Date();
+    const shouldRunUpdate = (freqStr, lastIso) => {
+      if (!freqStr) return false;
+      const freq = String(freqStr).toLowerCase().trim();
+      const validKeywords = ["24", "week", "month", "hr", "min"];
+      if (!validKeywords.some((key) => freq.includes(key))) return false;
+      if (!lastIso) return true;
+      const lastRunDate = new Date(lastIso);
+      if (Number.isNaN(lastRunDate.getTime())) return true;
+      const isScheduled = freq.includes("24") || freq.includes("week") || freq.includes("month");
+      if (isScheduled) {
+        const nowUk = fmtUkParts(nowDate);
+        if (nowUk.hour < 2) return false;
+        const lastUk = fmtUkParts(lastRunDate);
+        if (lastUk.ymd === nowUk.ymd) return false;
+        if (freq.includes("month")) {
+          const dayMatch = freq.match(/\d+/);
+          const targetDay = dayMatch ? parseInt(dayMatch[0], 10) : 1;
+          return nowUk.day === targetDay;
+        }
+        if (freq.includes("week")) {
+          return nowDate.getTime() - lastRunDate.getTime() >= 7 * 24 * 3600 * 1000;
+        }
+        return true;
+      }
+      const diff = nowDate.getTime() - lastRunDate.getTime();
+      let reqMs = 0;
+      if (freq.includes("hr")) reqMs = (parseFloat(freq) || 0) * 3600 * 1000;
+      else if (freq.includes("min")) reqMs = (parseFloat(freq) || 0) * 60 * 1000;
+      return diff >= reqMs;
+    };
+
+    const queue = [];
+    const sheetSignals = [];
+    for (const sched of schedRows) {
+      const clientName = sched.client_name;
+      if (sched.automation_enabled === false) continue;
+
+      const isSupa = supabaseClients.has(clientName);
+      const sheetClient = sheetClientByName.get(clientName) || null;
+      if (!isSupa && !sheetClient) continue;
+
+      const flags = sched.flags && typeof sched.flags === "object" ? sched.flags : {};
+      if (flags.in_flight_since) {
+        const inFlightMs = new Date(flags.in_flight_since).getTime();
+        const ageMs = Date.now() - inFlightMs;
+        if (!Number.isNaN(inFlightMs) && ageMs < 310_000) {
+          console.log(
+            `dispatchDueNativeMasterSyncs: Skipping ${clientName} (already in-flight for ${Math.round(ageMs / 1000)}s).`
+          );
+          continue;
+        }
+        console.warn(
+          `dispatchDueNativeMasterSyncs: Clearing stale in_flight_since lease for ${clientName} (${flags.in_flight_since}).`
+        );
+        await supabase
+          .from("sync_schedules")
+          .update({ flags: { ...flags, in_flight_since: null, in_flight_seqs: null } })
+          .eq("client_name", clientName);
+      }
+
+      const dcaGrid = dcaMap.get(clientName) || null;
+      const effectiveInvFreq = dcaGrid ? String(dcaGrid[1]?.[24] ?? "").trim() : String(sched.inv_freq ?? "").trim();
+      const effectiveCrmFreq = dcaGrid ? String(dcaGrid[2]?.[24] ?? "").trim() : String(sched.crm_freq ?? "").trim();
+      const effectiveExpFreq = dcaGrid ? String(dcaGrid[3]?.[24] ?? "").trim() : String(sched.exp_freq ?? "").trim();
+
+      const dueTypes = [];
+      if (shouldRunUpdate(effectiveInvFreq, sched.last_inv_run)) dueTypes.push("invoice");
+      if (shouldRunUpdate(effectiveCrmFreq, sched.last_crm_run)) dueTypes.push("crm");
+      if (shouldRunUpdate(effectiveExpFreq, sched.last_exp_run)) dueTypes.push("expense");
+
+      if (dueTypes.length > 0) {
+        if (isSupa) {
+          queue.push({
+            clientName,
+            types: dueTypes,
+            flags,
+            syncType: dueTypes.length === 3 ? "all" : dueTypes.length === 1 ? dueTypes[0] : "all",
+          });
+        } else if (sheetClient) {
+          sheetSignals.push({
+            clientName,
+            masterSheetId: sheetClient.master_sheet_id,
+            types: dueTypes,
+          });
+        }
+      }
+    }
+
+    const results = [];
+
+    if (sheetSignals.length > 0) {
+      const { getSheetsClient } = await import("./sheetsClient.js");
+      const rawSheets = await getSheetsClient("background");
+      for (const sig of sheetSignals) {
+        const tsIso = new Date().toISOString();
+        const batchData = [];
+        const schedPatch = {};
+        if (sig.types.includes("invoice")) {
+          batchData.push({ range: "DataChgAlert!Z2", values: [[tsIso]] });
+          schedPatch.last_inv_run = tsIso;
+          schedPatch.inv_status = "OK: Signal Sent";
+        }
+        if (sig.types.includes("crm")) {
+          batchData.push({ range: "DataChgAlert!Z3", values: [[tsIso]] });
+          schedPatch.last_crm_run = tsIso;
+          schedPatch.crm_status = "OK: Signal Sent";
+        }
+        if (sig.types.includes("expense")) {
+          batchData.push({ range: "DataChgAlert!Z4", values: [[tsIso]] });
+          schedPatch.last_exp_run = tsIso;
+          schedPatch.exp_status = "OK: Signal Sent";
+        }
+        try {
+          await rawSheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sig.masterSheetId,
+            _bypassSupabaseVirtualSheet: true,
+            requestBody: {
+              valueInputOption: "USER_ENTERED",
+              data: batchData,
+            },
+          });
+          await supabase.from("sync_schedules").update(schedPatch).eq("client_name", sig.clientName);
+          results.push({ clientName: sig.clientName, mode: "sheet", types: sig.types, success: true });
+        } catch (sigErr) {
+          console.warn(`dispatchDueNativeMasterSyncs: Sheet signal error for ${sig.clientName}:`, sigErr.message);
+          results.push({ clientName: sig.clientName, mode: "sheet", types: sig.types, success: false, error: sigErr.message });
+        }
+      }
+    }
+
+    if (queue.length === 0) {
+      if (results.length === 0) {
+        console.log("dispatchDueNativeMasterSyncs: No syncs currently due.");
+      }
+      return { dispatched: results.length, syncs: results };
+    }
+
+    console.log(
+      `dispatchDueNativeMasterSyncs: Found ${queue.length} Supabase client job(s) due. Dispatching with concurrency ${maxConcurrency}...`
+    );
+
+    const headers = {
+      "Content-Type": "application/json",
+      ...(cronSecret ? { "x-cron-secret": cronSecret } : {}),
+      ...(bypassToken ? { "x-vercel-protection-bypass": bypassToken } : {}),
+    };
+
+    const runChunk = async (clientName, chunkTypes, chunkSyncType) => {
+      try {
+        if (baseUrl) {
+          const res = await fetch(`${baseUrl}/api/pma/master-engine`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              action: "run_native_sync",
+              clientName,
+              syncType: chunkSyncType,
+              types: chunkTypes,
+              skipAlertsRefresh: true,
+              secret: cronSecret,
+            }),
+          });
+          const json = await res.json().catch(() => ({}));
+          return {
+            types: chunkTypes,
+            success: Boolean(res.ok && json.success),
+            error: json.error || (!res.ok ? `HTTP ${res.status}` : null),
+          };
+        }
+        const { getSheetsClient } = await import("./sheetsClient.js");
+        const sheets = await getSheetsClient("background");
+        await runNativeMasterSync({
+          sheets,
+          clientName,
+          syncType: chunkSyncType,
+          types: chunkTypes,
+          userEmail,
+        });
+        return { types: chunkTypes, success: true, error: null };
+      } catch (err) {
+        return { types: chunkTypes, success: false, error: err.message };
+      }
+    };
+
+    const executeItem = async (item) => {
+      const itemStart = Date.now();
+      const baseFlags = item.flags && typeof item.flags === "object" ? item.flags : {};
       await supabase
         .from("sync_schedules")
-        .update({ flags: { ...flags, in_flight_since: null, in_flight_seqs: null } })
-        .eq("client_name", clientName);
-    }
+        .update({
+          flags: {
+            ...baseFlags,
+            in_flight_since: new Date().toISOString(),
+            in_flight_seqs: item.types,
+          },
+        })
+        .eq("client_name", item.clientName);
 
-    const dcaGrid = dcaMap.get(clientName) || null;
-    const effectiveInvFreq = dcaGrid ? String(dcaGrid[1]?.[24] ?? "").trim() : String(sched.inv_freq ?? "").trim();
-    const effectiveCrmFreq = dcaGrid ? String(dcaGrid[2]?.[24] ?? "").trim() : String(sched.crm_freq ?? "").trim();
-    const effectiveExpFreq = dcaGrid ? String(dcaGrid[3]?.[24] ?? "").trim() : String(sched.exp_freq ?? "").trim();
-
-    const dueTypes = [];
-    if (isSeqDue(effectiveInvFreq, sched.last_inv_run)) dueTypes.push("invoice");
-    if (isSeqDue(effectiveCrmFreq, sched.last_crm_run)) dueTypes.push("crm");
-    if (isSeqDue(effectiveExpFreq, sched.last_exp_run)) dueTypes.push("expense");
-
-    if (dueTypes.length > 0) {
-      queue.push({
-        clientName,
-        types: dueTypes,
-        syncType: dueTypes.length === 3 ? "all" : (dueTypes.length === 1 ? dueTypes[0] : "all"),
-      });
-    }
-  }
-
-  if (queue.length === 0) {
-    console.log("dispatchDueNativeMasterSyncs: No syncs currently due.");
-    return { dispatched: 0, syncs: [] };
-  }
-
-  console.log(
-    `dispatchDueNativeMasterSyncs: Found ${queue.length} client job(s) due across ${queue.length} client(s). Dispatching with concurrency ${maxConcurrency}...`
-  );
-
-  const results = [];
-  const headers = {
-    "Content-Type": "application/json",
-    ...(cronSecret ? { "x-cron-secret": cronSecret } : {}),
-    ...(bypassToken ? { "x-vercel-protection-bypass": bypassToken } : {}),
-  };
-
-  const runChunk = async (clientName, chunkTypes, chunkSyncType) => {
-    try {
-      if (baseUrl) {
-        const res = await fetch(`${baseUrl}/api/pma/master-engine`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            action: "run_native_sync",
-            clientName,
-            syncType: chunkSyncType,
-            types: chunkTypes,
-            skipAlertsRefresh: true,
-            secret: cronSecret,
-          }),
+      const shouldSplitExpense = item.types.includes("expense") && item.types.length > 1;
+      if (shouldSplitExpense) {
+        const nonExpTypes = item.types.filter((t) => t !== "expense");
+        const firstSyncType = nonExpTypes.length === 1 ? nonExpTypes[0] : "all";
+        const firstRes = await runChunk(item.clientName, nonExpTypes, firstSyncType);
+        const secondRes = await runChunk(item.clientName, ["expense"], "expense");
+        const ok = firstRes.success && secondRes.success;
+        if (!ok) {
+          await supabase
+            .from("sync_schedules")
+            .update({ flags: { ...baseFlags, in_flight_since: null, in_flight_seqs: null } })
+            .eq("client_name", item.clientName);
+        }
+        results.push({
+          ...item,
+          success: ok,
+          durationMs: Date.now() - itemStart,
+          error: [firstRes.error, secondRes.error].filter(Boolean).join("; ") || null,
+          phases: [firstRes, secondRes],
         });
-        const json = await res.json().catch(() => ({}));
-        return {
-          types: chunkTypes,
-          success: Boolean(res.ok && json.success),
-          error: json.error || (!res.ok ? `HTTP ${res.status}` : null),
-        };
+        return;
       }
-      const { getSheetsClient } = await import("./sheetsClient.js");
-      const sheets = await getSheetsClient("background");
-      await runNativeMasterSync({
-        sheets,
-        clientName,
-        syncType: chunkSyncType,
-        types: chunkTypes,
-        userEmail,
-      });
-      return { types: chunkTypes, success: true, error: null };
-    } catch (err) {
-      return { types: chunkTypes, success: false, error: err.message };
-    }
-  };
 
-  const executeItem = async (item) => {
-    const itemStart = Date.now();
-    const shouldSplitExpense = item.types.includes("expense") && item.types.length > 1;
-    if (shouldSplitExpense) {
-      const nonExpTypes = item.types.filter((t) => t !== "expense");
-      const firstSyncType = nonExpTypes.length === 1 ? nonExpTypes[0] : "all";
-      const firstRes = await runChunk(item.clientName, nonExpTypes, firstSyncType);
-      const secondRes = await runChunk(item.clientName, ["expense"], "expense");
+      const singleRes = await runChunk(item.clientName, item.types, item.syncType);
+      if (!singleRes.success) {
+        await supabase
+          .from("sync_schedules")
+          .update({ flags: { ...baseFlags, in_flight_since: null, in_flight_seqs: null } })
+          .eq("client_name", item.clientName);
+      }
       results.push({
         ...item,
-        success: firstRes.success && secondRes.success,
+        success: singleRes.success,
         durationMs: Date.now() - itemStart,
-        error: [firstRes.error, secondRes.error].filter(Boolean).join("; ") || null,
-        phases: [firstRes, secondRes],
+        error: singleRes.error,
       });
-      return;
+    };
+
+    for (let i = 0; i < queue.length; i += maxConcurrency) {
+      const chunk = queue.slice(i, i + maxConcurrency);
+      await Promise.allSettled(chunk.map(executeItem));
     }
 
-    const singleRes = await runChunk(item.clientName, item.types, item.syncType);
-    results.push({
-      ...item,
-      success: singleRes.success,
-      durationMs: Date.now() - itemStart,
-      error: singleRes.error,
-    });
-  };
-
-  for (let i = 0; i < queue.length; i += maxConcurrency) {
-    const chunk = queue.slice(i, i + maxConcurrency);
-    await Promise.allSettled(chunk.map(executeItem));
+    return { dispatched: queue.length + sheetSignals.length, syncs: results };
+  } finally {
+    if (lockAcquired && redisClient?.isOpen) {
+      await redisClient.del(lockKey).catch(() => {});
+    }
   }
-
-  return { dispatched: queue.length, syncs: results };
 }
 
 const AMD_ACTION_CONFIG = {

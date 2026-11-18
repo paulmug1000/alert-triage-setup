@@ -753,7 +753,7 @@ export function sanitizeSpreadsheetTerms(text) {
       m.replace(/\s+(?:tab|sheet)s?$/i, "")
     )
     .replace(/\bNBtoFind(?:\s+(?:tab|sheet))?\b/gi, "NB to Find")
-    .replace(/\b(?:KeyInfo|PLComp|InvComp|DirComp|CRMComp|TimeComp|DataFromCRM|CRMList|DataChgAlert|AutoUpdates)\b/g, "Pulse configuration")
+    .replace(/\b(?:KeyInfo|PLComp|InvComp|DirComp|CRMComp|TimeComp|DataFromCRM|CRMList|DataChgAlert|AutoUpdates)(?:![A-Za-z]{1,3}\d+(?::[A-Za-z]{1,3}\d*)?)?\b/g, "Pulse configuration")
     .replace(/\bIMPORTRANGE\b/gi, "data link")
     .replace(/\b(?:spreadsheet|workbook)s?\b/gi, "Pulse")
     .replace(/\s{2,}/g, " ")
@@ -2529,7 +2529,6 @@ export function assertTrustedOrigin(req, res) {
       lower === "localhost" ||
       lower === "127.0.0.1" ||
       lower.endsWith(".pulsedashboard.co.uk") ||
-      lower.endsWith(".vercel.app") ||
       (reqHostname && lower === reqHostname)
     );
   };

@@ -105,8 +105,9 @@ export default function DbView({
   const [toastMsg, setToastMsg] = useState(null);
   const toastTimerRef = useRef(null);
 
-  // Alert memory panel state
+  // Alert memory & tools panel state
   const [showAlertMemoryTool, setShowAlertMemoryTool] = useState(false);
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
   const [amQuery, setAmQuery] = useState("");
   const [amStatusFilter, setAmStatusFilter] = useState("handled_only");
   const [amEntries, setAmEntries] = useState([]);
@@ -761,10 +762,34 @@ export default function DbView({
             <button
               type="button"
               onClick={() => {
+                const next = !showToolsMenu;
+                setShowToolsMenu(next);
+                if (next) setShowAlertMemoryTool(false);
+              }}
+              style={{
+                padding: "7px 12px",
+                fontSize: "12px",
+                fontWeight: 600,
+                color: showToolsMenu ? "#1e40af" : "#374151",
+                background: showToolsMenu ? "#eff6ff" : "#f9fafb",
+                border: `1px solid ${showToolsMenu ? "#93c5fd" : "#d1d5db"}`,
+                borderRadius: "6px",
+                cursor: "pointer",
+              }}
+            >
+              {showToolsMenu ? "Hide tools" : "Tools"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
                 const next = !showAlertMemoryTool;
                 setShowAlertMemoryTool(next);
-                if (next && amEntries.length === 0) {
-                  handleSearchAlertMemory();
+                if (next) {
+                  setShowToolsMenu(false);
+                  if (amEntries.length === 0) {
+                    handleSearchAlertMemory();
+                  }
                 }
               }}
               style={{
@@ -1244,6 +1269,75 @@ export default function DbView({
             </div>
           </div>
         )}
+
+        {/* Collapsible Database Maintenance Tools */}
+        {showToolsMenu && (
+          <div
+            style={{
+              marginTop: "14px",
+              padding: "14px",
+              background: "#f8fafc",
+              border: "1px solid #cbd5e1",
+              borderRadius: "8px",
+            }}
+          >
+            <div style={{ marginBottom: "10px" }}>
+              <div style={{ fontSize: "12.5px", fontWeight: 700, color: "#0f172a", marginBottom: "3px" }}>
+                SQL mirror table maintenance
+              </div>
+              <div style={{ fontSize: "12px", color: "#475569", lineHeight: 1.5 }}>
+                Automatic per-edit writes to the 14 relational SQL mirror tables are paused by default because Pulse and PMA read directly from{" "}
+                <code>master_sheet_grids</code>. Use these tools only when populating those tables for external SQL reporting or clearing them afterwards.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                disabled={!s2Ready || !hasVirtualTabs || isBusy}
+                onClick={() => handleBackfillMirrors(activeClientName)}
+                style={{
+                  ...actionBtnBase,
+                  background:
+                    activeOp?.key === "backfill_mirrors"
+                      ? "#eff6ff"
+                      : !s2Ready || !hasVirtualTabs
+                        ? "#f3f4f6"
+                        : "#ffffff",
+                  borderColor: activeOp?.key === "backfill_mirrors" ? "#60a5fa" : "#cbd5e1",
+                  color: !s2Ready || !hasVirtualTabs ? "#9ca3af" : activeOp?.key === "backfill_mirrors" ? "#1e40af" : "#334155",
+                  cursor: !s2Ready || !hasVirtualTabs ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "backfill_mirrors" && <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />}
+                <span>
+                  {activeOp?.key === "backfill_mirrors"
+                    ? `Backfilling (${activeClientName})...`
+                    : `Backfill SQL mirror tables (${activeClientName})`}
+                </span>
+              </button>
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={handleClearPausedMirrors}
+                style={{
+                  ...actionBtnBase,
+                  background:
+                    activeOp?.key === "clear_paused_mirrors"
+                      ? "#fef2f2"
+                      : !s2Ready
+                        ? "#f3f4f6"
+                        : "#fff5f5",
+                  borderColor: activeOp?.key === "clear_paused_mirrors" ? "#f87171" : "#fecaca",
+                  color: !s2Ready ? "#9ca3af" : "#b91c1c",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "clear_paused_mirrors" && <Spinner size={11} color="#b91c1c" style={{ marginRight: 0 }} />}
+                <span>{activeOp?.key === "clear_paused_mirrors" ? "Clearing..." : "Clear paused SQL mirror tables"}</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Initial Full-Screen Loading Skeleton (never flashes "No data available") */}
@@ -1507,46 +1601,6 @@ export default function DbView({
                     </button>
                   );
                 })}
-                <button
-                  type="button"
-                  disabled={!s2Ready || !hasVirtualTabs || isBusy}
-                  onClick={() => handleBackfillMirrors(activeClientName)}
-                  style={{
-                    ...actionBtnBase,
-                    background:
-                      activeOp?.key === "backfill_mirrors"
-                        ? "#eff6ff"
-                        : !s2Ready || !hasVirtualTabs
-                          ? "#f3f4f6"
-                          : "#f8fafc",
-                    borderColor: activeOp?.key === "backfill_mirrors" ? "#60a5fa" : "#cbd5e1",
-                    color: !s2Ready || !hasVirtualTabs ? "#9ca3af" : activeOp?.key === "backfill_mirrors" ? "#1e40af" : "#334155",
-                    cursor: !s2Ready || !hasVirtualTabs ? "not-allowed" : isBusy ? "wait" : "pointer",
-                  }}
-                >
-                  {activeOp?.key === "backfill_mirrors" && <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />}
-                  <span>{activeOp?.key === "backfill_mirrors" ? "Backfilling..." : "Backfill SQL mirror tables"}</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={!s2Ready || isBusy}
-                  onClick={handleClearPausedMirrors}
-                  style={{
-                    ...actionBtnBase,
-                    background:
-                      activeOp?.key === "clear_paused_mirrors"
-                        ? "#fef2f2"
-                        : !s2Ready
-                          ? "#f3f4f6"
-                          : "#fff5f5",
-                    borderColor: activeOp?.key === "clear_paused_mirrors" ? "#f87171" : "#fecaca",
-                    color: !s2Ready ? "#9ca3af" : "#b91c1c",
-                    cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
-                  }}
-                >
-                  {activeOp?.key === "clear_paused_mirrors" && <Spinner size={11} color="#b91c1c" style={{ marginRight: 0 }} />}
-                  <span>{activeOp?.key === "clear_paused_mirrors" ? "Clearing..." : "Clear paused SQL mirror tables"}</span>
-                </button>
               </div>
             </div>
 

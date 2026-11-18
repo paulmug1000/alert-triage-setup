@@ -1,6 +1,6 @@
 import Head from "next/head";
 import TriageSystem from "../triage";
-import { getSsrSessionUser, canSsrUserAccessPma, getSsrInitialPmaData } from "../../services/ssrSession";
+import { getSsrLiveSessionUser, canSsrUserAccessPma, getSsrInitialPmaData } from "../../services/ssrSession";
 
 export default function PMAPage({ initialUser = null, initialClients = [], initialIntegrations = null }) {
   return (
@@ -27,7 +27,7 @@ export default function PMAPage({ initialUser = null, initialClients = [], initi
 }
 
 export async function getServerSideProps(context) {
-  const sessionUser = getSsrSessionUser(context.req);
+  const sessionUser = await getSsrLiveSessionUser(context.req, context.res);
   if (sessionUser && !canSsrUserAccessPma(sessionUser)) {
     return {
       redirect: {

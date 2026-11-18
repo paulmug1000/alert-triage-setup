@@ -12,7 +12,7 @@ import crypto from "crypto";
 import { buildXeroAuthUrl } from "../../../../services/xeroService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
-import { getSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
+import { resolveLiveSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
 import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
 import { resolveSupabaseSheetContext } from "../../../../services/masterEngineService.js";
 import { isSupabaseControlPlaneActive } from "../../../../services/supabaseClient.js";
@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req);
   if (!sessionUser) {
     return res.status(401).json({ error: "Active session required." });
   }

@@ -59,6 +59,141 @@ function verifyHs256Jwt(token, secret) {
   return decoded;
 }
 
+const SESSION_MAX_AGE_SECS = 7 * 24 * 60 * 60;
+const REDIS_USERS_KEY = "pma:users:list";
+
+function getSsrJwtSecret() {
+  return (
+    process.env.PMA_JWT_SECRET?.trim() ||
+    process.env.AUTH_SECRET?.trim() ||
+    (process.env.NODE_ENV !== "production" ? globalThis.__PULSE_DEV_JWT_SECRET__ : null)
+  );
+}
+
+function signHs256Jwt(payload, secret, expiresInSecs = SESSION_MAX_AGE_SECS) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const fullPayload = { ...payload, iat: nowSec, exp: nowSec + expiresInSecs };
+  const headerB64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payloadB64 = Buffer.from(JSON.stringify(fullPayload)).toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", secret)
+    .update(`${headerB64}.${payloadB64}`)
+    .digest("base64url");
+  return `${headerB64}.${payloadB64}.${sig}`;
+}
+
+function setSsrSessionCookie(res, token, maxAge = SESSION_MAX_AGE_SECS) {
+  if (!res || typeof res.setHeader !== "function") return;
+  const isProd = process.env.NODE_ENV === "production";
+  const cookieStr = `pma_session=${encodeURIComponent(token)}; Max-Age=${maxAge}; Path=/; HttpOnly${isProd ? "; Secure" : ""}; SameSite=Lax`;
+  const existing = typeof res.getHeader === "function" ? res.getHeader("Set-Cookie") : null;
+  const existingArr = Array.isArray(existing) ? existing : (existing ? [String(existing)] : []);
+  const filtered = existingArr.filter((c) => !String(c).startsWith("pma_session="));
+  filtered.push(cookieStr);
+  res.setHeader("Set-Cookie", filtered.length === 1 ? filtered[0] : filtered);
+}
+
+function buildSsrSessionUser({ email, name, role, assignedClients, authProvider, isReadOnly }) {
+  const effectiveRole = role || "ClientUser";
+  const effectiveReadOnly = Boolean(isReadOnly || authProvider === "EmailOTP");
+  const normRole = String(effectiveRole).trim().toLowerCase();
+  const isBlockedOtp = normRole === "admin" || normRole === "clientmanager" || normRole === "client manager";
+  if ((authProvider === "EmailOTP" || effectiveReadOnly) && isBlockedOtp) {
+    return null;
+  }
+
+  const isAdmin = effectiveRole === "Admin" && !effectiveReadOnly;
+  const isSenior = effectiveRole === "Senior (Restricted)" || normRole.includes("senior");
+  const isClientUser = effectiveRole === "ClientUser";
+
+  const normalizedAssigned = (isAdmin && assignedClients === "*")
+    ? "*"
+    : (Array.isArray(assignedClients) ? assignedClients : []);
+
+  return {
+    email,
+    name: name || String(email).split("@")[0],
+    role: effectiveRole,
+    assignedClients: normalizedAssigned,
+    isAdmin,
+    isSenior,
+    isClientUser,
+    isReadOnly: effectiveReadOnly,
+    authProvider: authProvider || "OAuth"
+  };
+}
+
+function areSsrAssignedClientsEqual(a, b) {
+  if (a === "*" || b === "*") return a === b;
+  const arrA = Array.isArray(a) ? [...a].map((x) => String(x || "").trim()).filter(Boolean).sort() : [];
+  const arrB = Array.isArray(b) ? [...b].map((x) => String(x || "").trim()).filter(Boolean).sort() : [];
+  if (arrA.length !== arrB.length) return false;
+  return arrA.every((val, i) => val === arrB[i]);
+}
+
+async function loadLiveUserForSsr(email) {
+  const normEmail = String(email || "").toLowerCase().trim();
+  if (!normEmail) return { found: false, user: null };
+
+  // 1. Fast Redis check (pma:users:list is invalidated whenever users are created/updated/deleted)
+  try {
+    await ensureRedisConnected(400);
+    if (redisClient?.isOpen) {
+      const rawUsers = await Promise.race([
+        redisClient.get(REDIS_USERS_KEY),
+        new Promise((resolve) => setTimeout(() => resolve(null), 500))
+      ]);
+      if (rawUsers) {
+        const parsed = JSON.parse(rawUsers);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return { found: true, user: parsed.find((u) => u.email === normEmail) || null };
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Supabase fallback when Redis cache was busted or cold
+  try {
+    const { getSupabaseAdmin, isSupabaseControlPlaneActive } = await import("./supabaseClient.js");
+    if (await isSupabaseControlPlaneActive()) {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        const { data: rows, error } = await Promise.race([
+          sb.from("users").select("email, full_name, role, assigned_clients, status").eq("email", normEmail).limit(1),
+          new Promise((resolve) => setTimeout(() => resolve({ data: null, error: new Error("timeout") }), 700))
+        ]);
+        if (!error && Array.isArray(rows)) {
+          if (rows.length > 0) {
+            const r = rows[0];
+            const role = r.role || "ClientUser";
+            const assignedArr = Array.isArray(r.assigned_clients) ? r.assigned_clients : [];
+            const assignedClients = (role === "Admin" && assignedArr.includes("*"))
+              ? "*"
+              : assignedArr.filter((c) => c && c !== "*");
+            return {
+              found: true,
+              user: {
+                email: String(r.email || "").toLowerCase().trim(),
+                name: r.full_name || normEmail.split("@")[0],
+                role,
+                assignedClients,
+                status: r.status === "Suspended" ? "Suspended" : "Active"
+              }
+            };
+          }
+          // Confirm table isn't empty before treating as missing user
+          const { count } = await sb.from("users").select("email", { count: "exact", head: true });
+          if (typeof count === "number" && count > 0) {
+            return { found: true, user: null };
+          }
+        }
+      }
+    }
+  } catch {}
+
+  return { found: false, user: null };
+}
+
 /**
  * Lightweight SSR session reader for getServerSideProps.
  * Avoids importing googleapis / nodemailer / sheetsClient during Next.js page compilation.
@@ -66,10 +201,7 @@ function verifyHs256Jwt(token, secret) {
 export function getSsrSessionUser(req) {
   if (req?.url && String(req.url).includes("auth_error=")) return null;
   if (!req?.headers?.cookie) return null;
-  const secret =
-    process.env.PMA_JWT_SECRET?.trim() ||
-    process.env.AUTH_SECRET?.trim() ||
-    (process.env.NODE_ENV !== "production" ? globalThis.__PULSE_DEV_JWT_SECRET__ : null);
+  const secret = getSsrJwtSecret();
   if (!secret) return null;
 
   try {
@@ -81,36 +213,75 @@ export function getSsrSessionUser(req) {
     if (!decoded || !decoded.email) return null;
     if (decoded.tokenType && decoded.tokenType !== "session") return null;
 
-    const role = decoded.role || "ClientUser";
-    const isReadOnly = Boolean(decoded.isReadOnly || decoded.authProvider === "EmailOTP");
+    return buildSsrSessionUser({
+      email: decoded.email,
+      name: decoded.name,
+      role: decoded.role,
+      assignedClients: decoded.assignedClients,
+      authProvider: decoded.authProvider,
+      isReadOnly: decoded.isReadOnly
+    });
+  } catch {
+    return null;
+  }
+}
 
-    const normRole = String(role).trim().toLowerCase();
-    const isBlockedOtp = normRole === "admin" || normRole === "clientmanager" || normRole === "client manager";
-    if ((decoded.authProvider === "EmailOTP" || isReadOnly) && isBlockedOtp) {
+/**
+ * SSR session reader that overlays live user permissions (assignedClients, role, status)
+ * from Redis / Supabase and refreshes the pma_session cookie if stale.
+ */
+export async function getSsrLiveSessionUser(req, res = null) {
+  const sessionUser = getSsrSessionUser(req);
+  if (!sessionUser) return null;
+
+  try {
+    const lookup = await loadLiveUserForSsr(sessionUser.email);
+    if (!lookup.found) return sessionUser;
+
+    const liveUser = lookup.user;
+    if (!liveUser || liveUser.status === "Suspended") {
+      if (res) setSsrSessionCookie(res, "", 0);
       return null;
     }
 
-    const isAdmin = role === "Admin" && !isReadOnly;
-    const isSenior = role === "Senior (Restricted)" || normRole.includes("senior");
-    const isClientUser = role === "ClientUser";
+    const refreshed = buildSsrSessionUser({
+      email: liveUser.email,
+      name: liveUser.name || sessionUser.name,
+      role: liveUser.role,
+      assignedClients: liveUser.assignedClients,
+      authProvider: sessionUser.authProvider,
+      isReadOnly: sessionUser.isReadOnly
+    });
+    if (!refreshed) {
+      if (res) setSsrSessionCookie(res, "", 0);
+      return null;
+    }
 
-    const assignedClients = (isAdmin && decoded.assignedClients === "*")
-      ? "*"
-      : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
+    const changed =
+      refreshed.name !== sessionUser.name ||
+      refreshed.role !== sessionUser.role ||
+      !areSsrAssignedClientsEqual(refreshed.assignedClients, sessionUser.assignedClients);
 
-    return {
-      email: decoded.email,
-      name: decoded.name || decoded.email.split("@")[0],
-      role,
-      assignedClients,
-      isAdmin,
-      isSenior,
-      isClientUser,
-      isReadOnly,
-      authProvider: decoded.authProvider || "OAuth"
-    };
+    if (changed && res && typeof res.setHeader === "function") {
+      const secret = getSsrJwtSecret();
+      if (secret) {
+        const refreshedToken = signHs256Jwt({
+          jti: crypto.randomUUID(),
+          tokenType: "session",
+          email: refreshed.email,
+          name: refreshed.name,
+          role: refreshed.role,
+          assignedClients: refreshed.assignedClients,
+          authProvider: refreshed.authProvider,
+          isReadOnly: refreshed.isReadOnly
+        }, secret);
+        setSsrSessionCookie(res, refreshedToken, SESSION_MAX_AGE_SECS);
+      }
+    }
+
+    return refreshed;
   } catch {
-    return null;
+    return sessionUser;
   }
 }
 

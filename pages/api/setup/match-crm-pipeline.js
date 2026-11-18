@@ -10,6 +10,10 @@ import { scanBlankCodePipelineMatches, applyBlankCodePipelineMatches } from "../
 import { runNativeMasterAmdAction } from "../../../services/masterSyncEngine.js";
 import { resolveSupabaseSheetContext } from "../../../services/masterEngineService.js";
 
+export const config = {
+  maxDuration: 120,
+};
+
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {

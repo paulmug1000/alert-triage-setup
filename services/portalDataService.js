@@ -1,6 +1,6 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
-import { memoryCache } from "./cacheService.js";
+import { memoryCache, trackRedisKeyForClient } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 import { formatCurrencyString, parseMoney } from "./deepDiveHelper.js";
 import { getAllClients } from "./workspaces.js";
@@ -524,6 +524,8 @@ export async function fetchAndBuildPortalHomeAndPerformance(
         Promise.all([
           redisClient.set(payloadKey, JSON.stringify(payload), { EX: PORTAL_REDIS_TTL_SECS }),
           redisClient.set(perfKey, JSON.stringify(performanceData), { EX: PORTAL_REDIS_TTL_SECS }),
+          trackRedisKeyForClient(payloadKey),
+          trackRedisKeyForClient(perfKey),
         ]).catch((err) => {
           console.warn(`[portalDataService] Redis cache write warning for ${cleanClientId}:`, err?.message);
         });

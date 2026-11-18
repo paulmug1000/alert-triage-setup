@@ -17,6 +17,10 @@ import {
   applyCrmMappings
 } from "../../../services/crmSuggestionsService.js";
 
+export const config = {
+  maxDuration: 120,
+};
+
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {

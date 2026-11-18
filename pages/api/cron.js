@@ -17,6 +17,7 @@ import { dispatchDueNativeMasterSyncs } from "../../services/masterSyncEngine";
 import { getSheetsClient } from "../../services/sheetsClient";
 import { sendDailyAlertsSummary, checkAndNotifyTabErrors } from "../../services/dailyAlertsNotifier";
 import { warmAllClientsPortalHomeCache } from "../../services/portalDataService";
+import { compactAlertMemory } from "../../services/alertMemory";
 
 export const config = {
   maxDuration: 300,
@@ -316,6 +317,95 @@ export default async function handler(req, res) {
         }
       } catch (bkErr) {
         console.warn("⚠️ CRON: Non-fatal error in daily Supabase backup sweep:", bkErr.message);
+      }
+
+      // Run automated daily retention sweep once per UK calendar day (after 03:00 UK):
+      // - Prunes `activity_logs` older than 180 days (UI feeds read 30 days)
+      // - Compacts `alert_memory` (prunes stale cached/resolved/superseded fingerprints & strips old options JSON)
+      try {
+        const ukPartsRet = new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Europe/London",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          hourCycle: "h23",
+        }).formatToParts(new Date());
+        const ukMapRet = Object.fromEntries(ukPartsRet.map((p) => [p.type, p.value]));
+        const ukDateRetStr = `${ukMapRet.year}-${ukMapRet.month}-${ukMapRet.day}`;
+        const ukHourRet = Number(ukMapRet.hour);
+
+        if (ukHourRet >= 3) {
+          const sbRetention = getSupabaseAdmin();
+          let alreadyCleanedToday = false;
+
+          if (sbRetention) {
+            const { data: retRow } = await sbRetention
+              .from("system_config")
+              .select("value")
+              .eq("key", "daily_log_retention_state")
+              .maybeSingle();
+            if (retRow?.value?.lastRunDate === ukDateRetStr) {
+              alreadyCleanedToday = true;
+            }
+          }
+
+          if (!alreadyCleanedToday) {
+            let retLockAcquired = true;
+            const retLockKey = `pulse:cron:daily_retention_lock:${ukDateRetStr}`;
+            if (redisClient?.isOpen) {
+              try {
+                const locked = await redisClient.set(retLockKey, triggerSource, { NX: true, EX: 300 });
+                if (!locked) retLockAcquired = false;
+              } catch (_) { }
+            }
+
+            if (retLockAcquired) {
+              let prunedActivityLogs = 0;
+              if (sbRetention) {
+                const cutoff180d = new Date(Date.now() - 180 * 86400000).toISOString();
+                const { count, error: actDelErr } = await sbRetention
+                  .from("activity_logs")
+                  .delete({ count: "exact" })
+                  .lt("logged_at", cutoff180d);
+                if (actDelErr) {
+                  console.warn("⚠️ CRON: activity_logs retention prune warning:", actDelErr.message);
+                } else {
+                  prunedActivityLogs = count || 0;
+                }
+              }
+
+              const compactRes = await compactAlertMemory(sheets, acId).catch((err) => {
+                console.warn("⚠️ CRON: compactAlertMemory retention warning:", err.message);
+                return { originalRows: 0, keptRows: 0, prunedRows: 0, optionsClearedCount: 0 };
+              });
+
+              if (sbRetention) {
+                await sbRetention.from("system_config").upsert({
+                  key: "daily_log_retention_state",
+                  value: {
+                    lastRunDate: ukDateRetStr,
+                    lastRunAt: new Date().toISOString(),
+                    prunedActivityLogs,
+                    alertMemoryOriginalRows: compactRes?.originalRows || 0,
+                    alertMemoryKeptRows: compactRes?.keptRows || 0,
+                    alertMemoryPrunedRows: compactRes?.prunedRows || 0,
+                    alertMemoryOptionsCleared: compactRes?.optionsClearedCount || 0,
+                    source: triggerSource,
+                  },
+                  description: "Tracks once-per-day activity_logs (180d) and alert_memory retention sweep",
+                  updated_by: "System (Cron)",
+                });
+              }
+
+              console.log(
+                `🧹 CRON: Daily retention sweep completed (${prunedActivityLogs} activity_logs >180d pruned; alert_memory ${compactRes?.prunedRows || 0} pruned / ${compactRes?.keptRows || 0} kept)`
+              );
+            }
+          }
+        }
+      } catch (retErr) {
+        console.warn("⚠️ CRON: Non-fatal error in daily retention sweep:", retErr.message);
       }
 
       console.log(`✅ CRON: Pipeline complete`);

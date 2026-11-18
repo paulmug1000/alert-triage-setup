@@ -5370,6 +5370,59 @@ export async function backfillNormalizedMirrorTablesFromVirtualGrids(clientName 
   return summary;
 }
 
+const ALL_PAUSED_MIRROR_TABLES = [
+  "accounting_invoices",
+  "accounting_direct_costs",
+  "accounting_pl_lines",
+  "crm_deals_raw",
+  "time_entries_raw",
+  "bank_recon_periods",
+  "bank_recon_items",
+  "bank_recon_learning_map",
+  "client_jobs",
+  "client_outgoings",
+  "client_salaries",
+  "client_budgets_and_targets",
+  "client_cash_balances",
+  "pma_tasks",
+];
+
+/**
+ * Clears stale historical rows from the 14 write-only SQL mirror tables
+ * when normalized mirror syncing is paused (`PULSE_SYNC_NORMALIZED_MIRROR_TABLES=false`).
+ */
+export async function clearPausedNormalizedMirrorTables({ force = false } = {}) {
+  if (shouldSyncNormalizedMirrorTables() && !force) {
+    throw new Error(
+      "Normalized SQL mirror table sync is currently enabled; disable PULSE_SYNC_NORMALIZED_MIRROR_TABLES before clearing mirror tables."
+    );
+  }
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const deletedByTable = {};
+  let totalDeleted = 0;
+
+  for (const tbl of ALL_PAUSED_MIRROR_TABLES) {
+    const { count, error } = await supabase
+      .from(tbl)
+      .delete({ count: "exact" })
+      .not("id", "is", null);
+    if (error) {
+      throw new Error(`Failed clearing ${tbl}: ${error.message}`);
+    }
+    const n = count || 0;
+    deletedByTable[tbl] = n;
+    totalDeleted += n;
+  }
+
+  return {
+    success: true,
+    totalDeleted,
+    deletedByTable,
+  };
+}
+
 let _verifiedStage2SchemaReady = false;
 let _cachedSqlFiles = null;
 

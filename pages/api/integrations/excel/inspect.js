@@ -12,6 +12,10 @@ import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../servic
 import { inspectExcelWorkbook, refreshExcelTokens } from "../../../../services/excelIntegrationService.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../../services/vaultService.js";
 
+export const config = {
+  maxDuration: 120,
+};
+
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {

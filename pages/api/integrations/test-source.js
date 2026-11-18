@@ -17,6 +17,10 @@ import { assertSafeGraphId, refreshExcelTokens } from "../../../services/excelIn
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
+export const config = {
+  maxDuration: 120,
+};
+
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {

@@ -127,7 +127,7 @@ import {
 } from "../../services/masterEngineService";
 import { getSupabaseAdmin } from "../../services/supabaseClient";
 import { syncExpenseBreakdownToClientSheetNative } from "../../services/masterSyncEngine";
-import { getSessionUser, safeCompareSecret, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
+import { getSessionUser, resolveLiveSessionUser, safeCompareSecret, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
 import {
   isUserAuthorizedForClient,
   updateUserDailyAlertsEmail,
@@ -463,7 +463,9 @@ export default async function handler(req, res) {
 
     req.isSystemAuthorized = Boolean(isSystemAuthorized);
 
-    const sessionUser = getSessionUser(req, res);
+    const sessionUser = isSystemAuthorized
+      ? getSessionUser(req, res)
+      : await resolveLiveSessionUser(req, res, { sheets });
     installSheetIdBoundary(req, res, sessionUser);
 
     // Enforce authentication gateway across all protected actions

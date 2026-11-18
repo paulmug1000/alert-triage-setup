@@ -1621,8 +1621,11 @@ export async function compactAlertMemory(sheets, automationCommanderSheetId, opt
 
     let shouldKeep = false;
 
-    if (status === "task" || status === "pending_automation" || status === "cached") {
+    if (status === "task" || status === "pending_automation") {
       shouldKeep = true;
+    } else if (status === "cached") {
+      // Retain active/recent cached fingerprints; prune orphaned cached entries unseen for >90 days
+      shouldKeep = !Number.isFinite(ageDays) || ageDays <= 90;
     } else if (status === "accepted" || status === "ignored") {
       // 100% protection against resurrection for accepted or ignored items
       shouldKeep = true;

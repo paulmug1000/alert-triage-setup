@@ -1,8 +1,8 @@
-import { getSessionUser } from "../../../services/authService";
+import { resolveLiveSessionUser } from "../../../services/authService";
 
 export default async function handler(req, res) {
   try {
-    const user = getSessionUser(req);
+    const user = await resolveLiveSessionUser(req, res);
     if (!user) {
       return res.status(200).json({ authenticated: false, user: null });
     }

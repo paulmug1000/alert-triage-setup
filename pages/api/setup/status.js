@@ -8,7 +8,7 @@
  * are being requested.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
@@ -19,7 +19,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }

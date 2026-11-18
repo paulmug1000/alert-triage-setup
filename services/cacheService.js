@@ -117,6 +117,14 @@ function trackRedisKeyForClient_(cacheKey) {
 }
 
 /**
+ * Registers a dynamic Redis cache key in the client's per-client index set (`pulse:cache_idx:<sheetId>`)
+ * so targeted invalidation clears it without scanning Redis keys.
+ */
+export async function trackRedisKeyForClient(cacheKey) {
+  trackRedisKeyForClient_(cacheKey);
+}
+
+/**
  * Deletes known all-clients & portal all-clients Redis keys without running SCAN.
  */
 export async function invalidateAllClientsRedisKeys(extraAcIds = []) {

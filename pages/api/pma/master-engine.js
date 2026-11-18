@@ -20,6 +20,7 @@ import {
   setSupabaseClockEnabled,
   triggerSupabaseClockNow,
   backfillNormalizedMirrorTablesFromVirtualGrids,
+  clearPausedNormalizedMirrorTables,
 } from "../../../services/masterEngineService.js";
 import {
   runNativeMasterSync,
@@ -329,6 +330,24 @@ export default async function handler(req, res) {
           category: "SYSTEM",
           action: "NORMALIZED_MIRROR_TABLES_BACKFILLED",
           summary: `Backfilled normalised SQL mirror tables for ${cleanClient}`,
+          details: summary,
+          userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+        }).catch(() => { })
+      );
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, summary, status });
+    }
+
+    if (action === "clear_paused_mirrors") {
+      const sheets = await getSheetsClient();
+      const summary = await clearPausedNormalizedMirrorTables({ force: Boolean(req.body?.force) });
+      scheduleBackgroundWork_(
+        logPmaActivity(sheets, {
+          automationCommanderSheetId: acId,
+          clientName: cleanClient,
+          category: "SYSTEM",
+          action: "PAUSED_MIRROR_TABLES_CLEARED",
+          summary: `Cleared ${summary.totalDeleted || 0} stale row(s) across 14 paused SQL mirror tables`,
           details: summary,
           userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
         }).catch(() => { })

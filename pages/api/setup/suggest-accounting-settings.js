@@ -18,6 +18,10 @@ import {
   applyAccountingSettings
 } from "../../../services/accountingSuggestionsService.js";
 
+export const config = {
+  maxDuration: 120,
+};
+
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req, res);
   installSheetIdBoundary(req, res, sessionUser);

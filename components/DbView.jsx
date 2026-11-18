@@ -468,6 +468,36 @@ export default function DbView({
     });
   };
 
+  const handleClearPausedMirrors = () => {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Clear stale historical rows from the 14 paused write-only SQL mirror tables across Supabase? Live workbook grids, client data, and alert memory are unaffected."
+      )
+    ) {
+      return;
+    }
+    runTrackedOperation("clear_paused_mirrors", "Clearing paused SQL mirror tables...", async () => {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "clear_paused_mirrors",
+          clientName: activeClientName,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Could not clear paused SQL mirror tables.");
+      if (data.status) setStage2Data(data.status);
+      const s = data.summary || {};
+      return {
+        type: "success",
+        text: `Cleared ${Number(s.totalDeleted || 0).toLocaleString()} historical row(s) across the 14 paused SQL mirror tables.`,
+      };
+    });
+  };
+
   const handleSetClockEnabled = (enabled) => {
     const schedLabel = formatCronScheduleLabel(stage2Data?.clockStatus?.schedule).adjective;
     runTrackedOperation(
@@ -1496,6 +1526,26 @@ export default function DbView({
                 >
                   {activeOp?.key === "backfill_mirrors" && <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />}
                   <span>{activeOp?.key === "backfill_mirrors" ? "Backfilling..." : "Backfill SQL mirror tables"}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!s2Ready || isBusy}
+                  onClick={handleClearPausedMirrors}
+                  style={{
+                    ...actionBtnBase,
+                    background:
+                      activeOp?.key === "clear_paused_mirrors"
+                        ? "#fef2f2"
+                        : !s2Ready
+                          ? "#f3f4f6"
+                          : "#fff5f5",
+                    borderColor: activeOp?.key === "clear_paused_mirrors" ? "#f87171" : "#fecaca",
+                    color: !s2Ready ? "#9ca3af" : "#b91c1c",
+                    cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                  }}
+                >
+                  {activeOp?.key === "clear_paused_mirrors" && <Spinner size={11} color="#b91c1c" style={{ marginRight: 0 }} />}
+                  <span>{activeOp?.key === "clear_paused_mirrors" ? "Clearing..." : "Clear paused SQL mirror tables"}</span>
                 </button>
               </div>
             </div>

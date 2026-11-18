@@ -16,6 +16,10 @@ import { getSessionUser } from "../../../services/authService.js";
 import { provisionNewClientSystem } from "../../../services/setupService.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
+export const config = {
+  maxDuration: 300,
+};
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed." });

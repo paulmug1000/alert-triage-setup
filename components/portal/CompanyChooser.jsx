@@ -95,7 +95,7 @@ export default function CompanyChooser({
               color: "#ffffff"
             }}
           >
-            Select Company
+            Select company
           </h1>
           <p
             style={{
@@ -150,7 +150,7 @@ export default function CompanyChooser({
             >
               <div style={{ fontSize: "36px", marginBottom: "0.75rem" }}>🏢</div>
               <h3 style={{ margin: "0 0 0.5rem 0", color: "#1e293b", fontSize: "1.1rem" }}>
-                No Companies Assigned
+                No companies assigned
               </h3>
               <p style={{ margin: 0, fontSize: "0.9rem", color: "#64748b" }}>
                 There are currently no companies assigned to your account. Please contact{" "}

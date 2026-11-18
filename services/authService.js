@@ -3,7 +3,7 @@ import nodemailer from "nodemailer";
 import jwt from "jsonwebtoken";
 import { redisClient } from "./redisClient.js";
 import { getSheetsClient } from "./sheetsClient.js";
-import { getUserByEmail, updateUserLastLogin, getCanonicalAcSheetId } from "./userPermissions.js";
+import { getAllUsers, getUserByEmail, updateUserLastLogin, getCanonicalAcSheetId } from "./userPermissions.js";
 import { unwrapRequestSheetIds, installSheetIdBoundary } from "./sheetTokenService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPulseActivity } from "./pulseLogger.js";
@@ -195,7 +195,7 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
     console.log(`❌ Auth check failed for email: ${normalizedEmail} (not in Users tab or Suspended)`);
     try {
       await redisClient.set(cooldownKey, "1", { EX: COOLDOWN_SECS });
-    } catch {}
+    } catch { }
     try {
       const sheets = await getSheetsClient();
       const targetClient = user ? (Array.isArray(user.assignedClients) && user.assignedClients.length === 1 ? user.assignedClients[0] : "Multi-Client") : "Unregistered";
@@ -207,8 +207,8 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
         summary: `Blocked verification request for ${normalizedEmail}: ${!user ? "Email not registered" : "Account suspended"}`,
         details: { email: normalizedEmail, provider: "EmailOTP", reason: !user ? "Unregistered email" : "Account suspended", ip: clientIp || "-" },
         user: normalizedEmail
-      }).catch(() => {});
-    } catch {}
+      }).catch(() => { });
+    } catch { }
 
     // Generic message to avoid email enumeration
     return {
@@ -231,8 +231,8 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
         summary: `Blocked OTP login for ${user.role} (${normalizedEmail}): Admin and Client Manager must use SSO`,
         details: { email: normalizedEmail, role: user.role, provider: "EmailOTP", reason: "OTP not permitted for Admin/ClientManager", ip: clientIp || "-" },
         user: normalizedEmail
-      }).catch(() => {});
-    } catch {}
+      }).catch(() => { });
+    } catch { }
 
     return {
       success: false,
@@ -271,8 +271,8 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
       summary: `Verification code generated and sent to ${normalizedEmail}`,
       details: { email: normalizedEmail, provider: "EmailOTP", role: user.role, assignedClients: user.assignedClients, ip: clientIp || "-" },
       user: user.name || normalizedEmail
-    }).catch(() => {});
-  } catch {}
+    }).catch(() => { });
+  } catch { }
 
   // Dispatch Email
   const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
@@ -385,7 +385,7 @@ export async function verifyOtp(email, code, _ignoredAcId, res, clientIp = "-") 
         details: { email: normalizedEmail, reason: "Verification code expired or invalid", ip: clientIp },
         user: normalizedEmail
       });
-    }).catch(() => {});
+    }).catch(() => { });
 
     return {
       success: false,
@@ -417,7 +417,7 @@ export async function verifyOtp(email, code, _ignoredAcId, res, clientIp = "-") 
           details: { email: normalizedEmail, reason: "Max attempts exceeded", ip: clientIp },
           user: normalizedEmail
         });
-      }).catch(() => {});
+      }).catch(() => { });
 
       return {
         success: false,
@@ -442,7 +442,7 @@ export async function verifyOtp(email, code, _ignoredAcId, res, clientIp = "-") 
         details: { email: normalizedEmail, reason: "Incorrect code", attempt: newAttempts, maxAttempts: 5, ip: clientIp },
         user: normalizedEmail
       });
-    }).catch(() => {});
+    }).catch(() => { });
 
     return {
       success: false,
@@ -499,7 +499,7 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
       summary: `Blocked sign-in for ${normalizedEmail} via ${provider}: ${!user ? "Account not authorized" : "Account suspended"}`,
       details: { email: normalizedEmail, provider, reason: !user ? "Not authorized" : "Suspended", ip: clientIp },
       user: normalizedEmail
-    }).catch(() => {});
+    }).catch(() => { });
 
     return {
       success: false,
@@ -570,22 +570,96 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
   }).catch(() => { });
 
   const isReadOnly = provider === "EmailOTP";
-
-  // Sign JWT session
-  const payload = {
-    jti: crypto.randomUUID(),
-    tokenType: "session",
+  const resolvedUser = buildSessionUser({
     email: user.email,
     name: user.name,
     role: user.role,
     assignedClients: user.assignedClients,
     authProvider: provider,
     isReadOnly
+  });
+
+  // Sign JWT session and set HTTP-only cookie
+  const payload = mintSessionCookie(res, {
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    assignedClients: resolvedUser ? resolvedUser.assignedClients : user.assignedClients,
+    authProvider: provider,
+    isReadOnly
+  });
+
+  return {
+    success: true,
+    message: "Login successful",
+    user: {
+      ...payload,
+      ...(resolvedUser || {
+        isAdmin: user.role === "Admin" && !isReadOnly,
+        isSenior: user.role === "Senior (Restricted)" || String(user.role || "").toLowerCase().includes("senior"),
+        isClientUser: user.role === "ClientUser",
+        isReadOnly,
+        authProvider: provider
+      })
+    }
+  };
+}
+
+function appendSetCookie(res, cookieStr) {
+  if (!res || typeof res.setHeader !== "function") return;
+  const existing = typeof res.getHeader === "function" ? res.getHeader("Set-Cookie") : null;
+  const existingArr = Array.isArray(existing) ? existing : (existing ? [String(existing)] : []);
+  const filtered = existingArr.filter((c) => !String(c).startsWith("pma_session="));
+  filtered.push(cookieStr);
+  res.setHeader("Set-Cookie", filtered.length === 1 ? filtered[0] : filtered);
+}
+
+function buildSessionUser({ email, name, role, assignedClients, authProvider, isReadOnly }) {
+  const effectiveRole = role || "ClientUser";
+  const effectiveReadOnly = Boolean(isReadOnly || authProvider === "EmailOTP");
+
+  // Admins and Client Managers are strictly forbidden from having OTP / read-only sessions
+  if ((authProvider === "EmailOTP" || effectiveReadOnly) && (effectiveRole === "Admin" || isBlockedOtpRole(effectiveRole))) {
+    return null;
+  }
+
+  // Only non-read-only Admin is an internal staff role able to see all clients
+  const isAdmin = effectiveRole === "Admin" && !effectiveReadOnly;
+  const isSenior = effectiveRole === "Senior (Restricted)" || String(effectiveRole).toLowerCase().includes("senior");
+  const isClientUser = effectiveRole === "ClientUser";
+
+  // Secure default: only Admin may hold wildcard "*" assignedClients
+  const normalizedAssigned = (isAdmin && assignedClients === "*")
+    ? "*"
+    : (Array.isArray(assignedClients) ? assignedClients : []);
+
+  return {
+    email,
+    name: name || String(email).split("@")[0],
+    role: effectiveRole,
+    assignedClients: normalizedAssigned,
+    isAdmin,
+    isSenior,
+    isClientUser,
+    isReadOnly: effectiveReadOnly,
+    authProvider: authProvider || "OAuth"
+  };
+}
+
+function mintSessionCookie(res, { email, name, role, assignedClients, authProvider, isReadOnly }) {
+  const payload = {
+    jti: crypto.randomUUID(),
+    tokenType: "session",
+    email,
+    name,
+    role,
+    assignedClients,
+    authProvider,
+    isReadOnly
   };
 
   const secret = getJwtSecret();
   const token = jwt.sign(payload, secret, { expiresIn: `${SESSION_MAX_AGE_SECS}s` });
-  // Set HTTP-only Cookie if response object is provided
   if (res && typeof res.setHeader === "function") {
     const isProd = process.env.NODE_ENV === "production";
     const sessionCookie = serializeCookie("pma_session", token, {
@@ -595,21 +669,17 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
       path: "/",
       maxAge: SESSION_MAX_AGE_SECS
     });
-    res.setHeader("Set-Cookie", sessionCookie);
+    appendSetCookie(res, sessionCookie);
   }
+  return payload;
+}
 
-  return {
-    success: true,
-    message: "Login successful",
-    user: {
-      ...payload,
-      isAdmin: user.role === "Admin" && !isReadOnly,
-      isSenior: user.role === "Senior (Restricted)" || String(user.role || "").toLowerCase().includes("senior"),
-      isClientUser: user.role === "ClientUser",
-      isReadOnly,
-      authProvider: provider
-    }
-  };
+function areAssignedClientsEqual(a, b) {
+  if (a === "*" || b === "*") return a === b;
+  const arrA = Array.isArray(a) ? [...a].map((x) => String(x || "").trim()).filter(Boolean).sort() : [];
+  const arrB = Array.isArray(b) ? [...b].map((x) => String(x || "").trim()).filter(Boolean).sort() : [];
+  if (arrA.length !== arrB.length) return false;
+  return arrA.every((val, i) => val === arrB[i]);
 }
 
 /**
@@ -665,35 +735,16 @@ export function getSessionUser(req, res = null) {
     // Explicitly reject transient or single-purpose tokens (e.g. sso_token) from being used as session tokens
     if (decoded.tokenType && decoded.tokenType !== "session") return null;
 
-    const role = decoded.role || "ClientUser";
-    const isReadOnly = Boolean(decoded.isReadOnly || decoded.authProvider === "EmailOTP");
-
-    // Admins and Client Managers are strictly forbidden from having OTP / read-only sessions
-    if ((decoded.authProvider === "EmailOTP" || isReadOnly) && (role === "Admin" || isBlockedOtpRole(role))) {
-      return null;
-    }
-
-    // Only non-read-only Admin is an internal staff role able to see all clients
-    const isAdmin = role === "Admin" && !isReadOnly;
-    const isSenior = role === "Senior (Restricted)" || String(role).toLowerCase().includes("senior");
-    const isClientUser = role === "ClientUser";
-
-    // Secure default: only Admin may hold wildcard "*" assignedClients
-    const assignedClients = (isAdmin && decoded.assignedClients === "*")
-      ? "*"
-      : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
-
-    const userObj = {
+    const userObj = buildSessionUser({
       email: decoded.email,
-      name: decoded.name || decoded.email.split("@")[0],
-      role,
-      assignedClients,
-      isAdmin,
-      isSenior,
-      isClientUser,
-      isReadOnly,
-      authProvider: decoded.authProvider || "OAuth"
-    };
+      name: decoded.name,
+      role: decoded.role,
+      assignedClients: decoded.assignedClients,
+      authProvider: decoded.authProvider,
+      isReadOnly: decoded.isReadOnly
+    });
+    if (!userObj) return null;
+
     installSheetIdBoundary(req, activeRes, userObj);
     return userObj;
   } catch (err) {
@@ -702,11 +753,68 @@ export function getSessionUser(req, res = null) {
 }
 
 /**
+ * Resolve the active session user against the live user directory (Supabase / Redis / Users sheet),
+ * so changes to assignedClients, role, or status apply immediately without requiring re-login.
+ * When cookie claims are stale, automatically refreshes the pma_session cookie on res.
+ */
+export async function resolveLiveSessionUser(req, res = null, { sheets = null, bypassCache = false } = {}) {
+  const sessionUser = getSessionUser(req, res);
+  if (!sessionUser) return null;
+
+  const activeRes = res || req?.res || req?.socket?._httpMessage || null;
+
+  try {
+    const users = await getAllUsers(sheets, getCanonicalAcSheetId(), bypassCache);
+    if (!Array.isArray(users) || users.length === 0) {
+      return sessionUser;
+    }
+
+    const normEmail = String(sessionUser.email || "").toLowerCase().trim();
+    const liveUser = users.find((u) => u.email === normEmail);
+    if (!liveUser || liveUser.status === "Suspended") {
+      if (res) clearSessionCookie(res);
+      return null;
+    }
+
+    const refreshed = buildSessionUser({
+      email: liveUser.email,
+      name: liveUser.name || sessionUser.name,
+      role: liveUser.role,
+      assignedClients: liveUser.assignedClients,
+      authProvider: sessionUser.authProvider,
+      isReadOnly: sessionUser.isReadOnly
+    });
+    if (!refreshed) {
+      if (res) clearSessionCookie(res);
+      return null;
+    }
+
+    const changed =
+      refreshed.name !== sessionUser.name ||
+      refreshed.role !== sessionUser.role ||
+      !areAssignedClientsEqual(refreshed.assignedClients, sessionUser.assignedClients);
+
+    if (changed && res && typeof res.setHeader === "function") {
+      const cookies = req?.headers?.cookie ? parseCookies(req.headers.cookie) : {};
+      if (cookies.pma_session) {
+        mintSessionCookie(res, refreshed);
+      }
+    }
+
+    installSheetIdBoundary(req, activeRes, refreshed);
+    return refreshed;
+  } catch (err) {
+    console.warn("⚠️ resolveLiveSessionUser fallback to JWT claims:", err.message);
+    return sessionUser;
+  }
+}
+
+/**
  * Invalidate session cookie on logout
  */
 export function clearSessionCookie(res) {
   if (res && typeof res.setHeader === "function") {
-    res.setHeader("Set-Cookie", serializeCookie("pma_session", "", {
+    appendSetCookie(res, serializeCookie("pma_session", "", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",

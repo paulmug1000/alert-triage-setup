@@ -26,10 +26,10 @@ export default function Index() {
   );
 }
 
-import { getSsrSessionUser, canSsrUserAccessPma } from "../services/ssrSession";
+import { getSsrLiveSessionUser, canSsrUserAccessPma } from "../services/ssrSession";
 
 export async function getServerSideProps(context) {
-  const user = getSsrSessionUser(context.req);
+  const user = await getSsrLiveSessionUser(context.req, context.res);
   if (user && !canSsrUserAccessPma(user)) {
     return {
       redirect: {

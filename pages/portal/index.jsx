@@ -1225,7 +1225,7 @@ export default function PortalPage({
     return (
       <>
         <Head>
-          <title>Select Company | Pulse</title>
+          <title>Select company | Pulse</title>
         </Head>
         <CompanyChooser
           clients={clients}
@@ -1598,13 +1598,13 @@ function getViewTitle(key) {
   return titles[key] || "Client portal view";
 }
 
-import { getSsrSessionUser, getSsrInitialPortalData } from "../../services/ssrSession";
+import { getSsrLiveSessionUser, getSsrInitialPortalData } from "../../services/ssrSession";
 import { redisClient, ensureRedisConnected } from "../../services/redisClient";
 import { getClientSetupStatusForPortal } from "../../services/setupService";
 import { isUserAuthorizedForClient, maskResponseSheetIdsForUser } from "../../services/userPermissions";
 
 export async function getServerSideProps(context) {
-  const sessionUser = getSsrSessionUser(context.req);
+  const sessionUser = await getSsrLiveSessionUser(context.req, context.res);
   let initialSetupClient = null;
   let initialSetupStatus = null;
   let ssrPortalData = {

@@ -535,7 +535,35 @@ export async function verifyUserAuthorizedForSheet(arg1, arg2, arg3, arg4, _igno
   if (!sessionUser) {
     return { authorized: false, status: 401, error: "Unauthorized: Active session required" };
   }
-  if (sessionUser.isAdmin && !sessionUser.isReadOnly && sessionUser.authProvider !== "EmailOTP") {
+
+  // Refresh permissions from live user directory so client assignment / role / suspension changes apply immediately
+  let effectiveUser = sessionUser;
+  if (sessionUser.email) {
+    try {
+      const users = await getAllUsers(sheets, getCanonicalAcSheetId());
+      if (Array.isArray(users) && users.length > 0) {
+        const normEmail = String(sessionUser.email).toLowerCase().trim();
+        const liveUser = users.find((u) => u.email === normEmail);
+        if (!liveUser || liveUser.status === "Suspended") {
+          return { authorized: false, status: 401, error: "Unauthorized: Account is suspended or no longer active" };
+        }
+        const isReadOnly = isReadOnlySession(sessionUser);
+        effectiveUser = {
+          ...sessionUser,
+          name: liveUser.name || sessionUser.name,
+          role: liveUser.role,
+          isAdmin: liveUser.role === "Admin" && !isReadOnly,
+          isSenior: liveUser.role === "Senior (Restricted)" || String(liveUser.role || "").toLowerCase().includes("senior"),
+          isClientUser: liveUser.role === "ClientUser",
+          assignedClients: (liveUser.role === "Admin" && !isReadOnly && liveUser.assignedClients === "*")
+            ? "*"
+            : (Array.isArray(liveUser.assignedClients) ? liveUser.assignedClients : []),
+        };
+      }
+    } catch (_) { }
+  }
+
+  if (effectiveUser.isAdmin && !effectiveUser.isReadOnly && effectiveUser.authProvider !== "EmailOTP") {
     return { authorized: true, clientName: clientNameClaim || "Admin" };
   }
   sheetId = unwrapSheetId(sheetId);
@@ -561,7 +589,7 @@ export async function verifyUserAuthorizedForSheet(arg1, arg2, arg3, arg4, _igno
   }
 
   // 3. Verify user assignment for this client
-  const isAuthorized = isUserAuthorizedForClient(sessionUser, resolvedClient);
+  const isAuthorized = isUserAuthorizedForClient(effectiveUser, resolvedClient);
   if (!isAuthorized) {
     return { authorized: false, status: 403, error: "Forbidden: Not authorized for this client" };
   }

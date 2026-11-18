@@ -21,6 +21,9 @@ import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, filterClientsForUser, matchesClientName, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 import { getAllClients } from "./workspaces.js";
 import { sanitizeSpreadsheetTerms } from "../utils/helpers.js";
+import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
+import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId } from "./masterEngineService.js";
+import { formatGridForDisplay } from "./gasRuntime/sheetValueUtils.js";
 
 const REDIS_ACTIVITY_PREFIX = "pulse:activity:";
 const CACHE_TTL_SECONDS = 7 * 24 * 3600; // 7 days permanent cache
@@ -1121,6 +1124,55 @@ function deduplicateEvents(events) {
   return deduped;
 }
 
+function parseAutoLogRowsFromGrid_(rows, clientName, includeRoutine) {
+  const autoLogEvents = [];
+  if (!Array.isArray(rows)) return autoLogEvents;
+  rows.forEach((row, idx) => {
+    const ev = parseAutoLogRow(row, clientName, idx);
+    if (ev && (includeRoutine || !ev.isRoutine)) {
+      autoLogEvents.push(ev);
+    }
+  });
+  return autoLogEvents;
+}
+
+function extractFormattedAutoLogRows_(gridRow) {
+  const fullGrid = Array.isArray(gridRow?.values_grid) ? gridRow.values_grid : [];
+  if (fullGrid.length <= 1) return [];
+  const sliced = fullGrid.slice(1, 250).map((r) => (Array.isArray(r) ? r.slice(0, 4) : []));
+  return formatGridForDisplay("master", "AutoLog", sliced, 1, 0, fullGrid, gridRow?.notes_grid || {});
+}
+
+async function fetchSupabaseAutoLogGridsBatch_(canonicalClientNames = []) {
+  const names = [...new Set((canonicalClientNames || []).map((n) => String(n || "").trim()).filter(Boolean))];
+  const byLowerClientName = new Map();
+  if (names.length === 0 || !isSupabaseConfigured()) {
+    return { byLowerClientName, failed: false };
+  }
+  const sb = getSupabaseAdmin();
+  if (!sb) {
+    return { byLowerClientName, failed: true };
+  }
+  try {
+    const { data, error } = await sb
+      .from("master_sheet_grids")
+      .select("client_name, values_grid, notes_grid")
+      .eq("sheet_role", "master")
+      .eq("tab_name", "AutoLog")
+      .in("client_name", names);
+    if (error) {
+      return { byLowerClientName, failed: true, error: error.message };
+    }
+    for (const row of data || []) {
+      const key = String(row?.client_name || "").trim().toLowerCase();
+      if (key) byLowerClientName.set(key, row);
+    }
+    return { byLowerClientName, failed: false };
+  } catch (err) {
+    return { byLowerClientName, failed: true, error: err?.message || "Supabase query error" };
+  }
+}
+
 /**
  * Fetch and parse activity for a single client with Redis caching
  */
@@ -1130,7 +1182,8 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
     return { clientName, events: [], totalEvents: 0 };
   }
 
-  const cacheKey = `${REDIS_ACTIVITY_PREFIX}client:${clientName}:${includeRoutine ? "with_routine" : "normal"}`;
+  const modeKey = includeRoutine ? "with_routine" : "normal";
+  const cacheKey = `${REDIS_ACTIVITY_PREFIX}client:${clientName}:${modeKey}`;
 
   if (!forceRefresh) {
     try {
@@ -1147,7 +1200,7 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
 
   // 1. Read Master Sheet AutoLog (Expanded bounded range A2:D250 to capture full 30 days)
   if (masterSheetId) {
-    const autologCacheKey = `${REDIS_ACTIVITY_PREFIX}autolog:${clientName}:${includeRoutine ? "with_routine" : "normal"}`;
+    const autologCacheKey = `${REDIS_ACTIVITY_PREFIX}autolog:${clientName}:${modeKey}`;
     let autoLogEvents = null;
     if (!forceRefresh) {
       try {
@@ -1161,31 +1214,45 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
     }
 
     if (!autoLogEvents) {
+      let handledViaSupabase = false;
       try {
-        const resp = await withRetry(() =>
-          sheets.spreadsheets.values.get({
-            spreadsheetId: masterSheetId,
-            range: "AutoLog!A2:D250",
-            valueRenderOption: "FORMATTED_VALUE"
-          })
-        );
-        const rows = resp.data.values || [];
-        autoLogEvents = [];
-        rows.forEach((row, idx) => {
-          const ev = parseAutoLogRow(row, clientName, idx);
-          if (ev) {
-            if (includeRoutine || !ev.isRoutine) {
-              autoLogEvents.push(ev);
+        if (isSupabaseConfigured()) {
+          const masterCtx = await resolveSupabaseSheetContext({ spreadsheetId: masterSheetId, clientName });
+          if (masterCtx?.isVirtualMaster) {
+            const targetName = String(masterCtx.clientName || clientName || "").trim();
+            const batchRes = await fetchSupabaseAutoLogGridsBatch_([targetName]);
+            if (!batchRes.failed) {
+              const gridRow = batchRes.byLowerClientName.get(targetName.toLowerCase()) || null;
+              const formattedRows = gridRow ? extractFormattedAutoLogRows_(gridRow) : [];
+              autoLogEvents = parseAutoLogRowsFromGrid_(formattedRows, clientName, includeRoutine);
+              handledViaSupabase = true;
             }
           }
-        });
-        try {
-          await redisClient.set(autologCacheKey, JSON.stringify(autoLogEvents), { EX: CACHE_TTL_SECONDS });
-        } catch (e) { }
-      } catch (err) {
-        console.warn(`⚠️ Could not read AutoLog for ${clientName}:`, err.message);
-        autoLogEvents = [];
+        }
+      } catch (sbAutoErr) {
+        console.warn(`⚠️ Supabase AutoLog fast-read fallback to sheets for ${clientName}:`, sbAutoErr.message);
       }
+
+      if (!handledViaSupabase) {
+        try {
+          const resp = await withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: masterSheetId,
+              range: "AutoLog!A2:D250",
+              valueRenderOption: "FORMATTED_VALUE"
+            })
+          );
+          const rows = resp.data.values || [];
+          autoLogEvents = parseAutoLogRowsFromGrid_(rows, clientName, includeRoutine);
+        } catch (err) {
+          console.warn(`⚠️ Could not read AutoLog for ${clientName}:`, err.message);
+          autoLogEvents = [];
+        }
+      }
+
+      try {
+        await redisClient.set(autologCacheKey, JSON.stringify(autoLogEvents), { EX: CACHE_TTL_SECONDS });
+      } catch (e) { }
     }
 
     if (Array.isArray(autoLogEvents)) {
@@ -1207,23 +1274,27 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
     }
   }
 
-  // Fallback: Read Client Sheet AppLog only if no pulseEvents were found and clientSheetId provided (legacy support)
-  if (clientSheetId && events.filter(e => e.source === "user").length === 0) {
+  // Fallback: Read Client Sheet AppLog only when Pulse activity was requested (not skipped by bulk fetch),
+  // no user events were found in central logs, and the client sheet is a real legacy Google Sheet.
+  if (!skipPulse && clientSheetId && !isVirtualSupabaseSheetId(clientSheetId) && events.filter(e => e.source === "user").length === 0) {
     try {
-      const resp = await withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: clientSheetId,
-          range: "AppLog!A2:E200",
-          valueRenderOption: "FORMATTED_VALUE"
-        })
-      );
-      const rows = resp.data.values || [];
-      const userEvents = parseAppLogRows(rows, clientName);
-      userEvents.forEach(ev => {
-        if (includeRoutine || !ev.isRoutine) {
-          events.push(ev);
-        }
-      });
+      const clientCtx = await resolveSupabaseSheetContext({ spreadsheetId: clientSheetId, clientName });
+      if (!clientCtx?.isVirtualClient) {
+        const resp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: clientSheetId,
+            range: "AppLog!A2:E200",
+            valueRenderOption: "FORMATTED_VALUE"
+          })
+        );
+        const rows = resp.data.values || [];
+        const userEvents = parseAppLogRows(rows, clientName);
+        userEvents.forEach(ev => {
+          if (includeRoutine || !ev.isRoutine) {
+            events.push(ev);
+          }
+        });
+      }
     } catch (err) {
       // Legacy AppLog might not exist or fail gracefully
     }
@@ -1251,26 +1322,30 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
     cachedAt: new Date().toISOString()
   };
 
-  try {
-    await redisClient.set(cacheKey, JSON.stringify(result), { EX: CACHE_TTL_SECONDS });
-  } catch (e) {
-    // Ignore cache write errors
+  if (!skipPma && !skipPulse) {
+    try {
+      await redisClient.set(cacheKey, JSON.stringify(result), { EX: CACHE_TTL_SECONDS });
+    } catch (e) {
+      // Ignore cache write errors
+    }
   }
 
   return result;
 }
 
 /**
- * Fetch activity across all clients with strict quota defense:
- * - Checks Redis cache first (TTL 30m)
- * - Paced batch execution (batch size: 2, 400ms delay) to avoid quota spikes
+ * Fetch activity across all clients:
+ * - Checks Redis cache first
+ * - Batch-reads AutoLog grids in a single Supabase query for Supabase Master tenants
+ * - Falls back to paced Google Sheets reads (batch size: 2, 400ms delay) only for legacy Sheet Masters
  */
 export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh = false, includeRoutine = false, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, allowGlobalCacheWrite = true) {
   if (!Array.isArray(clientsList) || clientsList.length === 0) {
     return { clients: {}, allEvents: [], cachedAt: null };
   }
 
-  const cacheKey = `${REDIS_ACTIVITY_PREFIX}all:${includeRoutine ? "with_routine" : "normal"}`;
+  const modeKey = includeRoutine ? "with_routine" : "normal";
+  const cacheKey = `${REDIS_ACTIVITY_PREFIX}all:${modeKey}`;
 
   // 1. Try Redis cache if not forced refresh
   if (!forceRefresh) {
@@ -1286,61 +1361,175 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
     }
   }
 
-  console.log(`🔄 Fetching fresh activity for ${clientsList.length} clients from Google Sheets...`);
+  console.log(`🔄 Fetching fresh activity for ${clientsList.length} clients...`);
 
   const clientsData = {};
+  const clientKeyByLower = new Map();
+  for (const c of clientsList) {
+    if (!c?.clientName) continue;
+    clientsData[c.clientName] = { events: [], totalEvents: 0 };
+    clientKeyByLower.set(c.clientName.toLowerCase(), c.clientName);
+  }
   const allEvents = [];
-  const BATCH_SIZE = 2;
-  const DELAY_MS = 400;
 
-  for (let i = 0; i < clientsList.length; i += BATCH_SIZE) {
-    const batch = clientsList.slice(i, i + BATCH_SIZE);
-    const batchResults = await Promise.all(
-      batch.map(client => fetchClientActivity(sheets, client, includeRoutine, forceRefresh, automationCommanderSheetId, true, true))
-    );
+  // Partition Supabase Master tenants (1 batch query) vs legacy Google Sheet Masters (paced batches)
+  const supaEnabled = isSupabaseConfigured();
+  const contexts = supaEnabled
+    ? await Promise.all(
+        clientsList.map((client) =>
+          resolveSupabaseSheetContext({ spreadsheetId: client.masterSheetId, clientName: client.clientName }).catch(() => null)
+        )
+      )
+    : clientsList.map(() => null);
 
-    for (const res of batchResults) {
-      clientsData[res.clientName] = {
-        events: res.events,
-        totalEvents: res.totalEvents
+  const supabaseMasterItems = [];
+  const legacySheetClients = [];
+
+  clientsList.forEach((client, idx) => {
+    const ctx = contexts[idx];
+    if (supaEnabled && client?.masterSheetId && ctx?.isVirtualMaster) {
+      supabaseMasterItems.push({
+        client,
+        canonicalName: String(ctx.clientName || client.clientName || "").trim(),
+      });
+    } else {
+      legacySheetClients.push(client);
+    }
+  });
+
+  if (supabaseMasterItems.length > 0) {
+    const uncachedSupaItems = [];
+    if (!forceRefresh && redisClient?.isOpen) {
+      await Promise.all(
+        supabaseMasterItems.map(async (item) => {
+          const autologCacheKey = `${REDIS_ACTIVITY_PREFIX}autolog:${item.client.clientName}:${modeKey}`;
+          try {
+            const cachedAuto = await redisClient.get(autologCacheKey);
+            if (cachedAuto) {
+              const autoEvents = JSON.parse(cachedAuto);
+              if (Array.isArray(autoEvents)) {
+                clientsData[item.client.clientName].events.push(...autoEvents);
+                clientsData[item.client.clientName].totalEvents = clientsData[item.client.clientName].events.length;
+                allEvents.push(...autoEvents);
+                return;
+              }
+            }
+          } catch (_) { }
+          uncachedSupaItems.push(item);
+        })
+      );
+    } else {
+      uncachedSupaItems.push(...supabaseMasterItems);
+    }
+
+    if (uncachedSupaItems.length > 0) {
+      const canonicalNames = uncachedSupaItems.map((x) => x.canonicalName).filter(Boolean);
+      const batchRes = await fetchSupabaseAutoLogGridsBatch_(canonicalNames);
+      if (batchRes.failed) {
+        console.warn(`⚠️ Batch Supabase AutoLog query failed (${batchRes.error || "unknown"}), falling back to legacy fetch.`);
+        for (const item of uncachedSupaItems) {
+          legacySheetClients.push(item.client);
+        }
+      } else {
+        const redisWrites = [];
+        for (const item of uncachedSupaItems) {
+          const gridRow = batchRes.byLowerClientName.get(item.canonicalName.toLowerCase()) || null;
+          const formattedRows = gridRow ? extractFormattedAutoLogRows_(gridRow) : [];
+          const autoEvents = parseAutoLogRowsFromGrid_(formattedRows, item.client.clientName, includeRoutine);
+          clientsData[item.client.clientName].events.push(...autoEvents);
+          clientsData[item.client.clientName].totalEvents = clientsData[item.client.clientName].events.length;
+          allEvents.push(...autoEvents);
+
+          if (redisClient?.isOpen) {
+            const autologCacheKey = `${REDIS_ACTIVITY_PREFIX}autolog:${item.client.clientName}:${modeKey}`;
+            redisWrites.push(
+              redisClient.set(autologCacheKey, JSON.stringify(autoEvents), { EX: CACHE_TTL_SECONDS }).catch(() => { })
+            );
+          }
+        }
+        if (redisWrites.length > 0) {
+          await Promise.all(redisWrites);
+        }
+      }
+    }
+  }
+
+  if (legacySheetClients.length > 0) {
+    const BATCH_SIZE = 2;
+    const DELAY_MS = 400;
+
+    for (let i = 0; i < legacySheetClients.length; i += BATCH_SIZE) {
+      const batch = legacySheetClients.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(client => fetchClientActivity(sheets, client, includeRoutine, forceRefresh, automationCommanderSheetId, true, true))
+      );
+
+      for (const res of batchResults) {
+        clientsData[res.clientName] = {
+          events: res.events,
+          totalEvents: res.totalEvents
+        };
+        allEvents.push(...res.events);
+      }
+
+      // Delay between batches to respect Google Sheets rate limits
+      if (i + BATCH_SIZE < legacySheetClients.length) {
+        await new Promise(r => setTimeout(r, DELAY_MS));
+      }
+    }
+  }
+
+  // 2 & 3. Fetch Pulse Activity & PMA Activity across all clients in parallel
+  const [pulseEvents, pmaEvents] = await Promise.all([
+    fetchPulseActivity(sheets, automationCommanderSheetId, null).catch((err) => {
+      console.warn("⚠️ Could not fetch all Pulse activity in fetchAllClientsActivity:", err.message);
+      return [];
+    }),
+    fetchPmaActivity(sheets, automationCommanderSheetId, null).catch((err) => {
+      console.warn("⚠️ Could not fetch all PMA activity in fetchAllClientsActivity:", err.message);
+      return [];
+    }),
+  ]);
+
+  const appendCentralEvents = (eventsArr) => {
+    for (const ev of eventsArr) {
+      if (ev?.clientName) {
+        const targetKey = clientsData[ev.clientName]
+          ? ev.clientName
+          : clientKeyByLower.get(String(ev.clientName).trim().toLowerCase());
+        if (targetKey && clientsData[targetKey]) {
+          clientsData[targetKey].events.push(ev);
+        }
+      }
+      allEvents.push(ev);
+    }
+  };
+
+  appendCentralEvents(pulseEvents);
+  appendCentralEvents(pmaEvents);
+
+  // Deduplicate and sort each client's combined timeline, and refresh per-client Redis cache
+  const nowIso = new Date().toISOString();
+  const perClientCacheWrites = [];
+  for (const [cName, entry] of Object.entries(clientsData)) {
+    entry.events.sort((a, b) => b.timestampMs - a.timestampMs);
+    entry.events = deduplicateEvents(entry.events);
+    entry.totalEvents = entry.events.length;
+    if (allowGlobalCacheWrite && redisClient?.isOpen) {
+      const clientCacheKey = `${REDIS_ACTIVITY_PREFIX}client:${cName}:${modeKey}`;
+      const clientPayload = {
+        clientName: cName,
+        events: entry.events,
+        totalEvents: entry.totalEvents,
+        cachedAt: nowIso,
       };
-      allEvents.push(...res.events);
-    }
-
-    // Delay between batches to respect rate limits
-    if (i + BATCH_SIZE < clientsList.length) {
-      await new Promise(r => setTimeout(r, DELAY_MS));
+      perClientCacheWrites.push(
+        redisClient.set(clientCacheKey, JSON.stringify(clientPayload), { EX: CACHE_TTL_SECONDS }).catch(() => { })
+      );
     }
   }
-
-  // 2. Fetch Pulse Activity across all clients from Automation Commander in 1 single call
-  try {
-    const pulseEvents = await fetchPulseActivity(sheets, automationCommanderSheetId, null);
-    for (const ev of pulseEvents) {
-      if (ev.clientName && clientsData[ev.clientName]) {
-        clientsData[ev.clientName].events.push(ev);
-        clientsData[ev.clientName].events.sort((a, b) => b.timestampMs - a.timestampMs);
-        clientsData[ev.clientName].totalEvents = clientsData[ev.clientName].events.length;
-      }
-      allEvents.push(ev);
-    }
-  } catch (err) {
-    console.warn("⚠️ Could not fetch all Pulse activity in fetchAllClientsActivity:", err.message);
-  }
-
-  // 3. Fetch PMA Activity across all clients from Automation Commander in 1 single call
-  try {
-    const pmaEvents = await fetchPmaActivity(sheets, automationCommanderSheetId, null);
-    for (const ev of pmaEvents) {
-      if (ev.clientName && clientsData[ev.clientName]) {
-        clientsData[ev.clientName].events.push(ev);
-        clientsData[ev.clientName].events.sort((a, b) => b.timestampMs - a.timestampMs);
-        clientsData[ev.clientName].totalEvents = clientsData[ev.clientName].events.length;
-      }
-      allEvents.push(ev);
-    }
-  } catch (err) {
-    console.warn("⚠️ Could not fetch all PMA activity in fetchAllClientsActivity:", err.message);
+  if (perClientCacheWrites.length > 0) {
+    await Promise.all(perClientCacheWrites);
   }
 
   // Sort overall allEvents newest first and deduplicate
@@ -1350,14 +1539,14 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
   const payload = {
     clients: clientsData,
     allEvents: cleanAllEvents,
-    cachedAt: new Date().toISOString()
+    cachedAt: nowIso
   };
 
   // Cache in Redis only when fetching the full global client set
   if (allowGlobalCacheWrite) {
     try {
       await redisClient.set(cacheKey, JSON.stringify(payload), { EX: CACHE_TTL_SECONDS });
-      console.log(`✅ Cached activity for ${clientsList.length} clients (TTL: ${CACHE_TTL_SECONDS}s)`);
+      console.log(`✅ Cached activity for ${clientsList.length} clients (${supabaseMasterItems.length} Supabase batch, ${legacySheetClients.length} sheet; TTL: ${CACHE_TTL_SECONDS}s)`);
     } catch (cacheErr) {
       console.warn("⚠️ Redis write error in fetchAllClientsActivity:", cacheErr.message);
     }

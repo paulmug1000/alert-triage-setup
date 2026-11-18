@@ -17,6 +17,10 @@ import {
 } from "../../../services/setupService.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
+export const config = {
+  maxDuration: 300,
+};
+
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {

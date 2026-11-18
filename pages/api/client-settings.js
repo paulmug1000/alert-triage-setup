@@ -32,6 +32,10 @@ import {
   pullCrmDataService
 } from "../../services/clientSettingsService.js";
 
+export const config = {
+  maxDuration: 300,
+};
+
 export default async function handler(req, res) {
   // 1. Authenticate user
   const sessionUser = getSessionUser(req);

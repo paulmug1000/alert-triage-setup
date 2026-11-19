@@ -1564,6 +1564,11 @@ export function formatAdjustmentLabel(defaultLabel = "Manual adjustment", note =
   return defaultLabel;
 }
 
+function resolvePopoverTotal_(cellValue, breakdownSum, adjustmentAdded = false, hasItems = true) {
+  if (!hasItems || adjustmentAdded) return cellValue;
+  return Math.round(Number(breakdownSum || 0) * 100) / 100;
+}
+
 export function buildDeepDiveData({
   ddType,
   periodLabel,
@@ -1672,7 +1677,8 @@ export function buildDeepDiveData({
       items.push({ name: "Manual scenario adjustment", amount: manualRevAdj });
     }
     let drift = Math.round((parseMoney(cellValue) - (totalJobs + manualRevAdj)) * 100) / 100;
-    if (Math.abs(drift) > 2) {
+    const hasDriftAdj = Math.abs(drift) > 2;
+    if (hasDriftAdj) {
       items.push({
         name: isScenarioView && !scenariosConfig?.scenarioMeta ? "Manual scenario adjustment" : "Rounding adjustment",
         amount: drift,
@@ -1682,7 +1688,7 @@ export function buildDeepDiveData({
     return {
       title: effectiveIncomeMode ? "Confirmed income" : "Confirmed revenue",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, totalJobs + manualRevAdj, hasDriftAdj, items.length > 0),
       items: items.map((i) => ({
         name: i.name,
         client: i.client,
@@ -1707,17 +1713,18 @@ export function buildDeepDiveData({
     }
 
     const totalJobs = items.reduce((s, i) => s + i.amount, 0);
-    const drift = Math.round(parseMoney(cellValue) - totalJobs);
-    if (isScenarioView && Math.abs(drift) > 1) {
+    const drift = Math.round((parseMoney(cellValue) - totalJobs) * 100) / 100;
+    const hasDriftAdj = Math.abs(drift) > 1;
+    if (isScenarioView && hasDriftAdj) {
       items.push({ name: "Scenario adjustment", amount: drift });
-    } else if (!isScenarioView && Math.abs(drift) > 1) {
+    } else if (!isScenarioView && hasDriftAdj) {
       items.push({ name: "Rounding adjustment", amount: drift });
     }
 
     return {
       title: effectiveIncomeMode ? "Pipeline income" : "Pipeline revenue",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, totalJobs, hasDriftAdj, items.length > 0),
       items: items.map((i) => ({
         name: i.name,
         client: i.client,
@@ -2013,7 +2020,7 @@ export function buildDeepDiveData({
       // In the original app (WebApp.html line 16431):
       // restrictedTotal = cellTotal - conTotal - addTotal;
       // This includes salaries and dividends combined in the cell, without exposing dividend details.
-      const restrictedTotal = Math.round(targetCellVal - conTotal - cosTotal - psTotal - manualStaffAdjTotal);
+      const restrictedTotal = Math.round((targetCellVal - conTotal - cosTotal - psTotal - manualStaffAdjTotal) * 100) / 100;
       if (Math.abs(restrictedTotal) >= 0.01) {
         sections.push({
           key: "salaries",
@@ -2086,18 +2093,20 @@ export function buildDeepDiveData({
     }
 
     // Drift / Rounding adjustment is strictly restricted to full users (WebApp.html line 16513)
+    const calculatedTotal = salTotal + divTotal + conTotal + cosTotal + psTotal + manualStaffAdjTotal;
+    let hasStaffDriftAdj = isRestricted;
     if (!isRestricted) {
-      let calculatedTotal = salTotal + divTotal + conTotal + cosTotal + psTotal + manualStaffAdjTotal;
       let drift = Math.round((targetCellVal - calculatedTotal) * 100) / 100;
+      hasStaffDriftAdj = Math.abs(drift) > 2;
 
-      if (isScenarioView && Math.abs(drift) > 2) {
+      if (isScenarioView && hasStaffDriftAdj) {
         sections.push({
           key: "scenarioAdj",
           title: "Scenario adjustment",
           amount: drift,
           isAdjustment: true,
         });
-      } else if (!isScenarioView && Math.abs(drift) > 2) {
+      } else if (!isScenarioView && hasStaffDriftAdj) {
         sections.push({
           key: "roundingAdj",
           title: "Rounding adjustment",
@@ -2110,7 +2119,7 @@ export function buildDeepDiveData({
     return {
       title: isDel ? "Delivery staff costs" : "Non-delivery staff costs",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, calculatedTotal, hasStaffDriftAdj, sections.length > 0),
       sections,
       items: [],
     };
@@ -2143,14 +2152,15 @@ export function buildDeepDiveData({
 
     const totalJobs = items.reduce((s, i) => s + i.amount, 0);
     let drift = Math.round((parseMoney(cellValue) - totalJobs) * 100) / 100;
-    if (Math.abs(drift) > 2) {
+    const hasDriftAdj = Math.abs(drift) > 2;
+    if (hasDriftAdj) {
       items.push({ name: "Rounding adjustment", amount: drift });
     }
 
     return {
       title: directCostsMode === "Pass-through" ? "Pass-through costs" : "Direct costs",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, totalJobs, hasDriftAdj, items.length > 0),
       items,
       sections: null,
     };
@@ -2363,7 +2373,8 @@ export function buildDeepDiveData({
       items.push({ name: "Manual scenario adjustment", amount: manualExpAdj });
     }
     let drift = Math.round((parseMoney(cellValue) - (totalExp + manualExpAdj)) * 100) / 100;
-    if (Math.abs(drift) > 2) {
+    const hasDriftAdj = Math.abs(drift) > 2;
+    if (hasDriftAdj) {
       items.push({
         name: isScenarioView && !scenariosConfig?.scenarioMeta ? "Manual scenario adjustment" : "Rounding adjustment",
         amount: drift,
@@ -2382,7 +2393,7 @@ export function buildDeepDiveData({
     return {
       title: isDel ? "Delivery expenses" : "Non-delivery expenses",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, totalExp + manualExpAdj, hasDriftAdj, items.length > 0),
       items,
       sections: null,
     };
@@ -2404,10 +2415,13 @@ export function buildDeepDiveData({
       })
       .filter((item) => item.amount > 0);
 
+    const totalDivs = items.reduce((s, i) => s + i.amount, 0);
+    const divDrift = Math.round((parseMoney(cellValue) - totalDivs) * 100) / 100;
+
     return {
       title: "Dividends as salary",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, totalDivs, Math.abs(divDrift) > 2, items.length > 0),
       items,
       sections: null,
     };
@@ -2419,7 +2433,7 @@ export function buildDeepDiveData({
     const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, "confCash");
     const targetCellVal = parseMoney(cellValue);
     const sumItems = jobCash.reduce((s, i) => s + i.amount, 0);
-    const drift = Math.round(targetCellVal - sumItems);
+    const drift = Math.round((targetCellVal - sumItems) * 100) / 100;
 
     const items = jobCash.map((j) => ({
       name: j.name,
@@ -2433,7 +2447,8 @@ export function buildDeepDiveData({
       isPartPayment: j.isPartPayment || false,
     }));
 
-    if (Math.abs(drift) > 2) {
+    const hasDriftAdj = Math.abs(drift) > 2;
+    if (hasDriftAdj) {
       items.push({
         name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
@@ -2443,7 +2458,7 @@ export function buildDeepDiveData({
     return {
       title: "Confirmed cash incoming",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, sumItems, hasDriftAdj, items.length > 0),
       items,
       sections: null,
     };
@@ -2455,7 +2470,7 @@ export function buildDeepDiveData({
     const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, "pipeCash");
     const targetCellVal = parseMoney(cellValue);
     const sumItems = jobCash.reduce((s, i) => s + i.amount, 0);
-    const drift = Math.round(targetCellVal - sumItems);
+    const drift = Math.round((targetCellVal - sumItems) * 100) / 100;
 
     const items = jobCash.map((j) => ({
       name: j.name,
@@ -2468,7 +2483,8 @@ export function buildDeepDiveData({
       isPipeline: true,
     }));
 
-    if (Math.abs(drift) > 2) {
+    const hasDriftAdj = Math.abs(drift) > 2;
+    if (hasDriftAdj) {
       items.push({
         name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
@@ -2478,7 +2494,7 @@ export function buildDeepDiveData({
     return {
       title: "Pipeline cash incoming",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, sumItems, hasDriftAdj, items.length > 0),
       items,
       sections: null,
     };
@@ -2506,8 +2522,9 @@ export function buildDeepDiveData({
     let total = items.reduce((sum, item) => sum + item.amount, 0);
 
     const targetCellVal = parseMoney(cellValue);
-    const drift = Math.round(targetCellVal - total);
-    if (Math.abs(drift) > 2) {
+    const drift = Math.round((targetCellVal - total) * 100) / 100;
+    const hasDriftAdj = Math.abs(drift) > 2;
+    if (hasDriftAdj) {
       items.push({
         name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
@@ -2517,7 +2534,7 @@ export function buildDeepDiveData({
     return {
       title: "Salaries outgoing",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, total, hasDriftAdj, items.length > 0),
       items,
       sections: null,
     };
@@ -2529,9 +2546,10 @@ export function buildDeepDiveData({
     const list = CashDeepDiveEngine.getOutgoingsCash(effectiveDate, actualConType, keyData);
     const targetCellVal = parseMoney(cellValue);
     const total = list.reduce((sum, item) => sum + item.amount, 0);
-    const drift = Math.round(targetCellVal - total);
+    const drift = Math.round((targetCellVal - total) * 100) / 100;
 
-    if (Math.abs(drift) > 2) {
+    const hasDriftAdj = Math.abs(drift) > 2;
+    if (hasDriftAdj) {
       list.push({
         name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
@@ -2541,7 +2559,7 @@ export function buildDeepDiveData({
     return {
       title: "Contractors outgoing",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, total, hasDriftAdj, list.length > 0),
       items: list,
       sections: null,
     };
@@ -2554,7 +2572,7 @@ export function buildDeepDiveData({
     const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, actualDirType);
     const targetCellVal = parseMoney(cellValue);
     const sumItems = jobCash.reduce((s, i) => s + i.amount, 0);
-    const drift = Math.round(targetCellVal - sumItems);
+    const drift = Math.round((targetCellVal - sumItems) * 100) / 100;
 
     const items = jobCash.map((j) => ({
       name: j.name,
@@ -2568,7 +2586,8 @@ export function buildDeepDiveData({
       isPartPayment: j.isPartPayment || false,
     }));
 
-    if (Math.abs(drift) > 2) {
+    const hasDriftAdj = Math.abs(drift) > 2;
+    if (hasDriftAdj) {
       items.push({
         name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
@@ -2579,7 +2598,7 @@ export function buildDeepDiveData({
     return {
       title: isPassThroughCash ? "Pass-through cost payments" : "Direct cost payments",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, sumItems, hasDriftAdj, items.length > 0),
       items,
       sections: null,
     };
@@ -2592,7 +2611,8 @@ export function buildDeepDiveData({
     const total = list.reduce((sum, item) => sum + (item.amount || 0), 0);
     const drift = Math.round((targetCellVal - total) * 100) / 100;
 
-    if (Math.abs(drift) > 0.05) {
+    const hasDriftAdj = Math.abs(drift) > 0.05;
+    if (hasDriftAdj) {
       list.push({
         name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
@@ -2602,7 +2622,7 @@ export function buildDeepDiveData({
     return {
       title: "Other expenses",
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, total, hasDriftAdj, list.length > 0),
       items: list,
       sections: null,
     };
@@ -2653,10 +2673,13 @@ export function buildDeepDiveData({
       });
     }
 
+    const sectionsSum = sections.reduce((s, sec) => s + (Number(sec.amount) || 0), 0);
+    const flatDrift = Math.round((parseMoney(cellValue) - sectionsSum) * 100) / 100;
+
     return {
       title: displayTitle,
       period: periodLabel,
-      total: cellValue,
+      total: resolvePopoverTotal_(cellValue, sectionsSum, Math.abs(flatDrift) > 2, sections.length > 0),
       items: [],
       sections,
     };

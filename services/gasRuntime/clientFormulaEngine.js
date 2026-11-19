@@ -3382,8 +3382,7 @@ export function recalculateClientGrids(grids, options = {}) {
         "^" +
         collapsed
           .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-          .replace(/\*/g, ".*?")
-          .replace(/\?/g, ".") +
+          .replace(/[*?]/g, (ch) => (ch === "*" ? ".*" : ".")) +
         "$";
       const re = new RegExp(regexStr, "i");
       return (v) => !isBlankVal(v) && re.test(String(v));

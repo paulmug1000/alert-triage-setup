@@ -1927,6 +1927,7 @@ export function buildNativeStyledTables(mgmtGrid = [], chartRefsList = []) {
       const rows = [];
 
       for (let r0 = startRow0; r0 <= endRow0; r0++) {
+        const isHideRow = String(mgmtGrid?.[r0]?.[startCol0] ?? "").trim().toLowerCase() === "hide";
         const rowCells = [];
         for (let c0 = startCol0; c0 <= endCol0; c0++) {
           const rawCell = mgmtGrid?.[r0]?.[c0] ?? "";
@@ -1979,6 +1980,11 @@ export function buildNativeStyledTables(mgmtGrid = [], chartRefsList = []) {
               cellStyle.bold = fmt.textFormat.bold;
               boldApplied = true;
             }
+          }
+
+          if (isHideRow) {
+            cellStyle.bg = "#f3f3f3";
+            cellStyle.fg = "#f3f3f3";
           }
 
           let align = String(cellStyle.align || "").toUpperCase();
@@ -2062,6 +2068,133 @@ function hexToRgbColor_(hex) {
     green: parseInt(clean.slice(2, 4), 16) / 255,
     blue: parseInt(clean.slice(4, 6), 16) / 255,
   };
+}
+
+function getSlideNotesAndText_(slide) {
+  let notesText = "";
+  for (const ne of slide?.slideProperties?.notesPage?.pageElements || []) {
+    for (const te of ne.shape?.text?.textElements || []) {
+      if (te.textRun?.content) notesText += te.textRun.content;
+    }
+  }
+  let slideText = "";
+  for (const pe of slide?.pageElements || []) {
+    for (const te of pe.shape?.text?.textElements || []) {
+      if (te.textRun?.content) slideText += te.textRun.content;
+    }
+  }
+  return {
+    notesText,
+    notesLower: notesText.toLowerCase(),
+    slideTextLower: slideText.toLowerCase(),
+  };
+}
+
+/**
+ * Resolves a Google Slides chart element (either a linked sheetsChart or an already-replaced
+ * PULSE_CHART image) to a canonical chartId present in `chartIdMap`.
+ * Falls back to speaker notes, slide text, and element geometry so client decks created from
+ * copied Master Sheets (which have unique Google Sheets chartIds) are still matched and replaced.
+ */
+export function resolveCanonicalChartIdForSlideElement(slide, pe, slideChartElements = [], chartIdMap = new Map()) {
+  if (pe?.image) {
+    const alt = String(pe.title || pe.description || "");
+    const m = alt.match(/PULSE_CHART:(\d+)/);
+    if (m) {
+      const cid = Number(m[1]);
+      if (chartIdMap.has(cid)) return cid;
+    }
+  }
+  if (pe?.sheetsChart?.chartId) {
+    const directId = Number(pe.sheetsChart.chartId);
+    if (chartIdMap.has(directId)) return directId;
+  }
+  if (!pe?.sheetsChart && !pe?.image) return null;
+  if (pe?.image && !/PULSE_CHART:/.test(String(pe.title || pe.description || ""))) return null;
+
+  const { notesLower, slideTextLower } = getSlideNotesAndText_(slide);
+
+  // 1. 5-sparkline Snapshot slides ([MonthSnapshot] / [QuarterSnapshot])
+  const isQuarterSnap = notesLower.includes("[quartersnapshot]") || slideTextLower.includes("quarter snapshot");
+  const isMonthSnap = notesLower.includes("[monthsnapshot]") || slideTextLower.includes("month snapshot");
+  if ((isQuarterSnap || isMonthSnap) && slideChartElements.length === 5) {
+    const sortedByX = [...slideChartElements].sort(
+      (a, b) => (a.transform?.translateX ?? 0) - (b.transform?.translateX ?? 0)
+    );
+    const leftId = isQuarterSnap ? 531345867 : 1308389059;
+    if (sortedByX[0]?.objectId === pe.objectId) return leftId;
+
+    const midPair = sortedByX.slice(1, 3).sort(
+      (a, b) => (a.transform?.translateY ?? 0) - (b.transform?.translateY ?? 0)
+    );
+    if (midPair[0]?.objectId === pe.objectId) return isQuarterSnap ? 478763476 : 207153163;
+    if (midPair[1]?.objectId === pe.objectId) return isQuarterSnap ? 1246520464 : 223244050;
+
+    const rightPair = sortedByX.slice(3, 5).sort(
+      (a, b) => (a.transform?.translateY ?? 0) - (b.transform?.translateY ?? 0)
+    );
+    if (rightPair[0]?.objectId === pe.objectId) return isQuarterSnap ? 717707403 : 1552264321;
+    if (rightPair[1]?.objectId === pe.objectId) return isQuarterSnap ? 1026686269 : 135522675;
+  }
+
+  // 2. Single-chart slides matched by speaker notes or slide title/text
+  if (notesLower.includes("[cashflow]") || slideTextLower.includes("cashflow forecast")) {
+    return 1922083043;
+  }
+  if (
+    slideTextLower.includes("revenue and profit over time") ||
+    slideTextLower.includes("revenue & profit over time") ||
+    slideTextLower.includes("income and profit over time")
+  ) {
+    return 891278136;
+  }
+  if (notesLower.includes("[targets]") || slideTextLower.includes("targets vs actual") || slideTextLower.includes("target vs actual")) {
+    return 1834105746;
+  }
+  if (
+    (slideTextLower.includes("income by client") || slideTextLower.includes("revenue by client")) &&
+    slideTextLower.includes("month")
+  ) {
+    return 937912976;
+  }
+  if (slideTextLower.includes("ytd") && (slideTextLower.includes("breakdown") || slideTextLower.includes("by client"))) {
+    if (
+      slideTextLower.includes("over time") ||
+      slideTextLower.includes("by month") ||
+      slideTextLower.includes("stacked")
+    ) {
+      return 218419526;
+    }
+    return 2003233270;
+  }
+  if (notesLower.includes("[bookings") || slideTextLower.includes("bookings")) {
+    const isPie = slideTextLower.includes("by source");
+    if (notesLower.includes("[bookings6]") || slideTextLower.includes("6 month") || slideTextLower.includes("six month")) {
+      return isPie ? 1757937705 : 661522736;
+    }
+    if (notesLower.includes("[bookings3]") || slideTextLower.includes("3 month") || slideTextLower.includes("three month")) {
+      return isPie ? 905909944 : 757133711;
+    }
+    if (notesLower.includes("[bookings1]") || slideTextLower.includes("1 month") || slideTextLower.includes("one month")) {
+      return isPie ? 1102489229 : 1748368202;
+    }
+    return isPie ? 1829375263 : 854929283;
+  }
+  if (notesLower.includes("[pipeline") || slideTextLower.includes("pipeline")) {
+    const isPie = slideTextLower.includes("by source");
+    if (notesLower.includes("[pipeline6]") || slideTextLower.includes("6 month") || slideTextLower.includes("six month")) {
+      return isPie ? 612915003 : 1243978213;
+    }
+    if (notesLower.includes("[pipeline3]") || slideTextLower.includes("3 month") || slideTextLower.includes("three month")) {
+      return isPie ? 80464875 : 289470252;
+    }
+    if (notesLower.includes("[pipeline1]") || slideTextLower.includes("1 month") || slideTextLower.includes("one month")) {
+      return isPie ? 488146559 : 107213514;
+    }
+    return isPie ? 1403245524 : 591554962;
+  }
+
+  return null;
 }
 
 /**
@@ -2154,18 +2287,20 @@ export async function updateGoogleSlidesPresentationNative({
 
   // 2. Prepare chart PNG signed URLs for all chart elements present in the deck
   const chartSignedUrlByChartId = new Map();
+  const resolvedChartIdByElementId = new Map();
   if (!skipChartRefresh && sb) {
     await ensureChartStorageBucket_(sb);
     const neededChartIds = new Set();
 
     for (const slide of slides) {
-      for (const pe of slide.pageElements || []) {
-        if (pe.sheetsChart?.chartId) {
-          neededChartIds.add(Number(pe.sheetsChart.chartId));
-        } else if (pe.image) {
-          const alt = String(pe.title || pe.description || "");
-          const m = alt.match(/PULSE_CHART:(\d+)/);
-          if (m) neededChartIds.add(Number(m[1]));
+      const slideChartElements = (slide.pageElements || []).filter(
+        (el) => el.sheetsChart || (el.image && /PULSE_CHART:\d+/.test(String(el.title || el.description || "")))
+      );
+      for (const pe of slideChartElements) {
+        const cid = resolveCanonicalChartIdForSlideElement(slide, pe, slideChartElements, chartIdMap);
+        if (cid && chartIdMap.has(cid)) {
+          resolvedChartIdByElementId.set(pe.objectId, cid);
+          neededChartIds.add(cid);
         }
       }
     }
@@ -2210,14 +2345,7 @@ export async function updateGoogleSlidesPresentationNative({
     // 3a. Replace chart elements on this slide
     if (!skipChartRefresh) {
       for (const pe of slide.pageElements || []) {
-        let matchedChartId = null;
-        if (pe.sheetsChart?.chartId) {
-          matchedChartId = Number(pe.sheetsChart.chartId);
-        } else if (pe.image) {
-          const alt = String(pe.title || pe.description || "");
-          const m = alt.match(/PULSE_CHART:(\d+)/);
-          if (m) matchedChartId = Number(m[1]);
-        }
+        const matchedChartId = resolvedChartIdByElementId.get(pe.objectId) || null;
 
         if (matchedChartId && chartSignedUrlByChartId.has(matchedChartId)) {
           const signedUrl = chartSignedUrlByChartId.get(matchedChartId);

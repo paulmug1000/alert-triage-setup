@@ -316,15 +316,25 @@ export default function ReportingTab({
   }, [actionInProgress, reportMonthLabel]);
 
   // Run Batch Reporting Action (GENERATE | UPDATE | EMAIL) with detailed step-by-step progress
-  const handleRunBatchAction = async (mode) => {
-    if (!selectedClients || selectedClients.size === 0) {
+  const handleRunBatchAction = async (mode, overrideClients = null) => {
+    const hasOverrideClients = Array.isArray(overrideClients) && overrideClients.length > 0;
+    if (!hasOverrideClients && (!selectedClients || selectedClients.size === 0)) {
       setStatusMsg({ type: "error", text: "Please select at least one client to process." });
       return;
     }
 
-    const targetClients = clients.filter(c => selectedClients.has(c.clientName));
+    const targetClients = hasOverrideClients
+      ? overrideClients
+      : clients.filter(c => selectedClients.has(c.clientName));
     if (mode !== "EMAIL" && targetClients.some(c => !c.folderUrl)) {
       const missing = targetClients.filter(c => !c.folderUrl).map(c => c.clientName);
+      if (targetClients.length === 1) {
+        setStatusMsg({
+          type: "error",
+          text: `${missing[0]} does not have a management reports folder configured.`
+        });
+        return;
+      }
       if (!window.confirm(`Warning: The following client(s) do not have a Management Reports folder configured:\n- ${missing.join("\n- ")}\n\nDo you want to continue for the remaining clients?`)) {
         return;
       }
@@ -2330,6 +2340,34 @@ export default function ReportingTab({
                                 </svg>
                                 <span>{copiedClient === client.clientName ? "Copied" : "Copy link"}</span>
                               </button>
+                              {(() => {
+                                const isUpdatingThisClient = actionInProgress === "UPDATE" && runProgress?.currentClientName === client.clientName;
+                                return (
+                                  <button
+                                    type="button"
+                                    disabled={actionInProgress !== null}
+                                    onClick={() => handleRunBatchAction("UPDATE", [client])}
+                                    title={`Run deck update for ${client.clientName}`}
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "4px",
+                                      padding: "3px 8px",
+                                      background: isUpdatingThisClient ? "#e0f2fe" : "#ffffff",
+                                      color: "#0369a1",
+                                      border: "1px solid #0284c7",
+                                      borderRadius: "4px",
+                                      fontSize: "11px",
+                                      fontWeight: 600,
+                                      cursor: actionInProgress !== null ? "not-allowed" : "pointer",
+                                      opacity: actionInProgress !== null && !isUpdatingThisClient ? 0.55 : 1
+                                    }}
+                                  >
+                                    {isUpdatingThisClient && <Spinner size="10px" color="#0369a1" />}
+                                    <span>Update</span>
+                                  </button>
+                                );
+                              })()}
                             </div>
                             {latestReport?.month && (
                               <span style={{

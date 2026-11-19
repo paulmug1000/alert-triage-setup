@@ -107,16 +107,12 @@ export default function CashflowView({
     return universalFormatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
-  // Helper to extract or sum values across matching rows
-  const getValues = (rows, labelPatterns, rowIndices = []) => {
+  // Helper to find matching rows by explicit rowIndex or label pattern
+  const findMatchingRows = (rows, labelPatterns, rowIndices = []) => {
     let matching = [];
-
-    // Prioritize explicit row indices to avoid accidental double-counting of auxiliary rows
     if (rowIndices && rowIndices.length > 0) {
       matching = rows.filter((r) => rowIndices.includes(r.rowIndex));
     }
-
-    // Fallback: match by label if row index was not found in dataset
     if (matching.length === 0) {
       matching = rows.filter((r) => {
         const l = (r.label || "").toLowerCase().trim();
@@ -129,7 +125,12 @@ export default function CashflowView({
         });
       });
     }
+    return matching;
+  };
 
+  // Helper to extract or sum values across matching rows (formatted for table, or raw 2dp for popovers)
+  const getValues = (rows, labelPatterns, rowIndices = []) => {
+    const matching = findMatchingRows(rows, labelPatterns, rowIndices);
     if (matching.length === 0) return Array(rollingMonths.length).fill(`${currencySymbol}0`);
 
     return rollingMonths.map((_, mIdx) => {
@@ -138,6 +139,20 @@ export default function CashflowView({
         sum += parseMoney(r.rollingValues?.[mIdx]);
       });
       return formatMoney(sum);
+    });
+  };
+
+  const getRawValues = (rows, labelPatterns, rowIndices = []) => {
+    const matching = findMatchingRows(rows, labelPatterns, rowIndices);
+    if (matching.length === 0) return Array(rollingMonths.length).fill(0);
+
+    return rollingMonths.map((_, mIdx) => {
+      let sum = 0;
+      matching.forEach((r) => {
+        const raw = r.rollingRawValues?.[mIdx];
+        sum += typeof raw === "number" && Number.isFinite(raw) ? raw : parseMoney(r.rollingValues?.[mIdx]);
+      });
+      return Math.round(sum * 100) / 100;
     });
   };
 
@@ -169,24 +184,28 @@ export default function CashflowView({
 
   // Helper to extract base forecast line(s) + manual adjustment amount for flat cash rows
   const getFlatRowBreakdown = (rows, mIdx, baseDefs = [], adjRowIndices = []) => {
+    const readRaw = (r) => {
+      const raw = r?.rollingRawValues?.[mIdx];
+      return typeof raw === "number" && Number.isFinite(raw) ? raw : parseMoney(r?.rollingValues?.[mIdx]);
+    };
     const baseItems = [];
     baseDefs.forEach(({ rowIndex, label }) => {
       const r = rows.find((row) => row.rowIndex === rowIndex);
-      const val = parseMoney(r?.rollingValues?.[mIdx]);
+      const val = readRaw(r);
       if (Math.abs(val) > 0.01) {
-        baseItems.push({ title: label, amount: val });
+        baseItems.push({ title: label, amount: Math.round(val * 100) / 100 });
       }
     });
     let adjTotal = 0;
     adjRowIndices.forEach((rIdx) => {
       const r = rows.find((row) => row.rowIndex === rIdx);
-      adjTotal += parseMoney(r?.rollingValues?.[mIdx]);
+      adjTotal += readRaw(r);
     });
-    return { baseItems, adjTotal };
+    return { baseItems, adjTotal: Math.round(adjTotal * 100) / 100 };
   };
 
   // Deep dive cell click
-  const handleCellClick = (e, rowLabel, val, mIdx, ddType, cellNote = "", flatBreakdown = null) => {
+  const handleCellClick = (e, rowLabel, val, mIdx, ddType, cellNote = "", flatBreakdown = null, rawVal = undefined) => {
     if (!ddType || !val || val === "—" || Math.abs(parseMoney(val)) < 0.001) return;
 
     const monthLabel = rollingMonths[mIdx] || `Month ${mIdx + 1}`;
@@ -194,12 +213,13 @@ export default function CashflowView({
     const parsedTargetDate = DeepDiveEngine.parseHeaderDate(rollingMonths[mIdx]) || new Date();
 
     const isDataLoading = !keyData || isLoading;
+    const effectiveCellVal = typeof rawVal === "number" && Number.isFinite(rawVal) ? rawVal : val;
 
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel: monthLabel,
       monthIndex: mIdx,
-      cellValue: val,
+      cellValue: effectiveCellVal,
       yearIndex: 1,
       targetDate: parsedTargetDate,
       keyData,
@@ -217,7 +237,7 @@ export default function CashflowView({
       items: ddData.items,
       sections: ddData.sections,
       isLoading: isDataLoading,
-      _clickParams: { ddType, monthLabel, mIdx, val, parsedTargetDate, rect, cellNote, flatBreakdown },
+      _clickParams: { ddType, monthLabel, mIdx, val: effectiveCellVal, parsedTargetDate, rect, cellNote, flatBreakdown },
     });
   };
 
@@ -290,160 +310,136 @@ export default function CashflowView({
     keyData?.outgoingsMeta?.directCostsMode === "Pass-through";
   const directCostsLabel = isPassThrough ? "Pass-through costs" : "Direct costs";
 
+  const makeDetail = (rows, label, labelPatterns, rowIndices, ddType, flatSpec = null) => ({
+    label,
+    values: getValues(rows, labelPatterns, rowIndices),
+    rawValues: getRawValues(rows, labelPatterns, rowIndices),
+    getNote: (mIdx) => getAdjustmentNote(rows, mIdx, rowIndices),
+    ...(flatSpec
+      ? { getBreakdown: (mIdx) => getFlatRowBreakdown(rows, mIdx, flatSpec.baseDefs, flatSpec.adjRowIndices) }
+      : {}),
+    ddType,
+  });
+
   const exclDetails = [
-    {
-      label: "Confirmed cash incoming",
-      values: getValues(exclRows, ["confirmed cash incoming", "cash incoming adjustment", "incoming cash adjustment"], [6, 7]),
-      getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [6, 7]),
-      ddType: "cashConfInflow"
-    },
-    {
-      label: "Salaries",
-      values: isSenior
-        ? getValues(exclRows, ["salaries outgoing", "salaries adjustment", "dividends as salary outgoing", "dividends as salary adjustment"], [8, 9, 10, 11])
-        : getValues(exclRows, ["salaries outgoing", "salaries adjustment"], [8, 9]),
-      getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, isSenior ? [8, 9, 10, 11] : [8, 9]),
-      ddType: "cashSalaries"
-    },
+    makeDetail(exclRows, "Confirmed cash incoming", ["confirmed cash incoming", "cash incoming adjustment", "incoming cash adjustment"], [6, 7], "cashConfInflow"),
+    makeDetail(
+      exclRows,
+      "Salaries",
+      isSenior
+        ? ["salaries outgoing", "salaries adjustment", "dividends as salary outgoing", "dividends as salary adjustment"]
+        : ["salaries outgoing", "salaries adjustment"],
+      isSenior ? [8, 9, 10, 11] : [8, 9],
+      "cashSalaries"
+    ),
     ...(!isSenior
-      ? [{
-          label: "Dividends as salary",
-          values: getValues(exclRows, ["dividends as salary outgoing", "dividends as salary adjustment"], [10, 11]),
-          getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [10, 11]),
-          getBreakdown: (mIdx) => getFlatRowBreakdown(exclRows, mIdx, [{ rowIndex: 10, label: "Dividends as salary" }], [11]),
-          ddType: "cashDividends"
-        }]
+      ? [
+          makeDetail(
+            exclRows,
+            "Dividends as salary",
+            ["dividends as salary outgoing", "dividends as salary adjustment"],
+            [10, 11],
+            "cashDividends",
+            { baseDefs: [{ rowIndex: 10, label: "Dividends as salary" }], adjRowIndices: [11] }
+          ),
+        ]
       : []),
-    {
-      label: "Contractors",
-      values: getValues(exclRows, ["contractors outgoing", "contractors adjustment"], [12, 13]),
-      getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [12, 13]),
-      ddType: "conCash_excl"
-    },
-    {
-      label: directCostsLabel,
-      values: getValues(exclRows, ["direct costs outgoing", "direct costs adjustment", "pass-through costs outgoing", "pass-through costs adjustment"], [14, 15]),
-      getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [14, 15]),
-      ddType: "dirCash_excl"
-    },
-    {
-      label: "Other expenses",
-      values: getValues(exclRows, ["other expenses outgoing", "other expenses adjustment"], [16, 17]),
-      getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [16, 17]),
-      ddType: "cashOutgoings"
-    },
-    {
-      label: "Tax payments",
-      values: getValues(exclRows, ["corporation tax", "vat"], [19, 20, 21, 22]),
-      getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [19, 20, 21, 22]),
-      getBreakdown: (mIdx) => getFlatRowBreakdown(exclRows, mIdx, [
-        { rowIndex: 19, label: "Corporation tax" },
-        { rowIndex: 21, label: "VAT" },
-      ], [20, 22]),
-      ddType: "cashTaxes"
-    },
-    {
-      label: "Non-operating income",
-      values: getValues(exclRows, ["non-operating income"], [24, 25]),
-      getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [24, 25]),
-      getBreakdown: (mIdx) => getFlatRowBreakdown(exclRows, mIdx, [{ rowIndex: 24, label: "Non-operating income" }], [25]),
-      ddType: "nonOpIncCash"
-    },
-    {
-      label: "Non-operating expenses",
-      values: getValues(exclRows, ["non-operating expenses"], [26, 27]),
-      getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [26, 27]),
-      getBreakdown: (mIdx) => getFlatRowBreakdown(exclRows, mIdx, [{ rowIndex: 26, label: "Non-operating expenses" }], [27]),
-      ddType: "nonOpExpCash"
-    },
-    {
-      label: "Other cash movements",
-      values: getValues(exclRows, ["other cash movements", "other adjustments"], [29, 30]),
-      getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [29, 30]),
-      getBreakdown: (mIdx) => getFlatRowBreakdown(exclRows, mIdx, [{ rowIndex: 29, label: "Other cash movements" }], [30]),
-      ddType: "otherMoveCash"
-    },
+    makeDetail(exclRows, "Contractors", ["contractors outgoing", "contractors adjustment"], [12, 13], "conCash_excl"),
+    makeDetail(exclRows, directCostsLabel, ["direct costs outgoing", "direct costs adjustment", "pass-through costs outgoing", "pass-through costs adjustment"], [14, 15], "dirCash_excl"),
+    makeDetail(exclRows, "Other expenses", ["other expenses outgoing", "other expenses adjustment"], [16, 17], "cashOutgoings"),
+    makeDetail(
+      exclRows,
+      "Tax payments",
+      ["corporation tax", "vat"],
+      [19, 20, 21, 22],
+      "cashTaxes",
+      { baseDefs: [{ rowIndex: 19, label: "Corporation tax" }, { rowIndex: 21, label: "VAT" }], adjRowIndices: [20, 22] }
+    ),
+    makeDetail(
+      exclRows,
+      "Non-operating income",
+      ["non-operating income"],
+      [24, 25],
+      "nonOpIncCash",
+      { baseDefs: [{ rowIndex: 24, label: "Non-operating income" }], adjRowIndices: [25] }
+    ),
+    makeDetail(
+      exclRows,
+      "Non-operating expenses",
+      ["non-operating expenses"],
+      [26, 27],
+      "nonOpExpCash",
+      { baseDefs: [{ rowIndex: 26, label: "Non-operating expenses" }], adjRowIndices: [27] }
+    ),
+    makeDetail(
+      exclRows,
+      "Other cash movements",
+      ["other cash movements", "other adjustments"],
+      [29, 30],
+      "otherMoveCash",
+      { baseDefs: [{ rowIndex: 29, label: "Other cash movements" }], adjRowIndices: [30] }
+    ),
   ];
 
   const inclDetails = [
-    {
-      label: "Confirmed cash incoming",
-      values: getValues(inclRows, ["confirmed cash incoming", "cash incoming adjustment", "incoming cash adjustment"], [47, 49]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [47, 49]),
-      ddType: "cashConfInflow"
-    },
-    {
-      label: "Pipeline cash incoming",
-      values: getValues(inclRows, ["pipeline cash incoming"], [48]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [48]),
-      ddType: "cashPipeInflow"
-    },
-    {
-      label: "Salaries",
-      values: isSenior
-        ? getValues(inclRows, ["salaries outgoing", "salaries adjustment", "dividends as salary outgoing", "dividends as salary adjustment"], [50, 51, 52, 53])
-        : getValues(inclRows, ["salaries outgoing", "salaries adjustment"], [50, 51]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, isSenior ? [50, 51, 52, 53] : [50, 51]),
-      ddType: "cashSalaries"
-    },
+    makeDetail(inclRows, "Confirmed cash incoming", ["confirmed cash incoming", "cash incoming adjustment", "incoming cash adjustment"], [47, 49], "cashConfInflow"),
+    makeDetail(inclRows, "Pipeline cash incoming", ["pipeline cash incoming"], [48], "cashPipeInflow"),
+    makeDetail(
+      inclRows,
+      "Salaries",
+      isSenior
+        ? ["salaries outgoing", "salaries adjustment", "dividends as salary outgoing", "dividends as salary adjustment"]
+        : ["salaries outgoing", "salaries adjustment"],
+      isSenior ? [50, 51, 52, 53] : [50, 51],
+      "cashSalaries"
+    ),
     ...(!isSenior
-      ? [{
-          label: "Dividends as salary",
-          values: getValues(inclRows, ["dividends as salary outgoing", "dividends as salary adjustment"], [52, 53]),
-          getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [52, 53]),
-          getBreakdown: (mIdx) => getFlatRowBreakdown(inclRows, mIdx, [{ rowIndex: 52, label: "Dividends as salary" }], [53]),
-          ddType: "cashDividends"
-        }]
+      ? [
+          makeDetail(
+            inclRows,
+            "Dividends as salary",
+            ["dividends as salary outgoing", "dividends as salary adjustment"],
+            [52, 53],
+            "cashDividends",
+            { baseDefs: [{ rowIndex: 52, label: "Dividends as salary" }], adjRowIndices: [53] }
+          ),
+        ]
       : []),
-    {
-      label: "Contractors",
-      values: getValues(inclRows, ["contractors outgoing", "contractors adjustment"], [54, 55]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [54, 55]),
-      ddType: "cashContractors"
-    },
-    {
-      label: directCostsLabel,
-      values: getValues(inclRows, ["direct costs outgoing", "direct costs adjustment", "pass-through costs outgoing", "pass-through costs adjustment"], [56, 57]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [56, 57]),
-      ddType: "cashDirCosts"
-    },
-    {
-      label: "Other expenses",
-      values: getValues(inclRows, ["other expenses outgoing", "other expenses adjustment"], [58, 59]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [58, 59]),
-      ddType: "cashOutgoings"
-    },
-    {
-      label: "Tax payments",
-      values: getValues(inclRows, ["corporation tax", "vat"], [61, 62, 63, 64]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [61, 62, 63, 64]),
-      getBreakdown: (mIdx) => getFlatRowBreakdown(inclRows, mIdx, [
-        { rowIndex: 61, label: "Corporation tax" },
-        { rowIndex: 63, label: "VAT" },
-      ], [62, 64]),
-      ddType: "cashTaxes"
-    },
-    {
-      label: "Non-operating income",
-      values: getValues(inclRows, ["non-operating income"], [66, 67]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [66, 67]),
-      getBreakdown: (mIdx) => getFlatRowBreakdown(inclRows, mIdx, [{ rowIndex: 66, label: "Non-operating income" }], [67]),
-      ddType: "nonOpIncCash"
-    },
-    {
-      label: "Non-operating expenses",
-      values: getValues(inclRows, ["non-operating expenses"], [68, 69]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [68, 69]),
-      getBreakdown: (mIdx) => getFlatRowBreakdown(inclRows, mIdx, [{ rowIndex: 68, label: "Non-operating expenses" }], [69]),
-      ddType: "nonOpExpCash"
-    },
-    {
-      label: "Other cash movements",
-      values: getValues(inclRows, ["other cash movements", "other adjustments"], [71, 72]),
-      getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [71, 72]),
-      getBreakdown: (mIdx) => getFlatRowBreakdown(inclRows, mIdx, [{ rowIndex: 71, label: "Other cash movements" }], [72]),
-      ddType: "otherMoveCash"
-    },
+    makeDetail(inclRows, "Contractors", ["contractors outgoing", "contractors adjustment"], [54, 55], "cashContractors"),
+    makeDetail(inclRows, directCostsLabel, ["direct costs outgoing", "direct costs adjustment", "pass-through costs outgoing", "pass-through costs adjustment"], [56, 57], "cashDirCosts"),
+    makeDetail(inclRows, "Other expenses", ["other expenses outgoing", "other expenses adjustment"], [58, 59], "cashOutgoings"),
+    makeDetail(
+      inclRows,
+      "Tax payments",
+      ["corporation tax", "vat"],
+      [61, 62, 63, 64],
+      "cashTaxes",
+      { baseDefs: [{ rowIndex: 61, label: "Corporation tax" }, { rowIndex: 63, label: "VAT" }], adjRowIndices: [62, 64] }
+    ),
+    makeDetail(
+      inclRows,
+      "Non-operating income",
+      ["non-operating income"],
+      [66, 67],
+      "nonOpIncCash",
+      { baseDefs: [{ rowIndex: 66, label: "Non-operating income" }], adjRowIndices: [67] }
+    ),
+    makeDetail(
+      inclRows,
+      "Non-operating expenses",
+      ["non-operating expenses"],
+      [68, 69],
+      "nonOpExpCash",
+      { baseDefs: [{ rowIndex: 68, label: "Non-operating expenses" }], adjRowIndices: [69] }
+    ),
+    makeDetail(
+      inclRows,
+      "Other cash movements",
+      ["other cash movements", "other adjustments"],
+      [71, 72],
+      "otherMoveCash",
+      { baseDefs: [{ rowIndex: 71, label: "Other cash movements" }], adjRowIndices: [72] }
+    ),
   ];
 
   const isRowEmpty = (vals) => vals.every((v) => Math.abs(parseMoney(v)) < 0.01);
@@ -817,7 +813,7 @@ export default function CashflowView({
                             return (
                               <td
                                 key={mIdx}
-                                onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType, detail.getNote ? detail.getNote(mIdx) : "", detail.getBreakdown ? detail.getBreakdown(mIdx) : null)}
+                                onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType, detail.getNote ? detail.getNote(mIdx) : "", detail.getBreakdown ? detail.getBreakdown(mIdx) : null, detail.rawValues?.[mIdx])}
                                 style={{
                                   ...dataCellStyle,
                                   background: "inherit",
@@ -990,7 +986,7 @@ export default function CashflowView({
                             return (
                               <td
                                 key={mIdx}
-                                onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType, detail.getNote ? detail.getNote(mIdx) : "", detail.getBreakdown ? detail.getBreakdown(mIdx) : null)}
+                                onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType, detail.getNote ? detail.getNote(mIdx) : "", detail.getBreakdown ? detail.getBreakdown(mIdx) : null, detail.rawValues?.[mIdx])}
                                 style={{
                                   ...dataCellStyle,
                                   background: "inherit",

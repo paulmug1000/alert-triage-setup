@@ -261,15 +261,27 @@ export default async function handler(req, res) {
         batchRanges.push("KeyInfo!Q8:Q9");   // CRM tool (Q8) & CRM mode (Q9)
         batchRanges.push("KeyInfo!D11:D13"); // Job table style (D11), standard charge-out rate (D12), contractor day rate (D13)
 
-        const batchResp = await withRetry(() =>
-          sheets.spreadsheets.values.batchGet({
-            spreadsheetId: clientSheetId,
-            ranges: batchRanges,
-            valueRenderOption: "FORMATTED_VALUE",
-          })
-        );
+        const [batchResp, outgoingsRawResp] = await Promise.all([
+          withRetry(() =>
+            sheets.spreadsheets.values.batchGet({
+              spreadsheetId: clientSheetId,
+              ranges: batchRanges,
+              valueRenderOption: "FORMATTED_VALUE",
+            })
+          ),
+          hasOutgoings
+            ? withRetry(() =>
+              sheets.spreadsheets.values.get({
+                spreadsheetId: clientSheetId,
+                range: "Outgoings!A1:AV306",
+                valueRenderOption: "UNFORMATTED_VALUE",
+              })
+            ).catch(() => null)
+            : Promise.resolve(null),
+        ]);
 
         const valueRanges = batchResp.data.valueRanges || [];
+        const outgoingsRawRows = outgoingsRawResp?.data?.values || [];
         let rangeIdx = 0;
 
         let confirmedRows = hasConfirmed ? (valueRanges[rangeIdx++]?.values || []) : [];
@@ -883,10 +895,16 @@ export default async function handler(req, res) {
         const outgoingsHeadersY2 = (outgoingsRows[0] || []).slice(21, 33).map((h) => String(h || "").trim());
         const outgoingsHeadersY3 = (outgoingsRows[0] || []).slice(36, 48).map((h) => String(h || "").trim());
 
+        const toNumericVal = (rawCell, fmtCell) => {
+          if (typeof rawCell === "number" && Number.isFinite(rawCell)) return rawCell;
+          return parseMoney(fmtCell);
+        };
+
         const parseOutgoingsSection = (startRow, endRow) => {
           const items = [];
           for (let r = startRow; r <= endRow && r < outgoingsRows.length; r++) {
             const row = outgoingsRows[r] || [];
+            const rawRow = outgoingsRawRows[r] || [];
             const name = String(row[0] || "").trim();
             if (!name || name.toLowerCase() === "hide") continue;
 
@@ -899,12 +917,24 @@ export default async function handler(req, res) {
             const allocationsY2 = (row.slice(21, 33) || []).map(formatMoneyVal);
             const allocationsY3 = (row.slice(36, 48) || []).map(formatMoneyVal);
 
-            const sumAllocations = (arr) =>
-              arr.reduce((acc, val) => acc + parseMoney(val), 0);
+            const extractRawSlice = (startIdx, endIdx) => {
+              const slice = [];
+              for (let c = startIdx; c < endIdx; c++) {
+                slice.push(toNumericVal(rawRow[c], row[c]));
+              }
+              return slice;
+            };
 
-            const totalY1 = sumAllocations(allocationsY1);
-            const totalY2 = sumAllocations(allocationsY2);
-            const totalY3 = sumAllocations(allocationsY3);
+            const rawAllocationsY1 = extractRawSlice(6, 18);
+            const rawAllocationsY2 = extractRawSlice(21, 33);
+            const rawAllocationsY3 = extractRawSlice(36, 48);
+
+            const sumAllocations = (arr) =>
+              Math.round(arr.reduce((acc, val) => acc + (typeof val === "number" ? val : parseMoney(val)), 0) * 100) / 100;
+
+            const totalY1 = sumAllocations(rawAllocationsY1);
+            const totalY2 = sumAllocations(rawAllocationsY2);
+            const totalY3 = sumAllocations(rawAllocationsY3);
 
             items.push({
               rowNumber: r + 1,
@@ -920,12 +950,18 @@ export default async function handler(req, res) {
                 2: allocationsY2,
                 3: allocationsY3,
               },
+              rawAllocations: {
+                1: rawAllocationsY1,
+                2: rawAllocationsY2,
+                3: rawAllocationsY3,
+              },
               totals: {
                 1: totalY1,
                 2: totalY2,
                 3: totalY3,
               },
               monthlyAllocations: allocationsY1, // default to Year 1
+              rawMonthlyAllocations: rawAllocationsY1,
               totalAnnual: totalY1,
             });
           }
@@ -1222,12 +1258,12 @@ export default async function handler(req, res) {
                   const s = val.trim();
                   if (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}$/.test(s)) return true;
                   if (/^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}$/.test(s)) return true;
-                  if (/^\d{1,2}\s+[A-Za-z]{3,}\s+\d{2,4}$/.test(s)) return true;
+                  if (/^\d{1,2}[\s\-][A-Za-z]{3,}[\s\-]\d{2,4}$/.test(s)) return true;
                   return false;
                 };
 
                 const isTypeStr = (val) =>
-                  /^(expense|payment|bill payment|debit|credit|transfer|check)$/i.test(
+                  /^(expense|payment|bill payment|debit|credit|transfer|check|dd|deb|fpo|fpi|bgc|so|bp|chq|tfr|obp|bacs|fps|card|cash)$/i.test(
                     String(val || "").trim()
                   );
                 const isTaxRate = (val) =>
@@ -1240,9 +1276,10 @@ export default async function handler(req, res) {
 
                 const normCatKey = (s) =>
                   String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
-                const knownCategorySet = new Set(
+                const knownExpenseCatSet = new Set(
                   (expensesList || []).map((e) => normCatKey(e.name)).filter(Boolean)
                 );
+                const knownCategorySet = new Set(knownExpenseCatSet);
                 [
                   "debtors",
                   "creditors",
@@ -1260,8 +1297,9 @@ export default async function handler(req, res) {
                   const outAmt = parseFloat(c(8).replace(/[£$€,\s]/g, "")) || 0;
                   const inAmt = parseFloat(c(9).replace(/[£$€,\s]/g, "")) || 0;
                   const catFormula = c(16);
+                  const catFormulaNorm = normCatKey(catFormula);
 
-                  if (catFormula.toLowerCase() === "outgoings") {
+                  if (catFormula.toLowerCase() === "outgoings" || knownExpenseCatSet.has(catFormulaNorm)) {
                     // Collect non-empty cells across columns 0..7 with their column indices
                     const cells = [];
                     for (let i = 0; i <= 7; i++) {
@@ -1273,7 +1311,7 @@ export default async function handler(req, res) {
                     const dateCell = cells.find((item) => isDateStr(item.val));
                     const date = dateCell ? dateCell.val : "";
 
-                    // 2. Filter out date, transaction types (Expense, Payment, etc.), and tax rates
+                    // 2. Filter out date, transaction types (Expense, Payment, DD, DEB, etc.), and tax rates
                     const remaining = cells.filter((item) => {
                       if (item === dateCell) return false;
                       if (isDateStr(item.val)) return false;
@@ -1282,7 +1320,7 @@ export default async function handler(req, res) {
                       return true;
                     });
 
-                    // 3. Identify Category among remaining cells
+                    // 3. Identify Category only if it explicitly matches knownCategorySet
                     let sheetCategory = "";
                     const catIdx = remaining.findIndex((item) =>
                       knownCategorySet.has(normCatKey(item.val))
@@ -1291,12 +1329,14 @@ export default async function handler(req, res) {
                     if (catIdx !== -1) {
                       catCell = remaining[catIdx];
                       sheetCategory = catCell.val;
+                    } else if (knownExpenseCatSet.has(catFormulaNorm)) {
+                      sheetCategory = catFormula;
                     }
 
                     // 4. Remaining cells after removing category
                     const nonCat = remaining.filter((item) => item !== catCell);
 
-                    // 5. Account Name detection
+                    // 5. Account Name detection (col 2 is Account Name in standard Recon layout)
                     let account = "";
                     const accIdx = nonCat.findIndex((item) => isAccountStr(item.val));
                     let accCell = null;
@@ -1305,26 +1345,37 @@ export default async function handler(req, res) {
                       account = accCell.val;
                     }
 
-                    const payloadCells = nonCat.filter((item) => item !== accCell);
+                    // 6. Reference detection (Cols F/G = indices 5/6 in Recon layout, when not claimed as category/account)
+                    const rawRef5 = c(5);
+                    const rawRef6 = c(6);
+                    let ref = "";
+                    let refCell = null;
+                    if (rawRef6 && (!catCell || catCell.col !== 6) && !isDateStr(rawRef6)) {
+                      ref = rawRef6;
+                      refCell = nonCat.find((item) => item.col === 6) || null;
+                    } else if (rawRef5 && (!catCell || catCell.col !== 5) && !isDateStr(rawRef5)) {
+                      ref = rawRef5;
+                      refCell = nonCat.find((item) => item.col === 5) || null;
+                    }
 
-                    // 6. Payee and Description
+                    const payloadCells = nonCat.filter((item) => item !== accCell && item !== refCell);
+
+                    // 7. Payee and Description (prefer col 3 Payee and col 4 Particulars when present)
+                    const rawPayee = c(3);
+                    const rawParticulars = c(4);
                     let payee = "";
                     let desc = "";
-                    if (payloadCells.length === 1) {
+                    if (rawPayee && !isDateStr(rawPayee) && !isTypeStr(rawPayee) && (!catCell || catCell.col !== 3)) {
+                      payee = rawPayee;
+                      desc = (rawParticulars && (!catCell || catCell.col !== 4)) ? rawParticulars : "";
+                    } else if (rawParticulars && !isDateStr(rawParticulars) && !isTypeStr(rawParticulars) && (!catCell || catCell.col !== 4)) {
+                      payee = rawParticulars;
+                      desc = rawParticulars;
+                    } else if (payloadCells.length === 1) {
                       payee = payloadCells[0].val;
                     } else if (payloadCells.length >= 2) {
                       payee = payloadCells[0].val;
                       desc = payloadCells[1].val;
-                    }
-
-                    // If no category was explicitly recognized from knownCategorySet,
-                    // but we had multiple payload cells, check if one of them was in col 5, 6 or 7
-                    if (!sheetCategory && payloadCells.length >= 2) {
-                      const candidateCat = payloadCells[payloadCells.length - 1];
-                      if (candidateCat.col >= 5) {
-                        sheetCategory = candidateCat.val;
-                        payee = payloadCells[0].val;
-                      }
                     }
 
                     const netAmount = outAmt > 0 ? Math.abs(outAmt) : (inAmt > 0 ? -Math.abs(inAmt) : 0);
@@ -1334,6 +1385,7 @@ export default async function handler(req, res) {
                         account,
                         payee,
                         desc,
+                        ref,
                         sheetCategory,
                         amount: netAmount,
                         isCredit: inAmt > 0 && outAmt === 0,
@@ -1474,20 +1526,27 @@ export default async function handler(req, res) {
           outgoingsMeta.makingUpCosTiming = outgoingsRows[110][3] || "Curr";
         }
 
+        const getOutgoingsNum = (rIdx, cIdx) => {
+          if (!outgoingsRows[rIdx] && !outgoingsRawRows[rIdx]) return 0;
+          const rawVal = outgoingsRawRows[rIdx]?.[cIdx];
+          if (typeof rawVal === "number" && Number.isFinite(rawVal)) return rawVal;
+          return parseFloat(String(outgoingsRows[rIdx]?.[cIdx] || 0).replace(/[£,]/g, "")) || 0;
+        };
+
         for (let yi = 0; yi < yearBlocks.length; yi++) {
           const blk = yearBlocks[yi];
           const sDel = [], sNonDel = [], dcContr = [], mCos = [], mCosConf = [], mCosHz = [], psDel = [], psNonDel = [];
           for (let j = 0; j < blk.count; j++) {
             const cIdx = blk.start + j;
-            sDel.push(outgoingsRows[5] ? (parseFloat(String(outgoingsRows[5][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
-            sNonDel.push(outgoingsRows[6] ? (parseFloat(String(outgoingsRows[6][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
-            dcContr.push(outgoingsRows[8] ? (parseFloat(String(outgoingsRows[8][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
-            mCos.push(outgoingsRows[110] ? (parseFloat(String(outgoingsRows[110][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
-            mCosConf.push(outgoingsRows[244] ? (parseFloat(String(outgoingsRows[244][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
+            sDel.push(getOutgoingsNum(5, cIdx));
+            sNonDel.push(getOutgoingsNum(6, cIdx));
+            dcContr.push(getOutgoingsNum(8, cIdx));
+            mCos.push(getOutgoingsNum(110, cIdx));
+            mCosConf.push(getOutgoingsNum(244, cIdx));
             const indicator = outgoingsRows[111] ? String(outgoingsRows[111][cIdx] || "").toUpperCase().trim() : "";
             mCosHz.push(indicator === "ZERO");
-            psDel.push(outgoingsRows[234] ? (parseFloat(String(outgoingsRows[234][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
-            psNonDel.push(outgoingsRows[235] ? (parseFloat(String(outgoingsRows[235][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
+            psDel.push(getOutgoingsNum(234, cIdx));
+            psNonDel.push(getOutgoingsNum(235, cIdx));
           }
           outgoingsMeta.salariesDel.push(sDel);
           outgoingsMeta.salariesNonDel.push(sNonDel);

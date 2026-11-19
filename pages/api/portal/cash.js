@@ -105,7 +105,7 @@ export default async function handler(req, res) {
           sheets.spreadsheets.get({
             spreadsheetId: clientSheetId,
             ranges: ["Cash!A1:AZ80", "AppData!G59", "KeyInfo!B10"],
-            fields: "sheets(properties.title,data.rowData.values(formattedValue,note))",
+            fields: "sheets(properties.title,data.rowData.values(formattedValue,effectiveValue,note))",
           })
         );
 
@@ -159,6 +159,16 @@ export default async function handler(req, res) {
 
     // Build line items for Table 1 (Excluding pipeline: rows 3 to 38 -> indices 2 to 37)
     // and Table 2 (Including pipeline: rows 44 to 78 -> indices 43 to 77)
+    const extractRawVal = (cell) => {
+      const eff = cell?.effectiveValue?.numberValue;
+      if (typeof eff === "number" && Number.isFinite(eff)) return Math.round(eff * 100) / 100;
+      const fmt = cell?.formattedValue;
+      if (fmt === undefined || fmt === null || fmt === "") return 0;
+      const cleaned = String(fmt).replace(/[£$€,\s]/g, "").replace(/^\((.*)\)$/, "-$1");
+      const n = Number(cleaned);
+      return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+    };
+
     const parseTableSection = (startRowIdx, endRowIdx) => {
       const sectionRows = [];
       for (let r = startRowIdx; r <= endRowIdx; r++) {
@@ -173,6 +183,8 @@ export default async function handler(req, res) {
           return val !== undefined && val !== null ? String(val).trim() : "£0";
         });
 
+        const rollingRawValues = rollingMonthCols.map((m) => extractRawVal(rowCells[m.colIndex]));
+
         const rollingNotes = rollingMonthCols.map((m) => {
           const cell = rowCells[m.colIndex];
           const note = cell?.note;
@@ -186,6 +198,8 @@ export default async function handler(req, res) {
           return val !== undefined && val !== null ? String(val).trim() : "£0";
         });
 
+        const allRawValues = monthCols.map((m) => extractRawVal(rowCells[m.colIndex]));
+
         const allNotes = monthCols.map((m) => {
           const cell = rowCells[m.colIndex];
           const note = cell?.note;
@@ -196,8 +210,10 @@ export default async function handler(req, res) {
           rowIndex: r + 1,
           label,
           rollingValues,
+          rollingRawValues,
           rollingNotes,
           allValues,
+          allRawValues,
           allNotes,
         });
       }

@@ -935,7 +935,7 @@ export const CashDeepDiveEngine = {
                 client: job.client,
                 name: job.jobName,
                 desc: isPipelineType ? "" : desc,
-                amount: Math.round(amount),
+                amount: Math.round(amount * 100) / 100,
                 payDate: new Date(payYear, payMonth, Math.min(sendD, 28)),
                 status: isPipelineType ? "" : status,
                 isPipeline: isPipelineType,
@@ -980,7 +980,7 @@ export const CashDeepDiveEngine = {
               client: job.client,
               name: job.jobName,
               desc: isPipelineType ? "" : actualDesc,
-              amount: Math.round(amount),
+              amount: Math.round(amount * 100) / 100,
               payDate,
               status: statusVal,
               isPipeline: isPipelineType,
@@ -1188,80 +1188,165 @@ export const CashDeepDiveEngine = {
         // When Recon Sheet provides bank outgoings, build the exact cash list from bank transactions
         // and match each against the accounting tool's bills to inherit the authentic category
         if (bankOutgoings.length > 0) {
+          const STOP_WORDS = new Set([
+            "limited", "direct", "spend", "payment", "payments", "invoice", "manual", "journal",
+            "release", "prepayment", "subscription", "subscriptions", "reference", "monthly",
+            "charge", "charges", "bank", "from", "with", "debit", "credit", "card", "account"
+          ]);
+          const stripAlnum = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          const getTokens = (s) =>
+            String(s || "")
+              .toLowerCase()
+              .split(/[^a-z0-9]+/)
+              .filter((w) => w.length >= 4 && !STOP_WORDS.has(w));
+          const isGenericRef = (r) =>
+            !r || r.length < 4 || /^(dd|deb|fpo|fpi|bgc|so|bp|chq|tfr|obp|bacs|fps|card|cash|p&l|manual journal|unrecon)$/i.test(r.trim());
+
           const supplierCategoryHistory = new Map();
+          const tokenCategoryHistory = new Map();
           allOverheadTxns.forEach((x) => {
-            const sNorm = String(x.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            const sNorm = stripAlnum(x.s);
             if (sNorm && x.c) {
               supplierCategoryHistory.set(sNorm.slice(0, 8), x.c);
+              getTokens(x.s).forEach((tok) => {
+                if (!tokenCategoryHistory.has(tok)) {
+                  tokenCategoryHistory.set(tok, x.c);
+                }
+              });
             }
           });
 
+          const matchesSupplier = (billSupplier, bankPayeeNorm, bankDescNorm, bankCombinedNorm, bankTokens) => {
+            const xNorm = stripAlnum(billSupplier);
+            if (!xNorm) return false;
+            const xPrefix = xNorm.slice(0, 5);
+            if (xPrefix.length >= 4) {
+              if (
+                (bankPayeeNorm && (bankPayeeNorm.includes(xPrefix) || xNorm.includes(bankPayeeNorm.slice(0, 5)))) ||
+                (bankDescNorm && (bankDescNorm.includes(xPrefix) || xNorm.includes(bankDescNorm.slice(0, 5)))) ||
+                (bankCombinedNorm && bankCombinedNorm.includes(xPrefix))
+              ) {
+                return true;
+              }
+            }
+            const xTokens = getTokens(billSupplier);
+            return xTokens.some((xt) => bankCombinedNorm.includes(xt) || bankTokens.includes(xt));
+          };
+
           bankOutgoings.forEach((b) => {
-            const bPayee = String(b.payee || "");
-            const bNorm = bPayee.toLowerCase().replace(/[^a-z0-9]/g, "");
+            const bPayee = String(b.payee || "").trim();
+            const bDesc = String(b.desc || "").trim();
+            const bRef = String(b.ref || "").trim();
+            const bPayeeNorm = stripAlnum(bPayee);
+            const bDescNorm = stripAlnum(bDesc);
+            const bCombinedNorm = stripAlnum(`${bPayee} ${bDesc}`);
+            const bTokens = getTokens(`${bPayee} ${bDesc}`);
+            const bDate = CashDeepDiveEngine.parsePayDate(b.d);
             let matchedCat = null;
-            let matchedDesc = bPayee;
+            let matchedDesc = bPayee || bDesc;
 
             // 1. Credit card balance transfers / payments
             if (
-              bNorm.includes("capitalontap") ||
-              bNorm.includes("creditcard") ||
-              bNorm.includes("transferto") ||
-              bNorm.includes("barclaycard") ||
-              bNorm.includes("mastercard") ||
-              bNorm.includes("amex")
+              bCombinedNorm.includes("capitalontap") ||
+              bCombinedNorm.includes("creditcard") ||
+              bCombinedNorm.includes("transferto") ||
+              bCombinedNorm.includes("barclaycard") ||
+              bCombinedNorm.includes("mastercard") ||
+              bCombinedNorm.includes("amex")
             ) {
               matchedCat = "Credit Card Settlement";
-              matchedDesc = bPayee;
+              matchedDesc = bPayee || bDesc;
             }
 
-            // 2. Direct bill match by exact gross amount + supplier prefix
-            if (!matchedCat) {
-              const direct = allOverheadTxns.find((x) => {
-                const gMatch = Math.abs((x.g || 0) - b.amount) < 0.05;
-                const xNorm = String(x.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-                return gMatch && (bNorm.includes(xNorm.slice(0, 5)) || xNorm.includes(bNorm.slice(0, 5)));
+            // 2. Exact Reference + Gross Amount match against Row 300 accounting bills
+            if (!matchedCat && !isGenericRef(bRef)) {
+              const refLower = bRef.toLowerCase();
+              const byRef = allOverheadTxns.find((x) => {
+                const xr = String(x.r || "").trim().toLowerCase();
+                return xr && !isGenericRef(xr) && (xr === refLower || xr.includes(refLower) || refLower.includes(xr)) && Math.abs((x.g || 0) - b.amount) < 0.05;
               });
-              if (direct) {
-                matchedCat = direct.c;
-                matchedDesc = direct.s || bPayee;
+              if (byRef) {
+                matchedCat = byRef.c;
+                matchedDesc = byRef.s || bPayee || bDesc;
               }
             }
 
-            // 3. Authentic in-sheet category from Recon Sheet (e.g. QuickBooks layout Col H / Col G)
+            // 3. Direct bill match by exact gross amount + supplier/particulars match
+            if (!matchedCat) {
+              const directCandidates = allOverheadTxns.filter((x) => {
+                const gMatch = Math.abs((x.g || 0) - b.amount) < 0.05;
+                return gMatch && matchesSupplier(x.s, bPayeeNorm, bDescNorm, bCombinedNorm, bTokens);
+              });
+              if (directCandidates.length > 0) {
+                let best = directCandidates[0];
+                if (bDate && directCandidates.length > 1) {
+                  best = directCandidates.slice().sort((a, c2) => {
+                    const da = CashDeepDiveEngine.parsePayDate(a.p || a.d);
+                    const dc = CashDeepDiveEngine.parsePayDate(c2.p || c2.d);
+                    const diffA = da ? Math.abs(da.getTime() - bDate.getTime()) : Number.MAX_SAFE_INTEGER;
+                    const diffC = dc ? Math.abs(dc.getTime() - bDate.getTime()) : Number.MAX_SAFE_INTEGER;
+                    return diffA - diffC;
+                  })[0];
+                }
+                matchedCat = best.c;
+                matchedDesc = best.s || bPayee || bDesc;
+              }
+            }
+
+            // 3b. Unique exact-amount + same paid-date (within ±5 days) match in Row 300
+            if (!matchedCat && bDate) {
+              const sameDateAmt = allOverheadTxns.filter((x) => {
+                if (Math.abs((x.g || 0) - b.amount) >= 0.02) return false;
+                const pd = CashDeepDiveEngine.parsePayDate(x.p || x.d);
+                return pd && Math.abs(pd.getTime() - bDate.getTime()) <= 5 * 86400000;
+              });
+              const distinctCats = new Set(sameDateAmt.map((x) => x.c).filter(Boolean));
+              if (distinctCats.size === 1 && sameDateAmt[0]) {
+                matchedCat = sameDateAmt[0].c;
+                matchedDesc = sameDateAmt[0].s || bPayee || bDesc;
+              }
+            }
+
+            // 4. Authentic in-sheet category from Recon Sheet ONLY if it resolves to a known Outgoings category
             if (!matchedCat && b.sheetCategory && !/^(creditors|debtors|net pay|balance sheet|control)/i.test(b.sheetCategory)) {
               const resCat = resolveCategory(b.sheetCategory);
-              if (resCat && resCat !== "General Expenses") {
+              if (resCat && resCat !== "General Expenses" && knownExpMap.has(normCat(resCat))) {
                 matchedCat = resCat;
               }
             }
 
-            // 4. Multi-bill batch payment match (bills with same supplier summing to bank amount)
+            // 5. Multi-bill batch payment match (bills with same supplier summing to bank amount)
             if (!matchedCat) {
-              const sameSupplierBills = allOverheadTxns.filter((x) => {
-                const xNorm = String(x.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-                return bNorm.includes(xNorm.slice(0, 5)) || xNorm.includes(bNorm.slice(0, 5));
-              });
+              const sameSupplierBills = allOverheadTxns.filter((x) =>
+                matchesSupplier(x.s, bPayeeNorm, bDescNorm, bCombinedNorm, bTokens)
+              );
               const sum = sameSupplierBills.reduce((acc, x) => acc + (x.g || 0), 0);
               if (Math.abs(sum - b.amount) < 0.1 && sameSupplierBills.length > 0) {
                 matchedCat = sameSupplierBills[0].c;
-                matchedDesc = `${bPayee} (${sameSupplierBills.length} bills)`;
+                matchedDesc = `${bPayee || bDesc} (${sameSupplierBills.length} bills)`;
               }
             }
 
-            // 5. Supplier historical accounting category
+            // 6. Supplier historical accounting category (prefix + token match + bank fee pattern)
             if (!matchedCat) {
               for (const [key, cat] of supplierCategoryHistory.entries()) {
-                if (bNorm.includes(key)) {
+                if (bCombinedNorm.includes(key)) {
                   matchedCat = cat;
                   break;
                 }
               }
             }
-
-            // 6. Direct in-sheet category fallback (if non-control account)
-            if (!matchedCat && b.sheetCategory && !/^(creditors|debtors|net pay|balance sheet|control)/i.test(b.sheetCategory)) {
-              matchedCat = b.sheetCategory;
+            if (!matchedCat) {
+              for (const tok of bTokens) {
+                if (tokenCategoryHistory.has(tok)) {
+                  matchedCat = tokenCategoryHistory.get(tok);
+                  break;
+                }
+              }
+            }
+            if (!matchedCat && (/2\.75%\s*cd/i.test(`${bPayee} ${bDesc}`) || /bank\s*(fee|charge)/i.test(`${bPayee} ${bDesc}`))) {
+              const bankFeeCat = knownExpMap.get("bank fees") || knownExpMap.get("bank charges");
+              if (bankFeeCat) matchedCat = bankFeeCat;
             }
 
             // 7. Fallback
@@ -1272,9 +1357,8 @@ export const CashDeepDiveEngine = {
             // Check if this bank transaction matches an uncleared item from Recon RHS
             const matchedUnrec = liveReconUnrec.find((u) => {
               const amtMatch = Math.abs(u.g - Math.abs(b.amount)) < 0.05;
-              const bNormCheck = `${bNorm} ${String(b.desc || "").toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-              const uNorm = String(u.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-              const payeeMatch = bNormCheck.includes(uNorm.slice(0, 5)) || uNorm.includes(bNorm.slice(0, 5));
+              const uNorm = stripAlnum(u.s);
+              const payeeMatch = uNorm.length >= 4 && (bCombinedNorm.includes(uNorm.slice(0, 5)) || uNorm.includes(bPayeeNorm.slice(0, 5)));
               return amtMatch && payeeMatch;
             });
 
@@ -1284,8 +1368,8 @@ export const CashDeepDiveEngine = {
             txnsToGroup.push({
               date: b.d || "",
               paidDate: b.d || "",
-              supplier: matchedDesc || bPayee,
-              ref: b.ref || "",
+              supplier: matchedDesc || bPayee || bDesc,
+              ref: bRef,
               account: b.account || "",
               net: b.amount,
               vat: 0,
@@ -1444,7 +1528,7 @@ export const CashDeepDiveEngine = {
       }
 
       if (yearToRead >= 1 && yearToRead <= 3) {
-        const allocs = row.allocations?.[yearToRead] || [];
+        const allocs = row.rawAllocations?.[yearToRead] || row.allocations?.[yearToRead] || [];
         const rawVal = allocs[colToRead] || 0;
         let amount = parseMoney(rawVal);
 
@@ -1452,7 +1536,7 @@ export const CashDeepDiveEngine = {
           if (row.vat === "Yes") {
             amount *= 1.2;
           }
-          amount = -Math.abs(Math.round(amount));
+          amount = -Math.abs(Math.round(amount * 100) / 100);
           results.push({
             name: row.name,
             amount,
@@ -1492,7 +1576,7 @@ export const CashDeepDiveEngine = {
             if (vatStatus === "Yes") {
               cosAmount *= 1.2;
             }
-            cosAmount = -Math.abs(Math.round(cosAmount));
+            cosAmount = -Math.abs(Math.round(cosAmount * 100) / 100);
             results.push({ name: "Making up CoS amount", amount: cosAmount });
           }
         }
@@ -1648,7 +1732,7 @@ export function buildDeepDiveData({
         [];
       totalNbDc += parseMoney(dcArr[foundC] || 0);
     }
-    return Math.round(totalNbDc);
+    return Math.round(totalNbDc * 100) / 100;
   };
 
   // 1. Confirmed Revenue / Income

@@ -20,26 +20,21 @@ import { fetchQuickBooksBankAccounts, fetchQuickBooksAccountTransactions, refres
 import { syncReconBankTransactions, syncReconUnreconciledItems } from "./cashflowReconService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import {
+  VALID_RECON_CATEGORIES,
+  parseAmount,
+  normalizeDateStr,
+  matchAndRemoveFromUnreconPool,
+  performTransactionsUpdate
+} from "./reconTransactionsMerge.js";
 
-/**
- * Standard category set matching the Recon Sheet U3:U16 range
- */
-export const VALID_RECON_CATEGORIES = [
-  "Revenue",
-  "Outgoings",
-  "Contractors",
-  "Direct costs",
-  "Dividends",
-  "Salaries",
-  "PAYE",
-  "Pension",
-  "Transfer",
-  "Corp tax",
-  "VAT",
-  "Non-operating income",
-  "Non-operating expenses",
-  "Other"
-];
+export {
+  VALID_RECON_CATEGORIES,
+  parseAmount,
+  normalizeDateStr,
+  matchAndRemoveFromUnreconPool,
+  performTransactionsUpdate
+};
 
 function sortReconMonthTabsNewestFirst_(tabs) {
   return [...(tabs || [])].sort((a, b) => String(b).localeCompare(String(a)));
@@ -1710,19 +1705,7 @@ export async function enrichUnreconciledItemPredictions({
   });
 }
 
-import {
-  parseAmount,
-  normalizeDateStr,
-  matchAndRemoveFromUnreconPool,
-  performTransactionsUpdate
-} from "./reconTransactionsMerge.js";
-
-export {
-  parseAmount,
-  normalizeDateStr,
-  matchAndRemoveFromUnreconPool,
-  performTransactionsUpdate
-};
+// Merge helpers imported and re-exported at top of file
 
 
 /**

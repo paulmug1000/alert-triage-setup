@@ -12,6 +12,32 @@
  * - Keeps unreconciled items in the bank transactions list until they clear.
  */
 
+export const VALID_RECON_CATEGORIES = [
+  "Revenue",
+  "Outgoings",
+  "Contractors",
+  "Direct costs",
+  "Dividends",
+  "Salaries",
+  "PAYE",
+  "Pension",
+  "Transfer",
+  "Corp tax",
+  "VAT",
+  "Non-operating income",
+  "Non-operating expenses",
+  "Other"
+];
+
+const VALID_RECON_CAT_MAP = new Map(
+  VALID_RECON_CATEGORIES.map((cat) => [cat.toLowerCase(), cat])
+);
+
+export function normalizeValidReconCategory(rawCat) {
+  const s = String(rawCat || "").trim().toLowerCase();
+  return VALID_RECON_CAT_MAP.get(s) || "";
+}
+
 const MONTH_NAMES_SHORT = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
@@ -463,10 +489,12 @@ export function performTransactionsUpdate({
 
     // Keep existing Column Q category already sitting against the transaction in Column Q
     // Must strictly be an approved U3:U16 category (e.g. Contractors, Salaries, Outgoings, Revenue)
-    // NEVER a specific P&L overhead category like Advertising!
+    // NEVER a specific P&L overhead category like Advertising or IT Software and Consumables!
     const isCredit = parseAmount(apiTx.inAmount || apiTx.inAmt) > 0;
     const defaultCat = isCredit ? "Revenue" : "Outgoings";
-    const assignedCategory = exTx?.category || exTx?.suggestedCategory || defaultCat;
+    const existingValidCat = normalizeValidReconCategory(exTx?.category || exTx?.suggestedCategory);
+    const apiValidCat = normalizeValidReconCategory(apiTx.category || apiTx.suggestedCategory);
+    const assignedCategory = existingValidCat || apiValidCat || defaultCat;
 
     if (exTx) {
       if (parseAmount(exTx.outAmount) !== parseAmount(apiTx.outAmount) ||
@@ -506,10 +534,12 @@ export function performTransactionsUpdate({
 
     const isCredit = parseAmount(apiTx.inAmount || apiTx.inAmt) > 0;
     const defaultCat = isCredit ? "Revenue" : "Outgoings";
-    // If it matched an unreconciled item that had a cashflow category, inherit it
-    const assignedCategory = (matchedUn && matchedUn.category && matchedUn.category !== "Outgoings")
-      ? matchedUn.category
-      : (apiTx.category || apiTx.suggestedCategory || defaultCat);
+    // Only inherit matchedUn.category if it is an approved cashflow category (CD4:CN Col CM can hold P&L overhead categories)
+    const unreconValidCat = normalizeValidReconCategory(matchedUn?.category);
+    const apiValidCat = normalizeValidReconCategory(apiTx.category || apiTx.suggestedCategory);
+    const assignedCategory = (unreconValidCat && unreconValidCat !== "Outgoings")
+      ? unreconValidCat
+      : (apiValidCat || defaultCat);
 
     const newTx = {
       ...apiTx,

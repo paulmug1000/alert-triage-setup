@@ -779,8 +779,8 @@ export default function PerformanceFYView({
                         paddingLeft: isMarginRow
                           ? "20px"
                           : !rowStyle.isHeader && !rowStyle.isMajor
-                          ? "16px"
-                          : "10px",
+                            ? "16px"
+                            : "10px",
                         fontStyle: isPercentageRow ? "italic" : "normal",
                         position: "sticky",
                         left: 0,
@@ -810,10 +810,11 @@ export default function PerformanceFYView({
 
                       // If major row: solid band, transparent cell
                       if (rowStyle.isMajor) {
+                        const cellMathVal = typeof row.monthlyMath?.[mIdx] === "number" ? row.monthlyMath[mIdx] : val;
                         return (
                           <td
                             key={mIdx}
-                            onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel)}
+                            onClick={(e) => isClickable && handleCellClick(e, label, cellMathVal, mIdx, monthLabel)}
                             style={{
                               padding: "4.5px 4px",
                               textAlign: "right",
@@ -868,10 +869,11 @@ export default function PerformanceFYView({
                       }
 
                       // Regular data row
+                      const cellMathVal = typeof row.monthlyMath?.[mIdx] === "number" ? row.monthlyMath[mIdx] : val;
                       return (
                         <td
                           key={mIdx}
-                          onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel)}
+                          onClick={(e) => isClickable && handleCellClick(e, label, cellMathVal, mIdx, monthLabel)}
                           style={{
                             padding: "4.5px 4px",
                             textAlign: "right",
@@ -906,11 +908,12 @@ export default function PerformanceFYView({
                       const totalColBg = "rgba(0, 71, 171, 0.04)";
 
                       if (rowStyle.isMajor) {
+                        const totalCellMathVal = typeof row.totalMath === "number" ? row.totalMath : totalVal;
                         return (
                           <td
                             onClick={(e) =>
                               isClickable &&
-                              handleCellClick(e, label, totalVal, -1, `${activeYear.fyLabel} Total`)
+                              handleCellClick(e, label, totalCellMathVal, -1, `${activeYear.fyLabel} Total`)
                             }
                             style={{
                               padding: "4.5px 10px",
@@ -965,11 +968,12 @@ export default function PerformanceFYView({
                         );
                       }
 
+                      const totalCellMathVal = typeof row.totalMath === "number" ? row.totalMath : totalVal;
                       return (
                         <td
                           onClick={(e) =>
                             isClickable &&
-                            handleCellClick(e, label, totalVal, -1, `${activeYear.fyLabel} Total`)
+                            handleCellClick(e, label, totalCellMathVal, -1, `${activeYear.fyLabel} Total`)
                           }
                           style={{
                             padding: "4.5px 10px",
@@ -1005,36 +1009,36 @@ export default function PerformanceFYView({
           </table>
         </div>
 
-      {activeYearIdx < years.length - 1 && (
-        <button
-          type="button"
-          className="fy-nav-arrow-right"
-          onClick={() => setSelectedYearIdx(Math.min(years.length - 1, activeYearIdx + 1))}
-          title="Next Year"
-          style={{
-            position: "absolute",
-            right: "-42px",
-            top: "50%",
-            transform: "translateY(-50%)",
-            background: "transparent",
-            color: "#a2c4c9",
-            border: "none",
-            fontSize: "2.8rem",
-            fontWeight: "bold",
-            cursor: "pointer",
-            padding: "0",
-            zIndex: 10,
-            lineHeight: 1,
-            userSelect: "none",
-            transition: "color 0.2s",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
-        >
-          ›
-        </button>
-      )}
-    </div>
+        {activeYearIdx < years.length - 1 && (
+          <button
+            type="button"
+            className="fy-nav-arrow-right"
+            onClick={() => setSelectedYearIdx(Math.min(years.length - 1, activeYearIdx + 1))}
+            title="Next Year"
+            style={{
+              position: "absolute",
+              right: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ›
+          </button>
+        )}
+      </div>
 
       {/* Performance Trajectory Chart sitting below the table with 3x white space */}
       <PerformanceTrajectoryChartRow

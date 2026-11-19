@@ -8,7 +8,7 @@
  * Strictly restricted to Admins.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import {
   getSetupProcessTemplate,
@@ -22,7 +22,7 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }

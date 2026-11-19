@@ -4618,8 +4618,24 @@ export async function handleEomSaveReportingConfig(req, res, sheets) {
     const now = new Date().toISOString();
 
     if (clientName === "__SYSTEM__") {
-      if (webAppUrl !== undefined) state.systemWebAppUrl = String(webAppUrl).trim();
+      if (webAppUrl !== undefined) {
+        const lockedUrl = resolveLockedReportingWebAppUrl(webAppUrl);
+        if (!lockedUrl) {
+          return res.status(403).json({
+            success: false,
+            error: "Forbidden: System Reporting Web App URL must strictly match the server-configured REPORTING_WEBAPP_URL.",
+          });
+        }
+        state.systemWebAppUrl = lockedUrl;
+      }
     } else {
+      const cleanedWebAppUrl = webAppUrl !== undefined ? String(webAppUrl).trim() : undefined;
+      if (cleanedWebAppUrl && !isValidGoogleScriptUrl(cleanedWebAppUrl)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid Web App URL: Target URL must strictly be a Google Apps Script Web App ending with /exec.",
+        });
+      }
       const confKey = findClientKeyCaseInsensitive_(state.configsByClient, clientName);
       const prev = state.configsByClient[confKey] || {};
       state.configsByClient[confKey] = {
@@ -4628,7 +4644,7 @@ export async function handleEomSaveReportingConfig(req, res, sheets) {
         emailSubj: emailSubj !== undefined ? emailSubj : prev.emailSubj || "",
         emailBody: emailBody !== undefined ? emailBody : prev.emailBody || "",
         folderUrl: folderUrl !== undefined ? folderUrl : prev.folderUrl || "",
-        webAppUrl: webAppUrl !== undefined ? webAppUrl : prev.webAppUrl || "",
+        webAppUrl: cleanedWebAppUrl !== undefined ? cleanedWebAppUrl : prev.webAppUrl || "",
         updatedAt: now,
       };
     }
@@ -4725,6 +4741,52 @@ export function isValidGoogleScriptUrl(url) {
 }
 
 /**
+ * Resolves the canonical Reporting Web App URL from server environment configuration.
+ * Rejects any caller-supplied override that does not strictly match the canonical URL.
+ */
+export function resolveLockedReportingWebAppUrl(requestedUrl = "") {
+  const canonical = String(process.env.REPORTING_WEBAPP_URL || DEFAULT_REPORTING_WEBAPP_URL || "").trim();
+  if (!canonical || !isValidGoogleScriptUrl(canonical)) return "";
+  const requested = String(requestedUrl || "").trim();
+  if (requested && requested !== canonical) {
+    return "";
+  }
+  return canonical;
+}
+
+/**
+ * Posts JSON to a locked Google Apps Script Web App URL with redirect:"manual".
+ * Only follows GAS ContentService GET echoes on script.googleusercontent.com without secrets.
+ */
+export async function postGasWebAppLocked_(targetUrl, payload) {
+  if (!isValidGoogleScriptUrl(targetUrl)) {
+    throw new Error("Blocked invalid Google Apps Script Web App URL.");
+  }
+  const resp = await fetch(targetUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    redirect: "manual",
+  });
+  if (resp.status >= 300 && resp.status < 400) {
+    const loc = String(resp.headers.get("location") || "").trim();
+    let parsedLoc = null;
+    try {
+      parsedLoc = new URL(loc);
+    } catch (_) { }
+    if (
+      parsedLoc &&
+      parsedLoc.protocol === "https:" &&
+      (parsedLoc.hostname === "script.googleusercontent.com" || parsedLoc.hostname === "script.google.com")
+    ) {
+      return await fetch(parsedLoc.toString(), { method: "GET", redirect: "manual" });
+    }
+    throw new Error(`Blocked unexpected Web App redirect target (HTTP ${resp.status}).`);
+  }
+  return resp;
+}
+
+/**
  * Proxies a PING test to the GAS Reporting Web App from the backend to prevent browser CORS blocks
  */
 export async function handleEomTestReportingWebApp(req, res) {
@@ -4746,12 +4808,18 @@ export async function handleEomTestReportingWebApp(req, res) {
     });
   }
 
+  const lockedUrl = resolveLockedReportingWebAppUrl(cleanUrl);
+  if (!lockedUrl) {
+    return res.status(403).json({
+      success: false,
+      error: "Forbidden: Reporting Web App URL does not match the server-configured canonical endpoint."
+    });
+  }
+
   try {
-    const candidateSecrets = Array.from(new Set([
-      (process.env.CRON_SECRET || "").trim(),
-      (process.env.AGENT_TRIGGER_SECRET || "").trim(),
+    const candidateSecrets = [
       (process.env.REPORTING_WEBAPP_SECRET || "").trim(),
-    ].filter(Boolean)));
+    ].filter(Boolean);
     if (candidateSecrets.length === 0) {
       return res.status(500).json({
         success: false,
@@ -4762,11 +4830,7 @@ export async function handleEomTestReportingWebApp(req, res) {
     let gasText = "";
     let gasData = null;
     for (const secret of candidateSecrets) {
-      gasResp = await fetch(cleanUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "PING", secret })
-      });
+      gasResp = await postGasWebAppLocked_(lockedUrl, { action: "PING", secret });
       gasText = await gasResp.text();
       gasData = null;
       try { gasData = JSON.parse(gasText); } catch (e) { }
@@ -5044,19 +5108,16 @@ async function resolveOrCreateClientPresentation_({
     }
   } catch (driveCopyErr) {
     // 2. Fallback to sheetless GAS COPY_DECK action if personal My Drive quota applies
-    if (targetWebAppUrl && isValidGoogleScriptUrl(targetWebAppUrl) && candidateSecrets?.length > 0) {
+    const lockedWebAppUrl = resolveLockedReportingWebAppUrl(targetWebAppUrl);
+    if (lockedWebAppUrl && candidateSecrets?.length > 0) {
       for (const secret of candidateSecrets) {
         try {
-          const gasResp = await fetch(targetWebAppUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "COPY_DECK",
-              secret,
-              folderId,
-              templateFileId: templateFile.id,
-              newName,
-            }),
+          const gasResp = await postGasWebAppLocked_(lockedWebAppUrl, {
+            action: "COPY_DECK",
+            secret,
+            folderId,
+            templateFileId: templateFile.id,
+            newName,
           });
           const gasData = await gasResp.json();
           if (gasData?.success && gasData.presentationId) {
@@ -5215,19 +5276,17 @@ export async function handleEomRunReportingAction(req, res, sheets) {
       });
     }
 
-    const targetWebAppUrl = String(
-      webAppUrlOverride || state.systemWebAppUrl || process.env.REPORTING_WEBAPP_URL || clients[0]?.webAppUrl || DEFAULT_REPORTING_WEBAPP_URL
-    ).trim();
+    if (webAppUrlOverride && !resolveLockedReportingWebAppUrl(webAppUrlOverride)) {
+      return res.status(403).json({
+        success: false,
+        error: "Forbidden: Reporting Web App URL override must match the server-configured REPORTING_WEBAPP_URL.",
+      });
+    }
+    const targetWebAppUrl = resolveLockedReportingWebAppUrl(webAppUrlOverride);
 
-    const candidateSecrets = Array.from(
-      new Set(
-        [
-          (process.env.CRON_SECRET || "").trim(),
-          (process.env.AGENT_TRIGGER_SECRET || "").trim(),
-          (process.env.REPORTING_WEBAPP_SECRET || "").trim(),
-        ].filter(Boolean)
-      )
-    );
+    const candidateSecrets = [
+      (process.env.REPORTING_WEBAPP_SECRET || "").trim(),
+    ].filter(Boolean);
 
     // ── EMAIL MODE (delegates to GAS GmailApp.createDraft) ─────────────────────
     if (mode === "EMAIL") {
@@ -5259,11 +5318,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
       let gasText = "";
       let gasData = null;
       for (const secret of candidateSecrets) {
-        gasResp = await fetch(targetWebAppUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...baseGasPayload, secret }),
-        });
+        gasResp = await postGasWebAppLocked_(targetWebAppUrl, { ...baseGasPayload, secret });
         gasText = await gasResp.text();
         gasData = null;
         try {
@@ -7276,21 +7331,23 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
     if (isSupabaseMaster) {
       gasData = await runNativeRevenueComparison(sheets, supaCtx.clientName || resolvedName, monthKey);
     } else {
-      const candidateSecrets = Array.from(new Set([
+      if (!webAppUrl || !isValidGoogleScriptUrl(webAppUrl)) {
+        return res.status(400).json({ success: false, error: "Invalid Master GAS Web App URL." });
+      }
+      const candidateSecrets = [
         (process.env.AGENT_TRIGGER_SECRET || "").replace(/^["']|["']$/g, "").trim(),
-        (process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim(),
-        (process.env.REPORTING_WEBAPP_SECRET || "").replace(/^["']|["']$/g, "").trim(),
-      ].filter(Boolean)));
+      ].filter(Boolean);
       if (candidateSecrets.length === 0) {
-        return res.status(500).json({ success: false, error: "Reporting Web App secret is not configured on the server." });
+        return res.status(500).json({ success: false, error: "Agent trigger secret is not configured on the server." });
       }
 
       for (const secret of candidateSecrets) {
         try {
-          const gasResp = await fetch(webAppUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ secret, action: "run_revenue_comparison", targetMonth: monthKey, clientName })
+          const gasResp = await postGasWebAppLocked_(webAppUrl, {
+            secret,
+            action: "run_revenue_comparison",
+            targetMonth: monthKey,
+            clientName
           });
           const gasText = await gasResp.text();
           let parsed = null;

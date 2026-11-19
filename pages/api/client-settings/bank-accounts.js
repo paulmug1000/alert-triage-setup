@@ -9,7 +9,7 @@
  * Strict Admin-only access.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import {
   canAccessPma,
   isUserAuthorizedForClient,
@@ -20,9 +20,7 @@ import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 import {
   getIntegrationTokens,
-  updateRefreshedTokens,
-  getSharedXeroGrant,
-  updateSharedXeroGrantTokens
+  refreshStoredIntegrationToken
 } from "../../../services/vaultService.js";
 import { fetchXeroBankAccounts, refreshXeroTokens } from "../../../services/xeroService.js";
 import { fetchQuickBooksBankAccounts, refreshQBTokens } from "../../../services/quickbooksService.js";
@@ -32,8 +30,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed." });
   }
 
-  // 1. Authenticate user
-  const sessionUser = getSessionUser(req);
+  // 1. Authenticate user against live directory
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -110,17 +108,13 @@ export default async function handler(req, res) {
         if (isExpiringSoon && record.tokens.refreshToken) {
           try {
             console.log(`🔄 Bank Accounts: Refreshing Xero token for ${clientName}...`);
-            const refreshed = await refreshXeroTokens(record.tokens.refreshToken);
+            const refreshed = await refreshStoredIntegrationToken({
+              clientKey: record.clientKey || clientName,
+              masterSheetId: masterSheetId || record.masterSheetId || "",
+              tool: "xero",
+              refreshFn: (latest) => refreshXeroTokens(latest.tokens.refreshToken)
+            });
             accessToken = refreshed.accessToken;
-            if (record.isSharedGrant) {
-              await updateSharedXeroGrantTokens(refreshed);
-            } else {
-              await updateRefreshedTokens({
-                clientKey: record.clientKey,
-                tool: "xero",
-                tokens: refreshed
-              });
-            }
           } catch (refErr) {
             console.warn("⚠️ Bank Accounts: Failed to refresh Xero token:", refErr.message);
           }
@@ -145,13 +139,13 @@ export default async function handler(req, res) {
         if (isExpiringSoon && record.tokens.refreshToken) {
           try {
             console.log(`🔄 Bank Accounts: Refreshing QuickBooks token for ${clientName}...`);
-            const refreshed = await refreshQBTokens(record.tokens.refreshToken);
-            accessToken = refreshed.accessToken;
-            await updateRefreshedTokens({
-              clientKey: record.clientKey,
+            const refreshed = await refreshStoredIntegrationToken({
+              clientKey: record.clientKey || clientName,
+              masterSheetId: masterSheetId || record.masterSheetId || "",
               tool: "quickbooks",
-              tokens: refreshed
+              refreshFn: (latest) => refreshQBTokens(latest.tokens.refreshToken)
             });
+            accessToken = refreshed.accessToken;
           } catch (refErr) {
             console.warn("⚠️ Bank Accounts: Failed to refresh QuickBooks token:", refErr.message);
           }

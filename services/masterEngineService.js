@@ -323,10 +323,12 @@ function applyWriteToGrid2D_(
 
   for (let rOffset = 0; rOffset < rows.length; rOffset++) {
     const targetR = sRow + rOffset;
+    if (parsed.endRow0 != null && targetR > parsed.endRow0) break;
     while (nextGrid.length <= targetR) nextGrid.push([]);
     const rowVals = Array.isArray(rows[rOffset]) ? rows[rOffset] : [rows[rOffset]];
     for (let cOffset = 0; cOffset < rowVals.length; cOffset++) {
       const targetC = sCol + cOffset;
+      if (parsed.endCol0 != null && targetC > parsed.endCol0) break;
       while (nextGrid[targetR].length <= targetC) nextGrid[targetR].push("");
       const val = rowVals[cOffset];
       if (isFormulaGrid) {
@@ -966,13 +968,19 @@ async function getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi 
         .from("master_sheet_grids")
         .select("updated_at")
         .eq("client_name", ctx.clientName);
-      const { data: metaRow } =
-        sheetRole === "client"
-          ? await q
-            .or(`and(sheet_role.eq.client,tab_name.eq.${tabName}),and(sheet_role.eq.master,tab_name.eq.Client::${tabName})`)
-            .limit(1)
-            .maybeSingle()
-          : await q.eq("sheet_role", sheetRole).eq("tab_name", tabName).maybeSingle();
+      let metaRow = null;
+      if (sheetRole === "client") {
+        const { data: candidates } = await q
+          .in("sheet_role", ["client", "master"])
+          .in("tab_name", [String(tabName), `Client::${String(tabName)}`]);
+        metaRow =
+          (candidates || []).find((r) => r.sheet_role === "client" && r.tab_name === String(tabName)) ||
+          (candidates || []).find((r) => r.sheet_role === "master" && r.tab_name === `Client::${String(tabName)}`) ||
+          null;
+      } else {
+        const resSingle = await q.eq("sheet_role", sheetRole).eq("tab_name", tabName).maybeSingle();
+        metaRow = resSingle?.data || null;
+      }
       const dbUpdatedMs = metaRow?.updated_at ? new Date(metaRow.updated_at).getTime() : 0;
       const cachedUpdatedMs = cached.record?.updated_at ? new Date(cached.record.updated_at).getTime() : 0;
       if (dbUpdatedMs > 0 && (!cachedUpdatedMs || dbUpdatedMs > cachedUpdatedMs)) {
@@ -5688,21 +5696,40 @@ export async function getSupabaseClockStatusAndSyncConfig(updatedBy = "System") 
 
   let cfgVal = cfgRow?.value && typeof cfgRow.value === "object" ? { ...cfgRow.value } : null;
 
+  let rpcSecretsSynced = false;
+  if (cronSecret || bypassToken) {
+    try {
+      const { data: rpcSecRes, error: rpcSecErr } = await supabase.rpc("sync_pulse_clock_secrets", {
+        p_target_url: cfgVal?.targetUrl || defaultUrl,
+        p_cron_secret: cronSecret,
+        p_bypass_token: bypassToken,
+      });
+      if (!rpcSecErr && rpcSecRes?.success) {
+        rpcSecretsSynced = true;
+      }
+    } catch {
+      // Migration 0010 not installed yet
+    }
+  }
+
   const needsSeedOrRefresh =
     !cfgVal ||
-    (cronSecret && cfgVal.cronSecret !== cronSecret) ||
-    (bypassToken && cfgVal.bypassToken !== bypassToken) ||
-    !cfgVal.targetUrl;
+    !cfgVal.targetUrl ||
+    (!rpcSecretsSynced && ((cronSecret && cfgVal.cronSecret !== cronSecret) || (bypassToken && cfgVal.bypassToken !== bypassToken)));
 
   if (needsSeedOrRefresh) {
     cfgVal = {
       ...(cfgVal || {}),
       enabled: cfgVal?.enabled !== undefined ? Boolean(cfgVal.enabled) : true,
       targetUrl: cfgVal?.targetUrl || defaultUrl,
-      cronSecret,
-      bypassToken,
+      hasSecretConfigured: Boolean(cronSecret || rpcSecretsSynced),
+      ...(rpcSecretsSynced ? {} : { cronSecret, bypassToken }),
       updatedAt: new Date().toISOString(),
     };
+    if (rpcSecretsSynced) {
+      delete cfgVal.cronSecret;
+      delete cfgVal.bypassToken;
+    }
     await supabase.from("system_config").upsert({
       key: "supabase_cron_clock",
       value: cfgVal,
@@ -5735,7 +5762,7 @@ export async function getSupabaseClockStatusAndSyncConfig(updatedBy = "System") 
     enabled,
     activeAndRunning: Boolean(rpcReady && jobActive && enabled),
     targetUrl: cfgVal?.targetUrl || defaultUrl,
-    hasSecretConfigured: Boolean(cfgVal?.cronSecret),
+    hasSecretConfigured: Boolean(rpcSecretsSynced || cfgVal?.hasSecretConfigured || cfgVal?.cronSecret),
     lastTriggeredAt: cfgVal?.lastTriggeredAt || null,
     lastTriggerSource: cfgVal?.lastTriggerSource || null,
     lastWebhookReceivedAt: cfgVal?.lastWebhookReceivedAt || null,
@@ -5832,17 +5859,20 @@ export async function getVirtualTabForInspector({
   let staleAgainstClientEdits = false;
   if (sheetRole === "client") {
     const clientSelectCols = includeFormulas
-      ? "row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
-      : "row_count, col_count, values_grid, notes_grid, updated_at";
+      ? "sheet_role, tab_name, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
+      : "sheet_role, tab_name, row_count, col_count, values_grid, notes_grid, updated_at";
     const res = await supabase
       .from("master_sheet_grids")
       .select(clientSelectCols)
       .eq("client_name", clientName)
-      .or(`and(sheet_role.eq.client,tab_name.eq.${tabName}),and(sheet_role.eq.master,tab_name.eq.Client::${tabName})`)
-      .limit(1)
-      .maybeSingle();
-    data = res.data;
+      .in("sheet_role", ["client", "master"])
+      .in("tab_name", [String(tabName), `Client::${String(tabName)}`]);
     error = res.error;
+    const rows = Array.isArray(res.data) ? res.data : [];
+    data =
+      rows.find((r) => r.sheet_role === "client" && r.tab_name === String(tabName)) ||
+      rows.find((r) => r.sheet_role === "master" && r.tab_name === `Client::${String(tabName)}`) ||
+      null;
     if (!error && data) {
       expandClientTabFromStorage_(data, tabName, { valuesOnly: !includeFormulas });
     }

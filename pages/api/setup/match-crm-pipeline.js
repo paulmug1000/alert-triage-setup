@@ -3,19 +3,20 @@
  * between CRM deals and existing Pipeline jobs.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { scanBlankCodePipelineMatches, applyBlankCodePipelineMatches } from "../../../services/crmPipelineMatchService.js";
 import { runNativeMasterAmdAction } from "../../../services/masterSyncEngine.js";
 import { resolveSupabaseSheetContext } from "../../../services/masterEngineService.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export const config = {
   maxDuration: 120,
 };
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -46,11 +47,12 @@ export default async function handler(req, res) {
       return res.status(200).json(scanResult);
     } catch (err) {
       console.error("GET /api/setup/match-crm-pipeline error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
     }
   }
 
   if (req.method === "POST") {
+    if (!assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser)) {
       return res.status(403).json({ success: false, error: "Read-only session cannot modify pipeline jobs." });
     }
@@ -82,7 +84,7 @@ export default async function handler(req, res) {
       return res.status(200).json(result);
     } catch (err) {
       console.error("POST /api/setup/match-crm-pipeline error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
     }
   }
 

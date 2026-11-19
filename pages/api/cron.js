@@ -18,6 +18,7 @@ import { getSheetsClient } from "../../services/sheetsClient";
 import { sendDailyAlertsSummary, checkAndNotifyTabErrors } from "../../services/dailyAlertsNotifier";
 import { warmAllClientsPortalHomeCache } from "../../services/portalDataService";
 import { compactAlertMemory } from "../../services/alertMemory";
+import { resolveCanonicalOAuthHost } from "../../utils/helpers";
 
 export const config = {
   maxDuration: 300,
@@ -40,7 +41,7 @@ export default async function handler(req, res) {
   const authHeader = String(req.headers.authorization || "").trim();
   const headerSecret = String(req.headers["x-cron-secret"] || "").trim();
   const expectedBearer = `Bearer ${cronSecret}`;
-  const providedSecret = String(req.body?.secret || req.query?.secret || headerSecret || authHeader || "").trim();
+  const providedSecret = String(req.body?.secret || headerSecret || authHeader || "").trim();
 
   if (
     !providedSecret ||
@@ -71,11 +72,12 @@ export default async function handler(req, res) {
     forceAll,
   });
 
-  const host = req.headers["x-forwarded-host"] || req.headers.host || `127.0.0.1:${process.env.PORT || 3000}`;
-  const protocol = req.headers["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
+  const { host, proto } = resolveCanonicalOAuthHost(req);
   const cleanUrl = (url) => (url ? (url.startsWith("http") ? url : `https://${url}`) : null);
-  const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL) || cleanUrl(process.env.VERCEL_URL);
-  const baseUrl = prodUrl || `${protocol}://${host}`;
+  const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL);
+  const baseUrl = (prodUrl && prodUrl.startsWith("https://") && prodUrl.includes("pulsedashboard.co.uk"))
+    ? prodUrl
+    : `${proto}://${host}`;
   const acId = getCanonicalAcSheetId() || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 
   // Run the pipeline in the background using Vercel Pro waitUntil

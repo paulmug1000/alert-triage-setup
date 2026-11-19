@@ -6,6 +6,7 @@ import { sanitizeFormulaInput } from "./userPermissions.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { matchesClientName } from "./userPermissions.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import { evaluateSafeArithmetic } from "../utils/helpers.js";
 
 
 // Google Sheets light green 3 (used on Incredibble Cash tab)
@@ -1587,12 +1588,10 @@ export async function updateCashAdjustment({
   const cleanValue = typeof value === "string" ? value.trim().replace(/^['’]=/, "=") : value;
   let safeValue = sanitizeCashAdjustmentInput(cleanValue ?? "");
   if (!isAdmin && typeof safeValue === "string" && safeValue.startsWith("=") && /^=[0-9+\-*/().\s]+$/.test(safeValue)) {
-    try {
-      const evaluated = Function(`"use strict"; return (${safeValue.slice(1)});`)();
-      if (typeof evaluated === "number" && isFinite(evaluated)) {
-        safeValue = Math.round(evaluated * 100) / 100;
-      }
-    } catch (_) { }
+    const evaluated = evaluateSafeArithmetic(safeValue);
+    if (typeof evaluated === "number" && isFinite(evaluated)) {
+      safeValue = Math.round(evaluated * 100) / 100;
+    }
   }
 
   // Ensure KeyInfo!G1 in Client Sheet has the Recon Sheet URL if dynamic IMPORTRANGE is used
@@ -1904,15 +1903,11 @@ export async function applyCashFutureOffset({
     const cleanTargetVal = typeof targetValue === "string" ? targetValue.trim().replace(/^['’]=/, "=") : targetValue;
     let safeTargetVal = sanitizeCashAdjustmentInput(cleanTargetVal ?? "");
     if (!isAdmin && typeof safeTargetVal === "string" && safeTargetVal.startsWith("=")) {
-      let resolvedTarget = null;
-      if (/^=[0-9+\-*/().\s]+$/.test(safeTargetVal)) {
-        try {
-          const evT = Function(`"use strict"; return (${safeTargetVal.slice(1)});`)();
-          if (typeof evT === "number" && isFinite(evT)) {
-            resolvedTarget = Math.round(evT * 100) / 100;
-          }
-        } catch (_) { }
-      }
+      const evT = evaluateSafeArithmetic(safeTargetVal);
+      const resolvedTarget =
+        typeof evT === "number" && isFinite(evT)
+          ? Math.round(evT * 100) / 100
+          : null;
       safeTargetVal = resolvedTarget !== null ? resolvedTarget : sanitizeFormulaInput(safeTargetVal.replace(/^=+/, ""));
     }
     valueData.push({
@@ -1924,15 +1919,11 @@ export async function applyCashFutureOffset({
   const cleanNextVal = typeof nextValue === "string" ? nextValue.trim().replace(/^['’]=/, "=") : nextValue;
   let safeNextVal = sanitizeCashAdjustmentInput(cleanNextVal ?? "");
   if (!isAdmin && typeof safeNextVal === "string" && safeNextVal.startsWith("=")) {
-    let resolvedNext = null;
-    if (/^=[0-9+\-*/().\s]+$/.test(safeNextVal)) {
-      try {
-        const evaluated = Function(`"use strict"; return (${safeNextVal.slice(1)});`)();
-        if (typeof evaluated === "number" && isFinite(evaluated)) {
-          resolvedNext = Math.round(evaluated * 100) / 100;
-        }
-      } catch (_) { }
-    }
+    const evaluated = evaluateSafeArithmetic(safeNextVal);
+    const resolvedNext =
+      typeof evaluated === "number" && isFinite(evaluated)
+        ? Math.round(evaluated * 100) / 100
+        : null;
     safeNextVal = resolvedNext !== null ? resolvedNext : sanitizeFormulaInput(safeNextVal.replace(/^=+/, ""));
   }
 

@@ -572,7 +572,8 @@ export async function inspectExcelWorkbook({
       }
       const rawRows = rangeData.values.slice(0, 10);
       const detectedRow = detectCandidateHeaderRow(rawRows);
-      candidateHeaderRow = headerRowNum ? Math.max(1, parseInt(headerRowNum, 10)) : detectedRow;
+      const parsedHeaderRow = headerRowNum ? parseInt(headerRowNum, 10) : NaN;
+      candidateHeaderRow = Number.isFinite(parsedHeaderRow) ? Math.min(25, Math.max(1, parsedHeaderRow)) : detectedRow;
       const headerIdx = Math.max(0, candidateHeaderRow - 1);
       const rawHeaderRow = rangeData.values[headerIdx] || [];
       headers = rawHeaderRow.map((h) => String(h || "").trim()).filter(Boolean);

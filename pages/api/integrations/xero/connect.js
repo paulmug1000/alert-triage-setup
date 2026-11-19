@@ -13,7 +13,7 @@ import { buildXeroAuthUrl } from "../../../../services/xeroService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
 import { resolveLiveSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
-import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
+import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 import { resolveSupabaseSheetContext } from "../../../../services/masterEngineService.js";
 import { isSupabaseControlPlaneActive } from "../../../../services/supabaseClient.js";
 
@@ -21,8 +21,9 @@ export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
+  if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = await resolveLiveSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ error: "Active session required." });
   }
@@ -121,12 +122,8 @@ export default async function handler(req, res) {
       }
     }
 
-    // Dynamic Host Resolution
-    const reqHost = req.headers["x-forwarded-host"] || req.headers.host;
-    const isPulseHost = reqHost && (reqHost === "pulsedashboard.co.uk" || reqHost.endsWith(".pulsedashboard.co.uk"));
-    const prodHost = (process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).host : null) || process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
-    const host = isPulseHost ? reqHost : (prodHost || reqHost || "localhost:3000");
-    const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
+    // Canonical Host Resolution
+    const { host, proto } = resolveCanonicalOAuthHost(req);
     const redirectUri = `${proto}://${host}/api/integrations/xero/callback`;
 
     // PKCE Generation (RFC 7636)
@@ -142,7 +139,8 @@ export default async function handler(req, res) {
       masterSheetId: resolvedMasterSheetId,
       clientSheetId: resolvedClientSheetId,
       redirectBack: sanitizedRedirectBack,
-      mode: effectiveMode
+      mode: effectiveMode,
+      initiatedBy: sessionUser.email
     };
 
     const stateToken = createSignedOAuthState(statePayload);
@@ -165,6 +163,8 @@ export default async function handler(req, res) {
     return res.redirect(authUrl);
   } catch (err) {
     console.error("Xero Connect initiation error:", err);
-    return res.status(500).json({ error: err.message || "Failed to initiate Xero connection." });
+    return res.status(500).json({
+      error: sessionUser?.isAdmin ? (err.message || "Failed to initiate Xero connection.") : sanitizeSpreadsheetTerms(err.message || "Failed to initiate Xero connection.")
+    });
   }
 }

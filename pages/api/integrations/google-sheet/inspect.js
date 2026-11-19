@@ -7,17 +7,24 @@
  * Returns title, available worksheets/tabs, headers, and row counts.
  */
 
-import { getSessionUser } from "../../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
 import { inspectGoogleSpreadsheet, refreshGoogleSheetTokens } from "../../../../services/googleSheetService.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../../services/vaultService.js";
+import { assertTrustedOrigin } from "../../../../utils/helpers.js";
 
 export const config = {
   maxDuration: 120,
 };
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  if (req.method !== "POST") {
+    return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
+  }
+  if (!assertTrustedOrigin(req, res)) return;
+  res.setHeader("Cache-Control", "no-store");
+
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
@@ -25,8 +32,11 @@ export default async function handler(req, res) {
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ success: false, error: "Read-only session cannot inspect external spreadsheets." });
   }
+  if (sessionUser.isSenior || sessionUser.role === "Senior (Restricted)") {
+    return res.status(403).json({ success: false, error: "Restricted users cannot modify integrations." });
+  }
 
-  const { url, sheetId, clientKey, tabName, headerRowNum } = req.method === "POST" ? req.body : req.query;
+  const { url, sheetId, clientKey, tabName, headerRowNum } = req.body || {};
 
   if (!sessionUser.isAdmin && (!clientKey || !isUserAuthorizedForClient(sessionUser, clientKey))) {
     return res.status(403).json({ success: false, error: "Access denied to this client." });

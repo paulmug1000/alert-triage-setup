@@ -127,7 +127,7 @@ import {
 } from "../../services/masterEngineService";
 import { getSupabaseAdmin } from "../../services/supabaseClient";
 import { syncExpenseBreakdownToClientSheetNative } from "../../services/masterSyncEngine";
-import { getSessionUser, resolveLiveSessionUser, safeCompareSecret, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
+import { resolveLiveSessionUser, safeCompareSecret, sendOtp, verifyOtp, clearSessionCookie, revokeRequestSessionJti, getTrustedClientIp, checkRateLimit } from "../../services/authService";
 import {
   isUserAuthorizedForClient,
   updateUserDailyAlertsEmail,
@@ -142,7 +142,7 @@ import {
   unwrapRequestSheetIds,
   installSheetIdBoundary
 } from "../../services/userPermissions";
-import { matchesClientName, sanitizeSpreadsheetTerms, assertTrustedOrigin, isValidGoogleScriptUrl } from "../../utils/helpers";
+import { matchesClientName, sanitizeSpreadsheetTerms, assertTrustedOrigin, isValidGoogleScriptUrl, resolveCanonicalOAuthHost } from "../../utils/helpers";
 
 async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheetIds = []) {
   if (sessionUser?.isAdmin && !isReadOnlySession(sessionUser)) return true;
@@ -213,6 +213,7 @@ export default async function handler(req, res) {
     "https://pma.pulsedashboard.co.uk",
     ...(process.env.NODE_ENV !== "production" ? ["http://localhost:3000"] : [])
   ];
+  res.setHeader("Vary", "Origin");
   const origin = req.headers.origin;
   if (origin && allowedOrigins.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
@@ -415,7 +416,6 @@ export default async function handler(req, res) {
     const isCronAuthorized = Boolean(
       cronSecret && (
         safeCompareSecret(String(req.body?.secret || "").trim(), cronSecret) ||
-        safeCompareSecret(String(req.query?.secret || "").trim(), cronSecret) ||
         safeCompareSecret(String(req.headers["x-cron-secret"] || "").trim(), cronSecret) ||
         safeCompareSecret(String(req.headers.authorization || "").trim(), `Bearer ${cronSecret}`)
       )
@@ -437,7 +437,6 @@ export default async function handler(req, res) {
     const isInternalAuthorized = Boolean(
       internalSecret && (
         safeCompareSecret(String(req.body?.secret || "").trim(), internalSecret) ||
-        safeCompareSecret(String(req.query?.secret || "").trim(), internalSecret) ||
         safeCompareSecret(String(req.headers["x-internal-secret"] || "").trim(), internalSecret) ||
         safeCompareSecret(String(req.headers.authorization || "").trim(), `Bearer ${internalSecret}`)
       )
@@ -461,10 +460,17 @@ export default async function handler(req, res) {
       (isAgentAuthorized && action === "agent_progress") ||
       (isInternalAuthorized && (action === "auto_reconcile_bank_feeds" || action === "fetch_api_bank_transactions"));
 
+    if (!isSystemAuthorized) {
+      const rl = await checkRateLimit("triage-api", getTrustedClientIp(req), 180, 60);
+      if (!rl.allowed) {
+        return res.status(429).json({ success: false, error: "Too many requests. Please slow down and try again." });
+      }
+    }
+
     req.isSystemAuthorized = Boolean(isSystemAuthorized);
 
     const sessionUser = isSystemAuthorized
-      ? getSessionUser(req, res)
+      ? null
       : await resolveLiveSessionUser(req, res, { sheets });
     installSheetIdBoundary(req, res, sessionUser);
 
@@ -564,13 +570,15 @@ export default async function handler(req, res) {
         const targetSheetIds = [
           b.clientSheetId, q.clientSheetId,
           b.masterSheetId, q.masterSheetId,
+          b.masterId, q.masterId,
           b.reconSheetId, q.reconSheetId,
+          b.reconId, q.reconId,
           b.reconSheetUrl ? extractSheetIdFromUrl(b.reconSheetUrl) : null,
           b.payrollClientSheetId, q.payrollClientSheetId,
           b.timeMasterSheetId, q.timeMasterSheetId,
           b.sheetId, q.sheetId,
           b.clientId, q.clientId,
-          b.alert?.masterSheetId, b.alert?.clientSheetId, b.alert?.clientId
+          b.alert?.masterSheetId, b.alert?.masterId, b.alert?.reconId, b.alert?.clientSheetId, b.alert?.clientId
         ].filter(Boolean);
 
         if (targetSheetIds.length > 0 || targetClientClaim) {
@@ -592,7 +600,7 @@ export default async function handler(req, res) {
               sheets,
               sessionUser,
               item.clientName || targetClientClaim,
-              [item.clientSheetId, item.masterSheetId, item.clientId].filter(Boolean)
+              [item.clientSheetId, item.masterSheetId, item.masterId, item.reconId, item.clientId].filter(Boolean)
             );
             if (!itemAllowed) {
               return res.status(403).json({ success: false, error: "Forbidden: Access denied to one or more client alerts in batch." });
@@ -611,24 +619,15 @@ export default async function handler(req, res) {
       }
     }
 
-    const extractSafeClientIp = () => {
-      const vercelFwd = req.headers["x-vercel-forwarded-for"];
-      if (typeof vercelFwd === "string" && vercelFwd.trim()) return vercelFwd.split(",")[0].trim();
-      const forwarded = req.headers["x-forwarded-for"];
-      if (typeof forwarded === "string" && forwarded.trim()) return forwarded.split(",")[0].trim();
-      if (Array.isArray(forwarded) && forwarded[0]) return String(forwarded[0]).trim();
-      return req.socket?.remoteAddress || "127.0.0.1";
-    };
-
     if (action === "send_otp") {
       const { email } = req.body || {};
-      const clientIp = extractSafeClientIp();
+      const clientIp = getTrustedClientIp(req);
       const result = await sendOtp(email, automationCommanderSheetId, clientIp);
       return res.status(200).json(result);
 
     } else if (action === "verify_otp") {
       const { email, code } = req.body || {};
-      const clientIp = extractSafeClientIp();
+      const clientIp = getTrustedClientIp(req);
       const result = await verifyOtp(email, code, automationCommanderSheetId, res, clientIp);
       return res.status(result.success ? 200 : 401).json(result);
 
@@ -636,6 +635,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ authenticated: !!sessionUser, user: sessionUser });
 
     } else if (action === "logout") {
+      await revokeRequestSessionJti(req);
       clearSessionCookie(res);
       return res.status(200).json({ success: true, message: "Logged out" });
 
@@ -1293,11 +1293,12 @@ export default async function handler(req, res) {
           return res.status(200).json({ success: true, alreadyRunning: true, status: current });
         }
 
-        const host = req.headers["x-forwarded-host"] || req.headers.host || `127.0.0.1:${process.env.PORT || 3000}`;
-        const protocol = req.headers["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
+        const { host, proto } = resolveCanonicalOAuthHost(req);
         const cleanUrl = (url) => url ? (url.startsWith("http") ? url : `https://${url}`) : null;
-        const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL) || cleanUrl(process.env.VERCEL_URL);
-        const baseUrl = prodUrl || `${protocol}://${host}`;
+        const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL);
+        const baseUrl = (prodUrl && prodUrl.startsWith("https://") && prodUrl.includes("pulsedashboard.co.uk"))
+          ? prodUrl
+          : `${proto}://${host}`;
         const cronSecret = process.env.CRON_SECRET;
 
         await setTriageRefreshStatus({
@@ -1429,11 +1430,12 @@ export default async function handler(req, res) {
     } else if (action === "run_flag_sweep") {
       return await handleRunFlagSweep(req, res, sheets);
     } else if (action === "send_daily_alerts_summary") {
-      const cronSecret = process.env.CRON_SECRET;
-      if (cronSecret && req.body.secret !== cronSecret && (!sessionUser || !sessionUser.isAdmin)) {
+      const cronSecret = (process.env.CRON_SECRET || "").trim();
+      const hasSecret = Boolean(cronSecret && safeCompareSecret(String(req.body?.secret || "").trim(), cronSecret));
+      if (!isCronAuthorized && !hasSecret && (!sessionUser || !sessionUser.isAdmin)) {
         return res.status(403).json({ success: false, error: "Unauthorized" });
       }
-      const result = await sendDailyAlertsSummary(sheets, automationCommanderSheetId);
+      const result = await sendDailyAlertsSummary({ sheets, automationCommanderSheetId });
       return res.status(200).json(result);
     } else if (action === "build_cached_alert_options") {
       return await handleBuildCachedAlertOptions(req, res, sheets);
@@ -1670,7 +1672,7 @@ export default async function handler(req, res) {
     }
   } catch (error) {
     console.error("Triage API error:", error);
-    const sessionUser = getSessionUser(req, res);
+    const sessionUser = await resolveLiveSessionUser(req, res).catch(() => null);
     installSheetIdBoundary(req, res, sessionUser);
     const safeMsg = sessionUser?.isAdmin ? error.message : sanitizeSpreadsheetTerms(error.message || "Internal server error");
     res.status(500).json({

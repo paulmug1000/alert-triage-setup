@@ -1,10 +1,10 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache, del2TierCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
-import { assertTrustedOrigin } from "../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
@@ -13,7 +13,7 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
@@ -176,7 +176,7 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("❌ /api/portal/add-outgoing-row error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   } finally {
     await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
   }

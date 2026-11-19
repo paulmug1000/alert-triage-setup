@@ -34,10 +34,11 @@ import { refreshCloseTokens } from "../../../services/closeService.js";
 import { refreshHubSpotTokens } from "../../../services/hubspotService.js";
 import { refreshGoogleSheetTokens } from "../../../services/googleSheetService.js";
 import { refreshExcelTokens } from "../../../services/excelIntegrationService.js";
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, safeCompareSecret, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 import {
   resolveClientNameBySheetId,
   resolveMasterSheetIdByClientName,
@@ -48,26 +49,29 @@ import {
   isReadOnlySession
 } from "../../../services/userPermissions.js";
 
-function safeCompare(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+
+  const rl = await checkRateLimit(
+    "int-token",
+    `${getTrustedClientIp(req)}:${req.query.spreadsheetId || req.body?.spreadsheetId || req.query.clientKey || req.body?.clientKey || "global"}`,
+    120,
+    60
+  );
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many token requests. Please retry shortly." });
   }
 
   // 1. Verify Authentication: Client-Specific Secret (Master Sheet) OR Authorized PMA Session (verify=true only)
   const authHeader = req.headers.authorization || "";
   const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-  const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.query.secret || req.body?.secret || "");
+  const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.body?.secret || "");
 
   const expectedSecret = process.env.PULSE_INTERNAL_SECRET || "";
-  const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompare(providedSecret, expectedSecret));
+  const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompareSecret(providedSecret, expectedSecret));
 
   // Client-specific secret sent in custom header (or body fallback)
   const providedClientSecret = String(
@@ -78,7 +82,7 @@ export default async function handler(req, res) {
   ).trim();
 
   req.isSystemAuthorized = Boolean(providedClientSecret || isMasterSecretValid);
-  const sessionUser = getSessionUser(req, res);
+  const sessionUser = req.isSystemAuthorized ? null : await resolveLiveSessionUser(req, res);
   installSheetIdBoundary(req, res, sessionUser);
 
   // 2. Parse Target Integration & Client Identifier (after ws_ token boundary unwrapping)
@@ -138,7 +142,7 @@ export default async function handler(req, res) {
 
     const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
     if (registeredHash) {
-      const isMatch = safeCompare(providedHash, registeredHash) || safeCompare(providedClientSecret, registeredHash);
+      const isMatch = safeCompareSecret(providedHash, registeredHash) || safeCompareSecret(providedClientSecret, registeredHash);
       if (isMatch) {
         isAuthorized = true;
         // Auto-migrate raw plaintext pcs_ secret in Redis to sha256 hash
@@ -167,6 +171,7 @@ export default async function handler(req, res) {
       }
     }
   } else if (sessionUser) {
+    if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser) || !canAccessPma(sessionUser)) {
       return res.status(403).json({ success: false, error: "Forbidden: Active PMA staff session required." });
     }

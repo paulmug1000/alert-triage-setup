@@ -13,7 +13,9 @@ import {
   ensureEomReportingTabs_,
   getEomReportingControlState,
   saveEomReportingControlState,
-  isValidGoogleScriptUrl
+  isValidGoogleScriptUrl,
+  resolveLockedReportingWebAppUrl,
+  postGasWebAppLocked_
 } from "./eomTools.js";
 
 // ============================================================================
@@ -79,7 +81,7 @@ function unzipBufferToMap_(zipBuf) {
       if (compressionMethod === 0) {
         files.set(fileName, compressedSlice);
       } else if (compressionMethod === 8) {
-        files.set(fileName, zlib.inflateRawSync(compressedSlice));
+        files.set(fileName, zlib.inflateRawSync(compressedSlice, { maxOutputLength: 50 * 1024 * 1024 }));
       }
     } catch (zlibErr) {
       console.warn(`[unzipBufferToMap_] Could not inflate ${fileName}:`, zlibErr.message);
@@ -2389,13 +2391,18 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
     });
   }
 
-  const targetWebAppUrl = String(webAppUrl || process.env.REPORTING_WEBAPP_URL || DEFAULT_REPORTING_WEBAPP_URL).trim();
+  if (webAppUrl && !resolveLockedReportingWebAppUrl(webAppUrl)) {
+    return res.status(403).json({
+      success: false,
+      error: "Forbidden: Reporting Web App URL does not match the server-configured REPORTING_WEBAPP_URL."
+    });
+  }
 
-  const candidateSecrets = Array.from(new Set([
-    (process.env.CRON_SECRET || "").trim(),
-    (process.env.AGENT_TRIGGER_SECRET || "").trim(),
+  const targetWebAppUrl = resolveLockedReportingWebAppUrl(webAppUrl);
+
+  const candidateSecrets = [
     (process.env.REPORTING_WEBAPP_SECRET || "").trim(),
-  ].filter(Boolean)));
+  ].filter(Boolean);
 
   if (webAppUrl && isValidGoogleScriptUrl(targetWebAppUrl) && candidateSecrets.length === 0) {
     return res.status(500).json({
@@ -2410,24 +2417,20 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
     if (isValidGoogleScriptUrl(targetWebAppUrl) && candidateSecrets.length > 0) {
       for (const secret of candidateSecrets) {
         try {
-          const gasResp = await fetch(targetWebAppUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "APPLY_NARRATIVE",
-              secret,
-              clientName,
-              presentationId,
-              donorPresentationId: donorPresentationId || "",
-              folderUrl: folderUrl || "",
-              slideUpdates: slideUpdates.map(u => ({
-                slideNumber: Number(u.slideNumber),
-                shapeName: u.shapeName || "",
-                newText: sanitizeNarrativePunctuation_(String(u.newText || "")),
-                hasFlag: typeof u.hasFlag === "boolean" ? u.hasFlag : undefined,
-                isTakeawaysSlide: Boolean(u.isTakeawaysSlide)
-              }))
-            })
+          const gasResp = await postGasWebAppLocked_(targetWebAppUrl, {
+            action: "APPLY_NARRATIVE",
+            secret,
+            clientName,
+            presentationId,
+            donorPresentationId: donorPresentationId || "",
+            folderUrl: folderUrl || "",
+            slideUpdates: slideUpdates.map(u => ({
+              slideNumber: Number(u.slideNumber),
+              shapeName: u.shapeName || "",
+              newText: sanitizeNarrativePunctuation_(String(u.newText || "")),
+              hasFlag: typeof u.hasFlag === "boolean" ? u.hasFlag : undefined,
+              isTakeawaysSlide: Boolean(u.isTakeawaysSlide)
+            }))
           });
           const gasText = await gasResp.text();
           try {

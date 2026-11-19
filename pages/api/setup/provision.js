@@ -12,7 +12,7 @@
  * 6. Seeds Redis setup config and logs activity.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { provisionNewClientSystem } from "../../../services/setupService.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
@@ -26,7 +26,7 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }

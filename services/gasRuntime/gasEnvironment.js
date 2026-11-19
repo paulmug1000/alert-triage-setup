@@ -14,6 +14,7 @@
 import { randomUUID } from "crypto";
 import { getSupabaseAdmin } from "../supabaseClient.js";
 import { extractSheetIdFromUrl } from "../sheetsClient.js";
+import { assertExternalCrmSpreadsheet } from "../googleSheetService.js";
 import {
   colLetterToIdx0,
   colIdx0ToLetter,
@@ -2119,6 +2120,21 @@ export async function createGasEnvironment({
     }
 
     const isClientSheet = cleanId === ctx.clientSheetId;
+    if (!isClientSheet) {
+      const kiSheet = masterSS?.getSheetByName?.("KeyInfo");
+      const x11Raw = String(kiSheet?.valuesGrid?.[10]?.[23] ?? "").trim();
+      const x14Raw = String(kiSheet?.valuesGrid?.[13]?.[23] ?? "").trim();
+      const allowedExternalIds = new Set(
+        [
+          extractSheetIdFromUrl(x11Raw) || x11Raw,
+          extractSheetIdFromUrl(x14Raw) || x14Raw,
+        ].filter(Boolean)
+      );
+      if (!allowedExternalIds.has(cleanId)) {
+        throw new Error(`Access denied: Remote spreadsheet "${cleanId}" is not authorized for the active tenant.`);
+      }
+      await assertExternalCrmSpreadsheet(sheets, cleanId);
+    }
     const bypassVirtual = isClientSheet ? ctx.clientMode !== "supabase" : true;
     const metaResp = await withSheetsRetry_(
       () =>
@@ -2555,13 +2571,66 @@ export async function createGasEnvironment({
     },
   };
 
+  const isCanonicalPulseHost_ = (hostname) => {
+    const h = String(hostname || "").toLowerCase();
+    return (
+      h === "app.pulsedashboard.co.uk" ||
+      h === "pulsedashboard.co.uk" ||
+      h === "pma.pulsedashboard.co.uk" ||
+      (process.env.NODE_ENV !== "production" && (h === "localhost" || h === "127.0.0.1"))
+    );
+  };
+
+  const isBlockedSsrfHost_ = (rawHostname) => {
+    const h = String(rawHostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+    if (!h) return true;
+    if (
+      h === "localhost" ||
+      h.endsWith(".localhost") ||
+      h.endsWith(".local") ||
+      h.endsWith(".internal") ||
+      h === "metadata.google.internal"
+    ) {
+      return true;
+    }
+    const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipv4) {
+      const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+      if (a === 10 || a === 0 || a === 127) return true;
+      if (a === 169 && b === 254) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 100 && b >= 64 && b <= 127) return true;
+    }
+    if (/^(0x[0-9a-f]+|\d+)$/i.test(h)) return true;
+    if (h.includes(":")) {
+      if (
+        h === "::" ||
+        h === "::1" ||
+        h.startsWith("fe80:") ||
+        h.startsWith("fc") ||
+        h.startsWith("fd") ||
+        h.includes("127.0.0.1") ||
+        h.includes("169.254.")
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const UrlFetchApp = {
     fetch: async (url, params = {}) => {
       const urlStr = String(url || "");
+      let uObj;
+      try {
+        uObj = new URL(urlStr, "https://app.pulsedashboard.co.uk");
+      } catch {
+        throw new Error(`Invalid URL in UrlFetchApp.fetch: ${urlStr}`);
+      }
 
       // 1. Intercept internal Token Broker calls (`/api/integrations/token`)
-      if (urlStr.includes("/api/integrations/token")) {
-        const uObj = new URL(urlStr, "https://app.pulsedashboard.co.uk");
+      if (isCanonicalPulseHost_(uObj.hostname) && uObj.pathname === "/api/integrations/token") {
         let bodyObj = {};
         if (params.payload) {
           try {
@@ -2580,7 +2649,7 @@ export async function createGasEnvironment({
       }
 
       // 2. Intercept internal `/api/triage` calls (`agent_progress` and `auto_reconcile_bank_feeds`)
-      if (urlStr.includes("/api/triage")) {
+      if (isCanonicalPulseHost_(uObj.hostname) && uObj.pathname === "/api/triage") {
         let bodyObj = {};
         if (params.payload) {
           try {
@@ -2639,7 +2708,15 @@ export async function createGasEnvironment({
         }
       }
 
-      // 3. External HTTP fetch
+      // 3. External HTTP fetch (SSRF + scheme + credential redirect hardening)
+      const isLoopbackNonProd =
+        process.env.NODE_ENV !== "production" &&
+        uObj.protocol === "http:" &&
+        (uObj.hostname === "localhost" || uObj.hostname === "127.0.0.1");
+      if (!isLoopbackNonProd && (uObj.protocol !== "https:" || isBlockedSsrfHost_(uObj.hostname))) {
+        throw new Error(`Blocked unsafe external fetch target in UrlFetchApp.fetch: ${uObj.origin}`);
+      }
+
       const method = String(params.method || "GET").toUpperCase();
       const headers = { ...(params.headers || {}) };
       if (params.contentType && !headers["Content-Type"] && !headers["content-type"]) {
@@ -2661,11 +2738,15 @@ export async function createGasEnvironment({
         }
       }
 
-      const resp = await fetch(urlStr, {
+      const hasAuthOrSecretHeader = Object.keys(headers).some((k) =>
+        ["authorization", "x-pulse-client-secret", "x-cron-secret", "x-internal-secret"].includes(k.toLowerCase())
+      );
+
+      const resp = await fetch(uObj.toString(), {
         method,
         headers,
         body,
-        redirect: params.followRedirects === false ? "manual" : "follow",
+        redirect: params.followRedirects === false || hasAuthOrSecretHeader ? "manual" : "follow",
       });
 
       const respBuffer = Buffer.from(await resp.arrayBuffer());
@@ -2992,6 +3073,7 @@ export async function createGasEnvironment({
       if (envState.scriptPropertiesDirty) {
         const EPHEMERAL_KEYS = new Set([
           "PULSE_INTERNAL_SECRET",
+          "PULSE_CLIENT_SECRET",
           "AGENT_TRIGGER_SECRET",
           "CRON_SECRET",
           "VERCEL_BYPASS_TOKEN",

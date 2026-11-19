@@ -25,18 +25,11 @@ import { getClickUpWorkspaceInfo } from "../../../services/clickupService.js";
 import { refreshCapsuleTokens, getCapsuleAccountInfo } from "../../../services/capsuleService.js";
 import { refreshCloseTokens, getCloseAccountInfo } from "../../../services/closeService.js";
 import { refreshHubSpotTokens, getHubSpotAccountInfo } from "../../../services/hubspotService.js";
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, safeCompareSecret, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { resolveClientNameBySheetId, matchesClientName, isReadOnlySession } from "../../../services/userPermissions.js";
-
-function safeCompare(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 export const config = {
   maxDuration: 300,
@@ -45,6 +38,11 @@ export const config = {
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
+  }
+
+  const rl = await checkRateLimit("int-import", getTrustedClientIp(req), 60, 300);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many import requests. Please retry shortly." });
   }
 
   const { tool = "xero", spreadsheetId: rawSpreadsheetId, clientName, refreshToken, tenantId } = req.body;
@@ -60,10 +58,7 @@ export default async function handler(req, res) {
   const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.body?.secret || "");
 
   const expectedSecret = process.env.PULSE_INTERNAL_SECRET || "";
-  const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompare(providedSecret, expectedSecret));
-
-  const sessionUser = getSessionUser(req);
-  const isAdmin = Boolean(sessionUser?.isAdmin && !isReadOnlySession(sessionUser));
+  const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompareSecret(providedSecret, expectedSecret));
 
   const providedClientSecret = String(
     req.headers["x-pulse-client-secret"] ||
@@ -71,6 +66,14 @@ export default async function handler(req, res) {
     req.body?.clientSecret ||
     ""
   ).trim();
+
+  let sessionUser = null;
+  let isAdmin = false;
+  if (!providedClientSecret && !isMasterSecretValid) {
+    if (!assertTrustedOrigin(req, res)) return;
+    sessionUser = await resolveLiveSessionUser(req, res);
+    isAdmin = Boolean(sessionUser?.isAdmin && !isReadOnlySession(sessionUser));
+  }
 
   let isAuthorized = isAdmin;
   const redisSecretKey = `pulse:client_secret:${spreadsheetId}`;
@@ -99,7 +102,7 @@ export default async function handler(req, res) {
     if (providedClientSecret) {
       const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
       if (registeredHash) {
-        const isMatch = safeCompare(providedHash, registeredHash) || safeCompare(providedClientSecret, registeredHash);
+        const isMatch = safeCompareSecret(providedHash, registeredHash) || safeCompareSecret(providedClientSecret, registeredHash);
         if (isMatch) {
           isAuthorized = true;
           if (registeredHash.startsWith("pcs_")) {

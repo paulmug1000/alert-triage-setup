@@ -6,10 +6,10 @@
 
 import { getIntegrationTokens, deleteIntegrationTokens } from "../../../../services/vaultService.js";
 import { revokePipedriveToken } from "../../../../services/pipedriveService.js";
-import { getSessionUser } from "../../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../../services/authService.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet, matchesClientName, canAccessPma } from "../../../../services/userPermissions.js";
-import { assertTrustedOrigin } from "../../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -17,13 +17,16 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ error: "Active session required." });
   }
 
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ error: "Read-only session cannot disconnect integrations." });
+  }
+  if (sessionUser.role === "Senior (Restricted)" || sessionUser.isSenior) {
+    return res.status(403).json({ error: "Forbidden: Senior (Restricted) users cannot disconnect integrations." });
   }
   if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ error: "Forbidden: Only PMA staff can disconnect active integrations." });
@@ -84,6 +87,8 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("Pipedrive disconnect error:", err);
-    return res.status(500).json({ error: err.message || "Failed to disconnect Pipedrive integration." });
+    return res.status(500).json({
+      error: sessionUser?.isAdmin ? (err.message || "Failed to disconnect Pipedrive integration.") : sanitizeSpreadsheetTerms(err.message || "Failed to disconnect Pipedrive integration.")
+    });
   }
 }

@@ -1,5 +1,5 @@
 import { waitUntil } from "@vercel/functions";
-import { getSessionUser, safeCompareSecret } from "../../../services/authService.js";
+import { resolveLiveSessionUser, safeCompareSecret, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
@@ -86,11 +86,16 @@ export const config = {
 };
 
 export default async function handler(req, res) {
+  const rl = await checkRateLimit("pma-master-engine", getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many master engine requests. Please retry shortly." });
+  }
+
   const cronSecret = process.env.CRON_SECRET?.trim();
   const authHeader = String(req.headers.authorization || "").trim();
   const headerSecret = String(req.headers["x-cron-secret"] || "").trim();
   const expectedBearer = `Bearer ${cronSecret}`;
-  const providedSecret = String(req.body?.secret || req.query?.secret || headerSecret || authHeader || "").trim();
+  const providedSecret = String(req.body?.secret || headerSecret || authHeader || "").trim();
   const isCronAuth = Boolean(
     cronSecret &&
     providedSecret &&
@@ -99,7 +104,7 @@ export default async function handler(req, res) {
       (headerSecret && safeCompareSecret(headerSecret, cronSecret)))
   );
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = isCronAuth ? null : await resolveLiveSessionUser(req, res);
   if (!isCronAuth && (!sessionUser || !sessionUser.isAdmin || sessionUser.isReadOnly)) {
     return res.status(403).json({
       success: false,

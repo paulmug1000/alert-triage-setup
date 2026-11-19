@@ -52,6 +52,10 @@ const STRIP_NON_ADMIN_KEYS = new Set([
   "templateClientUrl",
   "spreadsheetUrl",
   "webAppUrl",
+  "reconScriptId",
+  "reconSheetScriptId",
+  "backupSheetId",
+  "backupSheetUrl",
 ]);
 
 function getTokenEncryptionKey() {
@@ -181,7 +185,7 @@ export function unwrapRequestSheetIds(obj, seen = new WeakSet(), rawSheetRefs = 
       } else if (
         rawSheetRefs &&
         CONDITIONAL_SHEET_ID_KEYS.has(key) &&
-        /^[a-zA-Z0-9-_]{22,}$/.test(t)
+        (/^[a-zA-Z0-9-_]{22,}$/.test(t) || /^sb-(?:client|master|recon)-[a-z0-9_-]+$/i.test(t))
       ) {
         rawSheetRefs.push({ target: obj, key });
       }
@@ -258,7 +262,7 @@ export function maskResponseSheetIdsForUser(data, sessionUser, seen = new WeakMa
     }
 
     if (CONDITIONAL_SHEET_ID_KEYS.has(key)) {
-      if (typeof val === "string" && /^[a-zA-Z0-9-_]{22,}$/.test(val.trim())) {
+      if (typeof val === "string" && (/^[a-zA-Z0-9-_]{22,}$/.test(val.trim()) || /^sb-(?:client|master|recon)-[a-z0-9_-]+$/i.test(val.trim()))) {
         outObj[key] = wrapSheetId(val);
       } else {
         outObj[key] = val;

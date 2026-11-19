@@ -1,7 +1,8 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 const CASH_CACHE_TTL_SECS = 60; // 60s L1 fresh window
 const CASH_REDIS_TTL_SECS = 86400; // 24h Redis SWR retention
@@ -27,8 +28,9 @@ export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
+  if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
@@ -236,6 +238,6 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("❌ /api/portal/cash error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
 }

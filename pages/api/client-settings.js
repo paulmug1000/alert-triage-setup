@@ -9,7 +9,7 @@
  * Strict Admin-only access.
  */
 
-import { getSessionUser } from "../../services/authService.js";
+import { resolveLiveSessionUser } from "../../services/authService.js";
 import {
   canAccessPma,
   isUserAuthorizedForClient,
@@ -18,7 +18,7 @@ import {
 } from "../../services/userPermissions.js";
 import { getSheetsClient } from "../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../services/sheetTokenService.js";
-import { assertTrustedOrigin } from "../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../services/masterEngineService.js";
 import {
   getClientSettings,
@@ -37,8 +37,8 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  // 1. Authenticate user
-  const sessionUser = getSessionUser(req);
+  // 1. Authenticate user against live directory
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -107,6 +107,7 @@ export default async function handler(req, res) {
         if (safeSettings.customisation?.kpiColouring && typeof safeSettings.customisation.kpiColouring === "object") {
           const safeKpi = { ...safeSettings.customisation.kpiColouring };
           delete safeKpi.parentTemplateUrl;
+          delete safeKpi.isParentFormula;
           safeSettings.customisation = { ...safeSettings.customisation, kpiColouring: safeKpi };
         }
         return res.status(200).json({ success: true, settings: safeSettings });
@@ -115,7 +116,10 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, settings: data });
     } catch (err) {
       console.error("GET /api/client-settings error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({
+        success: false,
+        error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to load settings.")
+      });
     }
   }
 
@@ -146,11 +150,17 @@ export default async function handler(req, res) {
     }
 
     // Strip admin-only sections for non-admins to prevent unauthorized modifications
+    const effectiveResetKpi = Boolean(sessionUser.isAdmin && resetKpiToParent);
     if (!sessionUser.isAdmin && settings) {
       delete settings.main;
       delete settings.automation;
       if (settings.accounting) {
         delete settings.accounting.expenseStatusMapping;
+      }
+      if (settings.crm?.excel) {
+        delete settings.crm.excel.azureTenantId;
+        delete settings.crm.excel.azureClientId;
+        delete settings.crm.excel.azureClientSecret;
       }
     }
 
@@ -248,13 +258,16 @@ export default async function handler(req, res) {
         masterSheetId,
         clientSheetId,
         settings,
-        resetKpiToParent: Boolean(resetKpiToParent)
+        resetKpiToParent: effectiveResetKpi
       });
 
       return res.status(200).json({ success: true, ...result });
     } catch (err) {
       console.error("POST /api/client-settings error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({
+        success: false,
+        error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to save settings.")
+      });
     }
     } finally {
       await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});

@@ -1,15 +1,17 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, isUserAuthorizedForClient } from "../../../services/userPermissions.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
@@ -35,8 +37,7 @@ export default async function handler(req, res) {
     } else if (!isUserAuthorizedForClient(sessionUser, targetClient)) {
       return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client" });
     }
-    const forwarded = req.headers["x-forwarded-for"];
-    const clientIp = (typeof forwarded === "string" ? forwarded.split(",")[0] : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "-";
+    const clientIp = getTrustedClientIp(req);
 
     await logPulseActivity(sheets, {
       clientName: targetClient,
@@ -50,6 +51,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ /api/portal/log-access error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
 }

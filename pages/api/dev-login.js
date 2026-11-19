@@ -1,16 +1,23 @@
 import jwt from "jsonwebtoken";
-import { getJwtSecret } from "../../services/authService";
+import { getJwtSecret, safeCompareSecret } from "../../services/authService";
 import { sanitizeRedirectUrl } from "../../utils/helpers";
 
 /**
  * Dev-only login endpoint to test authenticated portal and PMA flows in local development.
- * Restricted strictly to non-production environments.
+ * Restricted strictly to non-production local environments.
  */
 export default async function handler(req, res) {
+  const remoteIp = String(req.socket?.remoteAddress || "").trim();
+  const isLoopback = remoteIp === "127.0.0.1" || remoteIp === "::1" || remoteIp === "::ffff:127.0.0.1";
+  const configuredDevSecret = (process.env.DEV_LOGIN_SECRET || "").trim();
+  const providedDevSecret = String(req.headers["x-dev-login-secret"] || req.query?.secret || "").trim();
+
   if (
     process.env.NODE_ENV === "production" ||
     process.env.VERCEL_ENV === "production" ||
-    process.env.ENABLE_DEV_LOGIN !== "true"
+    process.env.ENABLE_DEV_LOGIN !== "true" ||
+    (req.method !== "POST" && !isLoopback) ||
+    (configuredDevSecret && !safeCompareSecret(providedDevSecret, configuredDevSecret))
   ) {
     return res.status(403).json({ error: "Dev login is disabled" });
   }

@@ -1,4 +1,4 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { getSupabaseAdmin, isSupabaseConfigured, setControlPlaneSource } from "../../../services/supabaseClient.js";
 import { redisClient } from "../../../services/redisClient.js";
@@ -353,7 +353,7 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser || !sessionUser.isAdmin || sessionUser.isReadOnly) {
     return res.status(403).json({
       success: false,

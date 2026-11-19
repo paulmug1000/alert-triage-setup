@@ -1,22 +1,52 @@
 import { APP_MANIFEST } from "../../config/appManifest";
 import { SYSTEM_VERSION, getSystemCopyright } from "../../config/version";
+import { resolveLiveSessionUser } from "../../services/authService";
+import { isSysAdminUser } from "../../services/sheetTokenService";
 
 /**
- * Public Web App & Routes Manifest API Endpoint
+ * Authenticated Web App & Routes Manifest API Endpoint
  * GET /api/manifest
- * Returns the comprehensive registry of all routes, query parameters, views,
- * and capabilities across both Pulse and PMA.
  */
-export default function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
-  res.setHeader("Cache-Control", "public, s-maxage=3600, stale-while-revalidate=86400");
+  const sessionUser = await resolveLiveSessionUser(req, res);
+  if (!sessionUser) {
+    return res.status(401).json({ success: false, error: "Active session required." });
+  }
+
+  res.setHeader("Cache-Control", "private, no-store");
+
+  if (isSysAdminUser(sessionUser)) {
+    return res.status(200).json({
+      success: true,
+      version: SYSTEM_VERSION,
+      copyright: getSystemCopyright(),
+      manifest: APP_MANIFEST,
+    });
+  }
+
+  const sanitizedPulseRoutes = (APP_MANIFEST?.areas?.pulse?.routes || []).map((r) => {
+    const { chartToggleCell: _omitted, ...rest } = r;
+    return rest;
+  });
+
   return res.status(200).json({
     success: true,
     version: SYSTEM_VERSION,
     copyright: getSystemCopyright(),
-    manifest: APP_MANIFEST,
+    manifest: {
+      name: APP_MANIFEST.name,
+      shortName: APP_MANIFEST.shortName,
+      version: APP_MANIFEST.version,
+      areas: {
+        pulse: {
+          ...APP_MANIFEST.areas.pulse,
+          routes: sanitizedPulseRoutes,
+        },
+      },
+    },
   });
 }

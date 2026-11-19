@@ -9,7 +9,7 @@
  * POST: Applies approved settings to Master Sheet KeyInfo!B2, B6, B8, B12.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
@@ -17,13 +17,14 @@ import {
   suggestAccountingSettings,
   applyAccountingSettings
 } from "../../../services/accountingSuggestionsService.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export const config = {
   maxDuration: 120,
 };
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req, res);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   installSheetIdBoundary(req, res, sessionUser);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
@@ -55,11 +56,12 @@ export default async function handler(req, res) {
       return res.status(200).json(suggestions);
     } catch (err) {
       console.error("GET /api/setup/suggest-accounting-settings error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
     }
   }
 
   if (req.method === "POST") {
+    if (!assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser) || !sessionUser.isAdmin) {
       return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required to apply accounting settings." });
     }

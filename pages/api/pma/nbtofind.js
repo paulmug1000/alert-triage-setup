@@ -1,4 +1,4 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import {
   fetchNBToFindData,
   saveNBToFindSettings,
@@ -8,12 +8,12 @@ import { getClients } from "../../../services/workspaces.js";
 import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
-import { assertTrustedOrigin } from "../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
   // 1. Authenticate user
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -62,7 +62,10 @@ export default async function handler(req, res) {
       return res.status(200).json(data);
     } catch (err) {
       console.error("Error in GET /api/pma/nbtofind:", err);
-      return res.status(500).json({ success: false, error: err.message || "Failed to load NB to find data" });
+      return res.status(500).json({
+        success: false,
+        error: sessionUser.isAdmin ? (err.message || "Failed to load NB to find data") : sanitizeSpreadsheetTerms(err.message || "Failed to load NB to find data")
+      });
     }
   }
 
@@ -136,7 +139,10 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: `Unknown action: ${action}` });
     } catch (err) {
       console.error("Error in POST /api/pma/nbtofind:", err);
-      return res.status(500).json({ success: false, error: err.message || "Failed to save NB to find data" });
+      return res.status(500).json({
+        success: false,
+        error: sessionUser.isAdmin ? (err.message || "Failed to save NB to find data") : sanitizeSpreadsheetTerms(err.message || "Failed to save NB to find data")
+      });
     } finally {
       await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
     }

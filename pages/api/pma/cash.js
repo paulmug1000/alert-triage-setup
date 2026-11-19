@@ -1,15 +1,15 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { fetchCashData, saveCashBatch, saveCashCellNote } from "../../../services/cashEditService.js";
 import { getClients } from "../../../services/workspaces.js";
 import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
-import { assertTrustedOrigin } from "../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
 export default async function handler(req, res) {
   // 1. Authenticate user
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -72,7 +72,10 @@ export default async function handler(req, res) {
       return res.status(200).json(data);
     } catch (err) {
       console.error("Error in GET /api/pma/cash:", err);
-      return res.status(500).json({ success: false, error: err.message || "Failed to load cash data" });
+      return res.status(500).json({
+        success: false,
+        error: sessionUser.isAdmin ? (err.message || "Failed to load cash data") : sanitizeSpreadsheetTerms(err.message || "Failed to load cash data")
+      });
     }
   }
 
@@ -146,7 +149,10 @@ export default async function handler(req, res) {
       return res.status(200).json(result);
     } catch (err) {
       console.error("Error in POST /api/pma/cash:", err);
-      return res.status(500).json({ success: false, error: err.message || "Failed to save cash changes" });
+      return res.status(500).json({
+        success: false,
+        error: sessionUser.isAdmin ? (err.message || "Failed to save cash changes") : sanitizeSpreadsheetTerms(err.message || "Failed to save cash changes")
+      });
     } finally {
       await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
     }

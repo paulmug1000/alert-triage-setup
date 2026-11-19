@@ -7,15 +7,15 @@
  * POST: Saves KeyInfo financial parameters to Master Sheet and marks task complete.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getMasterKeyInfoSettings, saveMasterKeyInfoSettings } from "../../../services/setupService.js";
-import { assertTrustedOrigin } from "../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req, res);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   installSheetIdBoundary(req, res, sessionUser);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
@@ -45,7 +45,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, settings });
     } catch (err) {
       console.error("GET /api/setup/keyinfo error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
     }
   }
 

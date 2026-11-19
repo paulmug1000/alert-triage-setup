@@ -17,6 +17,7 @@
 import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { invalidateAllClientsRedisKeys } from "./cacheService.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
+import { isValidGoogleScriptUrl } from "../utils/helpers.js";
 import { getIntegrationStatus, INTEGRATIONS_STATUS_CACHE_KEY } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput, getServiceAccountPoolEmails } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
@@ -2288,8 +2289,8 @@ export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, dep
   if (!clientName || !deploymentUrl) throw new Error("Missing clientName or deploymentUrl");
 
   const trimmedUrl = String(deploymentUrl).trim();
-  if (!trimmedUrl.startsWith("https://script.google.com/macros/s/")) {
-    throw new Error("Invalid deployment URL: Must start with https://script.google.com/macros/s/");
+  if (!isValidGoogleScriptUrl(trimmedUrl)) {
+    throw new Error("Invalid deployment URL: Must be a deployed Google Apps Script Web App URL (https://script.google.com/macros/s/<id>/exec).");
   }
 
   // 1. Write to Master Sheet KeyInfo!X29
@@ -2355,29 +2356,8 @@ export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, dep
     userEmail
   });
 
-  // 4. Automatically push ScriptProperties secrets to the newly deployed Master WebApp
-  try {
-    const agentSecret = String(process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim();
-    const pulseInternalSecret = String(process.env.PULSE_INTERNAL_SECRET || "").replace(/^["']|["']$/g, "").trim();
-    const cronSecret = String(process.env.CRON_SECRET || agentSecret).replace(/^["']|["']$/g, "").trim();
-    const vercelBypassToken = String(process.env.VERCEL_BYPASS_TOKEN || "").replace(/^["']|["']$/g, "").trim();
-    if (agentSecret && pulseInternalSecret) {
-      await fetch(trimmedUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "sync_script_secrets",
-          secret: agentSecret,
-          pulseInternalSecret,
-          cronSecret,
-          vercelBypassToken,
-          clientName
-        })
-      });
-    }
-  } catch (syncErr) {
-    console.warn(`[saveDeploymentUrl] Optional sync_script_secrets note for ${clientName}:`, syncErr.message);
-  }
+  // 4. Global secret broadcasting (CRON_SECRET, PULSE_INTERNAL_SECRET, VERCEL_BYPASS_TOKEN, AGENT_TRIGGER_SECRET)
+  // via sync_script_secrets has been severed as Master Google Sheets retire in favour of Supabase Masters.
 
   logPmaActivity({
     action: "setup_deployment_url_saved",

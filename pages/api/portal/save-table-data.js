@@ -1,11 +1,22 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry, colLetterToNum } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache, del2TierCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
-import { assertTrustedOrigin } from "../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+
+function colIdxToLetter_(idx) {
+  let c = Number(idx) + 1;
+  let letter = "";
+  while (c > 0) {
+    const rem = (c - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    c = Math.floor((c - rem - 1) / 26);
+  }
+  return letter;
+}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -13,7 +24,7 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
@@ -82,13 +93,30 @@ export default async function handler(req, res) {
           return res.status(400).json({ success: false, error: "Cross-sheet range override is not permitted." });
         }
       }
-      if (!/^[A-Z]{1,2}\d{1,4}(:[A-Z]{1,2}\d{1,4})?$/i.test(coordPart)) {
+      const rangeMatch = coordPart.toUpperCase().match(/^([A-Z]{1,2})(\d{1,4})(?::([A-Z]{1,2})(\d{1,4}))?$/);
+      if (!rangeMatch) {
         return res.status(400).json({ success: false, error: `Invalid cell coordinate: ${coordPart}` });
       }
-      const rowNums = (coordPart.match(/\d+/g) || []).map((n) => parseInt(n, 10));
-      const colLetters = (coordPart.match(/[A-Z]+/gi) || []).map((c) => c.toUpperCase());
-      const minRow = rowNums.length ? Math.min(...rowNums) : 0;
-      const maxRow = rowNums.length ? Math.max(...rowNums) : 0;
+      const startCol = rangeMatch[1];
+      const startRow = parseInt(rangeMatch[2], 10);
+      const endCol = rangeMatch[3] || startCol;
+      const endRow = rangeMatch[4] ? parseInt(rangeMatch[4], 10) : startRow;
+
+      const startColIdx = colLetterToNum(startCol) - 1;
+      const endColIdx = colLetterToNum(endCol) - 1;
+      const minRow = Math.min(startRow, endRow);
+      const maxRow = Math.max(startRow, endRow);
+      const minColIdx = Math.min(startColIdx, endColIdx);
+      const maxColIdx = Math.max(startColIdx, endColIdx);
+
+      const rawValues = Array.isArray(u.values) ? u.values : [[u.value]];
+      const normalizedRows = rawValues.map((row) => (Array.isArray(row) ? row : [row]));
+      const expectedRowCount = maxRow - minRow + 1;
+      const expectedColCount = maxColIdx - minColIdx + 1;
+      if (normalizedRows.length !== expectedRowCount || normalizedRows.some((r) => r.length !== expectedColCount)) {
+        return res.status(400).json({ success: false, error: "Payload dimensions do not match target coordinate bounds." });
+      }
+
       if (minRow < 2) {
         return res.status(400).json({ success: false, error: "Header row cannot be modified." });
       }
@@ -98,14 +126,15 @@ export default async function handler(req, res) {
         if (isSenior && (overlapsDividends || overlapsSalaries)) {
           return res.status(403).json({ success: false, error: "Forbidden: Senior users cannot modify salary or dividend rows" });
         }
-        const isContractorRange = minRow >= 13 && maxRow <= 110;
-        const isDividendRange = !isSenior && minRow >= 115 && maxRow <= 123;
-        const isExpenseRange = minRow >= 126 && maxRow <= 224;
-        if (!isContractorRange && !isDividendRange && !isExpenseRange) {
-          return res.status(403).json({ success: false, error: "This row is not within an editable section." });
+        for (let r = minRow; r <= maxRow; r++) {
+          const isContractorRow = r >= 13 && r <= 110;
+          const isDividendRow = !isSenior && r >= 115 && r <= 123;
+          const isExpenseRow = r >= 126 && r <= 224;
+          if (!isContractorRow && !isDividendRow && !isExpenseRow) {
+            return res.status(403).json({ success: false, error: "This row is not within an editable section." });
+          }
         }
-        for (const cl of colLetters) {
-          const cIdx = colLetterToNum(cl) - 1;
+        for (let cIdx = minColIdx; cIdx <= maxColIdx; cIdx++) {
           const isEditableCol =
             (cIdx >= 0 && cIdx <= 5) ||
             (cIdx >= 6 && cIdx <= 17) ||
@@ -119,8 +148,7 @@ export default async function handler(req, res) {
         if (minRow < 4 || maxRow > 53) {
           return res.status(403).json({ success: false, error: "This entry is not within an editable Salaries range." });
         }
-        for (const cl of colLetters) {
-          const cIdx = colLetterToNum(cl) - 1;
+        for (let cIdx = minColIdx; cIdx <= maxColIdx; cIdx++) {
           if (cIdx < 0 || cIdx > 8) {
             return res.status(403).json({ success: false, error: "Calculated totals cannot be modified." });
           }
@@ -132,18 +160,18 @@ export default async function handler(req, res) {
             return res.status(403).json({ success: false, error: "This entry is not within an editable NB to find range." });
           }
         }
-        for (const cl of colLetters) {
-          const cIdx = colLetterToNum(cl) - 1;
+        for (let cIdx = minColIdx; cIdx <= maxColIdx; cIdx++) {
           if (cIdx < 0 || cIdx > 49) {
             return res.status(403).json({ success: false, error: "Field is outside the editable NB to find range." });
           }
         }
       }
-      const fullRange = `${canonicalSheetName}!${coordPart.toUpperCase()}`;
-      const rawValues = Array.isArray(u.values) ? u.values : [[u.value]];
+      const boundedStartCol = colIdxToLetter_(minColIdx);
+      const boundedEndCol = colIdxToLetter_(maxColIdx);
+      const fullRange = `${canonicalSheetName}!${boundedStartCol}${minRow}:${boundedEndCol}${maxRow}`;
       data.push({
         range: fullRange,
-        values: rawValues.map((row) => (Array.isArray(row) ? row.map(sanitizeCell) : [sanitizeCell(row)])),
+        values: normalizedRows.map((row) => row.map(sanitizeCell)),
       });
     }
 
@@ -203,7 +231,10 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("❌ /api/portal/save-table-data error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to save data")
+    });
   } finally {
     await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
   }

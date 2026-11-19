@@ -217,12 +217,15 @@ export default function GoogleSheetLinkModal({
     setOpeningPicker(true);
 
     try {
-      const q = new URLSearchParams({
-        clientKey: resolvedClientName,
-        masterSheetId: resolvedMasterSheetId || ""
-      });
       const [tokenRes] = await Promise.all([
-        fetch(`/api/integrations/google-sheet/picker-token?${q.toString()}`),
+        fetch("/api/integrations/google-sheet/picker-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientKey: resolvedClientName,
+            masterSheetId: resolvedMasterSheetId || ""
+          })
+        }),
         loadGooglePickerApi()
       ]);
       const tokenData = await tokenRes.json();

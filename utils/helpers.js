@@ -2442,17 +2442,19 @@ export function sanitizeRedirectUrl(url, defaultTarget = "/pma") {
   // Explicit trusted domains
   try {
     const parsed = new URL(trimmed);
-    const isLocalhost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    const isProd = process.env.NODE_ENV === "production";
+    const isLocalhost = !isProd && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
     const isValidScheme = parsed.protocol === "https:" || (isLocalhost && parsed.protocol === "http:");
     if (!isValidScheme) return defaultTarget;
     const trustedHosts = [
       "app.pulsedashboard.co.uk",
       "pma.pulsedashboard.co.uk",
       "pulsedashboard.co.uk",
-      "localhost",
-      "127.0.0.1"
     ];
-    if (trustedHosts.includes(parsed.hostname) || parsed.hostname.endsWith(".pulsedashboard.co.uk")) {
+    if (!isProd) {
+      trustedHosts.push("localhost", "127.0.0.1");
+    }
+    if (trustedHosts.includes(parsed.hostname)) {
       return trimmed;
     }
   } catch (_) { }
@@ -2516,8 +2518,11 @@ export function assertTrustedOrigin(req, res) {
   if (!req || !req.headers) return true;
   const origin = req.headers.origin;
   const secFetchSite = req.headers["sec-fetch-site"];
-  const reqHostRaw = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim().toLowerCase();
-  const reqHostname = reqHostRaw.split(":")[0];
+  const isProd = process.env.NODE_ENV === "production";
+  const previewHostname =
+    process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL
+      ? String(process.env.VERCEL_URL).trim().toLowerCase().split(":")[0]
+      : "";
 
   const isTrustedHostname = (h) => {
     if (!h) return false;
@@ -2526,10 +2531,8 @@ export function assertTrustedOrigin(req, res) {
       lower === "app.pulsedashboard.co.uk" ||
       lower === "pma.pulsedashboard.co.uk" ||
       lower === "pulsedashboard.co.uk" ||
-      lower === "localhost" ||
-      lower === "127.0.0.1" ||
-      lower.endsWith(".pulsedashboard.co.uk") ||
-      (reqHostname && lower === reqHostname)
+      (!isProd && (lower === "localhost" || lower === "127.0.0.1")) ||
+      (previewHostname && lower === previewHostname)
     );
   };
 
@@ -2787,6 +2790,157 @@ export function rewriteRowFormulasToTargetRow(
     }
   }
   return out;
+}
+
+/**
+ * Escapes PostgreSQL ILIKE wildcard characters (%, _, \) for exact case-insensitive matches.
+ */
+export function escapeIlikeExact(val) {
+  return String(val ?? "").replace(/[\\%_]/g, "\\$&");
+}
+
+/**
+ * Deterministic recursive-descent arithmetic evaluator (never uses eval or Function).
+ * Evaluates simple numeric formulas like "=100+25.50*2" safely with bounded length and depth.
+ */
+export function evaluateSafeArithmetic(rawExpr) {
+  if (typeof rawExpr !== "string") return null;
+  const stripped = rawExpr.trim().replace(/^=+/, "").trim();
+  if (!stripped || stripped.length > 256 || !/^[0-9+\-*/().\s]+$/.test(stripped)) {
+    return null;
+  }
+
+  let pos = 0;
+  const skipWs = () => {
+    while (pos < stripped.length && /\s/.test(stripped[pos])) pos++;
+  };
+
+  const parseExpr = (depth) => {
+    if (depth > 16) throw new Error("Depth exceeded");
+    let left = parseTerm(depth + 1);
+    while (true) {
+      skipWs();
+      const ch = stripped[pos];
+      if (ch === "+" || ch === "-") {
+        pos++;
+        const right = parseTerm(depth + 1);
+        left = ch === "+" ? left + right : left - right;
+      } else {
+        break;
+      }
+    }
+    return left;
+  };
+
+  const parseTerm = (depth) => {
+    if (depth > 16) throw new Error("Depth exceeded");
+    let left = parseFactor(depth + 1);
+    while (true) {
+      skipWs();
+      const ch = stripped[pos];
+      if (ch === "*" || ch === "/") {
+        pos++;
+        const right = parseFactor(depth + 1);
+        if (ch === "/") {
+          if (right === 0) throw new Error("Division by zero");
+          left = left / right;
+        } else {
+          left = left * right;
+        }
+      } else {
+        break;
+      }
+    }
+    return left;
+  };
+
+  const parseFactor = (depth) => {
+    if (depth > 16) throw new Error("Depth exceeded");
+    skipWs();
+    const ch = stripped[pos];
+    if (ch === "+" || ch === "-") {
+      pos++;
+      const inner = parseFactor(depth + 1);
+      return ch === "-" ? -inner : inner;
+    }
+    if (ch === "(") {
+      pos++;
+      const inner = parseExpr(depth + 1);
+      skipWs();
+      if (stripped[pos] !== ")") throw new Error("Missing closing parenthesis");
+      pos++;
+      return inner;
+    }
+    const start = pos;
+    let seenDot = false;
+    let seenDigit = false;
+    while (pos < stripped.length) {
+      const c = stripped[pos];
+      if (c >= "0" && c <= "9") {
+        seenDigit = true;
+        pos++;
+      } else if (c === "." && !seenDot) {
+        seenDot = true;
+        pos++;
+      } else {
+        break;
+      }
+    }
+    if (!seenDigit) throw new Error("Unexpected token");
+    const num = Number(stripped.slice(start, pos));
+    if (!Number.isFinite(num)) throw new Error("Invalid number");
+    return num;
+  };
+
+  try {
+    const val = parseExpr(0);
+    skipWs();
+    if (pos !== stripped.length || typeof val !== "number" || !Number.isFinite(val)) {
+      return null;
+    }
+    return Math.round(val * 100) / 100;
+  } catch {
+    return null;
+  }
+}
+
+const CANONICAL_OAUTH_HOSTS = new Set([
+  "pulsedashboard.co.uk",
+  "app.pulsedashboard.co.uk",
+  "pma.pulsedashboard.co.uk",
+]);
+
+/**
+ * Resolves the canonical Pulse host and protocol for OAuth redirect_uri generation.
+ * Never trusts arbitrary x-forwarded-host values outside canonical Pulse hosts.
+ */
+export function resolveCanonicalOAuthHost(req) {
+  const reqHostRaw = String(req?.headers?.["x-forwarded-host"] || req?.headers?.host || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  const isPulseHost = CANONICAL_OAUTH_HOSTS.has(reqHostRaw);
+  const previewHost =
+    process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL
+      ? String(process.env.VERCEL_URL).trim().toLowerCase()
+      : "";
+  const isPreviewHost = Boolean(previewHost && reqHostRaw === previewHost);
+  let prodHost = "";
+  try {
+    prodHost =
+      (process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).host : "") ||
+      process.env.VERCEL_PROJECT_PRODUCTION_URL ||
+      process.env.VERCEL_URL ||
+      "";
+  } catch { }
+  const isProd = process.env.NODE_ENV === "production";
+  const host =
+    isPulseHost || isPreviewHost
+      ? reqHostRaw
+      : prodHost || (!isProd && reqHostRaw ? reqHostRaw : "app.pulsedashboard.co.uk");
+  const isLocal = !isProd && (host.startsWith("localhost") || host.startsWith("127.0.0.1"));
+  const proto = isLocal ? (req?.headers?.["x-forwarded-proto"] || "http") : "https";
+  return { host, proto };
 }
 
 

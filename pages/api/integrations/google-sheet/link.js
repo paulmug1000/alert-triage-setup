@@ -7,14 +7,14 @@
  * (KeyInfo!X14:X15) and auto-completes task p2_connect_crm in Setup Mode.
  */
 
-import { getSessionUser } from "../../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, resolveMasterSheetIdByClientName } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
-import { linkGoogleSheetToClient } from "../../../../services/googleSheetService.js";
+import { assertExternalCrmSpreadsheet, linkGoogleSheetToClient } from "../../../../services/googleSheetService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
 import { saveIntegrationTokens, getIntegrationTokens } from "../../../../services/vaultService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
-import { assertTrustedOrigin } from "../../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -22,7 +22,7 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
@@ -70,6 +70,9 @@ export default async function handler(req, res) {
   }
 
   try {
+    const sheetsForExternalCheck = await getSheetsClient();
+    await assertExternalCrmSpreadsheet(sheetsForExternalCheck, url);
+
     const linkResult = await linkGoogleSheetToClient({
       clientKey,
       masterSheetId: resolvedMasterSheetId,
@@ -156,7 +159,7 @@ export default async function handler(req, res) {
     console.error("Error linking Google Sheet CRM:", err);
     return res.status(500).json({
       success: false,
-      error: err.message || "Failed to link Google Sheet CRM"
+      error: sessionUser?.isAdmin ? (err.message || "Failed to link Google Sheet CRM") : sanitizeSpreadsheetTerms(err.message || "Failed to link Google Sheet CRM")
     });
   }
 }

@@ -12,6 +12,14 @@ const QB_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 const QB_REVOKE_URL = "https://developer.api.intuit.com/v2/oauth2/tokens/revoke";
 const QB_SCOPES = "com.intuit.quickbooks.accounting openid profile email";
 
+export function assertValidQBRealmId(realmId) {
+  const clean = String(realmId || "").trim();
+  if (!/^\d{1,30}$/.test(clean)) {
+    throw new Error("Invalid QuickBooks company ID (realmId).");
+  }
+  return clean;
+}
+
 /**
  * Resolves QuickBooks Client credentials from environment or sheet parameters.
  */
@@ -138,7 +146,8 @@ export async function getQBCompanyInfo(accessToken, realmId) {
   if (!realmId || !accessToken) return null;
 
   try {
-    const url = `https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}?minorversion=73`;
+    const safeRealmId = assertValidQBRealmId(realmId);
+    const url = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/companyinfo/${safeRealmId}?minorversion=73`;
     const res = await fetch(url, {
       method: "GET",
       headers: {
@@ -203,10 +212,11 @@ export async function fetchQuickBooksBankAccounts(accessToken, realmId) {
   if (!accessToken || !realmId) {
     throw new Error("Missing accessToken or realmId for fetchQuickBooksBankAccounts");
   }
+  const safeRealmId = assertValidQBRealmId(realmId);
 
   // Fetch Bank, Credit Card, and potential financial liability/asset accounts
   const query = "SELECT * FROM Account WHERE AccountType IN ('Bank', 'Credit Card', 'Other Current Liability', 'Other Current Asset') MAXRESULTS 1000";
-  const url = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(query)}&minorversion=73`;
+  const url = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(query)}&minorversion=73`;
   const res = await fetch(url, {
     method: "GET",
     headers: {
@@ -281,6 +291,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   if (!accessToken || !realmId || !accountId) {
     throw new Error("Missing accessToken, realmId, or accountId for fetchQuickBooksAccountTransactions");
   }
+  const safeRealmId = assertValidQBRealmId(realmId);
 
   const headers = {
     "Authorization": `Bearer ${accessToken}`,
@@ -292,7 +303,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   // 1. Customer Payments (Money In on sales invoices)
   try {
     const payQuery = `select * from Payment where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
-    const payUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(payQuery)}&minorversion=73`;
+    const payUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(payQuery)}&minorversion=73`;
     const payRes = await fetch(payUrl, { method: "GET", headers });
     if (payRes.ok) {
       const payData = await payRes.json();
@@ -325,7 +336,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   // 2. Sales Receipts (Money In on direct sales)
   try {
     const srQuery = `select * from SalesReceipt where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
-    const srUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(srQuery)}&minorversion=73`;
+    const srUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(srQuery)}&minorversion=73`;
     const srRes = await fetch(srUrl, { method: "GET", headers });
     if (srRes.ok) {
       const srData = await srRes.json();
@@ -358,7 +369,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   // 3. Deposits (Money In)
   try {
     const depQuery = `select * from Deposit where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
-    const depUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(depQuery)}&minorversion=73`;
+    const depUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(depQuery)}&minorversion=73`;
     const depRes = await fetch(depUrl, { method: "GET", headers });
     if (depRes.ok) {
       const depData = await depRes.json();
@@ -391,7 +402,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   // 4. Transfers (Money between accounts)
   try {
     const trQuery = `select * from Transfer where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
-    const trUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(trQuery)}&minorversion=73`;
+    const trUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(trQuery)}&minorversion=73`;
     const trRes = await fetch(trUrl, { method: "GET", headers });
     if (trRes.ok) {
       const trData = await trRes.json();
@@ -462,7 +473,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   // 5. Purchases (Money Out)
   try {
     const purQuery = `select * from Purchase where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
-    const purUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(purQuery)}&minorversion=73`;
+    const purUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(purQuery)}&minorversion=73`;
     const purRes = await fetch(purUrl, { method: "GET", headers });
     if (purRes.ok) {
       const purData = await purRes.json();
@@ -493,7 +504,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   // 6. Bill Payments (Money Out)
   try {
     const bpQuery = `select * from BillPayment where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
-    const bpUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(bpQuery)}&minorversion=73`;
+    const bpUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(bpQuery)}&minorversion=73`;
     const bpRes = await fetch(bpUrl, { method: "GET", headers });
     if (bpRes.ok) {
       const bpData = await bpRes.json();

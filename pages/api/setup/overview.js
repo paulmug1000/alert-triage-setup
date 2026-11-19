@@ -6,14 +6,16 @@
  * Returns setup status and progress for all clients the user has access to.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { canAccessPma } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getAllClientsSetupOverview } from "../../../services/setupService.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req, res);
+  if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
+  const sessionUser = await resolveLiveSessionUser(req, res);
   installSheetIdBoundary(req, res, sessionUser);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
@@ -34,6 +36,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ success: true, clients: overview });
   } catch (err) {
     console.error("GET /api/setup/overview error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
 }

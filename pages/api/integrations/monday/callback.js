@@ -6,9 +6,9 @@
 
 import { exchangeMondayCodeForTokens, getMondayAccountInfo } from "../../../../services/mondayService.js";
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
-import { verifySignedOAuthState } from "../../../../services/authService.js";
+import { verifySignedOAuthState, safeCompareSecret, verifyCallbackSessionInitiator } from "../../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
-import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
+import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -57,16 +57,17 @@ export default async function handler(req, res) {
   const clearCookieOptions = `Path=/api/integrations/monday; HttpOnly; SameSite=Lax; Max-Age=0${isProd ? "; Secure" : ""}`;
   res.setHeader("Set-Cookie", `pulse_monday_nonce=; ${clearCookieOptions}`);
 
-  if (!savedNonce || statePayload?.nonce !== savedNonce) {
+  if (!savedNonce || !statePayload?.nonce || !safeCompareSecret(String(statePayload.nonce), String(savedNonce))) {
     return res.status(403).json({ error: "State nonce verification failed (potential CSRF attempt)." });
   }
 
+  const initiatorCheck = await verifyCallbackSessionInitiator(req, res, statePayload);
+  if (!initiatorCheck.ok) {
+    return res.status(403).json({ error: initiatorCheck.error });
+  }
+
   try {
-    const reqHost = req.headers["x-forwarded-host"] || req.headers.host;
-    const isPulseHost = reqHost && (reqHost === "pulsedashboard.co.uk" || reqHost.endsWith(".pulsedashboard.co.uk"));
-    const prodHost = (process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).host : null) || process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
-    const host = isPulseHost ? reqHost : (prodHost || reqHost || "localhost:3000");
-    const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
+    const { host, proto } = resolveCanonicalOAuthHost(req);
     const redirectUri = `${proto}://${host}/api/integrations/monday/callback`;
 
     // 1. Exchange code
@@ -114,6 +115,6 @@ export default async function handler(req, res) {
     console.error("Monday.com OAuth callback processing error:", err);
     const separator = returnUrl.includes("?") ? "&" : "?";
     const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
-    return res.redirect(`${returnUrl}${separator}integration=monday&status=error&message=${encodeURIComponent(err.message)}${clientParam}`);
+    return res.redirect(`${returnUrl}${separator}integration=monday&status=error&message=${encodeURIComponent(sanitizeSpreadsheetTerms(err.message || "Connection failed"))}${clientParam}`);
   }
 }

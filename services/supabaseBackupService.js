@@ -18,6 +18,9 @@ import { randomUUID } from "crypto";
 import { getSupabaseAdmin } from "./supabaseClient.js";
 import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { invalidateMasterEngineCache } from "./masterEngineService.js";
+import { escapeIlikeExact } from "../utils/helpers.js";
+
+const MAX_ZLIB_OUTPUT_BYTES = 50 * 1024 * 1024;
 
 const BACKUP_BUCKET = "pulse-backups";
 const BACKUP_INDEX_CONFIG_KEY = "supabase_client_backups_index";
@@ -181,12 +184,12 @@ export async function createClientSnapshot({
     sb
       .from("clients")
       .select("id, client_name, normalized_key, status, master_mode, client_mode, metadata")
-      .ilike("client_name", cleanClient)
+      .ilike("client_name", escapeIlikeExact(cleanClient))
       .maybeSingle(),
     sb
       .from("tenant_key_info")
       .select("*")
-      .ilike("client_name", cleanClient)
+      .ilike("client_name", escapeIlikeExact(cleanClient))
       .maybeSingle(),
   ]);
 
@@ -325,7 +328,7 @@ export async function getSnapshotCompressedBase64ById(snapshotId) {
 export async function getSnapshotPayloadById(snapshotId) {
   const { entry, compressedBase64 } = await getSnapshotCompressedBase64ById(snapshotId);
   const compressedBuf = Buffer.from(compressedBase64, "base64");
-  const rawJson = zlib.gunzipSync(compressedBuf).toString("utf8");
+  const rawJson = zlib.gunzipSync(compressedBuf, { maxOutputLength: MAX_ZLIB_OUTPUT_BYTES }).toString("utf8");
   const payload = JSON.parse(rawJson);
 
   return { entry, payload };
@@ -349,7 +352,7 @@ export async function importLocalSnapshotToCloud({
   let payload = uploadedPayload;
   if (!payload && uploadedCompressedBase64) {
     const buf = Buffer.from(uploadedCompressedBase64, "base64");
-    const rawStr = buf[0] === 0x1f && buf[1] === 0x8b ? zlib.gunzipSync(buf).toString("utf8") : buf.toString("utf8");
+    const rawStr = buf[0] === 0x1f && buf[1] === 0x8b ? zlib.gunzipSync(buf, { maxOutputLength: MAX_ZLIB_OUTPUT_BYTES }).toString("utf8") : buf.toString("utf8");
     payload = JSON.parse(rawStr);
   }
 
@@ -467,7 +470,7 @@ export async function restoreClientSnapshot({
   const { data: cfgRow } = await sb
     .from("clients")
     .select("id, client_name")
-    .ilike("client_name", targetClientName)
+    .ilike("client_name", escapeIlikeExact(targetClientName))
     .maybeSingle();
 
   const canonicalClient = cfgRow?.client_name || targetClientName;
@@ -639,7 +642,7 @@ export async function runDailyAutoBackupSweep({
   const sb = getSupabaseAdmin();
   if (!sb) throw new Error("Supabase admin client is not configured.");
 
-  await ensureRedisConnected(1000).catch(() => {});
+  await ensureRedisConnected(1000).catch(() => { });
   const lockKey = "pulse:lock:daily_backup_sweep";
   let lockAcquired = false;
   if (redisClient?.isOpen) {
@@ -649,7 +652,7 @@ export async function runDailyAutoBackupSweep({
       if (!lockAcquired) {
         return { skipped: true, reason: "Daily backup sweep already in progress on another instance." };
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   try {
@@ -778,7 +781,7 @@ export async function runDailyAutoBackupSweep({
     };
   } finally {
     if (lockAcquired && redisClient?.isOpen) {
-      await redisClient.del(lockKey).catch(() => {});
+      await redisClient.del(lockKey).catch(() => { });
     }
   }
 }

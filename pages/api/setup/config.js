@@ -9,15 +9,15 @@
  * Access restricted to Admins and assigned ClientManagers.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientSetupConfig, saveClientSetupConfig } from "../../../services/setupService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
-import { assertTrustedOrigin } from "../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -69,7 +69,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, config });
     } catch (err) {
       console.error("GET /api/setup/config error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
     }
   }
 
@@ -138,7 +138,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, config: updatedConfig });
     } catch (err) {
       console.error("POST /api/setup/config error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
     }
   }
 

@@ -1,6 +1,7 @@
 import { withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { parseLogDate, formatRelativeTime, isWithin30Days, appendLiveActivityToCache } from "./activityService.js";
+import { escapeIlikeExact } from "../utils/helpers.js";
 import {
   getSupabaseAdmin,
   isSupabaseConfigured,
@@ -194,7 +195,7 @@ export async function fetchPmaActivity(sheets, automationCommanderSheetId = DEFA
           .order("logged_at", { ascending: false })
           .range(from, from + PAGE_SIZE - 1);
         if (targetClientName && targetClientName !== "ALL") {
-          query = query.ilike("client_name", targetClientName);
+          query = query.ilike("client_name", escapeIlikeExact(targetClientName));
         }
         const { data: pageRows, error } = await query;
         if (error) {

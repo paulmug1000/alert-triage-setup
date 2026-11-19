@@ -335,9 +335,9 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
   const handleOpenSheets = () => {
     createdSheetUrls.forEach((url, idx) => {
       if (idx === 0) {
-        window.open(url, "_blank");
+        window.open(url, "_blank", "noopener,noreferrer");
       } else {
-        setTimeout(() => window.open(url, "_blank"), idx * 300);
+        setTimeout(() => window.open(url, "_blank", "noopener,noreferrer"), idx * 300);
       }
     });
   };

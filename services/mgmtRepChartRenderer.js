@@ -124,6 +124,24 @@ function escapeXml(str) {
     .replace(/'/g, "&apos;");
 }
 
+const SAFE_SVG_COLOR_NAMES = new Set([
+  "none", "transparent", "currentcolor", "black", "white", "red", "green", "blue", "orange", "gray", "grey"
+]);
+
+function sanitizeSvgColor(raw, fallback = "#4472c4") {
+  const s = String(raw || "").trim();
+  if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(s)) return s;
+  if (/^rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)$/i.test(s)) return s;
+  if (/^rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(?:0|1|0?\.\d+)\s*\)$/i.test(s)) return s;
+  if (SAFE_SVG_COLOR_NAMES.has(s.toLowerCase())) return s.toLowerCase();
+  return fallback;
+}
+
+function safeSvgDim(val, fallback) {
+  const n = Number(val);
+  return Number.isFinite(n) && n > 0 && n <= 10000 ? n : fallback;
+}
+
 export function parseChartNumber(val) {
   if (val === null || val === undefined || val === "") return null;
   if (typeof val === "number") return Number.isFinite(val) ? val : null;
@@ -145,8 +163,8 @@ export function formatGBP(num) {
 }
 
 function darkenHex(hex, factor = 0.72) {
-  const clean = String(hex || "#4472c4").replace("#", "");
-  if (clean.length !== 6) return hex;
+  const clean = sanitizeSvgColor(hex, "#4472c4").replace("#", "");
+  if (clean.length !== 6) return "#4472c4";
   const r = Math.max(0, Math.min(255, Math.round(parseInt(clean.slice(0, 2), 16) * factor)));
   const g = Math.max(0, Math.min(255, Math.round(parseInt(clean.slice(2, 4), 16) * factor)));
   const b = Math.max(0, Math.min(255, Math.round(parseInt(clean.slice(4, 6), 16) * factor)));
@@ -206,6 +224,9 @@ function buildSmoothSplinePath(points, tension = 0.22) {
  * 1. SPARKLINE RENDERER (128x50 miniature smooth line chart)
  */
 export function renderSparklineSvg({ values = [], width = 220, height = 76, color = "#4472c4" }) {
+  width = safeSvgDim(width, 220);
+  height = safeSvgDim(height, 76);
+  color = sanitizeSvgColor(color, "#4472c4");
   const nums = values.map(parseChartNumber).filter((v) => v !== null);
   if (nums.length < 2) {
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
@@ -241,11 +262,14 @@ export function renderPie3DSvg({
   height = 540,
   labelColor = "#1a1a1a",
 }) {
+  width = safeSvgDim(width, 880);
+  height = safeSvgDim(height, 540);
+  labelColor = sanitizeSvgColor(labelColor, "#1a1a1a");
   const valid = items
     .map((it, idx) => ({
       label: normalizeReportLabel(it.label),
       value: parseChartNumber(it.value) || 0,
-      color: it.color || PULSE_CHART_PALETTE[idx % PULSE_CHART_PALETTE.length],
+      color: sanitizeSvgColor(it.color, PULSE_CHART_PALETTE[idx % PULSE_CHART_PALETTE.length]),
     }))
     .filter((it) => it.label && it.value > 0);
 
@@ -525,12 +549,14 @@ export function renderStackedColumnSvg({
   showAxisCurrency = true,
   showZeroBarTotals = false,
 }) {
+  width = safeSvgDim(width, 1048);
+  height = safeSvgDim(height, 543);
   // Filter to series that have at least one positive value (or keep all if <= 6 series)
   const activeSeries = series
     .map((s, idx) => ({
       name: normalizeReportLabel(s.name),
       values: (s.values || []).map((v) => Math.max(0, parseChartNumber(v) || 0)),
-      color: s.color || PULSE_CHART_PALETTE[idx % PULSE_CHART_PALETTE.length],
+      color: sanitizeSvgColor(s.color, PULSE_CHART_PALETTE[idx % PULSE_CHART_PALETTE.length]),
     }))
     .filter((s) => s.name && (series.length <= 6 || s.values.some((v) => v > 0)));
 
@@ -669,10 +695,12 @@ export function renderClusteredColumnSvg({
   width = 1048,
   height = 500,
 }) {
+  width = safeSvgDim(width, 1048);
+  height = safeSvgDim(height, 500);
   const activeSeries = series.map((s, idx) => ({
     name: String(s.name || "").trim(),
     values: (s.values || []).map((v) => Math.max(0, parseChartNumber(v) || 0)),
-    color: s.color || PULSE_CHART_PALETTE[idx % PULSE_CHART_PALETTE.length],
+    color: sanitizeSvgColor(s.color, PULSE_CHART_PALETTE[idx % PULSE_CHART_PALETTE.length]),
   }));
 
   const allVals = activeSeries.flatMap((s) => s.values);
@@ -752,11 +780,13 @@ export function renderRevenueTrendLineSvg({
   width = 1048,
   height = 510,
 }) {
+  width = safeSvgDim(width, 1048);
+  height = safeSvgDim(height, 510);
   const colors = ["#4472c4", "#ed7d31", "#a5a5a5"];
   const activeSeries = series.map((s, idx) => ({
     name: String(s.name || "").trim(),
     values: (s.values || []).map(parseChartNumber),
-    color: s.color || colors[idx % colors.length],
+    color: sanitizeSvgColor(s.color, colors[idx % colors.length]),
   }));
 
   const allNums = activeSeries.flatMap((s) => s.values.filter((v) => v !== null));
@@ -871,6 +901,8 @@ export function renderCashflowLineSvg({
   width = 1048,
   height = 480,
 }) {
+  width = safeSvgDim(width, 1048);
+  height = safeSvgDim(height, 480);
   const defaultStyles = [
     { color: "#4472c4", dashed: false },
     { color: "#ff9900", dashed: true },
@@ -879,7 +911,7 @@ export function renderCashflowLineSvg({
   const activeSeries = series.map((s, idx) => ({
     name: String(s.name || "").trim(),
     values: (s.values || []).map(parseChartNumber),
-    color: s.color || defaultStyles[idx % defaultStyles.length].color,
+    color: sanitizeSvgColor(s.color, defaultStyles[idx % defaultStyles.length].color),
     dashed: s.dashed !== undefined ? s.dashed : defaultStyles[idx % defaultStyles.length].dashed,
   }));
 

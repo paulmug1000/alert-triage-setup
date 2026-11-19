@@ -7,23 +7,33 @@
  * Returns available worksheets, used range address, and headers.
  */
 
-import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
+import { resolveLiveSessionUser } from "../../../../services/authService.js";
+import { isUserAuthorizedForClient, isReadOnlySession, canAccessPma } from "../../../../services/userPermissions.js";
 import { inspectExcelWorkbook, refreshExcelTokens } from "../../../../services/excelIntegrationService.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../../services/vaultService.js";
+import { assertTrustedOrigin } from "../../../../utils/helpers.js";
 
 export const config = {
   maxDuration: 120,
 };
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  if (req.method !== "POST") {
+    return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
+  }
+  if (!assertTrustedOrigin(req, res)) return;
+  res.setHeader("Cache-Control", "no-store");
+
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
 
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ success: false, error: "Read-only session cannot inspect external workbooks." });
+  }
+  if (sessionUser.isSenior || sessionUser.role === "Senior (Restricted)") {
+    return res.status(403).json({ success: false, error: "Restricted users cannot modify integrations." });
   }
 
   const {
@@ -36,7 +46,7 @@ export default async function handler(req, res) {
     clientId,
     clientSecret,
     headerRowNum
-  } = req.method === "POST" ? req.body : req.query;
+  } = req.body || {};
 
   if (!sessionUser.isAdmin && (!clientKey || !isUserAuthorizedForClient(sessionUser, clientKey))) {
     return res.status(403).json({ success: false, error: "Access denied to this client." });
@@ -49,9 +59,10 @@ export default async function handler(req, res) {
   try {
     let token = null;
     let azureCredentials = null;
+    let grant = null;
 
     if (clientKey) {
-      const grant = await getIntegrationTokens({ clientKey, tool: "excel" });
+      grant = await getIntegrationTokens({ clientKey, tool: "excel" });
       if (grant?.reconnectRequired) {
         return res.status(200).json({
           success: false,
@@ -60,6 +71,25 @@ export default async function handler(req, res) {
         });
       }
       if (grant?.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
+        // Prevent non-owner users from browsing unrelated workbooks across the authorizer's M365 tenant
+        const grantOwner = String(grant.metadata?.userEmail || "").toLowerCase().trim();
+        const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
+        if (!canAccessPma(sessionUser) && grantOwner && callerEmail !== grantOwner) {
+          const linkedDrive = String(grant.metadata?.driveId || "").trim();
+          const linkedFile = String(grant.metadata?.fileId || "").trim();
+          const matchesLinked =
+            linkedDrive &&
+            linkedFile &&
+            (!driveId || String(driveId).trim() === linkedDrive) &&
+            (!fileId || String(fileId).trim() === linkedFile) &&
+            !url;
+          if (!matchesLinked) {
+            return res.status(403).json({
+              success: false,
+              error: "Please authorise with your own Microsoft account to inspect a different workbook."
+            });
+          }
+        }
         // If expired or expiring within 5 minutes, refresh automatically with concurrency lock
         const isExpiring = !grant.expiresAt || Date.now() > (grant.expiresAt - 300000);
         if (isExpiring && grant.tokens.refreshToken) {
@@ -92,7 +122,7 @@ export default async function handler(req, res) {
       }
     }
 
-    if (!token && tenantId && clientId && clientSecret) {
+    if (!token && canAccessPma(sessionUser) && tenantId && clientId && clientSecret) {
       azureCredentials = { tenantId, clientId, clientSecret };
     }
 

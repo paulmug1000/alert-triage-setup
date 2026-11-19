@@ -153,9 +153,14 @@ const IV_LENGTH = 12; // 96 bits recommended for GCM
  * Throws in production if INTEGRATION_ENCRYPTION_KEY is missing.
  */
 function getEncryptionKey() {
-  const envKey = process.env.INTEGRATION_ENCRYPTION_KEY || process.env.PULSE_VAULT_MASTER_KEY;
+  const envKey = String(process.env.INTEGRATION_ENCRYPTION_KEY || process.env.PULSE_VAULT_MASTER_KEY || "").trim();
   if (!envKey) {
-    if (process.env.NODE_ENV === "production" || process.env.UPSTASH_REDIS_REST_URL || process.env.REDIS_URL) {
+    if (
+      process.env.NODE_ENV === "production" ||
+      process.env.UPSTASH_REDIS_REST_URL ||
+      process.env.REDIS_URL ||
+      isSupabaseConfigured()
+    ) {
       throw new Error("CRITICAL: INTEGRATION_ENCRYPTION_KEY environment variable is not configured while connected to a persistent or production store.");
     }
     // Fallback key for isolated local in-memory development only
@@ -165,6 +170,10 @@ function getEncryptionKey() {
   // If hex string (64 characters = 32 bytes)
   if (envKey.length === 64 && /^[0-9a-fA-F]+$/.test(envKey)) {
     return Buffer.from(envKey, "hex");
+  }
+
+  if (process.env.NODE_ENV === "production" && envKey.length < 32) {
+    throw new Error("CRITICAL: INTEGRATION_ENCRYPTION_KEY must be at least 32 characters (or 64 hex chars) in production.");
   }
 
   // Otherwise SHA-256 hash arbitrary secret string into 32 bytes
@@ -213,8 +222,12 @@ export function decryptPayload(encryptedString, aad = "") {
   const authTag = Buffer.from(parts[3], "hex");
   const ciphertext = Buffer.from(parts[4], "hex");
 
+  if (iv.length !== IV_LENGTH || authTag.length !== 16) {
+    throw new Error("Malformed IV or authentication tag length.");
+  }
+
   const key = getEncryptionKey();
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: 16 });
 
   if (aad) {
     decipher.setAAD(Buffer.from(String(aad), "utf8"));
@@ -294,24 +307,73 @@ export function matchTenantToClient(clientIdentifier, availableTenants = []) {
   });
   if (exact) return exact;
 
-  // 3. Substring inclusion
+  // 3. Substring inclusion (guard minimum length so empty/tiny names never match)
   const sub = availableTenants.find(t => {
     const tClean = String(t.tenantName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    return tClean.includes(cleanAlpha) || cleanAlpha.includes(tClean);
+    return tClean.length >= 4 && cleanAlpha.length >= 4 && (tClean.includes(cleanAlpha) || cleanAlpha.includes(tClean));
   });
   if (sub) return sub;
 
-  // 4. Word-based intersection (e.g. "Beyond The Blueprint Limited" vs "beyond_the_blueprint")
+  // 4. Word-based intersection (guard tWords.length > 0 to avoid [].every() vacuous truth)
   const stopWords = new Set(["ltd", "limited", "the", "and", "co", "uk", "group", "holdings"]);
   const targetWords = cleanId.replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
   if (targetWords.length > 0) {
     const wordMatch = availableTenants.find(t => {
       const tWords = String(t.tenantName || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
-      return targetWords.every(w => tWords.includes(w)) || tWords.every(w => targetWords.includes(w));
+      return tWords.length > 0 && (targetWords.every(w => tWords.includes(w)) || tWords.every(w => targetWords.includes(w)));
     });
     if (wordMatch) return wordMatch;
   }
 
+  return null;
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Strictly resolves an explicitly bound Xero organisation UUID against sharedGrant.availableTenants.
+ * Never performs fuzzy name matching for credential access.
+ */
+async function resolveExplicitSharedXeroTenant_({ record, clientKey, masterSheetId, availableTenants = [] }) {
+  if (!Array.isArray(availableTenants) || availableTenants.length === 0) return null;
+  const directTenantId = String(record?.tenantId || "").trim();
+  if (UUID_REGEX.test(directTenantId)) {
+    const byId = availableTenants.find((t) => String(t.tenantId || "").trim().toLowerCase() === directTenantId.toLowerCase());
+    if (byId) return byId;
+  }
+
+  if (isSupabaseConfigured() && (clientKey || masterSheetId)) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        let targetName = record?.clientName || clientKey || "";
+        if (!targetName && masterSheetId) {
+          const { data: cRow } = await sb
+            .from("clients")
+            .select("client_name")
+            .eq("master_sheet_id", String(masterSheetId).trim())
+            .limit(1)
+            .maybeSingle();
+          targetName = cRow?.client_name || "";
+        }
+        if (targetName) {
+          const { data: kiRow } = await sb
+            .from("master_sheet_grids")
+            .select("values_grid")
+            .eq("client_name", targetName)
+            .eq("sheet_role", "master")
+            .eq("tab_name", "KeyInfo")
+            .limit(1)
+            .maybeSingle();
+          const x2Val = String(kiRow?.values_grid?.[1]?.[23] || "").trim();
+          if (UUID_REGEX.test(x2Val)) {
+            const matched = availableTenants.find((t) => String(t.tenantId || "").trim().toLowerCase() === x2Val.toLowerCase());
+            if (matched) return matched;
+          }
+        }
+      }
+    } catch (_) { }
+  }
   return null;
 }
 
@@ -710,17 +772,15 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
       };
     }
 
-    // Otherwise, check Central Shared Xero Grant
+    // Otherwise, check Central Shared Xero Grant strictly by explicit bound tenantId UUID (never fuzzy client name)
     const sharedGrant = await getSharedXeroGrant();
     if (sharedGrant && sharedGrant.status === "connected" && sharedGrant.tokens) {
-      // Find which tenant belongs to this client
-      let matchedTenant = null;
-      if (record && record.tenantId) {
-        matchedTenant = matchTenantToClient(record.tenantId, sharedGrant.availableTenants);
-      }
-      if (!matchedTenant && (clientKey || record?.clientKey || record?.clientName)) {
-        matchedTenant = matchTenantToClient(record?.clientName || clientKey || record?.clientKey, sharedGrant.availableTenants);
-      }
+      const matchedTenant = await resolveExplicitSharedXeroTenant_({
+        record,
+        clientKey,
+        masterSheetId,
+        availableTenants: sharedGrant.availableTenants
+      });
 
       if (matchedTenant) {
         const tenantId = matchedTenant.tenantId;
@@ -948,14 +1008,17 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
         };
       }
 
-      // Shared grant is active: check if THIS client's organisation is in availableTenants
-      let matchedTenant = null;
-      if (record && record.tenantId) {
-        matchedTenant = matchTenantToClient(record.tenantId, sharedGrant.availableTenants);
-      }
-      if (!matchedTenant && (clientKey || record?.clientKey || record?.clientName)) {
-        matchedTenant = matchTenantToClient(record?.clientName || clientKey || record?.clientKey, sharedGrant.availableTenants);
-      }
+      // Shared grant is active: require explicit bound tenantId UUID (fuzzy match used only as UI suggestion)
+      const matchedTenant = await resolveExplicitSharedXeroTenant_({
+        record,
+        clientKey,
+        masterSheetId,
+        availableTenants: sharedGrant.availableTenants
+      });
+      const suggestedTenant =
+        !matchedTenant && (clientKey || record?.clientKey || record?.clientName)
+          ? matchTenantToClient(record?.clientName || clientKey || record?.clientKey, sharedGrant.availableTenants)
+          : null;
 
       if (matchedTenant) {
         const tenantId = matchedTenant.tenantId;
@@ -983,6 +1046,20 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
             tenantName,
             availableTenants: sharedGrant.availableTenants || []
           }
+        };
+      } else if (!record?.tenantId) {
+        return {
+          connected: false,
+          tool: "xero",
+          clientKey: clientKey || record?.clientKey || "",
+          clientName: record?.clientName || clientKey || "",
+          tenantId: "",
+          tenantName: "",
+          status: "tenant_selection_required",
+          reconnectRequired: false,
+          isSharedGrant: true,
+          suggestedTenant: suggestedTenant ? { tenantId: suggestedTenant.tenantId, tenantName: suggestedTenant.tenantName } : null,
+          availableTenants: sharedGrant.availableTenants || []
         };
       } else {
         // Shared grant is active, but THIS client's organisation is NOT authorized in Xero!

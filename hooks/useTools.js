@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 let _toolsScriptsPromise = null;
+const MAX_TOOLS_FILE_BYTES = 15 * 1024 * 1024;
 
 export function useTools({
   automationCommanderSheetId,
@@ -20,25 +21,26 @@ export function useTools({
       return Promise.resolve();
     }
     if (_toolsScriptsPromise) return _toolsScriptsPromise;
-    _toolsScriptsPromise = new Promise((resolve, reject) => {
-      if (window.pdfjsLib && window.XLSX) { setToolsScriptsLoaded(true); resolve(); return; }
-      let remaining = 2;
-      const done = () => { remaining--; if (remaining === 0) { setToolsScriptsLoaded(true); resolve(); } };
-      const fail = (msg) => { _toolsScriptsPromise = null; reject(new Error(msg)); };
-      const pdfScript = document.createElement("script");
-      pdfScript.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js";
-      pdfScript.onload = () => {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
-        done();
-      };
-      pdfScript.onerror = () => fail("Failed to load PDF library (pdf.js). Please check network or Content-Security-Policy settings.");
-      document.head.appendChild(pdfScript);
-      const xlsxScript = document.createElement("script");
-      xlsxScript.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-      xlsxScript.onload = done;
-      xlsxScript.onerror = () => fail("Failed to load Excel library (xlsx). Please check network or Content-Security-Policy settings.");
-      document.head.appendChild(xlsxScript);
-    });
+    _toolsScriptsPromise = (async () => {
+      try {
+        const [xlsxMod, pdfjsMod] = await Promise.all([
+          import("xlsx"),
+          import(/* webpackIgnore: true */ "/vendor/pdfjs/pdf.min.mjs"),
+        ]);
+        const XLSX = xlsxMod?.default?.read ? xlsxMod.default : xlsxMod;
+        const pdfjsLib = pdfjsMod?.getDocument ? pdfjsMod : (pdfjsMod?.default || window.pdfjsLib);
+        if (!XLSX?.read || !pdfjsLib?.getDocument) {
+          throw new Error("Local document parsers failed to initialize.");
+        }
+        pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.min.mjs";
+        window.XLSX = XLSX;
+        window.pdfjsLib = pdfjsLib;
+        setToolsScriptsLoaded(true);
+      } catch (err) {
+        _toolsScriptsPromise = null;
+        throw err;
+      }
+    })();
     return _toolsScriptsPromise;
   }, []);
 
@@ -94,6 +96,10 @@ export function useTools({
   }, [detectClientForFileId, updateToolsFile]);
 
   const convertOneToolsFile = useCallback(async (id, file, toolType) => {
+    if (file?.size > MAX_TOOLS_FILE_BYTES) {
+      updateToolsFile(id, { convertStatus: "error", convertMsg: "File exceeds 15 MB limit. Please upload a smaller file." });
+      return;
+    }
     updateToolsFile(id, { convertStatus: "converting", convertMsg: "Preparing file..." });
     try {
       const lowerName = (file.name || "").toLowerCase();
@@ -122,7 +128,7 @@ export function useTools({
       if (file.type === "application/pdf" || lowerName.endsWith(".pdf")) {
         if (!toolsScriptsLoaded) await loadToolsScripts();
         const arrayBuffer = await file.arrayBuffer();
-        const pdf = await window.pdfjsLib.getDocument(arrayBuffer).promise;
+        const pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer), isEvalSupported: false }).promise;
         const scale = 2;
         const images = [];
 

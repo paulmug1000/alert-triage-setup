@@ -666,8 +666,8 @@ export default function TriageAnalysisView({
             if (!isAdmin || (!info?.clientSheetId && !info?.masterSheetId)) return null;
             return (
               <button className="triage-btn" onClick={() => {
-                if (info.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.clientSheetId}/edit`, "_blank");
-                if (info.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.masterSheetId}/edit`, "_blank");
+                if (info.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.clientSheetId}/edit`, "_blank", "noopener,noreferrer");
+                if (info.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.masterSheetId}/edit`, "_blank", "noopener,noreferrer");
               }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
                 📊 Open Sheets
               </button>
@@ -2012,8 +2012,8 @@ export default function TriageAnalysisView({
                 const masterUrl = selectedClient.masterSheetId
                   ? `https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`
                   : null;
-                if (clientUrl) window.open(clientUrl, "_blank");
-                if (masterUrl) window.open(masterUrl, "_blank");
+                if (clientUrl) window.open(clientUrl, "_blank", "noopener,noreferrer");
+                if (masterUrl) window.open(masterUrl, "_blank", "noopener,noreferrer");
               }}
               style={{ ...styles.buttonSecondary, color: "#1d4ed8", borderColor: "#93c5fd" }}
             >

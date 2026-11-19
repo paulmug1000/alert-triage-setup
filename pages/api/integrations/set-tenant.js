@@ -10,7 +10,7 @@
 
 import { getIntegrationTokens, saveIntegrationTokens, getSharedXeroGrant, linkClientToSharedXero } from "../../../services/vaultService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { getSessionUser, safeCompareSecret } from "../../../services/authService.js";
+import { resolveLiveSessionUser, safeCompareSecret } from "../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../services/connectionNotifier.js";
 import { isReadOnlySession } from "../../../services/userPermissions.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
@@ -28,7 +28,7 @@ export default async function handler(req, res) {
   const expectedSecret = process.env.PULSE_INTERNAL_SECRET;
   const isSecretValid = Boolean(expectedSecret && providedSecret && safeCompareSecret(providedSecret, expectedSecret));
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = isSecretValid ? null : await resolveLiveSessionUser(req, res);
   const isAdmin = Boolean(sessionUser?.isAdmin && !isReadOnlySession(sessionUser));
 
   if (!isSecretValid && !isAdmin) {

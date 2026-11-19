@@ -5,6 +5,7 @@ import { getClientSetupStatusForPortal } from "../../../services/setupService.js
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "../../../services/supabaseClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { redisClient, ensureRedisConnected } from "../../../services/redisClient.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 function extractSheetIdFromUrl(url) {
   if (!url) return "";
@@ -18,6 +19,7 @@ export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
+  if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -218,6 +220,6 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("❌ /api/portal/clients error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
 }

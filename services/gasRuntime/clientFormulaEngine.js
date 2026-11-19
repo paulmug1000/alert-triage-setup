@@ -1958,7 +1958,7 @@ export function recalculateClientGrids(grids, options = {}) {
     const envVal = ctx.env.get(node.rawName.toLowerCase());
     if (envVal && typeof envVal === "object" && envVal.__isLambda) {
       const evaluatedArgs = args.map((a) => evalAST(a, ctx));
-      return invokeLambda(envVal, evaluatedArgs);
+      return invokeLambda(envVal, evaluatedArgs, ctx);
     }
 
     switch (fn) {
@@ -2199,7 +2199,7 @@ export function recalculateClientGrids(grids, options = {}) {
           const outRow = [];
           for (let c = 0; c < cols; c++) {
             const callArgs = arrayArgs.map((arr) => arr[r]?.[c] ?? null);
-            outRow.push(invokeLambda(lambdaObj, callArgs));
+            outRow.push(invokeLambda(lambdaObj, callArgs, ctx));
           }
           out.push(outRow);
         }
@@ -2212,7 +2212,7 @@ export function recalculateClientGrids(grids, options = {}) {
         const lambdaObj = evalAST(args[2], ctx);
         for (let r = 0; r < arr.length; r++) {
           for (let c = 0; c < (arr[r]?.length || 0); c++) {
-            acc = invokeLambda(lambdaObj, [acc, arr[r][c]]);
+            acc = invokeLambda(lambdaObj, [acc, arr[r][c]], ctx);
           }
         }
         return acc;
@@ -2224,7 +2224,7 @@ export function recalculateClientGrids(grids, options = {}) {
         const out = [];
         for (let r = 0; r < arr.length; r++) {
           try {
-            const res = invokeLambda(lambdaObj, [[arr[r]]]);
+            const res = invokeLambda(lambdaObj, [[arr[r]]], ctx);
             out.push([Array.isArray(res) ? res[0]?.[0] : res]);
           } catch (e) {
             out.push([e instanceof SheetError ? e.toString() : "#ERROR!"]);
@@ -2867,6 +2867,9 @@ export function recalculateClientGrids(grids, options = {}) {
       case "SEQUENCE": {
         const rows = Math.max(0, Math.trunc(toNumberStrict(evalScalar(args[0], ctx))));
         const cols = args.length >= 2 ? Math.max(1, Math.trunc(toNumberStrict(evalScalar(args[1], ctx)))) : 1;
+        if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows * cols > 100000) {
+          throw new SheetError("#NUM!", "SEQUENCE size exceeds 100,000 cells");
+        }
         const start = args.length >= 3 ? toNumberStrict(evalScalar(args[2], ctx)) : 1;
         const step = args.length >= 4 ? toNumberStrict(evalScalar(args[3], ctx)) : 1;
         const out = [];
@@ -3312,13 +3315,17 @@ export function recalculateClientGrids(grids, options = {}) {
     }
   }
 
-  function invokeLambda(lambdaObj, argVals) {
+  function invokeLambda(lambdaObj, argVals, callCtx = null) {
     const { paramNames, bodyAst, closureCtx } = lambdaObj;
+    const nextDepth = Math.max(callCtx?.lambdaDepth || 0, closureCtx?.lambdaDepth || 0) + 1;
+    if (nextDepth > 64) {
+      throw new SheetError("#NUM!", "Maximum LAMBDA recursion depth exceeded");
+    }
     const callEnv = new Map(closureCtx.env);
     for (let i = 0; i < paramNames.length; i++) {
       callEnv.set(paramNames[i], argVals[i] ?? null);
     }
-    return evalAST(bodyAst, { ...closureCtx, env: callEnv });
+    return evalAST(bodyAst, { ...closureCtx, env: callEnv, lambdaDepth: nextDepth });
   }
 
   function buildCriterionMatcher(critRaw) {
@@ -3385,10 +3392,16 @@ export function recalculateClientGrids(grids, options = {}) {
 
   function parseRe2Pattern(pat, globalFlag = false) {
     let flags = globalFlag ? "g" : "";
-    let p = pat;
+    let p = String(pat ?? "");
     if (p.startsWith("(?i)")) {
       flags += "i";
       p = p.slice(4);
+    }
+    if (p.length > 500) {
+      throw new SheetError("#VALUE!", "Regex pattern exceeds 500 character limit");
+    }
+    if (/\([^)]*[+*][^)]*\)[+*?{]/.test(p) || /(\.\*){4,}/.test(p)) {
+      throw new SheetError("#VALUE!", "Unsafe regular expression pattern");
     }
     return { pattern: p, flags };
   }

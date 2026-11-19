@@ -1,6 +1,6 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, sanitizeJobSlice, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -13,7 +13,8 @@ import {
   isNoEndDateSentinel,
   isJobCostingStyle,
   rewriteRowFormulasToTargetRow,
-  assertTrustedOrigin
+  assertTrustedOrigin,
+  sanitizeSpreadsheetTerms
 } from "../../../utils/helpers.js";
 import { buildRetainerChildRowsWritePlan } from "../../../services/retainers.js";
 import { getToleranceValues } from "../../../services/sharedHelpers.js";
@@ -37,7 +38,7 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
@@ -233,6 +234,8 @@ export default async function handler(req, res) {
       }
     }
 
+    parentA_AM = sanitizeJobSlice(parentA_AM, { isJobCosting, isPrimaryRange: true });
+
     confirmedBatchData.push({
       range: `${confirmedSheetName}!A${targetParentRow}:AM${targetParentRow}`,
       values: [parentA_AM],
@@ -264,7 +267,7 @@ export default async function handler(req, res) {
 
     // Parent row AP:BJ (cols 42-62, index 41-61)
     // For Retainers whose child rows are provisioned in background, keep parent AP:BJ empty
-    const parentAP_BJ = shouldProvisionRetainer ? new Array(21).fill("") : parentData.slice(41, 62);
+    const parentAP_BJ = sanitizeJobSlice(shouldProvisionRetainer ? new Array(21).fill("") : parentData.slice(41, 62));
     while (parentAP_BJ.length < 21) parentAP_BJ.push("");
     confirmedBatchData.push({
       range: `${confirmedSheetName}!AP${targetParentRow}:BJ${targetParentRow}`,
@@ -272,7 +275,7 @@ export default async function handler(req, res) {
     });
 
     // Parent row BX:CR (cols 76-96, index 75-95)
-    const parentBX_CR = parentData.slice(75, 96);
+    const parentBX_CR = sanitizeJobSlice(parentData.slice(75, 96));
     while (parentBX_CR.length < 21) parentBX_CR.push("");
     confirmedBatchData.push({
       range: `${confirmedSheetName}!BX${targetParentRow}:CR${targetParentRow}`,
@@ -310,7 +313,7 @@ export default async function handler(req, res) {
 
       confirmedBatchData.push({
         range: `${confirmedSheetName}!A${targetChildRow}:AM${targetChildRow}`,
-        values: [childA_AM],
+        values: [sanitizeJobSlice(childA_AM, { isJobCosting, isPrimaryRange: true })],
       });
 
       confirmedBatchData.push({
@@ -318,14 +321,14 @@ export default async function handler(req, res) {
         values: [[""]],
       });
 
-      const childAP_BJ = childData.slice(41, 62);
+      const childAP_BJ = sanitizeJobSlice(childData.slice(41, 62));
       while (childAP_BJ.length < 21) childAP_BJ.push("");
       confirmedBatchData.push({
         range: `${confirmedSheetName}!AP${targetChildRow}:BJ${targetChildRow}`,
         values: [childAP_BJ],
       });
 
-      const childBX_CR = childData.slice(75, 96);
+      const childBX_CR = sanitizeJobSlice(childData.slice(75, 96));
       while (childBX_CR.length < 21) childBX_CR.push("");
       confirmedBatchData.push({
         range: `${confirmedSheetName}!BX${targetChildRow}:CR${targetChildRow}`,
@@ -577,7 +580,10 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("❌ /api/portal/confirm-job error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.")
+    });
   } finally {
     await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
   }

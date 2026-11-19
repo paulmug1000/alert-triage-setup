@@ -7,7 +7,7 @@
  * POST: Updates a specific checklist task's completion status.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
@@ -52,8 +52,15 @@ function sanitizeChecklistStateForUser(state, sessionUser) {
   }
   const progressPercent = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
 
+  const {
+    availableTenants: _availableTenants,
+    scriptIds: _scriptIds,
+    provisioningStatus: _provisioningStatus,
+    ...safeState
+  } = state;
+
   return {
-    ...state,
+    ...safeState,
     totalTasks,
     completedCount,
     progressPercent,
@@ -63,7 +70,7 @@ function sanitizeChecklistStateForUser(state, sessionUser) {
 }
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req, res);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   installSheetIdBoundary(req, res, sessionUser);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
@@ -96,7 +103,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, ...sanitizeChecklistStateForUser(state, sessionUser) });
     } catch (err) {
       console.error("GET /api/setup/checklist error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
     }
   }
 
@@ -134,7 +141,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, ...sanitizeChecklistStateForUser(updatedState, sessionUser) });
     } catch (err) {
       console.error("POST /api/setup/checklist error:", err);
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
     }
   }
 

@@ -1,6 +1,7 @@
 import { withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { parseLogDate, formatRelativeTime, isWithin30Days, appendLiveActivityToCache } from "./activityService.js";
+import { escapeIlikeExact } from "../utils/helpers.js";
 import {
   getSupabaseAdmin,
   isSupabaseConfigured,
@@ -129,7 +130,7 @@ export async function logPulseActivity(sheets, {
       }
       // 3. Optional periodic pruning: check row count and trim oldest if > MAX_ROWS
       // Run asynchronously without awaiting to keep caller fast
-      prunePulseActivityLogIfNeeded(sheets, acId).catch(() => {});
+      prunePulseActivityLogIfNeeded(sheets, acId).catch(() => { });
     }
 
     console.log(`📝 [Pulse Log] ${cleanCategory} (${cleanClient}): ${cleanAction} - ${cleanSummary}`);
@@ -234,7 +235,7 @@ export async function fetchPulseActivity(sheets, automationCommanderSheetId = DE
           .order("logged_at", { ascending: false })
           .range(from, from + PAGE_SIZE - 1);
         if (targetClientName && targetClientName !== "ALL" && targetClientName !== "SYSTEM") {
-          query = query.ilike("client_name", targetClientName);
+          query = query.ilike("client_name", escapeIlikeExact(targetClientName));
         }
         const { data: pageRows, error } = await query;
         if (error) {
@@ -342,7 +343,7 @@ export async function fetchPulseActivity(sheets, automationCommanderSheetId = DE
                   matches = parsed.assignedClients.some(ac => ac.toLowerCase() === targetClientName.toLowerCase());
                 }
               }
-            } catch {}
+            } catch { }
           }
           if (!matches) return;
         }

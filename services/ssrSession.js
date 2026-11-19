@@ -40,6 +40,14 @@ function verifyHs256Jwt(token, secret) {
   if (parts.length !== 3) return null;
   const [headerB64, payloadB64, signatureB64] = parts;
 
+  let header = null;
+  try {
+    header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!header || header.alg !== "HS256") return null;
+
   const expectedSig = crypto
     .createHmac("sha256", secret)
     .update(`${headerB64}.${payloadB64}`)
@@ -53,7 +61,7 @@ function verifyHs256Jwt(token, secret) {
 
   const payloadJson = Buffer.from(payloadB64, "base64url").toString("utf8");
   const decoded = JSON.parse(payloadJson);
-  if (decoded.exp && Math.floor(Date.now() / 1000) >= decoded.exp) {
+  if (typeof decoded.exp !== "number" || Math.floor(Date.now() / 1000) >= decoded.exp) {
     return null;
   }
   return decoded;
@@ -213,7 +221,7 @@ export function getSsrSessionUser(req) {
     if (!decoded || !decoded.email) return null;
     if (decoded.tokenType && decoded.tokenType !== "session") return null;
 
-    return buildSsrSessionUser({
+    const userObj = buildSsrSessionUser({
       email: decoded.email,
       name: decoded.name,
       role: decoded.role,
@@ -221,6 +229,12 @@ export function getSsrSessionUser(req) {
       authProvider: decoded.authProvider,
       isReadOnly: decoded.isReadOnly
     });
+    if (!userObj) return null;
+    Object.defineProperties(userObj, {
+      _jti: { value: decoded.jti || null, enumerable: false },
+      _exp: { value: decoded.exp || null, enumerable: false },
+    });
+    return userObj;
   } catch {
     return null;
   }
@@ -234,12 +248,30 @@ export async function getSsrLiveSessionUser(req, res = null) {
   const sessionUser = getSsrSessionUser(req);
   if (!sessionUser) return null;
 
+  if (sessionUser._jti) {
+    try {
+      await ensureRedisConnected(400);
+      if (redisClient?.isOpen) {
+        const revoked = await redisClient.get(`pma:revoked_jti:${String(sessionUser._jti)}`);
+        if (revoked) {
+          if (res) setSsrSessionCookie(res, "", 0);
+          return null;
+        }
+      }
+    } catch { }
+  }
+
   try {
     const lookup = await loadLiveUserForSsr(sessionUser.email);
     if (!lookup.found) return sessionUser;
 
     const liveUser = lookup.user;
     if (!liveUser || liveUser.status === "Suspended") {
+      if (sessionUser._jti && redisClient?.isOpen) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const ttl = sessionUser._exp ? Math.max(60, Math.min(SESSION_MAX_AGE_SECS, Number(sessionUser._exp) - nowSec)) : SESSION_MAX_AGE_SECS;
+        await redisClient.set(`pma:revoked_jti:${String(sessionUser._jti)}`, "1", { EX: ttl }).catch(() => {});
+      }
       if (res) setSsrSessionCookie(res, "", 0);
       return null;
     }

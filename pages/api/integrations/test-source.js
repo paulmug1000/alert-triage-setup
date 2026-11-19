@@ -8,21 +8,23 @@
  * - Microsoft Excel via Azure Graph API (KeyInfo!X33:X41)
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "../../../services/sheetsClient.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../services/vaultService.js";
 import { verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../services/userPermissions.js";
 import { assertExternalCrmSpreadsheet, inspectGoogleSpreadsheet, refreshGoogleSheetTokens } from "../../../services/googleSheetService.js";
 import { assertSafeGraphId, refreshExcelTokens } from "../../../services/excelIntegrationService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
-import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export const config = {
   maxDuration: 120,
 };
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
+
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -144,7 +146,7 @@ export default async function handler(req, res) {
           tabName: tabName || null,
           clientKey,
           isAdmin: Boolean(sessionUser.isAdmin),
-          allowServiceAccountFallback: Boolean(sessionUser?.isAdmin)
+          allowServiceAccountFallback: false
         });
         const availableTabs = (inspection.tabs || []).map(t => t.title || "");
         if (tabName && !availableTabs.includes(tabName)) {
@@ -322,7 +324,9 @@ export default async function handler(req, res) {
     console.error("Error in /api/integrations/test-source:", err);
     return res.status(500).json({
       success: false,
-      error: err.message || "Failed to test spreadsheet source connection"
+      error: sessionUser?.isAdmin
+        ? (err.message || "Failed to test spreadsheet source connection")
+        : sanitizeSpreadsheetTerms(err.message || "Failed to test spreadsheet source connection")
     });
   }
 }

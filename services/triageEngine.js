@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { waitUntil } from "@vercel/functions";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter, applySheetFontFormat, sanitizeFormulaInput } from "./sheetsClient.js";
@@ -33,8 +33,8 @@ import { redisClient } from "./redisClient.js";
 import { anthropic } from "./claudeClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
-import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
-import { getSessionUser } from "./authService.js";
+import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan, resolveCanonicalOAuthHost } from "../utils/helpers.js";
+import { getSessionUser, safeCompareSecret } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId } from "./masterEngineService.js";
@@ -121,21 +121,39 @@ async function syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options
   }
 }
 
+function isAllowedInternalChainHost_(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  if (!host) return false;
+  if (host === "app.pulsedashboard.co.uk" || host === "pulsedashboard.co.uk" || host === "pma.pulsedashboard.co.uk") {
+    return true;
+  }
+  const prodHost = String(process.env.VERCEL_PROJECT_PRODUCTION_URL || "").trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
+  if (prodHost && host === prodHost) return true;
+  if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
+    const prevHost = String(process.env.VERCEL_URL).trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
+    if (prevHost && host === prevHost) return true;
+  }
+  if (process.env.NODE_ENV !== "production" && (host === "localhost" || host === "127.0.0.1")) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Resolves the canonical base URL for internal API callbacks/chain dispatches.
+ * Strictly ignores caller-supplied baseUrl overrides and untrusted forwarded hosts.
  */
-export function getBaseUrlFromReq(req, fallbackUrl = "") {
-  if (fallbackUrl && typeof fallbackUrl === "string" && fallbackUrl.trim()) {
-    const trimmed = fallbackUrl.trim();
-    return trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
-  }
+export function getBaseUrlFromReq(req, _ignoredFallbackUrl = "") {
+  const { host, proto } = resolveCanonicalOAuthHost(req);
   const cleanUrl = (url) => (url ? (url.startsWith("http") ? url : `https://${url}`) : null);
-  const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL) || cleanUrl(process.env.VERCEL_URL);
-  if (prodUrl) return prodUrl;
-
-  const host = req?.headers?.["x-forwarded-host"] || req?.headers?.host || `127.0.0.1:${process.env.PORT || 3000}`;
-  const protocol = req?.headers?.["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
-  return `${protocol}://${host}`;
+  const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL);
+  if (prodUrl) {
+    try {
+      const parsed = new URL(prodUrl);
+      if (isAllowedInternalChainHost_(parsed.hostname)) return prodUrl;
+    } catch (_) { }
+  }
+  return `${proto}://${host}`;
 }
 
 /**
@@ -144,10 +162,15 @@ export function getBaseUrlFromReq(req, fallbackUrl = "") {
  * while guaranteeing the next container is triggered.
  */
 export function dispatchAsyncChainStep(baseUrl, payload, bypassToken = "") {
-  const cleanBase = (baseUrl && typeof baseUrl === "string" && baseUrl.trim())
+  const { host: fallbackHost, proto: fallbackProto } = resolveCanonicalOAuthHost(null);
+  const candidateBase = (baseUrl && typeof baseUrl === "string" && baseUrl.trim())
     ? (baseUrl.trim().startsWith("http") ? baseUrl.trim() : `https://${baseUrl.trim()}`)
-    : "http://127.0.0.1:3000";
-  const url = `${cleanBase}/api/triage`;
+    : `${fallbackProto}://${fallbackHost}`;
+  const parsedUrl = new URL(`${candidateBase.replace(/\/+$/, "")}/api/triage`);
+  if (!isAllowedInternalChainHost_(parsedUrl.hostname)) {
+    throw new Error(`Blocked untrusted triage chain target host: ${parsedUrl.hostname}`);
+  }
+  const url = parsedUrl.toString();
   const effectiveBypass = String(
     bypassToken || process.env.VERCEL_BYPASS_TOKEN || process.env.VERCEL_AUTOMATION_BYPASS_SECRET || ""
   ).trim();
@@ -164,6 +187,7 @@ export function dispatchAsyncChainStep(baseUrl, payload, bypassToken = "") {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
+    redirect: "manual",
   })
     .then(async (res) => {
       if (!res.ok) {
@@ -1982,7 +2006,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       }
     }
 
-    const sessionId = Math.random().toString(36).substring(2, 15);
+    const sessionId = randomUUID();
     if (redisClient && !redisClient.isOpen) {
       try { await redisClient.connect(); } catch (_) { }
     }
@@ -2039,7 +2063,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
 
   const expectedCronSecret = (process.env.CRON_SECRET || "").trim();
   const incomingSecret = (secret || req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.headers["x-cron-secret"] || "").trim();
-  if (!expectedCronSecret || incomingSecret !== expectedCronSecret) {
+  if (!expectedCronSecret || !incomingSecret || !safeCompareSecret(incomingSecret, expectedCronSecret)) {
     return res.status(401).json({ success: false, error: "Unauthorised" });
   }
 
@@ -2733,7 +2757,11 @@ export async function isExpensePlaceholderStillActive_(line, clientSheetId, shar
 
 export async function handleRunFlagSweep(req, res, sheets) {
   const { secret: sweepSecret, automationCommanderSheetId: acIdSweep, startIdx = 0 } = req.body;
-  if (sweepSecret !== process.env.CRON_SECRET) {
+  const expectedCronSecret = (process.env.CRON_SECRET || "").trim();
+  const incomingSweepSecret = String(
+    sweepSecret || req.headers?.authorization?.replace(/^Bearer\s+/i, "") || req.headers?.["x-cron-secret"] || ""
+  ).trim();
+  if (!expectedCronSecret || !incomingSweepSecret || !safeCompareSecret(incomingSweepSecret, expectedCronSecret)) {
     return res.status(401).json({ success: false, error: "Unauthorised" });
   }
   if (!acIdSweep) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
@@ -3770,7 +3798,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
     await logFlagSweepRun(sheets, acIdSweep, { clientsChecked, flagsRaised, errors, alertsDelayed, alertsWoken, elapsedSeconds: elapsedS, raisedDetail, isContinuation: startIdx > 0, categoriesRun: categoriesRunStr });
 
     if (req.body?.chain) {
-      const effectiveBaseUrl = getBaseUrlFromReq(req, req.body?.baseUrl);
+      const effectiveBaseUrl = getBaseUrlFromReq(req);
       const effectiveBypass = String(
         req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || ""
       ).trim();
@@ -3787,7 +3815,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
         const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
           action: "run_flag_sweep",
-          secret: sweepSecret,
+          secret: incomingSweepSecret,
           automationCommanderSheetId: acIdSweep,
           startIdx: nextIdx,
           chunkSize: Number(req.body?.chunkSize) || 4,
@@ -3796,7 +3824,6 @@ export async function handleRunFlagSweep(req, res, sheets) {
           actionableDue,
           infoDue,
           proactiveDue,
-          baseUrl: effectiveBaseUrl,
           chain: true,
           bypassToken: effectiveBypass,
         }, effectiveBypass);
@@ -3812,9 +3839,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
         const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
           action: "build_cached_alert_options",
-          secret: sweepSecret,
+          secret: incomingSweepSecret,
           automationCommanderSheetId: acIdSweep,
-          baseUrl: effectiveBaseUrl,
           chain: true,
           buildBatch: 1,
           bypassToken: effectiveBypass,
@@ -3843,7 +3869,11 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
 export async function handleBuildCachedAlertOptions(req, res, sheets) {
   const { secret: buildSecret, automationCommanderSheetId: acIdBuild } = req.body;
-  if (buildSecret !== process.env.CRON_SECRET) {
+  const expectedCronSecret = (process.env.CRON_SECRET || "").trim();
+  const incomingBuildSecret = String(
+    buildSecret || req.headers?.authorization?.replace(/^Bearer\s+/i, "") || req.headers?.["x-cron-secret"] || ""
+  ).trim();
+  if (!expectedCronSecret || !incomingBuildSecret || !safeCompareSecret(incomingBuildSecret, expectedCronSecret)) {
     return res.status(401).json({ success: false, error: "Unauthorised" });
   }
   if (!acIdBuild) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
@@ -4143,7 +4173,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     });
 
     if (req.body?.chain) {
-      const effectiveBaseUrl = getBaseUrlFromReq(req, req.body?.baseUrl);
+      const effectiveBaseUrl = getBaseUrlFromReq(req);
       const effectiveBypass = String(
         req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || ""
       ).trim();
@@ -4160,9 +4190,8 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
 
         const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
           action: "build_cached_alert_options",
-          secret: buildSecret,
+          secret: incomingBuildSecret,
           automationCommanderSheetId: acIdBuild,
-          baseUrl: effectiveBaseUrl,
           chain: true,
           isContinuation: true,
           buildBatch: nextBatch,

@@ -122,11 +122,92 @@ export function isBlockedOtpRole(role) {
 
 function safeCompareCode(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
+  const hashA = crypto.createHash("sha256").update(a, "utf8").digest();
+  const hashB = crypto.createHash("sha256").update(b, "utf8").digest();
+  return crypto.timingSafeEqual(hashA, hashB);
 }
+
+/**
+ * Extracts the trusted client IP address from the request.
+ */
+export function getTrustedClientIp(req) {
+  if (!req || !req.headers) return "127.0.0.1";
+  const vercelFwd = req.headers["x-vercel-forwarded-for"];
+  if (typeof vercelFwd === "string" && vercelFwd.trim()) {
+    return vercelFwd.split(",")[0].trim();
+  }
+  const realIp = req.headers["x-real-ip"];
+  if (typeof realIp === "string" && realIp.trim()) {
+    return realIp.split(",")[0].trim();
+  }
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",").pop().trim();
+  }
+  if (Array.isArray(forwarded) && forwarded.length > 0) {
+    return String(forwarded[forwarded.length - 1]).trim();
+  }
+  return req.socket?.remoteAddress || "127.0.0.1";
+}
+
+/**
+ * Shared Redis sliding-window rate limiter.
+ */
+export async function checkRateLimit(bucket, identifier, maxRequests = 60, windowSecs = 60) {
+  const cleanBucket = String(bucket || "default").replace(/[^a-z0-9_-]/gi, "_");
+  const cleanId = String(identifier || "anon").trim().toLowerCase().slice(0, 128);
+  const key = `pma_rl:${cleanBucket}:${cleanId}`;
+  try {
+    if (!redisClient?.isOpen) return { allowed: true, count: 0 };
+    const count = await redisClient.incr(key);
+    if (count === 1) {
+      await redisClient.expire(key, Math.max(1, Math.trunc(windowSecs)));
+    }
+    return { allowed: count <= maxRequests, count };
+  } catch (err) {
+    console.warn("⚠️ Rate limit check warning:", err.message);
+    return { allowed: true, count: 0 };
+  }
+}
+
+const VERIFY_OTP_LUA = `
+  local otpKey = KEYS[1]
+  local attemptsKey = KEYS[2]
+  local entered = ARGV[1]
+
+  local attempts = tonumber(redis.call('GET', attemptsKey) or '0')
+  if attempts >= 5 then
+    redis.call('DEL', otpKey)
+    return {-2, attempts}
+  end
+
+  local raw = redis.call('GET', otpKey)
+  if not raw then
+    return {-1, attempts}
+  end
+
+  local ok, data = pcall(cjson.decode, raw)
+  if not ok or type(data) ~= 'table' then
+    return {-1, attempts}
+  end
+
+  if tostring(data.code or '') == entered then
+    redis.call('DEL', otpKey)
+    redis.call('DEL', attemptsKey)
+    return {1, 0}
+  end
+
+  local nextAttempts = redis.call('INCR', attemptsKey)
+  if nextAttempts == 1 then
+    redis.call('EXPIRE', attemptsKey, 900)
+  end
+  if nextAttempts >= 5 then
+    redis.call('DEL', otpKey)
+    redis.call('EXPIRE', attemptsKey, 900)
+    return {-2, nextAttempts}
+  end
+  return {0, nextAttempts}
+`;
 
 /**
  * Send an OTP verification code to the given email address
@@ -222,6 +303,9 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
   if (isBlockedRole) {
     console.log(`❌ Auth check blocked: ${normalizedEmail} has role ${user.role} and cannot log in via Email OTP.`);
     try {
+      await redisClient.set(cooldownKey, "1", { EX: COOLDOWN_SECS });
+    } catch { }
+    try {
       const sheets = await getSheetsClient();
       logPulseActivity(sheets, {
         automationCommanderSheetId,
@@ -278,7 +362,7 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
   const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
   const emailPass = process.env.PMA_EMAIL_APP_PASSWORD;
 
-  const subject = `Pulse Secure Access: Your Verification Code (${code})`;
+  const subject = "Pulse Secure Access: Your verification code";
   const textBody = `Hello,\n\nYour secure verification code for Pulse is: ${code}\n\nThis code will expire in 10 minutes. If you did not request this code, please ignore this email.\n\nBest regards,\nThe Pulse Team\n\n---\nThrive Organisational Consulting Ltd\nThis is an automated security message. Please do not reply.`;
 
   const htmlBody = `
@@ -329,11 +413,15 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
       console.error(`❌ Gmail SMTP sending failed:`, sendErr.message);
       if (process.env.NODE_ENV !== "production") {
         console.log(`🔑 [PMA OTP CODE FOR DEV]: ${code}`);
+        return {
+          success: true,
+          message: `Verification code generated. (SMTP Notice: ${sendErr.message})`,
+          devCode: code
+        };
       }
       return {
-        success: true,
-        message: `Verification code generated. (SMTP Notice: ${sendErr.message})`,
-        devCode: process.env.NODE_ENV !== "production" ? code : undefined
+        success: false,
+        message: "Unable to send verification email right now. Please try again shortly."
       };
     }
   } else {
@@ -364,73 +452,90 @@ export async function verifyOtp(email, code, _ignoredAcId, res, clientIp = "-") 
     return { success: false, message: "Email and verification code are required" };
   }
 
-  const otpKey = `pma_otp:${normalizedEmail}`;
-  const attemptsKey = `pma_otp_attempts:${normalizedEmail}`;
-  let cachedData = null;
-  try {
-    const raw = await redisClient.get(otpKey);
-    if (raw) cachedData = JSON.parse(raw);
-  } catch (e) {
-    console.error("❌ Redis get OTP error:", e.message);
+  // Per-IP verification rate limit (max 15 guesses per 15 minutes per IP)
+  if (clientIp && clientIp !== "-") {
+    const ipRl = await checkRateLimit("otp_verify_ip", clientIp, 15, 900);
+    if (!ipRl.allowed) {
+      return {
+        success: false,
+        message: "Too many verification attempts from this IP. Please try again in 15 minutes."
+      };
+    }
   }
 
-  if (!cachedData) {
+  const otpKey = `pma_otp:${normalizedEmail}`;
+  const attemptsKey = `pma_otp_attempts:${normalizedEmail}`;
+
+  // Status codes: 1 = matched & deleted, -1 = missing/expired, -2 = locked out (>= 5), 0 = wrong code
+  let status = -1;
+  let newAttempts = 0;
+
+  try {
+    if (redisClient?.isOpen && typeof redisClient.eval === "function") {
+      const luaRes = await redisClient.eval(VERIFY_OTP_LUA, {
+        keys: [otpKey, attemptsKey],
+        arguments: [enteredCode]
+      });
+      if (Array.isArray(luaRes)) {
+        status = Number(luaRes[0]);
+        newAttempts = Number(luaRes[1]) || 0;
+      }
+    } else if (redisClient?.isOpen) {
+      const priorAttempts = parseInt((await redisClient.get(attemptsKey)) || "0", 10) || 0;
+      if (priorAttempts >= 5) {
+        await redisClient.del(otpKey).catch(() => {});
+        status = -2;
+        newAttempts = priorAttempts;
+      } else {
+        const raw = await redisClient.get(otpKey);
+        const cachedData = raw ? JSON.parse(raw) : null;
+        if (!cachedData) {
+          status = -1;
+        } else if (safeCompareCode(String(cachedData.code || ""), enteredCode)) {
+          await redisClient.del(otpKey).catch(() => {});
+          await redisClient.del(attemptsKey).catch(() => {});
+          status = 1;
+        } else {
+          newAttempts = await redisClient.incr(attemptsKey);
+          if (newAttempts === 1) await redisClient.expire(attemptsKey, 900);
+          if (newAttempts >= 5) {
+            await redisClient.del(otpKey).catch(() => {});
+            await redisClient.expire(attemptsKey, 900);
+            status = -2;
+          } else {
+            status = 0;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error("❌ Redis verify OTP error:", e.message);
+  }
+
+  if (status === 1) {
+    return await createSessionForVerifiedEmail(normalizedEmail, res, "EmailOTP", automationCommanderSheetId, clientIp);
+  }
+
+  if (status === -2) {
     getSheetsClient().then(sheets => {
       logPulseActivity(sheets, {
         automationCommanderSheetId,
         clientName: "System",
         category: "AUTH",
-        action: "LOGIN_FAILED",
-        summary: `Failed verification for ${normalizedEmail} (Code expired or invalid)`,
-        details: { email: normalizedEmail, reason: "Verification code expired or invalid", ip: clientIp },
+        action: "AUTH_LOCKED",
+        summary: `Account locked for ${normalizedEmail} (Exceeded 5 failed attempts)`,
+        details: { email: normalizedEmail, reason: "Max attempts exceeded", ip: clientIp },
         user: normalizedEmail
       });
     }).catch(() => { });
 
     return {
       success: false,
-      message: "Verification code has expired or is invalid. Please request a new code."
+      message: "Too many failed attempts. Please request a new verification code."
     };
   }
 
-  if (!safeCompareCode(String(cachedData.code || ""), enteredCode)) {
-    let newAttempts = (parseInt(cachedData.attempts || 0, 10) || 0) + 1;
-    try {
-      newAttempts = await redisClient.incr(attemptsKey);
-      if (newAttempts === 1) {
-        await redisClient.expire(attemptsKey, 900); // 15-minute lockout window
-      }
-    } catch { }
-
-    if (newAttempts >= 5) {
-      try {
-        await redisClient.del(otpKey);
-        await redisClient.expire(attemptsKey, 900); // keep lockout active for 15 minutes
-      } catch { }
-      getSheetsClient().then(sheets => {
-        logPulseActivity(sheets, {
-          automationCommanderSheetId,
-          clientName: "System",
-          category: "AUTH",
-          action: "AUTH_LOCKED",
-          summary: `Account locked for ${normalizedEmail} (Exceeded 5 failed attempts)`,
-          details: { email: normalizedEmail, reason: "Max attempts exceeded", ip: clientIp },
-          user: normalizedEmail
-        });
-      }).catch(() => { });
-
-      return {
-        success: false,
-        message: "Too many failed attempts. Please request a new verification code."
-      };
-    }
-
-    cachedData.attempts = newAttempts;
-    const ttl = await redisClient.ttl(otpKey).catch(() => 300);
-    try {
-      await redisClient.set(otpKey, JSON.stringify(cachedData), { EX: ttl > 0 ? ttl : 300 });
-    } catch { }
-
+  if (status === 0) {
     const remaining = Math.max(0, 5 - newAttempts);
     getSheetsClient().then(sheets => {
       logPulseActivity(sheets, {
@@ -450,13 +555,22 @@ export async function verifyOtp(email, code, _ignoredAcId, res, clientIp = "-") 
     };
   }
 
-  // Code matches! Destroy OTP and attempt counter from Redis
-  try {
-    await redisClient.del(otpKey);
-    await redisClient.del(attemptsKey);
-  } catch { }
+  getSheetsClient().then(sheets => {
+    logPulseActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: "System",
+      category: "AUTH",
+      action: "LOGIN_FAILED",
+      summary: `Failed verification for ${normalizedEmail} (Code expired or invalid)`,
+      details: { email: normalizedEmail, reason: "Verification code expired or invalid", ip: clientIp },
+      user: normalizedEmail
+    });
+  }).catch(() => { });
 
-  return await createSessionForVerifiedEmail(normalizedEmail, res, "EmailOTP", automationCommanderSheetId, clientIp);
+  return {
+    success: false,
+    message: "Verification code has expired or is invalid. Please request a new code."
+  };
 }
 
 /**
@@ -477,19 +591,7 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
   const user = await getUserByEmail(normalizedEmail, sheets, automationCommanderSheetId, true);
 
   if (!user || user.status === "Suspended") {
-    if (res && typeof res.setHeader === "function") {
-      const isProd = process.env.NODE_ENV === "production";
-      res.setHeader(
-        "Set-Cookie",
-        serializeCookie("pma_session", "", {
-          httpOnly: true,
-          secure: isProd,
-          sameSite: "lax",
-          maxAge: 0,
-          path: "/",
-        })
-      );
-    }
+    clearSessionCookie(res);
     const targetClient = user ? (Array.isArray(user.assignedClients) && user.assignedClients.length === 1 ? user.assignedClients[0] : "Multi-Client") : "Unregistered";
     logPulseActivity(sheets, {
       automationCommanderSheetId,
@@ -518,19 +620,7 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
     };
   }
   if (provider === "Microsoft" && isStaffRole) {
-    if (res && typeof res.setHeader === "function") {
-      const isProd = process.env.NODE_ENV === "production";
-      res.setHeader(
-        "Set-Cookie",
-        serializeCookie("pma_session", "", {
-          httpOnly: true,
-          secure: isProd,
-          sameSite: "lax",
-          maxAge: 0,
-          path: "/",
-        })
-      );
-    }
+    clearSessionCookie(res);
     return {
       success: false,
       unauthorized: true,
@@ -687,10 +777,59 @@ function areAssignedClientsEqual(a, b) {
  */
 export function safeCompareSecret(a, b) {
   if (!a || !b || typeof a !== "string" || typeof b !== "string") return false;
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
+  const hashA = crypto.createHash("sha256").update(a, "utf8").digest();
+  const hashB = crypto.createHash("sha256").update(b, "utf8").digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
+
+function extractRawSessionToken(req) {
+  if (!req || !req.headers) return null;
+  if (req.headers.cookie) {
+    const cookies = parseCookies(req.headers.cookie);
+    if (cookies.pma_session) return cookies.pma_session;
+  }
+  if (req.headers.authorization) {
+    const parts = req.headers.authorization.split(" ");
+    if (parts.length === 2 && parts[0].toLowerCase() === "bearer") return parts[1];
+  }
+  if (req.headers["x-pma-token"]) {
+    return req.headers["x-pma-token"];
+  }
+  return null;
+}
+
+export async function revokeSessionJti(jti, exp = null) {
+  if (!jti || !redisClient?.isOpen) return false;
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const ttl = exp ? Math.max(60, Math.min(SESSION_MAX_AGE_SECS, Number(exp) - nowSec)) : SESSION_MAX_AGE_SECS;
+    await redisClient.set(`pma:revoked_jti:${String(jti)}`, "1", { EX: ttl });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function isSessionJtiRevoked(jti) {
+  if (!jti || !redisClient?.isOpen) return false;
+  try {
+    const val = await redisClient.get(`pma:revoked_jti:${String(jti)}`);
+    return Boolean(val);
+  } catch {
+    return false;
+  }
+}
+
+export async function revokeRequestSessionJti(req) {
+  const token = extractRawSessionToken(req);
+  if (!token) return false;
+  try {
+    const decoded = jwt.verify(token, getJwtSecret(), { algorithms: ["HS256"] });
+    if (decoded?.jti) {
+      return await revokeSessionJti(decoded.jti, decoded.exp);
+    }
+  } catch { }
+  return false;
 }
 
 /**
@@ -702,34 +841,12 @@ export function getSessionUser(req, res = null) {
   const activeRes = res || req.res || req.socket?._httpMessage || null;
   installSheetIdBoundary(req, activeRes);
 
-  let token = null;
-
-  // 1. Check HTTP-only cookie
-  if (req.headers && req.headers.cookie) {
-    const cookies = parseCookies(req.headers.cookie);
-    if (cookies.pma_session) {
-      token = cookies.pma_session;
-    }
-  }
-
-  // 2. Check Authorization header
-  if (!token && req.headers && req.headers.authorization) {
-    const parts = req.headers.authorization.split(" ");
-    if (parts.length === 2 && parts[0].toLowerCase() === "bearer") {
-      token = parts[1];
-    }
-  }
-
-  // 3. Check custom header x-pma-token
-  if (!token && req.headers && req.headers["x-pma-token"]) {
-    token = req.headers["x-pma-token"];
-  }
-
+  const token = extractRawSessionToken(req);
   if (!token) return null;
 
   try {
     const secret = getJwtSecret();
-    const decoded = jwt.verify(token, secret);
+    const decoded = jwt.verify(token, secret, { algorithms: ["HS256"] });
     if (!decoded || !decoded.email) return null;
 
     // Explicitly reject transient or single-purpose tokens (e.g. sso_token) from being used as session tokens
@@ -744,6 +861,11 @@ export function getSessionUser(req, res = null) {
       isReadOnly: decoded.isReadOnly
     });
     if (!userObj) return null;
+
+    Object.defineProperties(userObj, {
+      _jti: { value: decoded.jti || null, enumerable: false },
+      _exp: { value: decoded.exp || null, enumerable: false },
+    });
 
     installSheetIdBoundary(req, activeRes, userObj);
     return userObj;
@@ -761,6 +883,11 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
   const sessionUser = getSessionUser(req, res);
   if (!sessionUser) return null;
 
+  if (sessionUser._jti && (await isSessionJtiRevoked(sessionUser._jti))) {
+    if (res) clearSessionCookie(res);
+    return null;
+  }
+
   const activeRes = res || req?.res || req?.socket?._httpMessage || null;
 
   try {
@@ -772,6 +899,7 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
     const normEmail = String(sessionUser.email || "").toLowerCase().trim();
     const liveUser = users.find((u) => u.email === normEmail);
     if (!liveUser || liveUser.status === "Suspended") {
+      if (sessionUser._jti) await revokeSessionJti(sessionUser._jti, sessionUser._exp);
       if (res) clearSessionCookie(res);
       return null;
     }
@@ -785,9 +913,15 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
       isReadOnly: sessionUser.isReadOnly
     });
     if (!refreshed) {
+      if (sessionUser._jti) await revokeSessionJti(sessionUser._jti, sessionUser._exp);
       if (res) clearSessionCookie(res);
       return null;
     }
+
+    Object.defineProperties(refreshed, {
+      _jti: { value: sessionUser._jti || null, enumerable: false },
+      _exp: { value: sessionUser._exp || null, enumerable: false },
+    });
 
     const changed =
       refreshed.name !== sessionUser.name ||
@@ -807,6 +941,28 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
     console.warn("⚠️ resolveLiveSessionUser fallback to JWT claims:", err.message);
     return sessionUser;
   }
+}
+
+/**
+ * Verifies that if an OAuth callback originates in a browser holding an active Pulse session,
+ * that user has not been suspended and matches the state's initiatedBy user (if recorded).
+ */
+export async function verifyCallbackSessionInitiator(req, res, statePayload) {
+  const rawToken = extractRawSessionToken(req);
+  if (!rawToken) {
+    return statePayload?.initiatedBy
+      ? { ok: false, error: "Active session required to complete integration OAuth callback." }
+      : { ok: true };
+  }
+  const liveUser = await resolveLiveSessionUser(req, res);
+  if (!liveUser) {
+    return { ok: false, error: "Session is no longer active or has been suspended." };
+  }
+  const expectedEmail = String(statePayload?.initiatedBy || "").toLowerCase().trim();
+  if (expectedEmail && String(liveUser.email || "").toLowerCase().trim() !== expectedEmail) {
+    return { ok: false, error: "OAuth callback session does not match initiating user." };
+  }
+  return { ok: true, user: liveUser };
 }
 
 /**

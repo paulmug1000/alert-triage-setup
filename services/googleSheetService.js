@@ -14,6 +14,7 @@
 
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
+import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
 import { saveIntegrationTokens, getIntegrationTokens, deleteIntegrationTokens } from "./vaultService.js";
 import { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId, matchesClientName } from "./userPermissions.js";
 
@@ -311,9 +312,62 @@ export async function assertExternalCrmSpreadsheet(sheets, spreadsheetId) {
   if (!cleanId || !/^[A-Za-z0-9_-]{10,120}$/.test(cleanId)) {
     throw new Error("Invalid Google Sheet ID format.");
   }
-  if (BLOCKED_INTERNAL_SHEET_IDS.has(cleanId)) {
+  if (/^sb-(?:client|master|recon)-/i.test(cleanId) || BLOCKED_INTERNAL_SHEET_IDS.has(cleanId)) {
     throw new Error("Access denied: Cannot link or inspect internal Pulse system spreadsheets.");
   }
+
+  if (isSupabaseConfigured()) {
+    const sb = getSupabaseAdmin();
+    if (sb) {
+      const [{ data: tplRow, error: tplErr }, { data: clientRows, error: clientErr }] = await Promise.all([
+        sb
+          .from("system_config")
+          .select("value")
+          .eq("key", "client_provisioning_templates")
+          .maybeSingle(),
+        sb
+          .from("clients")
+          .select("client_sheet_id, master_sheet_id, recon_sheet_id, client_sheet_url, master_sheet_url, recon_sheet_url, backup_sheet_url"),
+      ]);
+
+      if (!tplErr && tplRow?.value && typeof tplRow.value === "object") {
+        const v = tplRow.value;
+        const tplIds = [
+          v.clientTemplateId,
+          v.masterTemplateId,
+          v.reconTemplateId,
+          extractSheetIdFromUrl(v.clientTemplateUrl),
+          extractSheetIdFromUrl(v.masterTemplateUrl),
+          extractSheetIdFromUrl(v.reconTemplateUrl),
+        ]
+          .map((id) => String(id || "").trim())
+          .filter(Boolean);
+        if (tplIds.includes(cleanId)) {
+          throw new Error("Access denied: Cannot link or inspect internal Pulse template spreadsheets.");
+        }
+      }
+
+      if (!clientErr && Array.isArray(clientRows)) {
+        for (const c of clientRows) {
+          const ids = [
+            c.client_sheet_id,
+            c.master_sheet_id,
+            c.recon_sheet_id,
+            extractSheetIdFromUrl(c.client_sheet_url),
+            extractSheetIdFromUrl(c.master_sheet_url),
+            extractSheetIdFromUrl(c.recon_sheet_url),
+            extractSheetIdFromUrl(c.backup_sheet_url),
+          ]
+            .map((id) => String(id || "").trim())
+            .filter(Boolean);
+          if (ids.includes(cleanId)) {
+            throw new Error("Access denied: Cannot link an internal Pulse client or master spreadsheet as an external CRM source.");
+          }
+        }
+      }
+    }
+  }
+
   const sheetsClient = sheets || (await getSheetsClient());
   const ownerClient = await resolveClientNameBySheetId(sheetsClient, cleanId);
   if (ownerClient) {

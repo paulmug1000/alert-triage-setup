@@ -830,179 +830,38 @@ export async function handleGetActiveAgentRun(req, res) {
 }
 
 /**
- * One-off / Admin helper: Pushes AGENT_TRIGGER_SECRET, PULSE_INTERNAL_SECRET, CRON_SECRET,
- * and VERCEL_BYPASS_TOKEN into ScriptProperties for all client Master Sheets via their WebApp doPost,
- * and registers any missing pulse:client_secret:<masterSheetId> keys in Redis.
+ * DECOMMISSIONED SECURITY STUB:
+ * Global application secrets (CRON_SECRET, PULSE_INTERNAL_SECRET, VERCEL_BYPASS_TOKEN, AGENT_TRIGGER_SECRET)
+ * must never be broadcast to external or retiring legacy Master GAS WebApp URLs.
+ * Master Google Sheets are retiring in favour of Supabase Masters; rotate global secrets in Vercel once retired.
  */
-export async function handleSyncAllMasterScriptSecrets(req, res, sheets) {
-  const acSheetId = getCanonicalAcSheetId();
+export async function handleSyncAllMasterScriptSecrets(req, res, _sheets) {
   const clientFilter = req.body?.clientFilter ? String(req.body.clientFilter).trim().toLowerCase() : null;
-
-  const agentSecret = String(process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim();
-  const pulseInternalSecret = String(process.env.PULSE_INTERNAL_SECRET || "").replace(/^["']|["']$/g, "").trim();
-  const cronSecret = String(process.env.CRON_SECRET || agentSecret).replace(/^["']|["']$/g, "").trim();
-  const vercelBypassToken = String(process.env.VERCEL_BYPASS_TOKEN || "").replace(/^["']|["']$/g, "").trim();
-
-  if (!agentSecret || !pulseInternalSecret) {
-    return res.status(500).json({
-      success: false,
-      error: "AGENT_TRIGGER_SECRET and PULSE_INTERNAL_SECRET must be configured in server environment variables."
-    });
-  }
+  let validatedTargetCount = 0;
 
   try {
-    const extractId = (val) => {
-      if (!val) return "";
-      const m = String(val).match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-      return m ? m[1] : String(val).trim();
-    };
-
-    const targets = [];
-    const usingSupabaseControlPlane = isSupabaseConfigured() && (await isSupabaseControlPlaneActive());
-
-    if (usingSupabaseControlPlane) {
+    if (isSupabaseConfigured() && (await isSupabaseControlPlaneActive())) {
       const sb = getSupabaseAdmin();
-      const { data: sbClients, error: sbErr } = await sb
+      const { data: sbClients } = await sb
         .from("clients")
-        .select("client_name, status, metadata, master_mode, master_sheet_id, master_sheet_url, web_app_url, master_deployment_url")
-        .order("client_name", { ascending: true });
-      if (sbErr) {
-        throw new Error(`Supabase clients read failed: ${sbErr.message}`);
-      }
+        .select("client_name, master_mode, web_app_url, master_deployment_url");
       for (const c of sbClients || []) {
         const clientName = String(c?.client_name || "").trim();
         if (!clientName) continue;
-        const effStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
-        if (["inactive", "archived", "suspended"].includes(effStatus)) continue;
         if (String(c?.master_mode || "").trim().toLowerCase() === "supabase") continue;
         if (clientFilter && !clientName.toLowerCase().includes(clientFilter)) continue;
-
-        const masterSheetId = extractId(c.master_sheet_url || c.master_sheet_id);
         const webAppUrl = String(c.master_deployment_url || c.web_app_url || "").trim();
-        targets.push({ clientName, masterSheetId, webAppUrl });
-      }
-    } else {
-      // 1. Legacy Sheets fallback: Read AutoUpdates (Col A = clientName, Col D = masterSheetUrl/Id, Col N = webAppUrl)
-      const auResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: acSheetId,
-        range: "AutoUpdates!A2:N500"
-      });
-      const auRows = auResp.data.values || [];
-
-      // 2. Also read Clients tracker sheet (Col A = clientName, Col W = deploymentUrl) as fallback for webAppUrl
-      const trackerUrlByClient = new Map();
-      try {
-        const trackerResp = await sheets.spreadsheets.values.get({
-          spreadsheetId: "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co",
-          range: "Clients!A3:W50"
-        });
-        for (const r of (trackerResp.data.values || [])) {
-          const cName = String(r[0] || "").trim().toLowerCase();
-          const depUrl = String(r[22] || "").trim();
-          if (cName && depUrl) trackerUrlByClient.set(cName, depUrl);
-        }
-      } catch (e) {
-        console.warn("[sync_all_master_script_secrets] Could not read fallback tracker sheet:", e.message);
-      }
-
-      for (const r of auRows) {
-        const clientName = String(r[0] || "").trim();
-        if (!clientName || clientName.toLowerCase() === "client") continue;
-        if (clientFilter && !clientName.toLowerCase().includes(clientFilter)) continue;
-
-        const masterSheetId = extractId(r[12] || r[3]);
-        const webAppUrl = String(r[13] || "").trim() || trackerUrlByClient.get(clientName.toLowerCase()) || "";
-        targets.push({ clientName, masterSheetId, webAppUrl });
+        if (isValidGoogleScriptUrl(webAppUrl)) validatedTargetCount++;
       }
     }
-
-    const results = [];
-    let syncedCount = 0;
-    let failedCount = 0;
-
-    for (const t of targets) {
-      if (!t.webAppUrl || !isValidGoogleScriptUrl(t.webAppUrl)) {
-        failedCount++;
-        results.push({
-          clientName: t.clientName,
-          masterSheetId: t.masterSheetId,
-          success: false,
-          error: usingSupabaseControlPlane
-            ? "No valid Google Apps Script WebApp URL configured in Supabase public.clients (master_deployment_url)."
-            : "No valid Google Apps Script WebApp URL configured in AutoUpdates (Col N) or Clients tracker (Col W)."
-        });
-        continue;
-      }
-
-      try {
-        const resp = await fetch(t.webAppUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "sync_script_secrets",
-            secret: agentSecret,
-            pulseInternalSecret,
-            cronSecret,
-            vercelBypassToken,
-            clientName: t.clientName
-          })
-        });
-
-        const rawText = await resp.text();
-        let data = null;
-        try { data = JSON.parse(rawText); } catch { }
-
-        if (data && data.success) {
-          let clientSecretStatus = "already_registered";
-          if (t.masterSheetId && redisClient?.isOpen) {
-            const redisKey = `pulse:client_secret:${t.masterSheetId}`;
-            const existing = await redisClient.get(redisKey);
-            if (!existing && data.pulseClientSecret) {
-              const rawSec = String(data.pulseClientSecret).trim();
-              const hash = crypto.createHash("sha256").update(rawSec).digest("hex");
-              await redisClient.set(redisKey, hash);
-              clientSecretStatus = "newly_registered";
-            } else if (!existing) {
-              clientSecretStatus = "missing_from_gas_response";
-            }
-          }
-          syncedCount++;
-          results.push({
-            clientName: t.clientName,
-            masterSheetId: t.masterSheetId,
-            success: true,
-            configuredKeys: data.configuredKeys || [],
-            clientSecretStatus
-          });
-        } else {
-          failedCount++;
-          results.push({
-            clientName: t.clientName,
-            masterSheetId: t.masterSheetId,
-            success: false,
-            error: data?.error || `Unexpected response (HTTP ${resp.status}): ${rawText.slice(0, 180)}`
-          });
-        }
-      } catch (err) {
-        failedCount++;
-        results.push({
-          clientName: t.clientName,
-          masterSheetId: t.masterSheetId,
-          success: false,
-          error: err.message
-        });
-      }
-    }
-
-    return res.status(200).json({
-      success: true,
-      total: targets.length,
-      syncedCount,
-      failedCount,
-      results
-    });
   } catch (err) {
-    console.error("❌ sync_all_master_script_secrets error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    console.warn("[sync_all_master_script_secrets] Target count lookup note:", err.message);
   }
+
+  return res.status(410).json({
+    success: false,
+    decommissioned: true,
+    validatedTargetCount,
+    error: "Global secret broadcasting via sync_script_secrets has been disabled. Legacy Master Google Sheets are retiring in favour of Supabase Masters; rotate shared secrets in Vercel once retirement completes."
+  });
 }

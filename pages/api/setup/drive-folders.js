@@ -8,7 +8,7 @@
  * when onboarding a client.
  */
 
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getDriveClient, withRetry } from "../../../services/sheetsClient.js";
 import { DEFAULT_CLIENTS_FOLDER_ID } from "../../../services/setupService.js";
 
@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed." });
   }
 
-  const sessionUser = getSessionUser(req, res);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }

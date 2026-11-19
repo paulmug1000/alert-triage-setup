@@ -8,18 +8,21 @@
  * browser can open the official Google Picker dialog for the current client.
  */
 
-import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../../services/userPermissions.js";
+import { resolveLiveSessionUser } from "../../../../services/authService.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, canAccessPma } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken } from "../../../../services/vaultService.js";
 import { refreshGoogleSheetTokens } from "../../../../services/googleSheetService.js";
+import { assertTrustedOrigin } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
-  if (req.method !== "GET" && req.method !== "POST") {
-    return res.status(405).json({ success: false, error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
   }
+  if (!assertTrustedOrigin(req, res)) return;
+  res.setHeader("Cache-Control", "no-store");
 
-  const sessionUser = getSessionUser(req, res);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
@@ -27,8 +30,11 @@ export default async function handler(req, res) {
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ success: false, error: "Read-only session cannot open file picker." });
   }
+  if (sessionUser.isSenior || sessionUser.role === "Senior (Restricted)") {
+    return res.status(403).json({ success: false, error: "Restricted users cannot modify integrations." });
+  }
 
-  const { clientKey, clientName, masterSheetId } = req.method === "POST" ? req.body : req.query;
+  const { clientKey, clientName, masterSheetId } = req.body || {};
   const targetClient = clientKey || clientName;
 
   if (!targetClient && !masterSheetId) {
@@ -63,6 +69,17 @@ export default async function handler(req, res) {
         success: false,
         needsAuth: true,
         error: "Please authorise with Google first before selecting a spreadsheet."
+      });
+    }
+
+    // Never expose another user's live Google OAuth accessToken to a non-staff session
+    const grantOwner = String(grant.metadata?.userEmail || "").toLowerCase().trim();
+    const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
+    if (!canAccessPma(sessionUser) && grantOwner && callerEmail !== grantOwner) {
+      return res.status(200).json({
+        success: false,
+        needsAuth: true,
+        error: "Please authorise with your own Google account before selecting a spreadsheet."
       });
     }
 

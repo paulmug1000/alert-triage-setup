@@ -1,12 +1,14 @@
-import { verifyOtp } from "../../../services/authService";
+import { verifyOtp, getTrustedClientIp } from "../../../services/authService";
 import { getClientSetupStatusForPortal } from "../../../services/setupService";
 import { redisClient } from "../../../services/redisClient";
 import { installSheetIdBoundary, maskResponseSheetIdsForUser } from "../../../services/userPermissions";
+import { assertTrustedOrigin } from "../../../utils/helpers";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
   try {
     const { email, code } = req.body || {};
@@ -14,13 +16,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, message: "Email and code are required" });
     }
 
-    const vercelFwd = req.headers["x-vercel-forwarded-for"];
-    const forwarded = req.headers["x-forwarded-for"];
-    const clientIp =
-      (typeof vercelFwd === "string" && vercelFwd.trim() ? vercelFwd.split(",")[0].trim() : "") ||
-      (typeof forwarded === "string" && forwarded.trim() ? forwarded.split(",")[0].trim() : forwarded?.[0]?.trim()) ||
-      req.socket?.remoteAddress ||
-      "127.0.0.1";
+    const clientIp = getTrustedClientIp(req);
 
     const result = await verifyOtp(email, code, null, res, clientIp);
     if (result.success && result.user) {

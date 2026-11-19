@@ -17,6 +17,7 @@ import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cac
 import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
 import { scheduleWaitUntil_ } from "./alertState.js";
+import { evaluateSafeArithmetic } from "../utils/helpers.js";
 
 export function colIdxToLetter(colIdx) {
   let temp = colIdx + 1;
@@ -278,15 +279,11 @@ export async function saveCashBatch({
 
     let cleanVal = sanitizeCashAdjustmentInput(String(up.value ?? "").trim());
     if (!isAdmin && typeof cleanVal === "string" && cleanVal.startsWith("=")) {
-      let resolved = null;
-      if (/^=[0-9+\-*/().\s]+$/.test(cleanVal)) {
-        try {
-          const evaluated = Function(`"use strict"; return (${cleanVal.slice(1)});`)();
-          if (typeof evaluated === "number" && isFinite(evaluated)) {
-            resolved = Math.round(evaluated * 100) / 100;
-          }
-        } catch (_) { }
-      }
+      const evaluated = evaluateSafeArithmetic(cleanVal);
+      const resolved =
+        typeof evaluated === "number" && isFinite(evaluated)
+          ? Math.round(evaluated * 100) / 100
+          : null;
       cleanVal = resolved !== null ? resolved : sanitizeFormulaInput(cleanVal.replace(/^=+/, ""));
     }
     validValueUpdates.push({
@@ -404,11 +401,14 @@ export async function saveCashCellNote({
   const cleanId = String(clientSheetId).trim();
   const rowNum = parseInt(sheetRow, 10);
   const finalColIdx = colIdx !== undefined ? parseInt(colIdx, 10) : colLetterToNum(colLetter) - 1;
-  const finalColLetter = colLetter || colIdxToLetter(finalColIdx);
 
-  if (finalColIdx < 1) {
-    throw new Error("Notes can only be added from Column B onwards.");
+  if (!Number.isInteger(rowNum) || rowNum < 1 || rowNum > 100) {
+    throw new Error("Invalid Cash row index: must be an integer between 1 and 100.");
   }
+  if (!Number.isInteger(finalColIdx) || finalColIdx < 1 || finalColIdx > 40) {
+    throw new Error("Notes can only be added between Column B and Column AO (column index 1 to 40).");
+  }
+  const finalColLetter = colIdxToLetter(finalColIdx);
 
   const sheets = await getSheetsClient();
   const gid = await getSheetGid(sheets, cleanId, "Cash");

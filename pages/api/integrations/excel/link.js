@@ -7,13 +7,13 @@
  * (KeyInfo!X33:X41) and auto-completes task p2_connect_crm in Setup Mode.
  */
 
-import { getSessionUser } from "../../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, resolveMasterSheetIdByClientName } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { linkExcelToClient } from "../../../../services/excelIntegrationService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
 import { saveIntegrationTokens, getIntegrationTokens } from "../../../../services/vaultService.js";
-import { assertTrustedOrigin } from "../../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
@@ -164,7 +164,7 @@ export default async function handler(req, res) {
     console.error("Error linking Microsoft Excel CRM:", err);
     return res.status(500).json({
       success: false,
-      error: err.message || "Failed to link Microsoft Excel CRM"
+      error: sessionUser?.isAdmin ? (err.message || "Failed to link Microsoft Excel CRM") : sanitizeSpreadsheetTerms(err.message || "Failed to link Microsoft Excel CRM")
     });
   }
 }

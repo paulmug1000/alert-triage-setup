@@ -695,6 +695,21 @@ export function sanitizeFormulaInput(val) {
   return val;
 }
 
+const JOB_COSTING_FORMULA_COLS = new Set([10, 12, 13, 14, 20, 32, 33, 37, 38]);
+
+/**
+ * Sanitizes a copied Pipeline/Confirmed row slice against formula injection while
+ * preserving internal Job Costing formula columns inside A:AM.
+ */
+export function sanitizeJobSlice(slice, { isJobCosting = false, isPrimaryRange = false } = {}) {
+  return (slice || []).map((cell, idx) => {
+    if (isPrimaryRange && isJobCosting && JOB_COSTING_FORMULA_COLS.has(idx)) {
+      return cell;
+    }
+    return sanitizeFormulaInput(cell);
+  });
+}
+
 /**
  * Formats an invoice reference / code for spreadsheet entry.
  * Prevents Google Sheets from stripping leading zeroes or parsing refs as numbers/dates

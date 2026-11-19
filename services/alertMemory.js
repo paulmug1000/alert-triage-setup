@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { withRetry } from "./sheetsClient.js";
 import { redisClient, scanRedisKeys } from "./redisClient.js";
+import { escapeIlikeExact } from "../utils/helpers.js";
 import {
   getSupabaseAdmin,
   isSupabaseConfigured,
@@ -2055,7 +2056,7 @@ export async function searchAlertMemoryEntries(sheets, automationCommanderSheetI
           .limit(Math.min(Number(limit) || 50, 200));
 
         if (cFilter && cFilter !== "all") {
-          builder = builder.ilike("client_name", cFilter);
+          builder = builder.ilike("client_name", escapeIlikeExact(cFilter));
         }
         if (sFilter && sFilter !== "all") {
           if (sFilter === "handled_only") {

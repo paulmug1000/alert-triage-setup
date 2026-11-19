@@ -1,9 +1,9 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, getSheetTitles } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
-import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense, isJobCostingStyle, formatLikelihood } from "../../../utils/helpers.js";
+import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense, isJobCostingStyle, formatLikelihood, assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import { getClients } from "../../../services/workspaces.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s L1 fresh window
@@ -40,8 +40,9 @@ export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
+  if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
@@ -1618,6 +1619,6 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("❌ /api/portal/key-data error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
 }

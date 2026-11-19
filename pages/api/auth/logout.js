@@ -1,10 +1,13 @@
-import { clearSessionCookie } from "../../../services/authService";
+import { clearSessionCookie, revokeRequestSessionJti } from "../../../services/authService";
+import { assertTrustedOrigin } from "../../../utils/helpers";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
+  if (!assertTrustedOrigin(req, res)) return;
   try {
+    await revokeRequestSessionJti(req);
     clearSessionCookie(res);
     return res.status(200).json({ success: true, message: "Logged out successfully" });
   } catch (error) {

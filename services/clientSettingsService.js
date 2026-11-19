@@ -18,6 +18,7 @@
 import { getSheetsClient, withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
+import { assertExternalCrmSpreadsheet } from "./googleSheetService.js";
 import { clearAllClientsMemoryCache, getClientWebAppUrl } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
@@ -926,6 +927,10 @@ export async function saveClientSettings({
     }
 
     // Conditional Tool fields
+    const candidateSheetUrl = String(settings.crm.googleSheetUrl || "").trim();
+    if (candidateSheetUrl) {
+      await assertExternalCrmSpreadsheet(sheets, candidateSheetUrl);
+    }
     addMasterCell("KeyInfo!X11", settings.crm.googleSheetUrl || "");
     addMasterCell("KeyInfo!X12", settings.crm.googleSheetTab || "");
     addMasterCell("KeyInfo!X13", settings.crm.googleSheetKeyHeaders || "");

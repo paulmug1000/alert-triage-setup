@@ -18,9 +18,9 @@ import {
 } from "../../../../services/vaultService.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/userPermissions.js";
-import { verifySignedOAuthState } from "../../../../services/authService.js";
+import { verifySignedOAuthState, safeCompareSecret, verifyCallbackSessionInitiator } from "../../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
-import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
+import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -75,17 +75,18 @@ export default async function handler(req, res) {
     `pulse_xero_verifier=; ${clearCookieOptions}`
   ]);
 
-  if (!savedNonce || statePayload?.nonce !== savedNonce) {
+  if (!savedNonce || !statePayload?.nonce || !safeCompareSecret(String(statePayload.nonce), String(savedNonce))) {
     return res.status(403).json({ error: "State nonce verification failed (potential CSRF attempt)." });
   }
 
+  const initiatorCheck = await verifyCallbackSessionInitiator(req, res, statePayload);
+  if (!initiatorCheck.ok) {
+    return res.status(403).json({ error: initiatorCheck.error });
+  }
+
   try {
-    // Dynamic Host Resolution
-    const reqHost = req.headers["x-forwarded-host"] || req.headers.host;
-    const isPulseHost = reqHost && (reqHost === "pulsedashboard.co.uk" || reqHost.endsWith(".pulsedashboard.co.uk"));
-    const prodHost = (process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).host : null) || process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
-    const host = isPulseHost ? reqHost : (prodHost || reqHost || "localhost:3000");
-    const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
+    // Canonical Host Resolution
+    const { host, proto } = resolveCanonicalOAuthHost(req);
     const redirectUri = `${proto}://${host}/api/integrations/xero/callback`;
 
     // 1. Exchange authorization code for tokens
@@ -230,7 +231,7 @@ export default async function handler(req, res) {
                   sheets.spreadsheets.values.update({
                     spreadsheetId: mSheetId,
                     range: "KeyInfo!X2",
-                    valueInputOption: "USER_ENTERED",
+                    valueInputOption: "RAW",
                     requestBody: { values: [[clientTenant.tenantId]] }
                   })
                 );
@@ -254,7 +255,7 @@ export default async function handler(req, res) {
           sheets.spreadsheets.values.update({
             spreadsheetId: masterSheetId,
             range: "KeyInfo!X2",
-            valueInputOption: "USER_ENTERED",
+            valueInputOption: "RAW",
             requestBody: { values: [[tenantId]] }
           })
         );
@@ -265,7 +266,7 @@ export default async function handler(req, res) {
             sheets.spreadsheets.values.append({
               spreadsheetId: masterSheetId,
               range: "AutoLog!A:D",
-              valueInputOption: "USER_ENTERED",
+              valueInputOption: "RAW",
               insertDataOption: "INSERT_ROWS",
               requestBody: {
                 values: [[nowStr, "CLIENT_AUTH", "Xero Connected", `Xero authorized via Pulse App (Central Shared Grant). Org: ${tenantName}`]]
@@ -306,6 +307,6 @@ export default async function handler(req, res) {
     console.error("Xero OAuth callback processing error:", err);
     const separator = returnUrl.includes("?") ? "&" : "?";
     const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
-    return res.redirect(`${returnUrl}${separator}integration=xero&status=error&message=${encodeURIComponent(err.message)}${clientParam}`);
+    return res.redirect(`${returnUrl}${separator}integration=xero&status=error&message=${encodeURIComponent(sanitizeSpreadsheetTerms(err.message || "Connection failed"))}${clientParam}`);
   }
 }

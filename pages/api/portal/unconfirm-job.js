@@ -1,6 +1,6 @@
-import { getSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, sanitizeJobSlice, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -12,7 +12,8 @@ import {
   rewriteRowFormulasToTargetRow,
   normalizeLikelihoodInput,
   formatLikelihood,
-  assertTrustedOrigin
+  assertTrustedOrigin,
+  sanitizeSpreadsheetTerms
 } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 
@@ -33,7 +34,7 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
@@ -263,6 +264,8 @@ export default async function handler(req, res) {
       parentA_AM[3] = todayStr;
     }
 
+    parentA_AM = sanitizeJobSlice(parentA_AM, { isJobCosting, isPrimaryRange: true });
+
     pipelineBatchData.push({
       range: `${pipelineSheetName}!A${pipelineRow}:AM${pipelineRow}`,
       values: [parentA_AM],
@@ -274,7 +277,7 @@ export default async function handler(req, res) {
     });
 
     // Parent row AP:BH (cols 42-60, index 41-59) — clear Confirmed recharged/cost-month offsets (slots 1 & 2)
-    const parentAP_BH = parentData.slice(41, 60);
+    const parentAP_BH = sanitizeJobSlice(parentData.slice(41, 60));
     while (parentAP_BH.length < 19) parentAP_BH.push("");
     parentAP_BH[5] = "";
     parentAP_BH[6] = "";
@@ -286,7 +289,7 @@ export default async function handler(req, res) {
     });
 
     // Parent row BX:CR (cols 76-96, index 75-95)
-    const parentBX_CR = parentData.slice(75, 96);
+    const parentBX_CR = sanitizeJobSlice(parentData.slice(75, 96));
     while (parentBX_CR.length < 21) parentBX_CR.push("");
     pipelineBatchData.push({
       range: `${pipelineSheetName}!BX${pipelineRow}:CR${pipelineRow}`,
@@ -330,7 +333,7 @@ export default async function handler(req, res) {
 
       pipelineBatchData.push({
         range: `${pipelineSheetName}!A${targetChildRow}:AM${targetChildRow}`,
-        values: [childA_AM],
+        values: [sanitizeJobSlice(childA_AM, { isJobCosting, isPrimaryRange: true })],
       });
 
       pipelineBatchData.push({
@@ -338,7 +341,7 @@ export default async function handler(req, res) {
         values: [[""]],
       });
 
-      const childAP_BH = childData.slice(41, 60);
+      const childAP_BH = sanitizeJobSlice(childData.slice(41, 60));
       while (childAP_BH.length < 19) childAP_BH.push("");
       childAP_BH[5] = "";
       childAP_BH[6] = "";
@@ -349,7 +352,7 @@ export default async function handler(req, res) {
         values: [childAP_BH],
       });
 
-      const childBX_CR = childData.slice(75, 96);
+      const childBX_CR = sanitizeJobSlice(childData.slice(75, 96));
       while (childBX_CR.length < 21) childBX_CR.push("");
       pipelineBatchData.push({
         range: `${pipelineSheetName}!BX${targetChildRow}:CR${targetChildRow}`,
@@ -569,7 +572,10 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("❌ /api/portal/unconfirm-job error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.")
+    });
   } finally {
     await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
   }

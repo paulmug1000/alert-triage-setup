@@ -9,13 +9,13 @@
  * and updates the Master Sheet's KeyInfo!X3 cell with the realmId.
  */
 
-import { exchangeQBCodeForTokens, getQBCompanyInfo } from "../../../../services/quickbooksService.js";
+import { exchangeQBCodeForTokens, getQBCompanyInfo, assertValidQBRealmId } from "../../../../services/quickbooksService.js";
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/userPermissions.js";
-import { verifySignedOAuthState } from "../../../../services/authService.js";
+import { verifySignedOAuthState, safeCompareSecret, verifyCallbackSessionInitiator } from "../../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
-import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
+import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -70,18 +70,20 @@ export default async function handler(req, res) {
     `pulse_qb_verifier=; ${clearCookieOptions}`
   ]);
 
-  if (!savedNonce || statePayload?.nonce !== savedNonce) {
+  if (!savedNonce || !statePayload?.nonce || !safeCompareSecret(String(statePayload.nonce), String(savedNonce))) {
     return res.status(403).json({ error: "State nonce verification failed (potential CSRF attempt)." });
   }
 
+  const initiatorCheck = await verifyCallbackSessionInitiator(req, res, statePayload);
+  if (!initiatorCheck.ok) {
+    return res.status(403).json({ error: initiatorCheck.error });
+  }
+
   try {
-    // Dynamic Host Resolution
-    const reqHost = req.headers["x-forwarded-host"] || req.headers.host;
-    const isPulseHost = reqHost && (reqHost === "pulsedashboard.co.uk" || reqHost.endsWith(".pulsedashboard.co.uk"));
-    const prodHost = (process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).host : null) || process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
-    const host = isPulseHost ? reqHost : (prodHost || reqHost || "localhost:3000");
-    const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
+    const { host, proto } = resolveCanonicalOAuthHost(req);
     const redirectUri = `${proto}://${host}/api/integrations/quickbooks/callback`;
+
+    const activeRealmId = realmId ? assertValidQBRealmId(realmId) : "";
 
     // 1. Exchange authorization code for tokens
     const tokens = await exchangeQBCodeForTokens({
@@ -93,7 +95,6 @@ export default async function handler(req, res) {
     const clientKey = statePayload.clientKey || statePayload.clientName;
     const clientName = statePayload.clientName || clientKey;
     let masterSheetId = statePayload.masterSheetId;
-    const activeRealmId = String(realmId || "").trim();
 
     // Fallback: If masterSheetId wasn't passed in statePayload, resolve it from AutoUpdates
     if (!masterSheetId && clientName) {
@@ -151,7 +152,7 @@ export default async function handler(req, res) {
           sheets.spreadsheets.values.update({
             spreadsheetId: masterSheetId,
             range: "KeyInfo!X3",
-            valueInputOption: "USER_ENTERED",
+            valueInputOption: "RAW",
             requestBody: { values: [[activeRealmId]] }
           })
         );
@@ -195,6 +196,7 @@ export default async function handler(req, res) {
     console.error("QuickBooks OAuth callback processing error:", err);
     const separator = returnUrl.includes("?") ? "&" : "?";
     const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
-    return res.redirect(`${returnUrl}${separator}integration=quickbooks&status=error&message=${encodeURIComponent(err.message)}${clientParam}`);
+    const safeErr = sanitizeSpreadsheetTerms(err.message || "QuickBooks authorization failed");
+    return res.redirect(`${returnUrl}${separator}integration=quickbooks&status=error&message=${encodeURIComponent(safeErr)}${clientParam}`);
   }
 }

@@ -1854,6 +1854,14 @@ export default function CashflowWorkbenchView({
   // 4. File Upload & Parse (.xlsx, .xls, .csv)
   const processUploadedFile = async (file) => {
     if (!file) return;
+    if (file.size > 15 * 1024 * 1024) {
+      setCustomModal({
+        title: "File too large",
+        message: "Please upload a spreadsheet smaller than 15 MB.",
+        type: "error"
+      });
+      return;
+    }
     setPasteParsing(true);
     try {
       const data = await file.arrayBuffer();

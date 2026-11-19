@@ -65,9 +65,18 @@ export default function TasksView({
   const [bulkSnoozeDate, setBulkSnoozeDate] = useState("");
   const [bulkSnoozeTime, setBulkSnoozeTime] = useState("07:00");
   const [acceptingOptionIdx, setAcceptingOptionIdx] = useState(null);
-  const [isResolvingTask, setIsResolvingTask] = useState(false);
-  const [isRevertingTask, setIsRevertingTask] = useState(false);
-  const [isUnsnoozingTask, setIsUnsnoozingTask] = useState(false);
+  const [acceptingTaskHash, setAcceptingTaskHash] = useState(null);
+  const [resolvingTaskHash, setResolvingTaskHash] = useState(null);
+  const [revertingTaskHash, setRevertingTaskHash] = useState(null);
+  const [unsnoozingTaskHash, setUnsnoozingTaskHash] = useState(null);
+  const [snoozingTaskHash, setSnoozingTaskHash] = useState(null);
+
+  const selectedHash = selectedTask?.fingerprintHash || null;
+  const isResolvingSelectedTask = Boolean(selectedHash && resolvingTaskHash === selectedHash);
+  const isRevertingSelectedTask = Boolean(selectedHash && revertingTaskHash === selectedHash);
+  const isUnsnoozingSelectedTask = Boolean(selectedHash && unsnoozingTaskHash === selectedHash);
+  const isSnoozingSelectedTask = Boolean(selectedHash && snoozingTaskHash === selectedHash);
+  const isAcceptingSelectedTask = Boolean(selectedHash && acceptingTaskHash === selectedHash && isAccepting);
 
   useEffect(() => {
     setSelectedTaskHashes(new Set());
@@ -169,33 +178,40 @@ export default function TasksView({
 
   const submitSnoozeTask = async () => {
     if (!selectedTask || !taskSnoozeDate) return;
+    const targetHash = selectedTask.fingerprintHash;
     const localDt = new Date(`${taskSnoozeDate}T${taskSnoozeTime}:00`);
     const snoozedUntil = localDt.toISOString();
     try {
+      setSnoozingTaskHash(targetHash);
       setTaskSnoozeSubmitting(true);
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "snooze_task",
-          fingerprintHash: selectedTask.fingerprintHash,
+          fingerprintHash: targetHash,
           snoozedUntil,
           automationCommanderSheetId,
         }),
       });
       const data = await res.json();
       if (data.success) {
-        setSelectedTask(null);
-        await loadTasks(tasksFilter, true);
+        setSelectedTask(prev => (prev?.fingerprintHash === targetHash ? null : prev));
+        setSnoozingTaskHash(prev => (prev === targetHash ? null : prev));
+        setTaskSnoozeSubmitting(false);
+        void loadTasks(tasksFilter, true);
         refreshTaskCount?.(true);
       } else setTaskActionError(data.error || "Failed to snooze task");
     } catch (e) { setTaskActionError(e.message); }
-    finally { setTaskSnoozeSubmitting(false); }
+    finally {
+      setSnoozingTaskHash(prev => (prev === targetHash ? null : prev));
+      setTaskSnoozeSubmitting(false);
+    }
   };
 
   const resolveTask = async (fingerprintHash) => {
     try {
-      setIsResolvingTask(true);
+      setResolvingTaskHash(fingerprintHash);
       setTaskActionError("");
       const res = await fetch("/api/triage", {
         method: "POST",
@@ -204,20 +220,21 @@ export default function TasksView({
       });
       const data = await res.json();
       if (data.success) {
-        if (selectedTask?.fingerprintHash === fingerprintHash) setSelectedTask(null);
+        setSelectedTask(prev => (prev?.fingerprintHash === fingerprintHash ? null : prev));
         if (tasksFilter !== "resolved") {
           setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
         }
-        await loadTasks(tasksFilter, true);
+        setResolvingTaskHash(prev => (prev === fingerprintHash ? null : prev));
+        void loadTasks(tasksFilter, true);
         refreshTaskCount?.(true);
       } else setTaskActionError(data.error || "Failed to resolve task");
     } catch (e) { setTaskActionError(e.message); }
-    finally { setIsResolvingTask(false); }
+    finally { setResolvingTaskHash(prev => (prev === fingerprintHash ? null : prev)); }
   };
 
   const handleRevertTaskToAlert = async (fingerprintHash) => {
     try {
-      setIsRevertingTask(true);
+      setRevertingTaskHash(fingerprintHash);
       setTaskActionError("");
       const res = await fetch("/api/triage", {
         method: "POST",
@@ -231,7 +248,7 @@ export default function TasksView({
       });
       const data = await res.json();
       if (data.success) {
-        if (selectedTask?.fingerprintHash === fingerprintHash) setSelectedTask(null);
+        setSelectedTask(prev => (prev?.fingerprintHash === fingerprintHash ? null : prev));
         if (tasksFilter !== "resolved") {
           setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
         }
@@ -336,13 +353,14 @@ export default function TasksView({
           }
         }
 
-        await loadTasks(tasksFilter, true);
+        setRevertingTaskHash(prev => (prev === fingerprintHash ? null : prev));
+        void loadTasks(tasksFilter, true);
         refreshTaskCount?.(true);
       } else {
         setTaskActionError(data.error || "Failed to revert task");
       }
     } catch (e) { setTaskActionError(e.message); }
-    finally { setIsRevertingTask(false); }
+    finally { setRevertingTaskHash(prev => (prev === fingerprintHash ? null : prev)); }
   };
 
   const handleAnalyzeTask = async (task) => {
@@ -380,8 +398,10 @@ export default function TasksView({
 
   const acceptTaskOption = async (option, idx = null) => {
     if (!selectedTask?.alertDataJSON) return;
+    const targetHash = selectedTask.fingerprintHash;
     try {
       const alertObj = JSON.parse(selectedTask.alertDataJSON);
+      setAcceptingTaskHash(targetHash);
       setAcceptingOptionIdx(idx);
       setIsAccepting(true);
       setTaskActionError("");
@@ -393,9 +413,10 @@ export default function TasksView({
       });
       const data = await res.json();
       if (!data.success) { setTaskActionError(`Failed: ${data.error || "Unknown error"}`); return; }
-      await resolveTask(selectedTask.fingerprintHash);
+      await resolveTask(targetHash);
     } catch (e) { setTaskActionError(e.message); }
     finally {
+      setAcceptingTaskHash(prev => (prev === targetHash ? null : prev));
       setIsAccepting(false);
       setAcceptingOptionIdx(null);
     }
@@ -1076,16 +1097,16 @@ export default function TasksView({
             {!selectedTask.isResolved && (
               <>
                 <button className="triage-btn"
-                  disabled={isRevertingTask || isResolvingTask}
+                  disabled={isRevertingSelectedTask || isResolvingSelectedTask}
                   onClick={() => handleRevertTaskToAlert(selectedTask.fingerprintHash)}
-                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#d97706", borderColor: "#fcd34d", display: "inline-flex", alignItems: "center", gap: "5px", opacity: (isRevertingTask || isResolvingTask) ? 0.7 : 1 }}>
-                  {isRevertingTask ? <><Spinner size={11} color="#d97706" /> Reverting...</> : "↩ Revert to alert"}
+                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#d97706", borderColor: "#fcd34d", display: "inline-flex", alignItems: "center", gap: "5px", opacity: (isRevertingSelectedTask || isResolvingSelectedTask) ? 0.7 : 1 }}>
+                  {isRevertingSelectedTask ? <><Spinner size={11} color="#d97706" /> Reverting...</> : "↩ Revert to alert"}
                 </button>
                 <button className="triage-btn"
-                  disabled={isResolvingTask || isRevertingTask}
+                  disabled={isResolvingSelectedTask || isRevertingSelectedTask}
                   onClick={() => resolveTask(selectedTask.fingerprintHash)}
-                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#16a34a", borderColor: "#86efac", display: "inline-flex", alignItems: "center", gap: "5px", opacity: (isResolvingTask || isRevertingTask) ? 0.7 : 1 }}>
-                  {isResolvingTask ? <><Spinner size={11} color="#16a34a" /> Resolving...</> : "✓ Resolve task"}
+                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#16a34a", borderColor: "#86efac", display: "inline-flex", alignItems: "center", gap: "5px", opacity: (isResolvingSelectedTask || isRevertingSelectedTask) ? 0.7 : 1 }}>
+                  {isResolvingSelectedTask ? <><Spinner size={11} color="#16a34a" /> Resolving...</> : "✓ Resolve task"}
                 </button>
               </>
             )}
@@ -1239,17 +1260,17 @@ export default function TasksView({
               {option.matchType !== "info" && (
                 <button className="triage-btn triage-btn-primary no-click-spinner"
                   onClick={() => acceptTaskOption(option, idx)}
-                  disabled={isAccepting}
+                  disabled={isAcceptingSelectedTask}
                   style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px" }}>
-                  {(isAccepting && acceptingOptionIdx === idx) ? <><Spinner />Applying...</> : `✓ Accept Option ${idx + 1}`}
+                  {(isAcceptingSelectedTask && acceptingOptionIdx === idx) ? <><Spinner />Applying...</> : `✓ Accept Option ${idx + 1}`}
                 </button>
               )}
               {option.matchType === "info" && (
                 <button className="triage-btn triage-btn-primary"
-                  disabled={isResolvingTask}
+                  disabled={isResolvingSelectedTask}
                   onClick={() => resolveTask(selectedTask.fingerprintHash)}
-                  style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px", opacity: isResolvingTask ? 0.7 : 1 }}>
-                  {isResolvingTask ? <><Spinner size={12} color="#fff" /> Resolving...</> : "✓ Mark as resolved"}
+                  style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px", opacity: isResolvingSelectedTask ? 0.7 : 1 }}>
+                  {isResolvingSelectedTask ? <><Spinner size={12} color="#fff" /> Resolving...</> : "✓ Mark as resolved"}
                 </button>
               )}
             </div>
@@ -1281,22 +1302,24 @@ export default function TasksView({
           {selectedTask.isSnoozed && (
             <div style={{ fontSize: "13px", color: "#d97706", marginBottom: "8px", display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
               <span>Currently snoozed until {new Date(selectedTask.snoozedUntil).toLocaleString("en-GB")}</span>
-              <button className="triage-btn" disabled={isUnsnoozingTask} onClick={async () => {
-                setIsUnsnoozingTask(true);
+              <button className="triage-btn" disabled={isUnsnoozingSelectedTask} onClick={async () => {
+                const targetHash = selectedTask.fingerprintHash;
+                setUnsnoozingTaskHash(targetHash);
                 try {
                   await fetch("/api/triage", {
                     method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "snooze_task", fingerprintHash: selectedTask.fingerprintHash, unsnooze: true, automationCommanderSheetId }),
+                    body: JSON.stringify({ action: "snooze_task", fingerprintHash: targetHash, unsnooze: true, automationCommanderSheetId }),
                   });
-                  setSelectedTask(prev => ({ ...prev, isSnoozed: false, snoozedUntil: "" }));
-                  setTasks(prev => prev.map(t => t.fingerprintHash === selectedTask.fingerprintHash ? { ...t, isSnoozed: false, snoozedUntil: "" } : t));
-                  await loadTasks(tasksFilter, true);
+                  setSelectedTask(prev => (prev?.fingerprintHash === targetHash ? { ...prev, isSnoozed: false, snoozedUntil: "" } : prev));
+                  setTasks(prev => prev.map(t => t.fingerprintHash === targetHash ? { ...t, isSnoozed: false, snoozedUntil: "" } : t));
+                  setUnsnoozingTaskHash(prev => (prev === targetHash ? null : prev));
+                  void loadTasks(tasksFilter, true);
                   refreshTaskCount?.(true);
                 } finally {
-                  setIsUnsnoozingTask(false);
+                  setUnsnoozingTaskHash(prev => (prev === targetHash ? null : prev));
                 }
-              }} style={{ ...styles.linkButton, marginLeft: "2px", fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "4px", opacity: isUnsnoozingTask ? 0.7 : 1 }}>
-                {isUnsnoozingTask ? <><Spinner size={11} /> Unsnoozing...</> : "Unsnooze"}
+              }} style={{ ...styles.linkButton, marginLeft: "2px", fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "4px", opacity: isUnsnoozingSelectedTask ? 0.7 : 1 }}>
+                {isUnsnoozingSelectedTask ? <><Spinner size={11} /> Unsnoozing...</> : "Unsnooze"}
               </button>
             </div>
           )}
@@ -1313,9 +1336,9 @@ export default function TasksView({
             </div>
             <button className="triage-btn"
               onClick={submitSnoozeTask}
-              disabled={taskSnoozeSubmitting || !taskSnoozeDate}
+              disabled={isSnoozingSelectedTask || !taskSnoozeDate}
               style={{ ...styles.buttonSecondary, color: "#d97706", borderColor: "#fbbf24", alignSelf: "flex-end", opacity: !taskSnoozeDate ? 0.5 : 1 }}>
-              {taskSnoozeSubmitting ? <><Spinner />Snoozing...</> : "⏰ Snooze"}
+              {isSnoozingSelectedTask ? <><Spinner />Snoozing...</> : "⏰ Snooze"}
             </button>
           </div>
         </div>

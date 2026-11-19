@@ -1066,6 +1066,16 @@ export default function ReportingTab({
     applyLeftRowsAndServerPreview(nextLeftRows);
   };
 
+  const handleUncheckDeliveryOverheadItems = () => {
+    const nextLeftRows = (overheadData.leftRows || []).map(r => {
+      if (r.isDelivery && !r.isTotalRow && r.checked) {
+        return { ...r, checked: false };
+      }
+      return r;
+    });
+    applyLeftRowsAndServerPreview(nextLeftRows);
+  };
+
   const handleAddZeroBudgetCategories = async (categoriesToAdd) => {
     if (!overheadModalClient) return;
     const list = Array.isArray(categoriesToAdd) ? categoriesToAdd.filter(Boolean) : [categoriesToAdd].filter(Boolean);
@@ -3092,7 +3102,7 @@ export default function ReportingTab({
                     )}
                   </div>
                   <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#64748b" }}>
-                    Check or uncheck categories on the left (MgmtRep!A371:F493) to preview the report table on the right (MgmtRep!AB371:AG493). Click Confirm when ready to save to the Master Sheet.
+                    Check or uncheck non-delivery categories on the left (MgmtRep!A371:F493) to preview the report table on the right (MgmtRep!AB371:AG493). Only non-delivery (0% delivery) expenses are compared against the report total. Click Confirm when ready to save to the Master Sheet.
                   </p>
                 </div>
 
@@ -3254,7 +3264,7 @@ export default function ReportingTab({
 
                         {!analysis.isMatched && (!analysis.suggestedItems || analysis.suggestedItems.length === 0) && Array.isArray(analysis.fallbackCandidates) && analysis.fallbackCandidates.length > 0 && (
                           <div style={{ fontSize: "12px", color: "#78350f", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                            <span style={{ fontWeight: 600 }}>Unchecked items with actual amounts:</span>
+                            <span style={{ fontWeight: 600 }}>Unchecked non-delivery items with actual amounts:</span>
                             {analysis.fallbackCandidates.map((item) => (
                               <span
                                 key={item.sheetRow}
@@ -3276,6 +3286,47 @@ export default function ReportingTab({
                                 <span style={{ fontFamily: "monospace" }}>({item.actualFormatted})</span>
                               </span>
                             ))}
+                          </div>
+                        )}
+
+                        {analysis.checkedDeliveryCount > 0 && Array.isArray(analysis.checkedDeliveryItems) && (
+                          <div style={{
+                            fontSize: "12px",
+                            color: "#92400e",
+                            background: "#fef3c7",
+                            border: "1px solid #fcd34d",
+                            borderRadius: "6px",
+                            padding: "6px 10px",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                            gap: "8px"
+                          }}>
+                            <div>
+                              <strong>{analysis.checkedDeliveryCount} delivery expense(s)</strong> (100% delivery) currently checked:{" "}
+                              <span style={{ fontWeight: 600 }}>
+                                {analysis.checkedDeliveryItems.map(item => item.category).join(", ")}
+                              </span>
+                              . Delivery expenses are normally excluded from the overhead report table.
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleUncheckDeliveryOverheadItems}
+                              style={{
+                                padding: "3px 10px",
+                                background: "#ffffff",
+                                color: "#b45309",
+                                border: "1px solid #f59e0b",
+                                borderRadius: "6px",
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                cursor: "pointer",
+                                whiteSpace: "nowrap"
+                              }}
+                            >
+                              Uncheck delivery items ({analysis.checkedDeliveryCount})
+                            </button>
                           </div>
                         )}
                       </div>
@@ -3334,122 +3385,193 @@ export default function ReportingTab({
                       gap: "18px",
                       alignItems: "start"
                     }}>
-                      {/* LEFT SECTION: MgmtRep!A371:F493 */}
-                      <div style={{
-                        border: "1px solid #e2e8f0",
-                        borderRadius: "8px",
-                        overflow: "hidden",
-                        background: "#ffffff"
-                      }}>
-                        <div style={{
-                          padding: "10px 14px",
-                          background: "#f8fafc",
-                          borderBottom: "1px solid #e2e8f0",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center"
-                        }}>
-                          <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
-                            All expense categories (MgmtRep!A371:F493)
-                          </span>
-                          <span style={{ fontSize: "11px", color: "#64748b" }}>
-                            {(overheadData.leftRows || []).filter(r => !r.isTotalRow && r.checked).length} of {(overheadData.leftRows || []).filter(r => !r.isTotalRow).length} checked
-                          </span>
-                        </div>
+                      {/* LEFT SECTION: Split into Non-delivery (0%) and Delivery (100%) */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                        {(() => {
+                          const allLeft = overheadData.leftRows || [];
+                          const nonDelItems = allLeft.filter(r => !r.isTotalRow && !r.isDelivery);
+                          const nonDelTotalRow = allLeft.find(r => r.isNonDelTotalRow);
+                          const delItems = allLeft.filter(r => !r.isTotalRow && r.isDelivery);
+                          const delTotalRow = allLeft.find(r => r.isDeliveryTotalRow);
 
-                        <div style={{ maxHeight: "52vh", overflowY: "auto" }}>
-                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-                            <thead>
-                              <tr style={{ position: "sticky", top: 0, background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569", zIndex: 1 }}>
-                                <th style={{ padding: "8px 10px", width: "34px", textAlign: "center" }}>Inc.</th>
-                                <th style={{ padding: "8px 10px", textAlign: "left" }}>Category</th>
-                                <th style={{ padding: "8px 10px", textAlign: "right" }}>Actual</th>
-                                <th style={{ padding: "8px 10px", textAlign: "right" }}>Budget</th>
-                                <th style={{ padding: "8px 10px", textAlign: "right" }}>Variance</th>
-                                <th style={{ padding: "8px 10px", textAlign: "right" }}>%</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(overheadData.leftRows || []).map((row) => {
-                                const isSuggested = suggestedSheetRows.has(row.sheetRow);
-                                const isModified = !row.isTotalRow && Boolean(row.checked) !== Boolean(row.sheetChecked);
+                          const leftSections = [
+                            {
+                              key: "nonDelivery",
+                              title: "Non-delivery expenses (0% delivery)",
+                              subtitleTag: "Compared to report table",
+                              items: nonDelItems,
+                              totalRow: nonDelTotalRow,
+                              maxHeight: "34vh",
+                              borderColor: "#bae6fd",
+                              headerBg: "#f0f9ff",
+                              emptyText: "No non-delivery expense categories found.",
+                              statusText: `${nonDelItems.filter(r => r.checked).length} of ${nonDelItems.length} checked`,
+                              statusColor: "#0369a1"
+                            },
+                            {
+                              key: "delivery",
+                              title: "Delivery expenses (100% delivery)",
+                              subtitleTag: "Excluded from overhead comparison",
+                              items: delItems,
+                              totalRow: delTotalRow,
+                              maxHeight: "22vh",
+                              borderColor: "#e2e8f0",
+                              headerBg: "#f8fafc",
+                              emptyText: "No delivery expense categories found.",
+                              statusText: delItems.some(r => r.checked)
+                                ? `${delItems.filter(r => r.checked).length} of ${delItems.length} checked`
+                                : `${delItems.length} categories`,
+                              statusColor: delItems.some(r => r.checked) ? "#b45309" : "#64748b"
+                            }
+                          ];
 
-                                return (
-                                  <tr
-                                    key={row.sheetRow}
-                                    onClick={() => !row.isTotalRow && handleToggleOverheadRow(row.sheetRow)}
-                                    style={{
-                                      borderBottom: "1px solid #f1f5f9",
-                                      borderTop: row.isTotalRow ? "2px solid #cbd5e1" : "none",
-                                      background: row.isNonDelTotalRow
-                                        ? "#eff6ff"
-                                        : (row.isTotalRow
-                                          ? "#f8fafc"
-                                          : (isSuggested
-                                            ? "#fffbeb"
-                                            : (row.checked ? "#f0fdf4" : "#ffffff"))),
-                                      fontWeight: row.isTotalRow ? 700 : 400,
-                                      cursor: row.isTotalRow ? "default" : "pointer"
-                                    }}
-                                  >
-                                    <td
-                                      style={{ padding: "7px 10px", textAlign: "center" }}
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
-                                      {!row.isTotalRow && (
-                                        <input
-                                          type="checkbox"
-                                          checked={Boolean(row.checked)}
-                                          onChange={() => handleToggleOverheadRow(row.sheetRow)}
-                                          style={{ cursor: "pointer" }}
-                                        />
+                          return leftSections.map((sec) => {
+                            const sectionRows = [...sec.items, ...(sec.totalRow ? [sec.totalRow] : [])];
+                            return (
+                              <div
+                                key={sec.key}
+                                style={{
+                                  border: `1px solid ${sec.borderColor}`,
+                                  borderRadius: "8px",
+                                  overflow: "hidden",
+                                  background: "#ffffff"
+                                }}
+                              >
+                                <div style={{
+                                  padding: "9px 14px",
+                                  background: sec.headerBg,
+                                  borderBottom: `1px solid ${sec.borderColor}`,
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "center",
+                                  gap: "8px",
+                                  flexWrap: "wrap"
+                                }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                    <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                                      {sec.title}
+                                    </span>
+                                    <span style={{
+                                      fontSize: "10px",
+                                      fontWeight: 600,
+                                      padding: "1px 7px",
+                                      borderRadius: "999px",
+                                      background: sec.key === "nonDelivery" ? "#e0f2fe" : "#f1f5f9",
+                                      color: sec.key === "nonDelivery" ? "#0369a1" : "#64748b"
+                                    }}>
+                                      {sec.subtitleTag}
+                                    </span>
+                                  </div>
+                                  <span style={{ fontSize: "11px", fontWeight: 600, color: sec.statusColor }}>
+                                    {sec.statusText}
+                                  </span>
+                                </div>
+
+                                <div style={{ maxHeight: sec.maxHeight, overflowY: "auto" }}>
+                                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                                    <thead>
+                                      <tr style={{ position: "sticky", top: 0, background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569", zIndex: 1 }}>
+                                        <th style={{ padding: "8px 10px", width: "34px", textAlign: "center" }}>Inc.</th>
+                                        <th style={{ padding: "8px 10px", textAlign: "left" }}>Category</th>
+                                        <th style={{ padding: "8px 10px", textAlign: "right" }}>Actual</th>
+                                        <th style={{ padding: "8px 10px", textAlign: "right" }}>Budget</th>
+                                        <th style={{ padding: "8px 10px", textAlign: "right" }}>Variance</th>
+                                        <th style={{ padding: "8px 10px", textAlign: "right" }}>%</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {sectionRows.length === 0 ? (
+                                        <tr>
+                                          <td colSpan={6} style={{ padding: "20px 14px", textAlign: "center", color: "#94a3b8" }}>
+                                            {sec.emptyText}
+                                          </td>
+                                        </tr>
+                                      ) : (
+                                        sectionRows.map((row) => {
+                                          const isSuggested = suggestedSheetRows.has(row.sheetRow);
+                                          const isModified = !row.isTotalRow && Boolean(row.checked) !== Boolean(row.sheetChecked);
+
+                                          return (
+                                            <tr
+                                              key={row.sheetRow}
+                                              onClick={() => !row.isTotalRow && handleToggleOverheadRow(row.sheetRow)}
+                                              style={{
+                                                borderBottom: "1px solid #f1f5f9",
+                                                borderTop: row.isTotalRow ? "2px solid #cbd5e1" : "none",
+                                                background: row.isNonDelTotalRow
+                                                  ? "#eff6ff"
+                                                  : (row.isTotalRow
+                                                    ? "#f8fafc"
+                                                    : (isSuggested
+                                                      ? "#fffbeb"
+                                                      : (row.checked ? (sec.key === "delivery" ? "#fef3c7" : "#f0fdf4") : "#ffffff"))),
+                                                fontWeight: row.isTotalRow ? 700 : 400,
+                                                cursor: row.isTotalRow ? "default" : "pointer"
+                                              }}
+                                            >
+                                              <td
+                                                style={{ padding: "7px 10px", textAlign: "center" }}
+                                                onClick={(e) => e.stopPropagation()}
+                                              >
+                                                {!row.isTotalRow && (
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={Boolean(row.checked)}
+                                                    onChange={() => handleToggleOverheadRow(row.sheetRow)}
+                                                    style={{ cursor: "pointer" }}
+                                                  />
+                                                )}
+                                              </td>
+                                              <td style={{ padding: "7px 10px", color: "#0f172a" }}>
+                                                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                                  <span>{row.category}</span>
+                                                  {isSuggested && (
+                                                    <span style={{
+                                                      fontSize: "10px",
+                                                      fontWeight: 700,
+                                                      padding: "1px 6px",
+                                                      borderRadius: "999px",
+                                                      background: "#fef3c7",
+                                                      color: "#b45309",
+                                                      border: "1px solid #f59e0b"
+                                                    }}>
+                                                      Suggested
+                                                    </span>
+                                                  )}
+                                                  {isModified && (
+                                                    <span style={{
+                                                      fontSize: "10px",
+                                                      fontWeight: 600,
+                                                      color: "#0284c7"
+                                                    }}>
+                                                      • edited
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              </td>
+                                              <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", fontWeight: row.isTotalRow || row.actualNum !== 0 ? 600 : 400, color: row.isNonDelTotalRow ? "#0369a1" : "#0f172a" }}>
+                                                {row.actualFormatted}
+                                              </td>
+                                              <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: row.budgetNum === null ? "#94a3b8" : "#334155" }}>
+                                                {row.budgetFormatted || "—"}
+                                              </td>
+                                              <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: row.varianceNum < 0 ? "#b91c1c" : "#334155" }}>
+                                                {row.varianceFormatted}
+                                              </td>
+                                              <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: "#475569" }}>
+                                                {row.pctFormatted || "—"}
+                                              </td>
+                                            </tr>
+                                          );
+                                        })
                                       )}
-                                    </td>
-                                    <td style={{ padding: "7px 10px", color: "#0f172a" }}>
-                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                                        <span>{row.category}</span>
-                                        {isSuggested && (
-                                          <span style={{
-                                            fontSize: "10px",
-                                            fontWeight: 700,
-                                            padding: "1px 6px",
-                                            borderRadius: "999px",
-                                            background: "#fef3c7",
-                                            color: "#b45309",
-                                            border: "1px solid #f59e0b"
-                                          }}>
-                                            Suggested
-                                          </span>
-                                        )}
-                                        {isModified && (
-                                          <span style={{
-                                            fontSize: "10px",
-                                            fontWeight: 600,
-                                            color: "#0284c7"
-                                          }}>
-                                            • edited
-                                          </span>
-                                        )}
-                                      </div>
-                                    </td>
-                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", fontWeight: row.isTotalRow || row.actualNum !== 0 ? 600 : 400, color: row.isNonDelTotalRow ? "#0369a1" : "#0f172a" }}>
-                                      {row.actualFormatted}
-                                    </td>
-                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: row.budgetNum === null ? "#94a3b8" : "#334155" }}>
-                                      {row.budgetFormatted || "—"}
-                                    </td>
-                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: row.varianceNum < 0 ? "#b91c1c" : "#334155" }}>
-                                      {row.varianceFormatted}
-                                    </td>
-                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: "#475569" }}>
-                                      {row.pctFormatted || "—"}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
                       </div>
 
                       {/* RIGHT SECTION: MgmtRep!AB371:AG493 */}
@@ -3475,7 +3597,7 @@ export default function ReportingTab({
                           </span>
                         </div>
 
-                        <div style={{ maxHeight: "52vh", overflowY: "auto" }}>
+                        <div style={{ maxHeight: "62vh", overflowY: "auto" }}>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
                             <thead>
                               <tr style={{ position: "sticky", top: 0, background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569", zIndex: 1 }}>
@@ -3499,11 +3621,26 @@ export default function ReportingTab({
                                     key={row.sheetRow}
                                     style={{
                                       borderBottom: "1px solid #f1f5f9",
-                                      background: row.hasDivZeroError ? "#fef2f2" : "#ffffff"
+                                      background: row.hasDivZeroError ? "#fef2f2" : (row.isDelivery ? "#fffbeb" : "#ffffff")
                                     }}
                                   >
                                     <td style={{ padding: "7px 10px", color: "#0f172a" }}>
-                                      {row.category}
+                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                        <span>{row.category}</span>
+                                        {row.isDelivery && (
+                                          <span style={{
+                                            fontSize: "10px",
+                                            fontWeight: 600,
+                                            padding: "1px 6px",
+                                            borderRadius: "999px",
+                                            background: "#fef3c7",
+                                            color: "#b45309",
+                                            border: "1px solid #fcd34d"
+                                          }}>
+                                            100% delivery
+                                          </span>
+                                        )}
+                                      </div>
                                     </td>
                                     <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", fontWeight: row.actualNum !== 0 ? 600 : 400 }}>
                                       {row.actualFormatted}

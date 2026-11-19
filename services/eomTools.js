@@ -5574,13 +5574,82 @@ export async function autoCompleteTaskByKeyword_(sheets, automationCommanderShee
 
 const ALIGNED_MGMTREP_B372_FORMULA = "=FILTER(INDEX(Outgoings!A125:BC228,0,G2),LEN(Outgoings!A125:A228)>0)";
 
+function roundCommercial_(n) {
+  return n < 0 ? -Math.round(Math.abs(n)) : Math.round(n);
+}
+
 function formatCurrencyGBP_(num) {
   if (num === null || num === undefined || num === "" || isNaN(Number(num))) return "£0";
-  const rounded = Math.round(Number(num));
+  const rounded = roundCommercial_(Number(num));
   if (rounded < 0) {
     return `-£${Math.abs(rounded).toLocaleString("en-GB")}`;
   }
   return `£${rounded.toLocaleString("en-GB")}`;
+}
+
+function formatDiffGBP_(num) {
+  const n = Number(num) || 0;
+  const abs = Math.abs(n);
+  if (abs >= 0.005 && abs < 0.5) {
+    const sign = n < 0 ? "-" : "";
+    return `${sign}£${abs.toFixed(2)}`;
+  }
+  return formatCurrencyGBP_(n);
+}
+
+function parseDeliveryPctInfo_(fmtVal, unfmtVal) {
+  const rawFmt = String(fmtVal ?? "").trim();
+  if (rawFmt.includes("%")) {
+    const pctNum = parseNumericValue_(rawFmt.replace(/%/g, ""));
+    if (pctNum !== null) {
+      const clamped = Math.max(0, Math.min(100, pctNum));
+      return {
+        deliveryPct: `${Math.round(clamped)}%`,
+        isDelivery: clamped > 0
+      };
+    }
+  }
+  if (typeof unfmtVal === "number" && Number.isFinite(unfmtVal)) {
+    const pct = Math.abs(unfmtVal) <= 1 ? unfmtVal * 100 : unfmtVal;
+    const clamped = Math.max(0, Math.min(100, pct));
+    return {
+      deliveryPct: `${Math.round(clamped)}%`,
+      isDelivery: clamped > 0
+    };
+  }
+  const parsed = parseNumericValue_(rawFmt);
+  if (parsed !== null) {
+    const pct = Math.abs(parsed) <= 1 && !rawFmt.includes("%") && parsed > 0 ? parsed * 100 : parsed;
+    const clamped = Math.max(0, Math.min(100, pct));
+    return {
+      deliveryPct: `${Math.round(clamped)}%`,
+      isDelivery: clamped > 0
+    };
+  }
+  return { deliveryPct: "0%", isDelivery: false };
+}
+
+function parseOutgoingsHeaderMonthKey_(rawHdr) {
+  if (typeof rawHdr === "number" && rawHdr > 20000 && rawHdr < 100000) {
+    const d = new Date(Math.round((rawHdr - 25569) * 86400 * 1000));
+    if (!isNaN(d.getTime())) {
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    }
+  }
+  const s = String(rawHdr || "").trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}$/.test(s)) return s;
+  const monthAbbrs = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+  const parts = s.split(/[\s\-/]+/);
+  if (parts.length === 2) {
+    const mNum = monthAbbrs[parts[0].slice(0, 3).toLowerCase()];
+    let y = parseInt(parts[1], 10);
+    if (mNum && Number.isFinite(y)) {
+      if (y < 100) y += 2000;
+      return `${y}-${String(mNum).padStart(2, "0")}`;
+    }
+  }
+  return monthStrToEomKey_(s);
 }
 
 function parseNumericValue_(val) {
@@ -5684,49 +5753,65 @@ async function ensureOverheadAlignmentAndMonth_(sheets, masterSheetId, reportMon
  */
 function findSubsetMatchingSum_(candidates, targetAmount) {
   const target = Math.abs(Number(targetAmount) || 0);
-  if (target < 0.5 || !Array.isArray(candidates) || candidates.length === 0) return [];
+  if (target < 0.01 || !Array.isArray(candidates) || candidates.length === 0) return [];
 
-  // Filter to candidates with positive actual amounts
+  const minItemAmount = target < 0.5 ? 0.01 : 0.5;
+  const matchTolerance = target < 0.5 ? 0.02 : 0.75;
+
+  // Filter to candidates with positive/meaningful actual amounts
   const valid = candidates
-    .filter(c => Math.abs(Number(c.actualNum) || 0) >= 0.5)
+    .filter(c => Math.abs(Number(c.actualNum) || 0) >= minItemAmount)
     .sort((a, b) => {
-      // Deprioritize depreciation slightly if non-depreciation items also match
+      // Prioritize delivery rows first when unchecking excess, deprioritize depreciation slightly
+      const aDel = a.isDelivery ? 0 : 1;
+      const bDel = b.isDelivery ? 0 : 1;
+      if (aDel !== bDel) return aDel - bDel;
       const aDep = /depreciation/i.test(a.category) ? 1 : 0;
       const bDep = /depreciation/i.test(b.category) ? 1 : 0;
       if (aDep !== bDep) return aDep - bDep;
       return Math.abs(b.actualNum) - Math.abs(a.actualNum);
     });
 
-  // 1. Check single-item exact/rounded match first
+  // 1. Check single-item exact match first, then rounded match
   for (const item of valid) {
-    if (Math.abs(item.actualNum - target) < 0.75) {
+    if (Math.abs(item.actualNum - target) < 0.02) {
       return [item];
     }
   }
+  if (matchTolerance > 0.02) {
+    for (const item of valid) {
+      if (Math.abs(item.actualNum - target) < matchTolerance) {
+        return [item];
+      }
+    }
+  }
 
-  // 2. Check combinations of size 2..6 via bounded backtracking
+  // 2. Check combinations of size 2..6 via bounded backtracking (exact match first, then rounded fallback)
   const maxItems = Math.min(6, valid.length);
-  for (let size = 2; size <= maxItems; size++) {
-    let found = null;
-    const search = (startIdx, chosen, currentSum) => {
-      if (found) return;
-      if (chosen.length === size) {
-        if (Math.abs(currentSum - target) < 0.75) {
-          found = [...chosen];
-        }
-        return;
-      }
-      for (let i = startIdx; i < valid.length; i++) {
-        const nextSum = currentSum + valid[i].actualNum;
-        if (nextSum - target > 2 && valid[i].actualNum > 0) continue;
-        chosen.push(valid[i]);
-        search(i + 1, chosen, nextSum);
-        chosen.pop();
+  const tolerancesToTry = matchTolerance > 0.02 ? [0.02, matchTolerance] : [0.02];
+  for (const tol of tolerancesToTry) {
+    for (let size = 2; size <= maxItems; size++) {
+      let found = null;
+      const search = (startIdx, chosen, currentSum) => {
         if (found) return;
-      }
-    };
-    search(0, [], 0);
-    if (found) return found;
+        if (chosen.length === size) {
+          if (Math.abs(currentSum - target) < tol) {
+            found = [...chosen];
+          }
+          return;
+        }
+        for (let i = startIdx; i < valid.length; i++) {
+          const nextSum = currentSum + valid[i].actualNum;
+          if (nextSum - target > 2 && valid[i].actualNum > 0) continue;
+          chosen.push(valid[i]);
+          search(i + 1, chosen, nextSum);
+          chosen.pop();
+          if (found) return;
+        }
+      };
+      search(0, [], 0);
+      if (found) return found;
+    }
   }
 
   return [];
@@ -5735,9 +5820,11 @@ function findSubsetMatchingSum_(candidates, targetAmount) {
 /**
  * Computes the right-hand table (MgmtRep!AB371:AG493) and reconciliation analysis
  * from the left-hand rows and their checked states.
+ * Only non-delivery (0% delivery) expenses are compared against "Total other expenses - non-del".
  */
 export function computeOverheadRightTableAndAnalysis_(leftRows = []) {
   const checkedRows = leftRows.filter(r => Boolean(r.checked) && !r.isTotalRow);
+  const checkedDeliveryRows = checkedRows.filter(r => Boolean(r.isDelivery));
 
   const rightRows = checkedRows.map(r => {
     const actualNum = Number(r.actualNum) || 0;
@@ -5758,12 +5845,14 @@ export function computeOverheadRightTableAndAnalysis_(leftRows = []) {
     } else if (Math.abs(budgetNum) < 0.005) {
       pctFormatted = "!!!";
     } else {
-      pctFormatted = `${Math.round((varNum / budgetNum) * 100)}%`;
+      pctFormatted = `${roundCommercial_((varNum / budgetNum) * 100)}%`;
     }
 
     return {
       sheetRow: r.sheetRow,
       category: r.category,
+      isDelivery: Boolean(r.isDelivery),
+      deliveryPct: r.deliveryPct || (r.isDelivery ? "100%" : "0%"),
       actualNum,
       actualFormatted: r.actualFormatted || formatCurrencyGBP_(actualNum),
       budgetNum,
@@ -5784,7 +5873,7 @@ export function computeOverheadRightTableAndAnalysis_(leftRows = []) {
   } else if (Math.abs(totalBudgetNum) < 0.005) {
     totalPctFormatted = "!!!";
   } else {
-    totalPctFormatted = `${Math.round((totalVarNum / totalBudgetNum) * 100)}%`;
+    totalPctFormatted = `${roundCommercial_((totalVarNum / totalBudgetNum) * 100)}%`;
   }
 
   const rightTotal = {
@@ -5798,7 +5887,7 @@ export function computeOverheadRightTableAndAnalysis_(leftRows = []) {
     pctFormatted: totalPctFormatted
   };
 
-  // Reconciliation against "Total other expenses - non-del" in left-hand table
+  // Reconciliation against "Total other expenses - non-del" in left-hand non-delivery table
   const nonDelRow = leftRows.find(r => r.isNonDelTotalRow);
   const targetNonDelActualNum = nonDelRow ? (Number(nonDelRow.actualNum) || 0) : null;
   const targetNonDelFormatted = nonDelRow
@@ -5806,7 +5895,12 @@ export function computeOverheadRightTableAndAnalysis_(leftRows = []) {
     : "£0";
 
   const differenceNum = targetNonDelActualNum !== null ? (targetNonDelActualNum - totalActualNum) : 0;
-  const isMatched = targetNonDelActualNum !== null && Math.abs(differenceNum) < 0.75;
+  const targetRounded = targetNonDelActualNum !== null ? roundCommercial_(targetNonDelActualNum) : null;
+  const rightRounded = roundCommercial_(totalActualNum);
+  const isMatched = targetNonDelActualNum !== null && (
+    Math.abs(differenceNum) < 0.005 ||
+    (Math.abs(differenceNum) < 0.5 && targetRounded === rightRounded)
+  );
 
   let suggestedItems = [];
   let suggestionDirection = null; // "check" | "uncheck"
@@ -5815,7 +5909,10 @@ export function computeOverheadRightTableAndAnalysis_(leftRows = []) {
   if (!isMatched && targetNonDelActualNum !== null) {
     if (differenceNum > 0) {
       suggestionDirection = "check";
-      const uncheckedCandidates = leftRows.filter(r => !r.checked && !r.isTotalRow && Math.abs(Number(r.actualNum) || 0) >= 0.5);
+      // Only non-delivery (0% delivery) unchecked items should be suggested to match non-delivery total
+      const uncheckedCandidates = leftRows.filter(
+        r => !r.checked && !r.isTotalRow && !r.isDelivery && Math.abs(Number(r.actualNum) || 0) >= 0.01
+      );
       suggestedItems = findSubsetMatchingSum_(uncheckedCandidates, differenceNum).map(r => ({
         sheetRow: r.sheetRow,
         category: r.category,
@@ -5823,16 +5920,20 @@ export function computeOverheadRightTableAndAnalysis_(leftRows = []) {
         actualFormatted: r.actualFormatted || formatCurrencyGBP_(r.actualNum)
       }));
       if (suggestedItems.length === 0) {
-        fallbackCandidates = uncheckedCandidates.map(r => ({
-          sheetRow: r.sheetRow,
-          category: r.category,
-          actualNum: r.actualNum,
-          actualFormatted: r.actualFormatted || formatCurrencyGBP_(r.actualNum)
-        }));
+        fallbackCandidates = uncheckedCandidates
+          .filter(r => Math.abs(Number(r.actualNum) || 0) >= 0.5)
+          .map(r => ({
+            sheetRow: r.sheetRow,
+            category: r.category,
+            actualNum: r.actualNum,
+            actualFormatted: r.actualFormatted || formatCurrencyGBP_(r.actualNum)
+          }));
       }
     } else if (differenceNum < 0) {
       suggestionDirection = "uncheck";
-      const checkedCandidates = leftRows.filter(r => r.checked && !r.isTotalRow && Math.abs(Number(r.actualNum) || 0) >= 0.5);
+      const checkedCandidates = leftRows.filter(
+        r => r.checked && !r.isTotalRow && Math.abs(Number(r.actualNum) || 0) >= 0.01
+      );
       suggestedItems = findSubsetMatchingSum_(checkedCandidates, Math.abs(differenceNum)).map(r => ({
         sheetRow: r.sheetRow,
         category: r.category,
@@ -5855,21 +5956,30 @@ export function computeOverheadRightTableAndAnalysis_(leftRows = []) {
       rightTotalActualNum: totalActualNum,
       rightTotalActualFormatted: formatCurrencyGBP_(totalActualNum),
       differenceNum,
-      differenceFormatted: formatCurrencyGBP_(differenceNum),
-      absDifferenceFormatted: formatCurrencyGBP_(Math.abs(differenceNum)),
+      differenceFormatted: formatDiffGBP_(differenceNum),
+      absDifferenceFormatted: formatDiffGBP_(Math.abs(differenceNum)),
       isMatched,
       suggestionDirection,
       suggestedItems,
       fallbackCandidates,
-      divZeroCategories
+      divZeroCategories,
+      checkedDeliveryCount: checkedDeliveryRows.length,
+      checkedDeliveryItems: checkedDeliveryRows.map(r => ({
+        sheetRow: r.sheetRow,
+        category: r.category,
+        actualNum: r.actualNum,
+        actualFormatted: r.actualFormatted || formatCurrencyGBP_(r.actualNum),
+        budgetFormatted: r.budgetFormatted || ""
+      }))
     }
   };
 }
 
 /**
- * Reads MgmtRep!A371:F493 from the Master Sheet and builds leftRows + rightRows + analysis.
+ * Reads MgmtRep!A371:F493 from the Master Sheet (and unrounded Actual/Budget/Delivery%
+ * from Client Sheet Outgoings & Budget) and builds leftRows + rightRows + analysis.
  */
-async function readAndParseOverheadExpenses_(sheets, masterSheetId, checkboxOverrides = null) {
+async function readAndParseOverheadExpenses_(sheets, masterSheetId, checkboxOverrides = null, clientName = "", explicitClientSheetId = "") {
   const [fmtResp, unfmtResp] = await Promise.all([
     withRetry(() => sheets.spreadsheets.values.batchGet({
       spreadsheetId: masterSheetId,
@@ -5878,14 +5988,132 @@ async function readAndParseOverheadExpenses_(sheets, masterSheetId, checkboxOver
     })),
     withRetry(() => sheets.spreadsheets.values.batchGet({
       spreadsheetId: masterSheetId,
-      ranges: ["MgmtRep!A371:F493"],
+      ranges: ["MgmtRep!G2", "MgmtRep!A371:F493"],
       valueRenderOption: "UNFORMATTED_VALUE"
     }))
   ]);
 
   const currentMonthFormatted = String(fmtResp.data.valueRanges?.[0]?.values?.[0]?.[0] || "").trim();
   const fmtRows = fmtResp.data.valueRanges?.[1]?.values || [];
-  const unfmtRows = unfmtResp.data.valueRanges?.[0]?.values || [];
+  const rawG2 = unfmtResp.data.valueRanges?.[0]?.values?.[0]?.[0];
+  const unfmtRows = unfmtResp.data.valueRanges?.[1]?.values || [];
+
+  // Resolve Client Sheet ID to fetch unrounded Outgoings actuals, delivery % (Col E), and unrounded Budget
+  let clientSheetId = extractSheetIdFromUrl(explicitClientSheetId) || explicitClientSheetId || "";
+  if (!clientSheetId) {
+    try {
+      const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+      if (supaCtx?.clientSheetId) clientSheetId = supaCtx.clientSheetId;
+    } catch (_) { }
+  }
+  if (!clientSheetId) {
+    try {
+      const c1Resp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "KeyInfo!C1",
+        valueRenderOption: "FORMATTED_VALUE"
+      }));
+      clientSheetId = extractSheetIdFromUrl(c1Resp.data.values?.[0]?.[0] || "") || "";
+    } catch (_) { }
+  }
+
+  let outgoingsEntries = [];
+  const outgoingsQueuesByCat = new Map();
+  const budgetByCatLower = new Map();
+  let hasUnroundedBudget = false;
+
+  if (clientSheetId) {
+    try {
+      const [outFmtResp, outUnfmtResp] = await Promise.all([
+        withRetry(() => sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientSheetId,
+          ranges: ["Outgoings!A1:BC1", "Outgoings!A125:BC228"],
+          valueRenderOption: "FORMATTED_VALUE"
+        })),
+        withRetry(() => sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientSheetId,
+          ranges: ["Outgoings!A1:BC1", "Outgoings!A125:BC228", "Budget!A149:BO253"],
+          valueRenderOption: "UNFORMATTED_VALUE"
+        }))
+      ]);
+
+      const outHdrFmt = outFmtResp.data.valueRanges?.[0]?.values?.[0] || [];
+      const outRowsFmt = outFmtResp.data.valueRanges?.[1]?.values || [];
+      const outHdrUnfmt = outUnfmtResp.data.valueRanges?.[0]?.values?.[0] || [];
+      const outRowsUnfmt = outUnfmtResp.data.valueRanges?.[1]?.values || [];
+      const budgetRowsUnfmt = outUnfmtResp.data.valueRanges?.[2]?.values || [];
+
+      let g2Col1 = Number.isFinite(Number(rawG2)) && Number(rawG2) >= 1 ? Math.round(Number(rawG2)) : -1;
+      if (g2Col1 <= 0 && currentMonthFormatted) {
+        const targetKey = parseOutgoingsHeaderMonthKey_(currentMonthFormatted);
+        if (targetKey) {
+          const maxCols = Math.max(outHdrFmt.length, outHdrUnfmt.length);
+          for (let c = 0; c < maxCols; c++) {
+            const k = parseOutgoingsHeaderMonthKey_(outHdrFmt[c]) || parseOutgoingsHeaderMonthKey_(outHdrUnfmt[c]);
+            if (k === targetKey) {
+              g2Col1 = c + 1;
+              break;
+            }
+          }
+        }
+      }
+
+      if (g2Col1 > 0) {
+        for (let r = 0; r < Math.max(outRowsFmt.length, outRowsUnfmt.length); r++) {
+          const fR = outRowsFmt[r] || [];
+          const uR = outRowsUnfmt[r] || [];
+          const rawCat = String(fR[0] ?? uR[0] ?? "").trim();
+          if (!rawCat) continue;
+
+          const isTotal = /^total other expenses/i.test(rawCat);
+          const isNonDelTotal = /total other expenses\s*-\s*non-del/i.test(rawCat) || /^total other expenses$/i.test(rawCat);
+          const isDelTotal = /total other expenses\s*-\s*delivery/i.test(rawCat);
+
+          let delInfo;
+          if (isDelTotal) {
+            delInfo = { deliveryPct: "100%", isDelivery: true };
+          } else if (isNonDelTotal || isTotal) {
+            delInfo = { deliveryPct: "0%", isDelivery: false };
+          } else if (/^recharged expenses/i.test(rawCat) && String(fR[4] ?? "").trim() === "" && (uR[4] === "" || uR[4] === undefined || uR[4] === null)) {
+            delInfo = { deliveryPct: "100%", isDelivery: true };
+          } else {
+            delInfo = parseDeliveryPctInfo_(fR[4], uR[4]);
+          }
+
+          const rawActCell = uR[g2Col1 - 1];
+          const unroundedActual = (rawActCell === "" || rawActCell === undefined || rawActCell === null)
+            ? 0
+            : (parseNumericValue_(rawActCell) ?? 0);
+
+          const entry = {
+            category: rawCat,
+            categoryLower: rawCat.toLowerCase(),
+            unroundedActual,
+            deliveryPct: delInfo.deliveryPct,
+            isDelivery: delInfo.isDelivery
+          };
+          outgoingsEntries.push(entry);
+          if (!outgoingsQueuesByCat.has(entry.categoryLower)) {
+            outgoingsQueuesByCat.set(entry.categoryLower, []);
+          }
+          outgoingsQueuesByCat.get(entry.categoryLower).push(entry);
+        }
+
+        hasUnroundedBudget = true;
+        for (let r = 0; r < budgetRowsUnfmt.length; r++) {
+          const bRow = budgetRowsUnfmt[r] || [];
+          const bCat = String(bRow[0] ?? "").trim();
+          if (!bCat) continue;
+          const bKey = bCat.toLowerCase();
+          if (!budgetByCatLower.has(bKey)) {
+            budgetByCatLower.set(bKey, bRow[g2Col1 - 1]);
+          }
+        }
+      }
+    } catch (outErr) {
+      console.warn(`readAndParseOverheadExpenses_ client sheet Outgoings/Budget warning for ${clientSheetId}:`, outErr.message);
+    }
+  }
 
   const leftHeaders = fmtRows[0] || ["", "Actual", "Budget", "Variance", "%"];
   const leftRows = [];
@@ -5903,12 +6131,42 @@ async function readAndParseOverheadExpenses_(sheets, masterSheetId, checkboxOver
     const isNonDelTotalRow = /total other expenses\s*-\s*non-del/i.test(category) || /^total other expenses$/i.test(category);
     const isDeliveryTotalRow = /total other expenses\s*-\s*delivery/i.test(category);
 
-    const actualNum = parseNumericValue_(uRow[1]) ?? 0;
-    const rawBudgetCell = uRow[2];
-    const budgetNum = (rawBudgetCell === "" || rawBudgetCell === undefined || rawBudgetCell === null)
-      ? null
-      : parseNumericValue_(rawBudgetCell);
-    const varianceNum = parseNumericValue_(uRow[3]) ?? ((budgetNum ?? 0) - actualNum);
+    const catLower = category.toLowerCase();
+    const posEntry = outgoingsEntries[leftRows.length];
+    let matchedOutEntry = null;
+    if (posEntry && posEntry.categoryLower === catLower) {
+      matchedOutEntry = posEntry;
+    } else if (outgoingsQueuesByCat.has(catLower) && outgoingsQueuesByCat.get(catLower).length > 0) {
+      matchedOutEntry = outgoingsQueuesByCat.get(catLower).shift();
+    }
+
+    const actualNum = matchedOutEntry
+      ? matchedOutEntry.unroundedActual
+      : (parseNumericValue_(uRow[1]) ?? 0);
+
+    let budgetNum = null;
+    if (hasUnroundedBudget && budgetByCatLower.has(catLower)) {
+      const rawB = budgetByCatLower.get(catLower);
+      budgetNum = (rawB === "" || rawB === undefined || rawB === null) ? null : parseNumericValue_(rawB);
+    } else {
+      const rawBudgetCell = uRow[2];
+      budgetNum = (rawBudgetCell === "" || rawBudgetCell === undefined || rawBudgetCell === null)
+        ? null
+        : parseNumericValue_(rawBudgetCell);
+    }
+
+    const varianceNum = (matchedOutEntry || hasUnroundedBudget)
+      ? ((budgetNum ?? 0) - actualNum)
+      : (parseNumericValue_(uRow[3]) ?? ((budgetNum ?? 0) - actualNum));
+
+    const isDelivery = isDeliveryTotalRow
+      ? true
+      : (isNonDelTotalRow
+        ? false
+        : (matchedOutEntry ? matchedOutEntry.isDelivery : /^cos\s*[-–—:]/i.test(category)));
+    const deliveryPct = matchedOutEntry
+      ? matchedOutEntry.deliveryPct
+      : (isDelivery ? "100%" : "0%");
 
     const sheetChecked = Boolean(uRow[5] === true || String(fRow[5] || "").toUpperCase() === "TRUE");
     const checked = isTotalRow
@@ -5920,6 +6178,8 @@ async function readAndParseOverheadExpenses_(sheets, masterSheetId, checkboxOver
     leftRows.push({
       sheetRow,
       category,
+      deliveryPct,
+      isDelivery,
       actualNum,
       actualFormatted: String(fRow[1] || "").trim() || formatCurrencyGBP_(actualNum),
       budgetNum,
@@ -5966,7 +6226,7 @@ export async function handleEomGetOverheadExpenses(req, res, sheets) {
     }
 
     await ensureOverheadAlignmentAndMonth_(sheets, mId, reportMonthKey);
-    const data = await readAndParseOverheadExpenses_(sheets, mId, null);
+    const data = await readAndParseOverheadExpenses_(sheets, mId, null, clientName);
 
     return res.status(200).json({
       success: true,
@@ -6136,7 +6396,7 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
     if (supaCtx && supaCtx.masterMode === "supabase") {
       await syncVirtualMgmtRepGridNative(sheets, supaCtx.clientName, null, null);
     }
-    const refreshed = await readAndParseOverheadExpenses_(sheets, mId, checkboxOverrides || null);
+    const refreshed = await readAndParseOverheadExpenses_(sheets, mId, checkboxOverrides || null, clientName, targetBudgetSheetId);
 
     logPmaActivity(sheets, {
       automationCommanderSheetId: automationCommanderSheetId || DEFAULT_AC_SHEET_ID,
@@ -6233,7 +6493,7 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
       persistToSupabase: true,
     });
 
-    const refreshed = await readAndParseOverheadExpenses_(sheets, mId, null);
+    const refreshed = await readAndParseOverheadExpenses_(sheets, mId, null, supaCtx?.clientName || clientName, supaCtx?.clientSheetId || "");
     const effectiveMonthKey = reportMonthKey || monthStrToEomKey_(refreshed.currentMonthFormatted) || "";
     const finalisedAt = new Date().toISOString();
     let overheadFinalisedByMonth = {};

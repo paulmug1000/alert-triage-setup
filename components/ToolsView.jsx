@@ -58,24 +58,6 @@ export default function ToolsView({
   const [eomCashflowReconClient, setEomCashflowReconClient] = useState(managedClient?.clientName || "");
   const [eomRevenueCheckClient, setEomRevenueCheckClient] = useState(managedClient?.clientName || "");
 
-  useEffect(() => {
-    if (managedClient?.clientName) {
-      setEomDetailClient(managedClient.clientName);
-      setEomSubView("overview");
-      setEomPushOutgoingsClient(managedClient.clientName);
-      setEomCashflowReconClient(managedClient.clientName);
-      setEomRevenueCheckClient(managedClient.clientName);
-    } else {
-      setEomDetailClient(null);
-    }
-  }, [managedClient, setEomDetailClient]);
-
-  useEffect(() => {
-    if ((eomSubView === "reporting" || eomSubView === "time") && !isAdmin) {
-      setEomSubView("overview");
-    }
-  }, [eomSubView, isAdmin]);
-
   const {
     eomMonthKey, setEomMonthKey, eomAllTasks, setEomAllTasks, eomStatusOverrides, setEomStatusOverrides,
     eomStatusLoading, setEomStatusLoading, eomStatusError, setEomStatusError, eomDetailClient, setEomDetailClient,
@@ -108,6 +90,24 @@ export default function ToolsView({
     eomDraggedDefaultTaskId, setEomDraggedDefaultTaskId, eomDragOverDefaultTaskId, setEomDragOverDefaultTaskId,
     eomClientTasks
   } = useEoM(sessionId);
+
+  useEffect(() => {
+    if (managedClient?.clientName) {
+      setEomDetailClient(managedClient.clientName);
+      setEomSubView("overview");
+      setEomPushOutgoingsClient(managedClient.clientName);
+      setEomCashflowReconClient(managedClient.clientName);
+      setEomRevenueCheckClient(managedClient.clientName);
+    } else {
+      setEomDetailClient(null);
+    }
+  }, [managedClient, setEomDetailClient]);
+
+  useEffect(() => {
+    if ((eomSubView === "reporting" || eomSubView === "time") && !isAdmin) {
+      setEomSubView("overview");
+    }
+  }, [eomSubView, isAdmin]);
 
   const [eomNbExcludeModal, setEomNbExcludeModal] = useState(null); // { taskId, clientName, clientSheetId }
   const [eomNbExcludeMode, setEomNbExcludeMode] = useState("target"); // "target" | "both"

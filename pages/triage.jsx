@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import Head from "next/head";
 import { useRouter } from "next/router";
 import Spinner from "../components/Spinner";
-import { MonthViewSkeleton, PmaHomeSkeleton, PmaAlertsSkeleton, PmaActivitySkeleton, PmaTasksSkeleton, PmaInvoicesTableSkeleton, PmaJobsTableSkeleton, PmaOutgoingsTableSkeleton, PmaRetainersTableSkeleton, PmaSalariesSkeleton, PmaExpensesTableSkeleton, PmaNBToFindSkeleton, PmaIntegrationsSkeleton, PmaSetupOverviewSkeleton, BudgetSkeleton } from "../components/Skeleton";
+import { MonthViewSkeleton, PmaHomeSkeleton, PmaAlertsSkeleton, PmaActivitySkeleton, PmaTasksSkeleton, PmaInvoicesTableSkeleton, PmaJobsTableSkeleton, PmaOutgoingsTableSkeleton, PmaRetainersTableSkeleton, PmaSalariesSkeleton, PmaExpensesTableSkeleton, PmaNBToFindSkeleton, PmaVatSkeleton, PmaIntegrationsSkeleton, PmaSetupOverviewSkeleton, BudgetSkeleton } from "../components/Skeleton";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
 import PortalShell from "../components/portal/PortalShell";
@@ -26,6 +26,7 @@ const ExpensesView = dynamic(() => import("../components/ExpensesView"), { ssr: 
 const NBToFindView = dynamic(() => import("../components/NBToFindView"), { ssr: false, loading: () => <PmaNBToFindSkeleton /> });
 const BudgetView = dynamic(() => import("../components/BudgetView"), { ssr: false, loading: () => <BudgetSkeleton /> });
 const CashEditView = dynamic(() => import("../components/CashEditView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
+const VATView = dynamic(() => import("../components/VATView"), { ssr: false, loading: () => <PmaVatSkeleton /> });
 const ViewsScreen = dynamic(() => import("../components/ViewsScreen"), { ssr: false, loading: () => <MonthViewSkeleton /> });
 const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: () => <PmaActivitySkeleton /> });
 const ActivityView = dynamic(() => import("../components/ActivityView"), { loading: () => <PmaActivitySkeleton /> });
@@ -225,7 +226,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   const [alertAssignOverlay, setAlertAssignOverlay] = useState(null); // { mode: "invoices" | "outgoings", client }
 
   const EDIT_NAV_KEYS = useMemo(
-    () => new Set(["jobs", "outgoings", "passthrough", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash"]),
+    () => new Set(["jobs", "outgoings", "passthrough", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash", "vat"]),
     []
   );
 
@@ -871,6 +872,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     loadClients();
   });
   const handleNavCash = () => navigateWithGuard(() => { setActiveNav("cash"); loadClients(); });
+  const handleNavVat = () => navigateWithGuard(() => { setActiveNav("vat"); loadClients(); });
   const handleNavViews = (tabId = "fyPerformance") => navigateWithGuard(() => {
     fireOutgoingsPullIfPending();
     if (typeof tabId === "string" && tabId) {
@@ -1367,6 +1369,20 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       );
     }
 
+    // ── VAT SCREEN ──────────────────────────────────────────────────────────────
+    if (activeNav === "vat") {
+      return (
+        <VATView
+          allOutgoingsClients={allOutgoingsClients}
+          styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
+          initialClient={editStickyClient}
+          onSelectClient={setEditStickyClient}
+        />
+      );
+    }
+
     // ── TOOLS SCREEN ─────────────────────────────────────────────────────────────
     if (activeNav === "tools") {
       return (
@@ -1571,6 +1587,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onNBToFind={handleNavNBToFind}
         onBudget={handleNavBudget}
         onCash={handleNavCash}
+        onVat={handleNavVat}
         onViews={handleNavViews}
         onTools={handleNavTools}
         onIntegrations={handleNavIntegrations}

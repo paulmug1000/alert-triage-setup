@@ -727,6 +727,15 @@ export function AppGlobalsProvider({ children }) {
       return d;
     });
 
+    enqueue(`vat_${cleanClientId}`, 4, "vat", async () => {
+      const res = await fetch(
+        `/api/pma/vat?clientName=${encodeURIComponent(clientName)}&clientSheetId=${encodeURIComponent(cleanClientId)}`
+      );
+      const d = await res.json();
+      if (d.success) setCachedClientData(cleanClientId, "vat", d);
+      return d;
+    });
+
     // Start sequential processing loop after initial PMA page load has settled (1.8s)
     // so PMA Home Page alert counts and active user requests get 100% uncontested priority.
     scheduleNextQueueTask(1800);

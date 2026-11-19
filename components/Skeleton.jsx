@@ -1957,6 +1957,90 @@ export function PmaNBToFindSkeleton() {
 }
 
 /**
+ * Composite Skeleton for VATView.jsx.
+ */
+export function PmaVatSkeleton() {
+  const monthLabels = ["Apr 26", "May 26", "Jun 26", "Jul 26", "Aug 26", "Sep 26", "Oct 26", "Nov 26", "Dec 26", "Jan 27", "Feb 27", "Mar 27"];
+  return (
+    <div style={{ marginTop: "8px" }}>
+      {/* Settings summary strip */}
+      <div
+        style={{
+          background: "#ffffff",
+          border: "1px solid #cbd5e1",
+          borderRadius: "8px",
+          padding: "12px 18px",
+          marginBottom: "18px",
+          display: "flex",
+          gap: "24px",
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        <Skeleton width="150px" height="14px" />
+        <Skeleton width="240px" height="14px" />
+        <Skeleton width="130px" height="14px" />
+      </div>
+
+      {[0, 1].map((secIdx) => (
+        <div
+          key={secIdx}
+          style={{
+            background: "#ffffff",
+            borderRadius: "8px",
+            border: "1px solid #cbd5e1",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            overflow: "hidden",
+            marginBottom: "20px",
+          }}
+        >
+          <div style={{ padding: "12px 16px", background: "#f8fafc", borderBottom: "1px solid #cbd5e1", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <Skeleton width="210px" height="15px" />
+            <Skeleton width="70px" height="12px" />
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+              <thead>
+                <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #cbd5e1" }}>
+                  <th style={{ padding: "10px 14px", textAlign: "left", width: "240px" }}>
+                    <Skeleton width="90px" height="13px" />
+                  </th>
+                  {monthLabels.map((_, i) => (
+                    <th key={i} style={{ padding: "10px 10px", width: "80px", textAlign: "right" }}>
+                      <Skeleton width="46px" height="13px" style={{ marginLeft: "auto" }} />
+                    </th>
+                  ))}
+                  <th style={{ padding: "10px 14px", width: "95px", textAlign: "right" }}>
+                    <Skeleton width="60px" height="13px" style={{ marginLeft: "auto" }} />
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from({ length: 6 }).map((_, rIdx) => (
+                  <tr key={rIdx} style={{ borderBottom: rIdx === 5 ? "none" : "1px solid #f1f5f9" }}>
+                    <td style={{ padding: "11px 14px" }}>
+                      <Skeleton width={rIdx >= 4 ? "140px" : "185px"} height="13px" />
+                    </td>
+                    {monthLabels.map((_, cIdx) => (
+                      <td key={cIdx} style={{ padding: "11px 10px", textAlign: "right" }}>
+                        <Skeleton width="50px" height="13px" style={{ marginLeft: "auto" }} />
+                      </td>
+                    ))}
+                    <td style={{ padding: "11px 14px", textAlign: "right" }}>
+                      <Skeleton width="58px" height="13px" style={{ marginLeft: "auto" }} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
  * Full-page PMA shell + skeleton used when transitioning immediately from Pulse (/pulse) to PMA (/pma).
  */
 export function PmaTransitionSkeleton({ user = null, targetNav = "home", clientName = "" }) {

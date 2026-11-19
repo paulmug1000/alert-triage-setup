@@ -98,6 +98,7 @@ function extractSheetIdFromCacheKey_(key) {
   }
   if (s.startsWith("pma_expenses_")) return s.slice("pma_expenses_".length);
   if (s.startsWith("pma_nbtofind_")) return s.slice("pma_nbtofind_".length);
+  if (s.startsWith("pma_vat_")) return s.slice("pma_vat_".length);
   if (s.startsWith("pma_cash_")) return s.slice("pma_cash_".length);
   if (s.startsWith("portal_cash_")) return s.slice("portal_cash_".length);
   if (s.startsWith("salaries_data:")) return s.slice("salaries_data:".length);
@@ -389,7 +390,8 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
         `pulse:pma:direct_costs_jobs:${cleanClientId}*`,
         `pulse:portal:*:${cleanClientId}*`,
         `pulse:view_data:${cleanClientId}:*`,
-        `pma_nbtofind_${cleanClientId}*`
+        `pma_nbtofind_${cleanClientId}*`,
+        `pma_vat_${cleanClientId}*`
       );
       exactKeys.add(`pulse:pma:jobs:${cleanClientId}:All`);
       exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Confirmed`);
@@ -399,6 +401,7 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
       exactKeys.add(`pulse:pma:direct_costs_jobs:${cleanClientId}:all`);
       exactKeys.add(`pulse:pma:direct_costs_jobs:${cleanClientId}:active`);
       exactKeys.add(`pma_nbtofind_${cleanClientId}`);
+      exactKeys.add(`pma_vat_${cleanClientId}`);
       addPortalKeys(cleanClientId);
       addViewKeys(cleanClientId);
     }
@@ -409,13 +412,15 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
         `pulse:portal:keydata:${cleanClientId}*`,
         `pulse:portal:key-data:${cleanClientId}*`,
         `pulse:portal:payload:${cleanClientId}*`,
-        `pulse:portal:performance:${cleanClientId}*`
+        `pulse:portal:performance:${cleanClientId}*`,
+        `pma_vat_${cleanClientId}*`
       );
       exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:all`);
       exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:active`);
       exactKeys.add(`pulse:pma:jobs:${cleanClientId}:All`);
       exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Confirmed`);
       exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Pipeline`);
+      exactKeys.add(`pma_vat_${cleanClientId}`);
       addPortalKeys(cleanClientId);
     }
     if (allScopes || scopes.includes("outgoings") || scopes.includes("expenses")) {
@@ -428,6 +433,7 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
         `pulse:portal:payload:${cleanClientId}*`,
         `pulse:portal:performance:${cleanClientId}*`,
         `pma_expenses_${cleanClientId}*`,
+        `pma_vat_${cleanClientId}*`,
         `salaries_data:${cleanClientId}*`
       );
       exactKeys.add(`pulse:pma:outgoings:${cleanClientId}`);
@@ -437,6 +443,7 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
       exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Confirmed`);
       exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Pipeline`);
       exactKeys.add(`pma_expenses_${cleanClientId}`);
+      exactKeys.add(`pma_vat_${cleanClientId}`);
       exactKeys.add(`salaries_data:${cleanClientId}`);
       addPortalKeys(cleanClientId);
     }
@@ -448,7 +455,8 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
         `pulse:portal:keydata:${cleanClientId}*`,
         `pulse:portal:key-data:${cleanClientId}*`,
         `pulse:portal:payload:${cleanClientId}*`,
-        `pulse:portal:performance:${cleanClientId}*`
+        `pulse:portal:performance:${cleanClientId}*`,
+        `pma_vat_${cleanClientId}*`
       );
       exactKeys.add(`pulse:pma:retainer_jobs:${cleanClientId}`);
       exactKeys.add(`pulse:pma:jobs:${cleanClientId}:All`);
@@ -456,6 +464,7 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
       exactKeys.add(`pulse:pma:jobs:${cleanClientId}:Pipeline`);
       exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:all`);
       exactKeys.add(`pulse:pma:invoice_jobs:${cleanClientId}:active`);
+      exactKeys.add(`pma_vat_${cleanClientId}`);
       addPortalKeys(cleanClientId);
     }
     if (allScopes || scopes.includes("views")) {
@@ -464,10 +473,12 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
         `pulse:portal:*:${cleanClientId}*`,
         `pma_expenses_${cleanClientId}*`,
         `pma_nbtofind_${cleanClientId}*`,
+        `pma_vat_${cleanClientId}*`,
         `salaries_data:${cleanClientId}*`
       );
       exactKeys.add(`pma_expenses_${cleanClientId}`);
       exactKeys.add(`pma_nbtofind_${cleanClientId}`);
+      exactKeys.add(`pma_vat_${cleanClientId}`);
       exactKeys.add(`salaries_data:${cleanClientId}`);
       addViewKeys(cleanClientId);
       addPortalKeys(cleanClientId);

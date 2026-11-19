@@ -182,6 +182,30 @@ export function formatDateDMonY(ym) {
   return `1-${MONTH_ABBR[ym.month - 1]}-${ym.year}`;
 }
 
+/**
+ * Formats a Google Sheets / Excel serial date number (e.g. 46296 or "46296") as "Oct 26" (or "Oct 2026" if useLong).
+ * Leaves non-serial strings untouched.
+ */
+export function formatSerialDateIfNumeric(val, useLong = false) {
+  if (val === null || val === undefined || val === "") return "";
+  if (typeof val === "number") {
+    if (Number.isFinite(val) && val > 25000 && val < 80000) {
+      const ym = parseMonthInfo(val);
+      if (ym) return useLong ? formatLongMonth(ym) : formatShortMonth(ym);
+    }
+    return String(val);
+  }
+  const s = String(val).trim();
+  if (/^\d{5}(?:\.\d+)?$/.test(s)) {
+    const num = Number(s);
+    if (num > 25000 && num < 80000) {
+      const ym = parseMonthInfo(num);
+      if (ym) return useLong ? formatLongMonth(ym) : formatShortMonth(ym);
+    }
+  }
+  return s;
+}
+
 export function ymToSerialFirstOfMonth(ym) {
   if (!ym) return 0;
   const utcMs = Date.UTC(ym.year, ym.month - 1, 1);
@@ -602,16 +626,21 @@ export async function computeNativeMgmtRepForClient({
   // ============================================================================
   // SECTION C: BUSINESS PERFORMANCE (U106:AA137) & CURR/NEXT MONTH (U502:AA533)
   // ============================================================================
-  const populateMonthVsBudgetBlock = (startRow1, dashCol1) => {
-    if (dashCol1 <= 0) return;
-    const mHeader = getCell(dashGrid, 1, dashCol1);
-    const statusHeader = getCell(dashGrid, 2, dashCol1);
+  const populateMonthVsBudgetBlock = (startRow1, dashCol1, fallbackYm = null) => {
+    const rawMHeader = dashCol1 > 0 ? getCell(dashGrid, 1, dashCol1) : "";
+    const mHeader =
+      formatSerialDateIfNumeric(rawMHeader) ||
+      (fallbackYm ? formatShortMonth(fallbackYm) : "");
+    const statusLabel = startRow1 === 106 ? "Actual" : "Forecast";
     const sectionHeader = getCell(dashGrid, 3, 1);
 
-    setCell(startRow1, 22, mHeader); // Col V (22)
+    setCell(startRow1, 21, mHeader); // Col U (21): Month header e.g. "Oct 26"
+    setCell(startRow1, 22, statusLabel); // Col V (22): "Actual" / "Forecast"
     setCell(startRow1 + 1, 21, getCell(dashGrid, 2, 1)); // Col U (21)
-    setCell(startRow1 + 1, 22, statusHeader);
+    setCell(startRow1 + 1, 22, ""); // Col V (22): empty spacer row matching MgmtRep
     setCell(startRow1 + 2, 21, sectionHeader);
+
+    if (dashCol1 <= 0) return;
 
     // Rows dashRow 4..32 map to startRow1 + 3 .. startRow1 + 31
     for (let dRow = 4; dRow <= 32; dRow++) {
@@ -665,8 +694,8 @@ export async function computeNativeMgmtRepForClient({
     }
   };
 
-  populateMonthVsBudgetBlock(106, G2); // [BusinessPerformance] U106:AA137
-  populateMonthVsBudgetBlock(502, O2); // [CurrMonth] (Next month forecast) U502:AA533
+  populateMonthVsBudgetBlock(106, G2, targetYm); // [BusinessPerformance] U106:AA137
+  populateMonthVsBudgetBlock(502, O2, nextMonthYm); // [CurrMonth] (Next month forecast) U502:AA533
 
   // ============================================================================
   // SECTION D: OVERHEADS (A371:F493 & AB371:AG493)
@@ -679,7 +708,7 @@ export async function computeNativeMgmtRepForClient({
   //   AB372 = {FILTER(A372:C493, F372:F493=TRUE); {"Total", SUMIF(F372:F493,TRUE,B372:B493), SUMIF(F372:F493,TRUE,C372:C493)}}
   // ============================================================================
   if (G2 > 0) {
-    const mHeader = getCell(outgoingsGrid, 1, G2) || formatShortMonth(targetYm);
+    const mHeader = formatSerialDateIfNumeric(getCell(outgoingsGrid, 1, G2)) || formatShortMonth(targetYm);
     setCell(371, 2, mHeader);
     setCell(371, 29, mHeader); // Col AC (29)
     for (let c = 1; c <= 5; c++) setCell(370, c, "");
@@ -856,7 +885,12 @@ export async function computeNativeMgmtRepForClient({
 
       if (offset < ytdMonthsCount) {
         setCell(542, col1, dashCol);
-        setCell(544, col1, getCell(dashGrid, 1, dashCol));
+        setCell(
+          544,
+          col1,
+          formatSerialDateIfNumeric(getCell(dashGrid, 1, dashCol)) ||
+          formatShortMonth(addMonths(currFyStartYm, offset))
+        );
         setCell(545, col1, getCell(dashGrid, 2, dashCol));
       } else if (offset === ytdMonthsCount) {
         setCell(542, col1, "");
@@ -966,7 +1000,12 @@ export async function computeNativeMgmtRepForClient({
     for (let m = 0; m < 12; m++) {
       const c1 = 2 + m;
       const dCol = J2 + m;
-      setCell(643, c1, getCell(dashGrid, 1, dCol));
+      setCell(
+        643,
+        c1,
+        formatSerialDateIfNumeric(getCell(dashGrid, 1, dCol)) ||
+        formatShortMonth(addMonths(currFyStartYm, m))
+      );
       setCell(644, c1, getCell(dashGrid, 2, dCol));
     }
     setCell(643, 14, "");
@@ -1029,7 +1068,12 @@ export async function computeNativeMgmtRepForClient({
       for (let m = 0; m < 12; m++) {
         const c1 = 35 + m; // AI (35) .. AT (46)
         const dCol = nextFyDashCol1 + m;
-        setCell(643, c1, getCell(dashGrid, 1, dCol));
+        setCell(
+          643,
+          c1,
+          formatSerialDateIfNumeric(getCell(dashGrid, 1, dCol)) ||
+          formatShortMonth(addMonths(nextFyStartYm, m))
+        );
         setCell(644, c1, getCell(dashGrid, 2, dCol));
       }
       setCell(643, 48, "FY total");
@@ -1041,6 +1085,10 @@ export async function computeNativeMgmtRepForClient({
         }
         setCell(mRow, 48, getCell(dashGrid, dRow, nextFyDashCol1 + 13));
       }
+    } else {
+      for (let m = 0; m < 12; m++) {
+        setCell(643, 35 + m, formatShortMonth(addMonths(nextFyStartYm, m)));
+      }
     }
   }
 
@@ -1051,7 +1099,9 @@ export async function computeNativeMgmtRepForClient({
     for (let m = 0; m < 12; m++) {
       const c1 = 2 + m; // B..M
       const dCol = J2 + m;
-      const mHdr = getCell(dashGrid, 1, dCol);
+      const mHdr =
+        formatSerialDateIfNumeric(getCell(dashGrid, 1, dCol)) ||
+        formatShortMonth(addMonths(currFyStartYm, m));
       const tRaw = getCell(dashGrid, 88, dCol);
       const aRaw = getCell(dashGrid, 89, dCol);
       const dRaw = getCell(dashGrid, 90, dCol);
@@ -1108,7 +1158,12 @@ export async function computeNativeMgmtRepForClient({
     for (let i = 0; i < 7; i++) {
       const c1 = 2 + i; // B..H
       const cashCol = startCashCol1 + i;
-      setCell(831, c1, getCell(cashGrid, 1, cashCol));
+      setCell(
+        831,
+        c1,
+        formatSerialDateIfNumeric(getCell(cashGrid, 1, cashCol)) ||
+        formatShortMonth(addMonths(targetYm, i + 1))
+      );
       setCell(832, c1, getCell(cashGrid, 2, cashCol));
       setCell(835, c1, getCell(cashGrid, 4, cashCol));  // Excl pipeline: Opening balance (row 835)
       setCell(836, c1, getCell(cashGrid, 32, cashCol)); // Excl pipeline: Net cash movement (row 836)
@@ -1874,7 +1929,8 @@ export function buildNativeStyledTables(mgmtGrid = [], chartRefsList = []) {
       for (let r0 = startRow0; r0 <= endRow0; r0++) {
         const rowCells = [];
         for (let c0 = startCol0; c0 <= endCol0; c0++) {
-          const rawText = String(mgmtGrid?.[r0]?.[c0] ?? "");
+          const rawCell = mgmtGrid?.[r0]?.[c0] ?? "";
+          const rawText = r0 === startRow0 ? formatSerialDateIfNumeric(rawCell) : String(rawCell);
           const text = c0 === startCol0 ? normalizeReportLabel(rawText) : rawText;
           // Lookup base style (for Overheads30..60 rows > 431, inherit from row 372)
           const styleLookupRow0 = r0 > 430 && r0 <= 492 && c0 >= 27 && c0 <= 32 ? 371 : r0;
@@ -2355,7 +2411,7 @@ export async function updateGoogleSlidesPresentationNative({
     sb.storage
       .from(EOM_CHART_STORAGE_BUCKET)
       .remove(uploadedChartPaths)
-      .catch(() => {});
+      .catch(() => { });
   }
 
   return {

@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS pulse_private.cron_secrets (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE pulse_private.cron_secrets ENABLE ROW LEVEL SECURITY;
+
 REVOKE ALL ON TABLE pulse_private.cron_secrets FROM PUBLIC, anon, authenticated;
 GRANT ALL ON TABLE pulse_private.cron_secrets TO postgres, service_role;
 

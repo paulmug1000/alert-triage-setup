@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 
 const TEXT_COLOR_SWATCHES = [
@@ -37,6 +37,69 @@ function idxToColLetters(idx0) {
   return out;
 }
 
+function rgbObjToHex(c) {
+  if (!c || (c.red === undefined && c.green === undefined && c.blue === undefined)) return null;
+  const r = Math.round((c.red ?? 0) * 255);
+  const g = Math.round((c.green ?? 0) * 255);
+  const b = Math.round((c.blue ?? 0) * 255);
+  return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+const DEFAULT_CELL_STYLE = {
+  bg: "#ffffff",
+  fg: "#000000",
+  bold: false,
+  italic: false,
+  underline: false,
+  fontSize: 10,
+  fontFamily: "Arial",
+  align: "",
+  valign: "MIDDLE",
+};
+
+function normalizeBlockRows(blocks = []) {
+  return (blocks || []).map((blk) => {
+    const rawRows = Array.isArray(blk?.rows) ? blk.rows : [];
+    const maxCols = rawRows.reduce((m, row) => Math.max(m, Array.isArray(row) ? row.length : 0), 0);
+    if (maxCols === 0) return blk;
+    const hasRagged = rawRows.some((row) => (Array.isArray(row) ? row.length : 0) < maxCols);
+    if (!hasRagged) return blk;
+    const normalizedRows = rawRows.map((row) => {
+      const arr = Array.isArray(row) ? row : [];
+      if (arr.length >= maxCols) return arr;
+      const padded = [...arr];
+      while (padded.length < maxCols) {
+        padded.push({ ...DEFAULT_CELL_STYLE });
+      }
+      return padded;
+    });
+    return { ...blk, rows: normalizedRows };
+  });
+}
+
+function describeCfRule(cf) {
+  const br = cf?.booleanRule;
+  if (!br?.condition) return { conditionText: "Unknown rule", bg: null, fg: null, bold: null };
+  const type = br.condition.type || "";
+  const vals = (br.condition.values || []).map((v) => v.userEnteredValue ?? "");
+  let conditionText = type;
+  if (type === "NOT_BLANK") conditionText = "Cell is not empty";
+  else if (type === "BLANK") conditionText = "Cell is empty";
+  else if (type === "TEXT_CONTAINS") conditionText = `Text contains "${vals[0] || ""}"`;
+  else if (type === "NUMBER_LESS") conditionText = `Value < ${vals[0]}`;
+  else if (type === "NUMBER_LESS_THAN_EQ") conditionText = `Value <= ${vals[0]}`;
+  else if (type === "NUMBER_GREATER") conditionText = `Value > ${vals[0]}`;
+  else if (type === "NUMBER_GREATER_THAN_EQ") conditionText = `Value >= ${vals[0]}`;
+  else if (type === "NUMBER_BETWEEN") conditionText = `Value between ${vals[0]} and ${vals[1]}`;
+  else if (type === "CUSTOM_FORMULA") conditionText = `Formula: ${vals[0] || ""}`;
+
+  const fmt = br.format || {};
+  const bg = rgbObjToHex(fmt.backgroundColorStyle?.rgbColor || fmt.backgroundColor);
+  const fg = rgbObjToHex(fmt.textFormat?.foregroundColorStyle?.rgbColor || fmt.textFormat?.foregroundColor);
+  const bold = typeof fmt.textFormat?.bold === "boolean" ? fmt.textFormat.bold : null;
+  return { conditionText, bg, fg, bold };
+}
+
 export default function ReportStyleEditorModal({
   isOpen,
   onClose,
@@ -58,9 +121,44 @@ export default function ReportStyleEditorModal({
 
   const [activeRange, setActiveRange] = useState("");
   const [selectedCells, setSelectedCells] = useState(() => new Set(["0:0"]));
+  const selectedCellsRef = useRef(selectedCells);
   const [anchorCell, setAnchorCell] = useState({ r: 0, c: 0 });
+  const anchorCellRef = useRef({ r: 0, c: 0 });
+  const focusCellRef = useRef({ r: 0, c: 0 });
+  const gridContainerRef = useRef(null);
   const [copiedStyle, setCopiedStyle] = useState(null);
   const [showCoordinates, setShowCoordinates] = useState(false);
+
+  const backdropMouseDownRef = useRef(false);
+  const dragStateRef = useRef({
+    active: false,
+    mode: "cell", // 'cell' | 'row' | 'col'
+    anchorR: 0,
+    anchorC: 0,
+    baseSelection: new Set(),
+  });
+
+  const applySelectedCells = useCallback((nextSet) => {
+    selectedCellsRef.current = nextSet;
+    setSelectedCells(nextSet);
+  }, []);
+
+  const updateAnchor = useCallback((nextAnchor) => {
+    anchorCellRef.current = nextAnchor;
+    setAnchorCell(nextAnchor);
+  }, []);
+
+  useEffect(() => {
+    selectedCellsRef.current = selectedCells;
+  }, [selectedCells]);
+
+  useEffect(() => {
+    const stopDrag = () => {
+      dragStateRef.current.active = false;
+    };
+    window.addEventListener("mouseup", stopDrag);
+    return () => window.removeEventListener("mouseup", stopDrag);
+  }, []);
 
   const loadStyles = useCallback(async () => {
     setLoading(true);
@@ -78,7 +176,7 @@ export default function ReportStyleEditorModal({
       const data = await resp.json();
       if (!data.success) throw new Error(data.error || "Failed to load template formatting");
 
-      const loadedBlocks = data.styles?.blocks || [];
+      const loadedBlocks = normalizeBlockRows(data.styles?.blocks || []);
       setBlocks(loadedBlocks);
       setOriginalBlocksJson(JSON.stringify(loadedBlocks));
       setConditionalFormats(data.styles?.conditionalFormats || []);
@@ -91,14 +189,15 @@ export default function ReportStyleEditorModal({
           loadedBlocks.some((b) => b.range === prev) ? prev : loadedBlocks[0].range
         );
       }
-      setSelectedCells(new Set(["0:0"]));
-      setAnchorCell({ r: 0, c: 0 });
+      applySelectedCells(new Set(["0:0"]));
+      updateAnchor({ r: 0, c: 0 });
+      focusCellRef.current = { r: 0, c: 0 };
     } catch (err) {
       setError(err.message || "Failed to load snapshot formatting");
     } finally {
       setLoading(false);
     }
-  }, [automationCommanderSheetId]);
+  }, [automationCommanderSheetId, applySelectedCells, updateAnchor]);
 
   useEffect(() => {
     if (isOpen) {
@@ -121,8 +220,15 @@ export default function ReportStyleEditorModal({
     () => blocks.findIndex((b) => b.range === activeRange),
     [blocks, activeRange]
   );
+  const activeBlockIndexRef = useRef(activeBlockIndex);
+  activeBlockIndexRef.current = activeBlockIndex;
+
   const activeBlock = activeBlockIndex >= 0 ? blocks[activeBlockIndex] : null;
   const activeSampleRows = activeBlock ? sampleValuesByRange[activeBlock.range] || [] : [];
+  const activeMaxCols = useMemo(
+    () => (activeBlock?.rows || []).reduce((m, row) => Math.max(m, row?.length || 0), 0),
+    [activeBlock]
+  );
 
   const originalBlocksParsed = useMemo(() => {
     try {
@@ -173,78 +279,307 @@ export default function ReportStyleEditorModal({
     return { r: r || 0, c: c || 0 };
   }, [selectedCells]);
 
+  const selectedCellCfRules = useMemo(() => {
+    if (!activeBlock || selectedCells.size === 0) return [];
+    const selectedSheetCoords = [...selectedCells].map((k) => {
+      const [r, c] = k.split(":").map(Number);
+      return { r0: activeBlock.startRow + r, c0: activeBlock.startCol + c };
+    });
+    const matched = [];
+    conditionalFormats.forEach((cf, idx) => {
+      const applies = (cf.ranges || []).some((rg) =>
+        selectedSheetCoords.some(
+          ({ r0, c0 }) =>
+            r0 >= (rg.startRowIndex ?? 0) &&
+            r0 < (rg.endRowIndex ?? 0) &&
+            c0 >= (rg.startColumnIndex ?? 0) &&
+            c0 < (rg.endColumnIndex ?? 0)
+        )
+      );
+      if (applies) {
+        matched.push({ index: idx + 1, ...describeCfRule(cf) });
+      }
+    });
+    return matched;
+  }, [activeBlock, selectedCells, conditionalFormats]);
+
   const primaryCellStyle = activeBlock?.rows?.[primaryCoords.r]?.[primaryCoords.c] || {
-    bg: "#ffffff",
-    fg: "#000000",
-    bold: false,
-    italic: false,
-    underline: false,
-    fontSize: 10,
-    fontFamily: "Arial",
-    align: "",
-    valign: "MIDDLE",
+    ...DEFAULT_CELL_STYLE,
   };
+
+  const selectionSummary = useMemo(() => {
+    if (!activeBlock || selectedCells.size <= 1) {
+      return {
+        isMixedBold: false,
+        isMixedItalic: false,
+        isMixedUnderline: false,
+        isMixedAlign: false,
+        isMixedFontSize: false,
+        isMixedFg: false,
+        isMixedBg: false,
+      };
+    }
+    const styles = [];
+    for (const key of selectedCells) {
+      const [r, c] = key.split(":").map(Number);
+      const st = activeBlock.rows?.[r]?.[c];
+      if (st) styles.push(st);
+    }
+    if (styles.length <= 1) {
+      return {
+        isMixedBold: false,
+        isMixedItalic: false,
+        isMixedUnderline: false,
+        isMixedAlign: false,
+        isMixedFontSize: false,
+        isMixedFg: false,
+        isMixedBg: false,
+      };
+    }
+    const first = styles[0];
+    return {
+      isMixedBold: styles.some((s) => Boolean(s.bold) !== Boolean(first.bold)),
+      isMixedItalic: styles.some((s) => Boolean(s.italic) !== Boolean(first.italic)),
+      isMixedUnderline: styles.some((s) => Boolean(s.underline) !== Boolean(first.underline)),
+      isMixedAlign: styles.some(
+        (s) => String(s.align || "").toUpperCase() !== String(first.align || "").toUpperCase()
+      ),
+      isMixedFontSize: styles.some((s) => (s.fontSize || 10) !== (first.fontSize || 10)),
+      isMixedFg: styles.some((s) => (s.fg || "#000000").toLowerCase() !== (first.fg || "#000000").toLowerCase()),
+      isMixedBg: styles.some((s) => (s.bg || "#ffffff").toLowerCase() !== (first.bg || "#ffffff").toLowerCase()),
+    };
+  }, [activeBlock, selectedCells]);
 
   const handleSelectBlock = (range) => {
+    dragStateRef.current.active = false;
     setActiveRange(range);
-    setSelectedCells(new Set(["0:0"]));
-    setAnchorCell({ r: 0, c: 0 });
+    applySelectedCells(new Set(["0:0"]));
+    updateAnchor({ r: 0, c: 0 });
+    focusCellRef.current = { r: 0, c: 0 };
   };
 
-  const handleCellClick = (r, c, e) => {
-    if (e.shiftKey) {
-      const rMin = Math.min(anchorCell.r, r);
-      const rMax = Math.max(anchorCell.r, r);
-      const cMin = Math.min(anchorCell.c, c);
-      const cMax = Math.max(anchorCell.c, c);
-      const next = new Set(e.ctrlKey || e.metaKey ? selectedCells : []);
-      for (let rr = rMin; rr <= rMax; rr++) {
-        for (let cc = cMin; cc <= cMax; cc++) {
-          next.add(`${rr}:${cc}`);
-        }
-      }
-      setSelectedCells(next);
-    } else if (e.ctrlKey || e.metaKey) {
-      const next = new Set(selectedCells);
-      const key = `${r}:${c}`;
-      if (next.has(key) && next.size > 1) next.delete(key);
-      else next.add(key);
-      setSelectedCells(next);
-      setAnchorCell({ r, c });
-    } else {
-      setSelectedCells(new Set([`${r}:${c}`]));
-      setAnchorCell({ r, c });
-    }
-  };
-
-  const handleSelectRow = (r, e) => {
-    if (!activeBlock) return;
-    const colsCount = activeBlock.rows?.[r]?.length || 0;
-    const next = new Set(e.shiftKey || e.ctrlKey || e.metaKey ? selectedCells : []);
-    const rStart = e.shiftKey ? Math.min(anchorCell.r, r) : r;
-    const rEnd = e.shiftKey ? Math.max(anchorCell.r, r) : r;
-    for (let rr = rStart; rr <= rEnd; rr++) {
-      for (let cc = 0; cc < colsCount; cc++) {
+  const buildRectSelection = useCallback((r1, c1, r2, c2, base = null) => {
+    const next = new Set(base || []);
+    const rMin = Math.min(r1, r2);
+    const rMax = Math.max(r1, r2);
+    const cMin = Math.min(c1, c2);
+    const cMax = Math.max(c1, c2);
+    for (let rr = rMin; rr <= rMax; rr++) {
+      for (let cc = cMin; cc <= cMax; cc++) {
         next.add(`${rr}:${cc}`);
       }
     }
-    setSelectedCells(next);
-    if (!e.shiftKey) setAnchorCell({ r, c: 0 });
-  };
+    return next;
+  }, []);
 
-  const handleSelectCol = (c, e) => {
-    if (!activeBlock) return;
+  useEffect(() => {
+    if (!isOpen || loading || !activeBlock) return undefined;
     const rowsCount = activeBlock.rows?.length || 0;
-    const next = new Set(e.shiftKey || e.ctrlKey || e.metaKey ? selectedCells : []);
-    const cStart = e.shiftKey ? Math.min(anchorCell.c, c) : c;
-    const cEnd = e.shiftKey ? Math.max(anchorCell.c, c) : c;
-    for (let rr = 0; rr < rowsCount; rr++) {
-      for (let cc = cStart; cc <= cEnd; cc++) {
-        next.add(`${rr}:${cc}`);
+    const colsCount = activeMaxCols || 0;
+    if (rowsCount === 0 || colsCount === 0) return undefined;
+
+    const handleKeyDown = (e) => {
+      const deltaMap = {
+        ArrowUp: [-1, 0],
+        ArrowDown: [1, 0],
+        ArrowLeft: [0, -1],
+        ArrowRight: [0, 1],
+      };
+      const delta = deltaMap[e.key];
+      if (!delta) return;
+
+      const activeEl = document.activeElement;
+      const tag = activeEl?.tagName;
+      if (
+        tag === "SELECT" ||
+        tag === "TEXTAREA" ||
+        (tag === "INPUT" && activeEl?.type !== "checkbox") ||
+        activeEl?.isContentEditable
+      ) {
+        return;
       }
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      e.preventDefault();
+
+      // Clear focus from toolbar button/checkbox if one was active so visual focus stays on the grid
+      if (activeEl && activeEl !== document.body && typeof activeEl.blur === "function") {
+        activeEl.blur();
+      }
+
+      const [dr, dc] = delta;
+      const curFocus = focusCellRef.current || anchorCellRef.current || { r: 0, c: 0 };
+      const nr = Math.max(0, Math.min(rowsCount - 1, curFocus.r + dr));
+      const nc = Math.max(0, Math.min(colsCount - 1, curFocus.c + dc));
+
+      focusCellRef.current = { r: nr, c: nc };
+      if (e.shiftKey) {
+        const anc = anchorCellRef.current || { r: 0, c: 0 };
+        applySelectedCells(buildRectSelection(anc.r, anc.c, nr, nc));
+      } else {
+        updateAnchor({ r: nr, c: nc });
+        applySelectedCells(new Set([`${nr}:${nc}`]));
+      }
+
+      const cellEl = gridContainerRef.current?.querySelector(`[data-cell-key="${nr}:${nc}"]`);
+      if (cellEl && typeof cellEl.scrollIntoView === "function") {
+        cellEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, loading, activeBlock, activeMaxCols, applySelectedCells, updateAnchor, buildRectSelection]);
+
+  const handleCellMouseDown = (r, c, e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    if (document.activeElement && document.activeElement !== document.body && typeof document.activeElement.blur === "function") {
+      document.activeElement.blur();
     }
-    setSelectedCells(next);
-    if (!e.shiftKey) setAnchorCell({ r: 0, c });
+    const isAdditive = e.ctrlKey || e.metaKey;
+    if (e.shiftKey) {
+      const base = isAdditive ? new Set(selectedCellsRef.current) : new Set();
+      applySelectedCells(buildRectSelection(anchorCell.r, anchorCell.c, r, c, base));
+      focusCellRef.current = { r, c };
+      dragStateRef.current = {
+        active: true,
+        mode: "cell",
+        anchorR: anchorCell.r,
+        anchorC: anchorCell.c,
+        baseSelection: base,
+      };
+      return;
+    }
+    if (isAdditive) {
+      const next = new Set(selectedCellsRef.current);
+      const key = `${r}:${c}`;
+      const wasSelected = next.has(key);
+      if (wasSelected && next.size > 1) {
+        next.delete(key);
+        applySelectedCells(next);
+        dragStateRef.current = {
+          active: false,
+          mode: "cell",
+          anchorR: r,
+          anchorC: c,
+          baseSelection: next,
+        };
+      } else {
+        next.add(key);
+        applySelectedCells(next);
+        updateAnchor({ r, c });
+        focusCellRef.current = { r, c };
+        dragStateRef.current = {
+          active: true,
+          mode: "cell",
+          anchorR: r,
+          anchorC: c,
+          baseSelection: new Set(next),
+        };
+      }
+      return;
+    }
+    applySelectedCells(new Set([`${r}:${c}`]));
+    updateAnchor({ r, c });
+    focusCellRef.current = { r, c };
+    dragStateRef.current = {
+      active: true,
+      mode: "cell",
+      anchorR: r,
+      anchorC: c,
+      baseSelection: new Set(),
+    };
+  };
+
+  const handleCellMouseEnter = (r, c, e) => {
+    const drag = dragStateRef.current;
+    if (!drag.active || !activeBlock) return;
+    if (e && typeof e.buttons === "number" && (e.buttons & 1) === 0) {
+      drag.active = false;
+      return;
+    }
+    focusCellRef.current = { r, c };
+    if (drag.mode === "row") {
+      applySelectedCells(
+        buildRectSelection(drag.anchorR, 0, r, Math.max(0, activeMaxCols - 1), drag.baseSelection)
+      );
+      return;
+    }
+    if (drag.mode === "col") {
+      const rowsCount = activeBlock.rows?.length || 0;
+      applySelectedCells(
+        buildRectSelection(0, drag.anchorC, Math.max(0, rowsCount - 1), c, drag.baseSelection)
+      );
+      return;
+    }
+    applySelectedCells(buildRectSelection(drag.anchorR, drag.anchorC, r, c, drag.baseSelection));
+  };
+
+  const handleRowMouseDown = (r, e) => {
+    if (e.button !== 0 || !activeBlock) return;
+    e.preventDefault();
+    const colsCount = activeMaxCols || activeBlock.rows?.[r]?.length || 0;
+    const isAdditive = e.ctrlKey || e.metaKey;
+    const base = isAdditive ? new Set(selectedCellsRef.current) : new Set();
+    const startR = e.shiftKey ? anchorCell.r : r;
+    applySelectedCells(buildRectSelection(startR, 0, r, Math.max(0, colsCount - 1), base));
+    if (!e.shiftKey) updateAnchor({ r, c: 0 });
+    focusCellRef.current = { r, c: Math.max(0, colsCount - 1) };
+    dragStateRef.current = {
+      active: true,
+      mode: "row",
+      anchorR: startR,
+      anchorC: 0,
+      baseSelection: base,
+    };
+  };
+
+  const handleRowMouseEnter = (r, e) => {
+    const drag = dragStateRef.current;
+    if (!drag.active || drag.mode !== "row" || !activeBlock) return;
+    if (e && typeof e.buttons === "number" && (e.buttons & 1) === 0) {
+      drag.active = false;
+      return;
+    }
+    const colsCount = activeMaxCols || activeBlock.rows?.[r]?.length || 0;
+    focusCellRef.current = { r, c: Math.max(0, colsCount - 1) };
+    applySelectedCells(
+      buildRectSelection(drag.anchorR, 0, r, Math.max(0, colsCount - 1), drag.baseSelection)
+    );
+  };
+
+  const handleColMouseDown = (c, e) => {
+    if (e.button !== 0 || !activeBlock) return;
+    e.preventDefault();
+    const rowsCount = activeBlock.rows?.length || 0;
+    const isAdditive = e.ctrlKey || e.metaKey;
+    const base = isAdditive ? new Set(selectedCellsRef.current) : new Set();
+    const startC = e.shiftKey ? anchorCell.c : c;
+    applySelectedCells(buildRectSelection(0, startC, Math.max(0, rowsCount - 1), c, base));
+    if (!e.shiftKey) updateAnchor({ r: 0, c });
+    focusCellRef.current = { r: Math.max(0, rowsCount - 1), c };
+    dragStateRef.current = {
+      active: true,
+      mode: "col",
+      anchorR: 0,
+      anchorC: startC,
+      baseSelection: base,
+    };
+  };
+
+  const handleColMouseEnter = (c, e) => {
+    const drag = dragStateRef.current;
+    if (!drag.active || drag.mode !== "col" || !activeBlock) return;
+    if (e && typeof e.buttons === "number" && (e.buttons & 1) === 0) {
+      drag.active = false;
+      return;
+    }
+    const rowsCount = activeBlock.rows?.length || 0;
+    focusCellRef.current = { r: Math.max(0, rowsCount - 1), c };
+    applySelectedCells(
+      buildRectSelection(0, drag.anchorC, Math.max(0, rowsCount - 1), c, drag.baseSelection)
+    );
   };
 
   const handleSelectAll = () => {
@@ -253,19 +588,22 @@ export default function ReportStyleEditorModal({
     (activeBlock.rows || []).forEach((rowArr, r) => {
       (rowArr || []).forEach((_, c) => next.add(`${r}:${c}`));
     });
-    setSelectedCells(next);
-    setAnchorCell({ r: 0, c: 0 });
+    applySelectedCells(next);
+    updateAnchor({ r: 0, c: 0 });
+    focusCellRef.current = { r: 0, c: 0 };
   };
 
   const updateSelectedStyle = (patchOrFn) => {
-    if (activeBlockIndex < 0 || selectedCells.size === 0) return;
+    const activeSet = selectedCellsRef.current;
+    const blkIdx = activeBlockIndexRef.current;
+    if (blkIdx < 0 || !activeSet || activeSet.size === 0) return;
     setNotice(null);
     setBlocks((prev) =>
       prev.map((blk, idx) => {
-        if (idx !== activeBlockIndex) return blk;
+        if (idx !== blkIdx) return blk;
         const nextRows = (blk.rows || []).map((rowArr, r) =>
           (rowArr || []).map((cellStyle, c) => {
-            if (!selectedCells.has(`${r}:${c}`)) return cellStyle;
+            if (!activeSet.has(`${r}:${c}`)) return cellStyle;
             const patch = typeof patchOrFn === "function" ? patchOrFn(cellStyle) : patchOrFn;
             return { ...cellStyle, ...patch };
           })
@@ -331,7 +669,7 @@ export default function ReportStyleEditorModal({
       });
       const data = await resp.json();
       if (!data.success) throw new Error(data.error || "Failed to reset formatting");
-      const nextBlocks = data.styles?.blocks || [];
+      const nextBlocks = normalizeBlockRows(data.styles?.blocks || []);
       setBlocks(nextBlocks);
       setOriginalBlocksJson(JSON.stringify(nextBlocks));
       setConditionalFormats(data.styles?.conditionalFormats || []);
@@ -349,7 +687,11 @@ export default function ReportStyleEditorModal({
 
   return (
     <div
-      onClick={() => {
+      onMouseDown={(e) => {
+        backdropMouseDownRef.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (e.target !== e.currentTarget || !backdropMouseDownRef.current) return;
         if (!hasUnsavedChanges || window.confirm("Discard unsaved formatting changes?")) {
           onClose();
         }
@@ -411,7 +753,7 @@ export default function ReportStyleEditorModal({
               </span>
             </div>
             <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
-              Select a cell, row header, column header, or Shift+click a range to adjust colours, bold, italic, and alignment.
+              Click and drag (or Shift+click) cells, row headers, or column headers to select a range and adjust colours, bold, italic, and alignment.
             </p>
           </div>
           <button
@@ -536,14 +878,20 @@ export default function ReportStyleEditorModal({
                   <button
                     type="button"
                     title="Bold"
-                    onClick={() => updateSelectedStyle({ bold: !primaryCellStyle.bold })}
+                    onClick={() =>
+                      updateSelectedStyle({
+                        bold: selectionSummary.isMixedBold ? true : !primaryCellStyle.bold,
+                      })
+                    }
                     style={{
                       width: "28px",
                       height: "28px",
                       borderRadius: "4px",
                       border: "1px solid #cbd5e1",
-                      background: primaryCellStyle.bold ? "#1d4ed8" : "#ffffff",
-                      color: primaryCellStyle.bold ? "#ffffff" : "#0f172a",
+                      background:
+                        !selectionSummary.isMixedBold && primaryCellStyle.bold ? "#1d4ed8" : "#ffffff",
+                      color:
+                        !selectionSummary.isMixedBold && primaryCellStyle.bold ? "#ffffff" : "#0f172a",
                       fontWeight: 700,
                       fontSize: "13px",
                       cursor: "pointer",
@@ -554,14 +902,24 @@ export default function ReportStyleEditorModal({
                   <button
                     type="button"
                     title="Italic"
-                    onClick={() => updateSelectedStyle({ italic: !primaryCellStyle.italic })}
+                    onClick={() =>
+                      updateSelectedStyle({
+                        italic: selectionSummary.isMixedItalic ? true : !primaryCellStyle.italic,
+                      })
+                    }
                     style={{
                       width: "28px",
                       height: "28px",
                       borderRadius: "4px",
                       border: "1px solid #cbd5e1",
-                      background: primaryCellStyle.italic ? "#1d4ed8" : "#ffffff",
-                      color: primaryCellStyle.italic ? "#ffffff" : "#0f172a",
+                      background:
+                        !selectionSummary.isMixedItalic && primaryCellStyle.italic
+                          ? "#1d4ed8"
+                          : "#ffffff",
+                      color:
+                        !selectionSummary.isMixedItalic && primaryCellStyle.italic
+                          ? "#ffffff"
+                          : "#0f172a",
                       fontStyle: "italic",
                       fontFamily: "serif",
                       fontWeight: 700,
@@ -574,14 +932,26 @@ export default function ReportStyleEditorModal({
                   <button
                     type="button"
                     title="Underline"
-                    onClick={() => updateSelectedStyle({ underline: !primaryCellStyle.underline })}
+                    onClick={() =>
+                      updateSelectedStyle({
+                        underline: selectionSummary.isMixedUnderline
+                          ? true
+                          : !primaryCellStyle.underline,
+                      })
+                    }
                     style={{
                       width: "28px",
                       height: "28px",
                       borderRadius: "4px",
                       border: "1px solid #cbd5e1",
-                      background: primaryCellStyle.underline ? "#1d4ed8" : "#ffffff",
-                      color: primaryCellStyle.underline ? "#ffffff" : "#0f172a",
+                      background:
+                        !selectionSummary.isMixedUnderline && primaryCellStyle.underline
+                          ? "#1d4ed8"
+                          : "#ffffff",
+                      color:
+                        !selectionSummary.isMixedUnderline && primaryCellStyle.underline
+                          ? "#ffffff"
+                          : "#0f172a",
                       textDecoration: "underline",
                       fontWeight: 700,
                       fontSize: "13px",
@@ -600,7 +970,9 @@ export default function ReportStyleEditorModal({
                     { val: "RIGHT", label: "Right" },
                     { val: "", label: "Auto" },
                   ].map((opt) => {
-                    const active = String(primaryCellStyle.align || "").toUpperCase() === opt.val;
+                    const active =
+                      !selectionSummary.isMixedAlign &&
+                      String(primaryCellStyle.align || "").toUpperCase() === opt.val;
                     return (
                       <button
                         key={opt.label}
@@ -628,8 +1000,13 @@ export default function ReportStyleEditorModal({
                 <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
                   <span style={{ fontSize: "11px", color: "#475569", fontWeight: 600 }}>Size:</span>
                   <select
-                    value={primaryCellStyle.fontSize || 10}
-                    onChange={(e) => updateSelectedStyle({ fontSize: Number(e.target.value) })}
+                    value={selectionSummary.isMixedFontSize ? "" : primaryCellStyle.fontSize || 10}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      if (Number.isFinite(val) && val > 0) {
+                        updateSelectedStyle({ fontSize: val });
+                      }
+                    }}
                     style={{
                       height: "28px",
                       padding: "0 6px",
@@ -639,6 +1016,11 @@ export default function ReportStyleEditorModal({
                       background: "#ffffff",
                     }}
                   >
+                    {selectionSummary.isMixedFontSize && (
+                      <option value="" disabled>
+                        Mixed
+                      </option>
+                    )}
                     {[6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18].map((sz) => (
                       <option key={sz} value={sz}>
                         {sz}pt
@@ -659,6 +1041,25 @@ export default function ReportStyleEditorModal({
                     title="Pick text colour"
                     style={{ width: "26px", height: "26px", border: "1px solid #cbd5e1", borderRadius: "4px", padding: 0, cursor: "pointer" }}
                   />
+                  {selectionSummary.isMixedFg && (
+                    <button
+                      type="button"
+                      onClick={() => updateSelectedStyle({ fg: primaryCellStyle.fg || "#000000" })}
+                      title="Apply displayed text colour to all selected cells"
+                      style={{
+                        padding: "2px 6px",
+                        fontSize: "10px",
+                        fontWeight: 600,
+                        borderRadius: "4px",
+                        border: "1px solid #cbd5e1",
+                        background: "#ffffff",
+                        color: "#334155",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Apply
+                    </button>
+                  )}
                   {TEXT_COLOR_SWATCHES.map((sw) => (
                     <button
                       key={sw.hex}
@@ -669,7 +1070,7 @@ export default function ReportStyleEditorModal({
                         width: "16px",
                         height: "16px",
                         borderRadius: "3px",
-                        border: primaryCellStyle.fg === sw.hex ? "2px solid #2563eb" : "1px solid #94a3b8",
+                        border: !selectionSummary.isMixedFg && primaryCellStyle.fg === sw.hex ? "2px solid #2563eb" : "1px solid #94a3b8",
                         background: sw.hex,
                         cursor: "pointer",
                         padding: 0,
@@ -688,6 +1089,25 @@ export default function ReportStyleEditorModal({
                     title="Pick fill colour"
                     style={{ width: "26px", height: "26px", border: "1px solid #cbd5e1", borderRadius: "4px", padding: 0, cursor: "pointer" }}
                   />
+                  {selectionSummary.isMixedBg && (
+                    <button
+                      type="button"
+                      onClick={() => updateSelectedStyle({ bg: primaryCellStyle.bg || "#ffffff" })}
+                      title="Apply displayed fill colour to all selected cells"
+                      style={{
+                        padding: "2px 6px",
+                        fontSize: "10px",
+                        fontWeight: 600,
+                        borderRadius: "4px",
+                        border: "1px solid #cbd5e1",
+                        background: "#ffffff",
+                        color: "#334155",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Apply
+                    </button>
+                  )}
                   {FILL_COLOR_SWATCHES.map((sw) => (
                     <button
                       key={sw.hex}
@@ -698,7 +1118,7 @@ export default function ReportStyleEditorModal({
                         width: "16px",
                         height: "16px",
                         borderRadius: "3px",
-                        border: primaryCellStyle.bg === sw.hex ? "2px solid #2563eb" : "1px solid #94a3b8",
+                        border: !selectionSummary.isMixedBg && primaryCellStyle.bg === sw.hex ? "2px solid #2563eb" : "1px solid #94a3b8",
                         background: sw.hex,
                         cursor: "pointer",
                         padding: 0,
@@ -780,12 +1200,15 @@ export default function ReportStyleEditorModal({
               )}
 
               {/* WYSIWYG Grid Canvas */}
-              <div style={{ flex: 1, overflow: "auto", padding: "16px", background: "#ffffff" }}>
+              <div
+                ref={gridContainerRef}
+                style={{ flex: 1, overflow: "auto", padding: "16px", background: "#ffffff" }}
+              >
                 {activeBlock && (
                   <>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", gap: "12px", flexWrap: "wrap" }}>
                       <div style={{ fontSize: "12px", color: "#475569" }}>
-                        Click row/column headers to select whole rows or columns. Cells marked <span style={{ color: "#2563eb", fontWeight: 600 }}>CF</span> also have conditional formatting rules that may override colours based on live numbers.
+                        Click and drag across cells, row numbers, or column letters to multi-select. Cells marked <span style={{ color: "#2563eb", fontWeight: 600 }}>CF</span> also have conditional formatting rules that may override colours based on live numbers.
                       </div>
                       {dirtyRanges.has(activeBlock.range) && (
                         <button
@@ -825,11 +1248,12 @@ export default function ReportStyleEditorModal({
                             >
                               All
                             </th>
-                            {(activeBlock.rows?.[0] || []).map((_, c) => (
+                            {Array.from({ length: activeMaxCols }, (_, c) => (
                               <th
                                 key={c}
-                                onClick={(e) => handleSelectCol(c, e)}
-                                title={`Click to select column ${idxToColLetters(activeBlock.startCol + c)} (Shift+click for range)`}
+                                onMouseDown={(e) => handleColMouseDown(c, e)}
+                                onMouseEnter={(e) => handleColMouseEnter(c, e)}
+                                title={`Click or drag to select column ${idxToColLetters(activeBlock.startCol + c)}`}
                                 style={{
                                   background: "#f1f5f9",
                                   border: "1px solid #cbd5e1",
@@ -853,8 +1277,9 @@ export default function ReportStyleEditorModal({
                             return (
                               <tr key={r}>
                                 <th
-                                  onClick={(e) => handleSelectRow(r, e)}
-                                  title={`Click to select row ${sheetRow1} (Shift+click for range)`}
+                                  onMouseDown={(e) => handleRowMouseDown(r, e)}
+                                  onMouseEnter={(e) => handleRowMouseEnter(r, e)}
+                                  title={`Click or drag to select row ${sheetRow1}`}
                                   style={{
                                     background: "#f1f5f9",
                                     border: "1px solid #cbd5e1",
@@ -878,17 +1303,24 @@ export default function ReportStyleEditorModal({
                                     ? coordLabel
                                     : sampleVal || "\u00A0";
                                   const hasCf = cfCoordsSet.has(key);
+                                  const alignUpper = String(cellStyle.align || "").toUpperCase();
                                   const align =
-                                    cellStyle.align === "RIGHT"
+                                    alignUpper === "RIGHT"
                                       ? "right"
-                                      : cellStyle.align === "CENTER"
+                                      : alignUpper === "CENTER"
                                       ? "center"
+                                      : alignUpper === "LEFT"
+                                      ? "left"
+                                      : /^[£$-\d(▲▼+]/.test(String(sampleVal).trim()) && c > 0
+                                      ? "right"
                                       : "left";
 
                                   return (
                                     <td
                                       key={c}
-                                      onClick={(e) => handleCellClick(r, c, e)}
+                                      data-cell-key={key}
+                                      onMouseDown={(e) => handleCellMouseDown(r, c, e)}
+                                      onMouseEnter={(e) => handleCellMouseEnter(r, c, e)}
                                       title={`${coordLabel} | Text: ${cellStyle.fg} | Fill: ${cellStyle.bg} | ${cellStyle.fontSize || 10}pt${hasCf ? " | Conditional formatting active" : ""}`}
                                       style={{
                                         position: "relative",
@@ -897,12 +1329,12 @@ export default function ReportStyleEditorModal({
                                         fontWeight: cellStyle.bold ? 700 : 400,
                                         fontStyle: cellStyle.italic ? "italic" : "normal",
                                         textDecoration: cellStyle.underline ? "underline" : "none",
-                                        fontSize: `${Math.max(10, Math.min(14, cellStyle.fontSize || 11))}px`,
+                                        fontSize: `${Math.max(8, Math.min(20, cellStyle.fontSize || 10))}px`,
                                         textAlign: align,
                                         padding: "5px 10px",
-                                        border: isSel ? "2px solid #2563eb" : "1px solid #e2e8f0",
-                                        boxShadow: isSel ? "inset 0 0 0 1px #ffffff" : "none",
-                                        cursor: "pointer",
+                                        border: "1px solid #e2e8f0",
+                                        boxShadow: isSel ? "inset 0 0 0 2px #2563eb" : "none",
+                                        cursor: "cell",
                                         whiteSpace: "nowrap",
                                         minWidth: "56px",
                                       }}
@@ -933,6 +1365,74 @@ export default function ReportStyleEditorModal({
                         </tbody>
                       </table>
                     </div>
+
+                    {selectedCellCfRules.length > 0 && (
+                      <div
+                        style={{
+                          marginTop: "14px",
+                          padding: "12px 14px",
+                          background: "#f8fafc",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: "8px",
+                        }}
+                      >
+                        <div style={{ fontSize: "12px", fontWeight: 700, color: "#0f172a", marginBottom: "8px" }}>
+                          Conditional formatting rules for selected cell(s) ({selectedCellCfRules.length})
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                          {selectedCellCfRules.map((rule) => (
+                            <div
+                              key={rule.index}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: "12px",
+                                padding: "6px 10px",
+                                background: "#ffffff",
+                                border: "1px solid #e2e8f0",
+                                borderRadius: "6px",
+                                fontSize: "12px",
+                                flexWrap: "wrap",
+                              }}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                <span style={{ fontSize: "10px", fontWeight: 700, color: "#64748b", minWidth: "24px" }}>
+                                  #{rule.index}
+                                </span>
+                                <span style={{ fontFamily: "monospace", color: "#0f172a" }}>
+                                  {rule.conditionText}
+                                </span>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                {rule.bg && (
+                                  <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#475569" }}>
+                                    Fill:
+                                    <span style={{ width: "14px", height: "14px", borderRadius: "3px", background: rule.bg, border: "1px solid #94a3b8", display: "inline-block" }} />
+                                    <span style={{ fontFamily: "monospace" }}>{rule.bg}</span>
+                                  </span>
+                                )}
+                                {rule.fg && (
+                                  <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#475569" }}>
+                                    Text:
+                                    <span style={{ width: "14px", height: "14px", borderRadius: "3px", background: rule.fg, border: "1px solid #94a3b8", display: "inline-block" }} />
+                                    <span style={{ fontFamily: "monospace" }}>{rule.fg}</span>
+                                  </span>
+                                )}
+                                {rule.bold !== null && (
+                                  <span style={{ fontSize: "11px", fontWeight: 600, color: "#334155" }}>
+                                    {rule.bold ? "Bold" : "Not bold"}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ marginTop: "6px", fontSize: "11px", color: "#64748b" }}>
+                          Rules are evaluated top-to-bottom; the first matching rule wins for each property (fill, text colour, bold).
+                        </div>
+                      </div>
+                    )}
                   </>
                 )}
               </div>

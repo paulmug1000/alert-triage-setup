@@ -433,8 +433,8 @@ export async function saveSharedXeroGrant({ tokens, availableTenants = [], conne
 /**
  * Retrieves the Central/Shared Advisor Xero Grant and decrypts its tokens.
  */
-export async function getSharedXeroGrant() {
-  let rawJson = getVaultL1_(SHARED_XERO_KEY);
+export async function getSharedXeroGrant({ bypassL1 = false } = {}) {
+  let rawJson = bypassL1 ? null : getVaultL1_(SHARED_XERO_KEY);
   if (!rawJson) {
     rawJson = await redisClient.get(SHARED_XERO_KEY);
     if (rawJson) setVaultL1_(SHARED_XERO_KEY, rawJson);
@@ -679,11 +679,13 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
   let clientKey = null;
   let masterSheetId = null;
   let tool = null;
+  let bypassL1 = false;
 
   if (typeof arg1 === "object" && arg1 !== null) {
     clientKey = arg1.clientKey;
     masterSheetId = arg1.masterSheetId;
     tool = arg1.tool;
+    bypassL1 = Boolean(arg1.bypassL1);
   } else {
     clientKey = arg1;
     tool = arg2;
@@ -697,7 +699,7 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
     redisKey = getVaultRedisKey(clientKey, cleanTool);
   } else if (masterSheetId) {
     const sheetIndexKey = getSheetIndexRedisKey(masterSheetId, cleanTool);
-    redisKey = getVaultL1_(sheetIndexKey);
+    redisKey = bypassL1 ? null : getVaultL1_(sheetIndexKey);
     if (!redisKey) {
       redisKey = await redisClient.get(sheetIndexKey);
       if (redisKey) setVaultL1_(sheetIndexKey, redisKey);
@@ -710,7 +712,7 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
         const resolvedName = await resolveClientNameBySheetId(sheets, masterSheetId);
         if (resolvedName) {
           const fallbackKey = getVaultRedisKey(resolvedName, cleanTool);
-          const rawCheck = getVaultL1_(fallbackKey) || await redisClient.get(fallbackKey);
+          const rawCheck = (bypassL1 ? null : getVaultL1_(fallbackKey)) || await redisClient.get(fallbackKey);
           if (rawCheck) {
             setVaultL1_(fallbackKey, rawCheck);
             redisKey = fallbackKey;
@@ -727,7 +729,7 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
 
   let record = null;
   if (redisKey) {
-    let rawJson = getVaultL1_(redisKey);
+    let rawJson = bypassL1 ? null : getVaultL1_(redisKey);
     if (!rawJson) {
       rawJson = await redisClient.get(redisKey);
       if (rawJson) setVaultL1_(redisKey, rawJson);
@@ -1264,10 +1266,11 @@ export async function refreshWithConcurrencyLock(lockKey, refreshFn, getLatestTo
 
   const promise = (async () => {
     let hasRedisLock = false;
+    const lockToken = crypto.randomUUID();
     try {
       if (redisClient?.isOpen) {
         // Try to acquire distributed Redis lock (valid for 20 seconds)
-        const acquired = await redisClient.set(redisLockKey, "locked", { NX: true, EX: 20 });
+        const acquired = await redisClient.set(redisLockKey, lockToken, { NX: true, EX: 20 });
         if (!acquired) {
           console.log(`🔒 Token Broker: Another worker holds distributed lock for "${lockKey}". Waiting for fresh token...`);
           // Spin-wait for up to 6 seconds for the active worker to finish and persist fresh tokens
@@ -1290,7 +1293,17 @@ export async function refreshWithConcurrencyLock(lockKey, refreshFn, getLatestTo
       return await refreshFn();
     } finally {
       if (hasRedisLock && redisClient?.isOpen) {
-        try { await redisClient.del(redisLockKey); } catch (_) {}
+        try {
+          if (typeof redisClient.eval === "function") {
+            await redisClient.eval(
+              "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+              { keys: [redisLockKey], arguments: [lockToken] }
+            );
+          } else {
+            const current = await redisClient.get(redisLockKey);
+            if (current === lockToken) await redisClient.del(redisLockKey);
+          }
+        } catch (_) {}
       }
       inFlightRefreshes.delete(lockKey);
     }
@@ -1345,11 +1358,12 @@ export async function refreshStoredIntegrationToken({
   const resolvedClientKey = initialRecord.clientKey || normalizeKey(clientKey);
   const lockKey = `${cleanTool}:${resolvedClientKey}`;
 
-  const getLatest = async () => {
+  const getLatest = async (bypassL1 = false) => {
     const latest = await getIntegrationTokens({
       clientKey: resolvedClientKey,
       masterSheetId: masterSheetId || initialRecord.masterSheetId,
-      tool: cleanTool
+      tool: cleanTool,
+      bypassL1
     });
     if (!latest?.tokens?.accessToken) return null;
     const latestExpiresIn = Math.max(0, Math.round(((latest.expiresAt || 0) - Date.now()) / 1000));
@@ -1364,7 +1378,7 @@ export async function refreshStoredIntegrationToken({
     return await refreshWithConcurrencyLock(
       lockKey,
       async () => {
-        const latest = await getLatest();
+        const latest = await getLatest(true);
         if (!latest) {
           throw new Error(`No active ${cleanTool} connection found for this client.`);
         }
@@ -1389,7 +1403,7 @@ export async function refreshStoredIntegrationToken({
         };
       },
       async () => {
-        const latest = await getLatest();
+        const latest = await getLatest(true);
         return latest ? { accessToken: latest.accessToken, expiresIn: latest.expiresIn } : null;
       }
     );

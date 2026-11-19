@@ -14,7 +14,8 @@ import {
   saveIntegrationTokens,
   saveSharedXeroGrant,
   linkClientToSharedXero,
-  matchTenantToClient
+  matchTenantToClient,
+  getIntegrationTokens
 } from "../../../../services/vaultService.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/userPermissions.js";
@@ -25,8 +26,13 @@ import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, sanitizeSpreadsheetTerm
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
   return cookieHeader.split(";").reduce((acc, pair) => {
-    const [k, v] = pair.trim().split("=");
-    if (k && v) acc[k] = decodeURIComponent(v);
+    const idx = pair.indexOf("=");
+    if (idx === -1) return acc;
+    const k = pair.slice(0, idx).trim();
+    const v = pair.slice(idx + 1).trim();
+    if (k && v) {
+      try { acc[k] = decodeURIComponent(v); } catch { acc[k] = v; }
+    }
     return acc;
   }, {});
 }
@@ -214,6 +220,16 @@ export default async function handler(req, res) {
           // Check if this ecosystem client matches one of the authorized tenants
           const clientTenant = matchTenantToClient(cName, tenants);
           if (clientTenant) {
+            // Preserve dedicated client grants and existing manual/explicit tenant bindings
+            const existingGrant = await getIntegrationTokens({
+              clientKey: cName,
+              masterSheetId: mSheetId,
+              tool: "xero"
+            }).catch(() => null);
+            if (existingGrant && (!existingGrant.isSharedGrant || existingGrant.tenantId)) {
+              console.log(`⏭️ Skipping auto-link for "${cName}" — existing dedicated or explicitly bound tenant preserved.`);
+              continue;
+            }
             console.log(`🔗 Auto-linking client "${cName}" to Xero Org "${clientTenant.tenantName}" (${clientTenant.tenantId})...`);
             await linkClientToSharedXero({
               clientKey: cName,

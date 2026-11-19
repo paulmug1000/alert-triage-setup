@@ -21,6 +21,87 @@ import { invalidateMasterEngineCache } from "./masterEngineService.js";
 import { escapeIlikeExact } from "../utils/helpers.js";
 
 const MAX_ZLIB_OUTPUT_BYTES = 50 * 1024 * 1024;
+const MAX_RESTORE_GRID_ROWS = 50000;
+const MAX_RESTORE_GRID_COLS = 600;
+const BACKUP_INDEX_LOCK_KEY = "pulse:lock:backup_index";
+const RELEASE_BACKUP_LOCK_LUA =
+  "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+let _backupIndexLocalQueue = Promise.resolve();
+
+const ALLOWED_TENANT_KEY_INFO_FIELDS = [
+  "fy_start_date",
+  "revenue_or_income_mode",
+  "direct_costs_mode",
+  "accounting_tool",
+  "crm_tool",
+  "crm_drives",
+  "primary_currency",
+  "currency_symbol",
+  "invoice_method",
+  "contractor_categories",
+  "passthrough_categories",
+  "tracked_bank_accounts",
+  "tracked_non_cash_accounts",
+  "overhead_mappings",
+  "product_lines",
+  "lead_sources",
+  "crm_field_mappings",
+  "kpi_colour_rules",
+  "tolerance_rules",
+  "portal_feature_flags",
+  "client_importrange_backup",
+  "client_materialized_at",
+];
+
+function normalizeClientKey_(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "_");
+}
+
+async function withBackupIndexLock_(fn) {
+  const runLocked = async () => {
+    await ensureRedisConnected(1000).catch(() => { });
+    const lockToken = randomUUID();
+    let lockAcquired = false;
+    if (redisClient?.isOpen) {
+      for (let attempt = 0; attempt < 20; attempt++) {
+        try {
+          const res = await redisClient.set(BACKUP_INDEX_LOCK_KEY, lockToken, { NX: true, EX: 30 });
+          if (res === "OK") {
+            lockAcquired = true;
+            break;
+          }
+        } catch {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 75 + Math.floor(Math.random() * 50)));
+      }
+      if (!lockAcquired) {
+        throw new Error("Backup index lock contention; please retry.");
+      }
+    }
+    try {
+      return await fn();
+    } finally {
+      if (lockAcquired && redisClient?.isOpen) {
+        try {
+          await redisClient.eval(RELEASE_BACKUP_LOCK_LUA, {
+            keys: [BACKUP_INDEX_LOCK_KEY],
+            arguments: [lockToken],
+          });
+        } catch {
+          // TTL expiry covers cleanup if eval fails
+        }
+      }
+    }
+  };
+
+  const next = _backupIndexLocalQueue.then(runLocked, runLocked);
+  _backupIndexLocalQueue = next.catch(() => { });
+  return next;
+}
 
 const BACKUP_BUCKET = "pulse-backups";
 const BACKUP_INDEX_CONFIG_KEY = "supabase_client_backups_index";
@@ -289,9 +370,11 @@ export async function createClientSnapshot({
     compressedBytes: compressedBuffer.length,
   };
 
-  const currentIndex = await readBackupIndex_(sb);
-  const nextIndex = [entry, ...currentIndex.filter((s) => s.id !== snapshotId)];
-  await writeBackupIndex_(sb, nextIndex, createdBy);
+  await withBackupIndexLock_(async () => {
+    const currentIndex = await readBackupIndex_(sb);
+    const nextIndex = [entry, ...currentIndex.filter((s) => s.id !== snapshotId)];
+    await writeBackupIndex_(sb, nextIndex, createdBy);
+  });
 
   return entry;
 }
@@ -418,9 +501,11 @@ export async function importLocalSnapshotToCloud({
     compressedBytes: compressedBuffer.length,
   };
 
-  const currentIndex = await readBackupIndex_(sb);
-  const nextIndex = [entry, ...currentIndex.filter((s) => s.id !== snapshotId)];
-  await writeBackupIndex_(sb, nextIndex, importedBy);
+  await withBackupIndexLock_(async () => {
+    const currentIndex = await readBackupIndex_(sb);
+    const nextIndex = [entry, ...currentIndex.filter((s) => s.id !== snapshotId)];
+    await writeBackupIndex_(sb, nextIndex, importedBy);
+  });
 
   return entry;
 }
@@ -531,7 +616,20 @@ export async function restoreClientSnapshot({
     const batch = tabsToRestore.slice(i, i + 3);
     await Promise.all(
       batch.map(async (tab) => {
+        const rawVals = Array.isArray(tab.values_grid) ? tab.values_grid : [];
+        if (rawVals.length > MAX_RESTORE_GRID_ROWS || rawVals.some((r) => Array.isArray(r) && r.length > MAX_RESTORE_GRID_COLS)) {
+          throw new Error(`Restored tab ${tab.sheet_role}:${tab.tab_name} exceeds maximum permitted grid dimensions.`);
+        }
         const rawNotes = tab.notes_grid && typeof tab.notes_grid === "object" ? { ...tab.notes_grid } : {};
+        if (rawNotes.__compact_meta && typeof rawNotes.__compact_meta === "object") {
+          const clampedTotal = Math.min(Math.max(0, Math.trunc(Number(rawNotes.__compact_meta.totalRows) || 0)), MAX_RESTORE_GRID_ROWS);
+          const clampedTpl = Math.max(0, Math.min(Math.max(0, rawVals.length - 1), Math.trunc(Number(rawNotes.__compact_meta.templateRowIdx) || 0)));
+          rawNotes.__compact_meta = {
+            ...rawNotes.__compact_meta,
+            totalRows: clampedTotal,
+            templateRowIdx: clampedTpl,
+          };
+        }
         const legacyEmbeddedForms = Array.isArray(rawNotes.__formulas_grid) ? rawNotes.__formulas_grid : null;
         if (tab.sheet_role === "client") {
           delete rawNotes.__formulas_grid;
@@ -544,16 +642,19 @@ export async function restoreClientSnapshot({
               : Array.isArray(tab.formulas_grid)
                 ? tab.formulas_grid
                 : null;
+        if (resolvedFormulas && (resolvedFormulas.length > MAX_RESTORE_GRID_ROWS || resolvedFormulas.some((r) => Array.isArray(r) && r.length > MAX_RESTORE_GRID_COLS))) {
+          throw new Error(`Restored formulas for ${tab.sheet_role}:${tab.tab_name} exceed maximum permitted grid dimensions.`);
+        }
         const record = {
           client_id: clientId,
           client_name: canonicalClient,
           sheet_role: tab.sheet_role,
           tab_name: tab.tab_name,
-          values_grid: Array.isArray(tab.values_grid) ? tab.values_grid : [],
+          values_grid: rawVals,
           formulas_grid: resolvedFormulas,
           notes_grid: rawNotes,
-          row_count: Number(tab.row_count) || (Array.isArray(tab.values_grid) ? tab.values_grid.length : 0),
-          col_count: Number(tab.col_count) || 0,
+          row_count: Math.min(Math.max(0, Number(tab.row_count) || rawVals.length), MAX_RESTORE_GRID_ROWS),
+          col_count: Math.min(Math.max(0, Number(tab.col_count) || 0), MAX_RESTORE_GRID_COLS),
           updated_at: nowIso,
         };
         const { error: uErr } = await sb
@@ -573,12 +674,16 @@ export async function restoreClientSnapshot({
   const keyInfoPayload = payload.config?.keyInfo || (payload.config && !payload.config.master_mode ? payload.config : null);
   if (keyInfoPayload && typeof keyInfoPayload === "object" && (scope === "all" || scope === "master_recon") && clientId) {
     const cleanKi = {
-      ...keyInfoPayload,
       client_id: clientId,
       client_name: canonicalClient,
+      normalized_key: normalizeClientKey_(canonicalClient),
       updated_at: nowIso,
     };
-    delete cleanKi.id;
+    for (const field of ALLOWED_TENANT_KEY_INFO_FIELDS) {
+      if (keyInfoPayload[field] !== undefined) {
+        cleanKi[field] = keyInfoPayload[field];
+      }
+    }
     const { error: kiErr } = await sb
       .from("tenant_key_info")
       .upsert([cleanKi], { onConflict: "client_id" });
@@ -613,11 +718,16 @@ export async function deleteClientSnapshot({ snapshotId, deletedBy = "Admin" } =
   if (!sb) throw new Error("Supabase admin client is not configured.");
   if (!snapshotId) throw new Error("snapshotId is required.");
 
-  const index = await readBackupIndex_(sb);
-  const target = index.find((s) => s.id === snapshotId);
-  if (!target) {
-    throw new Error(`Snapshot "${snapshotId}" not found.`);
-  }
+  const { target, remainingCount } = await withBackupIndexLock_(async () => {
+    const index = await readBackupIndex_(sb);
+    const found = index.find((s) => s.id === snapshotId);
+    if (!found) {
+      throw new Error(`Snapshot "${snapshotId}" not found.`);
+    }
+    const nextIndex = index.filter((s) => s.id !== snapshotId);
+    await writeBackupIndex_(sb, nextIndex, deletedBy);
+    return { target: found, remainingCount: nextIndex.length };
+  });
 
   if (target.storagePath) {
     await sb.storage.from(BACKUP_BUCKET).remove([target.storagePath]).catch((err) => {
@@ -625,10 +735,7 @@ export async function deleteClientSnapshot({ snapshotId, deletedBy = "Admin" } =
     });
   }
 
-  const nextIndex = index.filter((s) => s.id !== snapshotId);
-  await writeBackupIndex_(sb, nextIndex, deletedBy);
-
-  return { deletedSnapshot: target, remainingCount: nextIndex.length };
+  return { deletedSnapshot: target, remainingCount };
 }
 
 /**
@@ -644,10 +751,11 @@ export async function runDailyAutoBackupSweep({
 
   await ensureRedisConnected(1000).catch(() => { });
   const lockKey = "pulse:lock:daily_backup_sweep";
+  const sweepLockToken = randomUUID();
   let lockAcquired = false;
   if (redisClient?.isOpen) {
     try {
-      const lockRes = await redisClient.set(lockKey, `${Date.now()}`, { NX: true, EX: 900 });
+      const lockRes = await redisClient.set(lockKey, sweepLockToken, { NX: true, EX: 900 });
       lockAcquired = lockRes === "OK";
       if (!lockAcquired) {
         return { skipped: true, reason: "Daily backup sweep already in progress on another instance." };
@@ -744,21 +852,26 @@ export async function runDailyAutoBackupSweep({
     // Prune automated daily snapshots older than retentionDays (never auto-delete manual snapshots)
     const retentionDays = Math.max(1, Number(policy.retentionDays) || 14);
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-    const updatedIndex = await readBackupIndex_(sb);
-    const expiredAutoSnapshots = updatedIndex.filter(
-      (s) =>
-        (s.triggerType === "daily_auto" || s.triggerType === "pre_restore") &&
-        new Date(s.createdAt || 0).getTime() < cutoffMs
-    );
+    const expiredAutoSnapshots = await withBackupIndexLock_(async () => {
+      const updatedIndex = await readBackupIndex_(sb);
+      const expired = updatedIndex.filter(
+        (s) =>
+          (s.triggerType === "daily_auto" || s.triggerType === "pre_restore") &&
+          new Date(s.createdAt || 0).getTime() < cutoffMs
+      );
+      if (expired.length > 0) {
+        const expiredIds = new Set(expired.map((s) => s.id));
+        const surviving = updatedIndex.filter((s) => !expiredIds.has(s.id));
+        await writeBackupIndex_(sb, surviving, triggeredBy);
+      }
+      return expired;
+    });
 
     if (expiredAutoSnapshots.length > 0) {
       const pathsToRemove = expiredAutoSnapshots.map((s) => s.storagePath).filter(Boolean);
       if (pathsToRemove.length > 0) {
         await sb.storage.from(BACKUP_BUCKET).remove(pathsToRemove).catch(() => { });
       }
-      const expiredIds = new Set(expiredAutoSnapshots.map((s) => s.id));
-      const surviving = updatedIndex.filter((s) => !expiredIds.has(s.id));
-      await writeBackupIndex_(sb, surviving, triggeredBy);
     }
 
     const nextPolicy = await updateBackupPolicy(
@@ -781,7 +894,10 @@ export async function runDailyAutoBackupSweep({
     };
   } finally {
     if (lockAcquired && redisClient?.isOpen) {
-      await redisClient.del(lockKey).catch(() => { });
+      await redisClient.eval(RELEASE_BACKUP_LOCK_LUA, {
+        keys: [lockKey],
+        arguments: [sweepLockToken],
+      }).catch(() => { });
     }
   }
 }

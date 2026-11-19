@@ -18,6 +18,7 @@
 import { getSheetsClient, withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
+import { postGasWebAppLocked } from "../utils/helpers.js";
 import { assertExternalCrmSpreadsheet } from "./googleSheetService.js";
 import { clearAllClientsMemoryCache, getClientWebAppUrl } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
@@ -942,9 +943,9 @@ export async function saveClientSettings({
 
     if (settings.crm.excel) {
       const ex = settings.crm.excel;
-      addMasterCell("KeyInfo!X33", ex.azureTenantId || "");
-      addMasterCell("KeyInfo!X34", ex.azureClientId || "");
-      if (ex.azureClientSecret !== "••••••••") {
+      if (ex.azureTenantId !== undefined) addMasterCell("KeyInfo!X33", ex.azureTenantId || "");
+      if (ex.azureClientId !== undefined) addMasterCell("KeyInfo!X34", ex.azureClientId || "");
+      if (ex.azureClientSecret !== undefined && ex.azureClientSecret !== "••••••••") {
         addMasterCell("KeyInfo!X35", ex.azureClientSecret || "");
       }
       addMasterCell("KeyInfo!X36", ex.driveId || "");
@@ -1493,13 +1494,11 @@ export async function refreshChartOfAccountsService({ clientName, masterSheetId 
       const webAppUrl = await getClientWebAppUrl(sheets, clientName, "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M");
 
       if (webAppUrl) {
-        const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
-        const resp = await fetch(webAppUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ secret, action: "refresh_chart_of_accounts", clientName })
-        });
-        gasResult = await resp.json().catch(() => null);
+        const secret = (process.env.AGENT_TRIGGER_SECRET || "").trim();
+        if (secret) {
+          const resp = await postGasWebAppLocked(webAppUrl, { secret, action: "refresh_chart_of_accounts", clientName });
+          gasResult = await resp.json().catch(() => null);
+        }
       }
     }
   } catch (err) {
@@ -1543,13 +1542,11 @@ export async function pullFreshPlCategoriesService({ clientName, masterSheetId }
       const webAppUrl = await getClientWebAppUrl(sheets, clientName, "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M");
 
       if (webAppUrl) {
-        const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
-        const resp = await fetch(webAppUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ secret, action: "pull_pl", clientName })
-        });
-        gasResult = await resp.json().catch(() => null);
+        const secret = (process.env.AGENT_TRIGGER_SECRET || "").trim();
+        if (secret) {
+          const resp = await postGasWebAppLocked(webAppUrl, { secret, action: "pull_pl", clientName });
+          gasResult = await resp.json().catch(() => null);
+        }
       }
     }
   } catch (err) {
@@ -1610,12 +1607,11 @@ export async function pullCrmDataService({ clientName, masterSheetId, userEmail 
     if (!webAppUrl) {
       throw new Error("Master sheet automation URL not found for this client.");
     }
-    const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
-    const resp = await fetch(webAppUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret, action: "pull_crm", clientName })
-    });
+    const secret = (process.env.AGENT_TRIGGER_SECRET || "").trim();
+    if (!secret) {
+      throw new Error("AGENT_TRIGGER_SECRET is not configured on server.");
+    }
+    const resp = await postGasWebAppLocked(webAppUrl, { secret, action: "pull_crm", clientName });
     pullResult = await resp.json().catch(() => null);
     if (!resp.ok || (pullResult && pullResult.success === false)) {
       throw new Error(pullResult?.error || "Failed to pull CRM data from Master sheet.");

@@ -9,6 +9,17 @@ import { isValidGoogleScriptUrl } from "./eomTools.js";
 import { getSessionUser, safeCompareSecret } from "./authService.js";
 import { isUserAuthorizedForClient, getCanonicalAcSheetId } from "./userPermissions.js";
 import { getClientWebAppUrl } from "./workspaces.js";
+import { postGasWebAppLocked } from "../utils/helpers.js";
+
+async function requireSystemOrAdmin_(req, res) {
+  if (req?.isSystemAuthorized) return true;
+  const sessionUser = req?._liveSessionUser || await getSessionUser(req);
+  if (!sessionUser?.isAdmin || sessionUser?.isReadOnly) {
+    res.status(403).json({ success: false, error: "Forbidden: System Administrator privileges required." });
+    return false;
+  }
+  return true;
+}
 
 export const SWEEP_SCHEDULE_TAB = "SweepSchedule";
 export const SWEEP_SCHEDULE_DEFAULTS = {
@@ -303,6 +314,7 @@ export async function logClaudeUsage_(sheets, automationCommanderSheetId, client
 }
 
 export async function handleGetClaudeSettings(req, res, sheets) {
+  if (!(await requireSystemOrAdmin_(req, res))) return;
   const { automationCommanderSheetId: acId } = req.body || {};
   const acIdClean = extractSheetIdFromUrl(acId) || acId || getCanonicalAcSheetId();
   if (!isSupabaseConfigured() && !acIdClean) {
@@ -427,6 +439,7 @@ export async function handleCheckClaudeBudget(req, res, sheets) {
 }
 
 export async function handleLogClaudeUsage(req, res, sheets) {
+  if (!(await requireSystemOrAdmin_(req, res))) return;
   const { automationCommanderSheetId, source, clientName, alertType, inputTokens, outputTokens } = req.body;
   try {
     await logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens, source);
@@ -438,6 +451,7 @@ export async function handleLogClaudeUsage(req, res, sheets) {
 }
 
 export async function handleGetAppLog(req, res, sheets) {
+  if (!(await requireSystemOrAdmin_(req, res))) return;
   const APP_LOG_SHEET_ID = "1v1N5ymNkcUCSPfzEGJxE43ylgGN95iyZmhKgnz62OQQ";
   try {
     const resp = await sheets.spreadsheets.values.get({
@@ -459,12 +473,11 @@ export async function handleGetAppLog(req, res, sheets) {
 
 export async function handleTriggerProactiveChecks(req, res) {
   try {
-    const gasUrl = "https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec";
-    const gasResp = await fetch(gasUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "run_proactive_checks" }),
-    });
+    const gasUrl = (
+      process.env.AUTOMATION_COMMANDER_WEBAPP_URL ||
+      "https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec"
+    ).trim();
+    const gasResp = await postGasWebAppLocked(gasUrl, { action: "run_proactive_checks" });
     const gasData = await gasResp.json().catch(() => ({}));
     if (!gasData.success) throw new Error(gasData.error || "Failed to trigger Apps Script");
     return res.status(200).json({ success: true });
@@ -475,6 +488,7 @@ export async function handleTriggerProactiveChecks(req, res) {
 }
 
 export async function handleGetSweepSchedule(req, res, sheets) {
+  if (!(await requireSystemOrAdmin_(req, res))) return;
   const { automationCommanderSheetId: acIdGetSchedule } = req.body;
   if (!acIdGetSchedule) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
   try {
@@ -682,15 +696,11 @@ export async function handleTriggerAgentRun(req, res, sheets) {
       const startTime = Date.now();
       try {
         console.log(`[Agent run] Invoking Web App for ${targetClientName} (runId: ${runId})...`);
-        const gasResp = await fetch(webAppUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            secret: agentSecret,
-            types,
-            clientName: targetClientName,
-            runId
-          }),
+        const gasResp = await postGasWebAppLocked(webAppUrl, {
+          secret: agentSecret,
+          types,
+          clientName: targetClientName,
+          runId
         });
         const gasData = await gasResp.json().catch(() => null);
         if (gasData && gasData.success === false) {

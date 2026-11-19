@@ -264,9 +264,21 @@ export function getCell(grid, r0, c0) {
 }
 
 export function setCell(grid, r0, c0, val) {
+  if (!Number.isInteger(r0) || r0 < 0 || r0 >= 50000 || !Number.isInteger(c0) || c0 < 0 || c0 >= 600) {
+    throw new Error(`masterFormulaEngine.setCell index out of bounds (${r0}, ${c0})`);
+  }
   while (grid.length <= r0) grid.push([]);
   while (grid[r0].length <= c0) grid[r0].push("");
   grid[r0][c0] = val === null || val === undefined ? "" : val;
+}
+
+function buildSafeCommaOrRegex_(rawStr) {
+  const parts = String(rawStr || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return parts.length > 0 ? new RegExp(parts.join("|"), "i") : null;
 }
 
 export function clearRect(grid, startR0, endR0, startC0, endC0) {
@@ -1744,7 +1756,7 @@ export function evaluateCRMList(grids) {
   const dd2ConfDef = String(getCell(crmList, 1, 107) || "").trim(); // DD2
   const df2StatIncl = String(getCell(crmList, 1, 109) || "").trim(); // DF2
   const dh2AndOr = String(getCell(crmList, 1, 111) || "Or").trim(); // DH2
-  const inclRegex = df2StatIncl ? new RegExp(df2StatIncl.replace(/,\s*/g, "|"), "i") : null;
+  const inclRegex = buildSafeCommaOrRegex_(df2StatIncl);
 
   const czRows = caRows.filter((r) => {
     const chLike = toNumOrNull(r[7]);
@@ -1763,8 +1775,8 @@ export function evaluateCRMList(grids) {
   setCell(crmList, 1, 130, ea2StatExcl); // EA2
   const ec2AndOr = String(getCell(crmList, 1, 132) || "And").trim(); // EC2
   const ee2AddExcl = String(getCell(crmList, 1, 134) || "").trim(); // EE2
-  const exclRegex = ea2StatExcl ? new RegExp(ea2StatExcl.replace(/,\s*/g, "|"), "i") : null;
-  const addExclRegex = ee2AddExcl ? new RegExp(ee2AddExcl.replace(/,\s*/g, "|"), "i") : null;
+  const exclRegex = buildSafeCommaOrRegex_(ea2StatExcl);
+  const addExclRegex = buildSafeCommaOrRegex_(ee2AddExcl);
 
   const duRows = caRows.filter((r) => {
     const chLike = toNumOrNull(r[7]);
@@ -2044,7 +2056,7 @@ export function evaluateCRMComp(grids) {
   const rawValMatch = (rawLike.match(/[\d.]+/) || [])[0];
   const hasLikeRule = Boolean(rawLike.trim() && rawValMatch);
   const likeTargetVal = rawValMatch ? Number(rawValMatch) / (rawLike.includes("%") ? 100 : 1) : 0;
-  const flInclRegex = rawIncl.trim() ? new RegExp(rawIncl.trim().toLowerCase().replace(/\s*,\s*/g, "|"), "i") : null;
+  const flInclRegex = buildSafeCommaOrRegex_(rawIncl);
 
   for (let i = 0; i < efRows.length; i++) {
     const r0 = 5 + i;
@@ -2824,11 +2836,11 @@ export function evaluateYear0Data(grids) {
     78,
     69,
     toNumOrZero(getCell(y0, 19, 69)) -
-      toNumOrZero(getCell(y0, 35, 69)) -
-      toNumOrZero(getCell(y0, 49, 69)) -
-      toNumOrZero(getCell(y0, 53, 69)) -
-      toNumOrZero(getCell(y0, 72, 69)) -
-      toNumOrZero(getCell(y0, 75, 69))
+    toNumOrZero(getCell(y0, 35, 69)) -
+    toNumOrZero(getCell(y0, 49, 69)) -
+    toNumOrZero(getCell(y0, 53, 69)) -
+    toNumOrZero(getCell(y0, 72, 69)) -
+    toNumOrZero(getCell(y0, 75, 69))
   );
 
   // Left summary columns G..R (c0=6..17) and T (c0=19)

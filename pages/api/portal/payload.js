@@ -2,7 +2,12 @@ import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
-import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
+import {
+  assertTrustedOrigin,
+  sanitizeSpreadsheetTerms,
+  redactPortalPayloadForUser,
+  redactPortalPerformanceForUser,
+} from "../../../utils/helpers.js";
 import {
   fetchAndBuildPortalHomeAndPerformance,
   getCachedPortalHomeAndPerformance,
@@ -77,14 +82,19 @@ export default async function handler(req, res) {
       }
     }
 
+    const safePayload = redactPortalPayloadForUser(result.data, sessionUser);
+    const safePerformanceData = bundledPerformanceData
+      ? redactPortalPerformanceForUser(bundledPerformanceData, sessionUser)
+      : null;
+
     return res.status(200).json({
       success: true,
       fromCache: result.fromCache,
       fromMemory: result.fromMemory,
       fromRedis: result.fromRedis,
       staleRevalidating: result.staleRevalidating,
-      payload: result.data,
-      ...(bundledPerformanceData ? { performanceData: bundledPerformanceData } : {}),
+      payload: safePayload,
+      ...(safePerformanceData ? { performanceData: safePerformanceData } : {}),
       cachedAt: result.cachedAt,
     });
   } catch (err) {

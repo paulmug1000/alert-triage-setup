@@ -7,7 +7,7 @@
  * (KeyInfo!X33:X41) and auto-completes task p2_connect_crm in Setup Mode.
  */
 
-import { resolveLiveSessionUser } from "../../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, resolveMasterSheetIdByClientName } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { linkExcelToClient } from "../../../../services/excelIntegrationService.js";
@@ -20,6 +20,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
   if (!assertTrustedOrigin(req, res)) return;
+
+  const rl = await checkRateLimit("excel-int", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -82,12 +87,38 @@ export default async function handler(req, res) {
   }
 
   try {
+    const existingGrant = await getIntegrationTokens({ clientKey, masterSheetId: resolvedMasterSheetId, tool: "excel" });
+    if (existingGrant?.tokens?.accessToken && !existingGrant.tokens.accessToken.startsWith("manual_")) {
+      const grantOwner = String(existingGrant.metadata?.userEmail || "").toLowerCase().trim();
+      const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
+      if (!grantOwner || callerEmail !== grantOwner) {
+        const linkedDrive = String(existingGrant.metadata?.driveId || "").trim();
+        const linkedFile = String(existingGrant.metadata?.fileId || "").trim();
+        const matchesLinked =
+          linkedDrive &&
+          linkedFile &&
+          String(driveId || "").trim() === linkedDrive &&
+          String(fileId || "").trim() === linkedFile &&
+          !url;
+        if (!matchesLinked) {
+          return res.status(403).json({
+            success: false,
+            error: "Please authorise with your own Microsoft account before linking a different workbook."
+          });
+        }
+      }
+    }
+
+    const safeTenantId = sessionUser.isAdmin ? tenantId : "";
+    const safeClientId = sessionUser.isAdmin ? clientId : "";
+    const safeClientSecret = sessionUser.isAdmin ? clientSecret : "";
+
     const linkResult = await linkExcelToClient({
       clientKey,
       masterSheetId: resolvedMasterSheetId,
-      tenantId,
-      clientId,
-      clientSecret,
+      tenantId: safeTenantId,
+      clientId: safeClientId,
+      clientSecret: safeClientSecret,
       url,
       driveId,
       fileId,
@@ -97,8 +128,7 @@ export default async function handler(req, res) {
       keyHeaders
     });
 
-    // Check if vault record exists; update metadata or create connected status record
-    const existingGrant = await getIntegrationTokens({ clientKey, masterSheetId: resolvedMasterSheetId, tool: "excel" });
+    // Update Vault metadata or create connected status record
     if (existingGrant) {
       await saveIntegrationTokens({
         clientKey,

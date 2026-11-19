@@ -96,7 +96,10 @@ export default async function handler(req, res) {
         s.includes("wages") ||
         s.includes("remuneration") ||
         s.includes("net pay") ||
-        s.includes("director")
+        s.includes("director") ||
+        s.includes("pension") ||
+        s.includes("paye") ||
+        /\bnic\b/.test(s)
       );
     };
     const isRestrictedTx = (tx) => {
@@ -171,6 +174,13 @@ export default async function handler(req, res) {
         ? {
           ...data.outgoings,
           dividends: null,
+          ...(Array.isArray(data.outgoings.expenses)
+            ? {
+              expenses: data.outgoings.expenses.filter(
+                (exp) => !isRestrictedCat(exp?.name || exp?.category || exp?.label)
+              ),
+            }
+            : {}),
           transactionsByMonth: cleanTxByMonth,
           reconMonths: cleanReconMonths,
         }

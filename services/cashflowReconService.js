@@ -148,6 +148,17 @@ export function sanitizeCashAdjustmentInput(val) {
   return str;
 }
 
+function isAllowedNonAdminReconFormula_(str) {
+  const s = String(str || "").trim();
+  if (/^=IMPORTRANGE\(\s*KeyInfo!\$G\$1\s*,\s*"'[0-9]{4}'!X[0-9]+"\s*\)\s*-\s*\$?[A-Z]{1,2}\$?[0-9]+$/i.test(s)) {
+    return true;
+  }
+  if (/^=-?\d+(?:\.\d+)?-(?:\$?[A-Z]{1,2}\$?\d+|\(\$?[A-Z]{1,2}\$?\d+(?:\+\$?[A-Z]{1,2}\$?\d+)+\)|SUM\(\$?[A-Z]{1,2}\$?\d+:\$?[A-Z]{1,2}\$?\d+\))$/i.test(s)) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Get Cashflow Recon Data
  * Fetches the 3 months around the target month from Cash tab (Row 1 down to Difference row)
@@ -1587,10 +1598,13 @@ export async function updateCashAdjustment({
 
   const cleanValue = typeof value === "string" ? value.trim().replace(/^['’]=/, "=") : value;
   let safeValue = sanitizeCashAdjustmentInput(cleanValue ?? "");
-  if (!isAdmin && typeof safeValue === "string" && safeValue.startsWith("=") && /^=[0-9+\-*/().\s]+$/.test(safeValue)) {
-    const evaluated = evaluateSafeArithmetic(safeValue);
-    if (typeof evaluated === "number" && isFinite(evaluated)) {
-      safeValue = Math.round(evaluated * 100) / 100;
+  if (!isAdmin && typeof safeValue === "string" && safeValue.startsWith("=")) {
+    if (/^=[0-9+\-*/().\s]+$/.test(safeValue)) {
+      const evaluated = evaluateSafeArithmetic(safeValue);
+      const resolved = typeof evaluated === "number" && isFinite(evaluated) ? Math.round(evaluated * 100) / 100 : null;
+      safeValue = resolved !== null ? resolved : sanitizeFormulaInput(safeValue.replace(/^=+/, ""));
+    } else if (!isAllowedNonAdminReconFormula_(safeValue)) {
+      safeValue = sanitizeFormulaInput(safeValue.replace(/^=+/, ""));
     }
   }
 
@@ -1984,7 +1998,8 @@ export async function batchMatchCashflowActuals({
   adjustments = [], // array of { sheetRow, formula }
   resolvedRows = [], // array of sheetRow numbers to mark resolved
   clientName,
-  automationCommanderSheetId
+  automationCommanderSheetId,
+  isAdmin = false
 }) {
   if (!clientSheetId || !colLetter || colIdx === undefined) {
     throw new Error("Missing clientSheetId, colLetter, or colIdx");
@@ -2059,9 +2074,19 @@ export async function batchMatchCashflowActuals({
       .filter(adj => ALLOWED_ADJUSTMENT_ROWS.has(parseInt(adj?.sheetRow, 10)))
       .map(adj => {
         const cleanFormula = typeof adj.formula === "string" ? adj.formula.trim().replace(/^['’]=/, "=") : adj.formula;
+        let finalVal = sanitizeCashAdjustmentInput(cleanFormula);
+        if (!isAdmin && typeof finalVal === "string" && finalVal.startsWith("=")) {
+          if (/^=[0-9+\-*/().\s]+$/.test(finalVal)) {
+            const evaluated = evaluateSafeArithmetic(finalVal);
+            const resolved = typeof evaluated === "number" && isFinite(evaluated) ? Math.round(evaluated * 100) / 100 : null;
+            finalVal = resolved !== null ? resolved : sanitizeFormulaInput(finalVal.replace(/^=+/, ""));
+          } else if (!isAllowedNonAdminReconFormula_(finalVal)) {
+            finalVal = sanitizeFormulaInput(finalVal.replace(/^=+/, ""));
+          }
+        }
         return {
           range: `Cash!${cleanCol}${parseInt(adj.sheetRow, 10)}`,
-          values: [[sanitizeCashAdjustmentInput(cleanFormula)]]
+          values: [[finalVal]]
         };
       });
 

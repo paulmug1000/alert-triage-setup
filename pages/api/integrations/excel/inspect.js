@@ -7,8 +7,8 @@
  * Returns available worksheets, used range address, and headers.
  */
 
-import { resolveLiveSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, isReadOnlySession, canAccessPma } from "../../../../services/userPermissions.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
+import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
 import { inspectExcelWorkbook, refreshExcelTokens } from "../../../../services/excelIntegrationService.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../../services/vaultService.js";
 import { assertTrustedOrigin } from "../../../../utils/helpers.js";
@@ -23,6 +23,11 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
   res.setHeader("Cache-Control", "no-store");
+
+  const rl = await checkRateLimit("excel-int", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -71,10 +76,10 @@ export default async function handler(req, res) {
         });
       }
       if (grant?.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
-        // Prevent non-owner users from browsing unrelated workbooks across the authorizer's M365 tenant
+        // Prevent non-owner users (including staff) from browsing unrelated workbooks across the authorizer's M365 tenant
         const grantOwner = String(grant.metadata?.userEmail || "").toLowerCase().trim();
         const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
-        if (!canAccessPma(sessionUser) && grantOwner && callerEmail !== grantOwner) {
+        if (!grantOwner || callerEmail !== grantOwner) {
           const linkedDrive = String(grant.metadata?.driveId || "").trim();
           const linkedFile = String(grant.metadata?.fileId || "").trim();
           const matchesLinked =
@@ -122,7 +127,7 @@ export default async function handler(req, res) {
       }
     }
 
-    if (!token && canAccessPma(sessionUser) && tenantId && clientId && clientSecret) {
+    if (!token && sessionUser.isAdmin && tenantId && clientId && clientSecret) {
       azureCredentials = { tenantId, clientId, clientSecret };
     }
 

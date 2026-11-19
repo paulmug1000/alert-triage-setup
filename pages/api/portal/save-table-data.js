@@ -6,6 +6,7 @@ import { memoryCache, invalidatePmaClientCache, del2TierCache } from "../../../s
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+import { fetchExpensesData } from "../../../services/expensesService.js";
 
 function colIdxToLetter_(idx) {
   let c = Number(idx) + 1;
@@ -44,6 +45,12 @@ export default async function handler(req, res) {
       error: "clientSheetId, sheetName, and non-empty updates array are required",
     });
   }
+  if (updates.length > 500) {
+    return res.status(400).json({
+      success: false,
+      error: "Batch update exceeds maximum limit of 500 ranges.",
+    });
+  }
 
   const ALLOWED_SHEETS = {
     outgoings: "Outgoings",
@@ -75,6 +82,18 @@ export default async function handler(req, res) {
       if (sLower.includes("salar") || sLower.includes("divid")) {
         return res.status(403).json({ success: false, error: "Forbidden: Senior users cannot modify salaries or dividends" });
       }
+    }
+
+    const reconciledColLetters = new Set();
+    if (canonicalSheetName === "Outgoings" && !sessionUser.isAdmin) {
+      const currentExpenses = await fetchExpensesData(verifiedClientName, clientSheetId, false);
+      (currentExpenses?.fyConfigs || []).forEach((fy) => {
+        (fy.monthCols || []).forEach((m) => {
+          if (m.isReconciled && m.colLetter) {
+            reconciledColLetters.add(String(m.colLetter).toUpperCase().trim());
+          }
+        });
+      });
     }
 
     function sanitizeCell(v) {
@@ -142,6 +161,9 @@ export default async function handler(req, res) {
             (cIdx >= 36 && cIdx <= 47);
           if (!isEditableCol) {
             return res.status(403).json({ success: false, error: "Formula and total columns cannot be modified." });
+          }
+          if (!sessionUser.isAdmin && maxRow >= 126 && minRow <= 224 && reconciledColLetters.has(colIdxToLetter_(cIdx))) {
+            return res.status(403).json({ success: false, error: "Cannot modify expenses for a reconciled month." });
           }
         }
       } else if (canonicalSheetName === "Salaries") {

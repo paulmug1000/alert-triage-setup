@@ -110,6 +110,14 @@ export default async function handler(req, res) {
           delete safeKpi.isParentFormula;
           safeSettings.customisation = { ...safeSettings.customisation, kpiColouring: safeKpi };
         }
+        if (safeSettings.crm?.excel && typeof safeSettings.crm.excel === "object") {
+          const safeExcel = { ...safeSettings.crm.excel };
+          delete safeExcel.azureTenantId;
+          delete safeExcel.azureClientId;
+          delete safeExcel.azureClientSecret;
+          delete safeExcel.hasAzureSecret;
+          safeSettings.crm = { ...safeSettings.crm, excel: safeExcel };
+        }
         return res.status(200).json({ success: true, settings: safeSettings });
       }
 

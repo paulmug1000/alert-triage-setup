@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import jwt from "jsonwebtoken";
-import { redisClient } from "./redisClient.js";
+import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { getSheetsClient } from "./sheetsClient.js";
 import { getAllUsers, getUserByEmail, updateUserLastLogin, getCanonicalAcSheetId } from "./userPermissions.js";
 import { unwrapRequestSheetIds, installSheetIdBoundary } from "./sheetTokenService.js";
@@ -36,7 +36,11 @@ function parseCookies(cookieHeader) {
     if (idx === -1) return acc;
     const key = pair.slice(0, idx).trim();
     const val = pair.slice(idx + 1).trim();
-    acc[decodeURIComponent(key)] = decodeURIComponent(val);
+    try {
+      acc[decodeURIComponent(key)] = decodeURIComponent(val);
+    } catch {
+      acc[key] = val;
+    }
     return acc;
   }, {});
 }
@@ -319,9 +323,8 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
     } catch { }
 
     return {
-      success: false,
-      adminOtpBlocked: true,
-      message: "You cannot access Pulse or the Pulse Management Area using a one-time password. Please log in using Google or Microsoft."
+      success: true,
+      message: "If this email address is registered, a verification code has been sent. Please check your inbox."
     };
   }
 
@@ -799,8 +802,10 @@ function extractRawSessionToken(req) {
 }
 
 export async function revokeSessionJti(jti, exp = null) {
-  if (!jti || !redisClient?.isOpen) return false;
+  if (!jti) return false;
   try {
+    await ensureRedisConnected(400);
+    if (!redisClient?.isOpen) return false;
     const nowSec = Math.floor(Date.now() / 1000);
     const ttl = exp ? Math.max(60, Math.min(SESSION_MAX_AGE_SECS, Number(exp) - nowSec)) : SESSION_MAX_AGE_SECS;
     await redisClient.set(`pma:revoked_jti:${String(jti)}`, "1", { EX: ttl });
@@ -811,8 +816,10 @@ export async function revokeSessionJti(jti, exp = null) {
 }
 
 export async function isSessionJtiRevoked(jti) {
-  if (!jti || !redisClient?.isOpen) return false;
+  if (!jti) return false;
   try {
+    await ensureRedisConnected(400);
+    if (!redisClient?.isOpen) return false;
     const val = await redisClient.get(`pma:revoked_jti:${String(jti)}`);
     return Boolean(val);
   } catch {
@@ -839,6 +846,15 @@ export function getSessionUser(req, res = null) {
   if (!req) return null;
 
   const activeRes = res || req.res || req.socket?._httpMessage || null;
+  if (Object.prototype.hasOwnProperty.call(req, "_liveSessionUser")) {
+    const cached = req._liveSessionUser;
+    if (cached) {
+      installSheetIdBoundary(req, activeRes, cached);
+      return cached;
+    }
+    return null;
+  }
+
   installSheetIdBoundary(req, activeRes);
 
   const token = extractRawSessionToken(req);
@@ -880,11 +896,18 @@ export function getSessionUser(req, res = null) {
  * When cookie claims are stale, automatically refreshes the pma_session cookie on res.
  */
 export async function resolveLiveSessionUser(req, res = null, { sheets = null, bypassCache = false } = {}) {
+  if (req && Object.prototype.hasOwnProperty.call(req, "_liveSessionUser")) {
+    return req._liveSessionUser;
+  }
   const sessionUser = getSessionUser(req, res);
-  if (!sessionUser) return null;
+  if (!sessionUser) {
+    if (req) req._liveSessionUser = null;
+    return null;
+  }
 
   if (sessionUser._jti && (await isSessionJtiRevoked(sessionUser._jti))) {
     if (res) clearSessionCookie(res);
+    if (req) req._liveSessionUser = null;
     return null;
   }
 
@@ -893,6 +916,7 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
   try {
     const users = await getAllUsers(sheets, getCanonicalAcSheetId(), bypassCache);
     if (!Array.isArray(users) || users.length === 0) {
+      if (req) req._liveSessionUser = sessionUser;
       return sessionUser;
     }
 
@@ -901,6 +925,7 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
     if (!liveUser || liveUser.status === "Suspended") {
       if (sessionUser._jti) await revokeSessionJti(sessionUser._jti, sessionUser._exp);
       if (res) clearSessionCookie(res);
+      if (req) req._liveSessionUser = null;
       return null;
     }
 
@@ -915,6 +940,7 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
     if (!refreshed) {
       if (sessionUser._jti) await revokeSessionJti(sessionUser._jti, sessionUser._exp);
       if (res) clearSessionCookie(res);
+      if (req) req._liveSessionUser = null;
       return null;
     }
 
@@ -928,17 +954,36 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
       refreshed.role !== sessionUser.role ||
       !areAssignedClientsEqual(refreshed.assignedClients, sessionUser.assignedClients);
 
+    const privilegesDowngraded =
+      (sessionUser.isAdmin && !refreshed.isAdmin) ||
+      sessionUser.role !== refreshed.role ||
+      (Array.isArray(refreshed.assignedClients) &&
+        (sessionUser.assignedClients === "*" ||
+          (Array.isArray(sessionUser.assignedClients) &&
+            sessionUser.assignedClients.some((c) => !refreshed.assignedClients.includes(c)))));
+
+    if (changed && privilegesDowngraded && sessionUser._jti) {
+      await revokeSessionJti(sessionUser._jti, sessionUser._exp);
+    }
+
     if (changed && res && typeof res.setHeader === "function") {
       const cookies = req?.headers?.cookie ? parseCookies(req.headers.cookie) : {};
       if (cookies.pma_session) {
-        mintSessionCookie(res, refreshed);
+        const nextPayload = mintSessionCookie(res, refreshed);
+        if (nextPayload?.jti) {
+          Object.defineProperties(refreshed, {
+            _jti: { value: nextPayload.jti, enumerable: false, configurable: true },
+          });
+        }
       }
     }
 
+    if (req) req._liveSessionUser = refreshed;
     installSheetIdBoundary(req, activeRes, refreshed);
     return refreshed;
   } catch (err) {
     console.warn("⚠️ resolveLiveSessionUser fallback to JWT claims:", err.message);
+    if (req) req._liveSessionUser = sessionUser;
     return sessionUser;
   }
 }

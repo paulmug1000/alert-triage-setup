@@ -1814,7 +1814,7 @@ export function toSheetDateFormat(dStr) {
   const d = parseSheetDate(dStr);
   if (!d) {
     const raw = String(dStr).trim();
-    return /^[=+\-@|\t\r]/.test(raw) ? `'${raw}` : raw;
+    return sanitizeFormulaInput(raw);
   }
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const day = d.getDate();
@@ -2942,5 +2942,153 @@ export function resolveCanonicalOAuthHost(req) {
   const proto = isLocal ? (req?.headers?.["x-forwarded-proto"] || "http") : "https";
   return { host, proto };
 }
+
+/**
+ * Ensures an external anchor URL uses strictly an http:// or https:// scheme
+ * (prevents javascript: / data: / vbscript: URI execution in React 18 href bindings).
+ */
+export function toSafeExternalHref(url) {
+  if (!url || typeof url !== "string") return "#";
+  const trimmed = url.trim();
+  if (!trimmed) return "#";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return "#";
+}
+
+/**
+ * Validates that a target URL is a canonical Google Apps Script Web App (/exec)
+ * and executes POST without following arbitrary external redirects with secret payloads.
+ */
+export async function postGasWebAppLocked(targetUrl, payload, { timeoutMs = 60000 } = {}) {
+  const cleanUrl = String(targetUrl || "").trim();
+  if (!isValidGoogleScriptUrl(cleanUrl)) {
+    throw new Error("Blocked invalid GAS Web App URL.");
+  }
+  const resp = await fetch(cleanUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+    redirect: "manual",
+    signal: typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(timeoutMs) : undefined,
+  });
+  if (resp.status >= 300 && resp.status < 400) {
+    const loc = String(resp.headers.get("location") || "").trim();
+    let parsedLoc = null;
+    try {
+      parsedLoc = new URL(loc);
+    } catch (_) { }
+    if (
+      parsedLoc &&
+      parsedLoc.protocol === "https:" &&
+      (parsedLoc.hostname === "script.googleusercontent.com" || parsedLoc.hostname === "script.google.com")
+    ) {
+      return await fetch(parsedLoc.toString(), {
+        method: "GET",
+        redirect: "manual",
+        signal: typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(timeoutMs) : undefined,
+      });
+    }
+    throw new Error(`Blocked unexpected Web App redirect target (HTTP ${resp.status}).`);
+  }
+  return resp;
+}
+
+const PORTAL_SENSITIVE_SALARY_DIV_RE =
+  /salar|staff\s*cost|staff\s*ratio|staff.*%|divid|retained\s*profit|payroll|wages|director|remuneration|net\s*pay|pension|paye|\bnic\b/i;
+
+function isRestrictedPortalSalaryUser_(user) {
+  if (!user) return true;
+  if (user.isAdmin || user.role === "Admin") return false;
+  return Boolean(
+    user.isSenior ||
+    user.role === "Senior (Restricted)" ||
+    String(user.role || "").toLowerCase().includes("senior")
+  );
+}
+
+function redactPortalMonthBlock_(monthBlock) {
+  if (!monthBlock || typeof monthBlock !== "object") return monthBlock;
+  const redactRows = (arr) =>
+    Array.isArray(arr)
+      ? arr.map((r) =>
+          r && typeof r === "object" && PORTAL_SENSITIVE_SALARY_DIV_RE.test(String(r.label || ""))
+            ? { ...r, value: "—" }
+            : r
+        )
+      : arr;
+  return {
+    ...monthBlock,
+    ...(Array.isArray(monthBlock.rows) ? { rows: redactRows(monthBlock.rows) } : {}),
+    ...(Array.isArray(monthBlock.tableRows) ? { tableRows: redactRows(monthBlock.tableRows) } : {}),
+  };
+}
+
+/**
+ * Redacts confidential salary, staff-cost, staff-ratio, and dividend fields from
+ * the Portal Home payload for Senior (Restricted) sessions.
+ */
+export function redactPortalPayloadForUser(payload, user) {
+  if (!payload || typeof payload !== "object" || !isRestrictedPortalSalaryUser_(user)) {
+    return payload;
+  }
+  const cloned = { ...payload };
+  if (cloned.currMonth && typeof cloned.currMonth === "object") {
+    cloned.currMonth = {
+      ...redactPortalMonthBlock_(cloned.currMonth),
+      ...(cloned.currMonth.kpis && typeof cloned.currMonth.kpis === "object"
+        ? {
+            kpis: {
+              ...cloned.currMonth.kpis,
+              staffCostsDelivery: "—",
+              staffCostsNonDelivery: "—",
+              staffRatio: "—",
+            },
+          }
+        : {}),
+    };
+  }
+  if (cloned.months && typeof cloned.months === "object") {
+    cloned.months = {
+      ...(cloned.months.curr ? { curr: redactPortalMonthBlock_(cloned.months.curr) } : {}),
+      ...(cloned.months.prev ? { prev: redactPortalMonthBlock_(cloned.months.prev) } : {}),
+      ...(cloned.months.next ? { next: redactPortalMonthBlock_(cloned.months.next) } : {}),
+    };
+  }
+  return cloned;
+}
+
+/**
+ * Redacts confidential salary, staff-cost, staff-ratio, and dividend rows from
+ * the Portal Performance payload for Senior (Restricted) sessions.
+ */
+export function redactPortalPerformanceForUser(perfData, user) {
+  if (!perfData || typeof perfData !== "object" || !isRestrictedPortalSalaryUser_(user)) {
+    return perfData;
+  }
+  const years = Array.isArray(perfData.years)
+    ? perfData.years.map((yr) => {
+        if (!yr || typeof yr !== "object" || !Array.isArray(yr.rows)) return yr;
+        return {
+          ...yr,
+          rows: yr.rows.map((row) => {
+            if (!row || typeof row !== "object") return row;
+            if (!PORTAL_SENSITIVE_SALARY_DIV_RE.test(String(row.label || ""))) return row;
+            return {
+              ...row,
+              monthlyValues: Array.isArray(row.monthlyValues) ? row.monthlyValues.map(() => "—") : row.monthlyValues,
+              monthlyMath: Array.isArray(row.monthlyMath) ? row.monthlyMath.map(() => null) : row.monthlyMath,
+              totalVal: "—",
+              totalMath: null,
+            };
+          }),
+        };
+      })
+    : perfData.years;
+  return {
+    ...perfData,
+    years,
+  };
+}
+
 
 

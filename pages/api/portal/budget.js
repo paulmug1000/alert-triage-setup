@@ -1,6 +1,6 @@
 import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry, getSheetTitles, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, unwrapSheetId, canViewSalariesAndDividends } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
@@ -232,12 +232,9 @@ export default async function handler(req, res) {
       });
     }
 
-    const SENSITIVE_BUDGET_RE = /dividend|director|salar|wages|remuneration|paye|nic|pension/i;
-    const isSenior = Boolean(
-      sessionUser.isSenior ||
-      sessionUser.role === "Senior (Restricted)" ||
-      String(sessionUser.role || "").toLowerCase().includes("senior")
-    );
+    const SENSITIVE_BUDGET_RE =
+      /dividend|director|salar|wages|remuneration|paye|\bnic\b|pension|payroll|net\s*pay|staff\s*cost|staff\s*ratio|retained\s*profit/i;
+    const isSenior = !canViewSalariesAndDividends(sessionUser);
     let responseData = result.data;
     if (isSenior && responseData && typeof responseData === "object") {
       responseData = { ...responseData };

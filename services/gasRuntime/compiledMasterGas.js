@@ -13703,6 +13703,7 @@ async function runManualPartPaidExpensesAudit() {
  * ==          ROUTING FUNCTIONS          ==
  * =========================================
  *
+ * v2.82 (Fail closed on HTTP 401/403 in PullFromGoogleSheet_ instead of falling back to openByUrl, and block any single internal Pulse tab match)
  * v2.81 (Guard PullFromGoogleSheet_ native open against internal Pulse workbooks, disable HTTP redirects on Token Broker and Microsoft Graph API fetches, and enforce canonical Pulse Broker host)
  * v2.80 (Normalize numeric, percent, and date comparisons in PullFromExcelSheet_ delta check to stop false-delta overwrites and stamp CRMComp!J2 when unchanged)
  * v2.79 (Decommission installRandomWeeklyPLTrigger and remove all master triggers)
@@ -13896,10 +13897,15 @@ async function PullFromGoogleSheet_(isHeadless) {
         if (res.getResponseCode() === 200) {
           const json = JSON.parse(res.getContentText());
           rawData = json.values || [];
+        } else if (res.getResponseCode() === 401 || res.getResponseCode() === 403) {
+          throw new Error(`Access denied (HTTP ${res.getResponseCode()}) while fetching the configured Google Sheet via OAuth.`);
         } else {
           console.warn(`Token Broker Google Sheets API returned HTTP ${res.getResponseCode()}: ${res.getContentText()}. Falling back to native open.`);
         }
       } catch (apiErr) {
+        if (String(apiErr && apiErr.message || "").indexOf("Access denied") !== -1) {
+          throw apiErr;
+        }
         console.warn(`REST API fetch failed: ${apiErr.message}. Falling back to native open.`);
       }
     } else if (!token) {
@@ -13912,7 +13918,7 @@ async function PullFromGoogleSheet_(isHeadless) {
         const forbiddenInternalTabs = ['KeyInfo', 'InvComp', 'DirComp', 'CRMComp', 'PLComp', 'AutoUpdates', 'RepControl'];
         const remoteTabNames = remoteSs.getSheets().map(s => s.getName());
         const matchedInternalTabs = forbiddenInternalTabs.filter(t => remoteTabNames.indexOf(t) !== -1);
-        if (matchedInternalTabs.length >= 2 || remoteSs.getId() === SpreadsheetApp.getActiveSpreadsheet().getId()) {
+        if (matchedInternalTabs.length >= 1 || remoteSs.getId() === SpreadsheetApp.getActiveSpreadsheet().getId()) {
           throw new Error("Access denied: Target spreadsheet appears to be an internal Pulse workbook rather than an external CRM sheet.");
         }
         const remoteSheet = remoteSs.getSheetByName(tabName);
@@ -14786,6 +14792,7 @@ async function getBrokerExcelAccessToken_() {
 /**
  * ----------------------------------------------------------------
  * 7_COST_SYNC
+ * v3.53 (Sanitize Outgoings gapBlock note fields with sanitizeOutgoingsNoteField_)
  * v3.52 (Sanitize Outgoings note block fields against curly-brace injection, escape formula-leading part-paid Confirmed descriptions, enforce numeric QuickBooks realmId, and disable HTTP redirects on API fetches)
  * v3.51 (Require payee/vendor matching in split-bill unreconciled deduplication and exclude synthetic P&L rows in syncExpenseTransactionBreakdownToClientSheet_)
  * v3.50 (Guard Outgoings system rows 225-226 Recharged expenses forecast/recovery from bill matching, gap audits, overdue rolls, depreciation fallback row target, and P&L category quarantine)
@@ -16719,7 +16726,7 @@ async function auditAllOutgoingsGaps(isHeadless, writeToSheet = false) {
                  logDetails.push(`[Outgoings] Created Gap - ${currentMonthStr} Row ${r+1}, ${contractor}: £${neededGap.toFixed(2)} added`);
              }
              
-             const gapBlock = `{App ID: ${gapID}}{Amt: ${neededGap.toFixed(2)}}{Status: }{Rec date: ${estDates.rec}}{Pay date: ${estDates.pay}}{Description: Manual/Unaccounted balance (Gap)}`;
+             const gapBlock = `{App ID: ${sanitizeOutgoingsNoteField_(gapID)}}{Amt: ${neededGap.toFixed(2)}}{Status: }{Rec date: ${sanitizeOutgoingsNoteField_(estDates.rec)}}{Pay date: ${sanitizeOutgoingsNoteField_(estDates.pay)}}{Description: Manual/Unaccounted balance (Gap)}`;
              if (existingGapMatch) {
                  if (Math.abs(neededGap - existingGapAmt) > 0.01) newNote = newNote.replace(gapIDRegex, gapBlock);
              } else {

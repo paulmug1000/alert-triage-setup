@@ -8929,7 +8929,8 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         const m = String(cell || "").match(/^([A-Z]{1,3})(\d+)$/);
         if (!m) return false;
         const rowNum = parseInt(m[2], 10);
-        if (rowNum < 2) return false;
+        const colIdx0 = m[1].split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+        if (rowNum < 2 || rowNum > 5000 || colIdx0 < 0 || colIdx0 >= 200) return false;
         if ((writeTab === "Confirmed" || writeTab === "Pipeline") && isProtectedJobCol(m[1])) return false;
         return true;
       });
@@ -9523,13 +9524,31 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         }
         return (colIdx0 >= 5 && colIdx0 <= 29 && !(writeTab === "Confirmed" && colIdx0 === 17)) || colIdx0 === 31;
       };
+      const acceptSessionUser = req?._liveSessionUser || sessionUserArg || getSessionUser(req);
+      const callerCanViewSalaries = Boolean(req?.isSystemAuthorized || canViewSalariesAndDividends(acceptSessionUser));
       const minAllowedRow = writeTab === "Outgoings" ? 13 : 2;
+      const maxAllowedRow = writeTab === "Outgoings" ? 238 : 5000;
+      const isEditableOutgoingsCol_ = (colIdx0) =>
+        (colIdx0 >= 0 && colIdx0 <= 5) ||
+        (colIdx0 >= 6 && colIdx0 <= 17) ||
+        (colIdx0 >= 21 && colIdx0 <= 32) ||
+        (colIdx0 >= 36 && colIdx0 <= 47);
       const safeCellUpdates = cellUpdates.filter(({ cell }) => {
         const m = String(cell || "").match(/^([A-Z]{1,3})(\d+)$/);
         if (!m) return false;
         const rowNum = parseInt(m[2], 10);
-        if (rowNum < minAllowedRow) return false;
-        if (writeTab === "Outgoings" && protectedOutgoingsRows.has(rowNum)) return false;
+        const colIdx0 = m[1].split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+        if (rowNum < minAllowedRow || rowNum > maxAllowedRow) return false;
+        if (colIdx0 < 0 || colIdx0 >= 200) return false;
+        if (writeTab === "Outgoings") {
+          if (protectedOutgoingsRows.has(rowNum)) return false;
+          if (!isEditableOutgoingsCol_(colIdx0)) return false;
+          const isAllowedOutgRow =
+            (rowNum >= 13 && rowNum <= 110) ||
+            (rowNum >= 126 && rowNum <= 224) ||
+            (callerCanViewSalaries && ((rowNum >= 115 && rowNum <= 123) || (rowNum >= 230 && rowNum <= 238)));
+          if (!isAllowedOutgRow) return false;
+        }
         if ((writeTab === "Confirmed" || writeTab === "Pipeline") && isProtectedJobCol2(m[1])) return false;
         return true;
       });

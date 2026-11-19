@@ -270,6 +270,9 @@ export async function saveCashBatch({
   for (const up of updates) {
     const rowNum = parseInt(up.sheetRow, 10);
     const colIdx = up.colIdx !== undefined ? parseInt(up.colIdx, 10) : colLetterToNum(up.colLetter) - 1;
+    if (!Number.isInteger(rowNum) || rowNum < 1 || rowNum > 500 || !Number.isInteger(colIdx) || colIdx < 0 || colIdx > 100) {
+      continue;
+    }
     const colLetter = colIdxToLetter(colIdx);
 
     if (!isCashCellEditable(rowNum, colIdx)) {
@@ -304,7 +307,7 @@ export async function saveCashBatch({
     for (const cn of cellNotes) {
       const rowNum = parseInt(cn.sheetRow, 10);
       const colIdx = cn.colIdx !== undefined ? parseInt(cn.colIdx, 10) : colLetterToNum(cn.colLetter) - 1;
-      if (colIdx < 1) continue; // Skip column A
+      if (!Number.isInteger(rowNum) || rowNum < 2 || rowNum > 500 || !Number.isInteger(colIdx) || colIdx < 1 || colIdx > 36) continue; // Skip out-of-bounds or column A
 
       validNoteRequests.push({
         updateCells: {

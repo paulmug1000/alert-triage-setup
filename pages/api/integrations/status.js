@@ -98,6 +98,8 @@ export default async function handler(req, res) {
             .filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)))
             .map(c => {
               const copy = { ...c };
+              delete copy.autoUpdatesRow;
+              delete copy.rowNumber;
               if (copy.integrations?.xero) {
                 copy.integrations = {
                   ...copy.integrations,
@@ -501,6 +503,8 @@ export default async function handler(req, res) {
         ? clientConfigs
         : clientConfigs.map(c => {
           const copy = { ...c };
+          delete copy.autoUpdatesRow;
+          delete copy.rowNumber;
           if (copy.integrations?.xero) {
             copy.integrations = {
               ...copy.integrations,

@@ -47,8 +47,15 @@ function unzipBufferToMap_(zipBuf) {
   const cdSize = buf.readUInt32LE(eocdOffset + 12);
   const cdOffset = buf.readUInt32LE(eocdOffset + 16);
 
+  const MAX_ZIP_ENTRIES = 500;
+  const MAX_TOTAL_INFLATED_BYTES = 80 * 1024 * 1024;
+  if (totalEntries > MAX_ZIP_ENTRIES) {
+    throw new Error(`PPTX archive exceeds maximum entry limit (${totalEntries} > ${MAX_ZIP_ENTRIES}).`);
+  }
+
   let ptr = cdOffset;
   const cdEnd = Math.min(buf.length, cdOffset + cdSize);
+  let cumulativeBytes = 0;
 
   for (let idx = 0; idx < totalEntries && ptr + 46 <= cdEnd; idx++) {
     const sig = buf.readUInt32LE(ptr);
@@ -76,14 +83,30 @@ function unzipBufferToMap_(zipBuf) {
     const dataEnd = dataStart + compressedSize;
     if (dataEnd > buf.length) continue;
 
+    const remainingBudget = MAX_TOTAL_INFLATED_BYTES - cumulativeBytes;
+    if (remainingBudget <= 0) {
+      throw new Error("PPTX archive exceeds maximum cumulative uncompressed size limit.");
+    }
+
     const compressedSlice = buf.slice(dataStart, dataEnd);
     try {
       if (compressionMethod === 0) {
+        if (compressedSlice.length > remainingBudget) {
+          throw new Error("PPTX archive exceeds maximum cumulative uncompressed size limit.");
+        }
+        cumulativeBytes += compressedSlice.length;
         files.set(fileName, compressedSlice);
       } else if (compressionMethod === 8) {
-        files.set(fileName, zlib.inflateRawSync(compressedSlice, { maxOutputLength: 50 * 1024 * 1024 }));
+        const inflated = zlib.inflateRawSync(compressedSlice, {
+          maxOutputLength: Math.min(50 * 1024 * 1024, remainingBudget),
+        });
+        cumulativeBytes += inflated.length;
+        files.set(fileName, inflated);
       }
     } catch (zlibErr) {
+      if (String(zlibErr?.message || "").includes("cumulative uncompressed size")) {
+        throw zlibErr;
+      }
       console.warn(`[unzipBufferToMap_] Could not inflate ${fileName}:`, zlibErr.message);
     }
   }

@@ -9,10 +9,32 @@ import {
 } from "./alertMemory";
 import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
-import { matchesClientName, isUserAuthorizedForClient } from "./userPermissions";
+import { matchesClientName, isUserAuthorizedForClient, canViewSalariesAndDividends } from "./userPermissions";
 import { ADMIN_ONLY_ALERT_TYPES, KNOWN_PROACTIVE_ALERT_TYPES } from "../utils/helpers";
 import { restoreAlertToCacheAndSession, applyAlertRemovalToTriageData, PRECOMPUTED_KEY, prunePrecomputedInBackground_ } from "./alertState";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine";
+
+function isTaskRestrictedForUser_(alertType, taskMeta, sessionUser) {
+  if (sessionUser?.isAdmin) return false;
+  const isAdminOnly = !!taskMeta?.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(alertType);
+  if (isAdminOnly) return true;
+  if (!canViewSalariesAndDividends(sessionUser) && alertType === "salary_forecast_in_actual_month") {
+    return true;
+  }
+  return false;
+}
+
+function isTaskOwnedByUser_(taskMeta, sessionUser) {
+  if (!sessionUser) return false;
+  if (sessionUser.isAdmin || sessionUser.role === "Admin") return true;
+  const userEmail = String(sessionUser.email || "").trim().toLowerCase();
+  const userName = String(sessionUser.name || "").trim().toLowerCase();
+  const taskEmail = String(taskMeta?.createdByEmail || taskMeta?.createdBy || "").trim().toLowerCase();
+  const taskName = String(taskMeta?.createdByName || "").trim().toLowerCase();
+  if (taskEmail && userEmail) return taskEmail === userEmail;
+  if (!taskEmail && taskName && userName) return taskName === userName;
+  return false;
+}
 
 function findMatchingTaskMemoryCandidates_(memoryRows, {
   fingerprintHash,
@@ -163,6 +185,10 @@ export async function handleBulkCreateTasks(req, res, sheets) {
         const rawLegacyKey = alert.legacyAlertKey || alert.metadata?.legacyAlertKey || "";
         const legacyHash = rawLegacyKey ? createHash("sha256").update(rawLegacyKey).digest("hex").substring(0, 16) : null;
         const alertType = alert.type || alert.flagType || alert.alertType || "";
+        if (isTaskRestrictedForUser_(alertType, { isAdminOnly: ADMIN_ONLY_ALERT_TYPES.has(alertType) }, sessionUser)) {
+          results.push({ fingerprintHash: alert.fingerprintHash || null, error: "Access denied to restricted alert type" });
+          continue;
+        }
         const isProactiveAlert = Boolean(alert.isProactive || rawAlertKey || KNOWN_PROACTIVE_ALERT_TYPES.has(alertType));
         const isInfoAlert = Boolean(alert.isInfo || alert.category === "informational");
         const category = isProactiveAlert ? "proactive" : (isInfoAlert ? "informational" : "discrepancy");
@@ -344,8 +370,8 @@ export async function handleCreateTask(req, res, sheets) {
 
   const alertType = alert.type || alert.flagType || alert.alertType || "";
   const isAdminOnly = ADMIN_ONLY_ALERT_TYPES.has(alertType);
-  if (!sessionUser.isAdmin && isAdminOnly) {
-    return res.status(403).json({ success: false, error: "Access denied: cannot create task for Admin-only alert" });
+  if (isTaskRestrictedForUser_(alertType, { isAdminOnly }, sessionUser)) {
+    return res.status(403).json({ success: false, error: "Access denied: cannot create task for restricted alert" });
   }
 
   const createdByEmail = sessionUser.email || "";
@@ -626,8 +652,8 @@ export async function handleGetTasks(req, res, sheets) {
       accessibleTasks = accessibleTasks.filter(t =>
         assignedList.some(assigned => matchesClientName(assigned, t.clientName))
       );
-      // 2. Hide admin-only alert tasks from non-admins
-      accessibleTasks = accessibleTasks.filter(t => !t.isAdminOnly && !ADMIN_ONLY_ALERT_TYPES.has(t.alertType));
+      // 2. Hide admin-only and role-restricted alert tasks (e.g. salaries for Senior (Restricted))
+      accessibleTasks = accessibleTasks.filter(t => !isTaskRestrictedForUser_(t.alertType, t, sessionUser));
       // 3. Non-admins only ever see items that they turned into tasks
       accessibleTasks = accessibleTasks.filter(t => checkIsMine(t));
     }
@@ -712,11 +738,12 @@ export async function handleAddTaskNote(req, res, sheets) {
 
     let taskMeta = {};
     try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
-    const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
-    if (!sessionUser.isAdmin && isAdminOnly) {
-      return res.status(403).json({ success: false, error: "Access denied: task belongs to an Admin-only alert" });
+    if (isTaskRestrictedForUser_(memoryRow.alertType, taskMeta, sessionUser)) {
+      return res.status(403).json({ success: false, error: "Access denied: task belongs to a restricted alert" });
     }
-    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
+    if (!sessionUser.isAdmin && !isTaskOwnedByUser_(taskMeta, sessionUser)) {
+      return res.status(403).json({ success: false, error: "Access denied: you may only update tasks you created" });
+    }
     const notes = Array.isArray(taskMeta.furtherNotes) ? taskMeta.furtherNotes : [];
     notes.push({ text: noteText, timestamp: new Date().toISOString() });
     taskMeta.furtherNotes = notes;
@@ -765,8 +792,10 @@ export async function handleSnoozeTask(req, res, sheets) {
 
       let taskMeta = {};
       try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
-      const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
-      if (!sessionUser.isAdmin && isAdminOnly) {
+      if (isTaskRestrictedForUser_(memoryRow.alertType, taskMeta, sessionUser)) {
+        continue;
+      }
+      if (!sessionUser.isAdmin && !isTaskOwnedByUser_(taskMeta, sessionUser)) {
         continue;
       }
       if (unsnooze) { taskMeta.snoozedUntil = ""; } else { taskMeta.snoozedUntil = snoozedUntil || ""; }
@@ -843,9 +872,11 @@ export async function handleRevertTaskToAlert(req, res, sheets) {
     }
     let taskMeta = {};
     try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
-    const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
-    if (!sessionUser.isAdmin && isAdminOnly) {
-      return res.status(403).json({ success: false, error: "Access denied: task belongs to an Admin-only alert" });
+    if (isTaskRestrictedForUser_(memoryRow.alertType, taskMeta, sessionUser)) {
+      return res.status(403).json({ success: false, error: "Access denied: task belongs to a restricted alert" });
+    }
+    if (!sessionUser.isAdmin && !isTaskOwnedByUser_(taskMeta, sessionUser)) {
+      return res.status(403).json({ success: false, error: "Access denied: you may only revert tasks you created" });
     }
 
     let originalAlert = null;
@@ -944,8 +975,10 @@ export async function handleResolveTask(req, res, sheets) {
 
       let taskMeta = {};
       try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
-      const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
-      if (!sessionUser.isAdmin && isAdminOnly) {
+      if (isTaskRestrictedForUser_(memoryRow.alertType, taskMeta, sessionUser)) {
+        continue;
+      }
+      if (!sessionUser.isAdmin && !isTaskOwnedByUser_(taskMeta, sessionUser)) {
         continue;
       }
       taskMeta.resolvedAt = new Date().toISOString();
@@ -1012,9 +1045,13 @@ export async function handleUpdateTask(req, res, sheets) {
 
     let taskMeta = {};
     try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) { }
-    const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
-    if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && isAdminOnly) {
-      return res.status(403).json({ success: false, error: "Forbidden: Access denied to Admin-only task." });
+    if (!req.isSystemAuthorized && sessionUser) {
+      if (isTaskRestrictedForUser_(memoryRow.alertType, taskMeta, sessionUser)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Access denied to restricted task." });
+      }
+      if (!sessionUser.isAdmin && !isTaskOwnedByUser_(taskMeta, sessionUser)) {
+        return res.status(403).json({ success: false, error: "Forbidden: You may only update tasks you created." });
+      }
     }
     taskMeta.furtherNotes = [...(taskMeta.furtherNotes || []), { text: `Alert data changed - analysis updated${unsnooze ? " and task unsnoozed" : ""}`, timestamp: new Date().toISOString(), system: true }];
     if (unsnooze) taskMeta.snoozedUntil = "";
@@ -1069,6 +1106,9 @@ export async function handleCheckExistingTask(req, res, sheets) {
 
     let taskMeta = {};
     try { taskMeta = JSON.parse(match.dataSnapshot || "{}"); } catch (e) { }
+    if (!req.isSystemAuthorized && sessionUser && isTaskRestrictedForUser_(match.alertType, taskMeta, sessionUser)) {
+      return res.status(200).json({ success: true, found: false });
+    }
     const snoozedUntil = taskMeta.snoozedUntil ? new Date(taskMeta.snoozedUntil) : null;
 
     return res.status(200).json({

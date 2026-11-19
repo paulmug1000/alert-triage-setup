@@ -13,7 +13,7 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, sanitizeFormulaInput, getCanonicalAcSheetId, verifyUserAuthorizedForSheet } from "./userPermissions.js";
 import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces.js";
-import { matchesClientName, sanitizeSpreadsheetTerms, isPlaceholderInvoice, parseSheetDate } from "../utils/helpers.js";
+import { matchesClientName, sanitizeSpreadsheetTerms, isPlaceholderInvoice, parseSheetDate, postGasWebAppLocked } from "../utils/helpers.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import {
   pullLivePLToSupabaseNative,
@@ -3378,12 +3378,14 @@ export async function handleEomPullFreshPl(req, res, sheets) {
       });
     }
 
-    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
-    const gasResp = await fetch(webAppUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret, action: "pull_pl", clientName }),
-    });
+    const secret = (process.env.AGENT_TRIGGER_SECRET || "").trim();
+    if (!secret) {
+      return res.status(500).json({
+        success: false,
+        error: isAdmin ? "AGENT_TRIGGER_SECRET is not configured on server" : "Accounting sync service is not configured."
+      });
+    }
+    const gasResp = await postGasWebAppLocked(webAppUrl, { secret, action: "pull_pl", clientName });
 
     const gasText = await gasResp.text();
     let gasData = null;
@@ -3483,20 +3485,22 @@ export async function handleEomPushOutgoings(req, res, sheets) {
         });
       }
     } else {
-      const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
+      const secret = (process.env.AGENT_TRIGGER_SECRET || "").trim();
+      if (!secret) {
+        return res.status(500).json({
+          success: false,
+          error: isAdmin ? "AGENT_TRIGGER_SECRET is not configured on server" : "Accounting sync service is not configured."
+        });
+      }
       const action = isInclUnrec ? "push_outgoings_with_pl_adds" : "push_outgoings";
       const functionName = isInclUnrec ? "pushOutgoingsWithPLAddsToClientSheet" : "pushOutgoingsToClientSheet";
 
-      const gasResp = await fetch(webAppUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          secret,
-          action,
-          functionName,
-          includeUnreconciled: isInclUnrec,
-          clientName
-        }),
+      const gasResp = await postGasWebAppLocked(webAppUrl, {
+        secret,
+        action,
+        functionName,
+        includeUnreconciled: isInclUnrec,
+        clientName
       });
 
       const gasText = await gasResp.text();
@@ -4764,31 +4768,7 @@ export function resolveLockedReportingWebAppUrl(requestedUrl = "") {
  * Only follows GAS ContentService GET echoes on script.googleusercontent.com without secrets.
  */
 export async function postGasWebAppLocked_(targetUrl, payload) {
-  if (!isValidGoogleScriptUrl(targetUrl)) {
-    throw new Error("Blocked invalid Google Apps Script Web App URL.");
-  }
-  const resp = await fetch(targetUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    redirect: "manual",
-  });
-  if (resp.status >= 300 && resp.status < 400) {
-    const loc = String(resp.headers.get("location") || "").trim();
-    let parsedLoc = null;
-    try {
-      parsedLoc = new URL(loc);
-    } catch (_) { }
-    if (
-      parsedLoc &&
-      parsedLoc.protocol === "https:" &&
-      (parsedLoc.hostname === "script.googleusercontent.com" || parsedLoc.hostname === "script.google.com")
-    ) {
-      return await fetch(parsedLoc.toString(), { method: "GET", redirect: "manual" });
-    }
-    throw new Error(`Blocked unexpected Web App redirect target (HTTP ${resp.status}).`);
-  }
-  return resp;
+  return await postGasWebAppLocked(targetUrl, payload);
 }
 
 /**
@@ -6368,21 +6348,20 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
         );
         addedRowsInfo.push({ category: catName, sheetRow: targetRow, mode: "inserted_after_all" });
       } else {
-        // Category already exists in Budget!A150:A250 with blank month cells -> populate blank month cells with £0
+        // Category already exists in Budget!A150:A250 -> populate ONLY blank month cells with £0 (preserving existing values/formulas untouched)
         const r = budgetRows[targetRow - 150] || [];
-        const fillFyRange = (startIdx) => {
-          const vals = [];
+        for (const startIdx of [6, 21, 36]) {
           for (let k = 0; k < 12; k++) {
-            const cur = r[startIdx + k];
-            vals.push(cur === "" || cur === undefined || cur === null ? 0 : cur);
+            const cIdx = startIdx + k;
+            const cur = r[cIdx];
+            if (cur === "" || cur === undefined || cur === null) {
+              batchData.push({
+                range: `Budget!${colIdxToLetter_(cIdx)}${targetRow}`,
+                values: [[0]],
+              });
+            }
           }
-          return vals;
-        };
-        batchData.push(
-          { range: `Budget!G${targetRow}:R${targetRow}`, values: [fillFyRange(6)] },
-          { range: `Budget!V${targetRow}:AG${targetRow}`, values: [fillFyRange(21)] },
-          { range: `Budget!AK${targetRow}:AV${targetRow}`, values: [fillFyRange(36)] }
-        );
+        }
         addedRowsInfo.push({ category: catName, sheetRow: targetRow, mode: "filled_existing_blank_months" });
       }
     }

@@ -4,7 +4,7 @@ import { anthropic } from "./claudeClient";
 import { logClaudeUsage_ } from "./systemConfig";
 import { monthStrToEomKey_, eomTargetMonthToWorkMonth_, autoCompleteLinkedEomTask_ } from "./eomTools";
 import { getSessionUser } from "./authService";
-import { DEFAULT_AC_SHEET_ID, isUserAuthorizedForClient, resolveClientNameBySheetId, verifyUserAuthorizedForSheet, isReadOnlySession } from "./userPermissions";
+import { DEFAULT_AC_SHEET_ID, isUserAuthorizedForClient, resolveClientNameBySheetId, verifyUserAuthorizedForSheet, isReadOnlySession, canViewSalariesAndDividends } from "./userPermissions";
 import { getAllClients } from "./workspaces";
 import {
   findForecastOnlyEmployeesInMonth_,
@@ -579,14 +579,23 @@ export async function handleUploadPayrollChunk(req, res) {
   const { uploadId, chunkData, isFirstChunk } = req.body;
   if (!uploadId || chunkData === undefined) return res.status(400).json({ success: false, error: "Missing uploadId or chunkData" });
   if (!SAFE_UPLOAD_ID_REGEX.test(String(uploadId))) return res.status(400).json({ success: false, error: "Invalid uploadId format" });
-  if (String(chunkData).length > 15 * 1024 * 1024) return res.status(413).json({ success: false, error: "Upload chunk exceeds maximum size" });
+  const chunkStr = String(chunkData);
+  const MAX_CHUNK_BYTES = 15 * 1024 * 1024;
+  const MAX_TOTAL_UPLOAD_BYTES = 25 * 1024 * 1024;
+  if (chunkStr.length > MAX_CHUNK_BYTES) return res.status(413).json({ success: false, error: "Upload chunk exceeds maximum size" });
   try {
     const key = getScopedPayrollUploadKey_(req, uploadId);
     if (isFirstChunk) {
-      await redisClient.set(key, chunkData, { EX: 3600 }); 
+      await redisClient.set(key, chunkStr, { EX: 3600 });
     } else {
-      await redisClient.append(key, chunkData);
-      await redisClient.expire(key, 3600); 
+      const currentLen = typeof redisClient.strLen === "function"
+        ? Number(await redisClient.strLen(key)) || 0
+        : String((await redisClient.get(key)) || "").length;
+      if (currentLen + chunkStr.length > MAX_TOTAL_UPLOAD_BYTES) {
+        return res.status(413).json({ success: false, error: "Total upload exceeds 25 MB maximum size" });
+      }
+      await redisClient.append(key, chunkStr);
+      await redisClient.expire(key, 3600);
     }
     return res.status(200).json({ success: true });
   } catch (err) {
@@ -599,6 +608,11 @@ export async function handleIdentifyPayrollClient(req, res, sheets) {
   const { uploadId, fileName } = req.body;
   const idAcId = DEFAULT_AC_SHEET_ID;
   if (!uploadId || !idAcId) return res.status(400).json({ success: false, error: "Missing uploadId or acId" });
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (!canViewSalariesAndDividends(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: You do not have permission to access payroll data." });
+  }
   let fileData;
   try {
     const key = getScopedPayrollUploadKey_(req, uploadId);
@@ -611,7 +625,6 @@ export async function handleIdentifyPayrollClient(req, res, sheets) {
     return res.status(status).json({ success: false, error: err.message });
   }
   try {
-    const sessionUser = getSessionUser(req);
     const clientsRes = await getAllClients(sheets, sessionUser, false, idAcId);
     const allClients = (clientsRes?.clientsArray || [])
       .map(c => ({
@@ -738,8 +751,9 @@ export async function handleProcessPayrollDocument(req, res, sheets) {
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
-
-  let targetClient = payrollClientName || "";
+  if (!canViewSalariesAndDividends(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: You do not have permission to access payroll data." });
+  }
   if (!targetClient && payrollClientSheetId) {
     try {
       targetClient = await resolveClientNameBySheetId(sheets, payrollClientSheetId, automationCommanderSheetId);
@@ -890,6 +904,9 @@ export async function handleResolvePayrollImportForecast(req, res, sheets) {
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (!canViewSalariesAndDividends(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: You do not have permission to access payroll data." });
+  }
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ success: false, error: "Read-only session cannot modify payroll data." });
   }

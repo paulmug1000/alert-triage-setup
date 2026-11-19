@@ -143,7 +143,7 @@ import {
   unwrapRequestSheetIds,
   installSheetIdBoundary
 } from "../../services/userPermissions";
-import { matchesClientName, sanitizeSpreadsheetTerms, assertTrustedOrigin, isValidGoogleScriptUrl, resolveCanonicalOAuthHost } from "../../utils/helpers";
+import { matchesClientName, sanitizeSpreadsheetTerms, assertTrustedOrigin, isValidGoogleScriptUrl, resolveCanonicalOAuthHost, postGasWebAppLocked } from "../../utils/helpers";
 
 async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheetIds = []) {
   if (sessionUser?.isAdmin && !isReadOnlySession(sessionUser)) return true;
@@ -307,6 +307,28 @@ export default async function handler(req, res) {
 
     const originalJson = res.json.bind(res);
     res.json = function (data) {
+      const callerIsPrivileged = Boolean(
+        req.isSystemAuthorized ||
+        (!req._liveSessionUser?.isReadOnly && (req._liveSessionUser?.isAdmin || req._liveSessionUser?.role === "Admin"))
+      );
+      if (!callerIsPrivileged && data && typeof data === "object" && !Array.isArray(data)) {
+        const scrubNonAdminText = (val) => {
+          if (typeof val !== "string" || !val) return val;
+          return sanitizeSpreadsheetTerms(val).replace(
+            /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.iam\.gserviceaccount\.com/gi,
+            "system service"
+          );
+        };
+        if (typeof data.error === "string") {
+          data.error = scrubNonAdminText(data.error);
+        }
+        if (typeof data.details === "string") {
+          data.details = scrubNonAdminText(data.details);
+        }
+        if (typeof data.message === "string") {
+          data.message = scrubNonAdminText(data.message);
+        }
+      }
       if (data && data.success && !data.deferredSheetWrite && PMA_MUTATION_SCOPES[action]) {
         const scopeList = PMA_MUTATION_SCOPES[action];
         const rawCId = req.body?.clientSheetId || req.body?.payrollClientSheetId || "";
@@ -475,13 +497,14 @@ export default async function handler(req, res) {
       : await resolveLiveSessionUser(req, res, { sheets });
     installSheetIdBoundary(req, res, sessionUser);
 
+    if (req.method === "POST" && !isSystemAuthorized && !assertTrustedOrigin(req, res)) {
+      return;
+    }
+
     // Enforce authentication gateway across all protected actions
     if (!PUBLIC_ACTIONS.has(action) && !isSystemAuthorized) {
       if (!sessionUser) {
         return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
-      }
-      if (req.method === "POST" && !assertTrustedOrigin(req, res)) {
-        return;
       }
 
       // Enforce strict read-only lock across all state-mutating actions for EmailOTP / read-only sessions
@@ -1241,15 +1264,11 @@ export default async function handler(req, res) {
           if (!isValidGoogleScriptUrl(webAppUrl)) {
             return res.status(400).json({ success: false, error: "Invalid Master Web App URL configured for client." });
           }
-          const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
+          const secret = (process.env.AGENT_TRIGGER_SECRET || "").trim();
           if (!secret) {
             return res.status(500).json({ success: false, error: "AGENT_TRIGGER_SECRET is not configured on server" });
           }
-          const gasResp = await fetch(webAppUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
-          });
+          const gasResp = await postGasWebAppLocked(webAppUrl, { secret, action: "sync_expense_breakdown", clientName });
           const gasText = await gasResp.text();
           let gasData = null;
           try { gasData = JSON.parse(gasText); } catch (e) { }
@@ -1542,12 +1561,21 @@ export default async function handler(req, res) {
     } else if (action === "upload_payroll_chunk") {
       return await handleUploadPayrollChunk(req, res);
     } else if (action === "identify_payroll_client") {
+      if (!canViewSalariesAndDividends(sessionUser)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Payroll access restricted." });
+      }
       return await handleIdentifyPayrollClient(req, res, sheets);
     } else if (action === "identify_time_client") {
       return await handleIdentifyTimeClient(req, res, sheets);
     } else if (action === "process_payroll_document") {
+      if (!canViewSalariesAndDividends(sessionUser)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Payroll access restricted." });
+      }
       return await handleProcessPayrollDocument(req, res, sheets);
     } else if (action === "resolve_payroll_import_forecast") {
+      if (!canViewSalariesAndDividends(sessionUser)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Payroll access restricted." });
+      }
       return await handleResolvePayrollImportForecast(req, res, sheets);
     } else if (action === "process_time_document") {
       return await handleProcessTimeDocument(req, res, sheets);

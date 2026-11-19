@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
 import ReportStyleEditorModal from "./ReportStyleEditorModal";
-import { eomWorkMonthToTargetMonth } from "../utils/helpers";
+import { eomWorkMonthToTargetMonth, toSafeExternalHref } from "../utils/helpers";
 
 /**
  * Shifts a YYYY-MM month key by delta months (+1 or -1)
@@ -2313,7 +2313,7 @@ export default function ReportingTab({
                           <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                               <a
-                                href={activeReportUrl}
+                                href={toSafeExternalHref(activeReportUrl) || "#"}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 style={{
@@ -2579,7 +2579,7 @@ export default function ReportingTab({
                           )}
                           {client.masterSheetUrl && (
                             <a
-                              href={client.masterSheetUrl}
+                              href={toSafeExternalHref(client.masterSheetUrl) || "#"}
                               target="_blank"
                               rel="noopener noreferrer"
                               style={{ color: "#0284c7", textDecoration: "none" }}
@@ -2589,7 +2589,7 @@ export default function ReportingTab({
                           )}
                           {client.folderUrl && (
                             <a
-                              href={client.folderUrl}
+                              href={toSafeExternalHref(client.folderUrl) || "#"}
                               target="_blank"
                               rel="noopener noreferrer"
                               style={{ color: "#0284c7", textDecoration: "none" }}
@@ -2851,7 +2851,7 @@ export default function ReportingTab({
                         <td style={{ padding: "10px 12px", fontWeight: 600 }}>{item.clientName}</td>
                         <td style={{ padding: "10px 12px" }}>{item.month}</td>
                         <td style={{ padding: "10px 12px" }}>
-                          <a href={item.reportUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#0066cc", textDecoration: "none" }}>
+                          <a href={toSafeExternalHref(item.reportUrl) || "#"} target="_blank" rel="noopener noreferrer" style={{ color: "#0066cc", textDecoration: "none" }}>
                             {item.reportName || "Open presentation"} ↗
                           </a>
                         </td>
@@ -3974,7 +3974,7 @@ export default function ReportingTab({
                 <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                   {narrativeWorkbench?.reportUrl && (
                     <a
-                      href={narrativeWorkbench.reportUrl}
+                      href={toSafeExternalHref(narrativeWorkbench.reportUrl) || "#"}
                       target="_blank"
                       rel="noopener noreferrer"
                       style={{

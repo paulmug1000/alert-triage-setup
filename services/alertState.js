@@ -1768,9 +1768,11 @@ export async function handleGetIgnoredAlerts(req, res, sheets) {
     }
     if (!sessionUser.isAdmin) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      const allowSalaries = canViewSalariesAndDividends(sessionUser);
       ignoredAlerts = ignoredAlerts.filter(a =>
         assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
-        !ADMIN_ONLY_ALERT_TYPES.has(a.alertType)
+        !ADMIN_ONLY_ALERT_TYPES.has(a.alertType) &&
+        (allowSalaries || a.alertType !== "salary_forecast_in_actual_month")
       );
     }
 

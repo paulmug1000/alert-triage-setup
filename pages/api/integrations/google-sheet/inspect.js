@@ -7,11 +7,12 @@
  * Returns title, available worksheets/tabs, headers, and row counts.
  */
 
-import { resolveLiveSessionUser } from "../../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
+import { extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
 import { inspectGoogleSpreadsheet, refreshGoogleSheetTokens } from "../../../../services/googleSheetService.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../../services/vaultService.js";
-import { assertTrustedOrigin } from "../../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
 export const config = {
   maxDuration: 120,
@@ -23,6 +24,11 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
   res.setHeader("Cache-Control", "no-store");
+
+  const rl = await checkRateLimit("gsheet-int", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -59,6 +65,18 @@ export default async function handler(req, res) {
         });
       }
       if (grant?.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
+        const grantOwner = String(grant.metadata?.userEmail || "").toLowerCase().trim();
+        const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
+        if (!grantOwner || callerEmail !== grantOwner) {
+          const linkedSheetId = String(grant.metadata?.spreadsheetId || "").trim();
+          const requestedSheetId = extractSheetIdFromUrl(url || sheetId) || String(sheetId || "").trim();
+          if (!linkedSheetId || !requestedSheetId || requestedSheetId !== linkedSheetId) {
+            return res.status(403).json({
+              success: false,
+              error: "Please authorise with your own Google account to inspect a different spreadsheet."
+            });
+          }
+        }
         // If expired or expiring within 5 minutes, refresh automatically with concurrency lock
         const isExpiring = !grant.expiresAt || Date.now() > (grant.expiresAt - 300000);
         if (isExpiring && grant.tokens.refreshToken) {
@@ -106,7 +124,7 @@ export default async function handler(req, res) {
     console.error("Error inspecting Google Sheet:", err);
     return res.status(200).json({
       success: false,
-      error: err.message || "Failed to inspect Google Sheet"
+      error: sessionUser.isAdmin ? (err.message || "Failed to inspect Google Sheet") : sanitizeSpreadsheetTerms(err.message || "Failed to inspect external source")
     });
   }
 }

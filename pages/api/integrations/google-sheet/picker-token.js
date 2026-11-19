@@ -8,8 +8,8 @@
  * browser can open the official Google Picker dialog for the current client.
  */
 
-import { resolveLiveSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, canAccessPma } from "../../../../services/userPermissions.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken } from "../../../../services/vaultService.js";
 import { refreshGoogleSheetTokens } from "../../../../services/googleSheetService.js";
@@ -21,6 +21,11 @@ export default async function handler(req, res) {
   }
   if (!assertTrustedOrigin(req, res)) return;
   res.setHeader("Cache-Control", "no-store");
+
+  const rl = await checkRateLimit("gsheet-picker", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -72,10 +77,10 @@ export default async function handler(req, res) {
       });
     }
 
-    // Never expose another user's live Google OAuth accessToken to a non-staff session
+    // Never expose another user's live Google OAuth accessToken to a different caller (including staff)
     const grantOwner = String(grant.metadata?.userEmail || "").toLowerCase().trim();
     const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
-    if (!canAccessPma(sessionUser) && grantOwner && callerEmail !== grantOwner) {
+    if (!grantOwner || callerEmail !== grantOwner) {
       return res.status(200).json({
         success: false,
         needsAuth: true,

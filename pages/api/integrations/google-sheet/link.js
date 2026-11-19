@@ -7,9 +7,9 @@
  * (KeyInfo!X14:X15) and auto-completes task p2_connect_crm in Setup Mode.
  */
 
-import { resolveLiveSessionUser } from "../../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, resolveMasterSheetIdByClientName } from "../../../../services/userPermissions.js";
-import { getSheetsClient } from "../../../../services/sheetsClient.js";
+import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
 import { assertExternalCrmSpreadsheet, linkGoogleSheetToClient } from "../../../../services/googleSheetService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
 import { saveIntegrationTokens, getIntegrationTokens } from "../../../../services/vaultService.js";
@@ -21,6 +21,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
   if (!assertTrustedOrigin(req, res)) return;
+
+  const rl = await checkRateLimit("gsheet-int", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -70,6 +75,22 @@ export default async function handler(req, res) {
   }
 
   try {
+    const existingGrant = await getIntegrationTokens({ clientKey, masterSheetId: resolvedMasterSheetId, tool: "googlesheet" });
+    if (existingGrant?.tokens?.accessToken && !existingGrant.tokens.accessToken.startsWith("manual_")) {
+      const grantOwner = String(existingGrant.metadata?.userEmail || "").toLowerCase().trim();
+      const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
+      if (!grantOwner || callerEmail !== grantOwner) {
+        const linkedSheetId = String(existingGrant.metadata?.spreadsheetId || "").trim();
+        const requestedSheetId = extractSheetIdFromUrl(url) || String(url || "").trim();
+        if (!linkedSheetId || requestedSheetId !== linkedSheetId) {
+          return res.status(403).json({
+            success: false,
+            error: "Please authorise with your own Google account before linking a different spreadsheet."
+          });
+        }
+      }
+    }
+
     const sheetsForExternalCheck = await getSheetsClient();
     await assertExternalCrmSpreadsheet(sheetsForExternalCheck, url);
 
@@ -83,8 +104,7 @@ export default async function handler(req, res) {
       spreadsheetTitle
     });
 
-    // Check if vault record exists; update metadata or create connected status record
-    const existingGrant = await getIntegrationTokens({ clientKey, masterSheetId: resolvedMasterSheetId, tool: "googlesheet" });
+    // Update Vault metadata or create connected status record
     const resolvedTitle = String(spreadsheetTitle || existingGrant?.metadata?.spreadsheetTitle || "").trim();
     if (existingGrant) {
       await saveIntegrationTokens({

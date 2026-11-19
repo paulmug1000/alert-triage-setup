@@ -807,7 +807,7 @@ export default function OutgoingsDetailModal({
               <button
                 type="button"
                 onClick={() => {
-                  window.open(`https://docs.google.com/spreadsheets/d/${resolvedClientInfo.clientSheetId}/edit`, "_blank");
+                  window.open(`https://docs.google.com/spreadsheets/d/${resolvedClientInfo.clientSheetId}/edit`, "_blank", "noopener,noreferrer");
                 }}
                 style={{
                   padding: "6px 12px",

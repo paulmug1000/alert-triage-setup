@@ -202,6 +202,9 @@ export function colLetterToIdx0(letters) {
 
 export function colIdx0ToLetter(idx0) {
   let n = Number(idx0) + 1;
+  if (!Number.isFinite(n) || n <= 0 || n > 16384) {
+    throw new Error(`Column index out of range (${idx0})`);
+  }
   let str = "";
   while (n > 0) {
     const rem = (n - 1) % 26;
@@ -323,11 +326,17 @@ function applyWriteToGrid2D_(
 
   for (let rOffset = 0; rOffset < rows.length; rOffset++) {
     const targetR = sRow + rOffset;
+    if (targetR < 0 || targetR >= 50000) {
+      throw new Error(`Virtual sheet write row out of bounds (${targetR + 1} in ${tabName || "sheet"})`);
+    }
     if (parsed.endRow0 != null && targetR > parsed.endRow0) break;
     while (nextGrid.length <= targetR) nextGrid.push([]);
     const rowVals = Array.isArray(rows[rOffset]) ? rows[rOffset] : [rows[rOffset]];
     for (let cOffset = 0; cOffset < rowVals.length; cOffset++) {
       const targetC = sCol + cOffset;
+      if (targetC < 0 || targetC >= 600) {
+        throw new Error(`Virtual sheet write column out of bounds (${targetC + 1} in ${tabName || "sheet"})`);
+      }
       if (parsed.endCol0 != null && targetC > parsed.endCol0) break;
       while (nextGrid[targetR].length <= targetC) nextGrid[targetR].push("");
       const val = rowVals[cOffset];
@@ -718,7 +727,8 @@ export function expandClientTabFromStorage_(data, tabName, { valuesOnly = false 
   const hasMigratedFormulasCol = !hasLegacyEmbeddedFormulas && (hasDbFormulasCol || storedVals.length === 0);
 
   if (meta && meta.totalRows > storedVals.length && storedVals.length >= 2) {
-    const { totalRows, templateRowIdx } = meta;
+    const totalRows = Math.min(Math.max(0, Math.trunc(Number(meta.totalRows) || 0)), 50000);
+    const templateRowIdx = Math.max(0, Math.min(storedVals.length - 1, Math.trunc(Number(meta.templateRowIdx) || 0)));
     const uncompactedForms = valuesOnly ? null : expandFormulasGrid2D_(storedForms, storedVals, minCols);
     const expandedVals = [];
     const expandedForms = valuesOnly ? expandedVals : [];
@@ -1545,7 +1555,7 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     ["TimeComp", "DataFromTime"].forEach((t) => masterTabsNeeded.add(t));
   }
 
-  const grids = {};
+  const grids = Object.create(null);
   const recordsByTab = {};
   const clientKey = String(ctx.clientName || "").toLowerCase();
   const missingMasterTabs = [];
@@ -2011,7 +2021,7 @@ async function recomputeAndPersistImmediateClientTabs_(
     return;
   }
 
-  const localGrids = {};
+  const localGrids = Object.create(null);
   const records = {};
 
   // Always include KeyInfo in localGrids if cached (or load it if a tab besides Confirmed/Pipeline needs it)
@@ -2314,7 +2324,7 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
   const supabase = getSupabaseAdmin();
   const recordsByTab = {};
   const prevSnapshots = {};
-  const grids = {};
+  const grids = Object.create(null);
   const alreadyEvaluatedTabs = new Set();
   const wasPersistedToDbImmediate = new Set();
 
@@ -3663,6 +3673,9 @@ export async function handleVirtualSheetsCall({
           const e = Math.max(s, Number(rng.endIndex ?? s + 1));
           const count = e - s;
           if (count > 0) {
+            if (s > 50000 || s + count > 50000 || (target.values_grid || []).length + count > 50000) {
+              throw new Error(`insertDimension exceeds maximum virtual sheet row limit (50000)`);
+            }
             const nextVals = (target.values_grid || []).map((r) => (Array.isArray(r) ? [...r] : []));
             const nextForms = (target.formulas_grid || target.values_grid || []).map((r, r0) => ({
               oldR1: r0 + 1,
@@ -5202,7 +5215,7 @@ export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") 
     }
   }
 
-  const grids = {};
+  const grids = Object.create(null);
   const chunkSize = 8;
   for (let i = 0; i < tabsToFetch.length; i += chunkSize) {
     const batch = tabsToFetch.slice(i, i + chunkSize);
@@ -5715,7 +5728,7 @@ export async function getSupabaseClockStatusAndSyncConfig(updatedBy = "System") 
   const needsSeedOrRefresh =
     !cfgVal ||
     !cfgVal.targetUrl ||
-    (!rpcSecretsSynced && ((cronSecret && cfgVal.cronSecret !== cronSecret) || (bypassToken && cfgVal.bypassToken !== bypassToken)));
+    Boolean(cfgVal.cronSecret || cfgVal.bypassToken);
 
   if (needsSeedOrRefresh) {
     cfgVal = {
@@ -5723,13 +5736,10 @@ export async function getSupabaseClockStatusAndSyncConfig(updatedBy = "System") 
       enabled: cfgVal?.enabled !== undefined ? Boolean(cfgVal.enabled) : true,
       targetUrl: cfgVal?.targetUrl || defaultUrl,
       hasSecretConfigured: Boolean(cronSecret || rpcSecretsSynced),
-      ...(rpcSecretsSynced ? {} : { cronSecret, bypassToken }),
       updatedAt: new Date().toISOString(),
     };
-    if (rpcSecretsSynced) {
-      delete cfgVal.cronSecret;
-      delete cfgVal.bypassToken;
-    }
+    delete cfgVal.cronSecret;
+    delete cfgVal.bypassToken;
     await supabase.from("system_config").upsert({
       key: "supabase_cron_clock",
       value: cfgVal,
@@ -7067,7 +7077,7 @@ export async function seedNewClientTemplatesToSupabase(
     }
 
     const outNotesMap = clientSnap.outNotesMap || {};
-    const grids = {};
+    const grids = Object.create(null);
 
     for (const tabRec of clientSnap.tabs) {
       const tabName = tabRec.tabName;

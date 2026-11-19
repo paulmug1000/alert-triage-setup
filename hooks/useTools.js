@@ -115,7 +115,12 @@ export function useTools({
       if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
         if (!toolsScriptsLoaded) await loadToolsScripts();
         const buf = await file.arrayBuffer();
-        const workbook = window.XLSX.read(new Uint8Array(buf), { type: "array" });
+        const workbook = window.XLSX.read(new Uint8Array(buf), {
+          type: "array",
+          cellFormula: false,
+          cellHTML: false,
+          sheetRows: 25000,
+        });
         let excelText = "";
         workbook.SheetNames.forEach(sheetName => {
           excelText += `--- SHEET: ${sheetName} ---\n`;

@@ -9,7 +9,7 @@
  */
 
 import { resolveLiveSessionUser } from "../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, matchesClientName } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
@@ -37,10 +37,18 @@ export default async function handler(req, res) {
   if (!sessionUser.isAdmin && (clientSheetId || masterSheetId)) {
     try {
       const sheets = await getSheetsClient();
-      const targetSheet = clientSheetId || masterSheetId;
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, targetSheet, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      let boundClient = String(clientName || "").trim();
+      for (const sid of [clientSheetId, masterSheetId].filter(Boolean)) {
+        const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
+        if (!auth.authorized) {
+          return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+        }
+        if (auth.clientName) {
+          if (boundClient && !matchesClientName(boundClient, auth.clientName)) {
+            return res.status(403).json({ success: false, error: "Access denied to this client." });
+          }
+          boundClient = auth.clientName;
+        }
       }
     } catch (_) {
       return res.status(403).json({ success: false, error: "Access denied to this client." });

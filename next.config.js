@@ -3,6 +3,7 @@ const nextConfig = {
   distDir: process.env.NEXT_DIST_DIR || ".next",
   reactStrictMode: true,
   swcMinify: true,
+  images: { unoptimized: true },
   cacheMaxMemorySize: 52 * 1024 * 1024,
   devIndicators: {
     buildActivity: false,
@@ -18,7 +19,7 @@ const nextConfig = {
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://www.gstatic.com",
       "font-src 'self' data: https://fonts.gstatic.com",
       "img-src 'self' data: blob: https:",
-      "connect-src 'self' https://app.pulsedashboard.co.uk https://pma.pulsedashboard.co.uk https://*.pulsedashboard.co.uk https://accounts.google.com https://apis.google.com https://www.googleapis.com https://content.googleapis.com https://docs.google.com https://login.microsoftonline.com",
+      "connect-src 'self' https://app.pulsedashboard.co.uk https://pulsedashboard.co.uk https://pma.pulsedashboard.co.uk https://accounts.google.com https://apis.google.com https://www.googleapis.com https://content.googleapis.com https://docs.google.com https://login.microsoftonline.com",
       "frame-src 'self' https://accounts.google.com https://docs.google.com https://drive.google.com https://content.googleapis.com https://login.microsoftonline.com",
       "frame-ancestors 'self'",
       "worker-src 'self' blob:",

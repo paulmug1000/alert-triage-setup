@@ -696,15 +696,34 @@ export function sanitizeFormulaInput(val) {
 }
 
 const JOB_COSTING_FORMULA_COLS = new Set([10, 12, 13, 14, 20, 32, 33, 37, 38]);
+const PRIMARY_NUMERIC_FORMULA_COLS = new Set([8, 9, 11, 15, 16, 17, 19, 32, 33]);
+const DANGEROUS_FORMULA_FN_RE = /=\s*[\s\S]*\b(IMPORT(?:XML|DATA|HTML|FEED|RANGE)|IMAGE|HYPERLINK|QUERY|WEBSERVICE|GOOGLEFINANCE|FILTERXML)\s*\(/i;
 
 /**
  * Sanitizes a copied Pipeline/Confirmed row slice against formula injection while
- * preserving internal Job Costing formula columns inside A:AM.
+ * preserving internal Job Costing formula columns inside A:AM (and numeric admin formulas when authorized).
  */
-export function sanitizeJobSlice(slice, { isJobCosting = false, isPrimaryRange = false } = {}) {
-  return (slice || []).map((cell, idx) => {
+export function sanitizeJobSlice(slice, { isJobCosting = false, isPrimaryRange = false, canEnterFormulas = false, rangeKind = "other" } = {}) {
+  const arr = Array.isArray(slice) ? slice : [];
+  return arr.map((cell, idx) => {
+    if (typeof cell === "string" && DANGEROUS_FORMULA_FN_RE.test(cell)) {
+      return sanitizeFormulaInput(cell);
+    }
     if (isPrimaryRange && isJobCosting && JOB_COSTING_FORMULA_COLS.has(idx)) {
       return cell;
+    }
+    if (canEnterFormulas && typeof cell === "string" && /^\s*=/.test(cell)) {
+      const allowNumericFormulaCol =
+        (isPrimaryRange && PRIMARY_NUMERIC_FORMULA_COLS.has(idx)) ||
+        (rangeKind === "invoices" && (
+          arr.length <= 19
+            ? (idx === 0 || idx === 5 || idx === 7 || idx === 12 || idx === 14)
+            : (idx % 7 === 0 || idx % 7 === 5)
+        )) ||
+        (rangeKind === "expenses" && idx % 7 === 0);
+      if (allowNumericFormulaCol) {
+        return cell;
+      }
     }
     return sanitizeFormulaInput(cell);
   });

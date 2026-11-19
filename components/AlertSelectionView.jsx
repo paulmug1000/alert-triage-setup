@@ -1624,8 +1624,8 @@ export default function AlertSelectionView({
               if (!isAdmin || (!info?.clientSheetId && !info?.masterSheetId)) return null;
               return (
                 <button className="triage-btn" onClick={() => {
-                  if (info.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.clientSheetId}/edit`, "_blank");
-                  if (info.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.masterSheetId}/edit`, "_blank");
+                  if (info.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.clientSheetId}/edit`, "_blank", "noopener,noreferrer");
+                  if (info.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.masterSheetId}/edit`, "_blank", "noopener,noreferrer");
                 }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd", whiteSpace: "nowrap" }}>
                   📊 Open sheets
                 </button>
@@ -2091,8 +2091,8 @@ export default function AlertSelectionView({
                                         })()}
                                         {isAdmin && clientInfo && (clientInfo.clientSheetId || clientInfo.masterSheetId) && (
                                           <button className="triage-btn" onClick={() => {
-                                            if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
-                                            if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
+                                            if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank", "noopener,noreferrer");
+                                            if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank", "noopener,noreferrer");
                                           }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd", whiteSpace: "nowrap" }}>📊 Open sheets</button>
                                         )}
                                         {isRichFlag && !analysis && !isLoading && (
@@ -3317,8 +3317,8 @@ export default function AlertSelectionView({
                                               )}
                                               {isAdmin && (clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
                                                 <button className="triage-btn" onClick={() => {
-                                                  if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
-                                                  if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
+                                                  if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank", "noopener,noreferrer");
+                                                  if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank", "noopener,noreferrer");
                                                 }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd", whiteSpace: "nowrap" }}>Open sheets</button>
                                               )}
                                               {(alert.alertType === "contractorsDashboardDiscr" || alert.alertType === "expenseDashboardDiscr") && clientInfo && (

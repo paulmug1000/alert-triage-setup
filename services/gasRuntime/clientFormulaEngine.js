@@ -387,6 +387,9 @@ function colLettersToIndex(letters) {
 
 function colIndexToLetters(c0) {
   let n = c0 + 1;
+  if (!Number.isFinite(n) || n <= 0 || n > 16384) {
+    throw new SheetError("#VALUE!", `Column index out of range (${c0})`);
+  }
   let s = "";
   while (n > 0) {
     const m = (n - 1) % 26;
@@ -1118,6 +1121,9 @@ const PRESERVE_EXISTING_SPILL = Symbol("PRESERVE_EXISTING_SPILL");
 
 export function recalculateClientGrids(grids, options = {}) {
   if (!grids || typeof grids !== "object") return grids;
+  if (Object.getPrototypeOf(grids) === Object.prototype) {
+    Object.setPrototypeOf(grids, null);
+  }
 
   const todaySerial =
     typeof options.todaySerial === "number"
@@ -2725,6 +2731,9 @@ export function recalculateClientGrids(grids, options = {}) {
         const b = resolveRangeBounds(args[0], ctx, true);
         if (!b) return ctx.r + 1;
         if (b.r0 === b.r1) return b.r0 + 1;
+        if (b.r1 - b.r0 + 1 > 50000) {
+          throw new SheetError("#NUM!", "ROW span exceeds 50,000 rows");
+        }
         const out = [];
         for (let r = b.r0; r <= b.r1; r++) out.push([r + 1]);
         return out;
@@ -2867,8 +2876,8 @@ export function recalculateClientGrids(grids, options = {}) {
       case "SEQUENCE": {
         const rows = Math.max(0, Math.trunc(toNumberStrict(evalScalar(args[0], ctx))));
         const cols = args.length >= 2 ? Math.max(1, Math.trunc(toNumberStrict(evalScalar(args[1], ctx)))) : 1;
-        if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows * cols > 100000) {
-          throw new SheetError("#NUM!", "SEQUENCE size exceeds 100,000 cells");
+        if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows > 50000 || cols > 600 || rows * cols > 100000) {
+          throw new SheetError("#NUM!", "SEQUENCE size exceeds allowed sheet bounds");
         }
         const start = args.length >= 3 ? toNumberStrict(evalScalar(args[2], ctx)) : 1;
         const step = args.length >= 4 ? toNumberStrict(evalScalar(args[3], ctx)) : 1;
@@ -3368,11 +3377,12 @@ export function recalculateClientGrids(grids, options = {}) {
     }
 
     if (s.includes("*") || s.includes("?")) {
+      const collapsed = s.replace(/\*+/g, "*");
       const regexStr =
         "^" +
-        s
+        collapsed
           .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-          .replace(/\*/g, ".*")
+          .replace(/\*/g, ".*?")
           .replace(/\?/g, ".") +
         "$";
       const re = new RegExp(regexStr, "i");
@@ -3390,6 +3400,54 @@ export function recalculateClientGrids(grids, options = {}) {
     return (v) => !isBlankVal(v) && String(v).toLowerCase() === lowerS;
   }
 
+  function hasNestedQuantifier_(patternStr) {
+    const stack = [{ hasQuant: false }];
+    let inCharClass = false;
+    for (let i = 0; i < patternStr.length; i++) {
+      const ch = patternStr[i];
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
+      if (inCharClass) {
+        if (ch === "]") inCharClass = false;
+        continue;
+      }
+      if (ch === "[") {
+        inCharClass = true;
+        continue;
+      }
+      if (ch === "(") {
+        stack.push({ hasQuant: false });
+        continue;
+      }
+      if (ch === ")") {
+        const popped = stack.length > 1 ? stack.pop() : { hasQuant: false };
+        const nextCh = patternStr[i + 1] || "";
+        const isQuantAfterGroup = nextCh === "+" || nextCh === "*" || nextCh === "{";
+        if (popped.hasQuant && isQuantAfterGroup) {
+          return true;
+        }
+        if (popped.hasQuant || isQuantAfterGroup) {
+          stack[stack.length - 1].hasQuant = true;
+        }
+        continue;
+      }
+      if (ch === "+" || ch === "*") {
+        stack[stack.length - 1].hasQuant = true;
+        continue;
+      }
+      if (ch === "{") {
+        const tailMatch = patternStr.slice(i).match(/^\{\d+(?:,\d*)?\}/);
+        if (tailMatch) {
+          stack[stack.length - 1].hasQuant = true;
+          i += tailMatch[0].length - 1;
+        }
+      }
+    }
+    return false;
+  }
+
   function parseRe2Pattern(pat, globalFlag = false) {
     let flags = globalFlag ? "g" : "";
     let p = String(pat ?? "");
@@ -3400,7 +3458,7 @@ export function recalculateClientGrids(grids, options = {}) {
     if (p.length > 500) {
       throw new SheetError("#VALUE!", "Regex pattern exceeds 500 character limit");
     }
-    if (/\([^)]*[+*][^)]*\)[+*?{]/.test(p) || /(\.\*){4,}/.test(p)) {
+    if (hasNestedQuantifier_(p) || /(\.\*|\.\+){3,}/.test(p)) {
       throw new SheetError("#VALUE!", "Unsafe regular expression pattern");
     }
     return { pattern: p, flags };

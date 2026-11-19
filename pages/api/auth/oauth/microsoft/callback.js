@@ -129,8 +129,10 @@ export default async function handler(req, res) {
       idClaims.aud !== clientId ||
       typeof idClaims.exp !== "number" ||
       idClaims.exp * 1000 <= Date.now() ||
+      typeof idClaims.tid !== "string" ||
+      !idClaims.tid.trim() ||
       typeof idClaims.iss !== "string" ||
-      !idClaims.iss.startsWith("https://login.microsoftonline.com/") ||
+      idClaims.iss !== `https://login.microsoftonline.com/${idClaims.tid.trim()}/v2.0` ||
       !safeCompareSecret(String(idClaims.nonce || ""), String(cookieNonce))
     ) {
       res.redirect("/pma?auth_error=invalid_identity_token");
@@ -156,7 +158,7 @@ export default async function handler(req, res) {
       idClaims.xms_edov === "true" ||
       idClaims.xms_edov === 1;
 
-    const graphRes = await fetch("https://graph.microsoft.com/v1.0/me", {
+    const graphRes = await fetch("https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName,userType", {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
 
@@ -167,19 +169,36 @@ export default async function handler(req, res) {
       return;
     }
 
-    const upnEmail = String(idClaims.preferred_username || graphUser.userPrincipalName || "").toLowerCase().trim();
+    const graphUpn = String(graphUser.userPrincipalName || "").toLowerCase().trim();
+    const graphUserType = String(graphUser.userType || "").toLowerCase().trim();
+    const preferredUsername = String(idClaims.preferred_username || "").toLowerCase().trim();
     const claimEmail = String(idClaims.email || "").toLowerCase().trim();
-    const nativeMsaDomains = ["@outlook.", "@hotmail.", "@live.", "@msn."];
+
+    // Always block B2B Guest / external UPNs even if preferred_username shadows a victim domain
+    if (graphUserType === "guest" || graphUpn.includes("#ext#") || preferredUsername.includes("#ext#")) {
+      console.error("❌ Blocked external or B2B guest Microsoft identity:", { tid: idClaims.tid, userType: graphUserType });
+      res.redirect("/pma?auth_error=unverified_email_domain");
+      return;
+    }
+
+    // Never allow idClaims.preferred_username to shadow an inconsistent Graph UPN
+    const upnEmail = graphUpn || preferredUsername;
+    const isNativeMsaDomain = /@(outlook|hotmail|live|msn)\.(com|co\.uk|[a-z]{2,3}(\.[a-z]{2})?)$/i.test(upnEmail);
 
     let email = "";
     if (isDomainVerified) {
       email = claimEmail || upnEmail;
     } else if (idClaims.tid === MSA_TENANT_ID) {
-      if (upnEmail && nativeMsaDomains.some((d) => upnEmail.includes(d))) {
+      if (upnEmail && isNativeMsaDomain) {
         email = upnEmail;
       }
-    } else if (idClaims.xms_edov === undefined && upnEmail && !upnEmail.includes("#ext#") && (!claimEmail || claimEmail === upnEmail)) {
-      email = upnEmail;
+    } else if (
+      idClaims.xms_edov === undefined &&
+      graphUpn &&
+      (!preferredUsername || preferredUsername === graphUpn) &&
+      (!claimEmail || claimEmail === graphUpn)
+    ) {
+      email = graphUpn;
     }
 
     if (!email || !email.includes("@")) {

@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputDateFormat, postGasWebAppLocked } from "../utils/helpers.js";
 import { serialToDate } from "./gasRuntime/sheetValueUtils.js";
 import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid, sanitizeFormulaInput } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
@@ -3307,21 +3307,13 @@ export async function handleClassifyPLCategory(sheets, {
     } else {
       const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
       if (webAppUrl) {
-        const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
+        const secret = (process.env.AGENT_TRIGGER_SECRET || "").trim();
         if (secret) {
-          fetch(webAppUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ secret, action: "push_outgoings", clientName })
-          }).catch(err => {
+          postGasWebAppLocked(webAppUrl, { secret, action: "push_outgoings", clientName }).catch(err => {
             console.warn("⚠️ Master WebApp push_outgoings error:", err.message);
           });
 
-          fetch(webAppUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
-          }).catch(syncErr => {
+          postGasWebAppLocked(webAppUrl, { secret, action: "sync_expense_breakdown", clientName }).catch(syncErr => {
             console.warn("⚠️ Master WebApp sync_expense_breakdown error:", syncErr.message);
           });
         }

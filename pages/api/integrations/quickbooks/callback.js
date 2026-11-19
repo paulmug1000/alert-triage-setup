@@ -20,8 +20,13 @@ import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, sanitizeSpreadsheetTerm
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
   return cookieHeader.split(";").reduce((acc, pair) => {
-    const [k, v] = pair.trim().split("=");
-    if (k && v) acc[k] = decodeURIComponent(v);
+    const idx = pair.indexOf("=");
+    if (idx === -1) return acc;
+    const k = pair.slice(0, idx).trim();
+    const v = pair.slice(idx + 1).trim();
+    if (k && v) {
+      try { acc[k] = decodeURIComponent(v); } catch { acc[k] = v; }
+    }
     return acc;
   }, {});
 }

@@ -12,6 +12,8 @@
  */
 
 import { randomUUID } from "crypto";
+import dns from "dns";
+import net from "net";
 import { getSupabaseAdmin } from "../supabaseClient.js";
 import { extractSheetIdFromUrl } from "../sheetsClient.js";
 import { assertExternalCrmSpreadsheet } from "../googleSheetService.js";
@@ -429,11 +431,12 @@ async function resolveBrokerTokenInProcess(ctx, toolRaw) {
 
       const getLatestTokenFn = async () => {
         const latest = (normalizedTool === "xero" && record.isSharedGrant)
-          ? await getSharedXeroGrant()
+          ? await getSharedXeroGrant({ bypassL1: true })
           : await getIntegrationTokens({
             clientKey: record.clientKey,
             masterSheetId: ctx.masterSheetId,
             tool: normalizedTool,
+            bypassL1: true,
           });
         if (!latest?.tokens?.accessToken) return null;
         const latestExpiresIn = Math.max(0, Math.round(((latest.expiresAt || 0) - Date.now()) / 1000));
@@ -708,6 +711,9 @@ class VirtualRange {
 
     for (let r = 0; r < values.length; r++) {
       const r0 = this.startRow1 - 1 + r;
+      if (r0 < 0 || r0 >= 50000) {
+        throw new Error(`VirtualRange.setValues row index out of bounds (${r0 + 1} for ${tabName})`);
+      }
       while (grid.length <= r0) grid.push([]);
       while (fGrid.length <= r0) fGrid.push([]);
       const rowVals = Array.isArray(values[r]) ? values[r] : [values[r]];
@@ -715,6 +721,9 @@ class VirtualRange {
 
       for (let c = 0; c < rowVals.length; c++) {
         const c0 = this.startCol1 - 1 + c;
+        if (c0 < 0 || c0 >= 600) {
+          throw new Error(`VirtualRange.setValues column index out of bounds (${c0 + 1} for ${tabName})`);
+        }
         while (grid[r0].length <= c0) grid[r0].push("");
         while (fGrid[r0].length <= c0) fGrid[r0].push("");
         const rawVal = rowVals[c];
@@ -766,9 +775,15 @@ class VirtualRange {
     const notes = this.sheet.notesGrid;
     for (let r = 0; r < notesMatrix.length; r++) {
       const r0 = this.startRow1 - 1 + r;
+      if (r0 < 0 || r0 >= 50000) {
+        throw new Error(`VirtualRange.setNotes row index out of bounds (${r0 + 1} for ${this.sheet.name})`);
+      }
       const rowNotes = Array.isArray(notesMatrix[r]) ? notesMatrix[r] : [notesMatrix[r]];
       for (let c = 0; c < rowNotes.length; c++) {
         const c0 = this.startCol1 - 1 + c;
+        if (c0 < 0 || c0 >= 600) {
+          throw new Error(`VirtualRange.setNotes column index out of bounds (${c0 + 1} for ${this.sheet.name})`);
+        }
         const nStr = rowNotes[c] === null || rowNotes[c] === undefined ? "" : String(rowNotes[c]);
         if (nStr) {
           notes[`${r0}:${c0}`] = nStr;
@@ -2581,42 +2596,195 @@ export async function createGasEnvironment({
     );
   };
 
+  const MAX_SSRF_REDIRECT_HOPS = 5;
+  const MAX_FETCH_TIMEOUT_MS = 45000;
+  const MAX_FETCH_RESPONSE_BYTES = 25 * 1024 * 1024;
+
+  const isBlockedIpv4_ = (ip) => {
+    const m = String(ip || "").match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!m) return true;
+    const octets = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+    if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+    const [a, b, c] = octets;
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 0 && (c === 0 || c === 2)) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 198 && (b === 18 || b === 19)) return true;
+    if (a === 198 && b === 51 && c === 100) return true;
+    if (a === 203 && b === 0 && c === 113) return true;
+    if (a >= 224) return true;
+    return false;
+  };
+
+  const expandIpv6Groups_ = (rawIp) => {
+    let ip = String(rawIp || "").toLowerCase().split("%")[0];
+    const lastColon = ip.lastIndexOf(":");
+    const tail = lastColon >= 0 ? ip.slice(lastColon + 1) : "";
+    if (tail.includes(".")) {
+      const m = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (!m) return null;
+      const o = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+      if (o.some((n) => n < 0 || n > 255)) return null;
+      const hi = ((o[0] << 8) | o[1]).toString(16).padStart(4, "0");
+      const lo = ((o[2] << 8) | o[3]).toString(16).padStart(4, "0");
+      ip = `${ip.slice(0, lastColon + 1)}${hi}:${lo}`;
+    }
+    const halves = ip.split("::");
+    if (halves.length > 2) return null;
+    const left = halves[0] ? halves[0].split(":").filter(Boolean) : [];
+    const right = halves.length === 2 && halves[1] ? halves[1].split(":").filter(Boolean) : [];
+    const total = left.length + right.length;
+    if (halves.length === 1 && total !== 8) return null;
+    if (halves.length === 2 && total >= 8) return null;
+    const zeros = halves.length === 2 ? new Array(8 - total).fill(0) : [];
+    const hexGroups = [...left, ...zeros, ...right];
+    if (hexGroups.length !== 8) return null;
+    const nums = [];
+    for (const g of hexGroups) {
+      if (typeof g === "number") {
+        nums.push(g);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+        nums.push(parseInt(g, 16));
+      }
+    }
+    return nums;
+  };
+
+  const isBlockedIpAddress_ = (rawIp) => {
+    const cleaned = String(rawIp || "").trim().replace(/^\[|\]$/g, "").split("%")[0].replace(/\.+$/, "");
+    const ver = net.isIP(cleaned);
+    if (ver === 4) return isBlockedIpv4_(cleaned);
+    if (ver === 6) {
+      const g = expandIpv6Groups_(cleaned);
+      if (!g) return true;
+      const allZeroFirst5 = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0;
+      if (allZeroFirst5 && g[5] === 0) {
+        if (g[6] === 0 && (g[7] === 0 || g[7] === 1)) return true;
+        const compatV4 = `${(g[6] >> 8) & 0xff}.${g[6] & 0xff}.${(g[7] >> 8) & 0xff}.${g[7] & 0xff}`;
+        return isBlockedIpv4_(compatV4);
+      }
+      if (allZeroFirst5 && g[5] === 0xffff) {
+        const mappedV4 = `${(g[6] >> 8) & 0xff}.${g[6] & 0xff}.${(g[7] >> 8) & 0xff}.${g[7] & 0xff}`;
+        return isBlockedIpv4_(mappedV4);
+      }
+      if (g[0] === 0x0064 && (g[1] & 0xfffe) === 0xff9a) {
+        const nat64V4 = `${(g[6] >> 8) & 0xff}.${g[6] & 0xff}.${(g[7] >> 8) & 0xff}.${g[7] & 0xff}`;
+        return isBlockedIpv4_(nat64V4);
+      }
+      if (g[0] === 0x2002) {
+        const sixTo4V4 = `${(g[1] >> 8) & 0xff}.${g[1] & 0xff}.${(g[2] >> 8) & 0xff}.${g[2] & 0xff}`;
+        if (isBlockedIpv4_(sixTo4V4)) return true;
+      }
+      if ((g[0] & 0xfe00) === 0xfc00) return true;
+      if ((g[0] & 0xffc0) === 0xfe80) return true;
+      if ((g[0] & 0xff00) === 0xff00) return true;
+      if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true;
+      return false;
+    }
+    return true;
+  };
+
   const isBlockedSsrfHost_ = (rawHostname) => {
-    const h = String(rawHostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+    const h = String(rawHostname || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^\[|\]$/g, "")
+      .replace(/\.+$/, "");
     if (!h) return true;
     if (
       h === "localhost" ||
       h.endsWith(".localhost") ||
       h.endsWith(".local") ||
       h.endsWith(".internal") ||
-      h === "metadata.google.internal"
+      h === "metadata.google.internal" ||
+      h === "metadata" ||
+      h === "instance-data"
     ) {
       return true;
     }
-    const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (ipv4) {
-      const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-      if (a === 10 || a === 0 || a === 127) return true;
-      if (a === 169 && b === 254) return true;
-      if (a === 172 && b >= 16 && b <= 31) return true;
-      if (a === 192 && b === 168) return true;
-      if (a === 100 && b >= 64 && b <= 127) return true;
-    }
     if (/^(0x[0-9a-f]+|\d+)$/i.test(h)) return true;
-    if (h.includes(":")) {
-      if (
-        h === "::" ||
-        h === "::1" ||
-        h.startsWith("fe80:") ||
-        h.startsWith("fc") ||
-        h.startsWith("fd") ||
-        h.includes("127.0.0.1") ||
-        h.includes("169.254.")
-      ) {
-        return true;
-      }
+    if (net.isIP(h.split("%")[0]) !== 0) {
+      return isBlockedIpAddress_(h);
+    }
+    if (/^[\da-f.x]+$/i.test(h) && h.split(".").every((part) => /^(0x[0-9a-f]+|\d+)$/i.test(part))) {
+      return true;
     }
     return false;
+  };
+
+  const assertSafeExternalTarget_ = async (targetUrlObj, allowLoopbackNonProd = false) => {
+    const cleanHost = String(targetUrlObj.hostname || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^\[|\]$/g, "")
+      .replace(/\.+$/, "");
+    const isLoopbackNonProd =
+      allowLoopbackNonProd &&
+      process.env.NODE_ENV !== "production" &&
+      targetUrlObj.protocol === "http:" &&
+      (cleanHost === "localhost" || cleanHost === "127.0.0.1");
+    if (isLoopbackNonProd) return;
+    if (targetUrlObj.protocol !== "https:" || isBlockedSsrfHost_(cleanHost)) {
+      throw new Error(`Blocked unsafe external fetch target in UrlFetchApp.fetch: ${targetUrlObj.origin}`);
+    }
+    if (net.isIP(cleanHost.split("%")[0]) === 0) {
+      let resolved;
+      try {
+        resolved = await dns.promises.lookup(cleanHost, { all: true, verbatim: true });
+      } catch (dnsErr) {
+        throw new Error(`Blocked unresolvable host in UrlFetchApp.fetch: ${cleanHost} (${dnsErr.message})`);
+      }
+      if (!Array.isArray(resolved) || resolved.length === 0) {
+        throw new Error(`Blocked host with no DNS records in UrlFetchApp.fetch: ${cleanHost}`);
+      }
+      for (const rec of resolved) {
+        if (!rec?.address || isBlockedIpAddress_(rec.address)) {
+          throw new Error(`Blocked private or reserved DNS target in UrlFetchApp.fetch: ${cleanHost}`);
+        }
+      }
+    }
+  };
+
+  const readBoundedResponseBuffer_ = async (resp, maxBytes = MAX_FETCH_RESPONSE_BYTES) => {
+    const clHeader = resp.headers?.get?.("content-length");
+    const clNum = clHeader !== null && clHeader !== undefined && clHeader !== "" ? Number(clHeader) : NaN;
+    if (Number.isFinite(clNum) && clNum > maxBytes) {
+      if (resp.body && typeof resp.body.cancel === "function") {
+        await resp.body.cancel().catch(() => {});
+      }
+      throw new Error(`Response content-length (${clNum}) exceeded ${maxBytes} byte limit in UrlFetchApp.fetch`);
+    }
+    if (resp.body && typeof resp.body.getReader === "function") {
+      const reader = resp.body.getReader();
+      const chunks = [];
+      let totalBytes = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value && value.byteLength) {
+            totalBytes += value.byteLength;
+            if (totalBytes > maxBytes) {
+              await reader.cancel().catch(() => {});
+              throw new Error(`Response exceeded ${maxBytes} byte limit in UrlFetchApp.fetch`);
+            }
+            chunks.push(Buffer.from(value));
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      return Buffer.concat(chunks);
+    }
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.byteLength > maxBytes) {
+      throw new Error(`Response exceeded ${maxBytes} byte limit in UrlFetchApp.fetch`);
+    }
+    return buf;
   };
 
   const UrlFetchApp = {
@@ -2708,48 +2876,89 @@ export async function createGasEnvironment({
         }
       }
 
-      // 3. External HTTP fetch (SSRF + scheme + credential redirect hardening)
-      const isLoopbackNonProd =
-        process.env.NODE_ENV !== "production" &&
-        uObj.protocol === "http:" &&
-        (uObj.hostname === "localhost" || uObj.hostname === "127.0.0.1");
-      if (!isLoopbackNonProd && (uObj.protocol !== "https:" || isBlockedSsrfHost_(uObj.hostname))) {
-        throw new Error(`Blocked unsafe external fetch target in UrlFetchApp.fetch: ${uObj.origin}`);
+      // 3. External HTTP fetch (SSRF + DNS + manual redirect + timeout + bounded response)
+      await assertSafeExternalTarget_(uObj, true);
+
+      let currentMethod = String(params.method || "GET").toUpperCase();
+      let currentHeaders = { ...(params.headers || {}) };
+      if (params.contentType && !currentHeaders["Content-Type"] && !currentHeaders["content-type"]) {
+        currentHeaders["Content-Type"] = params.contentType;
       }
 
-      const method = String(params.method || "GET").toUpperCase();
-      const headers = { ...(params.headers || {}) };
-      if (params.contentType && !headers["Content-Type"] && !headers["content-type"]) {
-        headers["Content-Type"] = params.contentType;
-      }
-
-      let body = undefined;
-      if (method !== "GET" && method !== "HEAD" && params.payload !== undefined) {
+      let currentBody = undefined;
+      if (currentMethod !== "GET" && currentMethod !== "HEAD" && params.payload !== undefined) {
         if (typeof params.payload === "string" || Buffer.isBuffer(params.payload)) {
-          body = params.payload;
+          currentBody = params.payload;
         } else if (typeof params.payload === "object") {
-          const ct = String(headers["Content-Type"] || headers["content-type"] || "");
+          const ct = String(currentHeaders["Content-Type"] || currentHeaders["content-type"] || "");
           if (ct.includes("application/json")) {
-            body = JSON.stringify(params.payload);
+            currentBody = JSON.stringify(params.payload);
           } else {
-            body = new URLSearchParams(params.payload).toString();
-            if (!ct) headers["Content-Type"] = "application/x-www-form-urlencoded";
+            currentBody = new URLSearchParams(params.payload).toString();
+            if (!ct) currentHeaders["Content-Type"] = "application/x-www-form-urlencoded";
           }
         }
       }
 
-      const hasAuthOrSecretHeader = Object.keys(headers).some((k) =>
+      const hasAuthOrSecretHeader = Object.keys(currentHeaders).some((k) =>
         ["authorization", "x-pulse-client-secret", "x-cron-secret", "x-internal-secret"].includes(k.toLowerCase())
       );
+      const allowRedirects = params.followRedirects !== false && !hasAuthOrSecretHeader;
 
-      const resp = await fetch(uObj.toString(), {
-        method,
-        headers,
-        body,
-        redirect: params.followRedirects === false || hasAuthOrSecretHeader ? "manual" : "follow",
-      });
+      let currentUrlObj = uObj;
+      let resp = null;
+      for (let hop = 0; hop <= MAX_SSRF_REDIRECT_HOPS; hop++) {
+        resp = await fetch(currentUrlObj.toString(), {
+          method: currentMethod,
+          headers: currentHeaders,
+          body: currentBody,
+          redirect: "manual",
+          signal: AbortSignal.timeout(MAX_FETCH_TIMEOUT_MS),
+        });
 
-      const respBuffer = Buffer.from(await resp.arrayBuffer());
+        const isRedirect = [301, 302, 303, 307, 308].includes(resp.status);
+        if (!isRedirect || !allowRedirects) {
+          break;
+        }
+        const location = resp.headers.get("location");
+        if (!location) {
+          break;
+        }
+        if (resp.body && typeof resp.body.cancel === "function") {
+          await resp.body.cancel().catch(() => {});
+        }
+        if (hop === MAX_SSRF_REDIRECT_HOPS) {
+          throw new Error(`Exceeded maximum redirect hops (${MAX_SSRF_REDIRECT_HOPS}) in UrlFetchApp.fetch`);
+        }
+
+        let nextUrlObj;
+        try {
+          nextUrlObj = new URL(location, currentUrlObj.toString());
+        } catch {
+          throw new Error(`Invalid redirect location in UrlFetchApp.fetch: ${location}`);
+        }
+        await assertSafeExternalTarget_(nextUrlObj, false);
+
+        if (nextUrlObj.origin !== currentUrlObj.origin) {
+          const stripped = {};
+          for (const [k, v] of Object.entries(currentHeaders)) {
+            const lk = k.toLowerCase();
+            if (!["authorization", "cookie", "x-pulse-client-secret", "x-cron-secret", "x-internal-secret"].includes(lk)) {
+              stripped[k] = v;
+            }
+          }
+          currentHeaders = stripped;
+        }
+        if (resp.status === 301 || resp.status === 302 || resp.status === 303) {
+          if (currentMethod !== "GET" && currentMethod !== "HEAD") {
+            currentMethod = "GET";
+            currentBody = undefined;
+          }
+        }
+        currentUrlObj = nextUrlObj;
+      }
+
+      const respBuffer = await readBoundedResponseBuffer_(resp, MAX_FETCH_RESPONSE_BYTES);
       const respText = respBuffer.toString("utf8");
       const respHeaders = Object.fromEntries(resp.headers.entries());
 

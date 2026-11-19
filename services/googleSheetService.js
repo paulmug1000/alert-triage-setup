@@ -313,7 +313,7 @@ export async function assertExternalCrmSpreadsheet(sheets, spreadsheetId) {
     throw new Error("Invalid Google Sheet ID format.");
   }
   if (/^sb-(?:client|master|recon)-/i.test(cleanId) || BLOCKED_INTERNAL_SHEET_IDS.has(cleanId)) {
-    throw new Error("Access denied: Cannot link or inspect internal Pulse system spreadsheets.");
+    throw new Error("Access denied: Cannot link or inspect an internal Pulse resource.");
   }
 
   if (isSupabaseConfigured()) {
@@ -330,7 +330,11 @@ export async function assertExternalCrmSpreadsheet(sheets, spreadsheetId) {
           .select("client_sheet_id, master_sheet_id, recon_sheet_id, client_sheet_url, master_sheet_url, recon_sheet_url, backup_sheet_url"),
       ]);
 
-      if (!tplErr && tplRow?.value && typeof tplRow.value === "object") {
+      if (tplErr || clientErr) {
+        throw new Error("Unable to verify external source eligibility right now. Please try again.");
+      }
+
+      if (tplRow?.value && typeof tplRow.value === "object") {
         const v = tplRow.value;
         const tplIds = [
           v.clientTemplateId,
@@ -343,11 +347,11 @@ export async function assertExternalCrmSpreadsheet(sheets, spreadsheetId) {
           .map((id) => String(id || "").trim())
           .filter(Boolean);
         if (tplIds.includes(cleanId)) {
-          throw new Error("Access denied: Cannot link or inspect internal Pulse template spreadsheets.");
+          throw new Error("Access denied: Cannot link or inspect an internal Pulse resource.");
         }
       }
 
-      if (!clientErr && Array.isArray(clientRows)) {
+      if (Array.isArray(clientRows)) {
         for (const c of clientRows) {
           const ids = [
             c.client_sheet_id,
@@ -361,7 +365,7 @@ export async function assertExternalCrmSpreadsheet(sheets, spreadsheetId) {
             .map((id) => String(id || "").trim())
             .filter(Boolean);
           if (ids.includes(cleanId)) {
-            throw new Error("Access denied: Cannot link an internal Pulse client or master spreadsheet as an external CRM source.");
+            throw new Error("Access denied: Cannot link or inspect an internal Pulse resource.");
           }
         }
       }
@@ -371,7 +375,7 @@ export async function assertExternalCrmSpreadsheet(sheets, spreadsheetId) {
   const sheetsClient = sheets || (await getSheetsClient());
   const ownerClient = await resolveClientNameBySheetId(sheetsClient, cleanId);
   if (ownerClient) {
-    throw new Error("Access denied: Cannot link an internal Pulse client or master spreadsheet as an external CRM source.");
+    throw new Error("Access denied: Cannot link or inspect an internal Pulse resource.");
   }
 }
 

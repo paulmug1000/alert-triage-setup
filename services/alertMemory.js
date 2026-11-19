@@ -2066,7 +2066,7 @@ export async function searchAlertMemoryEntries(sheets, automationCommanderSheetI
           }
         }
         if (q) {
-          const safeQ = q.replace(/[%_,()]/g, "");
+          const safeQ = q.replace(/[%_,()"'\\]/g, "");
           if (safeQ) {
             builder = builder.or(
               `fingerprint_hash.ilike.%${safeQ}%,alert_summary.ilike.%${safeQ}%,client_name.ilike.%${safeQ}%,alert_type.ilike.%${safeQ}%,ignore_reason.ilike.%${safeQ}%`

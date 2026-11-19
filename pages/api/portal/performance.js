@@ -2,7 +2,7 @@ import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
-import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms, redactPortalPerformanceForUser } from "../../../utils/helpers.js";
 import {
   fetchAndBuildPortalHomeAndPerformance,
   PORTAL_L1_TTL_SECS,
@@ -66,13 +66,15 @@ export default async function handler(req, res) {
       },
     });
 
+    const safePerfData = redactPortalPerformanceForUser(result.data, sessionUser);
+
     return res.status(200).json({
       success: true,
       fromCache: result.fromCache,
       fromMemory: result.fromMemory,
       fromRedis: result.fromRedis,
       staleRevalidating: result.staleRevalidating,
-      data: result.data,
+      data: safePerfData,
       cachedAt: result.cachedAt,
     });
   } catch (err) {

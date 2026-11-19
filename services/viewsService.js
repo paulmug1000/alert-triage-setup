@@ -122,6 +122,49 @@ function sanitizeViewDataForUser(result, sessionUser) {
   if (!result || !sessionUser || canViewSalariesAndDividends(sessionUser)) {
     return result;
   }
+  const SENSITIVE_VIEW_ROW_RE =
+    /salar|staff\s*cost|staff\s*ratio|staff.*%|divid|retained\s*profit|payroll|wages|director|remuneration|net\s*pay|pension|paye|\bnic\b/i;
+  const redactCellRow_ = (row) =>
+    Array.isArray(row)
+      ? row.map((cell, cIdx) => (cIdx === 0 ? cell : cell ? { ...cell, v: "—", note: undefined } : null))
+      : row;
+
+  if (result.tab === "dashboard" && Array.isArray(result.matrix)) {
+    return {
+      ...result,
+      matrix: result.matrix.map((row, idx) => {
+        if (idx <= 1 || !Array.isArray(row)) return row;
+        const lbl = String(row[0]?.v || "");
+        if (SENSITIVE_VIEW_ROW_RE.test(lbl)) {
+          return redactCellRow_(row);
+        }
+        return row;
+      }),
+    };
+  }
+  if (result.tab === "outgoings") {
+    return {
+      ...result,
+      ...(Array.isArray(result.outgoingRows)
+        ? {
+            outgoingRows: result.outgoingRows.map((row) =>
+              Array.isArray(row) && SENSITIVE_VIEW_ROW_RE.test(String(row[0]?.v || ""))
+                ? redactCellRow_(row)
+                : row
+            ),
+          }
+        : {}),
+      ...(Array.isArray(result.mainRows)
+        ? {
+            mainRows: result.mainRows.map((row) =>
+              Array.isArray(row) && SENSITIVE_VIEW_ROW_RE.test(String(row[0]?.v || ""))
+                ? redactCellRow_(row)
+                : row
+            ),
+          }
+        : {}),
+    };
+  }
   if (result.tab === "contractors") {
     return {
       ...result,
@@ -148,7 +191,7 @@ function sanitizeViewDataForUser(result, sessionUser) {
         if (idx === 0 || !Array.isArray(row)) return row;
         const lbl = String(row[0]?.v || "");
         if (/salar|divid|payroll|wages|director|remuneration|net pay/i.test(lbl)) {
-          return row.map((cell, cIdx) => (cIdx === 0 ? cell : cell ? { ...cell, v: "—", note: undefined } : null));
+          return redactCellRow_(row);
         }
         return row;
       }),
@@ -923,6 +966,9 @@ export async function handleUpdateCellNote(req, res, sheets) {
   }
 
   const rowNum = parseInt(sheetRow, 10);
+  if (!Number.isInteger(rowNum) || rowNum < 2 || rowNum > 5000) {
+    return res.status(400).json({ success: false, error: "Invalid row index for note" });
+  }
   let colIndex = 0;
   let finalColLetter = colLetter || "A";
   if (colIdx !== undefined) {
@@ -931,6 +977,9 @@ export async function handleUpdateCellNote(req, res, sheets) {
   } else if (colLetter) {
     colIndex = colLetterToNum(colLetter) - 1;
     finalColLetter = String(colLetter).toUpperCase();
+  }
+  if (!Number.isInteger(colIndex) || colIndex < 0 || colIndex >= 200 || !/^[A-Z]{1,3}$/.test(finalColLetter)) {
+    return res.status(400).json({ success: false, error: "Invalid column index for note" });
   }
 
   const targetTabNormalized = String(tab || "").toLowerCase();

@@ -171,7 +171,10 @@ export default async function handler(req, res) {
       }
     }
   } else if (sessionUser) {
-    if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
+    if (String(req.headers["sec-fetch-site"] || "").toLowerCase() === "cross-site") {
+      return res.status(403).json({ success: false, error: "Forbidden: Cross-site request blocked." });
+    }
+    if ((req.method === "POST" || req.headers.origin || req.headers.referer) && !assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser) || !canAccessPma(sessionUser)) {
       return res.status(403).json({ success: false, error: "Forbidden: Active PMA staff session required." });
     }
@@ -254,7 +257,7 @@ export default async function handler(req, res) {
         const refreshResult = await refreshWithConcurrencyLock(lockKey, async () => {
           if (record.isSharedGrant) {
             console.log(`🔄 Token Broker: Shared Xero token expiring (${expiresIn}s). Checking latest shared grant...`);
-            const latestShared = await getSharedXeroGrant();
+            const latestShared = await getSharedXeroGrant({ bypassL1: true });
             const latestExpiresIn = Math.max(0, Math.round(((latestShared?.expiresAt || 0) - Date.now()) / 1000));
 
             if (latestExpiresIn >= 300) {
@@ -279,7 +282,7 @@ export default async function handler(req, res) {
             };
           } else {
             console.log(`🔄 Token Broker: Dedicated Xero token for ${record.clientKey} expiring (${expiresIn}s). Checking freshness...`);
-            const latestDedicated = await getIntegrationTokens({ clientKey: record.clientKey, tool: "xero" });
+            const latestDedicated = await getIntegrationTokens({ clientKey: record.clientKey, tool: "xero", bypassL1: true });
             const latestExpiresIn = Math.max(0, Math.round(((latestDedicated?.expiresAt || 0) - Date.now()) / 1000));
 
             if (latestExpiresIn >= 300) {
@@ -308,11 +311,11 @@ export default async function handler(req, res) {
           }
         }, async () => {
           if (record.isSharedGrant) {
-            const latestShared = await getSharedXeroGrant();
+            const latestShared = await getSharedXeroGrant({ bypassL1: true });
             const latestExpiresIn = Math.max(0, Math.round(((latestShared?.expiresAt || 0) - Date.now()) / 1000));
             return latestShared?.tokens?.accessToken ? { accessToken: latestShared.tokens.accessToken, expiresIn: latestExpiresIn } : null;
           } else {
-            const latestDedicated = await getIntegrationTokens({ clientKey: record.clientKey, tool: "xero" });
+            const latestDedicated = await getIntegrationTokens({ clientKey: record.clientKey, tool: "xero", bypassL1: true });
             const latestExpiresIn = Math.max(0, Math.round(((latestDedicated?.expiresAt || 0) - Date.now()) / 1000));
             return latestDedicated?.tokens?.accessToken ? { accessToken: latestDedicated.tokens.accessToken, expiresIn: latestExpiresIn } : null;
           }
@@ -347,7 +350,7 @@ export default async function handler(req, res) {
           lockKey,
           async () => {
             console.log(`🔄 Token Broker: QuickBooks token for ${record.clientKey} is expiring in ${expiresIn}s. Triggering automatic refresh...`);
-            const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "quickbooks" });
+            const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "quickbooks", bypassL1: true });
             const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
             if (latestExpiresIn >= 300) {
               return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
@@ -365,7 +368,7 @@ export default async function handler(req, res) {
             return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
           },
           async () => {
-            const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "quickbooks" });
+            const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "quickbooks", bypassL1: true });
             const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
             return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
           }
@@ -394,7 +397,7 @@ export default async function handler(req, res) {
           const refreshResult = await refreshWithConcurrencyLock(
             lockKey,
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "pipedrive" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "pipedrive", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               if (latestExpiresIn >= 300) {
                 return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
@@ -409,7 +412,7 @@ export default async function handler(req, res) {
               return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
             },
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "pipedrive" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "pipedrive", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
             }
@@ -435,7 +438,7 @@ export default async function handler(req, res) {
           const refreshResult = await refreshWithConcurrencyLock(
             lockKey,
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "monday" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "monday", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               if (latestExpiresIn >= 300) {
                 return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
@@ -450,7 +453,7 @@ export default async function handler(req, res) {
               return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
             },
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "monday" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "monday", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
             }
@@ -476,7 +479,7 @@ export default async function handler(req, res) {
           const refreshResult = await refreshWithConcurrencyLock(
             lockKey,
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "capsule" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "capsule", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               if (latestExpiresIn >= 300) {
                 return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
@@ -491,7 +494,7 @@ export default async function handler(req, res) {
               return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
             },
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "capsule" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "capsule", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
             }
@@ -517,7 +520,7 @@ export default async function handler(req, res) {
           const refreshResult = await refreshWithConcurrencyLock(
             lockKey,
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "close" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "close", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               if (latestExpiresIn >= 300) {
                 return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
@@ -532,7 +535,7 @@ export default async function handler(req, res) {
               return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
             },
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "close" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "close", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
             }
@@ -558,7 +561,7 @@ export default async function handler(req, res) {
           const refreshResult = await refreshWithConcurrencyLock(
             lockKey,
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "hubspot" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "hubspot", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               if (latestExpiresIn >= 300) {
                 return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
@@ -573,7 +576,7 @@ export default async function handler(req, res) {
               return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
             },
             async () => {
-              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "hubspot" });
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "hubspot", bypassL1: true });
               const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
               return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
             }

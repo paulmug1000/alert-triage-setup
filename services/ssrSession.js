@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { memoryCache } from "./cacheService.js";
 import { maskResponseSheetIdsForUser, unwrapSheetId } from "./sheetTokenService.js";
+import { redactPortalPayloadForUser, redactPortalPerformanceForUser } from "../utils/helpers.js";
 
 const DEFAULT_AC_SHEET_ID = process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 const ALL_CLIENTS_CACHE_KEY = `pulse:all_clients:${DEFAULT_AC_SHEET_ID}`;
@@ -285,6 +286,11 @@ export async function getSsrLiveSessionUser(req, res = null) {
       isReadOnly: sessionUser.isReadOnly
     });
     if (!refreshed) {
+      if (sessionUser._jti && redisClient?.isOpen) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const ttl = sessionUser._exp ? Math.max(60, Math.min(SESSION_MAX_AGE_SECS, Number(sessionUser._exp) - nowSec)) : SESSION_MAX_AGE_SECS;
+        await redisClient.set(`pma:revoked_jti:${String(sessionUser._jti)}`, "1", { EX: ttl }).catch(() => {});
+      }
       if (res) setSsrSessionCookie(res, "", 0);
       return null;
     }
@@ -293,6 +299,25 @@ export async function getSsrLiveSessionUser(req, res = null) {
       refreshed.name !== sessionUser.name ||
       refreshed.role !== sessionUser.role ||
       !areSsrAssignedClientsEqual(refreshed.assignedClients, sessionUser.assignedClients);
+
+    const privilegesDowngraded =
+      (sessionUser.isAdmin && !refreshed.isAdmin) ||
+      sessionUser.role !== refreshed.role ||
+      (Array.isArray(refreshed.assignedClients) &&
+        (sessionUser.assignedClients === "*" ||
+          (Array.isArray(sessionUser.assignedClients) &&
+            sessionUser.assignedClients.some((c) => !refreshed.assignedClients.includes(c)))));
+
+    if (changed && privilegesDowngraded && sessionUser._jti) {
+      try {
+        await ensureRedisConnected(400);
+        if (redisClient?.isOpen) {
+          const nowSec = Math.floor(Date.now() / 1000);
+          const ttl = sessionUser._exp ? Math.max(60, Math.min(SESSION_MAX_AGE_SECS, Number(sessionUser._exp) - nowSec)) : SESSION_MAX_AGE_SECS;
+          await redisClient.set(`pma:revoked_jti:${String(sessionUser._jti)}`, "1", { EX: ttl }).catch(() => {});
+        }
+      } catch { }
+    }
 
     if (changed && res && typeof res.setHeader === "function") {
       const secret = getSsrJwtSecret();
@@ -311,6 +336,7 @@ export async function getSsrLiveSessionUser(req, res = null) {
       }
     }
 
+    if (req) req._liveSessionUser = refreshed;
     return refreshed;
   } catch {
     return sessionUser;
@@ -499,9 +525,39 @@ export async function getSsrInitialPmaData(sessionUser) {
       .sort((a, b) => String(a.clientName || "").localeCompare(String(b.clientName || "")));
   }
 
+  const scopedIntegrationsClients = sessionUser.isAdmin
+    ? scopedIntClients
+    : scopedIntClients.map((c) => {
+        const copy = { ...c };
+        delete copy.autoUpdatesRow;
+        delete copy.rowNumber;
+        if (copy.integrations?.xero) {
+          copy.integrations = {
+            ...copy.integrations,
+            xero: {
+              ...copy.integrations.xero,
+              availableTenants: [],
+              metadata: copy.integrations.xero.metadata
+                ? { ...copy.integrations.xero.metadata, availableTenants: [] }
+                : copy.integrations.xero.metadata,
+            },
+          };
+        }
+        if (copy.accountingStatus) {
+          copy.accountingStatus = {
+            ...copy.accountingStatus,
+            availableTenants: [],
+            metadata: copy.accountingStatus.metadata
+              ? { ...copy.accountingStatus.metadata, availableTenants: [] }
+              : copy.accountingStatus.metadata,
+          };
+        }
+        return copy;
+      });
+
   const initialIntegrations = rawIntegrations
     ? {
-        allClients: scopedIntClients,
+        allClients: scopedIntegrationsClients,
         sharedXero: rawIntegrations.sharedXero
           ? {
               ...rawIntegrations.sharedXero,
@@ -690,12 +746,20 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
       sessionUser
     );
 
+    const safePayload =
+      selectedRaw?.setupMode || query?.preview === "setup" || !initialPayload
+        ? null
+        : redactPortalPayloadForUser(initialPayload, sessionUser);
+    const safePerfData =
+      selectedRaw?.setupMode || query?.preview === "setup" || !initialPerformanceData
+        ? null
+        : redactPortalPerformanceForUser(initialPerformanceData, sessionUser);
+
     return {
       initialClients: masked.initialClients || null,
       initialSelectedClient: masked.initialSelectedClient || null,
-      initialPayload: selectedRaw?.setupMode || query?.preview === "setup" ? null : initialPayload || null,
-      initialPerformanceData:
-        selectedRaw?.setupMode || query?.preview === "setup" ? null : initialPerformanceData || null,
+      initialPayload: safePayload,
+      initialPerformanceData: safePerfData,
       selectedSetupConfig,
     };
   } catch {

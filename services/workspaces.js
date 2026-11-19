@@ -22,9 +22,10 @@ import {
   getJobCostingRowFormulasLetterMap,
   buildJobRowClearAndRestorePlan,
   formatLikelihood,
-  normalizeLikelihoodInput
+  normalizeLikelihoodInput,
+  postGasWebAppLocked
 } from "../utils/helpers.js";
-import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, unwrapSheetId } from "./userPermissions.js";
+import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, unwrapSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
@@ -899,8 +900,8 @@ export async function handleUpdateOutgoingsVendor(req, res, sheets) {
   }
 
   const rowNum = parseInt(sheetRow, 10);
-  if (isNaN(rowNum) || rowNum < 13) {
-    return res.status(400).json({ success: false, error: "Invalid sheetRow for Outgoings contractor" });
+  if (isNaN(rowNum) || rowNum < 13 || rowNum > 110) {
+    return res.status(400).json({ success: false, error: "Invalid row for Outgoings contractor" });
   }
 
   try {
@@ -1177,7 +1178,24 @@ export async function handleGetOutgoings(req, res, sheets) {
       },
     });
 
-    return res.status(200).json(result.data);
+    const callerUser = getSessionUser(req);
+    let responsePayload = result.data;
+    if (responsePayload && callerUser && !canViewSalariesAndDividends(callerUser)) {
+      const RESTRICTED_OUTGOINGS_RE = /salar|divid|payroll|wages|director|remuneration|net pay|pension|paye|\bnic\b/i;
+      const filteredExtra = Array.isArray(responsePayload.extraOutgoingsRows)
+        ? responsePayload.extraOutgoingsRows.filter((row) => {
+            const sr = Number(row?.sheetRow);
+            if ((sr >= 115 && sr <= 124) || (sr >= 230 && sr <= 239)) return false;
+            return !RESTRICTED_OUTGOINGS_RE.test(String(row?.name || ""));
+          })
+        : responsePayload.extraOutgoingsRows;
+      responsePayload = {
+        ...responsePayload,
+        extraOutgoingsRows: filteredExtra,
+      };
+    }
+
+    return res.status(200).json(responsePayload);
   } catch (err) {
     console.error("❌ get_outgoings error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -7637,11 +7655,16 @@ async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMas
           return recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || tenantClient);
         }
         const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
-        if (cronSecret) {
-          return fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: targetMasterId, secret: cronSecret }),
+        const acWebAppUrl = (
+          process.env.AUTOMATION_COMMANDER_WEBAPP_URL ||
+          "https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec"
+        ).trim();
+        if (cronSecret && acWebAppUrl) {
+          return postGasWebAppLocked(acWebAppUrl, {
+            action: "refreshOutgoings",
+            clientSheetId: sheetIdClean,
+            masterSheetId: targetMasterId,
+            secret: cronSecret,
           });
         }
       })
@@ -7649,22 +7672,39 @@ async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMas
   }
 }
 
+function cleanNoteBlockField_(val) {
+  return String(val == null ? "" : val).replace(/[{}\r\n]/g, " ").trim();
+}
+
+function isEditableOutgoingsNoteRow_(r, user, allowMakingUpCos = false) {
+  if (allowMakingUpCos && r === 111) return true;
+  if (r >= 13 && r <= 110) return true;
+  if (r >= 126 && r <= 224) return true;
+  if (((r >= 115 && r <= 123) || (r >= 230 && r <= 238)) && canViewSalariesAndDividends(user)) {
+    return true;
+  }
+  return false;
+}
+
 export async function handleUpdateOutgoingNote(req, res, sheets) {
   const { clientSheetId, sheetRow, colLetter, blocks, topNote } = req.body;
   if (!clientSheetId || !sheetRow || !colLetter) return res.status(400).json({ success: false, error: "Missing required fields" });
   const parsedRow = parseInt(sheetRow, 10);
   const cleanColLetter = String(colLetter).trim().toUpperCase();
-  if (isNaN(parsedRow) || parsedRow < 4 || parsedRow > 400 || !/^[E-Z]$|^A[A-Z]$/.test(cleanColLetter)) {
-    return res.status(400).json({ success: false, error: "Invalid Outgoings row or column" });
+  if (isNaN(parsedRow) || parsedRow < 13 || parsedRow > 238 || !/^[E-Z]$|^A[A-Z]$/.test(cleanColLetter)) {
+    return res.status(400).json({ success: false, error: "Invalid entry row or column" });
   }
   const colIdx0 = colLetterToNum(cleanColLetter) - 1;
   const isMonthlyCol = (colIdx0 >= 6 && colIdx0 <= 17) || (colIdx0 >= 21 && colIdx0 <= 32) || (colIdx0 >= 36 && colIdx0 <= 47);
   if (!isMonthlyCol) {
-    return res.status(400).json({ success: false, error: "Invalid Outgoings monthly column" });
+    return res.status(400).json({ success: false, error: "Invalid monthly column" });
   }
   const sessionUser = getSessionUser(req);
-  if (sessionUser?.role === "Senior (Restricted)" && ((parsedRow >= 115 && parsedRow <= 123) || (parsedRow >= 230 && parsedRow <= 238))) {
+  if (!canViewSalariesAndDividends(sessionUser) && ((parsedRow >= 115 && parsedRow <= 123) || (parsedRow >= 230 && parsedRow <= 238))) {
     return res.status(403).json({ success: false, error: "Forbidden: Access to salary and dividend rows is restricted." });
+  }
+  if (!isEditableOutgoingsNoteRow_(parsedRow, sessionUser, true)) {
+    return res.status(400).json({ success: false, error: "Selected row is not editable." });
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
@@ -7723,9 +7763,15 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       } catch (e) { }
     }
 
-    const blockStr = resolvedBlocks.map(b =>
-      `{App ID: ${b.appId}}{Amt: ${b.amount}}{Status:${b.status ? " " + b.status : ""}}{Rec date:${b.recDate ? " " + b.recDate : ""}}{Pay date:${b.payDate ? " " + b.payDate : ""}}{Description:${b.description ? " " + b.description : ""}}`
-    ).join("\n");
+    const blockStr = resolvedBlocks.map(b => {
+      const safeId = cleanNoteBlockField_(b.appId);
+      const safeAmt = Number.isFinite(Number(b.amount)) ? Number(b.amount) : cleanNoteBlockField_(b.amount);
+      const safeStatus = cleanNoteBlockField_(b.status);
+      const safeRec = cleanNoteBlockField_(b.recDate);
+      const safePay = cleanNoteBlockField_(b.payDate);
+      const safeDesc = cleanNoteBlockField_(b.description);
+      return `{App ID: ${safeId}}{Amt: ${safeAmt}}{Status:${safeStatus ? " " + safeStatus : ""}}{Rec date:${safeRec ? " " + safeRec : ""}}{Pay date:${safePay ? " " + safePay : ""}}{Description:${safeDesc ? " " + safeDesc : ""}}`;
+    }).join("\n");
 
     const noteStr = finalTopNote
       ? (finalTopNote + (blockStr ? "\n" + blockStr : ""))
@@ -7898,6 +7944,9 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
   if (!clientSheetId || !Array.isArray(updates) || updates.length === 0) {
     return res.status(400).json({ success: false, error: "Missing required fields: clientSheetId and updates" });
   }
+  if (updates.length > 500) {
+    return res.status(400).json({ success: false, error: "Too many updates in batch (maximum 500)." });
+  }
 
   const sessionUser = getSessionUser(req);
   const deduped = new Map();
@@ -7905,15 +7954,15 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
   for (const item of updates) {
     const parsedRow = parseInt(item?.sheetRow, 10);
     const cleanColLetter = String(item?.colLetter || "").trim().toUpperCase();
-    if (isNaN(parsedRow) || parsedRow < 4 || parsedRow > 400 || parsedRow === 111) continue;
-    if (!/^[E-Z]$|^A[A-Z]$/.test(cleanColLetter)) continue;
+    if (isNaN(parsedRow) || !/^[E-Z]$|^A[A-Z]$/.test(cleanColLetter)) continue;
     const colIdx0 = colLetterToNum(cleanColLetter) - 1;
     const isMonthlyCol = (colIdx0 >= 6 && colIdx0 <= 17) || (colIdx0 >= 21 && colIdx0 <= 32) || (colIdx0 >= 36 && colIdx0 <= 47);
     if (!isMonthlyCol) continue;
 
-    if (sessionUser?.role === "Senior (Restricted)" && ((parsedRow >= 115 && parsedRow <= 123) || (parsedRow >= 230 && parsedRow <= 238))) {
+    if (!canViewSalariesAndDividends(sessionUser) && ((parsedRow >= 115 && parsedRow <= 123) || (parsedRow >= 230 && parsedRow <= 238))) {
       return res.status(403).json({ success: false, error: "Forbidden: Access to salary and dividend rows is restricted." });
     }
+    if (!isEditableOutgoingsNoteRow_(parsedRow, sessionUser, false)) continue;
 
     deduped.set(`${parsedRow}_${cleanColLetter}`, {
       sheetRow: parsedRow,
@@ -7991,9 +8040,15 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
         }
       }
 
-      const blockStr = resolvedBlocks.map((b) =>
-        `{App ID: ${b.appId}}{Amt: ${b.amount}}{Status:${b.status ? " " + b.status : ""}}{Rec date:${b.recDate ? " " + b.recDate : ""}}{Pay date:${b.payDate ? " " + b.payDate : ""}}{Description:${b.description ? " " + b.description : ""}}`
-      ).join("\n");
+      const blockStr = resolvedBlocks.map((b) => {
+        const safeId = cleanNoteBlockField_(b.appId);
+        const safeAmt = Number.isFinite(Number(b.amount)) ? Number(b.amount) : cleanNoteBlockField_(b.amount);
+        const safeStatus = cleanNoteBlockField_(b.status);
+        const safeRec = cleanNoteBlockField_(b.recDate);
+        const safePay = cleanNoteBlockField_(b.payDate);
+        const safeDesc = cleanNoteBlockField_(b.description);
+        return `{App ID: ${safeId}}{Amt: ${safeAmt}}{Status:${safeStatus ? " " + safeStatus : ""}}{Rec date:${safeRec ? " " + safeRec : ""}}{Pay date:${safePay ? " " + safePay : ""}}{Description:${safeDesc ? " " + safeDesc : ""}}`;
+      }).join("\n");
 
       const noteStr = u.topNote
         ? (u.topNote + (blockStr ? "\n" + blockStr : ""))
@@ -8423,13 +8478,18 @@ export async function handleFireOutgoingsPull(req, res, sheets) {
     }
 
     const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
-    if (!cronSecret) {
+    const acWebAppUrl = (
+      process.env.AUTOMATION_COMMANDER_WEBAPP_URL ||
+      "https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec"
+    ).trim();
+    if (!cronSecret || !acWebAppUrl) {
       return res.status(500).json({ success: false, error: "Server CRON_SECRET is not configured." });
     }
-    const gasResp = await fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: pullClientIdClean, masterSheetId: pullMasterIdClean, secret: cronSecret }),
+    const gasResp = await postGasWebAppLocked(acWebAppUrl, {
+      action: "refreshOutgoings",
+      clientSheetId: pullClientIdClean,
+      masterSheetId: pullMasterIdClean,
+      secret: cronSecret,
     });
     const gasData = await gasResp.json().catch(() => ({}));
     console.log(`  📋 fire_outgoings_pull GAS call: ${gasData.success ? "OK" : gasData.error || "no response"}`);

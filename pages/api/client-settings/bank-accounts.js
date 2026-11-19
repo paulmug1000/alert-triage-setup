@@ -9,7 +9,8 @@
  * Strict Admin-only access.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
+import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import {
   canAccessPma,
   isUserAuthorizedForClient,
@@ -28,6 +29,11 @@ import { fetchQuickBooksBankAccounts, refreshQBTokens } from "../../../services/
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({ success: false, error: "Method not allowed." });
+  }
+
+  const rl = await checkRateLimit("bank-accounts", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
   }
 
   // 1. Authenticate user against live directory
@@ -184,7 +190,10 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("GET /api/client-settings/bank-accounts fatal error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to load bank accounts.")
+    });
   } finally {
     await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
   }

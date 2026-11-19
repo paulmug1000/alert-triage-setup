@@ -1,6 +1,6 @@
 import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, sanitizeJobSlice, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -1023,22 +1023,30 @@ export default async function handler(req, res) {
       canEnterFormulas,
     });
 
+    const isDangerousFormulaStr_ = (val) =>
+      typeof val === "string" &&
+      /=\s*[\s\S]*\b(IMPORT(?:XML|DATA|HTML|FEED|RANGE)|IMAGE|HYPERLINK|QUERY|WEBSERVICE|GOOGLEFINANCE|FILTERXML)\s*\(/i.test(val);
+
     const batchUpdateData = [
       {
         range: `${sheetName}!A${parentRow}:AM${parentRow}`,
-        values: [slicePad(updatedParentRow, 0, 39)],
+        values: [sanitizeJobSlice(slicePad(updatedParentRow, 0, 39), { isJobCosting, isPrimaryRange: true, canEnterFormulas })],
       },
       {
         range: `${sheetName}!AN${parentRow}`,
-        values: [[updatedParentRow[39] !== undefined ? updatedParentRow[39] : ""]],
+        values: [[
+          canEnterFormulas && typeof updatedParentRow[39] === "string" && /^\s*=/.test(updatedParentRow[39]) && !isDangerousFormulaStr_(updatedParentRow[39])
+            ? updatedParentRow[39]
+            : sanitizeFormulaInput(updatedParentRow[39] !== undefined ? updatedParentRow[39] : ""),
+        ]],
       },
       {
         range: `${sheetName}!AP${parentRow}:${invBandEndCol}${parentRow}`,
-        values: [slicePad(updatedParentRow, 41, invBandEndIdx)],
+        values: [sanitizeJobSlice(slicePad(updatedParentRow, 41, invBandEndIdx), { canEnterFormulas, rangeKind: "invoices" })],
       },
       {
         range: `${sheetName}!BX${parentRow}:CR${parentRow}`,
-        values: [slicePad(updatedParentRow, 75, 96)],
+        values: [sanitizeJobSlice(slicePad(updatedParentRow, 75, 96), { canEnterFormulas, rangeKind: "expenses" })],
       },
     ];
 
@@ -1084,13 +1092,14 @@ export default async function handler(req, res) {
           isJobCosting,
           sheetName,
           rowNum: childRowNum,
+          canEnterFormulas,
         }
       );
 
       batchUpdateData.push(
         {
           range: `${sheetName}!A${childRowNum}:AM${childRowNum}`,
-          values: [slicePad(updatedChildRow, 0, 39)],
+          values: [sanitizeJobSlice(slicePad(updatedChildRow, 0, 39), { isJobCosting, isPrimaryRange: true, canEnterFormulas })],
         },
         {
           range: `${sheetName}!AN${childRowNum}`,
@@ -1098,11 +1107,11 @@ export default async function handler(req, res) {
         },
         {
           range: `${sheetName}!AP${childRowNum}:${invBandEndCol}${childRowNum}`,
-          values: [slicePad(updatedChildRow, 41, invBandEndIdx)],
+          values: [sanitizeJobSlice(slicePad(updatedChildRow, 41, invBandEndIdx), { canEnterFormulas, rangeKind: "invoices" })],
         },
         {
           range: `${sheetName}!BX${childRowNum}:CR${childRowNum}`,
-          values: [slicePad(updatedChildRow, 75, 96)],
+          values: [sanitizeJobSlice(slicePad(updatedChildRow, 75, 96), { canEnterFormulas, rangeKind: "expenses" })],
         }
       );
     }

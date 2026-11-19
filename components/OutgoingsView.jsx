@@ -2493,7 +2493,7 @@ export default function OutgoingsView({
                   <button
                     className="triage-btn"
                     onClick={() => {
-                      window.open(`https://docs.google.com/spreadsheets/d/${outgoingsClient.clientSheetId}/edit`, "_blank");
+                      window.open(`https://docs.google.com/spreadsheets/d/${outgoingsClient.clientSheetId}/edit`, "_blank", "noopener,noreferrer");
                     }}
                     style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
                   >
@@ -2773,7 +2773,7 @@ export default function OutgoingsView({
                     <button
                       className="triage-btn"
                       onClick={() => {
-                        window.open(`https://docs.google.com/spreadsheets/d/${outgoingsClient.clientSheetId}/edit`, "_blank");
+                        window.open(`https://docs.google.com/spreadsheets/d/${outgoingsClient.clientSheetId}/edit`, "_blank", "noopener,noreferrer");
                       }}
                       style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
                     >

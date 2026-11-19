@@ -106,26 +106,39 @@ export default async function handler(req, res) {
       return;
     }
 
-    // Verify OIDC id_token claims if returned by Google
-    if (tokenData.id_token) {
-      try {
-        const parts = String(tokenData.id_token).split(".");
-        if (parts.length === 3) {
-          const idClaims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-          if (
-            idClaims.aud !== clientId ||
-            typeof idClaims.exp !== "number" ||
-            idClaims.exp * 1000 <= Date.now() ||
-            (idClaims.nonce && !safeCompareSecret(String(idClaims.nonce), String(cookieNonce)))
-          ) {
-            res.redirect("/pma?auth_error=invalid_identity_token");
-            return;
-          }
-        }
-      } catch {
+    // Strictly verify OIDC id_token claims, nonce, and issuer returned by Google
+    if (!tokenData.id_token) {
+      res.redirect("/pma?auth_error=invalid_identity_token");
+      return;
+    }
+    let idClaims = null;
+    try {
+      const parts = String(tokenData.id_token).split(".");
+      if (parts.length !== 3) {
         res.redirect("/pma?auth_error=invalid_identity_token");
         return;
       }
+      idClaims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+      const validIssuer =
+        idClaims?.iss === "https://accounts.google.com" ||
+        idClaims?.iss === "accounts.google.com";
+      if (
+        !idClaims ||
+        typeof idClaims !== "object" ||
+        idClaims.aud !== clientId ||
+        !validIssuer ||
+        typeof idClaims.exp !== "number" ||
+        idClaims.exp * 1000 <= Date.now() ||
+        !cookieNonce ||
+        !idClaims.nonce ||
+        !safeCompareSecret(String(idClaims.nonce), String(cookieNonce))
+      ) {
+        res.redirect("/pma?auth_error=invalid_identity_token");
+        return;
+      }
+    } catch {
+      res.redirect("/pma?auth_error=invalid_identity_token");
+      return;
     }
 
     const userRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
@@ -133,7 +146,12 @@ export default async function handler(req, res) {
     });
 
     const userData = await userRes.json();
-    if (!userRes.ok || !userData.email || userData.email_verified !== true) {
+    if (
+      !userRes.ok ||
+      !userData.email ||
+      userData.email_verified !== true ||
+      (idClaims.sub && userData.sub && idClaims.sub !== userData.sub)
+    ) {
       console.error("❌ Failed to fetch verified Google userinfo:", { status: userRes.status, verified: userData?.email_verified });
       res.redirect("/pma?auth_error=failed_to_fetch_user_profile");
       return;

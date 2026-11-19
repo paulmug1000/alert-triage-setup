@@ -22,7 +22,10 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
+  if (String(req.headers["sec-fetch-site"] || "").toLowerCase() === "cross-site") {
+    return res.status(403).json({ success: false, error: "Forbidden: Cross-site request blocked." });
+  }
+  if ((req.method === "POST" || req.headers.origin || req.headers.referer) && !assertTrustedOrigin(req, res)) return;
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {

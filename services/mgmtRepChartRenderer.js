@@ -221,35 +221,39 @@ function buildSmoothSplinePath(points, tension = 0.22) {
 }
 
 /**
- * 1. SPARKLINE RENDERER (128x50 miniature smooth line chart)
+ * 1. SPARKLINE RENDERER (256x100 miniature smooth line chart matching Google Sheets layout)
+ *    Uses a transparent background, 0-baseline axis scaling, and Google Sheets' right-half
+ *    plot coordinates (x: 118..249, y: 18..80) so it aligns directly beneath KPI figures on slides.
  */
-export function renderSparklineSvg({ values = [], width = 220, height = 76, color = "#4472c4" }) {
-  width = safeSvgDim(width, 220);
-  height = safeSvgDim(height, 76);
+export function renderSparklineSvg({ values = [], width = 256, height = 100, color = "#4472c4" }) {
+  width = safeSvgDim(width, 256);
+  height = safeSvgDim(height, 100);
   color = sanitizeSvgColor(color, "#4472c4");
   const nums = values.map(parseChartNumber).filter((v) => v !== null);
   if (nums.length < 2) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
-      <rect width="${width}" height="${height}" fill="#ffffff"/>
-    </svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}"></svg>`;
   }
-  const minV = Math.min(...nums);
-  const maxV = Math.max(...nums);
+  const minRaw = Math.min(0, ...nums);
+  const maxRaw = Math.max(0, ...nums);
+  const scale = computeNiceAxisScale(minRaw, maxRaw, true);
+  const minV = scale.min;
+  const maxV = scale.max;
   const span = maxV - minV || 1;
-  const padX = 12;
-  const padY = 10;
-  const plotW = width - padX * 2;
-  const plotH = height - padY * 2;
+  const plotLeft = width * (118 / 256);
+  const plotRight = width * (249 / 256);
+  const padTop = height * 0.18;
+  const padBottom = height * 0.2;
+  const plotW = plotRight - plotLeft;
+  const plotH = height - padTop - padBottom;
 
   const pts = nums.map((v, i) => ({
-    x: padX + (i / (nums.length - 1)) * plotW,
-    y: padY + plotH - ((v - minV) / span) * plotH,
+    x: plotLeft + (i / (nums.length - 1)) * plotW,
+    y: padTop + plotH - ((v - minV) / span) * plotH,
   }));
 
   const pathD = buildSmoothSplinePath(pts, 0.2);
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
-    <rect width="${width}" height="${height}" fill="#ffffff"/>
-    <path d="${pathD}" fill="none" stroke="${color}" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="${pathD}" fill="none" stroke="${color}" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>`;
 }
 

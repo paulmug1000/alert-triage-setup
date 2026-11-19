@@ -68,7 +68,8 @@ import {
   handleEomGetNarrativeWorkbench, handleEomGenerateNarrative,
   handleEomSaveNarrativeDraft, handleEomApplyNarrativeToDeck,
   handleEomGetRevenueCheck, handleEomRunRevenueComparison, handleEomSaveRevenueCheckNotes,
-  handleEomPreviewMgmtReport
+  handleEomPreviewMgmtReport,
+  handleEomGetTemplateStyles, handleEomSaveTemplateStyles, handleEomResetTemplateStyles
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
@@ -530,6 +531,9 @@ export default async function handler(req, res) {
         "eom_save_narrative_draft",
         "eom_apply_narrative_to_deck",
         "eom_preview_mgmt_report",
+        "eom_get_template_styles",
+        "eom_save_template_styles",
+        "eom_reset_template_styles",
         "identify_time_client",
         "process_time_document",
         "get_agent_run_progress",
@@ -1647,6 +1651,12 @@ export default async function handler(req, res) {
       return await handleEomSaveRevenueCheckNotes(req, res, sheets);
     } else if (action === "eom_preview_mgmt_report") {
       return await handleEomPreviewMgmtReport(req, res, sheets);
+    } else if (action === "eom_get_template_styles") {
+      return await handleEomGetTemplateStyles(req, res, sheets);
+    } else if (action === "eom_save_template_styles") {
+      return await handleEomSaveTemplateStyles(req, res, sheets);
+    } else if (action === "eom_reset_template_styles") {
+      return await handleEomResetTemplateStyles(req, res, sheets);
 
     } else if (action === "get_flag_sweep_log") {
       const limit = Math.min(Math.max(parseInt(req.body.limit, 10) || 100, 1), 200);

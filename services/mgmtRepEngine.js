@@ -23,8 +23,13 @@ import {
 
 const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const EOM_CHART_STORAGE_BUCKET = "eom-report-charts";
+export const MGMT_REP_TEMPLATE_STYLES_KEY = "mgmt_rep_template_styles";
+const TEMPLATE_STYLES_CACHE_TTL_MS = 30000;
 
 let _cachedTemplateStyles = null;
+let _cachedSupabaseStylesPayload = null; // { styles, isCustomised, updatedAt }
+let _cachedSupabaseStylesAt = 0;
+
 function getTemplateStyles_() {
   if (_cachedTemplateStyles) return _cachedTemplateStyles;
   try {
@@ -37,6 +42,102 @@ function getTemplateStyles_() {
     _cachedTemplateStyles = { blocks: [], conditionalFormats: [] };
   }
   return _cachedTemplateStyles;
+}
+
+export function invalidateTemplateStylesCache() {
+  _cachedSupabaseStylesPayload = null;
+  _cachedSupabaseStylesAt = 0;
+}
+
+/**
+ * Loads the active template styles (checking Supabase `system_config` override first,
+ * falling back to the bundled `mgmtRepTemplateStyles.json`).
+ */
+export async function loadMgmtRepTemplateStyles({ withMeta = false } = {}) {
+  if (_cachedSupabaseStylesPayload && Date.now() - _cachedSupabaseStylesAt < TEMPLATE_STYLES_CACHE_TTL_MS) {
+    return withMeta ? _cachedSupabaseStylesPayload : _cachedSupabaseStylesPayload.styles;
+  }
+  const bundled = getTemplateStyles_();
+  const sb = getSupabaseAdmin();
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from("system_config")
+        .select("value, updated_at")
+        .eq("key", MGMT_REP_TEMPLATE_STYLES_KEY)
+        .maybeSingle();
+      if (!error && data?.value && Array.isArray(data.value.blocks)) {
+        const payload = {
+          styles: {
+            blocks: data.value.blocks,
+            conditionalFormats: Array.isArray(data.value.conditionalFormats)
+              ? data.value.conditionalFormats
+              : bundled.conditionalFormats || [],
+          },
+          isCustomised: true,
+          updatedAt: data.value.updatedAt || data.updated_at || null,
+        };
+        _cachedSupabaseStylesPayload = payload;
+        _cachedSupabaseStylesAt = Date.now();
+        return withMeta ? payload : payload.styles;
+      }
+    } catch (err) {
+      console.warn("[mgmtRepEngine] Could not load Supabase template styles:", err?.message);
+    }
+  }
+  const fallbackPayload = {
+    styles: bundled,
+    isCustomised: false,
+    updatedAt: null,
+  };
+  _cachedSupabaseStylesPayload = fallbackPayload;
+  _cachedSupabaseStylesAt = Date.now();
+  return withMeta ? fallbackPayload : bundled;
+}
+
+/**
+ * Persists edited template styles to Supabase `system_config` so they take effect across
+ * both localhost and serverless deployments.
+ */
+export async function saveMgmtRepTemplateStyles(stylesObj = {}) {
+  const sb = getSupabaseAdmin();
+  if (!sb) throw new Error("Supabase is not configured.");
+  if (!Array.isArray(stylesObj?.blocks)) {
+    throw new Error("Invalid template styles payload: blocks array is required.");
+  }
+  const bundled = getTemplateStyles_();
+  const nowIso = new Date().toISOString();
+  const valueToSave = {
+    blocks: stylesObj.blocks,
+    conditionalFormats: Array.isArray(stylesObj.conditionalFormats)
+      ? stylesObj.conditionalFormats
+      : bundled.conditionalFormats || [],
+    updatedAt: nowIso,
+  };
+  const { error } = await sb
+    .from("system_config")
+    .upsert(
+      { key: MGMT_REP_TEMPLATE_STYLES_KEY, value: valueToSave, updated_at: nowIso },
+      { onConflict: "key" }
+    );
+  if (error) throw new Error(error.message || "Failed to save template styles");
+  invalidateTemplateStylesCache();
+  return { styles: valueToSave, isCustomised: true, updatedAt: nowIso };
+}
+
+/**
+ * Deletes the Supabase override so table formatting reverts to the bundled default snapshot.
+ */
+export async function resetMgmtRepTemplateStyles() {
+  const sb = getSupabaseAdmin();
+  if (!sb) throw new Error("Supabase is not configured.");
+  const { error } = await sb
+    .from("system_config")
+    .delete()
+    .eq("key", MGMT_REP_TEMPLATE_STYLES_KEY);
+  if (error) throw new Error(error.message || "Failed to reset template styles");
+  invalidateTemplateStylesCache();
+  return { styles: getTemplateStyles_(), isCustomised: false, updatedAt: null };
 }
 
 // ============================================================================
@@ -1896,8 +1997,8 @@ function evaluateConditionalRuleAtCell_(cf, r0, c0, mgmtGrid) {
  * Builds the array of styled table objects ({ code, sheetName, rangeA1, rowCount, colCount, rows })
  * from a 2D MgmtRep grid, applying exact base styles and conditional formatting rules.
  */
-export function buildNativeStyledTables(mgmtGrid = [], chartRefsList = []) {
-  const tpl = getTemplateStyles_();
+export function buildNativeStyledTables(mgmtGrid = [], chartRefsList = [], templateStylesOverride = null) {
+  const tpl = templateStylesOverride || getTemplateStyles_();
   const blocks = tpl.blocks || [];
   const condRules = tpl.conditionalFormats || [];
 
@@ -2236,7 +2337,8 @@ export async function updateGoogleSlidesPresentationNative({
   const targetCompactStr = `${shortMonthNames[targetYm.month - 1]}${String(targetYm.year).slice(-2)}`;
   const prevCompactStr = `${shortMonthNames[prevYm.month - 1]}${String(prevYm.year).slice(-2)}`;
 
-  const styledTables = buildNativeStyledTables(mgmtGrid, chartRefsList);
+  const templateStyles = await loadMgmtRepTemplateStyles();
+  const styledTables = buildNativeStyledTables(mgmtGrid, chartRefsList, templateStyles);
   const styledTableByCode = new Map();
   for (const st of styledTables) {
     styledTableByCode.set(String(st.code || "").trim().toLowerCase(), st);
@@ -2349,7 +2451,32 @@ export async function updateGoogleSlidesPresentationNative({
 
         if (matchedChartId && chartSignedUrlByChartId.has(matchedChartId)) {
           const signedUrl = chartSignedUrlByChartId.get(matchedChartId);
+          const chartDef = chartIdMap.get(matchedChartId);
           const newObjId = `pulse_ch_${sIdx}_${matchedChartId}_${Date.now().toString(36).slice(-4)}`;
+
+          // Restore canonical 2.56:1 (256x100) bounding box if a previous sparkline PNG run altered the height
+          let targetSize = pe.size;
+          let targetTransform = pe.transform;
+          if (chartDef?.id?.startsWith("sparkline") && pe.size?.width?.magnitude && pe.size?.height?.magnitude) {
+            const sx = Number(pe.transform?.scaleX) || 1;
+            const sy = Number(pe.transform?.scaleY) || 1;
+            const curW = pe.size.width.magnitude * sx;
+            const curH = pe.size.height.magnitude * sy;
+            const curRatio = curH > 0 ? curW / curH : 0;
+            if (curRatio > 2.7 && sy > 0) {
+              const targetH = curW / 2.56;
+              const deltaY = (targetH - curH) / 2;
+              targetSize = {
+                width: { ...pe.size.width },
+                height: { magnitude: Math.round(targetH / sy), unit: pe.size.height.unit || "EMU" },
+              };
+              targetTransform = {
+                ...pe.transform,
+                translateY: (pe.transform?.translateY ?? 0) - deltaY,
+              };
+            }
+          }
+
           batchRequests.push(
             {
               createImage: {
@@ -2357,8 +2484,8 @@ export async function updateGoogleSlidesPresentationNative({
                 url: signedUrl,
                 elementProperties: {
                   pageObjectId: slideId,
-                  size: pe.size,
-                  transform: pe.transform,
+                  size: targetSize,
+                  transform: targetTransform,
                 },
               },
             },

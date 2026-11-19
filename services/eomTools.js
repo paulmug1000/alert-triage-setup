@@ -26,6 +26,11 @@ import {
   computeNativeMgmtRepForClient,
   buildNativeStyledTables,
   updateGoogleSlidesPresentationNative,
+  loadMgmtRepTemplateStyles,
+  saveMgmtRepTemplateStyles,
+  resetMgmtRepTemplateStyles,
+  formatSerialDateIfNumeric,
+  parseA1RangeCoords,
 } from "./mgmtRepEngine.js";
 
 // Moved from triage.js local scope
@@ -5210,7 +5215,8 @@ export async function handleEomRunReportingAction(req, res, sheets) {
 
       let activeChartRefs = chartRefsList;
       if (primaryMgmtGrid && chartRefsList.length > 0) {
-        const styledTables = buildNativeStyledTables(primaryMgmtGrid, chartRefsList);
+        const templateStyles = await loadMgmtRepTemplateStyles();
+        const styledTables = buildNativeStyledTables(primaryMgmtGrid, chartRefsList, templateStyles);
         const filtered = styledTables
           .filter((tbl) => tbl.rows.some((r) => r.some((cell) => String(cell.text || "").trim() !== "")))
           .map((tbl) => ({
@@ -7838,10 +7844,11 @@ export async function handleEomPreviewMgmtReport(req, res, sheets) {
       })),
     }));
 
-    // 3. Build styled table blocks natively (applying base styles + 61 conditional format rules)
+    // 3. Build styled table blocks natively (applying base styles + conditional format rules)
     const state = await getEomReportingControlState(sheets);
     const chartRefsList = Array.isArray(state?.chartRefs) && state.chartRefs.length > 0 ? state.chartRefs : DEFAULT_CHART_REFS;
-    const allStyledTables = buildNativeStyledTables(mgmtGrid, chartRefsList);
+    const templateStyles = await loadMgmtRepTemplateStyles();
+    const allStyledTables = buildNativeStyledTables(mgmtGrid, chartRefsList, templateStyles);
     const styledTables = allStyledTables.filter((tbl) =>
       tbl.rows.some((r) => r.some((c) => String(c.v || "").trim() !== ""))
     );
@@ -7856,6 +7863,187 @@ export async function handleEomPreviewMgmtReport(req, res, sheets) {
     });
   } catch (err) {
     console.error("❌ handleEomPreviewMgmtReport error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+function sanitizeHexColor_(raw, fallback = "#ffffff") {
+  const s = String(raw || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(s) ? s.toLowerCase() : fallback;
+}
+
+function sanitizeCellStyleObj_(c = {}) {
+  const alignUpper = String(c.align || "").trim().toUpperCase();
+  const validAlign = ["LEFT", "CENTER", "RIGHT"].includes(alignUpper) ? alignUpper : "";
+  const valignUpper = String(c.valign || "MIDDLE").trim().toUpperCase();
+  const validValign = ["TOP", "MIDDLE", "BOTTOM"].includes(valignUpper) ? valignUpper : "MIDDLE";
+  const fontSizeNum = Number(c.fontSize);
+  return {
+    bg: sanitizeHexColor_(c.bg, "#ffffff"),
+    fg: sanitizeHexColor_(c.fg, "#000000"),
+    bold: Boolean(c.bold),
+    italic: Boolean(c.italic),
+    underline: Boolean(c.underline),
+    fontSize: Number.isFinite(fontSizeNum) && fontSizeNum >= 6 && fontSizeNum <= 36 ? Math.round(fontSizeNum) : 10,
+    fontFamily: String(c.fontFamily || "Arial").trim().slice(0, 40) || "Arial",
+    align: validAlign,
+    valign: validValign,
+  };
+}
+
+/**
+ * Loads the active management report table formatting snapshot (`mgmt_rep_template_styles` in Supabase
+ * or bundled `mgmtRepTemplateStyles.json`), plus sample cell display values from `template_snapshot::master::MgmtRep`.
+ */
+export async function handleEomGetTemplateStyles(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  try {
+    const [{ styles, isCustomised, updatedAt }, state] = await Promise.all([
+      loadMgmtRepTemplateStyles({ withMeta: true }),
+      getEomReportingControlState(sheets),
+    ]);
+    const chartRefs = Array.isArray(state?.chartRefs) && state.chartRefs.length > 0 ? state.chartRefs : DEFAULT_CHART_REFS;
+
+    // Fetch sample display labels/values from template_snapshot::master::MgmtRep so the editor shows real row labels
+    const sampleValuesByRange = {};
+    const sb = getSupabaseAdmin();
+    if (sb) {
+      const { data: tplSnap } = await sb
+        .from("system_config")
+        .select("value")
+        .eq("key", "template_snapshot::master::MgmtRep")
+        .maybeSingle();
+      const grid = tplSnap?.value?.values_grid;
+      if (Array.isArray(grid)) {
+        for (const blk of styles?.blocks || []) {
+          const coords = parseA1RangeCoords(blk.range);
+          if (!coords) continue;
+          const rows = [];
+          for (let r0 = coords.startRow0; r0 <= coords.endRow0; r0++) {
+            const rVals = [];
+            for (let c0 = coords.startCol0; c0 <= coords.endCol0; c0++) {
+              const rawCell = grid?.[r0]?.[c0] ?? "";
+              const val = r0 === coords.startRow0 ? formatSerialDateIfNumeric(rawCell) : String(rawCell);
+              rVals.push(val);
+            }
+            rows.push(rVals);
+          }
+          sampleValuesByRange[blk.range] = rows;
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      styles,
+      chartRefs,
+      sampleValuesByRange,
+      isCustomised,
+      updatedAt,
+    });
+  } catch (err) {
+    console.error("❌ handleEomGetTemplateStyles error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Saves updated management report table formatting blocks to Supabase `system_config` (`mgmt_rep_template_styles`).
+ */
+export async function handleEomSaveTemplateStyles(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  const { blocks, blockRange, rows } = req.body || {};
+
+  try {
+    const { styles: currentStyles } = await loadMgmtRepTemplateStyles({ withMeta: true });
+    let nextBlocks = Array.isArray(currentStyles?.blocks) ? [...currentStyles.blocks] : [];
+
+    if (Array.isArray(blocks) && blocks.length > 0) {
+      nextBlocks = blocks.map((blk) => ({
+        range: String(blk.range || "").trim(),
+        startRow: Number(blk.startRow) || 0,
+        startCol: Number(blk.startCol) || 0,
+        rows: (blk.rows || []).map((rowArr) => (rowArr || []).map((cell) => sanitizeCellStyleObj_(cell))),
+      }));
+    } else if (blockRange && Array.isArray(rows)) {
+      const idx = nextBlocks.findIndex((b) => b.range === blockRange);
+      if (idx < 0) {
+        return res.status(404).json({ success: false, error: `Template block ${blockRange} not found.` });
+      }
+      nextBlocks[idx] = {
+        ...nextBlocks[idx],
+        rows: rows.map((rowArr) => (rowArr || []).map((cell) => sanitizeCellStyleObj_(cell))),
+      };
+    } else {
+      return res.status(400).json({ success: false, error: "Either blocks array or (blockRange + rows) is required." });
+    }
+
+    const saved = await saveMgmtRepTemplateStyles({
+      blocks: nextBlocks,
+      conditionalFormats: currentStyles?.conditionalFormats || [],
+    });
+
+    scheduleBg_(
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: resolveAcSheetId_(req.body?.automationCommanderSheetId),
+        category: "REPORTING",
+        action: "Updated report table formatting",
+        summary: blockRange
+          ? `Updated snapshot formatting for ${blockRange}`
+          : `Updated snapshot formatting across ${nextBlocks.length} report table blocks`,
+        details: { blockRange: blockRange || "ALL" },
+      })
+    );
+
+    return res.status(200).json({
+      success: true,
+      isCustomised: saved.isCustomised,
+      updatedAt: saved.updatedAt,
+      styles: saved.styles,
+    });
+  } catch (err) {
+    console.error("❌ handleEomSaveTemplateStyles error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Resets custom Supabase formatting back to the bundled default snapshot (`mgmtRepTemplateStyles.json`).
+ */
+export async function handleEomResetTemplateStyles(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  try {
+    const resetRes = await resetMgmtRepTemplateStyles();
+
+    scheduleBg_(
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: resolveAcSheetId_(req.body?.automationCommanderSheetId),
+        category: "REPORTING",
+        action: "Reset report table formatting",
+        summary: "Reset snapshot table formatting back to bundled defaults",
+      })
+    );
+
+    return res.status(200).json({
+      success: true,
+      isCustomised: resetRes.isCustomised,
+      updatedAt: resetRes.updatedAt,
+      styles: resetRes.styles,
+    });
+  } catch (err) {
+    console.error("❌ handleEomResetTemplateStyles error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

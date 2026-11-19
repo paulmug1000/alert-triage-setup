@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
+import ReportStyleEditorModal from "./ReportStyleEditorModal";
 import { eomWorkMonthToTargetMonth } from "../utils/helpers";
 
 /**
@@ -65,6 +66,7 @@ export default function ReportingTab({
 
   const [showLogModal, setShowLogModal] = useState(false);
   const [showChartRefsModal, setShowChartRefsModal] = useState(false);
+  const [showStyleEditorModal, setShowStyleEditorModal] = useState(false);
   const [editingRef, setEditingRef] = useState(null); // { code, range, label, originalCode, isNew }
   const [refSaving, setRefSaving] = useState(false);
   const [refDeletingCode, setRefDeletingCode] = useState(null);
@@ -1860,6 +1862,22 @@ export default function ReportingTab({
               }}
             >
               Chart references
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowStyleEditorModal(true)}
+              style={{
+                padding: "7px 12px",
+                fontSize: "12px",
+                fontWeight: 600,
+                color: "#334155",
+                background: "#f8fafc",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                cursor: "pointer"
+              }}
+            >
+              Table formatting
             </button>
           </div>
         </div>
@@ -5474,6 +5492,12 @@ export default function ReportingTab({
           </div>
         </div>
       )}
+
+      <ReportStyleEditorModal
+        isOpen={showStyleEditorModal}
+        onClose={() => setShowStyleEditorModal(false)}
+        automationCommanderSheetId={automationCommanderSheetId}
+      />
     </div>
   );
 }

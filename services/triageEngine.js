@@ -209,22 +209,24 @@ export function dispatchAsyncChainStep(baseUrl, payload, bypassToken = "") {
             if (!redirRes.ok) {
               const rText = await redirRes.text().catch(() => "");
               console.error(`❌ [Triage Chain] Step '${payload.action}' redirect HTTP error ${redirRes.status} (${redirUrl.toString()}): ${rText}`);
-            } else {
-              console.log(`🔗 [Triage Chain] Dispatched step '${payload.action}' via canonical redirect (status ${redirRes.status})`);
+              return { ok: false, status: redirRes.status, error: rText || `HTTP ${redirRes.status}` };
             }
-            return;
+            console.log(`🔗 [Triage Chain] Dispatched step '${payload.action}' via canonical redirect (status ${redirRes.status})`);
+            return { ok: true, status: redirRes.status };
           }
         }
       }
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         console.error(`❌ [Triage Chain] Step '${payload.action}' HTTP error ${res.status}: ${text}`);
-      } else {
-        console.log(`🔗 [Triage Chain] Dispatched step '${payload.action}' successfully (status ${res.status})`);
+        return { ok: false, status: res.status, error: text || `HTTP ${res.status}` };
       }
+      console.log(`🔗 [Triage Chain] Dispatched step '${payload.action}' successfully (status ${res.status})`);
+      return { ok: true, status: res.status };
     })
     .catch((err) => {
       console.error(`❌ [Triage Chain] Network dispatch failure for step '${payload.action}':`, err.message);
+      return { ok: false, status: 0, error: err.message };
     });
 
   try {
@@ -238,11 +240,14 @@ export function dispatchAsyncChainStep(baseUrl, payload, bypassToken = "") {
   return dispatchPromise;
 }
 
-async function flushAsyncChainDispatch_(dispatchPromise, waitMs = 350) {
-  if (!dispatchPromise) return;
-  await Promise.race([
-    dispatchPromise.catch(() => { }),
-    new Promise(resolve => setTimeout(resolve, waitMs)),
+async function flushAsyncChainDispatch_(dispatchPromise, waitMs = 1500) {
+  if (!dispatchPromise) return { settled: false };
+  return await Promise.race([
+    dispatchPromise.then(
+      (result) => ({ settled: true, ...(result || { ok: true }) }),
+      (err) => ({ settled: true, ok: false, status: 0, error: err?.message || "Dispatch failed" })
+    ),
+    new Promise(resolve => setTimeout(() => resolve({ settled: false }), waitMs)),
   ]);
 }
 
@@ -316,7 +321,17 @@ export async function runBackgroundTriageRefresh({
       chain: true,
       bypassToken: effectiveBypass,
     }, effectiveBypass);
-    await flushAsyncChainDispatch_(stepPromise);
+    const dispatchOutcome = await flushAsyncChainDispatch_(stepPromise, 1500);
+    if (dispatchOutcome.settled && dispatchOutcome.ok === false) {
+      const msg = `Failed to dispatch sweep batch 1 (HTTP ${dispatchOutcome.status || "network"}): ${dispatchOutcome.error || "Unknown error"}`;
+      await setTriageRefreshStatus({
+        status: "error",
+        error: msg,
+        completedAt: Date.now(),
+        updatedAt: Date.now(),
+      }, 300).catch(() => { });
+      return { success: false, chained: true, error: msg };
+    }
 
     return { success: true, chained: true, startedAt: startTime };
   }
@@ -2795,6 +2810,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
   if (!acIdSweep) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
 
   const sweepStart = Date.now();
+  const lambdaStartMs = Number(req.body?._lambdaStartMs) || sweepStart;
+  const IN_LAMBDA_SWEEP_BUDGET_MS = 140000;
+  const IN_LAMBDA_BUILD_HANDOFF_BUDGET_MS = 160000;
   let clientsChecked = 0, flagsRaised = 0, errors = 0;
   let alertsDelayed = 0, alertsWoken = 0;
   let raisedDetail = [];
@@ -3843,7 +3861,6 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
       if (hasMore) {
         const nextBatchNum = Math.floor(nextIdx / (Number(req.body?.chunkSize) || 4)) + 1;
-        console.log(`🔗 [Triage Chain] Sweep chunk finished. Chaining to next sweep batch ${nextBatchNum} at index ${nextIdx}...`);
         await setTriageRefreshStatus({
           status: "running",
           step: "sweep",
@@ -3851,7 +3868,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
           updatedAt: Date.now(),
         }).catch(() => { });
 
-        const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
+        const lambdaElapsedMs = Date.now() - lambdaStartMs;
+        const nextSweepPayload = {
           action: "run_flag_sweep",
           secret: incomingSweepSecret,
           automationCommanderSheetId: acIdSweep,
@@ -3864,26 +3882,87 @@ export async function handleRunFlagSweep(req, res, sheets) {
           proactiveDue,
           chain: true,
           bypassToken: effectiveBypass,
-        }, effectiveBypass);
-        await flushAsyncChainDispatch_(stepPromise);
-      } else {
-        console.log(`🔗 [Triage Chain] Sweep complete across all clients. Chaining to Step 2 (build cached alert options)...`);
-        await setTriageRefreshStatus({
-          status: "running",
-          step: "build",
-          progress: "Generating options (batch 1)...",
-          updatedAt: Date.now(),
-        }).catch(() => { });
+        };
 
-        const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
-          action: "build_cached_alert_options",
-          secret: incomingSweepSecret,
-          automationCommanderSheetId: acIdSweep,
-          chain: true,
-          buildBatch: 1,
-          bypassToken: effectiveBypass,
-        }, effectiveBypass);
-        await flushAsyncChainDispatch_(stepPromise);
+        if (lambdaElapsedMs < IN_LAMBDA_SWEEP_BUDGET_MS) {
+          console.log(`🔗 [Triage Chain] Sweep chunk finished (${Math.round(lambdaElapsedMs / 1000)}s elapsed in Lambda). Continuing batch ${nextBatchNum} at index ${nextIdx} in-process...`);
+          const nextRes = await invokeInProcessHandler_(handleRunFlagSweep, sheets, {
+            ...nextSweepPayload,
+            _lambdaStartMs: lambdaStartMs,
+          });
+          if (!nextRes.data?.success) {
+            return res.status(nextRes.statusCode || 500).json(nextRes.data || { success: false, error: `Sweep continuation failed at index ${nextIdx}` });
+          }
+        } else {
+          console.log(`🔗 [Triage Chain] Sweep chunk finished (${Math.round(lambdaElapsedMs / 1000)}s elapsed in Lambda). Chaining via HTTP to batch ${nextBatchNum} at index ${nextIdx}...`);
+          const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, nextSweepPayload, effectiveBypass);
+          const dispatchOutcome = await flushAsyncChainDispatch_(stepPromise, 1500);
+          if (dispatchOutcome.settled && dispatchOutcome.ok === false) {
+            const msg = `Failed to dispatch sweep batch ${nextBatchNum} (HTTP ${dispatchOutcome.status || "network"}): ${dispatchOutcome.error || "Unknown error"}`;
+            await setTriageRefreshStatus({
+              status: "error",
+              error: msg,
+              completedAt: Date.now(),
+              updatedAt: Date.now(),
+            }, 300).catch(() => { });
+            return res.status(502).json({ success: false, error: msg });
+          }
+        }
+      } else {
+        const lambdaElapsedMs = Date.now() - lambdaStartMs;
+        if (lambdaElapsedMs < IN_LAMBDA_BUILD_HANDOFF_BUDGET_MS) {
+          console.log(`🔗 [Triage Chain] Sweep complete across all clients (${Math.round(lambdaElapsedMs / 1000)}s elapsed in Lambda). Running Step 2 (build cached alert options) in-process...`);
+          await setTriageRefreshStatus({
+            status: "running",
+            step: "build",
+            progress: "Generating options (batch 1)...",
+            updatedAt: Date.now(),
+          }).catch(() => { });
+
+          const remainingBuildMs = Math.max(45000, 210000 - lambdaElapsedMs);
+          const buildRes = await invokeInProcessHandler_(handleBuildCachedAlertOptions, sheets, {
+            action: "build_cached_alert_options",
+            secret: incomingSweepSecret,
+            automationCommanderSheetId: acIdSweep,
+            chain: true,
+            buildBatch: 1,
+            bypassToken: effectiveBypass,
+            maxDurationMs: remainingBuildMs,
+          });
+          if (!buildRes.data?.success) {
+            console.error(`❌ [Triage Chain] In-process build_cached_alert_options failed: ${buildRes.data?.error || "unknown error"}`);
+          }
+        } else {
+          console.log(`🔗 [Triage Chain] Sweep complete across all clients (${Math.round(lambdaElapsedMs / 1000)}s elapsed). Chaining to Step 2 (build cached alert options)...`);
+          await setTriageRefreshStatus({
+            status: "running",
+            step: "build",
+            progress: "Generating options (batch 1)...",
+            updatedAt: Date.now(),
+          }).catch(() => { });
+
+          const stepPromise = dispatchAsyncChainStep(effectiveBaseUrl, {
+            action: "build_cached_alert_options",
+            secret: incomingSweepSecret,
+            automationCommanderSheetId: acIdSweep,
+            chain: true,
+            buildBatch: 1,
+            bypassToken: effectiveBypass,
+          }, effectiveBypass);
+          const dispatchOutcome = await flushAsyncChainDispatch_(stepPromise, 1500);
+          if (dispatchOutcome.settled && dispatchOutcome.ok === false) {
+            console.warn(`⚠️ [Triage Chain] HTTP dispatch for build_cached_alert_options failed (${dispatchOutcome.status}); running store_precomputed in-process as fallback...`);
+            await invokeInProcessHandler_(handleStorePrecomputed, sheets, {
+              action: "store_precomputed",
+              secret: incomingSweepSecret,
+              automationCommanderSheetId: acIdSweep,
+              chain: true,
+              computedAt: new Date().toISOString(),
+            }).catch((storeErr) => {
+              console.error("❌ [Triage Chain] Fallback store_precomputed failed:", storeErr.message);
+            });
+          }
+        }
       }
     }
 
@@ -3967,7 +4046,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     let hasMore = false;
     let builtDetail = [];
     const gasLocksByClient = new Map();
-    const TIME_LIMIT_MS = 75000;
+    const TIME_LIMIT_MS = Math.max(30000, Number(req.body?.maxDurationMs) || 150000);
 
     for (const [key, rows] of groups.entries()) {
       if (Date.now() - buildStart > TIME_LIMIT_MS) {
@@ -4065,6 +4144,11 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
         }
 
         for (const row of rows) {
+          if (Date.now() - buildStart > TIME_LIMIT_MS) {
+            console.log(`  ⏳ Time limit reached inside ${clientName}/${alertType} (${Math.round((Date.now() - buildStart) / 1000)}s). Exiting cleanly to avoid 300s timeout.`);
+            hasMore = true;
+            break;
+          }
           const match = currentAlerts.find(a => a._fingerprint === row.fingerprintHash || a._legacyFingerprint === row.fingerprintHash);
           if (!match) {
             console.log(`  ⏭ ${clientName}/${alertType}: fingerprint ${row.fingerprintHash.slice(0, 8)}… no longer found - marking auto_resolved`);
@@ -4146,6 +4230,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
         errors += rows.length;
         console.log(`  ❌ ${clientName}/${alertType}: group processing failed - ${groupErr.message}`);
       }
+      if (hasMore) break;
     }
 
     const elapsedS = Math.round((Date.now() - buildStart) / 1000);
@@ -4257,7 +4342,19 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           buildBatch: nextBatch,
           bypassToken: effectiveBypass,
         }, effectiveBypass);
-        await flushAsyncChainDispatch_(stepPromise);
+        const dispatchOutcome = await flushAsyncChainDispatch_(stepPromise, 1500);
+        if (dispatchOutcome.settled && dispatchOutcome.ok === false) {
+          console.warn(`⚠️ [Triage Chain] Options batch ${nextBatch} HTTP dispatch failed (${dispatchOutcome.status}); running store_precomputed in-process with partial builds...`);
+          await invokeInProcessHandler_(handleStorePrecomputed, sheets, {
+            action: "store_precomputed",
+            secret: (buildSecret || process.env.CRON_SECRET || "").trim(),
+            automationCommanderSheetId: acIdBuild,
+            chain: true,
+            computedAt: new Date().toISOString(),
+          }).catch(storeErr => {
+            console.error("❌ [Triage Chain] Fallback store_precomputed failed:", storeErr.message);
+          });
+        }
       } else {
         console.log(`🔗 [Triage Chain] Options build complete. Running Step 3 (store_precomputed) in-process...`);
         await setTriageRefreshStatus({

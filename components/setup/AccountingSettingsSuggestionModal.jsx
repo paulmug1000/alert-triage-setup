@@ -223,6 +223,24 @@ export default function AccountingSettingsSuggestionModal({
                 </div>
               )}
 
+              {/* VAT Payment Scheme Confirmation Notice (e.g. QuickBooks API limitation) */}
+              {data?.vatSchemeNotice && (
+                <div
+                  style={{
+                    padding: "12px 16px",
+                    borderRadius: "8px",
+                    marginBottom: "16px",
+                    fontSize: "12px",
+                    background: "#FFFBEB",
+                    border: "1px solid #FDE68A",
+                    color: "#92400E"
+                  }}
+                >
+                  <strong style={{ display: "block", marginBottom: "4px" }}>VAT payment scheme confirmation required</strong>
+                  {data.vatSchemeNotice}
+                </div>
+              )}
+
               {/* Inspection Info Callout */}
               <div
                 style={{
@@ -243,6 +261,11 @@ export default function AccountingSettingsSuggestionModal({
                     • {note}
                   </div>
                 ))}
+                {data?.vatQuartersEvidence && (
+                  <div style={{ marginTop: "4px", fontStyle: "italic", color: "#0284C7" }}>
+                    VAT quarters inspection: {data.vatQuartersEvidence}
+                  </div>
+                )}
                 {data?.payeInspectionEvidence && (
                   <div style={{ marginTop: "4px", fontStyle: "italic", color: "#0284C7" }}>
                     PAYE inspection: {data.payeInspectionEvidence}

@@ -150,6 +150,268 @@ async function resolveAccountingToolAuth(clientName, masterSheetId) {
 }
 
 /**
+ * Parses a QuickBooks YYYY-MM-DD TxnDate string into a local Date without UTC shift.
+ */
+function parseIsoDateLocal(dateStr) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateStr || ""));
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+/**
+ * Parses Xero date values ("/Date(1774915200000+0000)/" or ISO strings).
+ */
+function parseXeroDate(val) {
+  const raw = String(val || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("/Date(")) {
+    const ms = parseInt(raw.slice(6), 10);
+    if (!isNaN(ms)) {
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? null : d;
+    }
+  }
+  return parseIsoDateLocal(raw);
+}
+
+/**
+ * Returns true if the given Date falls on the last day of its calendar month.
+ */
+function isMonthEndDate(date) {
+  if (!(date instanceof Date) || isNaN(date.getTime())) return false;
+  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+  return next.getDate() === 1;
+}
+
+/**
+ * Classifies whether a transaction belongs to HMRC PAYE or HMRC VAT settlements.
+ * Avoids false-matching regular supplier invoices/purchases that mention 20% VAT,
+ * and avoids counting explicit HMRC VAT payments toward PAYE frequency.
+ */
+export function classifyHmrcTransaction({ text, partyName = "" }) {
+  const lower = String(text || "").toLowerCase();
+  const partyLower = String(partyName || "").toLowerCase();
+
+  const hasPayeKeyword = /\b(paye|nic|national insurance)\b/i.test(lower);
+  const hasCorpTaxKeyword = /\b(corporation tax|corp tax|ct600)\b/i.test(lower);
+  const hasHmrcParty = /\b(hmrc|hm revenue|inland revenue|customs)\b/i.test(partyLower);
+  const hasHmrcAny = hasHmrcParty || /\b(hmrc|hm revenue|inland revenue)\b/i.test(lower);
+  const hasVatWord = /\b(vat|value added tax)\b/i.test(lower);
+  const hasExplicitVatPhrase = /\b(hmrc vat|vat return|vat payment|vat repayment|vat refund|vat liability|vat control|vat payable|vat owed|vat dd)\b/i.test(lower);
+
+  const isVat =
+    !hasPayeKeyword &&
+    !hasCorpTaxKeyword &&
+    (hasExplicitVatPhrase || (hasHmrcAny && hasVatWord));
+
+  const isPaye =
+    hasPayeKeyword ||
+    (hasHmrcAny && !isVat && !hasCorpTaxKeyword);
+
+  return { isPaye, isVat };
+}
+
+/**
+ * Derives Monthly vs Quarterly PAYE cycle from matched transaction dates.
+ */
+export function derivePayeCycleFromDates(dates) {
+  if (!Array.isArray(dates) || dates.length === 0) {
+    return {
+      cycle: "Monthly",
+      evidence: "No distinct HMRC PAYE bank transactions detected in trailing 12 months. Defaulting to Monthly."
+    };
+  }
+
+  const distinctMonths = new Set();
+  for (const d of dates) {
+    if (d instanceof Date && !isNaN(d.getTime())) {
+      distinctMonths.add(`${d.getFullYear()}-${d.getMonth() + 1}`);
+    }
+  }
+
+  if (distinctMonths.size >= 5) {
+    return {
+      cycle: "Monthly",
+      evidence: `Detected ${dates.length} HMRC/PAYE transaction(s) across ${distinctMonths.size} month(s) in trailing 12 months. Suggesting Monthly.`
+    };
+  }
+  if (distinctMonths.size >= 2 && distinctMonths.size <= 4) {
+    return {
+      cycle: "Quarterly",
+      evidence: `Detected ${dates.length} HMRC/PAYE transaction(s) across ${distinctMonths.size} quarter/month intervals in trailing 12 months. Suggesting Quarterly.`
+    };
+  }
+  return {
+    cycle: "Monthly",
+    evidence: `Detected ${dates.length} HMRC/PAYE payment transaction(s). Suggesting Monthly.`
+  };
+}
+
+/**
+ * Infers the UK VAT quarter stagger cycle from HMRC VAT payment/refund dates.
+ * UK VAT payments are typically collected ~1 month + 7 days after quarter end:
+ * - Days 1..18 of month M -> quarter ended 2 months earlier (M - 2)
+ * - Days 19..31 of month M -> manual payment for quarter ended 1 month earlier (M - 1)
+ */
+export function deriveVatQuarterFromDates(dates) {
+  if (!Array.isArray(dates) || dates.length === 0) {
+    return null;
+  }
+
+  const votes = new Map();
+  const distinctMonths = new Set();
+  const monthLabels = [];
+
+  for (const d of dates) {
+    if (!(d instanceof Date) || isNaN(d.getTime())) continue;
+    const month = d.getMonth() + 1;
+    const day = d.getDate();
+    const offset = day <= 18 ? 2 : 1;
+    const inferredEndMonth = ((month - 1 - offset + 12) % 12) + 1;
+    const cycle = deriveVatQuarterCycle(inferredEndMonth);
+
+    votes.set(cycle, (votes.get(cycle) || 0) + 1);
+    const key = `${d.getFullYear()}-${month}`;
+    if (!distinctMonths.has(key)) {
+      distinctMonths.add(key);
+      monthLabels.push(`${MONTH_NAMES_SHORT[month - 1]} ${d.getFullYear()}`);
+    }
+  }
+
+  if (votes.size === 0) return null;
+
+  if (distinctMonths.size >= 8) {
+    return {
+      cycle: null,
+      isMonthlyVat: true,
+      evidence: `Detected ${dates.length} HMRC VAT transaction(s) across ${distinctMonths.size} months (appears to be monthly VAT filing).`
+    };
+  }
+
+  const sorted = [...votes.entries()].sort((a, b) => b[1] - a[1]);
+  const [topCycle, topVotes] = sorted[0];
+  const secondVotes = sorted[1]?.[1] || 0;
+
+  if (topVotes === secondVotes) {
+    return {
+      cycle: null,
+      isMonthlyVat: false,
+      evidence: `Detected ${dates.length} HMRC VAT transaction(s) (${monthLabels.join(", ")}), but stagger votes were tied.`
+    };
+  }
+
+  return {
+    cycle: topCycle,
+    isMonthlyVat: false,
+    evidence: `Inferred from ${dates.length} HMRC VAT transaction(s) in ${monthLabels.join(", ")}.`
+  };
+}
+
+/**
+ * Queries paginated QuickBooks entities up to a safe page cap.
+ */
+async function fetchQuickBooksQueryAll({ accessToken, realmId, entity, whereClause, maxPages = 5 }) {
+  const pageSize = 1000;
+  const rows = [];
+
+  for (let page = 0; page < maxPages; page++) {
+    const startPosition = page * pageSize + 1;
+    const query = `SELECT * FROM ${entity} WHERE ${whereClause} STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`;
+    const url = `https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(realmId)}/query?query=${encodeURIComponent(query)}&minorversion=73`;
+
+    const res = await fetch(url, {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Accept": "application/json"
+      },
+      redirect: "manual"
+    });
+
+    if (!res.ok) {
+      throw new Error(`QuickBooks ${entity} query returned status ${res.status}`);
+    }
+
+    const data = await res.json();
+    const batch = data?.QueryResponse?.[entity] || [];
+    rows.push(...batch);
+
+    if (batch.length < pageSize) break;
+  }
+
+  return rows;
+}
+
+/**
+ * Inspects QuickBooks Purchase, BillPayment, and Transfer records for trailing 12-month HMRC PAYE & VAT payments.
+ */
+async function inspectQuickBooksHmrcDates({ accessToken, realmId, startIso, endIso }) {
+  const whereClause = `TxnDate >= '${startIso}' AND TxnDate <= '${endIso}'`;
+  const sources = [
+    {
+      entity: "Purchase",
+      extract: (p) => {
+        const lineText = (p.Line || [])
+          .map(l => `${l.Description || ""} ${l.AccountBasedExpenseLineDetail?.AccountRef?.name || ""} ${l.ItemBasedExpenseLineDetail?.ItemRef?.name || ""}`)
+          .join(" ");
+        const partyName = p.EntityRef?.name || "";
+        return {
+          partyName,
+          text: `${partyName} ${p.PrivateNote || ""} ${p.DocNumber || ""} ${lineText}`
+        };
+      }
+    },
+    {
+      entity: "BillPayment",
+      extract: (bp) => {
+        const partyName = bp.VendorRef?.name || "";
+        return {
+          partyName,
+          text: `${partyName} ${bp.PrivateNote || ""} ${bp.DocNumber || ""}`
+        };
+      }
+    },
+    {
+      entity: "Transfer",
+      extract: (t) => ({
+        partyName: `${t.FromAccountRef?.name || ""} ${t.ToAccountRef?.name || ""}`,
+        text: `${t.FromAccountRef?.name || ""} ${t.ToAccountRef?.name || ""} ${t.PrivateNote || ""}`
+      })
+    }
+  ];
+
+  const results = await Promise.allSettled(
+    sources.map(src => fetchQuickBooksQueryAll({ accessToken, realmId, entity: src.entity, whereClause }))
+  );
+
+  const payeDates = [];
+  const vatDates = [];
+  let succeededCount = 0;
+
+  results.forEach((result, idx) => {
+    if (result.status !== "fulfilled") {
+      console.warn(`⚠️ QuickBooks ${sources[idx].entity} HMRC query failed:`, result.reason?.message);
+      return;
+    }
+    succeededCount++;
+    for (const row of result.value) {
+      const { isPaye, isVat } = classifyHmrcTransaction(sources[idx].extract(row));
+      if (!isPaye && !isVat) continue;
+      const d = parseIsoDateLocal(row.TxnDate);
+      if (d && !isNaN(d.getTime())) {
+        if (isPaye) payeDates.push(d);
+        if (isVat) vatDates.push(d);
+      }
+    }
+  });
+
+  if (succeededCount === 0) {
+    throw new Error("All QuickBooks transaction queries failed.");
+  }
+
+  return { payeDates, vatDates };
+}
+
+/**
  * Suggests initial accounting settings for KeyInfo (Start date, VAT quarters, VAT scheme, PAYE cycle).
  */
 export async function suggestAccountingSettings({ clientName, masterSheetId, isAdmin = true }) {
@@ -186,9 +448,11 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
   let financialYearEndDay = 31;
   let rawTaxBasis = "";
   let rawTaxPeriod = "";
+  let xeroPeriodLockDate = null;
   let baseCurrency = "GBP";
   let inspectionNotes = [];
   let flatRateWarning = null;
+  let vatSchemeNotice = null;
 
   if (auth && auth.tool === "Xero") {
     try {
@@ -207,10 +471,14 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
         financialYearEndMonth = org.FinancialYearEndMonth || 3;
         rawTaxBasis = String(org.SalesTaxBasis || "").toUpperCase();
         rawTaxPeriod = String(org.SalesTaxPeriod || "").toUpperCase();
+        xeroPeriodLockDate = parseXeroDate(org.PeriodLockDate);
         baseCurrency = org.BaseCurrency || org.DefaultCurrency || "GBP";
 
         inspectionNotes.push(`Connected to Xero organisation: "${org.Name || clientName}".`);
         inspectionNotes.push(`Financial year end: ${financialYearEndDay} ${MONTH_NAMES_SHORT[financialYearEndMonth - 1] || financialYearEndMonth}.`);
+        if (rawTaxPeriod === "MONTHLY" || rawTaxPeriod === "YEARLY") {
+          inspectionNotes.push(`Xero VAT filing period is set to ${rawTaxPeriod.toLowerCase()}. Pulse tracks VAT on a quarterly cycle — please confirm the closest quarterly stagger.`);
+        }
       } else {
         inspectionNotes.push(`Xero Organisation API returned status ${orgRes.status}.`);
       }
@@ -221,7 +489,7 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
   } else if (auth && auth.tool === "QuickBooks") {
     try {
       const safeRealmId = assertValidQBRealmId(auth.realmId);
-      const prefUrl = `https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(safeRealmId)}/preferences`;
+      const prefUrl = `https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(safeRealmId)}/preferences?minorversion=73`;
       const prefRes = await fetch(prefUrl, {
         headers: {
           "Authorization": `Bearer ${auth.accessToken}`,
@@ -231,7 +499,8 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
       });
       if (prefRes.ok) {
         const prefData = await prefRes.json();
-        const firstMonthStr = prefData?.Preferences?.AccountingInfoPrefs?.FirstMonthOfFiscalYear || "April";
+        const prefs = prefData?.Preferences || {};
+        const firstMonthStr = prefs.AccountingInfoPrefs?.FirstMonthOfFiscalYear || "April";
         const monthMap = {
           january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
           july: 7, august: 8, september: 9, october: 10, november: 11, december: 12
@@ -239,11 +508,27 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
         const startM = monthMap[firstMonthStr.toLowerCase()] || 4;
         // End month is month before start month
         financialYearEndMonth = startM === 1 ? 12 : startM - 1;
+
+        const homeCurrency = prefs.CurrencyPrefs?.HomeCurrency?.value;
+        if (homeCurrency) {
+          baseCurrency = String(homeCurrency).toUpperCase();
+        }
+
+        const reportBasis = prefs.ReportPrefs?.ReportBasis;
         inspectionNotes.push(`Connected to QuickBooks company. First fiscal month: ${firstMonthStr}.`);
+        if (reportBasis) {
+          inspectionNotes.push(`QuickBooks default report basis: ${reportBasis}.`);
+        }
+
+        vatSchemeNotice = `QuickBooks does not expose the HMRC VAT accounting scheme via its API${reportBasis ? ` (default report basis is ${reportBasis}, which may differ from VAT scheme)` : ""}. Defaulted to Accrual — please confirm Cash vs Accrual and check whether the client uses the Flat Rate scheme.`;
+      } else {
+        inspectionNotes.push(`QuickBooks Preferences API returned status ${prefRes.status}.`);
+        vatSchemeNotice = "Could not inspect QuickBooks preferences. Defaulted VAT scheme to Accrual — please confirm Cash vs Accrual with the client.";
       }
     } catch (err) {
       console.warn("⚠️ Error fetching QuickBooks Preferences:", err.message);
       inspectionNotes.push(`Could not query QuickBooks Preferences API: ${err.message}.`);
+      vatSchemeNotice = "Could not inspect QuickBooks preferences. Defaulted VAT scheme to Accrual — please confirm Cash vs Accrual with the client.";
     }
   } else {
     inspectionNotes.push("No accounting tool connected in Pulse Vault yet. Using standard defaults.");
@@ -264,25 +549,24 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
   // Check for Flat Rate Scheme (unsupported in Pulse)
   if (rawTaxBasis.includes("FLAT")) {
     flatRateWarning = `Flat rate scheme (${rawTaxBasis}) detected in ${detectedTool}. Pulse does not support the Flat Rate VAT scheme. Please choose Cash or Accrual or consult the client.`;
-    inspectionNotes.push(`⚠️ ${flatRateWarning}`);
+    inspectionNotes.push(flatRateWarning);
   }
 
-  // 3. VAT Quarters
-  const suggestedVatQuarters = deriveVatQuarterCycle(financialYearEndMonth);
+  // 3. Trailing 12-month HMRC transaction inspection (shared pass for both PAYE cycle and VAT quarters)
+  const oneYearAgo = new Date();
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+  const startIso = oneYearAgo.toISOString().split("T")[0];
+  const endIso = new Date().toISOString().split("T")[0];
 
-  // 4. PAYE Cycle Inspection
-  // Look for PAYE / HMRC payments in bank transactions or journals
-  let suggestedPayeCycle = "Monthly";
-  let payeInspectionEvidence = "Defaulted to monthly cycle.";
+  let payeResult = {
+    cycle: "Monthly",
+    evidence: "Defaulted to monthly cycle."
+  };
+  let vatDates = [];
+  let transactionFetchError = null;
 
   if (auth && auth.tool === "Xero") {
     try {
-      const oneYearAgo = new Date();
-      oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-      const startIso = oneYearAgo.toISOString().split("T")[0];
-      const endIso = new Date().toISOString().split("T")[0];
-
-      // Query bank transactions containing HMRC or PAYE
       const [startY, startM, startD] = startIso.split("-").map(Number);
       const [endY, endM, endD] = endIso.split("-").map(Number);
       const whereClause = `Date>=DateTime(${startY},${startM},${startD}) AND Date<=DateTime(${endY},${endM},${endD})`;
@@ -299,44 +583,86 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
       if (btRes.ok) {
         const btData = await btRes.json();
         const txs = btData?.BankTransactions || [];
-        const payeTxs = txs.filter(tx => {
-          if (tx.Status === "DELETED") return false;
-          const text = `${tx.Contact?.Name || ""} ${tx.Reference || ""} ${(tx.LineItems || []).map(l => l.Description).join(" ")}`.toLowerCase();
-          return text.includes("paye") || text.includes("hmrc") || text.includes("inland revenue");
-        });
-
-        if (payeTxs.length > 0) {
-          // Count distinct payment months
-          const distinctMonths = new Set();
-          payeTxs.forEach(tx => {
-            const dateStr = String(tx.Date || "").replace("/Date(", "").replace(")/", "");
-            const d = new Date(parseInt(dateStr, 10));
-            if (!isNaN(d.getTime())) {
-              distinctMonths.add(`${d.getFullYear()}-${d.getMonth() + 1}`);
-            }
-          });
-
-          if (distinctMonths.size >= 5) {
-            suggestedPayeCycle = "Monthly";
-            payeInspectionEvidence = `Detected ${payeTxs.length} HMRC/PAYE transaction(s) across ${distinctMonths.size} month(s) in trailing 12 months. Suggesting Monthly.`;
-          } else if (distinctMonths.size >= 2 && distinctMonths.size <= 4) {
-            suggestedPayeCycle = "Quarterly";
-            payeInspectionEvidence = `Detected ${payeTxs.length} HMRC/PAYE transaction(s) across ${distinctMonths.size} quarter/month intervals in trailing 12 months. Suggesting Quarterly.`;
-          } else {
-            payeInspectionEvidence = `Detected ${payeTxs.length} HMRC/PAYE payment transaction(s). Suggesting Monthly.`;
+        const payeDates = [];
+        for (const tx of txs) {
+          if (tx.Status === "DELETED") continue;
+          const partyName = tx.Contact?.Name || "";
+          const text = `${partyName} ${tx.Reference || ""} ${(tx.LineItems || []).map(l => l.Description).join(" ")}`;
+          const { isPaye, isVat } = classifyHmrcTransaction({ text, partyName });
+          if (!isPaye && !isVat) continue;
+          const d = parseXeroDate(tx.Date);
+          if (d && !isNaN(d.getTime())) {
+            if (isPaye) payeDates.push(d);
+            if (isVat) vatDates.push(d);
           }
-        } else {
-          payeInspectionEvidence = "No distinct HMRC PAYE bank transactions detected in trailing 12 months. Defaulting to Monthly.";
         }
+        payeResult = derivePayeCycleFromDates(payeDates);
+      } else {
+        transactionFetchError = `Xero bank transactions API returned status ${btRes.status}.`;
+        payeResult.evidence = `${transactionFetchError} Defaulting to Monthly.`;
       }
-    } catch (payeErr) {
-      console.warn("⚠️ Error inspecting PAYE bank transactions:", payeErr.message);
-      payeInspectionEvidence = "Could not inspect bank transactions for PAYE. Defaulting to Monthly.";
+    } catch (txErr) {
+      console.warn("⚠️ Error inspecting Xero HMRC bank transactions:", txErr.message);
+      transactionFetchError = "Could not inspect Xero bank transactions.";
+      payeResult.evidence = "Could not inspect Xero bank transactions for PAYE. Defaulting to Monthly.";
+    }
+  } else if (auth && auth.tool === "QuickBooks") {
+    try {
+      const safeRealmId = assertValidQBRealmId(auth.realmId);
+      const { payeDates, vatDates: qbVatDates } = await inspectQuickBooksHmrcDates({
+        accessToken: auth.accessToken,
+        realmId: safeRealmId,
+        startIso,
+        endIso
+      });
+      vatDates = qbVatDates;
+      payeResult = derivePayeCycleFromDates(payeDates);
+    } catch (txErr) {
+      console.warn("⚠️ Error inspecting QuickBooks HMRC transactions:", txErr.message);
+      transactionFetchError = "Could not inspect QuickBooks transactions.";
+      payeResult.evidence = "Could not inspect QuickBooks transactions for PAYE. Defaulting to Monthly.";
     }
   }
 
+  // 4. Layered VAT Quarters Detection
+  // Layer 1: HMRC VAT payment/refund transaction history
+  let suggestedVatQuarters = null;
+  let vatQuartersEvidence = "";
+  const vatFromTx = deriveVatQuarterFromDates(vatDates);
+
+  if (vatFromTx?.cycle) {
+    suggestedVatQuarters = vatFromTx.cycle;
+    vatQuartersEvidence = vatFromTx.evidence;
+  } else if (xeroPeriodLockDate && isMonthEndDate(xeroPeriodLockDate)) {
+    // Layer 2: Xero PeriodLockDate (if set to a calendar month-end)
+    const lockMonth = xeroPeriodLockDate.getMonth() + 1;
+    suggestedVatQuarters = deriveVatQuarterCycle(lockMonth);
+    const lockLabel = `${MONTH_NAMES_SHORT[lockMonth - 1]} ${xeroPeriodLockDate.getFullYear()}`;
+    vatQuartersEvidence = vatFromTx?.evidence
+      ? `${vatFromTx.evidence} Used Xero period lock date (${lockLabel}) as tie-breaker.`
+      : `No distinct HMRC VAT transactions detected; inferred from Xero period lock date (${lockLabel}).`;
+  } else {
+    // Layer 3: Fallback to Financial Year End month
+    suggestedVatQuarters = deriveVatQuarterCycle(financialYearEndMonth);
+    const fyEndName = MONTH_NAMES_SHORT[financialYearEndMonth - 1] || financialYearEndMonth;
+    if (vatFromTx?.evidence) {
+      vatQuartersEvidence = `${vatFromTx.evidence} Fell back to financial year end (${fyEndName}).`;
+    } else if (transactionFetchError) {
+      vatQuartersEvidence = `${transactionFetchError} Estimated VAT quarters from financial year end (${fyEndName}).`;
+    } else {
+      vatQuartersEvidence = `No distinct HMRC VAT transactions detected in trailing 12 months; estimated from financial year end (${fyEndName}). Please verify against HMRC VAT stagger.`;
+    }
+  }
+
+  const suggestedPayeCycle = payeResult.cycle;
+  const payeInspectionEvidence = payeResult.evidence;
+
   const safeNotes = isAdmin ? inspectionNotes : inspectionNotes.map((n) => sanitizeSpreadsheetTerms(n));
   const safeEvidence = isAdmin ? payeInspectionEvidence : sanitizeSpreadsheetTerms(payeInspectionEvidence);
+  const safeVatQuartersEvidence = isAdmin ? vatQuartersEvidence : sanitizeSpreadsheetTerms(vatQuartersEvidence);
+  const safeVatNotice = vatSchemeNotice
+    ? (isAdmin ? vatSchemeNotice : sanitizeSpreadsheetTerms(vatSchemeNotice))
+    : null;
 
   return {
     success: true,
@@ -359,8 +685,10 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
       primaryCurrency: baseCurrency
     },
     flatRateWarning: isAdmin ? flatRateWarning : (flatRateWarning ? sanitizeSpreadsheetTerms(flatRateWarning) : null),
+    vatSchemeNotice: safeVatNotice,
     inspectionNotes: safeNotes,
-    payeInspectionEvidence: safeEvidence
+    payeInspectionEvidence: safeEvidence,
+    vatQuartersEvidence: safeVatQuartersEvidence
   };
 }
 

@@ -314,8 +314,13 @@ export function useTriageEngine({
       } else if (st.status === "error") {
         if (!isBg) throw new Error(st.error || "Background refresh encountered an error");
         break;
+      } else if (st.status === "stalled") {
+        if (!isBg) {
+          throw new Error(st.error || "Background refresh stalled before completing. Check server logs or try again.");
+        }
+        break;
       } else {
-        // idle or stalled
+        // idle
         if (!isBg) setRefreshStatus("");
         break;
       }

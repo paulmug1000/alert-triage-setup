@@ -120,6 +120,59 @@ export default function ClientSelectionView({
     return total + clientTotal;
   }, 0) + authorizedProactiveAlerts.length;
 
+  const debugPanel = isAdmin && showDebugPanel ? (
+    <div style={{ marginTop: "16px", padding: "16px", background: "#1a1a2e", borderRadius: "6px", color: "#e0e0e0" }}>
+      <div style={{ fontSize: "13px", fontWeight: "700", marginBottom: "10px", color: "#7dd3fc" }}>🔍 Triage state debugger</div>
+      <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+        <input value={debugClientName} onChange={e => setDebugClientName(e.target.value)}
+          placeholder="Client name (blank = all)"
+          style={{ flex: 1, fontSize: "12px", padding: "6px 8px", borderRadius: "4px", border: "1px solid #444", background: "#2d2d4e", color: "#e0e0e0" }} />
+        <button className="triage-btn" onClick={async () => {
+          setDebugAction("run");
+          try { await runDebug(); } finally { setDebugAction(null); }
+        }} disabled={debugLoading}
+          style={{ background: "#0066cc", color: "white", border: "none", borderRadius: "4px", padding: "6px 14px", fontSize: "12px", cursor: debugLoading ? "default" : "pointer", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+          {(debugLoading && (!debugAction || debugAction === "run")) ? <><Spinner size={11} color="#fff" /> Running...</> : "Run"}
+        </button>
+        <button className="triage-btn" onClick={async () => {
+          setDebugAction("dedupe");
+          setDebugLoading(true);
+          try {
+            const res = await fetch("/api/triage", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "cleanup_alert_memory", automationCommanderSheetId })
+            });
+            setDebugResult(await res.json());
+          } catch (e) { setDebugResult({ error: e.message }); }
+          finally { setDebugLoading(false); setDebugAction(null); }
+        }} disabled={debugLoading}
+          style={{ background: "#dc2626", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: debugLoading ? "default" : "pointer", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+          {debugAction === "dedupe" ? <><Spinner size={11} color="#fff" /> Deduping...</> : "🧹 Dedupe"}
+        </button>
+        <button className="triage-btn" onClick={async () => {
+          setDebugAction("rehash");
+          setDebugLoading(true);
+          try {
+            const res = await fetch("/api/triage", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "rehash_alert_memory", automationCommanderSheetId })
+            });
+            setDebugResult(await res.json());
+          } catch (e) { setDebugResult({ error: e.message }); }
+          finally { setDebugLoading(false); setDebugAction(null); }
+        }} disabled={debugLoading}
+          style={{ background: "#0369a1", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: debugLoading ? "default" : "pointer", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+          {debugAction === "rehash" ? <><Spinner size={11} color="#fff" /> Rehashing...</> : "🔄 Rehash"}
+        </button>
+      </div>
+      {debugResult && (
+        <pre style={{ fontSize: "11px", color: "#a0e0a0", overflow: "auto", maxHeight: "400px", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+          {JSON.stringify(debugResult, null, 2)}
+        </pre>
+      )}
+    </div>
+  ) : null;
+
   // State 1: All alerts have been resolved
   if (totalAlertsCount === 0 && proactiveLoadedAt > 0 && !isLoading) {
     return (
@@ -131,6 +184,7 @@ export default function ClientSelectionView({
           </p>
         </div>
         <div style={styles.card}>
+          {error && <div style={styles.errorBanner}>{error}</div>}
           <div style={styles.successBanner}>
             ✓ {managedClient ? `No outstanding alerts for ${managedClient.clientName}` : "No outstanding alerts"}
           </div>
@@ -143,12 +197,18 @@ export default function ClientSelectionView({
                 {isLoading ? <><Spinner size={12} />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
               </button>
             )}
+            {isAdmin && (
+              <button className="triage-btn" onClick={() => setShowDebugPanel(v => !v)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#888" }}>
+                🔍 Debug
+              </button>
+            )}
             {!isSingleClientUser && managedClient && onClearManagedClient && (
               <button className="triage-btn" onClick={onClearManagedClient} style={{ ...styles.buttonSecondary }}>
                 ← View all clients
               </button>
             )}
           </div>
+          {debugPanel}
         </div>
       </div>
     );
@@ -404,58 +464,7 @@ export default function ClientSelectionView({
           </div>
         </div>
 
-        {isAdmin && showDebugPanel && (
-          <div style={{ marginTop: "16px", padding: "16px", background: "#1a1a2e", borderRadius: "6px", color: "#e0e0e0" }}>
-            <div style={{ fontSize: "13px", fontWeight: "700", marginBottom: "10px", color: "#7dd3fc" }}>🔍 Triage State Debugger</div>
-            <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
-              <input value={debugClientName} onChange={e => setDebugClientName(e.target.value)}
-                placeholder="Client name (blank = all)"
-                style={{ flex: 1, fontSize: "12px", padding: "6px 8px", borderRadius: "4px", border: "1px solid #444", background: "#2d2d4e", color: "#e0e0e0" }} />
-              <button className="triage-btn" onClick={async () => {
-                setDebugAction("run");
-                try { await runDebug(); } finally { setDebugAction(null); }
-              }} disabled={debugLoading}
-                style={{ background: "#0066cc", color: "white", border: "none", borderRadius: "4px", padding: "6px 14px", fontSize: "12px", cursor: debugLoading ? "default" : "pointer", display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                {(debugLoading && (!debugAction || debugAction === "run")) ? <><Spinner size={11} color="#fff" /> Running...</> : "Run"}
-              </button>
-              <button className="triage-btn" onClick={async () => {
-                setDebugAction("dedupe");
-                setDebugLoading(true);
-                try {
-                  const res = await fetch("/api/triage", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "cleanup_alert_memory", automationCommanderSheetId })
-                  });
-                  setDebugResult(await res.json());
-                } catch (e) { setDebugResult({ error: e.message }); }
-                finally { setDebugLoading(false); setDebugAction(null); }
-              }} disabled={debugLoading}
-                style={{ background: "#dc2626", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: debugLoading ? "default" : "pointer", display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                {debugAction === "dedupe" ? <><Spinner size={11} color="#fff" /> Deduping...</> : "🧹 Dedupe"}
-              </button>
-              <button className="triage-btn" onClick={async () => {
-                setDebugAction("rehash");
-                setDebugLoading(true);
-                try {
-                  const res = await fetch("/api/triage", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "rehash_alert_memory", automationCommanderSheetId })
-                  });
-                  setDebugResult(await res.json());
-                } catch (e) { setDebugResult({ error: e.message }); }
-                finally { setDebugLoading(false); setDebugAction(null); }
-              }} disabled={debugLoading}
-                style={{ background: "#0369a1", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: debugLoading ? "default" : "pointer", display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                {debugAction === "rehash" ? <><Spinner size={11} color="#fff" /> Rehashing...</> : "🔄 Rehash"}
-              </button>
-            </div>
-            {debugResult && (
-              <pre style={{ fontSize: "11px", color: "#a0e0a0", overflow: "auto", maxHeight: "400px", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                {JSON.stringify(debugResult, null, 2)}
-              </pre>
-            )}
-          </div>
-        )}
+        {debugPanel}
       </div>
 
     </div>

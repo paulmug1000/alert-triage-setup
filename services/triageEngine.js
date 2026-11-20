@@ -2848,7 +2848,16 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
     const sweepItems = [];
 
-    for (const client of clientChunk) {
+    for (let chunkClientIdx = 0; chunkClientIdx < clientChunk.length; chunkClientIdx++) {
+      const client = clientChunk[chunkClientIdx];
+      if (req.body?.chain) {
+        await setTriageRefreshStatus({
+          status: "running",
+          step: "sweep",
+          progress: `Scanning ${client.clientName} (${startIdx + chunkClientIdx + 1}/${clientRows.length})...`,
+          updatedAt: Date.now(),
+        }).catch(() => { });
+      }
       try {
         const freqRow = Array.isArray(freqRows)
           ? (freqRows[client.rowIndex] || [])
@@ -4047,8 +4056,11 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     let builtDetail = [];
     const gasLocksByClient = new Map();
     const TIME_LIMIT_MS = Math.max(30000, Number(req.body?.maxDurationMs) || 150000);
+    let lastHeartbeatMs = Date.now();
+    let groupIdx = 0;
 
     for (const [key, rows] of groups.entries()) {
+      groupIdx++;
       if (Date.now() - buildStart > TIME_LIMIT_MS) {
         console.log(`  ⏳ Time limit reached (${Math.round((Date.now() - buildStart) / 1000)}s). Exiting cleanly to avoid 300s timeout.`);
         hasMore = true;
@@ -4056,6 +4068,15 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
       }
 
       const [clientName, alertType] = key.split("::");
+      if (req.body?.chain && Date.now() - lastHeartbeatMs > 10000) {
+        lastHeartbeatMs = Date.now();
+        await setTriageRefreshStatus({
+          status: "running",
+          step: "build",
+          progress: `Generating options (${groupIdx}/${groups.size}: ${clientName})...`,
+          updatedAt: lastHeartbeatMs,
+        }).catch(() => { });
+      }
       const client = clientByName.get(clientName);
       if (!client) {
         console.log(`  ⚠️ ${clientName}: not found in current client list - skipping ${rows.length} row(s)`);
@@ -4148,6 +4169,15 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
             console.log(`  ⏳ Time limit reached inside ${clientName}/${alertType} (${Math.round((Date.now() - buildStart) / 1000)}s). Exiting cleanly to avoid 300s timeout.`);
             hasMore = true;
             break;
+          }
+          if (req.body?.chain && Date.now() - lastHeartbeatMs > 20000) {
+            lastHeartbeatMs = Date.now();
+            await setTriageRefreshStatus({
+              status: "running",
+              step: "build",
+              progress: `Generating options (${groupIdx}/${groups.size}: ${clientName})...`,
+              updatedAt: lastHeartbeatMs,
+            }).catch(() => { });
           }
           const match = currentAlerts.find(a => a._fingerprint === row.fingerprintHash || a._legacyFingerprint === row.fingerprintHash);
           if (!match) {

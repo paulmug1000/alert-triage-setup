@@ -192,12 +192,30 @@ export function classifyHmrcTransaction({ text, partyName = "" }) {
   const lower = String(text || "").toLowerCase();
   const partyLower = String(partyName || "").toLowerCase();
 
-  const hasPayeKeyword = /\b(paye|nic|national insurance)\b/i.test(lower);
+  // Strip phrases indicating absence/exclusion of VAT so they never misclassify PAYE/HMRC lines as VAT
+  const sanitizedForVat = lower.replace(
+    /\b(no vat|zero vat|0%\s*vat|exempt from vat|vat exempt|out of scope of vat|outside scope of vat|non[- ]vat|excl\.?\s*vat|ex\.?\s*vat)\b/g,
+    " "
+  );
+
+  const hasPayeKeyword =
+    lower.includes("paye") ||
+    lower.includes("national insurance") ||
+    /\b(nic|sdds|cis)\b/i.test(lower);
   const hasCorpTaxKeyword = /\b(corporation tax|corp tax|ct600)\b/i.test(lower);
-  const hasHmrcParty = /\b(hmrc|hm revenue|inland revenue|customs)\b/i.test(partyLower);
-  const hasHmrcAny = hasHmrcParty || /\b(hmrc|hm revenue|inland revenue)\b/i.test(lower);
-  const hasVatWord = /\b(vat|value added tax)\b/i.test(lower);
-  const hasExplicitVatPhrase = /\b(hmrc vat|vat return|vat payment|vat repayment|vat refund|vat liability|vat control|vat payable|vat owed|vat dd)\b/i.test(lower);
+  const hasHmrcParty =
+    partyLower.includes("hmrc") ||
+    partyLower.includes("hm revenue") ||
+    partyLower.includes("inland revenue") ||
+    /\bcustoms\b/i.test(partyLower);
+  const hasHmrcAny =
+    hasHmrcParty ||
+    lower.includes("hmrc") ||
+    lower.includes("hm revenue") ||
+    lower.includes("inland revenue") ||
+    lower.includes("accounts office");
+  const hasVatWord = /\b(vat|value added tax)\b/i.test(sanitizedForVat);
+  const hasExplicitVatPhrase = /\b(hmrc vat|vat return|vat payment|vat repayment|vat refund|vat liability|vat control|vat payable|vat owed|vat dd|e-vat)\b/i.test(sanitizedForVat);
 
   const isVat =
     !hasPayeKeyword &&

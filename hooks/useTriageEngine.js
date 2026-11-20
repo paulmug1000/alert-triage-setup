@@ -336,26 +336,38 @@ export function useTriageEngine({
       setError("");
       setAcceptError("");
 
-      const triggerResp = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "trigger_refresh",
-          automationCommanderSheetId,
-          forceProactive: isForced,
-        }),
-      });
-      const triggerData = await triggerResp.json();
-      if (!triggerResp.ok || !triggerData.success) {
-        throw new Error(triggerData.error || "Failed to start background refresh");
-      }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const triggerResp = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "trigger_refresh",
+            automationCommanderSheetId,
+            forceProactive: isForced,
+          }),
+        });
+        const triggerData = await triggerResp.json();
+        if (!triggerResp.ok || !triggerData.success) {
+          throw new Error(triggerData.error || "Failed to start background refresh");
+        }
 
-      if (triggerData.alreadyRunning) {
-        console.log("Background refresh already in progress - connecting to progress stream...");
-        setRefreshStatus(triggerData.status?.progress || "Scanning clients...");
-      }
+        if (triggerData.alreadyRunning) {
+          console.log("Background refresh already in progress - connecting to progress stream...");
+          setRefreshStatus(triggerData.status?.progress || "Scanning clients...");
+        }
 
-      await pollRefreshStatus(false);
+        try {
+          await pollRefreshStatus(false);
+          break;
+        } catch (pollErr) {
+          if (attempt === 0 && triggerData.alreadyRunning && String(pollErr?.message || "").includes("Previous refresh timed out")) {
+            console.warn("Attached background refresh timed out; starting a fresh refresh run...");
+            setRefreshStatus("Previous run timed out — starting fresh refresh...");
+            continue;
+          }
+          throw pollErr;
+        }
+      }
     } catch (err) {
       if (isMountedRef.current) {
         setError(err.message);

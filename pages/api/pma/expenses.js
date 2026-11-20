@@ -200,7 +200,7 @@ export default async function handler(req, res) {
         error: sessionUser.isAdmin ? (err.message || "Failed to save expenses") : sanitizeSpreadsheetTerms(err.message || "Failed to save expenses")
       });
     } finally {
-      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
+      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
     }
   }
 

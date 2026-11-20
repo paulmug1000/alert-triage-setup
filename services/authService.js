@@ -3,7 +3,7 @@ import nodemailer from "nodemailer";
 import jwt from "jsonwebtoken";
 import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { getSheetsClient } from "./sheetsClient.js";
-import { getAllUsers, getUserByEmail, updateUserLastLogin, getCanonicalAcSheetId } from "./userPermissions.js";
+import { getAllUsers, getUserByEmail, updateUserLastLogin, getCanonicalAcSheetId, isUserAuthorizedForClient, isReadOnlySession, USER_REVOKED_AT_PREFIX } from "./userPermissions.js";
 import { unwrapRequestSheetIds, installSheetIdBoundary } from "./sheetTokenService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPulseActivity } from "./pulseLogger.js";
@@ -486,7 +486,7 @@ export async function verifyOtp(email, code, _ignoredAcId, res, clientIp = "-") 
     } else if (redisClient?.isOpen) {
       const priorAttempts = parseInt((await redisClient.get(attemptsKey)) || "0", 10) || 0;
       if (priorAttempts >= 5) {
-        await redisClient.del(otpKey).catch(() => {});
+        await redisClient.del(otpKey).catch(() => { });
         status = -2;
         newAttempts = priorAttempts;
       } else {
@@ -495,14 +495,14 @@ export async function verifyOtp(email, code, _ignoredAcId, res, clientIp = "-") 
         if (!cachedData) {
           status = -1;
         } else if (safeCompareCode(String(cachedData.code || ""), enteredCode)) {
-          await redisClient.del(otpKey).catch(() => {});
-          await redisClient.del(attemptsKey).catch(() => {});
+          await redisClient.del(otpKey).catch(() => { });
+          await redisClient.del(attemptsKey).catch(() => { });
           status = 1;
         } else {
           newAttempts = await redisClient.incr(attemptsKey);
           if (newAttempts === 1) await redisClient.expire(attemptsKey, 900);
           if (newAttempts >= 5) {
-            await redisClient.del(otpKey).catch(() => {});
+            await redisClient.del(otpKey).catch(() => { });
             await redisClient.expire(attemptsKey, 900);
             status = -2;
           } else {
@@ -835,6 +835,14 @@ export async function revokeRequestSessionJti(req) {
     if (decoded?.jti) {
       return await revokeSessionJti(decoded.jti, decoded.exp);
     }
+    const tokHash = crypto.createHash("sha256").update(String(token)).digest("hex");
+    await ensureRedisConnected(400);
+    if (redisClient?.isOpen) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const ttl = decoded?.exp ? Math.max(60, Math.min(SESSION_MAX_AGE_SECS, Number(decoded.exp) - nowSec)) : SESSION_MAX_AGE_SECS;
+      await redisClient.set(`pma:revoked_tok_hash:${tokHash}`, "1", { EX: ttl });
+      return true;
+    }
   } catch { }
   return false;
 }
@@ -878,9 +886,12 @@ export function getSessionUser(req, res = null) {
     });
     if (!userObj) return null;
 
+    const rawTokenHash = crypto.createHash("sha256").update(String(token)).digest("hex");
     Object.defineProperties(userObj, {
       _jti: { value: decoded.jti || null, enumerable: false },
       _exp: { value: decoded.exp || null, enumerable: false },
+      _iat: { value: decoded.iat || 0, enumerable: false },
+      _rawTokenHash: { value: rawTokenHash, enumerable: false },
     });
 
     installSheetIdBoundary(req, activeRes, userObj);
@@ -911,13 +922,39 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
     return null;
   }
 
+  let forceDirBypass = Boolean(bypassCache);
+  try {
+    await ensureRedisConnected(400);
+    if (redisClient?.isOpen) {
+      if (!sessionUser._jti && sessionUser._rawTokenHash) {
+        const revHash = await redisClient.get(`pma:revoked_tok_hash:${sessionUser._rawTokenHash}`).catch(() => null);
+        if (revHash) {
+          if (res) clearSessionCookie(res);
+          if (req) req._liveSessionUser = null;
+          return null;
+        }
+      }
+      const normEmailForRev = String(sessionUser.email || "").toLowerCase().trim();
+      const revokedAtRaw = await redisClient.get(`${USER_REVOKED_AT_PREFIX}${normEmailForRev}`).catch(() => null);
+      if (revokedAtRaw && Number(revokedAtRaw) >= Number(sessionUser._iat || 0)) {
+        if (!sessionUser._jti) {
+          if (res) clearSessionCookie(res);
+          if (req) req._liveSessionUser = null;
+          return null;
+        }
+        forceDirBypass = true;
+      }
+    }
+  } catch { }
+
   const activeRes = res || req?.res || req?.socket?._httpMessage || null;
 
   try {
-    const users = await getAllUsers(sheets, getCanonicalAcSheetId(), bypassCache);
+    const users = await getAllUsers(sheets, getCanonicalAcSheetId(), forceDirBypass);
     if (!Array.isArray(users) || users.length === 0) {
-      if (req) req._liveSessionUser = sessionUser;
-      return sessionUser;
+      // Fail closed when the live user directory cannot be verified
+      if (req) req._liveSessionUser = null;
+      return null;
     }
 
     const normEmail = String(sessionUser.email || "").toLowerCase().trim();
@@ -945,8 +982,9 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
     }
 
     Object.defineProperties(refreshed, {
-      _jti: { value: sessionUser._jti || null, enumerable: false },
+      _jti: { value: sessionUser._jti || null, enumerable: false, configurable: true },
       _exp: { value: sessionUser._exp || null, enumerable: false },
+      _iat: { value: sessionUser._iat || 0, enumerable: false },
     });
 
     const changed =
@@ -966,7 +1004,7 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
       await revokeSessionJti(sessionUser._jti, sessionUser._exp);
     }
 
-    if (changed && res && typeof res.setHeader === "function") {
+    if ((changed || !sessionUser._jti) && res && typeof res.setHeader === "function") {
       const cookies = req?.headers?.cookie ? parseCookies(req.headers.cookie) : {};
       if (cookies.pma_session) {
         const nextPayload = mintSessionCookie(res, refreshed);
@@ -982,15 +1020,15 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
     installSheetIdBoundary(req, activeRes, refreshed);
     return refreshed;
   } catch (err) {
-    console.warn("⚠️ resolveLiveSessionUser fallback to JWT claims:", err.message);
-    if (req) req._liveSessionUser = sessionUser;
-    return sessionUser;
+    console.warn("⚠️ resolveLiveSessionUser fail-closed on directory error:", err.message);
+    if (req) req._liveSessionUser = null;
+    return null;
   }
 }
 
 /**
  * Verifies that if an OAuth callback originates in a browser holding an active Pulse session,
- * that user has not been suspended and matches the state's initiatedBy user (if recorded).
+ * that user has not been suspended, matches the state's initiatedBy user, and still holds required privileges.
  */
 export async function verifyCallbackSessionInitiator(req, res, statePayload) {
   const rawToken = extractRawSessionToken(req);
@@ -1006,6 +1044,16 @@ export async function verifyCallbackSessionInitiator(req, res, statePayload) {
   const expectedEmail = String(statePayload?.initiatedBy || "").toLowerCase().trim();
   if (expectedEmail && String(liveUser.email || "").toLowerCase().trim() !== expectedEmail) {
     return { ok: false, error: "OAuth callback session does not match initiating user." };
+  }
+  if (isReadOnlySession(liveUser) || liveUser.isSenior || liveUser.role === "Senior (Restricted)") {
+    return { ok: false, error: "Insufficient permissions to complete integration OAuth callback." };
+  }
+  if (statePayload?.mode === "advisor" && !liveUser.isAdmin) {
+    return { ok: false, error: "Admin privileges required to update central advisor integration." };
+  }
+  const targetClient = statePayload?.clientName || statePayload?.clientKey;
+  if (!liveUser.isAdmin && statePayload?.mode !== "advisor" && targetClient && !isUserAuthorizedForClient(liveUser, targetClient)) {
+    return { ok: false, error: "No longer authorized for target client." };
   }
   return { ok: true, user: liveUser };
 }

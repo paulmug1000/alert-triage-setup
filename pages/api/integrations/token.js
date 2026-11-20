@@ -26,7 +26,7 @@ import {
   isOAuthReconnectError
 } from "../../../services/vaultService.js";
 import { refreshXeroTokens } from "../../../services/xeroService.js";
-import { refreshQBTokens } from "../../../services/quickbooksService.js";
+import { refreshQBTokens, assertValidQBRealmId } from "../../../services/quickbooksService.js";
 import { refreshMondayTokens } from "../../../services/mondayService.js";
 import { refreshPipedriveTokens } from "../../../services/pipedriveService.js";
 import { refreshCapsuleTokens } from "../../../services/capsuleService.js";
@@ -665,14 +665,17 @@ export default async function handler(req, res) {
             let parsedErr = errBody;
             try { parsedErr = JSON.parse(errBody); } catch { }
             console.error(`🚨 Token Broker: Provider test failed for ${record.clientName} (Xero HTTP ${testRes.status}):`, errBody);
-            return res.status(testRes.status === 403 || testRes.status === 401 ? 403 : 502).json({
+            const xeroErrPayload = {
               success: false,
               verified: false,
               status: testRes.status,
               error: `Xero API Error: HTTP ${testRes.status} (${testRes.statusText}). This token does not have access to organisation "${record.tenantName || tenantId}". Re-authorization required.`,
-              providerDetails: parsedErr,
               reconnectRequired: true
-            });
+            };
+            if (!isBrowserSessionCall || sessionUser?.isAdmin) {
+              xeroErrPayload.providerDetails = parsedErr;
+            }
+            return res.status(testRes.status === 403 || testRes.status === 401 ? 403 : 502).json(xeroErrPayload);
           }
           const orgData = await testRes.json();
           const orgName = orgData?.Organisations?.[0]?.Name || record.tenantName;
@@ -697,31 +700,46 @@ export default async function handler(req, res) {
           });
         }
       } else if (tool === "quickbooks" || tool === "qb") {
-        const realmId = record.realmId || record.tenantId || "";
-        if (!realmId) {
+        const rawRealmId = record.realmId || record.tenantId || "";
+        if (!rawRealmId) {
           return res.status(400).json({
             success: false,
             error: `Configuration Error: Client "${record.clientName}" does not have a QuickBooks company ID (realmId) configured.`,
             reconnectRequired: true
           });
         }
+        let realmId;
         try {
-          const testRes = await fetch(`https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}`, {
+          realmId = assertValidQBRealmId(rawRealmId);
+        } catch (qbIdErr) {
+          return res.status(400).json({
+            success: false,
+            error: qbIdErr.message,
+            reconnectRequired: true
+          });
+        }
+        try {
+          const encodedRealmId = encodeURIComponent(realmId);
+          const testRes = await fetch(`https://quickbooks.api.intuit.com/v3/company/${encodedRealmId}/companyinfo/${encodedRealmId}`, {
             headers: {
               "Authorization": `Bearer ${accessToken}`,
               "Accept": "application/json"
-            }
+            },
+            redirect: "manual"
           });
           if (!testRes.ok) {
             const errBody = await testRes.text();
-            return res.status(testRes.status === 403 || testRes.status === 401 ? 403 : 502).json({
+            const qbErrPayload = {
               success: false,
               verified: false,
               status: testRes.status,
               error: `QuickBooks API Error: HTTP ${testRes.status} (${testRes.statusText}). Re-authorization required.`,
-              providerDetails: errBody,
               reconnectRequired: true
-            });
+            };
+            if (!isBrowserSessionCall || sessionUser?.isAdmin) {
+              qbErrPayload.providerDetails = errBody;
+            }
+            return res.status(testRes.status === 403 || testRes.status === 401 ? 403 : 502).json(qbErrPayload);
           }
           const qbData = await testRes.json();
           const compName = qbData?.CompanyInfo?.CompanyName || record.companyName;

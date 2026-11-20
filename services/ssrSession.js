@@ -150,7 +150,7 @@ async function loadLiveUserForSsr(email) {
     if (redisClient?.isOpen) {
       const rawUsers = await Promise.race([
         redisClient.get(REDIS_USERS_KEY),
-        new Promise((resolve) => setTimeout(() => resolve(null), 500))
+        new Promise((resolve) => setTimeout(() => resolve(null), 1500))
       ]);
       if (rawUsers) {
         const parsed = JSON.parse(rawUsers);
@@ -159,7 +159,7 @@ async function loadLiveUserForSsr(email) {
         }
       }
     }
-  } catch {}
+  } catch { }
 
   // 2. Supabase fallback when Redis cache was busted or cold
   try {
@@ -169,7 +169,7 @@ async function loadLiveUserForSsr(email) {
       if (sb) {
         const { data: rows, error } = await Promise.race([
           sb.from("users").select("email, full_name, role, assigned_clients, status").eq("email", normEmail).limit(1),
-          new Promise((resolve) => setTimeout(() => resolve({ data: null, error: new Error("timeout") }), 700))
+          new Promise((resolve) => setTimeout(() => resolve({ data: null, error: new Error("timeout") }), 2500))
         ]);
         if (!error && Array.isArray(rows)) {
           if (rows.length > 0) {
@@ -198,7 +198,7 @@ async function loadLiveUserForSsr(email) {
         }
       }
     }
-  } catch {}
+  } catch { }
 
   return { found: false, user: null };
 }
@@ -231,9 +231,12 @@ export function getSsrSessionUser(req) {
       isReadOnly: decoded.isReadOnly
     });
     if (!userObj) return null;
+    const rawTokenHash = crypto.createHash("sha256").update(String(token)).digest("hex");
     Object.defineProperties(userObj, {
       _jti: { value: decoded.jti || null, enumerable: false },
       _exp: { value: decoded.exp || null, enumerable: false },
+      _iat: { value: decoded.iat || 0, enumerable: false },
+      _rawTokenHash: { value: rawTokenHash, enumerable: false },
     });
     return userObj;
   } catch {
@@ -249,29 +252,41 @@ export async function getSsrLiveSessionUser(req, res = null) {
   const sessionUser = getSsrSessionUser(req);
   if (!sessionUser) return null;
 
-  if (sessionUser._jti) {
-    try {
-      await ensureRedisConnected(400);
-      if (redisClient?.isOpen) {
+  try {
+    await ensureRedisConnected(400);
+    if (redisClient?.isOpen) {
+      if (sessionUser._jti) {
         const revoked = await redisClient.get(`pma:revoked_jti:${String(sessionUser._jti)}`);
         if (revoked) {
           if (res) setSsrSessionCookie(res, "", 0);
           return null;
         }
+      } else if (sessionUser._rawTokenHash) {
+        const revTok = await redisClient.get(`pma:revoked_tok_hash:${sessionUser._rawTokenHash}`);
+        if (revTok) {
+          if (res) setSsrSessionCookie(res, "", 0);
+          return null;
+        }
       }
-    } catch { }
-  }
+      const normEmailForRev = String(sessionUser.email || "").toLowerCase().trim();
+      const revokedAtRaw = await redisClient.get(`pma:user_revoked_at:${normEmailForRev}`).catch(() => null);
+      if (revokedAtRaw && Number(revokedAtRaw) >= Number(sessionUser._iat || 0) && !sessionUser._jti) {
+        if (res) setSsrSessionCookie(res, "", 0);
+        return null;
+      }
+    }
+  } catch { }
 
   try {
     const lookup = await loadLiveUserForSsr(sessionUser.email);
-    if (!lookup.found) return sessionUser;
+    if (!lookup.found) return null;
 
     const liveUser = lookup.user;
     if (!liveUser || liveUser.status === "Suspended") {
       if (sessionUser._jti && redisClient?.isOpen) {
         const nowSec = Math.floor(Date.now() / 1000);
         const ttl = sessionUser._exp ? Math.max(60, Math.min(SESSION_MAX_AGE_SECS, Number(sessionUser._exp) - nowSec)) : SESSION_MAX_AGE_SECS;
-        await redisClient.set(`pma:revoked_jti:${String(sessionUser._jti)}`, "1", { EX: ttl }).catch(() => {});
+        await redisClient.set(`pma:revoked_jti:${String(sessionUser._jti)}`, "1", { EX: ttl }).catch(() => { });
       }
       if (res) setSsrSessionCookie(res, "", 0);
       return null;
@@ -289,7 +304,7 @@ export async function getSsrLiveSessionUser(req, res = null) {
       if (sessionUser._jti && redisClient?.isOpen) {
         const nowSec = Math.floor(Date.now() / 1000);
         const ttl = sessionUser._exp ? Math.max(60, Math.min(SESSION_MAX_AGE_SECS, Number(sessionUser._exp) - nowSec)) : SESSION_MAX_AGE_SECS;
-        await redisClient.set(`pma:revoked_jti:${String(sessionUser._jti)}`, "1", { EX: ttl }).catch(() => {});
+        await redisClient.set(`pma:revoked_jti:${String(sessionUser._jti)}`, "1", { EX: ttl }).catch(() => { });
       }
       if (res) setSsrSessionCookie(res, "", 0);
       return null;
@@ -314,12 +329,12 @@ export async function getSsrLiveSessionUser(req, res = null) {
         if (redisClient?.isOpen) {
           const nowSec = Math.floor(Date.now() / 1000);
           const ttl = sessionUser._exp ? Math.max(60, Math.min(SESSION_MAX_AGE_SECS, Number(sessionUser._exp) - nowSec)) : SESSION_MAX_AGE_SECS;
-          await redisClient.set(`pma:revoked_jti:${String(sessionUser._jti)}`, "1", { EX: ttl }).catch(() => {});
+          await redisClient.set(`pma:revoked_jti:${String(sessionUser._jti)}`, "1", { EX: ttl }).catch(() => { });
         }
       } catch { }
     }
 
-    if (changed && res && typeof res.setHeader === "function") {
+    if ((changed || !sessionUser._jti) && res && typeof res.setHeader === "function") {
       const secret = getSsrJwtSecret();
       if (secret) {
         const refreshedToken = signHs256Jwt({
@@ -339,7 +354,7 @@ export async function getSsrLiveSessionUser(req, res = null) {
     if (req) req._liveSessionUser = refreshed;
     return refreshed;
   } catch {
-    return sessionUser;
+    return null;
   }
 }
 
@@ -445,10 +460,10 @@ export async function getSsrInitialPmaData(sessionUser) {
         ]);
         if (Array.isArray(res)) {
           if (res[0]) {
-            try { rawClients = JSON.parse(res[0]); } catch {}
+            try { rawClients = JSON.parse(res[0]); } catch { }
           }
           if (res[1]) {
-            try { rawIntegrations = JSON.parse(res[1]); _l1Integrations = rawIntegrations; } catch {}
+            try { rawIntegrations = JSON.parse(res[1]); _l1Integrations = rawIntegrations; } catch { }
           }
           if (rawClients && Array.isArray(rawClients.clientsArray) && rawClients.clientsArray.length > 0) {
             try {
@@ -470,16 +485,16 @@ export async function getSsrInitialPmaData(sessionUser) {
                       if (cfg.accountingTool) c.accountingTool = cfg.accountingTool;
                       if (cfg.crmTool) c.crmTool = cfg.crmTool;
                       if (cfg.crmDrives) c.crmDrives = cfg.crmDrives;
-                    } catch {}
+                    } catch { }
                   }
                 });
               }
-            } catch {}
+            } catch { }
             _l1Clients = rawClients;
           }
           if (rawClients || rawIntegrations) _l1CachedAt = now;
         }
-      } catch {}
+      } catch { }
     }
     if (!rawClients || !Array.isArray(rawClients.clientsArray) || rawClients.clientsArray.length === 0) {
       const sbFallback = await Promise.race([
@@ -528,43 +543,43 @@ export async function getSsrInitialPmaData(sessionUser) {
   const scopedIntegrationsClients = sessionUser.isAdmin
     ? scopedIntClients
     : scopedIntClients.map((c) => {
-        const copy = { ...c };
-        delete copy.autoUpdatesRow;
-        delete copy.rowNumber;
-        if (copy.integrations?.xero) {
-          copy.integrations = {
-            ...copy.integrations,
-            xero: {
-              ...copy.integrations.xero,
-              availableTenants: [],
-              metadata: copy.integrations.xero.metadata
-                ? { ...copy.integrations.xero.metadata, availableTenants: [] }
-                : copy.integrations.xero.metadata,
-            },
-          };
-        }
-        if (copy.accountingStatus) {
-          copy.accountingStatus = {
-            ...copy.accountingStatus,
+      const copy = { ...c };
+      delete copy.autoUpdatesRow;
+      delete copy.rowNumber;
+      if (copy.integrations?.xero) {
+        copy.integrations = {
+          ...copy.integrations,
+          xero: {
+            ...copy.integrations.xero,
             availableTenants: [],
-            metadata: copy.accountingStatus.metadata
-              ? { ...copy.accountingStatus.metadata, availableTenants: [] }
-              : copy.accountingStatus.metadata,
-          };
-        }
-        return copy;
-      });
+            metadata: copy.integrations.xero.metadata
+              ? { ...copy.integrations.xero.metadata, availableTenants: [] }
+              : copy.integrations.xero.metadata,
+          },
+        };
+      }
+      if (copy.accountingStatus) {
+        copy.accountingStatus = {
+          ...copy.accountingStatus,
+          availableTenants: [],
+          metadata: copy.accountingStatus.metadata
+            ? { ...copy.accountingStatus.metadata, availableTenants: [] }
+            : copy.accountingStatus.metadata,
+        };
+      }
+      return copy;
+    });
 
   const initialIntegrations = rawIntegrations
     ? {
-        allClients: scopedIntegrationsClients,
-        sharedXero: rawIntegrations.sharedXero
-          ? {
-              ...rawIntegrations.sharedXero,
-              availableTenants: sessionUser.isAdmin ? (rawIntegrations.sharedXero.availableTenants || []) : []
-            }
-          : null
-      }
+      allClients: scopedIntegrationsClients,
+      sharedXero: rawIntegrations.sharedXero
+        ? {
+          ...rawIntegrations.sharedXero,
+          availableTenants: sessionUser.isAdmin ? (rawIntegrations.sharedXero.availableTenants || []) : []
+        }
+        : null
+    }
     : null;
 
   return maskResponseSheetIdsForUser(
@@ -620,7 +635,7 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
           try {
             rawPortalClients = JSON.parse(rawRes[0]);
             memoryCache.set(portalCacheKey, rawPortalClients, 300);
-          } catch {}
+          } catch { }
         } else if (rawRes[1]) {
           try {
             const parsedAll = JSON.parse(rawRes[1]);
@@ -628,7 +643,7 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
               rawPortalClients = parsedAll.clientsArray;
               memoryCache.set(portalCacheKey, rawPortalClients, 300);
             }
-          } catch {}
+          } catch { }
         }
       }
     }
@@ -665,7 +680,7 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
         sessionUser.role === "Senior (Restricted)" ||
         sessionUser.isSenior ||
         sessionUser.isReadOnly) &&
-        !sessionUser.isAdmin
+      !sessionUser.isAdmin
     );
 
     const cleanClients = authorizedClients.map((c) => {
@@ -673,11 +688,11 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
       return isPulseOnly
         ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode }
         : {
-            clientName: c.clientName,
-            clientSheetId: c.clientSheetId,
-            masterSheetId: c.masterSheetId,
-            setupMode,
-          };
+          clientName: c.clientName,
+          clientSheetId: c.clientSheetId,
+          masterSheetId: c.masterSheetId,
+          setupMode,
+        };
     });
 
     let selectedRaw = null;
@@ -734,7 +749,7 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
               }
             }
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -760,7 +775,7 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
       initialSelectedClient: masked.initialSelectedClient || null,
       initialPayload: safePayload,
       initialPerformanceData: safePerfData,
-      selectedSetupConfig,
+      selectedSetupConfig: maskResponseSheetIdsForUser(selectedSetupConfig, sessionUser),
     };
   } catch {
     return {

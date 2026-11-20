@@ -62,7 +62,7 @@ export function parseNum(val) {
 /**
  * Fetch and parse expenses data from Client Sheet Outgoings tab
  */
-export async function fetchExpensesData(clientName, clientSheetId, bypassCache = false) {
+export async function fetchExpensesData(clientName, clientSheetId, bypassCache = false, options = {}) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
 
   const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
@@ -71,6 +71,7 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
   const cachedResult = await resolvePortalCache({
     cacheKey,
     bypassCache: Boolean(bypassCache),
+    minBypassAgeMs: options?.minBypassAgeMs || 0,
     l1TtlSecs: 120,
     redisTtlSecs: 86400,
     isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.expenses)),
@@ -381,7 +382,7 @@ export async function saveExpenseMetadata({
       action: "UPDATE_EXPENSE_ROW",
       clientName,
       details: `Updated expense entry "${cleanCategory}" (VAT: ${cleanVat}, Del: ${cleanDelPct})`,
-    }).catch(() => {})
+    }).catch(() => { })
   );
 
   return { success: true, sheetRow: rowNum };
@@ -428,7 +429,7 @@ export async function toggleExpenseDelivery({
       action: "MOVE_EXPENSE_CATEGORY",
       clientName,
       details: `Moved expense entry to ${isDel ? "Delivery" : "Non-delivery"} (${newDelPct})`,
-    }).catch(() => {})
+    }).catch(() => { })
   );
 
   return { success: true, sheetRow: rowNum, deliveryPct: newDelPct };
@@ -578,7 +579,7 @@ export async function saveExpenseAmount({
       action: "UPDATE_EXPENSE_AMOUNTS",
       clientName,
       details: `Updated ${dataUpdates.length} monthly expense amount(s)`,
-    }).catch(() => {})
+    }).catch(() => { })
   );
 
   return { success: true, sheetRow: rowNum, updated: dataUpdates.length };
@@ -713,7 +714,7 @@ export async function saveExpenseBatch({
       action: "UPDATE_EXPENSE_AMOUNTS",
       clientName,
       details: `Batch updated ${summary.join(" and ")} in expenses`,
-    }).catch(() => {})
+    }).catch(() => { })
   );
 
   return {

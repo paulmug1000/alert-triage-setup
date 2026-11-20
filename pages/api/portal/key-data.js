@@ -87,6 +87,29 @@ export default async function handler(req, res) {
 
   const sanitizeForUser = (data) => {
     if (!isSeniorUser || !data) return data;
+    const restrictedPersonNames = new Set();
+    const addRestrictedName = (raw) => {
+      const norm = String(raw || "").trim().toLowerCase().replace(/\s+/g, " ");
+      if (norm.length >= 4) restrictedPersonNames.add(norm);
+      if (norm.includes(",")) {
+        const parts = norm.split(",").map((p) => p.trim()).filter(Boolean);
+        if (parts.length === 2) {
+          const flipped = `${parts[1]} ${parts[0]}`.replace(/\s+/g, " ").trim();
+          if (flipped.length >= 4) restrictedPersonNames.add(flipped);
+        }
+      }
+    };
+    for (const st of data.salaries?.staff || []) addRestrictedName(st?.name);
+    for (const dv of data.outgoings?.dividends || []) addRestrictedName(dv?.name || dv?.label);
+    const matchesRestrictedPerson = (val) => {
+      if (restrictedPersonNames.size === 0 || !val) return false;
+      const norm = String(val).trim().toLowerCase().replace(/\s+/g, " ");
+      if (norm.length < 4) return false;
+      for (const name of restrictedPersonNames) {
+        if (norm.includes(name)) return true;
+      }
+      return false;
+    };
     const isRestrictedCat = (cat) => {
       const s = String(cat || "").toLowerCase();
       return (
@@ -114,7 +137,14 @@ export default async function handler(req, res) {
         isRestrictedCat(tx.d) ||
         isRestrictedCat(tx.payee) ||
         isRestrictedCat(tx.desc) ||
-        isRestrictedCat(tx.description)
+        isRestrictedCat(tx.description) ||
+        matchesRestrictedPerson(tx.payee) ||
+        matchesRestrictedPerson(tx.contact) ||
+        matchesRestrictedPerson(tx.name) ||
+        matchesRestrictedPerson(tx.s) ||
+        matchesRestrictedPerson(tx.d) ||
+        matchesRestrictedPerson(tx.desc) ||
+        matchesRestrictedPerson(tx.description)
       );
     };
     const cleanTxByMonth = data.outgoings?.transactionsByMonth

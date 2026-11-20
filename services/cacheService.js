@@ -225,6 +225,7 @@ export async function resolvePortalCache({
   bypassCache = false,
   isAutoRefresh = false,
   isReadOnly = false,
+  minBypassAgeMs: customMinBypassAgeMs = 0,
   l1TtlSecs = 60,
   redisTtlSecs = 1800,
   isValidPayload = null,
@@ -309,7 +310,10 @@ export async function resolvePortalCache({
           }
 
           // When bypassCache=true: coalesce if another tab/user already refreshed within the window
-          const minBypassAgeMs = isAutoRefresh ? 120000 : isReadOnly ? 15000 : 0;
+          const minBypassAgeMs = Math.max(
+            Number(customMinBypassAgeMs) || 0,
+            isAutoRefresh ? 120000 : isReadOnly ? 15000 : 0
+          );
           if (minBypassAgeMs > 0 && ageMs < minBypassAgeMs) {
             memoryCache.set(cacheKey, parsed, l1TtlSecs);
             return {

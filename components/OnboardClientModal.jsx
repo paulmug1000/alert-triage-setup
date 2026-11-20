@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
+import { toSafeExternalHref } from "../utils/helpers";
 
 function formatToolLabel(tool) {
   if (!tool || tool === "None") return "";
@@ -334,10 +335,12 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
 
   const handleOpenSheets = () => {
     createdSheetUrls.forEach((url, idx) => {
+      const safeUrl = toSafeExternalHref(url);
+      if (!safeUrl || safeUrl === "#") return;
       if (idx === 0) {
-        window.open(url, "_blank", "noopener,noreferrer");
+        window.open(safeUrl, "_blank", "noopener,noreferrer");
       } else {
-        setTimeout(() => window.open(url, "_blank", "noopener,noreferrer"), idx * 300);
+        setTimeout(() => window.open(safeUrl, "_blank", "noopener,noreferrer"), idx * 300);
       }
     });
   };
@@ -591,9 +594,9 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center", marginBottom: "18px", padding: "10px 12px", borderRadius: "8px", background: "#F8FAFC", border: "1px solid #E2E8F0" }}>
                   {createdData.folderUrl && (
                     <a
-                      href={createdData.folderUrl}
+                      href={toSafeExternalHref(createdData.folderUrl)}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       style={{ fontSize: "12.5px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                     >
                       Open Google Drive folder ↗
@@ -601,9 +604,9 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
                   )}
                   {createdData.clientUrl && (
                     <a
-                      href={createdData.clientUrl}
+                      href={toSafeExternalHref(createdData.clientUrl)}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       style={{ fontSize: "12.5px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                     >
                       Open client sheet ↗
@@ -611,9 +614,9 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
                   )}
                   {createdData.masterUrl && (
                     <a
-                      href={createdData.masterUrl}
+                      href={toSafeExternalHref(createdData.masterUrl)}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       style={{ fontSize: "12.5px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                     >
                       Open master sheet ↗
@@ -621,9 +624,9 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated, o
                   )}
                   {createdData.reconUrl && (
                     <a
-                      href={createdData.reconUrl}
+                      href={toSafeExternalHref(createdData.reconUrl)}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       style={{ fontSize: "12.5px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                     >
                       Open recon sheet ↗

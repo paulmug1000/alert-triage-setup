@@ -86,7 +86,7 @@ export function getPreviousCalendarMonthLabel() {
   return `${capitalized} ${yStr}`;
 }
 
-export async function getSalariesData({ clientName, masterSheetId, clientSheetId, bypassCache = false }) {
+export async function getSalariesData({ clientName, masterSheetId, clientSheetId, bypassCache = false, minBypassAgeMs = 0 }) {
   if (!clientSheetId && !masterSheetId) {
     throw new Error("clientSheetId is required.");
   }
@@ -99,6 +99,7 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
   const cachedResult = await resolvePortalCache({
     cacheKey,
     bypassCache: Boolean(bypassCache),
+    minBypassAgeMs: Number(minBypassAgeMs) || 0,
     l1TtlSecs: 120,
     redisTtlSecs: 86400,
     isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.employees)),

@@ -52,7 +52,7 @@ export function parseMonthYearHeader(label) {
 /**
  * Fetch and parse all NBtoFind data
  */
-export async function fetchNBToFindData(clientName, clientSheetId, bypassCache = false) {
+export async function fetchNBToFindData(clientName, clientSheetId, bypassCache = false, options = {}) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
 
   const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
@@ -61,6 +61,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
   const cachedResult = await resolvePortalCache({
     cacheKey,
     bypassCache: Boolean(bypassCache),
+    minBypassAgeMs: options?.minBypassAgeMs || 0,
     l1TtlSecs: 120,
     redisTtlSecs: 86400,
     isValidPayload: (p) => Boolean(p && p.success && p.sections),

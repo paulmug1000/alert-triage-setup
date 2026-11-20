@@ -1,4 +1,4 @@
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
 import {
   getSalariesData,
   saveEmployeeData,
@@ -24,6 +24,11 @@ export default async function handler(req, res) {
   }
 
   installSheetIdBoundary(req, res, sessionUser);
+
+  const rl = await checkRateLimit("pma-view", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please retry shortly." });
+  }
 
   // 2. GET Request: Fetch Salaries & Dividends
   if (req.method === "GET") {
@@ -65,6 +70,7 @@ export default async function handler(req, res) {
         masterSheetId,
         clientSheetId,
         bypassCache: (bypassCache === "true" || bypassCache === true) && !isReadOnlySession(sessionUser),
+        minBypassAgeMs: sessionUser.isAdmin ? 0 : 15000,
       });
 
       return res.status(200).json(data);

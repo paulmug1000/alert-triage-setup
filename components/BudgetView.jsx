@@ -137,8 +137,8 @@ export default function BudgetView({
   onSelectClient,
 }) {
   const { user } = useAuth();
-  const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
-  const isSysAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
+  const isAdmin = Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager"));
+  const isSysAdmin = Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   // Client State (synchronous initial selection from managedClient or initialClient to eliminate flash)
@@ -905,7 +905,7 @@ export default function BudgetView({
   const handleSaveCellNote = async (newNote) => {
     if (!noteModalData || !selectedClient) return;
     const { sheetRow, colIdx } = noteModalData;
-    const clientKey = selectedClient.clientSpreadsheetId || selectedClient.spreadsheetId;
+    const clientKey = selectedClient.clientSheetId || selectedClient.clientSpreadsheetId || selectedClient.spreadsheetId;
     const masterKey = selectedClient.masterSpreadsheetId || selectedClient.masterSheetId;
 
     // Optimistically update local matrix
@@ -1433,7 +1433,7 @@ export default function BudgetView({
               <a
                 href={`https://docs.google.com/spreadsheets/d/${targetSheetId}/edit#gid=0`}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 style={{
                   padding: "6px 12px",
                   borderRadius: "6px",

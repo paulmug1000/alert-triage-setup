@@ -1,25 +1,19 @@
 import crypto from "crypto";
-import { createSignedOAuthState } from "../../../../services/authService";
-
-const CANONICAL_PULSE_HOSTS = new Set([
-  "pulsedashboard.co.uk",
-  "app.pulsedashboard.co.uk",
-  "pma.pulsedashboard.co.uk",
-]);
+import { createSignedOAuthState, getTrustedClientIp, checkRateLimit } from "../../../../services/authService";
+import { resolveCanonicalOAuthHost } from "../../../../utils/helpers";
 
 export default async function handler(req, res) {
+  const rl = await checkRateLimit("oauth-init", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: "Too many sign-in attempts. Please retry shortly." });
+  }
+
   const clientId = process.env.AZURE_CLIENT_ID;
   if (!clientId) {
     return res.status(500).json({ error: "Missing AZURE_CLIENT_ID environment variable" });
   }
 
-  // Host resolution: allow only exact canonical Pulse hosts, else configured app host
-  const reqHostRaw = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim().toLowerCase();
-  const isPulseHost = CANONICAL_PULSE_HOSTS.has(reqHostRaw);
-  const prodHost = (process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).host : null) || process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
-  const host = isPulseHost ? reqHostRaw : (prodHost || (process.env.NODE_ENV !== "production" ? reqHostRaw : "app.pulsedashboard.co.uk") || "localhost:3000");
-  const isLocal = process.env.NODE_ENV !== "production" && (host.startsWith("localhost") || host.startsWith("127.0.0.1"));
-  const proto = isLocal ? (req.headers["x-forwarded-proto"] || "http") : "https";
+  const { host, proto } = resolveCanonicalOAuthHost(req);
   const redirectUri = `${proto}://${host}/api/auth/oauth/microsoft/callback`;
 
   // Standard Microsoft Entra ID OpenID Connect & Graph user identity scopes

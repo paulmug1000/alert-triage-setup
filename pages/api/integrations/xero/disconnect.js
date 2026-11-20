@@ -9,9 +9,9 @@
  * 3. Records the disconnection in audit logs.
  */
 
-import { getIntegrationTokens, deleteIntegrationTokens } from "../../../../services/vaultService.js";
+import { getIntegrationTokens, deleteIntegrationTokens, getSharedXeroGrant, deleteSharedXeroGrant } from "../../../../services/vaultService.js";
 import { revokeXeroToken } from "../../../../services/xeroService.js";
-import { resolveLiveSessionUser } from "../../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet, matchesClientName, canAccessPma } from "../../../../services/userPermissions.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
@@ -21,6 +21,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
   if (!assertTrustedOrigin(req, res)) return;
+
+  const rl = await checkRateLimit("int-disconnect", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: "Too many requests. Please slow down." });
+  }
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -76,9 +81,23 @@ export default async function handler(req, res) {
   }
 
   try {
+    if (isAdvisorTarget) {
+      const sharedGrant = await getSharedXeroGrant({ bypassL1: true });
+      const sharedToken = sharedGrant?.tokens?.refreshToken || sharedGrant?.tokens?.accessToken;
+      if (sharedToken) {
+        await revokeXeroToken(sharedToken).catch((e) => console.warn("Shared Xero revoke warning:", e.message));
+      }
+      await deleteSharedXeroGrant();
+      console.log("🔌 Central shared Xero advisor integration disconnected.");
+      return res.status(200).json({
+        success: true,
+        message: "Central advisor Xero integration disconnected and revoked successfully."
+      });
+    }
+
     // 1. Fetch current credentials to revoke
     const record = await getIntegrationTokens({
-      clientKey,
+      clientKey: targetClient,
       masterSheetId,
       tool: "xero"
     });
@@ -94,12 +113,12 @@ export default async function handler(req, res) {
 
     // 2. Delete from Central Vault
     await deleteIntegrationTokens({
-      clientKey,
+      clientKey: targetClient,
       masterSheetId,
       tool: "xero"
     });
 
-    console.log(`🔌 Xero integration disconnected for client: ${clientKey || masterSheetId}`);
+    console.log(`🔌 Xero integration disconnected for client: ${targetClient || masterSheetId}`);
 
     return res.status(200).json({
       success: true,

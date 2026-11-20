@@ -265,6 +265,9 @@ export async function applyBlankCodePipelineMatches({
   if (!Array.isArray(matches) || matches.length === 0) {
     throw new Error("No matches were selected to apply.");
   }
+  if (matches.length > 500) {
+    throw new Error("Too many pipeline matches in a single request (max 500).");
+  }
 
   const sheets = await getSheetsClient();
   const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
@@ -305,10 +308,12 @@ export async function applyBlankCodePipelineMatches({
   const seenRows = new Set();
   const seenCodes = new Set();
 
+  const maxAllowedRow = Math.min(5000, Math.max(pipeVals.length + 50, 200));
+
   for (const item of matches) {
     const rowNum = parseInt(item?.pipelineRow, 10);
     const projectCode = String(item?.projectCode || "").trim();
-    if (!rowNum || rowNum < 2 || !projectCode) continue;
+    if (!Number.isInteger(rowNum) || rowNum < 2 || rowNum > maxAllowedRow || !projectCode) continue;
     if (seenRows.has(rowNum) || seenCodes.has(projectCode.toUpperCase())) {
       skipped.push({ rowNum, projectCode, reason: "Duplicate selection in request" });
       continue;

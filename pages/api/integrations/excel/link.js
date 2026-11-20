@@ -89,7 +89,7 @@ export default async function handler(req, res) {
   try {
     const existingGrant = await getIntegrationTokens({ clientKey, masterSheetId: resolvedMasterSheetId, tool: "excel" });
     if (existingGrant?.tokens?.accessToken && !existingGrant.tokens.accessToken.startsWith("manual_")) {
-      const grantOwner = String(existingGrant.metadata?.userEmail || "").toLowerCase().trim();
+      const grantOwner = String(existingGrant.metadata?.authorizedByPulseEmail || existingGrant.metadata?.userEmail || "").toLowerCase().trim();
       const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
       if (!grantOwner || callerEmail !== grantOwner) {
         const linkedDrive = String(existingGrant.metadata?.driveId || "").trim();

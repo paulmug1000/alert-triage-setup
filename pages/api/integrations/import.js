@@ -18,7 +18,7 @@
 import crypto from "crypto";
 import { saveIntegrationTokens } from "../../../services/vaultService.js";
 import { refreshXeroTokens, getXeroConnections } from "../../../services/xeroService.js";
-import { refreshQBTokens, getQBCompanyInfo } from "../../../services/quickbooksService.js";
+import { refreshQBTokens, getQBCompanyInfo, assertValidQBRealmId } from "../../../services/quickbooksService.js";
 import { refreshMondayTokens, getMondayAccountInfo } from "../../../services/mondayService.js";
 import { refreshPipedriveTokens, getPipedriveAccountInfo } from "../../../services/pipedriveService.js";
 import { getClickUpWorkspaceInfo } from "../../../services/clickupService.js";
@@ -26,6 +26,7 @@ import { refreshCapsuleTokens, getCapsuleAccountInfo } from "../../../services/c
 import { refreshCloseTokens, getCloseAccountInfo } from "../../../services/closeService.js";
 import { refreshHubSpotTokens, getHubSpotAccountInfo } from "../../../services/hubspotService.js";
 import { resolveLiveSessionUser, safeCompareSecret, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
+import { unwrapSheetId } from "../../../services/sheetTokenService.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { resolveClientNameBySheetId, matchesClientName, isReadOnlySession } from "../../../services/userPermissions.js";
@@ -36,6 +37,7 @@ export const config = {
 };
 
 export default async function handler(req, res) {
+  res.setHeader("Cache-Control", "private, no-store");
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
@@ -45,14 +47,7 @@ export default async function handler(req, res) {
     return res.status(429).json({ success: false, error: "Too many import requests. Please retry shortly." });
   }
 
-  const { tool = "xero", spreadsheetId: rawSpreadsheetId, clientName, refreshToken, tenantId } = req.body;
-  const spreadsheetId = rawSpreadsheetId ? (extractSheetIdFromUrl(String(rawSpreadsheetId).trim()) || String(rawSpreadsheetId).trim()) : "";
-
-  if (!spreadsheetId) {
-    return res.status(400).json({ success: false, error: "Missing required spreadsheetId parameter." });
-  }
-
-  // 1. Verify Authentication: Ecosystem Secret + Client-Specific Secret, OR Non-ReadOnly Admin Session
+  // 1. Verify Authentication BEFORE parsing spreadsheetId or touching Google Sheets / Redis
   const authHeader = req.headers.authorization || "";
   const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
   const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.body?.secret || "");
@@ -73,12 +68,41 @@ export default async function handler(req, res) {
     if (!assertTrustedOrigin(req, res)) return;
     sessionUser = await resolveLiveSessionUser(req, res);
     isAdmin = Boolean(sessionUser?.isAdmin && !isReadOnlySession(sessionUser));
+    if (!isAdmin) {
+      return res.status(sessionUser ? 403 : 401).json({
+        success: false,
+        error: sessionUser ? "Forbidden: Non-read-only Admin access required." : "Unauthorized: Valid internal secret or admin session required."
+      });
+    }
+  }
+
+  if (!isAdmin && !providedClientSecret) {
+    console.warn("🚨 Integration Import: Missing client-specific secret.");
+    return res.status(401).json({
+      success: false,
+      error: "Unauthorized: Client-specific secret (X-Pulse-Client-Secret) is required."
+    });
+  }
+
+  const { tool = "xero", spreadsheetId: rawSpreadsheetId, clientName, refreshToken, tenantId } = req.body || {};
+  const unwrappedSpreadsheetId = rawSpreadsheetId ? unwrapSheetId(String(rawSpreadsheetId).trim()) : "";
+  const spreadsheetId = unwrappedSpreadsheetId ? (extractSheetIdFromUrl(unwrappedSpreadsheetId) || unwrappedSpreadsheetId) : "";
+
+  if (!spreadsheetId) {
+    return res.status(400).json({ success: false, error: "Missing required spreadsheetId parameter." });
   }
 
   let isAuthorized = isAdmin;
   const redisSecretKey = `pulse:client_secret:${spreadsheetId}`;
   const sheets = await getSheetsClient();
   const resolvedSheetClient = await resolveClientNameBySheetId(sheets, spreadsheetId);
+
+  if (!resolvedSheetClient) {
+    return res.status(403).json({ success: false, error: "Forbidden: Unrecognized spreadsheet ID." });
+  }
+  if (clientName && !matchesClientName(clientName, resolvedSheetClient)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Client name does not match spreadsheet ID." });
+  }
 
   if (!isAuthorized) {
     if (!redisClient?.isOpen) {
@@ -92,43 +116,28 @@ export default async function handler(req, res) {
       return res.status(503).json({ success: false, error: "Authentication store error." });
     }
 
-    if (!resolvedSheetClient) {
-      return res.status(403).json({ success: false, error: "Forbidden: Unrecognized spreadsheet ID." });
-    }
-    if (clientName && !matchesClientName(clientName, resolvedSheetClient)) {
-      return res.status(403).json({ success: false, error: "Forbidden: Client name does not match spreadsheet ID." });
-    }
-
-    if (providedClientSecret) {
-      const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
-      if (registeredHash) {
-        const isMatch = safeCompareSecret(providedHash, registeredHash) || safeCompareSecret(providedClientSecret, registeredHash);
-        if (isMatch) {
-          isAuthorized = true;
-          if (registeredHash.startsWith("pcs_")) {
-            await redisClient.set(redisSecretKey, providedHash).catch(() => {});
-          }
-        } else {
-          return res.status(401).json({ success: false, error: "Unauthorized: Invalid client-specific secret." });
+    const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
+    if (registeredHash) {
+      const isMatch = safeCompareSecret(providedHash, registeredHash) || safeCompareSecret(providedClientSecret, registeredHash);
+      if (isMatch) {
+        isAuthorized = true;
+        if (registeredHash.startsWith("pcs_")) {
+          await redisClient.set(redisSecretKey, providedHash).catch(() => { });
         }
       } else {
-        if (isMasterSecretValid && resolvedSheetClient) {
-          try {
-            await redisClient.set(redisSecretKey, providedHash);
-            isAuthorized = true;
-          } catch (regErr) {
-            return res.status(503).json({ success: false, error: "Failed to persist client secret." });
-          }
-        } else {
-          return res.status(401).json({ success: false, error: "Unauthorized: Valid ecosystem secret and registered Master Sheet required for initial client registration." });
-        }
+        return res.status(401).json({ success: false, error: "Unauthorized: Invalid client-specific secret." });
       }
     } else {
-      console.warn(`🚨 Integration Import: Missing client-specific secret for ${spreadsheetId}.`);
-      return res.status(401).json({
-        success: false,
-        error: "Unauthorized: Client-specific secret (X-Pulse-Client-Secret) is required."
-      });
+      if (isMasterSecretValid && resolvedSheetClient) {
+        try {
+          await redisClient.set(redisSecretKey, providedHash);
+          isAuthorized = true;
+        } catch (regErr) {
+          return res.status(503).json({ success: false, error: "Failed to persist client secret." });
+        }
+      } else {
+        return res.status(401).json({ success: false, error: "Unauthorized: Valid ecosystem secret and registered Master Sheet required for initial client registration." });
+      }
     }
   }
 
@@ -136,6 +145,10 @@ export default async function handler(req, res) {
     console.warn("🚨 Integration Import: Unauthorized attempt.");
     return res.status(401).json({ success: false, error: "Unauthorized: Invalid internal secret or admin session required." });
   }
+
+  const attachAccessToken = (payload, tokenVal) => (
+    sessionUser ? payload : { ...payload, accessToken: tokenVal }
+  );
 
   try {
     const cleanTool = String(tool).trim().toLowerCase();
@@ -190,17 +203,16 @@ export default async function handler(req, res) {
 
       console.log(`✅ Integration Import: Successfully migrated Xero for "${effectiveClientName}" [${spreadsheetId}]. Org: "${tenantName}".`);
 
-      return res.status(200).json({
+      return res.status(200).json(attachAccessToken({
         success: true,
         tool: "xero",
         clientKey: effectiveClientKey,
         clientName: effectiveClientName,
         tenantId: activeTenantId,
         tenantName: tenantName,
-        accessToken: refreshed.accessToken,
         expiresIn: refreshed.expiresIn,
         message: `Successfully imported Xero connection into Pulse Central Vault.`
-      });
+      }, refreshed.accessToken));
     }
 
     if (cleanTool === "quickbooks" || cleanTool === "qb") {
@@ -210,7 +222,18 @@ export default async function handler(req, res) {
       console.log(`📥 Integration Import: Importing existing QuickBooks tokens for sheet: ${spreadsheetId}...`);
 
       const { realmId = "", qbCompanyId = "", clientId = "", clientSecret = "" } = req.body;
-      const activeRealmId = String(realmId || qbCompanyId || "").trim();
+      const rawRealmId = String(realmId || qbCompanyId || "").trim();
+      let activeRealmId = "";
+      if (rawRealmId) {
+        try {
+          activeRealmId = assertValidQBRealmId(rawRealmId);
+          if (!/^\d{5,30}$/.test(activeRealmId)) {
+            return res.status(400).json({ success: false, error: "Invalid QuickBooks company ID (realmId)." });
+          }
+        } catch (qbErr) {
+          return res.status(400).json({ success: false, error: qbErr.message });
+        }
+      }
 
       // Validate and refresh token with Intuit
       const refreshed = await refreshQBTokens(refreshToken, clientId, clientSecret);
@@ -248,17 +271,16 @@ export default async function handler(req, res) {
 
       console.log(`✅ Integration Import: Successfully migrated QuickBooks for "${effectiveClientName}" [${spreadsheetId}]. Company: "${companyName || activeRealmId}".`);
 
-      return res.status(200).json({
+      return res.status(200).json(attachAccessToken({
         success: true,
         tool: "quickbooks",
         clientKey: effectiveClientKey,
         clientName: effectiveClientName,
         realmId: activeRealmId,
         companyName: companyName || activeRealmId,
-        accessToken: refreshed.accessToken,
         expiresIn: refreshed.expiresIn,
         message: `Successfully imported QuickBooks connection into Pulse Central Vault.`
-      });
+      }, refreshed.accessToken));
     }
 
     if (cleanTool === "monday") {
@@ -311,15 +333,14 @@ export default async function handler(req, res) {
 
       console.log(`✅ Integration Import: Successfully migrated Monday.com for "${effectiveClientName}" [${spreadsheetId}].`);
 
-      return res.status(200).json({
+      return res.status(200).json(attachAccessToken({
         success: true,
         tool: "monday",
         clientKey: effectiveClientKey,
         clientName: effectiveClientName,
         accountName: accountInfo?.accountName || effectiveClientName,
-        accessToken: activeAccessToken,
         message: `Successfully imported Monday.com connection into Pulse Central Vault.`
-      });
+      }, activeAccessToken));
     }
 
     if (cleanTool === "pipedrive") {
@@ -372,15 +393,14 @@ export default async function handler(req, res) {
 
       console.log(`✅ Integration Import: Successfully migrated Pipedrive for "${effectiveClientName}" [${spreadsheetId}].`);
 
-      return res.status(200).json({
+      return res.status(200).json(attachAccessToken({
         success: true,
         tool: "pipedrive",
         clientKey: effectiveClientKey,
         clientName: effectiveClientName,
         companyName: accountInfo?.companyName || effectiveClientName,
-        accessToken: activeAccessToken,
         message: `Successfully imported Pipedrive connection into Pulse Central Vault.`
-      });
+      }, activeAccessToken));
     }
 
     if (cleanTool === "clickup") {
@@ -426,15 +446,14 @@ export default async function handler(req, res) {
 
       console.log(`✅ Integration Import: Successfully migrated ClickUp for "${effectiveClientName}" [${spreadsheetId}].`);
 
-      return res.status(200).json({
+      return res.status(200).json(attachAccessToken({
         success: true,
         tool: "clickup",
         clientKey: effectiveClientKey,
         clientName: effectiveClientName,
         teamName: workspaceInfo?.workspaceName || effectiveClientName,
-        accessToken: activeAccessToken,
         message: `Successfully imported ClickUp connection into Pulse Central Vault.`
-      });
+      }, activeAccessToken));
     }
 
     if (cleanTool === "capsule") {
@@ -487,15 +506,14 @@ export default async function handler(req, res) {
 
       console.log(`✅ Integration Import: Successfully migrated Capsule CRM for "${effectiveClientName}" [${spreadsheetId}].`);
 
-      return res.status(200).json({
+      return res.status(200).json(attachAccessToken({
         success: true,
         tool: "capsule",
         clientKey: effectiveClientKey,
         clientName: effectiveClientName,
         siteName: accountInfo?.siteName || effectiveClientName,
-        accessToken: activeAccessToken,
         message: `Successfully imported Capsule CRM connection into Pulse Central Vault.`
-      });
+      }, activeAccessToken));
     }
 
     if (cleanTool === "close") {
@@ -548,15 +566,14 @@ export default async function handler(req, res) {
 
       console.log(`✅ Integration Import: Successfully migrated Close CRM for "${effectiveClientName}" [${spreadsheetId}].`);
 
-      return res.status(200).json({
+      return res.status(200).json(attachAccessToken({
         success: true,
         tool: "close",
         clientKey: effectiveClientKey,
         clientName: effectiveClientName,
         organizationName: accountInfo?.organizationName || effectiveClientName,
-        accessToken: activeAccessToken,
         message: `Successfully imported Close CRM connection into Pulse Central Vault.`
-      });
+      }, activeAccessToken));
     }
 
     if (cleanTool === "hubspot") {
@@ -610,15 +627,14 @@ export default async function handler(req, res) {
 
       console.log(`✅ Integration Import: Successfully migrated HubSpot for "${effectiveClientName}" [${spreadsheetId}].`);
 
-      return res.status(200).json({
+      return res.status(200).json(attachAccessToken({
         success: true,
         tool: "hubspot",
         clientKey: effectiveClientKey,
         clientName: effectiveClientName,
         accountName: accountInfo?.accountName || effectiveClientName,
-        accessToken: activeAccessToken,
         message: `Successfully imported HubSpot connection into Pulse Central Vault.`
-      });
+      }, activeAccessToken));
     }
 
     return res.status(400).json({ success: false, error: `Tool "${tool}" is not supported for import.` });

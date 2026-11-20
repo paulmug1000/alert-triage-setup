@@ -78,7 +78,7 @@ export default async function handler(req, res) {
     }
 
     // Never expose another user's live Google OAuth accessToken to a different caller (including staff)
-    const grantOwner = String(grant.metadata?.userEmail || "").toLowerCase().trim();
+    const grantOwner = String(grant.metadata?.authorizedByPulseEmail || grant.metadata?.userEmail || "").toLowerCase().trim();
     const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
     if (!grantOwner || callerEmail !== grantOwner) {
       return res.status(200).json({

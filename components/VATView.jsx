@@ -633,7 +633,7 @@ export default function VATView({
                                     whiteSpace: "nowrap",
                                   }}
                                 >
-                                  {m.isError ? m.rawDisplay : formatMoney(m.value)}
+                                  {m.isError ? (isSysAdmin ? m.rawDisplay : "Error") : formatMoney(m.value)}
                                 </td>
                               );
                             })}

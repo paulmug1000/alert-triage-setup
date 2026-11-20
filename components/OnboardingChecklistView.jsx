@@ -443,7 +443,7 @@ export default function OnboardingChecklistView({
                 <a
                   href={`https://docs.google.com/spreadsheets/d/${effectiveMasterSheetId}/edit#gid=0`}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   style={{ fontSize: "13px", fontWeight: "600", color: "#0284C7", textDecoration: "none" }}
                 >
                   Authorise Master IMPORTRANGE ↗
@@ -453,7 +453,7 @@ export default function OnboardingChecklistView({
                 <a
                   href={`https://docs.google.com/spreadsheets/d/${effectiveClientSheetId}/edit`}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   style={{ fontSize: "13px", fontWeight: "600", color: "#0284C7", textDecoration: "none" }}
                 >
                   Authorise Client IMPORTRANGE ↗
@@ -474,7 +474,7 @@ export default function OnboardingChecklistView({
                 <a
                   href={`https://docs.google.com/spreadsheets/d/${effectiveMasterSheetId}/edit`}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   style={{ fontSize: "12px", fontWeight: "600", color: "#0284C7", textDecoration: "none" }}
                 >
                   Open master script editor ↗

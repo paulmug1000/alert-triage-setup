@@ -52,7 +52,7 @@ export default async function handler(req, res) {
     }
 
     try {
-      const suggestions = await suggestAccountingSettings({ clientName, masterSheetId });
+      const suggestions = await suggestAccountingSettings({ clientName, masterSheetId, isAdmin: Boolean(sessionUser.isAdmin) });
       return res.status(200).json(suggestions);
     } catch (err) {
       console.error("GET /api/setup/suggest-accounting-settings error:", err);

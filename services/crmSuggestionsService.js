@@ -26,6 +26,7 @@
  */
 
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { unwrapSheetId } from "./sheetTokenService.js";
 import { CRM_PULSE_FIELDS, saveClientSettings } from "./clientSettingsService.js";
 
 /**
@@ -233,7 +234,8 @@ export async function suggestCrmMappings({ clientName, masterSheetId }) {
   if (!clientName || !masterSheetId) {
     throw new Error("Missing clientName or masterSheetId parameter.");
   }
-  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+  const unwrappedId = unwrapSheetId(String(masterSheetId).trim());
+  const cleanMasterId = extractSheetIdFromUrl(unwrappedId) || unwrappedId;
   const sheets = await getSheetsClient();
 
   // 1. Fetch available CRM headers and up to 150 rows of data from DataFromCRM!A1:ZZ150
@@ -441,7 +443,8 @@ export async function applyCrmMappings({
   if (!clientName || !masterSheetId) {
     throw new Error("Missing clientName or masterSheetId parameter.");
   }
-  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+  const unwrappedId = unwrapSheetId(String(masterSheetId).trim());
+  const cleanMasterId = extractSheetIdFromUrl(unwrappedId) || unwrappedId;
 
   // Use saveClientSettings to update CRMList!AB2:AN2, CRMList!A2:M2, CRMList!DD2:DH2, CRMList!EE2
   await saveClientSettings({

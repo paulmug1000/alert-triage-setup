@@ -1,4 +1,4 @@
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
 import {
   fetchExpensesData,
   saveExpenseMetadata,
@@ -27,6 +27,11 @@ export default async function handler(req, res) {
 
   installSheetIdBoundary(req, res, sessionUser);
 
+  const rl = await checkRateLimit("pma-view", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please retry shortly." });
+  }
+
   // 2. GET Request: Fetch Expenses
   if (req.method === "GET") {
     let { clientName, clientSheetId, bypassCache } = req.query;
@@ -54,13 +59,15 @@ export default async function handler(req, res) {
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
       }
+      clientName = auth.clientName || clientName;
     }
 
     try {
       const data = await fetchExpensesData(
         clientName || "Client",
         clientSheetId,
-        bypassCache === "true" || bypassCache === true
+        bypassCache === "true" || bypassCache === true,
+        { minBypassAgeMs: sessionUser.isAdmin ? 0 : 15000 }
       );
       return res.status(200).json(data);
     } catch (err) {
@@ -110,6 +117,7 @@ export default async function handler(req, res) {
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
       }
+      clientName = auth.clientName || clientName;
     }
 
     try {

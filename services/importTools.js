@@ -5,6 +5,7 @@ import { logClaudeUsage_ } from "./systemConfig";
 import { monthStrToEomKey_, eomTargetMonthToWorkMonth_, autoCompleteLinkedEomTask_ } from "./eomTools";
 import { getSessionUser } from "./authService";
 import { DEFAULT_AC_SHEET_ID, isUserAuthorizedForClient, resolveClientNameBySheetId, verifyUserAuthorizedForSheet, isReadOnlySession, canViewSalariesAndDividends } from "./userPermissions";
+import { sanitizeSpreadsheetTerms } from "../utils/helpers";
 import { getAllClients } from "./workspaces";
 import {
   findForecastOnlyEmployeesInMonth_,
@@ -29,9 +30,9 @@ function getScopedPayrollUploadKey_(req, uploadId) {
 }
 
 const CLIENT_NAME_NOISE_WORDS_ = new Set([
-  "ltd","limited","plc","inc","llc","llp","the","and","&",
-  "group","co","corp","corporation","holdings","international",
-  "uk","us","solutions","services","consulting","consultancy",
+  "ltd", "limited", "plc", "inc", "llc", "llp", "the", "and", "&",
+  "group", "co", "corp", "corporation", "holdings", "international",
+  "uk", "us", "solutions", "services", "consulting", "consultancy",
 ]);
 
 function isDateMatchJs_(sheetHeader, aiDate) {
@@ -39,7 +40,7 @@ function isDateMatchJs_(sheetHeader, aiDate) {
   const s1 = String(sheetHeader).toLowerCase();
   const s2 = String(aiDate).toLowerCase();
   if (s1 === s2) return true;
-  const months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+  const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
   const m1 = months.find(m => s1.includes(m));
   const m2 = months.find(m => s2.includes(m));
   const y1 = s1.match(/\d{2,4}/);
@@ -116,7 +117,7 @@ async function scoreClientsByEmployeeOverlap_(sheets, allClients, extractedEmplo
         }
         if (overlap > 0) scores.push({ clientName: client.clientName, overlap });
       }
-    } catch (e) {}
+    } catch (e) { }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
   scores.sort((a, b) => b.overlap - a.overlap);
@@ -174,8 +175,8 @@ function buildVerticalCsvText_(csvText) {
         cleanData += rowText;
       }
     }
-  } catch (e) {}
-  return cleanData;
+  } catch (e) { }
+  return cleanData.replace(/<\/?untrusted_document>/gi, "[document_tag]");
 }
 
 function parsePayrollNumber_(val) {
@@ -470,7 +471,7 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
   const docTotals = extractedData.totals ? normalizePayrollEmployee_(extractedData.totals) : {};
   const totalsSource = extractedData.totalsSource === "document" ? "document" : "calculated";
   const TOLERANCE = 1.00;
-  const categories = ["grossPay","eeNic","erNic","studLoan","eePension","erPension","paye"];
+  const categories = ["grossPay", "eeNic", "erNic", "studLoan", "eePension", "erPension", "paye"];
   const totalsCheck = categories.map(cat => {
     const docVal = parseFloat(docTotals[cat]) || 0;
     const writtenVal = Math.round(writtenTotals[cat] * 100) / 100;
@@ -576,6 +577,11 @@ async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targe
 }
 
 export async function handleUploadPayrollChunk(req, res) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Read-only sessions cannot upload or import documents." });
+  }
   const { uploadId, chunkData, isFirstChunk } = req.body;
   if (!uploadId || chunkData === undefined) return res.status(400).json({ success: false, error: "Missing uploadId or chunkData" });
   if (!SAFE_UPLOAD_ID_REGEX.test(String(uploadId))) return res.status(400).json({ success: false, error: "Invalid uploadId format" });
@@ -600,7 +606,7 @@ export async function handleUploadPayrollChunk(req, res) {
     return res.status(200).json({ success: true });
   } catch (err) {
     const status = /Authentication required/i.test(err.message) ? 401 : 400;
-    return res.status(status).json({ success: false, error: err.message });
+    return res.status(status).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Upload failed.") });
   }
 }
 
@@ -610,6 +616,9 @@ export async function handleIdentifyPayrollClient(req, res, sheets) {
   if (!uploadId || !idAcId) return res.status(400).json({ success: false, error: "Missing uploadId or acId" });
   const sessionUser = getSessionUser(req);
   if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Read-only sessions cannot upload or import documents." });
+  }
   if (!canViewSalariesAndDividends(sessionUser)) {
     return res.status(403).json({ success: false, error: "Forbidden: You do not have permission to access payroll data." });
   }
@@ -622,7 +631,7 @@ export async function handleIdentifyPayrollClient(req, res, sheets) {
     if (!fileData || !fileData.data || !fileData.type) throw new Error("Payload malformed");
   } catch (err) {
     const status = /Authentication required/i.test(err.message) ? 401 : 400;
-    return res.status(status).json({ success: false, error: err.message });
+    return res.status(status).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
   try {
     const clientsRes = await getAllClients(sheets, sessionUser, false, idAcId);
@@ -653,7 +662,7 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
       idContent = [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: fileData.data } }, { type: "text", text: promptText }];
     }
     const idMsg = await anthropic.messages.create({ model: "claude-sonnet-4-6", max_tokens: 1500, messages: [{ role: "user", content: idContent }] });
-    await logClaudeUsage_(sheets, idAcId, "", "payroll_identify", idMsg.usage?.input_tokens || 0, idMsg.usage?.output_tokens || 0, "payroll_tool").catch(() => {});
+    await logClaudeUsage_(sheets, idAcId, "", "payroll_identify", idMsg.usage?.input_tokens || 0, idMsg.usage?.output_tokens || 0, "payroll_tool").catch(() => { });
 
     const idRaw = idMsg.content[0].type === "text" ? idMsg.content[0].text : "";
     const idClean = idRaw.replace(new RegExp("```json", "g"), "").replace(new RegExp("```", "g"), "").trim();
@@ -672,7 +681,8 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
     }
     return res.status(200).json({ success: true, status: "AMBIGUOUS", employerName: idData.employerName || "", employeeNames: [], candidateScores: [] });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    const su = getSessionUser(req);
+    return res.status(500).json({ success: false, error: su?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
 }
 
@@ -680,6 +690,11 @@ export async function handleIdentifyTimeClient(req, res, sheets) {
   const { uploadId, fileName } = req.body;
   const idAcId = DEFAULT_AC_SHEET_ID;
   if (!uploadId || !idAcId) return res.status(400).json({ success: false, error: "Missing uploadId or acId" });
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Read-only sessions cannot upload or import documents." });
+  }
   let fileData;
   try {
     const key = getScopedPayrollUploadKey_(req, uploadId);
@@ -689,10 +704,9 @@ export async function handleIdentifyTimeClient(req, res, sheets) {
     if (!fileData || !fileData.data || !fileData.type) throw new Error("Payload malformed");
   } catch (err) {
     const status = /Authentication required/i.test(err.message) ? 401 : 400;
-    return res.status(status).json({ success: false, error: err.message });
+    return res.status(status).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
   try {
-    const sessionUser = getSessionUser(req);
     const clientsRes = await getAllClients(sheets, sessionUser, false, idAcId);
     const allClients = (clientsRes?.clientsArray || [])
       .map(c => ({
@@ -721,7 +735,7 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
       idContent = [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: fileData.data } }, { type: "text", text: promptText }];
     }
     const idMsg = await anthropic.messages.create({ model: "claude-sonnet-4-6", max_tokens: 1500, messages: [{ role: "user", content: idContent }] });
-    await logClaudeUsage_(sheets, idAcId, "", "time_identify", idMsg.usage?.input_tokens || 0, idMsg.usage?.output_tokens || 0, "time_tool").catch(() => {});
+    await logClaudeUsage_(sheets, idAcId, "", "time_identify", idMsg.usage?.input_tokens || 0, idMsg.usage?.output_tokens || 0, "time_tool").catch(() => { });
 
     const idRaw = idMsg.content[0].type === "text" ? idMsg.content[0].text : "";
     const idClean = idRaw.replace(new RegExp("```json", "g"), "").replace(new RegExp("```", "g"), "").trim();
@@ -740,7 +754,7 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
     }
     return res.status(200).json({ success: true, status: "AMBIGUOUS", employerName: idData.employerName || "", employeeNames: [], candidateScores: [] });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
 }
 
@@ -751,16 +765,23 @@ export async function handleProcessPayrollDocument(req, res, sheets) {
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Read-only sessions cannot upload or import documents." });
+  }
   if (!canViewSalariesAndDividends(sessionUser)) {
     return res.status(403).json({ success: false, error: "Forbidden: You do not have permission to access payroll data." });
   }
-  if (!targetClient && payrollClientSheetId) {
+  let targetClient = String(payrollClientName || "").trim();
+  if (!sessionUser.isAdmin) {
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, payrollClientSheetId, targetClient, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client" });
+    }
+    targetClient = auth.clientName || targetClient;
+  } else if (!targetClient && payrollClientSheetId) {
     try {
       targetClient = await resolveClientNameBySheetId(sheets, payrollClientSheetId, automationCommanderSheetId);
-    } catch (_) {}
-  }
-  if (!sessionUser.isAdmin && (!(await verifyUserAuthorizedForSheet(sessionUser, payrollClientSheetId, payrollClientName, sheets)).authorized)) {
-    return res.status(403).json({ success: false, error: "Access denied to this client" });
+    } catch (_) { }
   }
   let fileData;
   let scopedKey;
@@ -771,7 +792,7 @@ export async function handleProcessPayrollDocument(req, res, sheets) {
     fileData = JSON.parse(raw);
     if (!fileData || !fileData.data || !fileData.type) throw new Error("Payload malformed");
   } catch (err) {
-    return res.status(400).json({ success: false, error: err.message });
+    return res.status(400).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
   try {
     const empResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: payrollClientSheetId, range: "Salaries!A4:A53" }));
@@ -840,7 +861,7 @@ Return ONLY valid JSON matching this exact structure:
     }
 
     const aiMsg = await anthropic.messages.create({ model: "claude-sonnet-4-6", max_tokens: 6000, messages: [{ role: "user", content }] });
-    await logClaudeUsage_(sheets, automationCommanderSheetId, payrollClientName || "", "payroll_extract", aiMsg.usage?.input_tokens || 0, aiMsg.usage?.output_tokens || 0, "payroll_tool").catch(() => {});
+    await logClaudeUsage_(sheets, automationCommanderSheetId, payrollClientName || "", "payroll_extract", aiMsg.usage?.input_tokens || 0, aiMsg.usage?.output_tokens || 0, "payroll_tool").catch(() => { });
 
     const rawText = aiMsg.content[0].type === "text" ? aiMsg.content[0].text : "";
     const cleanText = rawText.replace(new RegExp("```json", "g"), "").replace(new RegExp("```", "g"), "").trim();
@@ -857,12 +878,12 @@ Return ONLY valid JSON matching this exact structure:
     const targetMonthStr = confirmedMonth || extractedData.period;
     if (!targetMonthStr || String(targetMonthStr).toLowerCase() === "unknown" || String(targetMonthStr).toLowerCase() === "null") {
       const d = new Date(); d.setMonth(d.getMonth() - 1);
-      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       return res.status(200).json({ success: true, status: "CONFIRM_PERIOD", extractedData, fallback: `${months[d.getMonth()]} ${d.getFullYear()}` });
     }
 
     const writeResult = await writePayrollDataToSheet_(sheets, payrollClientSheetId, extractedData, targetMonthStr, allEmployeeNames);
-    await redisClient.del(scopedKey).catch(() => {});
+    await redisClient.del(scopedKey).catch(() => { });
 
     if (writeResult.writeSuccess && writeResult.requiresForecastResolution) {
       return res.status(200).json({
@@ -879,8 +900,8 @@ Return ONLY valid JSON matching this exact structure:
     }
     return res.status(200).json({ success: true, status: "COMPLETE", extractedData, ...writeResult });
   } catch (err) {
-    if (scopedKey) await redisClient.del(scopedKey).catch(() => {});
-    return res.status(500).json({ success: false, error: err.message });
+    if (scopedKey) await redisClient.del(scopedKey).catch(() => { });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
 }
 
@@ -942,7 +963,7 @@ export async function handleResolvePayrollImportForecast(req, res, sheets) {
       taskCompleted,
     });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message || "Failed to resolve payroll forecast item." });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? (err.message || "Failed to resolve payroll forecast item.") : sanitizeSpreadsheetTerms(err.message || "Failed to resolve payroll forecast item.") });
   }
 }
 
@@ -953,12 +974,15 @@ export async function handleProcessTimeDocument(req, res, sheets) {
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Read-only sessions cannot upload or import documents." });
+  }
 
   const payrollClientSheetId = timeMasterSheetId; const payrollClientName = timeClientName; let targetClient = timeClientName || "";
   if (!targetClient && timeMasterSheetId) {
     try {
       targetClient = await resolveClientNameBySheetId(sheets, timeMasterSheetId, automationCommanderSheetId);
-    } catch (_) {}
+    } catch (_) { }
   }
   if (!sessionUser.isAdmin && (!(await verifyUserAuthorizedForSheet(sessionUser, payrollClientSheetId, payrollClientName, sheets)).authorized)) {
     return res.status(403).json({ success: false, error: "Access denied to this client" });
@@ -971,7 +995,7 @@ export async function handleProcessTimeDocument(req, res, sheets) {
     if (!raw) throw new Error("Upload not found or expired");
     fileData = JSON.parse(raw);
   } catch (err) {
-    return res.status(400).json({ success: false, error: err.message });
+    return res.status(400).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
   try {
     const empResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: timeMasterSheetId, range: "TimeComp!A12:A62" }));
@@ -999,7 +1023,7 @@ Return ONLY valid JSON: { "period": "MMM YYYY", "employees": [{ "originalName": 
     }
 
     const aiMsg = await anthropic.messages.create({ model: "claude-sonnet-4-6", max_tokens: 6000, messages: [{ role: "user", content }] });
-    await logClaudeUsage_(sheets, automationCommanderSheetId, timeClientName || "", "time_extract", aiMsg.usage?.input_tokens || 0, aiMsg.usage?.output_tokens || 0, "time_tool").catch(() => {});
+    await logClaudeUsage_(sheets, automationCommanderSheetId, timeClientName || "", "time_extract", aiMsg.usage?.input_tokens || 0, aiMsg.usage?.output_tokens || 0, "time_tool").catch(() => { });
 
     const rawText = aiMsg.content[0].type === "text" ? aiMsg.content[0].text : "";
     const cleanText = rawText.replace(new RegExp("```json", "g"), "").replace(new RegExp("```", "g"), "").trim();
@@ -1011,12 +1035,12 @@ Return ONLY valid JSON: { "period": "MMM YYYY", "employees": [{ "originalName": 
     const targetMonthStr = confirmedMonth || extractedData.period;
     if (!targetMonthStr || String(targetMonthStr).toLowerCase() === "unknown" || String(targetMonthStr).toLowerCase() === "null") {
       const d = new Date(); d.setMonth(d.getMonth() - 1);
-      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       return res.status(200).json({ success: true, status: "CONFIRM_PERIOD", extractedData, fallback: `${months[d.getMonth()]} ${d.getFullYear()}` });
     }
 
     const writeResult = await writeTimeDataToSheet_(sheets, timeMasterSheetId, extractedData, targetMonthStr, allEmployeeNames);
-    await redisClient.del(scopedKey).catch(() => {});
+    await redisClient.del(scopedKey).catch(() => { });
 
     if (writeResult.writeSuccess && automationCommanderSheetId) {
       const timeWorkMonthKey = eomTargetMonthToWorkMonth_(monthStrToEomKey_(targetMonthStr));
@@ -1024,7 +1048,7 @@ Return ONLY valid JSON: { "period": "MMM YYYY", "employees": [{ "originalName": 
     }
     return res.status(200).json({ success: true, status: "COMPLETE", extractedData, ...writeResult });
   } catch (err) {
-    if (scopedKey) await redisClient.del(scopedKey).catch(() => {});
-    return res.status(500).json({ success: false, error: err.message });
+    if (scopedKey) await redisClient.del(scopedKey).catch(() => { });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
 }

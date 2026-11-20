@@ -8,7 +8,7 @@
  * - Microsoft Excel via Azure Graph API (KeyInfo!X33:X41)
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "../../../services/sheetsClient.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../services/vaultService.js";
 import { verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../services/userPermissions.js";
@@ -34,6 +34,11 @@ export default async function handler(req, res) {
 
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ success: false, error: "Read-only session cannot test integration sources." });
+  }
+
+  const rl = await checkRateLimit("int-test-source", sessionUser.email || getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many test requests. Please retry shortly." });
   }
 
   installSheetIdBoundary(req, res, sessionUser);

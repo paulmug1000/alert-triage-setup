@@ -28,6 +28,7 @@ export const USERS_TAB = "Users";
 export const DEFAULT_AC_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 const REDIS_USERS_KEY = "pma:users:list";
 const REDIS_USERS_TTL_SECS = 300; // 5 minutes cache
+export const USER_REVOKED_AT_PREFIX = "pma:user_revoked_at:";
 
 export function getCanonicalAcSheetId() {
   return process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
@@ -98,7 +99,7 @@ export async function getAllUsers(sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID, by
   const acId = getCanonicalAcSheetId();
   const now = Date.now();
 
-  if (!bypassCache && _usersMemoryCache && (now - _usersCachedAt < 60000)) {
+  if (!bypassCache && _usersMemoryCache && (now - _usersCachedAt < 2000)) {
     return _usersMemoryCache;
   }
 
@@ -903,6 +904,18 @@ export async function createOrUpdateUser(sheets, {
     }
   }
 
+  const prevClients = Array.isArray(existingUser?.assignedClients) ? [...existingUser.assignedClients].sort().join(",") : String(existingUser?.assignedClients || "");
+  const nextClients = normalizedRole === "Admin" ? "*" : [...clientList].sort().join(",");
+  const shouldBumpRevokedAt =
+    normalizedStatus === "Suspended" ||
+    (existingUser && (existingUser.role !== normalizedRole || prevClients !== nextClients));
+
+  if (shouldBumpRevokedAt && redisClient?.isOpen) {
+    await redisClient
+      .set(`${USER_REVOKED_AT_PREFIX}${normalizedEmail}`, String(Math.floor(Date.now() / 1000)), { EX: 7 * 86400 })
+      .catch(() => { });
+  }
+
   await invalidateUsersCache();
   const updatedList = await getAllUsers(sheets, acId, true);
   return {
@@ -979,6 +992,24 @@ export async function deleteUserByEmail(sheets, { email, actorEmail }) {
     } else {
       await mirrorDeleteToSheet();
     }
+  }
+
+  const prevClients = Array.isArray(existingUser?.assignedClients) ? [...existingUser.assignedClients].sort().join(",") : String(existingUser?.assignedClients || "");
+  const nextClients = normalizedRole === "Admin" ? "*" : [...clientList].sort().join(",");
+  const shouldBumpRevokedAt =
+    normalizedStatus === "Suspended" ||
+    (existingUser && (existingUser.role !== normalizedRole || prevClients !== nextClients));
+
+  if (shouldBumpRevokedAt && redisClient?.isOpen) {
+    await redisClient
+      .set(`${USER_REVOKED_AT_PREFIX}${normalizedEmail}`, String(Math.floor(Date.now() / 1000)), { EX: 7 * 86400 })
+      .catch(() => { });
+  }
+
+  if (redisClient?.isOpen) {
+    await redisClient
+      .set(`${USER_REVOKED_AT_PREFIX}${normalizedEmail}`, String(Math.floor(Date.now() / 1000)), { EX: 7 * 86400 })
+      .catch(() => { });
   }
 
   await invalidateUsersCache();

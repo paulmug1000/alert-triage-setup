@@ -922,7 +922,7 @@ export default function SetupView({
                 <a
                   href={`/pulse?client=${encodeURIComponent(selectedClient?.clientName || selectedClientName)}&preview=setup`}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -1296,7 +1296,7 @@ export default function SetupView({
                     <a
                       href={`/pulse?client=${encodeURIComponent(selectedClientName)}&preview=setup`}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       style={{
                         display: "inline-flex",
                         alignItems: "center",

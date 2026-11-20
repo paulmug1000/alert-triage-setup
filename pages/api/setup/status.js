@@ -13,6 +13,7 @@ import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, matchesClientN
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
+import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET") {
@@ -67,6 +68,6 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("GET /api/setup/status error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to load setup status.") });
   }
 }

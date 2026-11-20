@@ -6,7 +6,7 @@
 
 import crypto from "crypto";
 import { buildClickUpAuthUrl } from "../../../../services/clickupService.js";
-import { resolveLiveSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
+import { resolveLiveSessionUser, createSignedOAuthState, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet, matchesClientName } from "../../../../services/userPermissions.js";
 import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
@@ -20,6 +20,11 @@ export default async function handler(req, res) {
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ error: "Active session required." });
+  }
+
+  const rl = await checkRateLimit("oauth-int-connect", sessionUser.email || getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: "Too many connection requests. Please retry shortly." });
   }
 
   if (isReadOnlySession(sessionUser)) {

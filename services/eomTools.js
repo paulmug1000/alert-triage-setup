@@ -40,6 +40,22 @@ const EOM_SB_CACHE_PREFIX = "eom_sb_state_v2_";
 const EOM_SB_CACHE_TTL_SECONDS = 15;
 let _pendingEomSeedPromise = null;
 
+function sanitizeEomTaskListForUser_(list, isAdmin) {
+  if (isAdmin || !Array.isArray(list)) return list;
+  const s = (v) => (typeof v === "string" && v ? sanitizeSpreadsheetTerms(v) : v);
+  return list.map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const copy = { ...item };
+    if ("name" in copy) copy.name = s(copy.name);
+    if ("taskName" in copy) copy.taskName = s(copy.taskName);
+    if ("defaultNotes" in copy) copy.defaultNotes = s(copy.defaultNotes);
+    if ("clientNotes" in copy) copy.clientNotes = s(copy.clientNotes);
+    if ("notelet" in copy) copy.notelet = s(copy.notelet);
+    if ("notes" in copy) copy.notes = s(copy.notes);
+    return copy;
+  });
+}
+
 function scheduleBg_(promise) {
   const p = Promise.resolve(promise).catch((err) => {
     console.warn("[eomTools bg]", err?.message || err);
@@ -677,13 +693,14 @@ export async function handleEomGetOverviewBootstrap(req, res, sheets) {
         });
       });
 
+      const isAdminSession = Boolean(req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin);
       return res.status(200).json({
         success: true,
         monthKey: effectiveMonthKey,
-        templates,
-        tasks,
-        statusOverrides,
-        defaultTasks,
+        templates: sanitizeEomTaskListForUser_(templates, isAdminSession),
+        tasks: sanitizeEomTaskListForUser_(tasks, isAdminSession),
+        statusOverrides: sanitizeEomTaskListForUser_(statusOverrides, isAdminSession),
+        defaultTasks: sanitizeEomTaskListForUser_(defaultTasks, isAdminSession),
         excludedClients,
         source: "supabase",
       });
@@ -762,13 +779,14 @@ export async function handleEomGetOverviewBootstrap(req, res, sheets) {
       .filter((r) => r[2] === effectiveMonthKey && canSeeClient(r[0]))
       .map((r) => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending", notelet: r[5] || "" }));
 
+    const isAdminSession = Boolean(req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin);
     return res.status(200).json({
       success: true,
       monthKey: effectiveMonthKey,
-      templates,
-      tasks,
-      statusOverrides,
-      defaultTasks,
+      templates: sanitizeEomTaskListForUser_(templates, isAdminSession),
+      tasks: sanitizeEomTaskListForUser_(tasks, isAdminSession),
+      statusOverrides: sanitizeEomTaskListForUser_(statusOverrides, isAdminSession),
+      defaultTasks: sanitizeEomTaskListForUser_(defaultTasks, isAdminSession),
       excludedClients,
       source: "sheets",
     });
@@ -780,6 +798,7 @@ export async function handleEomGetOverviewBootstrap(req, res, sheets) {
 export async function handleEomGetTemplates(req, res, sheets) {
   const { automationCommanderSheetId } = req.body;
   if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const isAdminSession = Boolean(req.isSystemAuthorized || getSessionUser(req)?.isAdmin);
   try {
     const sbState = await getEomSupabaseState_(sheets, automationCommanderSheetId, []);
     if (sbState) {
@@ -795,7 +814,7 @@ export async function handleEomGetTemplates(req, res, sheets) {
           sortOrder: t.sortOrder !== undefined && t.sortOrder !== "" && t.sortOrder !== null ? Number(t.sortOrder) : 1000000 + i,
         }))
         .sort((a, b) => a.sortOrder - b.sortOrder);
-      return res.status(200).json({ success: true, templates });
+      return res.status(200).json({ success: true, templates: sanitizeEomTaskListForUser_(templates, isAdminSession) });
     }
 
     await ensureEomTabs_(sheets, automationCommanderSheetId);
@@ -806,7 +825,7 @@ export async function handleEomGetTemplates(req, res, sheets) {
       active: r[4] !== "FALSE" && r[4] !== false, createdAt: r[5] || "", alertCategories: r[6] || "",
       sortOrder: r[7] !== undefined && r[7] !== "" ? Number(r[7]) : 1000000 + i,
     })).sort((a, b) => a.sortOrder - b.sortOrder);
-    return res.status(200).json({ success: true, templates });
+    return res.status(200).json({ success: true, templates: sanitizeEomTaskListForUser_(templates, isAdminSession) });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -1060,6 +1079,7 @@ export async function handleEomGetClientTasks(req, res, sheets) {
   const { automationCommanderSheetId, clientName: filterClient } = req.body;
   if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
   const sessionUser = getSessionUser(req);
+  const isAdminSession = Boolean(req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin);
   const canSeeClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
   try {
     const sbState = await getEomSupabaseState_(sheets, automationCommanderSheetId, []);
@@ -1076,7 +1096,7 @@ export async function handleEomGetClientTasks(req, res, sheets) {
         });
       });
       tasks.sort((a, b) => a.sortOrder - b.sortOrder);
-      return res.status(200).json({ success: true, tasks });
+      return res.status(200).json({ success: true, tasks: sanitizeEomTaskListForUser_(tasks, isAdminSession) });
     }
 
     await ensureEomTabs_(sheets, automationCommanderSheetId);
@@ -1105,7 +1125,7 @@ export async function handleEomGetClientTasks(req, res, sheets) {
         sortOrder: r[7] !== undefined && r[7] !== "" ? Number(r[7]) : 1000000 + i,
       }))
       .sort((a, b) => a.sortOrder - b.sortOrder);
-    return res.status(200).json({ success: true, tasks });
+    return res.status(200).json({ success: true, tasks: sanitizeEomTaskListForUser_(tasks, isAdminSession) });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -1114,6 +1134,8 @@ export async function handleEomGetClientTasks(req, res, sheets) {
 export async function handleEomGetClientDetail(req, res, sheets) {
   const { automationCommanderSheetId, clientName: detailClient, monthKey: detailMonthKey } = req.body;
   if (!automationCommanderSheetId || !detailClient || !detailMonthKey) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const sessionUser = getSessionUser(req);
+  const isAdminSession = Boolean(req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin);
   try {
     const sbState = await getEomSupabaseState_(sheets, automationCommanderSheetId, [detailMonthKey]);
     if (sbState) {
@@ -1128,7 +1150,11 @@ export async function handleEomGetClientDetail(req, res, sheets) {
         status: st?.status || "pending",
         notelet: st?.notelet || "",
       }));
-      return res.status(200).json({ success: true, tasks, statusOverrides });
+      return res.status(200).json({
+        success: true,
+        tasks: sanitizeEomTaskListForUser_(tasks, isAdminSession),
+        statusOverrides: sanitizeEomTaskListForUser_(statusOverrides, isAdminSession),
+      });
     }
 
     await ensureEomTabs_(sheets, automationCommanderSheetId);
@@ -1161,7 +1187,11 @@ export async function handleEomGetClientDetail(req, res, sheets) {
       .filter(r => r[0] === detailClient && r[2] === detailMonthKey)
       .map(r => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending", notelet: r[5] || "" }));
 
-    return res.status(200).json({ success: true, tasks, statusOverrides });
+    return res.status(200).json({
+      success: true,
+      tasks: sanitizeEomTaskListForUser_(tasks, isAdminSession),
+      statusOverrides: sanitizeEomTaskListForUser_(statusOverrides, isAdminSession),
+    });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -3060,14 +3090,14 @@ export async function handleEomGetPlCompData(req, res, sheets) {
 
     const monthsStandard = monthColsStandard.map((colLetter, idx) => ({
       colIndex: idx,
-      colLetter,
+      ...(isAdmin ? { colLetter } : {}),
       header: row1[monthIndicesStandard[idx]] || `Month ${idx + 1}`,
       checked: String(f87Values[idx] || "").toUpperCase() === "TRUE"
     }));
 
     const monthsWithAdds = monthColsWithAdds.map((colLetter, idx) => ({
       colIndex: idx,
-      colLetter,
+      ...(isAdmin ? { colLetter } : {}),
       header: row1[monthIndicesWithAdds[idx]] || `Month ${idx + 1}`,
       checked: String(t87Values[idx] || "").toUpperCase() === "TRUE"
     }));
@@ -3116,7 +3146,7 @@ export async function handleEomGetPlCompData(req, res, sheets) {
         const label = String(row[1] || "").trim();
         if (!label) continue;
         const values = colIndices.map(ci => row[ci] || "0.00");
-        result.push({ label, values, rowNumber: i + 1 });
+        result.push({ label, values, ...(isAdmin ? { rowNumber: i + 1 } : {}) });
       }
       return result;
     };
@@ -3195,7 +3225,7 @@ export async function handleEomGetPlCompData(req, res, sheets) {
               const matchesIfExcluded = Math.abs(plT - outExcl) < 0.05;
               const remainingDiff = Math.round((plT - outExcl) * 100) / 100;
               return {
-                colLetter: m.colLetter,
+                ...(isAdmin ? { colLetter: m.colLetter } : {}),
                 monthHeader: m.header,
                 plTotal: plT,
                 plTotalFormatted: formatCurrencyNum(plT),
@@ -3233,7 +3263,7 @@ export async function handleEomGetPlCompData(req, res, sheets) {
               depCategoryName,
               perMonth,
               allMatchIfExcluded,
-              summaryText
+              summaryText: isAdmin ? summaryText : sanitizeSpreadsheetTerms(summaryText)
             };
           }
         }
@@ -3261,7 +3291,7 @@ export async function handleEomGetPlCompData(req, res, sheets) {
                 const matchesIfExcluded = Math.abs(plT - outExcl) < 0.05;
                 const remainingDiff = Math.round((plT - outExcl) * 100) / 100;
                 return {
-                  colLetter: m.colLetter,
+                  ...(isAdmin ? { colLetter: m.colLetter } : {}),
                   monthHeader: m.header,
                   plTotal: plT,
                   plTotalFormatted: formatCurrencyNum(plT),
@@ -3299,7 +3329,7 @@ export async function handleEomGetPlCompData(req, res, sheets) {
                 hasRechargedRecovery: true,
                 perMonth,
                 allMatchIfExcluded,
-                summaryText
+                summaryText: isAdmin ? summaryText : sanitizeSpreadsheetTerms(summaryText)
               };
             }
           }
@@ -3330,7 +3360,7 @@ export async function handleEomGetPlCompData(req, res, sheets) {
     });
   } catch (err) {
     console.error("❌ eom_get_plcomp_data error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message) });
   }
 }
 
@@ -3619,6 +3649,7 @@ export async function ensureEomDefaultTasksTab_(sheets, spreadsheetId) {
 export async function handleEomGetDefaultTasks(req, res, sheets) {
   const { automationCommanderSheetId } = req.body;
   if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const isAdminSession = Boolean(req.isSystemAuthorized || getSessionUser(req)?.isAdmin);
   try {
     const sbState = await getEomSupabaseState_(sheets, automationCommanderSheetId, []);
     if (sbState) {
@@ -3641,7 +3672,7 @@ export async function handleEomGetDefaultTasks(req, res, sheets) {
           };
         })
         .sort((a, b) => a.sortOrder - b.sortOrder);
-      return res.status(200).json({ success: true, defaultTasks });
+      return res.status(200).json({ success: true, defaultTasks: sanitizeEomTaskListForUser_(defaultTasks, isAdminSession) });
     }
 
     await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
@@ -3681,7 +3712,7 @@ export async function handleEomGetDefaultTasks(req, res, sheets) {
       };
     }).sort((a, b) => a.sortOrder - b.sortOrder);
 
-    return res.status(200).json({ success: true, defaultTasks });
+    return res.status(200).json({ success: true, defaultTasks: sanitizeEomTaskListForUser_(defaultTasks, isAdminSession) });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -5100,6 +5131,7 @@ async function resolveOrCreateClientPresentation_({
           const gasResp = await postGasWebAppLocked_(lockedWebAppUrl, {
             action: "COPY_DECK",
             secret,
+            clientName,
             folderId,
             templateFileId: templateFile.id,
             newName,
@@ -7797,14 +7829,28 @@ export async function handleEomPreviewMgmtReport(req, res, sheets) {
               }
             }
           }
+          const MAX_CHART_PNG_BYTES = 10 * 1024 * 1024;
           await Promise.all(
             urlMap.map(async (item) => {
               try {
-                const r = await fetch(item.url);
-                if (r.ok) {
-                  const buf = Buffer.from(await r.arrayBuffer());
-                  legacyPngByChartId[item.chartId] = `data:image/png;base64,${buf.toString("base64")}`;
+                const u = new URL(String(item.url || ""));
+                const h = u.hostname.toLowerCase();
+                if (u.protocol !== "https:" || (!h.endsWith(".googleusercontent.com") && !h.endsWith(".google.com"))) {
+                  return;
                 }
+                const r = await fetch(u.toString(), {
+                  redirect: "manual",
+                  signal: AbortSignal.timeout(15000),
+                });
+                if (!r.ok) return;
+                const cl = Number(r.headers.get("content-length") || 0);
+                if (Number.isFinite(cl) && cl > MAX_CHART_PNG_BYTES) {
+                  if (r.body?.cancel) await r.body.cancel().catch(() => { });
+                  return;
+                }
+                const buf = Buffer.from(await r.arrayBuffer());
+                if (buf.byteLength > MAX_CHART_PNG_BYTES) return;
+                legacyPngByChartId[item.chartId] = `data:image/png;base64,${buf.toString("base64")}`;
               } catch (_) { }
             })
           );

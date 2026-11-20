@@ -276,9 +276,9 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
   return handledMap;
 }
 
-function mapSupabaseAlertMemoryRow_(r, i = 0) {
+function mapSupabaseAlertMemoryRow_(r) {
   return {
-    rowIndex: r.sheet_row_index || i + 2,
+    rowIndex: r.sheet_row_index ?? null,
     fingerprintHash: r.fingerprint_hash || "",
     alertType: r.alert_type || "",
     clientName: r.client_name || "",
@@ -385,12 +385,13 @@ export async function queryAlertMemoryTargeted(
   }
 }
 
-export async function readAlertMemory(sheets, automationCommanderSheetId) {
+export async function readAlertMemory(sheets, automationCommanderSheetId, options = {}) {
+  const bypassCache = Boolean(options?.bypassCache);
   const now = Date.now();
   const supabaseActive = await isSupabaseControlPlaneActive();
   const memoryTtlMs = supabaseActive ? 5000 : 60000;
 
-  if (_alertMemoryMemoryCache && (now - _alertMemoryCachedAt < memoryTtlMs)) {
+  if (!bypassCache && _alertMemoryMemoryCache && (now - _alertMemoryCachedAt < memoryTtlMs)) {
     return [..._alertMemoryMemoryCache];
   }
 
@@ -404,10 +405,11 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
         sb
           .from("alert_memory")
           .select("*")
-          .order("sheet_row_index", { ascending: true })
+          .order("sheet_row_index", { ascending: true, nullsFirst: false })
+          .order("fingerprint_hash", { ascending: true })
       );
       if (Array.isArray(dbRows)) {
-        const parsed = dbRows.map((r, i) => mapSupabaseAlertMemoryRow_(r, i));
+        const parsed = dbRows.map((r) => mapSupabaseAlertMemoryRow_(r));
         _alertMemoryMemoryCache = parsed;
         _alertMemoryCachedAt = now;
         return [...parsed];
@@ -417,23 +419,25 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
     }
   }
 
-  try {
-    if (redisClient?.isOpen && automationCommanderSheetId) {
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        console.log(`[AlertMemory Cache HIT] read ${cached.length} chars from Redis key ${cacheKey}`);
-        const parsed = JSON.parse(cached);
-        _alertMemoryMemoryCache = parsed;
-        _alertMemoryCachedAt = now;
-        return [...parsed];
+  if (!bypassCache) {
+    try {
+      if (redisClient?.isOpen && automationCommanderSheetId) {
+        const cached = await redisClient.get(cacheKey);
+        if (cached) {
+          console.log(`[AlertMemory Cache HIT] read ${cached.length} chars from Redis key ${cacheKey}`);
+          const parsed = JSON.parse(cached);
+          _alertMemoryMemoryCache = parsed;
+          _alertMemoryCachedAt = now;
+          return [...parsed];
+        } else {
+          console.log(`[AlertMemory Cache MISS] Redis key ${cacheKey} is null/empty`);
+        }
       } else {
-        console.log(`[AlertMemory Cache MISS] Redis key ${cacheKey} is null/empty`);
+        console.log(`[AlertMemory Cache SKIP] redisClient.isOpen=${redisClient?.isOpen}, acId=${automationCommanderSheetId}`);
       }
-    } else {
-      console.log(`[AlertMemory Cache SKIP] redisClient.isOpen=${redisClient?.isOpen}, acId=${automationCommanderSheetId}`);
+    } catch (err) {
+      console.warn("⚠️ Redis read error in readAlertMemory:", err.message);
     }
-  } catch (err) {
-    console.warn("⚠️ Redis read error in readAlertMemory:", err.message);
   }
 
   const response = await withRetry(() => sheets.spreadsheets.values.get({
@@ -853,6 +857,8 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
   const lastRechecked = payload.lastRechecked || now;
   const normalizedCategory = normalizeCategoryForType(alertType, category);
 
+  const supabaseActive = await isSupabaseControlPlaneActive();
+
   if (isSupabaseConfigured() && fingerprintHash) {
     try {
       const sb = getSupabaseAdmin();
@@ -868,7 +874,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
             await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, existingRow.status);
             return {
               ...payload,
-              rowIndex: existingRow.sheet_row_index,
+              rowIndex: existingRow.sheet_row_index ?? null,
               fingerprintHash,
               status: existingRow.status,
               ignoreReason: existingRow.ignore_reason || ignoreReason || "",
@@ -890,17 +896,22 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
           data_snapshot: dataSnapshot || "",
           category: normalizedCategory,
         };
-        await Promise.all([
+        const [upsertRes] = await Promise.all([
           sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" }),
           syncPmaTaskRowsToSupabase_(sb, [sbRow]),
         ]);
+        if (upsertRes?.error) {
+          throw new Error(upsertRes.error.message || "alert_memory upsert failed");
+        }
       }
     } catch (sbErr) {
       console.warn("⚠️ Supabase appendAlertMemoryRow upsert warning:", sbErr.message);
+      if (supabaseActive && !shouldDualWriteLegacyControlPlaneSheets()) {
+        throw sbErr;
+      }
     }
   }
 
-  const supabaseActive = await isSupabaseControlPlaneActive();
   const isHandledStatus = Boolean(
     fingerprintHash &&
     (targetStatus === "accepted" || targetStatus === "ignored" || targetStatus === "task" || targetStatus === "superseded" || targetStatus === "task_resolved")
@@ -1150,12 +1161,18 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
             return row;
           });
         if (sbRows.length > 0) {
-          await sb.from("alert_memory").upsert(sbRows, { onConflict: "fingerprint_hash" });
+          const { error: sbUpsertErr } = await sb.from("alert_memory").upsert(sbRows, { onConflict: "fingerprint_hash" });
+          if (sbUpsertErr) {
+            throw new Error(sbUpsertErr.message || "alert_memory batch upsert failed");
+          }
           await syncPmaTaskRowsToSupabase_(sb, sbRows);
         }
       }
     } catch (sbErr) {
       console.warn("⚠️ Supabase appendAlertMemoryRowsBatch warning:", sbErr.message);
+      if (await isSupabaseControlPlaneActive() && !shouldDualWriteLegacyControlPlaneSheets()) {
+        throw sbErr;
+      }
     }
   }
 
@@ -1294,11 +1311,12 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
   ];
 
   // Update in-memory and Redis caches immediately (before slow Supabase/Sheets network I/O)
-  let detectedOldHash = _previousFingerprintHash || (_alertMemoryMemoryCache ? (_alertMemoryMemoryCache.find(r => r.rowIndex === rowIndex)?.fingerprintHash || "") : "");
+  const targetFp = cleanUpdates.fingerprintHash || _previousFingerprintHash || "";
+  let detectedOldHash = _previousFingerprintHash || (_alertMemoryMemoryCache ? (_alertMemoryMemoryCache.find(r => (targetFp && r.fingerprintHash === targetFp) || (rowIndex != null && r.rowIndex === rowIndex))?.fingerprintHash || "") : "");
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
-    let idx = cache.findIndex(r => r.rowIndex === rowIndex);
-    if (idx === -1 && cleanUpdates.fingerprintHash) {
-      idx = cache.findIndex(r => r.fingerprintHash === cleanUpdates.fingerprintHash);
+    let idx = targetFp ? cache.findIndex(r => r.fingerprintHash === targetFp) : -1;
+    if (idx === -1 && rowIndex != null) {
+      idx = cache.findIndex(r => r.rowIndex === rowIndex);
     }
     if (idx !== -1) {
       if (!detectedOldHash && cache[idx]?.fingerprintHash) {
@@ -1313,8 +1331,19 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
         lastSeen: now,
         lastRechecked: lastRecheckedVal,
         category: targetCategory || cache[idx].category || "discrepancy",
-        rowIndex,
+        rowIndex: rowIndex ?? cache[idx].rowIndex ?? null,
       };
+    } else if (cleanUpdates.fingerprintHash) {
+      cache.push({
+        ...cleanUpdates,
+        status: effectiveStatus,
+        cachedOptionsJSON: compressedOptions || "",
+        firstSeen: firstSeenVal,
+        lastSeen: now,
+        lastRechecked: lastRecheckedVal,
+        category: targetCategory || "discrepancy",
+        rowIndex: rowIndex ?? null,
+      });
     }
   });
   const oldHash = (detectedOldHash && cleanUpdates.fingerprintHash && detectedOldHash !== cleanUpdates.fingerprintHash) ? detectedOldHash : "";
@@ -1349,7 +1378,7 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
               last_rechecked: lastRecheckedVal,
               data_snapshot: cleanUpdates.dataSnapshot || "",
               category: targetCategory,
-              sheet_row_index: rowIndex,
+              ...(rowIndex != null ? { sheet_row_index: rowIndex } : {}),
             };
             subTasks.push(sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" }));
             subTasks.push(syncPmaTaskRowsToSupabase_(sb, [sbRow]));
@@ -1371,11 +1400,19 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
             }
           }
           if (subTasks.length > 0) {
-            await Promise.all(subTasks);
+            const results = await Promise.all(subTasks);
+            for (const r of results) {
+              if (r?.error) {
+                throw new Error(r.error.message || "alert_memory update failed");
+              }
+            }
           }
         }
       } catch (sbErr) {
         console.warn("⚠️ Supabase updateAlertMemoryRow warning:", sbErr.message);
+        if (supabaseActive && !shouldDualWriteLegacyControlPlaneSheets()) {
+          throw sbErr;
+        }
       }
     })());
   }
@@ -1456,9 +1493,10 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
   }
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
     for (const item of normalizedUpdateItems) {
-      let idx = cache.findIndex(r => r.rowIndex === item.rowIndex);
-      if (idx === -1 && item.updates?.fingerprintHash) {
-        idx = cache.findIndex(r => r.fingerprintHash === item.updates.fingerprintHash);
+      const targetFp = item.updates?.fingerprintHash || item.previousFingerprintHash || "";
+      let idx = targetFp ? cache.findIndex(r => r.fingerprintHash === targetFp) : -1;
+      if (idx === -1 && item.rowIndex != null) {
+        idx = cache.findIndex(r => r.rowIndex === item.rowIndex);
       }
       if (idx !== -1) {
         const cachedOldHash = cache[idx]?.fingerprintHash;
@@ -1473,7 +1511,7 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
           firstSeen: item.updates?.firstSeen || cache[idx].firstSeen || now,
           lastSeen: now,
           lastRechecked: item.updates?.lastRechecked || now,
-          rowIndex: item.rowIndex,
+          rowIndex: item.rowIndex ?? cache[idx].rowIndex ?? null,
         };
       }
     }
@@ -1510,7 +1548,7 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
               last_rechecked: updates.lastRechecked || now,
               data_snapshot: updates.dataSnapshot || "",
               category: normalizeCategoryForType(updates.alertType, updates.category),
-              sheet_row_index: rowIndex,
+              ...(rowIndex != null ? { sheet_row_index: rowIndex } : {}),
             });
           }
           const sbRows = [...sbRowsByHash.values()];
@@ -1541,11 +1579,19 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
             subTasks.push(sb.from("pma_tasks").delete().in("fingerprint_hash", oldHashesToRemoveFromTasks));
           }
           if (subTasks.length > 0) {
-            await Promise.all(subTasks);
+            const results = await Promise.all(subTasks);
+            for (const r of results) {
+              if (r?.error) {
+                throw new Error(r.error.message || "alert_memory batch update failed");
+              }
+            }
           }
         }
       } catch (sbErr) {
         console.warn("⚠️ Supabase updateAlertMemoryRowsBatch warning:", sbErr.message);
+        if (supabaseActive && !shouldDualWriteLegacyControlPlaneSheets()) {
+          throw sbErr;
+        }
       }
     })());
   }

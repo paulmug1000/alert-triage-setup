@@ -4,8 +4,8 @@
  * ============================================================================
  */
 
-import { resolveLiveSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, matchesClientName, canAccessPma } from "../../../../services/userPermissions.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, matchesClientName, resolveMasterSheetIdByClientName, canAccessPma } from "../../../../services/userPermissions.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
 import { deleteIntegrationTokens, invalidateIntegrationsCache } from "../../../../services/vaultService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
@@ -17,6 +17,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
   if (!assertTrustedOrigin(req, res)) return;
+
+  const rl = await checkRateLimit("int-disconnect", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -49,18 +54,19 @@ export default async function handler(req, res) {
 
   try {
     const sheets = await getSheetsClient();
-    if (!sessionUser.isAdmin && masterSheetId) {
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientKey, sheets);
+    const resolvedMasterSheetId = masterSheetId || (await resolveMasterSheetIdByClientName(sheets, targetClient));
+    if (!sessionUser.isAdmin && resolvedMasterSheetId) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, resolvedMasterSheetId, targetClient, sheets);
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error });
       }
     }
 
     // 1. Clear KeyInfo!X33:X41 in master sheet if available
-    if (masterSheetId) {
+    if (resolvedMasterSheetId) {
       await withRetry(() =>
         sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: masterSheetId,
+          spreadsheetId: resolvedMasterSheetId,
           requestBody: {
             valueInputOption: "USER_ENTERED",
             data: [
@@ -80,12 +86,12 @@ export default async function handler(req, res) {
     }
 
     // 2. Remove vault record
-    await deleteIntegrationTokens({ clientKey, masterSheetId, tool: "excel" });
+    await deleteIntegrationTokens({ clientKey: targetClient, masterSheetId: resolvedMasterSheetId, tool: "excel" });
 
     // 3. Reset task in setup checklist
     try {
       await updateClientChecklistTask(sheets, {
-        clientName: clientKey,
+        clientName: targetClient,
         taskId: "p2_connect_crm",
         isCompleted: false,
         metadata: "Disconnected",
@@ -94,7 +100,7 @@ export default async function handler(req, res) {
     } catch (e) {}
 
     // 4. Invalidate Redis setup cache
-    const cleanClient = String(clientKey || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+    const cleanClient = String(targetClient || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
     const redisKey = `pulse:setup:${cleanClient}`;
     if (redisClient?.isOpen) {
       try {
@@ -111,7 +117,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: `Disconnected Microsoft Excel CRM for ${clientKey}.`
+      message: `Disconnected Microsoft Excel CRM for ${targetClient}.`
     });
   } catch (err) {
     console.error("Error disconnecting Microsoft Excel CRM:", err);

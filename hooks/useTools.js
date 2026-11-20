@@ -122,7 +122,7 @@ export function useTools({
           sheetRows: 25000,
         });
         let excelText = "";
-        workbook.SheetNames.forEach(sheetName => {
+        workbook.SheetNames.slice(0, 20).forEach(sheetName => {
           excelText += `--- SHEET: ${sheetName} ---\n`;
           excelText += window.XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]) + "\n\n";
         });

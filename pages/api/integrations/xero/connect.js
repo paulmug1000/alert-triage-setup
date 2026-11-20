@@ -12,7 +12,7 @@ import crypto from "crypto";
 import { buildXeroAuthUrl } from "../../../../services/xeroService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
-import { resolveLiveSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
+import { resolveLiveSessionUser, createSignedOAuthState, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 import { resolveSupabaseSheetContext } from "../../../../services/masterEngineService.js";
 import { isSupabaseControlPlaneActive } from "../../../../services/supabaseClient.js";
@@ -26,6 +26,11 @@ export default async function handler(req, res) {
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ error: "Active session required." });
+  }
+
+  const rl = await checkRateLimit("oauth-int-connect", sessionUser.email || getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: "Too many connection requests. Please retry shortly." });
   }
 
   if (isReadOnlySession(sessionUser)) {

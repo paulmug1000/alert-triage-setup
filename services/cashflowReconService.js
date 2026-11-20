@@ -1133,7 +1133,10 @@ async function buildStaffPayrollBreakdown_({
           const parts = s.name.split(",").map(p => p.trim());
           const firstname = parts[1] || parts[0];
           const firstInitial = (firstname[0] || "").toLowerCase();
-          const hasInitial = new RegExp(`\\b${firstInitial}[.\\s]`, "i").test(txText);
+          const escapedInitial = firstInitial ? firstInitial.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "";
+          const hasInitial = escapedInitial
+            ? new RegExp(`\\b${escapedInitial}[.\\s]`, "i").test(txText)
+            : false;
           if (hasInitial) {
             tx.matched = true;
             tx.matchedStaff = s.name;
@@ -1340,6 +1343,13 @@ export async function syncReconBankTransactions({
   }
   tabName = cleanTab;
 
+  if (!Array.isArray(transactions)) {
+    throw new Error("Invalid transactions payload: expected an array.");
+  }
+  if (transactions.length > 1500) {
+    throw new Error("Too many bank transactions in a single sync (max 1500).");
+  }
+
   // Safety guard: Never wipe out transactions with an empty array unless allowEmpty is explicitly specified
   if (transactions.length === 0 && !allowEmpty) {
     return { success: true, count: 0, skipped: true };
@@ -1480,6 +1490,12 @@ export async function syncReconUnreconciledItems({
     throw new Error("Invalid recon tabName: must be 4 digits (MMYY).");
   }
   tabName = cleanTab;
+  if (!Array.isArray(unreconciledItems)) {
+    throw new Error("Invalid unreconciledItems payload: expected an array.");
+  }
+  if (unreconciledItems.length > 300) {
+    throw new Error("Too many unreconciled items in a single sync (max 300).");
+  }
 
   const sheets = await getSheetsClient();
   const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;

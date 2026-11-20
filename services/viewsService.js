@@ -147,21 +147,21 @@ function sanitizeViewDataForUser(result, sessionUser) {
       ...result,
       ...(Array.isArray(result.outgoingRows)
         ? {
-            outgoingRows: result.outgoingRows.map((row) =>
-              Array.isArray(row) && SENSITIVE_VIEW_ROW_RE.test(String(row[0]?.v || ""))
-                ? redactCellRow_(row)
-                : row
-            ),
-          }
+          outgoingRows: result.outgoingRows.map((row) =>
+            Array.isArray(row) && SENSITIVE_VIEW_ROW_RE.test(String(row[0]?.v || ""))
+              ? redactCellRow_(row)
+              : row
+          ),
+        }
         : {}),
       ...(Array.isArray(result.mainRows)
         ? {
-            mainRows: result.mainRows.map((row) =>
-              Array.isArray(row) && SENSITIVE_VIEW_ROW_RE.test(String(row[0]?.v || ""))
-                ? redactCellRow_(row)
-                : row
-            ),
-          }
+          mainRows: result.mainRows.map((row) =>
+            Array.isArray(row) && SENSITIVE_VIEW_ROW_RE.test(String(row[0]?.v || ""))
+              ? redactCellRow_(row)
+              : row
+          ),
+        }
         : {}),
     };
   }
@@ -1011,6 +1011,27 @@ export async function handleUpdateCellNote(req, res, sheets) {
     return res.status(400).json({ success: false, error: "Unsupported section for notes" });
   }
 
+  // Per-tab coordinate bounds validation
+  const TAB_NOTE_BOUNDS = {
+    Budget: { minRow: 2, maxRow: 300, minCol: 0, maxCol: 60 },
+    Outgoings: { minRow: 13, maxRow: 224, minCol: 6, maxCol: 47 },
+    OutgNotes: { minRow: 13, maxRow: 224, minCol: 6, maxCol: 47 },
+    NBtoFind: { minRow: 2, maxRow: 300, minCol: 0, maxCol: 60 },
+    Salaries: { minRow: 2, maxRow: 300, minCol: 0, maxCol: 60 },
+    Confirmed: { minRow: 2, maxRow: 5000, minCol: 0, maxCol: 100 },
+    Pipeline: { minRow: 2, maxRow: 5000, minCol: 0, maxCol: 100 },
+  };
+  const tabBounds = TAB_NOTE_BOUNDS[targetTab];
+  if (
+    !tabBounds ||
+    rowNum < tabBounds.minRow ||
+    rowNum > tabBounds.maxRow ||
+    colIndex < tabBounds.minCol ||
+    colIndex > tabBounds.maxCol
+  ) {
+    return res.status(400).json({ success: false, error: "Invalid cell coordinates for note update" });
+  }
+
   if (!canViewSalariesAndDividends(sessionUser)) {
     const isRestrictedNote =
       targetTab === "Salaries" ||
@@ -1028,7 +1049,29 @@ export async function handleUpdateCellNote(req, res, sheets) {
   try {
     const sheetIdClean = extractSheetIdFromUrl(targetSpreadsheetId) || targetSpreadsheetId;
     const gid = await getSheetGid(sheets, sheetIdClean, targetTab);
-    const cleanNote = String(note ?? "");
+    let cleanNote = String(note ?? "");
+
+    if (targetTab === "Outgoings" || targetTab === "OutgNotes") {
+      const sanitizedUserText = cleanNote.replace(/[{}]/g, "").trim();
+      let existingNote = "";
+      try {
+        const existingResp = await withRetry(() =>
+          sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            ranges: [`${targetTab}!${finalColLetter}${rowNum}`],
+            includeGridData: true,
+            fields: "sheets.data.rowData.values.note",
+          })
+        );
+        existingNote = String(existingResp?.data?.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0]?.note || "");
+      } catch (readNoteErr) {
+        console.warn(`[handleUpdateCellNote] Existing note lookup skipped for ${targetTab}!${finalColLetter}${rowNum}:`, readNoteErr.message);
+      }
+      const preservedMetaLines = existingNote
+        .split(/\r?\n/)
+        .filter((line) => /\{App ID:/i.test(line));
+      cleanNote = [sanitizedUserText, ...preservedMetaLines].filter(Boolean).join("\n\n");
+    }
 
     await withRetry(() =>
       sheets.spreadsheets.batchUpdate({

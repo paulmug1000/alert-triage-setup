@@ -27,9 +27,11 @@
  */
 
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { unwrapSheetId } from "./sheetTokenService.js";
+import { sanitizeSpreadsheetTerms } from "../utils/helpers.js";
 import { getIntegrationTokens, updateRefreshedTokens, getSharedXeroGrant, updateSharedXeroGrantTokens } from "./vaultService.js";
 import { refreshXeroTokens } from "./xeroService.js";
-import { refreshQBTokens } from "./quickbooksService.js";
+import { refreshQBTokens, assertValidQBRealmId } from "./quickbooksService.js";
 import { saveClientSettings } from "./clientSettingsService.js";
 
 const MONTH_NAMES_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -94,7 +96,8 @@ export function deriveVatQuarterCycle(endMonth) {
  * Resolves active accounting tool credentials from Vault for a client.
  */
 async function resolveAccountingToolAuth(clientName, masterSheetId) {
-  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+  const unwrappedId = masterSheetId ? unwrapSheetId(String(masterSheetId).trim()) : "";
+  const cleanMasterId = unwrappedId ? (extractSheetIdFromUrl(unwrappedId) || unwrappedId) : "";
   const candidateTools = ["xero", "quickbooks"];
 
   for (const tool of candidateTools) {
@@ -149,9 +152,10 @@ async function resolveAccountingToolAuth(clientName, masterSheetId) {
 /**
  * Suggests initial accounting settings for KeyInfo (Start date, VAT quarters, VAT scheme, PAYE cycle).
  */
-export async function suggestAccountingSettings({ clientName, masterSheetId }) {
+export async function suggestAccountingSettings({ clientName, masterSheetId, isAdmin = true }) {
   if (!clientName) throw new Error("Missing clientName parameter.");
-  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+  const unwrappedId = masterSheetId ? unwrapSheetId(String(masterSheetId).trim()) : "";
+  const cleanMasterId = unwrappedId ? (extractSheetIdFromUrl(unwrappedId) || unwrappedId) : "";
 
   const auth = await resolveAccountingToolAuth(clientName, cleanMasterId);
   const sheets = await getSheetsClient();
@@ -216,12 +220,14 @@ export async function suggestAccountingSettings({ clientName, masterSheetId }) {
     }
   } else if (auth && auth.tool === "QuickBooks") {
     try {
-      const prefUrl = `https://quickbooks.api.intuit.com/v3/company/${auth.realmId}/preferences`;
+      const safeRealmId = assertValidQBRealmId(auth.realmId);
+      const prefUrl = `https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(safeRealmId)}/preferences`;
       const prefRes = await fetch(prefUrl, {
         headers: {
           "Authorization": `Bearer ${auth.accessToken}`,
           "Accept": "application/json"
-        }
+        },
+        redirect: "manual"
       });
       if (prefRes.ok) {
         const prefData = await prefRes.json();
@@ -329,6 +335,9 @@ export async function suggestAccountingSettings({ clientName, masterSheetId }) {
     }
   }
 
+  const safeNotes = isAdmin ? inspectionNotes : inspectionNotes.map((n) => sanitizeSpreadsheetTerms(n));
+  const safeEvidence = isAdmin ? payeInspectionEvidence : sanitizeSpreadsheetTerms(payeInspectionEvidence);
+
   return {
     success: true,
     detectedTool,
@@ -349,9 +358,9 @@ export async function suggestAccountingSettings({ clientName, masterSheetId }) {
       payeCycle: suggestedPayeCycle,
       primaryCurrency: baseCurrency
     },
-    flatRateWarning,
-    inspectionNotes,
-    payeInspectionEvidence
+    flatRateWarning: isAdmin ? flatRateWarning : (flatRateWarning ? sanitizeSpreadsheetTerms(flatRateWarning) : null),
+    inspectionNotes: safeNotes,
+    payeInspectionEvidence: safeEvidence
   };
 }
 
@@ -365,9 +374,10 @@ function cleanCategoryName(name) {
 /**
  * Suggests classification of P&L categories into Pulse Master Sheet sections (KeyInfo!BA2:BA180).
  */
-export async function suggestCategoryMappings({ clientName, masterSheetId }) {
+export async function suggestCategoryMappings({ clientName, masterSheetId, isAdmin = true }) {
   if (!clientName) throw new Error("Missing clientName parameter.");
-  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+  const unwrappedId = masterSheetId ? unwrapSheetId(String(masterSheetId).trim()) : "";
+  const cleanMasterId = unwrappedId ? (extractSheetIdFromUrl(unwrappedId) || unwrappedId) : "";
   const sheets = await getSheetsClient();
 
   // Read existing categories from Master Sheet
@@ -398,7 +408,9 @@ export async function suggestCategoryMappings({ clientName, masterSheetId }) {
   let candidateCategories = rawPlCategories.length > 0 ? rawPlCategories : chartOfAccounts;
 
   // Also check if we can query fresh Chart of Accounts from Xero/QBO if candidateCategories is empty
-  let sourceOrigin = rawPlCategories.length > 0 ? "Master Sheet P&L (KeyInfo!BE)" : "Master Sheet Chart of Accounts (KeyInfo!AW)";
+  let sourceOrigin = rawPlCategories.length > 0
+    ? (isAdmin ? "Master Sheet P&L (KeyInfo!BE)" : "Saved P&L categories")
+    : (isAdmin ? "Master Sheet Chart of Accounts (KeyInfo!AW)" : "Saved chart of accounts");
 
   if (candidateCategories.length === 0) {
     const auth = await resolveAccountingToolAuth(clientName, cleanMasterId);
@@ -536,7 +548,8 @@ export async function applyAccountingSettings({ clientName, masterSheetId, setti
   if (!clientName || !masterSheetId) {
     throw new Error("Missing clientName or masterSheetId parameter.");
   }
-  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+  const unwrappedId = unwrapSheetId(String(masterSheetId).trim());
+  const cleanMasterId = extractSheetIdFromUrl(unwrappedId) || unwrappedId;
 
   // Use saveClientSettings to write to Google Sheets and invalidate Redis cache
   await saveClientSettings({
@@ -564,7 +577,8 @@ export async function applyCategoryMappings({ clientName, masterSheetId, mapping
   if (!clientName || !masterSheetId) {
     throw new Error("Missing clientName or masterSheetId parameter.");
   }
-  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+  const unwrappedId = unwrapSheetId(String(masterSheetId).trim());
+  const cleanMasterId = extractSheetIdFromUrl(unwrappedId) || unwrappedId;
 
   // Strip empty/duplicate values and truncate to max slice lengths
   const cleanSlice = (arr, maxLen) => {

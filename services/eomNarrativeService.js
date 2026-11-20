@@ -787,7 +787,7 @@ async function fetchOverheadTransactionContext_(sheets, {
         if (!resolvedReconId && found.reconSheetId) resolvedReconId = found.reconSheetId;
         if (!resolvedClientSheetId && found.clientSheetId) resolvedClientSheetId = found.clientSheetId;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   const seenTxKeys = new Set();
@@ -1088,7 +1088,7 @@ async function fetchSlidePreviewsMap_(presentationId, slidesList, modifiedTime =
             continue;
           }
         }
-      } catch (_) {}
+      } catch (_) { }
     }
     missingSlides.push(s);
   }
@@ -1124,6 +1124,37 @@ async function fetchSlidePreviewsMap_(presentationId, slidesList, modifiedTime =
       : `slide_preview:${presentationId}:${s.pageId}`;
     let base64 = "";
 
+    const isAllowedGoogleImageUrl_ = (rawUrl) => {
+      try {
+        const u = new URL(String(rawUrl || ""));
+        if (u.protocol !== "https:") return false;
+        const h = u.hostname.toLowerCase();
+        return h.endsWith(".googleusercontent.com") || h.endsWith(".google.com");
+      } catch {
+        return false;
+      }
+    };
+    const MAX_SLIDE_IMG_BYTES = 10 * 1024 * 1024;
+    const fetchBoundedGoogleImg_ = async (rawUrl, extraHeaders = {}) => {
+      if (!isAllowedGoogleImageUrl_(rawUrl)) return null;
+      const resp = await fetch(rawUrl, {
+        headers: extraHeaders,
+        redirect: "manual",
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!resp.ok) return resp;
+      const cl = Number(resp.headers.get("content-length") || 0);
+      if (Number.isFinite(cl) && cl > MAX_SLIDE_IMG_BYTES) {
+        if (resp.body?.cancel) await resp.body.cancel().catch(() => { });
+        throw new Error(`Image exceeded ${MAX_SLIDE_IMG_BYTES} byte limit`);
+      }
+      const ab = await resp.arrayBuffer();
+      if (ab.byteLength > MAX_SLIDE_IMG_BYTES) {
+        throw new Error(`Image exceeded ${MAX_SLIDE_IMG_BYTES} byte limit`);
+      }
+      return { ok: true, status: resp.status, headers: resp.headers, buffer: Buffer.from(ab) };
+    };
+
     // Method A: Official Google Slides API (1600x900, 300 req/min quota)
     if (slidesApi) {
       try {
@@ -1134,10 +1165,9 @@ async function fetchSlidePreviewsMap_(presentationId, slidesList, modifiedTime =
         });
         const contentUrl = thumbRes?.data?.contentUrl;
         if (contentUrl) {
-          const imgResp = await fetch(contentUrl);
-          if (imgResp.ok) {
-            const ab = await imgResp.arrayBuffer();
-            base64 = Buffer.from(ab).toString("base64");
+          const imgResp = await fetchBoundedGoogleImg_(contentUrl);
+          if (imgResp?.ok && imgResp.buffer) {
+            base64 = imgResp.buffer.toString("base64");
           }
         }
       } catch (slidesApiErr) {
@@ -1154,13 +1184,10 @@ async function fetchSlidePreviewsMap_(presentationId, slidesList, modifiedTime =
         attempts++;
         try {
           const url = `https://docs.google.com/presentation/d/${encodeURIComponent(presentationId)}/export/png?id=${encodeURIComponent(presentationId)}&pageid=${encodeURIComponent(s.pageId)}&t=${Date.now()}`;
-          const resp = await fetch(url, {
-            headers: { Authorization: `Bearer ${authToken}` }
-          });
-          if (resp.ok && (resp.headers.get("content-type") || "").startsWith("image/")) {
-            const ab = await resp.arrayBuffer();
-            base64 = Buffer.from(ab).toString("base64");
-          } else if (resp.status === 429) {
+          const resp = await fetchBoundedGoogleImg_(url, { Authorization: `Bearer ${authToken}` });
+          if (resp?.ok && resp.buffer && (resp.headers.get("content-type") || "").startsWith("image/")) {
+            base64 = resp.buffer.toString("base64");
+          } else if (resp?.status === 429) {
             console.warn(`[fetchSlidePreviewsMap_] 429 on slide ${sNum} (attempt ${attempts}), waiting ${attempts * 600}ms...`);
             await sleep_(attempts * 600);
           } else {
@@ -1180,7 +1207,7 @@ async function fetchSlidePreviewsMap_(presentationId, slidesList, modifiedTime =
         if (redisClient && redisClient.isOpen) {
           await redisClient.set(cacheKey, base64, { EX: 86400 * 3 });
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Pacing delay between slide fetches to prevent rate spikes
@@ -1254,10 +1281,10 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
     const snapshotSlide = parsedSlides.find(s => s.chartCode === "[MonthSnapshot]" || s.slideNumber === 2);
     const snapshotContext = snapshotSlide
       ? {
-          slideNumber: snapshotSlide.slideNumber,
-          slideTitle: snapshotSlide.slideTitle,
-          tables: snapshotSlide.tables
-        }
+        slideNumber: snapshotSlide.slideNumber,
+        slideTitle: snapshotSlide.slideTitle,
+        tables: snapshotSlide.tables
+      }
       : null;
 
     const candidateNarrativeSlides = parsedSlides.filter(s => {
@@ -1833,7 +1860,7 @@ Output ONLY the condensed narrative text.`
       totalInputTokens,
       totalOutputTokens,
       "reporting_narrative"
-    ).catch(() => {});
+    ).catch(() => { });
   }
 
   return sanitizeNarrativePunctuation_(generatedText);
@@ -1915,7 +1942,7 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
           if (previewMap.has(Number(targetSlide.slideNumber))) {
             targetSlide.slidePreviewBase64 = previewMap.get(Number(targetSlide.slideNumber));
           }
-        } catch (_) {}
+        } catch (_) { }
       }
 
       const generatedText = await generateSingleSlideWithClaude_({
@@ -2052,7 +2079,7 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
       action: "Drafted Management Report Narrative",
       summary: `Generated AI narrative drafts across ${slidesList.length} slides for ${clientName} (${reportMonthKey})`,
       details: { clientName, reportMonthKey, presentationId, slideCount: slidesList.length }
-    }).catch(() => {});
+    }).catch(() => { });
 
     return res.status(200).json({
       success: true,
@@ -2458,11 +2485,11 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
           const gasText = await gasResp.text();
           try {
             gasData = JSON.parse(gasText);
-          } catch (_) {}
+          } catch (_) { }
           if (!gasData || gasData.success || !String(gasData.error || "").includes("Invalid secret token")) {
             break;
           }
-        } catch (_) {}
+        } catch (_) { }
       }
     }
 
@@ -2517,7 +2544,7 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
         if (matchingKeys.length > 0) {
           await redisClient.del(matchingKeys);
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const refreshedPreviewMap = await fetchSlidePreviewsMap_(presentationId, previewInput);
@@ -2542,7 +2569,7 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
       action: "Applied Management Report Narrative",
       summary: `Applied narrative commentary to ${slideUpdates.length} slides in Google Slides deck for ${clientName} (${reportMonthKey})`,
       details: { clientName, reportMonthKey, presentationId, updatedCount: gasData.updatedCount || slideUpdates.length }
-    }).catch(() => {});
+    }).catch(() => { });
 
     return res.status(200).json({
       success: true,

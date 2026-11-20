@@ -519,12 +519,12 @@ export function evaluateInvAppList(grids) {
       } else if (gsEq(f1Format, "StripPre")) {
         F = nText.replace(/^[^-]+-/, "");
       } else if (gsEq(f1Format, "Right4")) {
-        const m = nText.match(/[a-zA-Z]*(\d+)[a-zA-Z]*/);
+        const m = nText.match(/(\d+)/);
         F = m ? m[1].slice(-4) : "";
       } else if (gsEq(f1Format, "Right5")) {
         F = nText.slice(-5);
       } else {
-        const m = nText.match(/[a-zA-Z]*(\d+)[a-zA-Z]*/);
+        const m = nText.match(/(\d+)/);
         F = m ? m[1].slice(-3) : "";
       }
     }

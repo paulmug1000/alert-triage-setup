@@ -2445,7 +2445,7 @@ export default function CashflowReconTab({
                     <a
                       href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.clientSheetId}`}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600", paddingTop: "5px" }}
                     >
                       Client sheet ↗
@@ -2456,7 +2456,7 @@ export default function CashflowReconTab({
                     <a
                       href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.reconSheetId}`}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600", paddingTop: "5px" }}
                     >
                       Recon sheet ↗

@@ -3,13 +3,9 @@ import {
   verifySignedOAuthState,
   safeCompareSecret,
   getTrustedClientIp,
+  checkRateLimit,
 } from "../../../../../services/authService";
-
-const CANONICAL_PULSE_HOSTS = new Set([
-  "pulsedashboard.co.uk",
-  "app.pulsedashboard.co.uk",
-  "pma.pulsedashboard.co.uk",
-]);
+import { resolveCanonicalOAuthHost } from "../../../../../utils/helpers";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -28,6 +24,11 @@ function parseCookies(cookieHeader) {
 }
 
 export default async function handler(req, res) {
+  const rl = await checkRateLimit("oauth-callback", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: "Too many authentication requests. Please retry shortly." });
+  }
+
   const { code, error, error_description, state } = req.query;
 
   const cookies = parseCookies(req.headers.cookie);
@@ -71,12 +72,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const reqHostRaw = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim().toLowerCase();
-  const isPulseHost = CANONICAL_PULSE_HOSTS.has(reqHostRaw);
-  const prodHost = (process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).host : null) || process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
-  const host = isPulseHost ? reqHostRaw : (prodHost || (process.env.NODE_ENV !== "production" ? reqHostRaw : "app.pulsedashboard.co.uk") || "localhost:3000");
-  const isLocal = process.env.NODE_ENV !== "production" && (host.startsWith("localhost") || host.startsWith("127.0.0.1"));
-  const proto = isLocal ? (req.headers["x-forwarded-proto"] || "http") : "https";
+  const { host, proto } = resolveCanonicalOAuthHost(req);
   const redirectUri = `${proto}://${host}/api/auth/oauth/microsoft/callback`;
 
   try {
@@ -166,6 +162,16 @@ export default async function handler(req, res) {
     if (!graphRes.ok) {
       console.error("❌ Failed to fetch Microsoft Graph user:", { status: graphRes.status });
       res.redirect("/pma?auth_error=failed_to_fetch_user_profile");
+      return;
+    }
+
+    if (
+      idClaims.oid &&
+      graphUser.id &&
+      String(idClaims.oid).trim().toLowerCase() !== String(graphUser.id).trim().toLowerCase()
+    ) {
+      console.error("❌ Microsoft identity mismatch between id_token oid and Graph user id");
+      res.redirect("/pma?auth_error=invalid_identity_token");
       return;
     }
 

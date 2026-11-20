@@ -26,8 +26,8 @@ export default function NBToFindView({
   onSelectClient,
 }) {
   const { user } = useAuth();
-  const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
-  const isSysAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
+  const isAdmin = Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager"));
+  const isSysAdmin = Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   // Client Selection State (synchronous initial selection from managedClient or initialClient to eliminate flash)

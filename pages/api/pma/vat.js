@@ -1,4 +1,4 @@
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
 import { fetchVatData } from "../../../services/vatService.js";
 import { getClients } from "../../../services/workspaces.js";
 import { verifyUserAuthorizedForSheet, canAccessPma } from "../../../services/userPermissions.js";
@@ -20,6 +20,11 @@ export default async function handler(req, res) {
 
   if (req.method !== "GET") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
+  }
+
+  const rl = await checkRateLimit("pma-view", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please retry shortly." });
   }
 
   let { clientName, clientSheetId, bypassCache } = req.query;
@@ -47,21 +52,25 @@ export default async function handler(req, res) {
     if (!auth.authorized) {
       return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
     }
+    clientName = auth.clientName || clientName;
   }
 
   try {
     const data = await fetchVatData(
       clientName || "Client",
       clientSheetId,
-      bypassCache === "true" || bypassCache === true
+      bypassCache === "true" || bypassCache === true,
+      { minBypassAgeMs: sessionUser.isAdmin ? 0 : 15000 }
     );
 
     if (!sessionUser.isAdmin && data) {
+      const maskVatErrDisplay = (raw) =>
+        /^#(?:REF!|NAME\?|VALUE!|N\/A|ERROR!)$/i.test(String(raw || "").trim()) ? "Error" : raw;
       return res.status(200).json({
         ...data,
-        fyConfigs: (data.fyConfigs || []).map(({ totalColLetter, ...fyRest }) => ({
+        fyConfigs: (data.fyConfigs || []).map(({ totalColLetter, totalCol, ...fyRest }) => ({
           ...fyRest,
-          monthCols: (fyRest.monthCols || []).map(({ colLetter, ...mRest }) => mRest),
+          monthCols: (fyRest.monthCols || []).map(({ colLetter, colIdx, ...mRest }) => mRest),
         })),
         sections: (data.sections || []).map((sec) => ({
           ...sec,
@@ -72,7 +81,11 @@ export default async function handler(req, res) {
                 fyId,
                 {
                   ...fyVal,
-                  months: (fyVal.months || []).map(({ colLetter, ...mRest }) => mRest),
+                  ...(fyVal?.rawDisplay !== undefined ? { rawDisplay: maskVatErrDisplay(fyVal.rawDisplay) } : {}),
+                  months: (fyVal.months || []).map(({ colLetter, colIdx, rawDisplay, ...mRest }) => ({
+                    ...mRest,
+                    ...(rawDisplay !== undefined ? { rawDisplay: maskVatErrDisplay(rawDisplay) } : {}),
+                  })),
                 },
               ])
             ),

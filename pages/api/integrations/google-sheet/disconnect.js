@@ -4,7 +4,7 @@
  * ============================================================================
  */
 
-import { resolveLiveSessionUser } from "../../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, matchesClientName, resolveMasterSheetIdByClientName, canAccessPma } from "../../../../services/userPermissions.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
 import { deleteIntegrationTokens, invalidateIntegrationsCache } from "../../../../services/vaultService.js";
@@ -17,6 +17,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
   if (!assertTrustedOrigin(req, res)) return;
+
+  const rl = await checkRateLimit("int-disconnect", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -110,7 +115,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: `Disconnected Google Sheet CRM for ${clientKey}.`
+      message: `Disconnected Google Sheet CRM for ${targetClient}.`
     });
   } catch (err) {
     console.error("Error disconnecting Google Sheet CRM:", err);

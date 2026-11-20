@@ -65,7 +65,7 @@ export default async function handler(req, res) {
         });
       }
       if (grant?.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
-        const grantOwner = String(grant.metadata?.userEmail || "").toLowerCase().trim();
+        const grantOwner = String(grant.metadata?.authorizedByPulseEmail || grant.metadata?.userEmail || "").toLowerCase().trim();
         const callerEmail = String(sessionUser.email || "").toLowerCase().trim();
         if (!grantOwner || callerEmail !== grantOwner) {
           const linkedSheetId = String(grant.metadata?.spreadsheetId || "").trim();

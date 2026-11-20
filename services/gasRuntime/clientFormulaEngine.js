@@ -1,4 +1,4 @@
-//Version 1.09 - R1C1 relative AST template cache, targeted range-cache invalidation, Europe/London TODAY(), and Year0Data/ContrPayments/OutgNotes DAG parity
+//Version 1.10 - Enforce finite arithmetic checks across BinaryOp/Literal/setCellVal plus R1C1 relative AST template cache, targeted range-cache invalidation, Europe/London TODAY(), and Year0Data/ContrPayments/OutgNotes DAG parity
 // Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -253,7 +253,10 @@ function toNumberStrict(v) {
   if (isSheetError(v)) throw toErrorObject(v);
   if (v === null || v === undefined || v === "") return 0;
   if (typeof v === "boolean") return v ? 1 : 0;
-  if (typeof v === "number") return v;
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) throw new SheetError("#NUM!", "Numeric value is not finite");
+    return v;
+  }
   const rawS = String(v).trim();
   const s = rawS.replace(/^[£$€\s]+/, "").replace(/,/g, "");
   if (!s) throw new SheetError("#VALUE!", "Empty string in numeric conversion");
@@ -1446,7 +1449,12 @@ export function recalculateClientGrids(grids, options = {}) {
     const t = grids[tab];
     if (!t) return;
     if (!t.values[r]) t.values[r] = [];
-    t.values[r][c] = val instanceof SheetError ? val.toString() : val;
+    t.values[r][c] =
+      val instanceof SheetError
+        ? val.toString()
+        : typeof val === "number" && !Number.isFinite(val)
+          ? "#NUM! (Numeric value is not finite)"
+          : val;
     const dims = tabDims[tab];
     if (dims && r < dims.rows && c < dims.cols) {
       cellState[tab][r * dims.cols + c] = 2;
@@ -1668,17 +1676,23 @@ export function recalculateClientGrids(grids, options = {}) {
     if (node.type === "Literal" && typeof node.value === "number") {
       return resolveRefCoords({ sheet: null, coord: { kind: "row", row: Math.trunc(node.value) - 1 } }, ctx);
     }
+    const clampGridBounds = (tab, r0, r1, c0, c1, applyInactiveClamp) => {
+      const dims = tabDims[tab] || { rows: 1000, cols: 100 };
+      const maxTabRow = Math.min(50000, Math.max((dims.rows || 1000) - 1, 5000));
+      let boundedR1 = Math.min(r1, maxTabRow);
+      if (applyInactiveClamp && activeRowLimitByTab[tab] !== undefined && boundedR1 > activeRowLimitByTab[tab]) {
+        boundedR1 = Math.max(r0, activeRowLimitByTab[tab]);
+      }
+      const boundedC1 = Math.min(c1, 600);
+      return { r1: boundedR1, c1: boundedC1 };
+    };
     if (node.type === "RangeOp") {
       const leftB = resolveRangeBounds(node.left, ctx, clampInactive);
       const rightB = resolveRangeBounds(node.right, { ...ctx, tab: leftB.tab }, clampInactive);
       const tab = leftB.tab;
       const r0 = Math.min(leftB.r0, rightB.r0);
-      let r1 = Math.max(leftB.r1, rightB.r1);
       const c0 = Math.min(leftB.c0, rightB.c0);
-      const c1 = Math.max(leftB.c1, rightB.c1);
-      if (clampInactive && activeRowLimitByTab[tab] !== undefined && r1 > activeRowLimitByTab[tab]) {
-        r1 = Math.max(r0, activeRowLimitByTab[tab]);
-      }
+      const { r1, c1 } = clampGridBounds(tab, r0, Math.max(leftB.r1, rightB.r1), c0, Math.max(leftB.c1, rightB.c1), clampInactive);
       return { tab, r0, r1, c0, c1, isSingle: r0 === r1 && c0 === c1 };
     }
     if (node.type === "Call" && node.name === "INDIRECT") {
@@ -1687,19 +1701,28 @@ export function recalculateClientGrids(grids, options = {}) {
     }
     if (node.type === "Call" && node.name === "OFFSET") {
       const base = resolveRangeBounds(node.args[0], ctx, false);
-      const rowOff = Math.trunc(toNumberStrict(evalScalar(node.args[1], ctx)));
-      const colOff = Math.trunc(toNumberStrict(evalScalar(node.args[2], ctx)));
-      const height = node.args.length >= 4 && node.args[3].type !== "EmptyArg"
-        ? Math.trunc(toNumberStrict(evalScalar(node.args[3], ctx)))
+      const rowOffRaw = toNumberStrict(evalScalar(node.args[1], ctx));
+      const colOffRaw = toNumberStrict(evalScalar(node.args[2], ctx));
+      const heightRaw = node.args.length >= 4 && node.args[3].type !== "EmptyArg"
+        ? toNumberStrict(evalScalar(node.args[3], ctx))
         : (base.r1 - base.r0 + 1);
-      const width = node.args.length >= 5 && node.args[4].type !== "EmptyArg"
-        ? Math.trunc(toNumberStrict(evalScalar(node.args[4], ctx)))
+      const widthRaw = node.args.length >= 5 && node.args[4].type !== "EmptyArg"
+        ? toNumberStrict(evalScalar(node.args[4], ctx))
         : (base.c1 - base.c0 + 1);
+      if (!Number.isFinite(rowOffRaw) || !Number.isFinite(colOffRaw) || !Number.isFinite(heightRaw) || !Number.isFinite(widthRaw)) {
+        throw new SheetError("#NUM!", "OFFSET parameters must be finite");
+      }
+      const rowOff = Math.trunc(rowOffRaw);
+      const colOff = Math.trunc(colOffRaw);
+      const height = Math.trunc(heightRaw);
+      const width = Math.trunc(widthRaw);
+      if (height < 1 || width < 1) {
+        throw new SheetError("#VALUE!", "OFFSET dimensions must be >= 1");
+      }
       const r0 = base.r0 + rowOff;
       const c0 = base.c0 + colOff;
-      const r1 = r0 + Math.max(1, height) - 1;
-      const c1 = c0 + Math.max(1, width) - 1;
-      if (r0 < 0 || c0 < 0) throw new SheetError("#REF!", "OFFSET out of bounds");
+      if (r0 < 0 || c0 < 0 || r0 > 50000 || c0 > 600) throw new SheetError("#REF!", "OFFSET out of bounds");
+      const { r1, c1 } = clampGridBounds(base.tab, r0, r0 + height - 1, c0, c0 + width - 1, clampInactive);
       return { tab: base.tab, r0, r1, c0, c1, isSingle: r0 === r1 && c0 === c1 };
     }
     return null;
@@ -1726,10 +1749,10 @@ export function recalculateClientGrids(grids, options = {}) {
     }
     const cRight = parseCoordToken(parts[1].trim());
     if (!cRight) throw new SheetError("#REF!", `Invalid INDIRECT '${refStr}'`);
-    let r0 = cLeft.row !== undefined ? cLeft.row : 0;
-    let r1 = cRight.row !== undefined ? cRight.row : dims.rows - 1;
-    let c0 = cLeft.col !== undefined ? cLeft.col : 0;
-    let c1 = cRight.col !== undefined ? cRight.col : dims.cols - 1;
+    const r0 = cLeft.row !== undefined ? cLeft.row : 0;
+    let r1 = Math.min(cRight.row !== undefined ? cRight.row : dims.rows - 1, Math.min(50000, Math.max((dims.rows || 1000) - 1, 5000)));
+    const c0 = cLeft.col !== undefined ? cLeft.col : 0;
+    const c1 = Math.min(cRight.col !== undefined ? cRight.col : dims.cols - 1, 600);
     if (clampInactive && activeRowLimitByTab[tab] !== undefined && r1 > activeRowLimitByTab[tab]) {
       r1 = Math.max(r0, activeRowLimitByTab[tab]);
     }
@@ -1799,11 +1822,39 @@ export function recalculateClientGrids(grids, options = {}) {
     );
   }
 
+  function evalBinaryScalarOp(op, a, b) {
+    if (isSheetError(a)) throw toErrorObject(a);
+    if (isSheetError(b)) throw toErrorObject(b);
+    if (op === "&") return toStringVal(a) + toStringVal(b);
+    const checkFinite = (n) => {
+      if (!Number.isFinite(n)) {
+        throw new SheetError("#NUM!", "Numeric overflow in arithmetic operation");
+      }
+      return n;
+    };
+    if (op === "+") return checkFinite(toNumberOrZero(a) + toNumberOrZero(b));
+    if (op === "-") return checkFinite(toNumberOrZero(a) - toNumberOrZero(b));
+    if (op === "*") return checkFinite(toNumberOrZero(a) * toNumberOrZero(b));
+    if (op === "/") {
+      const num = toNumberOrZero(a);
+      const den = toNumberOrZero(b);
+      if (Math.abs(den) <= 1e-15) throw new SheetError("#DIV/0!", "Evaluation caused divide by zero error.");
+      return checkFinite(num / den);
+    }
+    if (op === "^") {
+      return checkFinite(Math.pow(toNumberOrZero(a), toNumberOrZero(b)));
+    }
+    return compareSheetValues(a, b, op);
+  }
+
   function evalAST(node, ctx) {
     if (!node) return null;
 
     switch (node.type) {
       case "Literal":
+        if (typeof node.value === "number" && !Number.isFinite(node.value)) {
+          throw new SheetError("#NUM!", "Numeric literal overflow");
+        }
         return node.value;
 
       case "EmptyArg":
@@ -1896,22 +1947,7 @@ export function recalculateClientGrids(grids, options = {}) {
               if (hit) return hit.val;
             }
             const lv = getRange2D(bLeft.tab, bLeft.r0, bLeft.r1, bLeft.c0, bLeft.c1, true);
-            const res = broadcastBinaryOp(op, lv, rv, (a, b) => {
-              if (isSheetError(a)) throw toErrorObject(a);
-              if (isSheetError(b)) throw toErrorObject(b);
-              if (op === "&") return toStringVal(a) + toStringVal(b);
-              if (op === "+") return toNumberOrZero(a) + toNumberOrZero(b);
-              if (op === "-") return toNumberOrZero(a) - toNumberOrZero(b);
-              if (op === "*") return toNumberOrZero(a) * toNumberOrZero(b);
-              if (op === "/") {
-                const num = toNumberOrZero(a);
-                const den = toNumberOrZero(b);
-                if (Math.abs(den) <= 1e-15) throw new SheetError("#DIV/0!", "Evaluation caused divide by zero error.");
-                return num / den;
-              }
-              if (op === "^") return Math.pow(toNumberOrZero(a), toNumberOrZero(b));
-              return compareSheetValues(a, b, op);
-            });
+            const res = broadcastBinaryOp(op, lv, rv, (a, b) => evalBinaryScalarOp(op, a, b));
             if (binKey) rCache.set(binKey, { val: res, r0: bLeft.r0, r1: bLeft.r1, c0: bLeft.c0, c1: bLeft.c1 });
             return res;
           }
@@ -1924,24 +1960,7 @@ export function recalculateClientGrids(grids, options = {}) {
           // or SUMPRODUCT((A2:A10="x")*(B2:B10)) use array broadcasting!
         }
 
-        return broadcastBinaryOp(op, lv, rv, (a, b) => {
-          if (isSheetError(a)) throw toErrorObject(a);
-          if (isSheetError(b)) throw toErrorObject(b);
-          if (op === "&") {
-            return toStringVal(a) + toStringVal(b);
-          }
-          if (op === "+") return toNumberOrZero(a) + toNumberOrZero(b);
-          if (op === "-") return toNumberOrZero(a) - toNumberOrZero(b);
-          if (op === "*") return toNumberOrZero(a) * toNumberOrZero(b);
-          if (op === "/") {
-            const num = toNumberOrZero(a);
-            const den = toNumberOrZero(b);
-            if (Math.abs(den) <= 1e-15) throw new SheetError("#DIV/0!", "Evaluation caused divide by zero error.");
-            return num / den;
-          }
-          if (op === "^") return Math.pow(toNumberOrZero(a), toNumberOrZero(b));
-          return compareSheetValues(a, b, op);
-        });
+        return broadcastBinaryOp(op, lv, rv, (a, b) => evalBinaryScalarOp(op, a, b));
       }
 
       case "Call":
@@ -3234,20 +3253,30 @@ export function recalculateClientGrids(grids, options = {}) {
             if (idx === -1) throw new SheetError("#VALUE!", "SEARCH did not find substring");
             return idx + startPos;
           }
+          if (rawNeedle.length > 500) {
+            throw new SheetError("#VALUE!", "SEARCH pattern exceeds 500 character limit");
+          }
           let rx = "";
+          let lastWasStar = false;
           for (let i = 0; i < rawNeedle.length; i++) {
             const ch = rawNeedle[i];
             if (ch === "~" && i + 1 < rawNeedle.length) {
               rx += rawNeedle[++i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              lastWasStar = false;
             } else if (ch === "*") {
-              rx += ".*";
+              if (!lastWasStar) {
+                rx += ".*";
+                lastWasStar = true;
+              }
             } else if (ch === "?") {
               rx += ".";
+              lastWasStar = false;
             } else {
               rx += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              lastWasStar = false;
             }
           }
-          const m = hay.match(new RegExp(rx, "i"));
+          const m = hay.slice(0, 25000).match(new RegExp(rx, "i"));
           if (!m || m.index === undefined) throw new SheetError("#VALUE!", "SEARCH did not find pattern");
           return m.index + startPos;
         });
@@ -3258,6 +3287,7 @@ export function recalculateClientGrids(grids, options = {}) {
         const patVal = evalAST(args[1], ctx);
         if (!Array.isArray(textVal) && !Array.isArray(patVal)) {
           const s = toStringVal(textVal);
+          if (s.length > 25000) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
           const { pattern, flags } = parseRe2Pattern(toStringVal(patVal), false);
           const re = new RegExp(pattern, flags);
           const m = s.match(re);
@@ -3267,6 +3297,7 @@ export function recalculateClientGrids(grids, options = {}) {
         }
         return broadcastBinaryOp("REGEXEXTRACT", textVal, patVal, (t, p) => {
           const s = toStringVal(t);
+          if (s.length > 25000) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
           const { pattern, flags } = parseRe2Pattern(toStringVal(p), false);
           const re = new RegExp(pattern, flags);
           const m = s.match(re);
@@ -3283,6 +3314,7 @@ export function recalculateClientGrids(grids, options = {}) {
             throw new SheetError("#VALUE!", "REGEXMATCH requires text");
           }
           const s = toStringVal(t);
+          if (s.length > 25000) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
           const { pattern, flags } = parseRe2Pattern(toStringVal(p), false);
           const re = new RegExp(pattern, flags);
           return re.test(s);
@@ -3295,7 +3327,11 @@ export function recalculateClientGrids(grids, options = {}) {
         const replStr = toStringVal(evalScalar(args[2], ctx));
         const { pattern, flags } = parseRe2Pattern(patStr, true);
         const re = new RegExp(pattern, flags);
-        return mapArrayScalar(textVal, (t) => toStringVal(t).replace(re, replStr));
+        return mapArrayScalar(textVal, (t) => {
+          const s = toStringVal(t);
+          if (s.length > 25000) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
+          return s.replace(re, replStr);
+        });
       }
 
       case "FORMULATEXT": {
@@ -3400,7 +3436,7 @@ export function recalculateClientGrids(grids, options = {}) {
   }
 
   function hasNestedQuantifier_(patternStr) {
-    const stack = [{ hasQuant: false }];
+    const stack = [{ hasQuant: false, hasAlt: false }];
     let inCharClass = false;
     for (let i = 0; i < patternStr.length; i++) {
       const ch = patternStr[i];
@@ -3417,14 +3453,18 @@ export function recalculateClientGrids(grids, options = {}) {
         continue;
       }
       if (ch === "(") {
-        stack.push({ hasQuant: false });
+        stack.push({ hasQuant: false, hasAlt: false });
+        continue;
+      }
+      if (ch === "|") {
+        stack[stack.length - 1].hasAlt = true;
         continue;
       }
       if (ch === ")") {
-        const popped = stack.length > 1 ? stack.pop() : { hasQuant: false };
+        const popped = stack.length > 1 ? stack.pop() : { hasQuant: false, hasAlt: false };
         const nextCh = patternStr[i + 1] || "";
         const isQuantAfterGroup = nextCh === "+" || nextCh === "*" || nextCh === "{";
-        if (popped.hasQuant && isQuantAfterGroup) {
+        if ((popped.hasQuant || popped.hasAlt) && isQuantAfterGroup) {
           return true;
         }
         if (popped.hasQuant || isQuantAfterGroup) {

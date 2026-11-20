@@ -120,7 +120,20 @@ async function loadVaultRecordFromSupabase_({ clientKey, masterSheetId, tool }) 
         .eq("tool", cleanTool)
         .limit(1)
         .maybeSingle();
-      row = data;
+      if (data?.encrypted_payload) {
+        if (clientKey && clientKey !== "__shared_xero__") {
+          try {
+            const candidate = JSON.parse(data.encrypted_payload);
+            const rowKey = normalizeKey(data.client_key || candidate?.clientKey || "");
+            if (rowKey && rowKey !== normalizeKey(clientKey)) {
+              return null;
+            }
+          } catch {
+            return null;
+          }
+        }
+        row = data;
+      }
     }
     if (!row?.encrypted_payload) return null;
     const parsed = JSON.parse(row.encrypted_payload);
@@ -129,12 +142,12 @@ async function loadVaultRecordFromSupabase_({ clientKey, masterSheetId, tool }) 
         row.client_key === "__shared_xero__"
           ? SHARED_XERO_KEY
           : getVaultRedisKey(row.client_key || parsed.clientKey, cleanTool);
-      await redisClient.set(targetRedisKey, row.encrypted_payload).catch(() => {});
+      await redisClient.set(targetRedisKey, row.encrypted_payload).catch(() => { });
       setVaultL1_(targetRedisKey, row.encrypted_payload);
       const mId = masterSheetId || row.master_sheet_id || parsed.masterSheetId;
       if (mId && row.client_key !== "__shared_xero__") {
         const sIdxKey = getSheetIndexRedisKey(mId, cleanTool);
-        await redisClient.set(sIdxKey, targetRedisKey).catch(() => {});
+        await redisClient.set(sIdxKey, targetRedisKey).catch(() => { });
         setVaultL1_(sIdxKey, targetRedisKey);
       }
     }
@@ -443,7 +456,7 @@ export async function getSharedXeroGrant({ bypassL1 = false } = {}) {
   if (rawJson) {
     try {
       record = JSON.parse(rawJson);
-    } catch {}
+    } catch { }
   }
   if (!record) {
     record = await loadVaultRecordFromSupabase_({ clientKey: "__shared_xero__", tool: "xero" });
@@ -476,7 +489,7 @@ export async function updateSharedXeroGrantTokens(tokens) {
   let existingBundle = {};
   try {
     existingBundle = decryptPayload(record.encryptedTokens, aad);
-  } catch {}
+  } catch { }
 
   const mergedBundle = {
     ...existingBundle,
@@ -737,11 +750,20 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
     if (rawJson) {
       try {
         record = JSON.parse(rawJson);
-      } catch {}
+      } catch { }
     }
   }
   if (!record) {
     record = await loadVaultRecordFromSupabase_({ clientKey, masterSheetId, tool: cleanTool });
+  }
+
+  if (record && clientKey && clientKey !== "__shared_xero__") {
+    const recClientKey = normalizeKey(record.clientKey || "");
+    const expectedClientKey = normalizeKey(clientKey);
+    if (recClientKey && expectedClientKey && recClientKey !== expectedClientKey) {
+      console.warn(`⚠️ Vault clientKey mismatch for tool ${cleanTool}: expected "${expectedClientKey}", got "${recClientKey}"`);
+      record = null;
+    }
   }
 
   // 1. If tool is Xero: Check if client uses or should use the Central Shared Xero Grant
@@ -751,7 +773,11 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
     if (isDedicated) {
       let decryptedBundle = null;
       try {
-        const aad = `${record.clientKey}:${cleanTool}`;
+        const expectedAadKey =
+          clientKey && clientKey !== "__shared_xero__"
+            ? normalizeKey(clientKey)
+            : normalizeKey(record.clientKey);
+        const aad = `${expectedAadKey}:${cleanTool}`;
         decryptedBundle = decryptPayload(record.encryptedTokens, aad);
       } catch (err) {
         console.warn(`Dedicated Xero token decrypt failed for ${record.clientKey}:`, err.message);
@@ -820,7 +846,11 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
   if (!record) return null;
 
   try {
-    const aad = `${record.clientKey}:${cleanTool}`;
+    const expectedAadKey =
+      clientKey && clientKey !== "__shared_xero__"
+        ? normalizeKey(clientKey)
+        : normalizeKey(record.clientKey);
+    const aad = `${expectedAadKey}:${cleanTool}`;
     const decryptedBundle = record.encryptedTokens ? decryptPayload(record.encryptedTokens, aad) : null;
 
     return {
@@ -894,7 +924,7 @@ export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenant
     let existingBundle = {};
     try {
       existingBundle = decryptPayload(record.encryptedTokens, aad);
-    } catch {}
+    } catch { }
 
     const mergedBundle = {
       ...existingBundle,
@@ -956,7 +986,7 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
     if (rawJson) {
       try {
         record = JSON.parse(rawJson);
-      } catch {}
+      } catch { }
     }
   }
   if (!record) {
@@ -1163,8 +1193,9 @@ export async function markIntegrationReconnectRequired({ clientKey, masterSheetI
         sharedRec.updatedAt = new Date().toISOString();
         await redisClient.set(SHARED_XERO_KEY, JSON.stringify(sharedRec));
         clearVaultL1_(SHARED_XERO_KEY);
+        await syncVaultRecordToSupabase("__shared_xero__", "xero", sharedRec);
         console.log("⚠️ Vault: Marked central shared Xero grant as reconnect_required.");
-      } catch {}
+      } catch { }
     }
   }
 
@@ -1213,7 +1244,7 @@ export async function deleteIntegrationTokens(arg1, arg2, arg3) {
         if (parsed.masterSheetId && !sheetKey) {
           sheetKey = getSheetIndexRedisKey(parsed.masterSheetId, cleanTool);
         }
-      } catch {}
+      } catch { }
     }
     await redisClient.del(redisKey);
     clearVaultL1_(redisKey);
@@ -1247,6 +1278,31 @@ export async function deleteIntegrationTokens(arg1, arg2, arg3) {
 }
 
 export const removeIntegrationTokens = deleteIntegrationTokens;
+
+/**
+ * Deletes the Central Shared Xero Advisor grant from L1 memory cache, Redis, and Supabase.
+ */
+export async function deleteSharedXeroGrant() {
+  if (redisClient?.isOpen) {
+    await redisClient.del(SHARED_XERO_KEY).catch(() => { });
+  }
+  clearVaultL1_(SHARED_XERO_KEY);
+
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        await sb.from("tenant_integrations").delete().eq("client_key", "__shared_xero__").eq("tool", "xero");
+      }
+    } catch (sbDelErr) {
+      console.warn("⚠️ Vault Supabase shared Xero delete warning:", sbDelErr.message);
+    }
+  }
+
+  await invalidateIntegrationsCache();
+  console.log("🗑️ Vault: Deleted central shared Xero advisor grant.");
+  return { success: true };
+}
 
 // Module-level in-flight refresh mutex to prevent local container concurrent refresh token collisions
 const inFlightRefreshes = new Map();
@@ -1303,7 +1359,7 @@ export async function refreshWithConcurrencyLock(lockKey, refreshFn, getLatestTo
             const current = await redisClient.get(redisLockKey);
             if (current === lockToken) await redisClient.del(redisLockKey);
           }
-        } catch (_) {}
+        } catch (_) { }
       }
       inFlightRefreshes.delete(lockKey);
     }
@@ -1416,7 +1472,7 @@ export async function refreshStoredIntegrationToken({
           tool: cleanTool,
           error: err.message
         });
-      } catch (_) {}
+      } catch (_) { }
     }
     throw err;
   }

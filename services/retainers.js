@@ -3398,9 +3398,10 @@ export async function handleCreateRetainerJob(req, res, sheets) {
       details: { jobName, endClient, clientName: tenantClient, monthlyRevenue, monthlyDirectCosts, startDate, endDate: formatJobEndDateDisplay(formattedEnd), invoiceFrequency, childRowCount: retainerPlan.rowsToCreate }
     }).catch(e => console.error("PMA log failed:", e));
 
+    const isAdminUser = !sessionUser?.isReadOnly && Boolean(sessionUser?.isAdmin || sessionUser?.role === "Admin");
     return res.status(200).json({
       success: true,
-      parentRowNum: newParentRowNum,
+      ...(isAdminUser ? { parentRowNum: newParentRowNum } : {}),
       childRowCount: retainerPlan.rowsToCreate,
       backgroundProvisioning: false,
     });
@@ -4127,6 +4128,8 @@ export async function handleComputeRetainerSplitInvoicePreview(req, res, sheets)
 }
 
 export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  const isAdminUser = !sessionUser?.isReadOnly && Boolean(sessionUser?.isAdmin || sessionUser?.role === "Admin");
   let {
     clientSheetId, masterSheetId, client, clientName, jobName, parentRowNum, missingRowNum,
     standardMonthlyAmount, altAmount, altSentDate, altInvoiceNo, altStatus, vatAmount, difference,
@@ -4154,6 +4157,20 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
   if (missing.length > 0) {
     return res.status(400).json({ success: false, error: `Missing required fields: ${missing.join(", ")}` });
   }
+
+  missingRowNum = parseInt(missingRowNum, 10);
+  if (!Number.isInteger(missingRowNum) || missingRowNum < 2 || missingRowNum > 5000) {
+    return res.status(400).json({ success: false, error: "Invalid missingRowNum parameter." });
+  }
+  if (existingConfirmedRow !== undefined && existingConfirmedRow !== null && existingConfirmedRow !== "") {
+    existingConfirmedRow = parseInt(existingConfirmedRow, 10);
+    if (!Number.isInteger(existingConfirmedRow) || existingConfirmedRow < 2 || existingConfirmedRow > 5000) {
+      return res.status(400).json({ success: false, error: "Invalid existingConfirmedRow parameter." });
+    }
+  } else {
+    existingConfirmedRow = null;
+  }
+
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const resp = await sheets.spreadsheets.values.get({
@@ -4167,6 +4184,9 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       return res.status(400).json({ success: false, error: "Row mismatch" });
     }
     parentRowNum = resolvedParent.rowNum;
+    if (missingRowNum <= parentRowNum) {
+      return res.status(400).json({ success: false, error: "Invalid missingRowNum for target retainer." });
+    }
     client = resolvedParent.resolvedClient;
     jobName = resolvedParent.resolvedJobName;
     const parentRow = resolvedParent.row;
@@ -4174,7 +4194,8 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
     const { defaultDaysToPay: rawDefaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
     const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay).replace(/[^\d.-]/g, ""), 10) || 30;
     const parsedAltSentDate = retParseSheetDate(altSentDate);
-    const diffNum = Math.round((parseFloat(difference) || 0) * 100) / 100;
+    const diffNum = Math.round((parseFloat(String(difference ?? "").replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
+    const standardMonthlyNum = Math.round((parseFloat(String(standardMonthlyAmount ?? "").replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
 
     if (splitMode === "recharged_expense" && diffNum > 0) {
       const fullInvoiceAmt = Math.round((parseFloat(altAmount) || ((parseFloat(standardMonthlyAmount) || 0) + diffNum)) * 100) / 100;
@@ -4220,11 +4241,15 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
         });
       })().catch(e => console.error("PMA log failed:", e));
 
-      return res.status(200).json({ success: true, mode: "recharged_expense", parentRowNum, missingRowNum });
+      return res.status(200).json({
+        success: true,
+        mode: "recharged_expense",
+        ...(isAdminUser ? { parentRowNum, missingRowNum } : {}),
+      });
     }
 
     const writeData = [
-      { range: `Confirmed!AP${missingRowNum}`, values: [[standardMonthlyAmount]] },
+      { range: `Confirmed!AP${missingRowNum}`, values: [[standardMonthlyNum]] },
       { range: `Confirmed!AQ${missingRowNum}`, values: [[formatInvoiceRefForSheet(altInvoiceNo || "")]] },
       { range: `Confirmed!AS${missingRowNum}`, values: [[defaultDaysToPay]] },
       { range: `Confirmed!AT${missingRowNum}`, values: [[sanitizeFormulaInput(altStatus || "")]] },
@@ -4238,18 +4263,22 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
     if (existingConfirmedRow) {
       writeData.push(
         { range: `Confirmed!B${existingConfirmedRow}`, values: [[sanitizeFormulaInput(extraJobName)]] },
-        { range: `Confirmed!D${existingConfirmedRow}`, values: [[parentRow[3] || ""]] },
+        { range: `Confirmed!D${existingConfirmedRow}`, values: [[sanitizeFormulaInput(parentRow[3] || "")]] },
         { range: `Confirmed!E${existingConfirmedRow}`, values: [[sanitizeFormulaInput(parentRow[4] || "")]] },
-        { range: `Confirmed!AG${existingConfirmedRow}`, values: [[difference]] },
+        { range: `Confirmed!AG${existingConfirmedRow}`, values: [[diffNum]] },
         { range: `Confirmed!AJ${existingConfirmedRow}`, values: [["Retainer"]] },
         { range: `Confirmed!AK${existingConfirmedRow}`, values: [[sanitizeFormulaInput(parentRow[36] || "")]] },
-        { range: `Confirmed!AP${existingConfirmedRow}`, values: [[difference]] },
+        { range: `Confirmed!AP${existingConfirmedRow}`, values: [[diffNum]] },
       );
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
       await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
-      return res.status(200).json({ success: true, mode: "converted", extraJobRow: existingConfirmedRow });
+      return res.status(200).json({
+        success: true,
+        mode: "converted",
+        ...(isAdminUser ? { extraJobRow: existingConfirmedRow } : {}),
+      });
     } else {
       const metaResp = await sheets.spreadsheets.get({
         spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties)",
@@ -4278,15 +4307,15 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       writeData.push(
         { range: `Confirmed!A${newRowNum}`, values: [[sanitizeFormulaInput(client)]] },
         { range: `Confirmed!B${newRowNum}`, values: [[sanitizeFormulaInput(extraJobName)]] },
-        { range: `Confirmed!D${newRowNum}`, values: [[parentRow[3] || ""]] },
+        { range: `Confirmed!D${newRowNum}`, values: [[sanitizeFormulaInput(parentRow[3] || "")]] },
         { range: `Confirmed!E${newRowNum}`, values: [[sanitizeFormulaInput(parentRow[4] || "")]] },
-        { range: `Confirmed!AG${newRowNum}`, values: [[difference]] },
+        { range: `Confirmed!AG${newRowNum}`, values: [[diffNum]] },
         { range: `Confirmed!AI${newRowNum}`, values: [[vatYesNo]] },
         { range: `Confirmed!AJ${newRowNum}`, values: [["Retainer"]] },
         { range: `Confirmed!AK${newRowNum}`, values: [[sanitizeFormulaInput(parentRow[36] || "")]] },
         { range: `Confirmed!AL${newRowNum}`, values: [[retFmtDate(monthStart)]] },
         { range: `Confirmed!AM${newRowNum}`, values: [[retFmtDate(monthEnd)]] },
-        { range: `Confirmed!AP${newRowNum}`, values: [[difference]] },
+        { range: `Confirmed!AP${newRowNum}`, values: [[diffNum]] },
         { range: `Confirmed!AQ${newRowNum}`, values: [[formatInvoiceRefForSheet(altInvoiceNo || "")]] },
         { range: `Confirmed!AS${newRowNum}`, values: [[defaultDaysToPay]] },
         { range: `Confirmed!AT${newRowNum}`, values: [[sanitizeFormulaInput(altStatus || "")]] },
@@ -4313,11 +4342,15 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
           category: "RETAINER",
           action: "Retainer Split Invoice Applied",
           summary: `Applied retainer invoice split for #${altInvoiceNo || "Invoice"} on ${jobIdentifier}`,
-          details: { clientName: tenantClient, endClient, altInvoiceNo, difference, extraJobName }
+          details: { clientName: tenantClient, endClient, altInvoiceNo, difference: diffNum, extraJobName }
         });
       })().catch(e => console.error("PMA log failed:", e));
 
-      return res.status(200).json({ success: true, mode: "created", extraJobRow: newRowNum });
+      return res.status(200).json({
+        success: true,
+        mode: "created",
+        ...(isAdminUser ? { extraJobRow: newRowNum } : {}),
+      });
     }
   } catch (err) {
     console.error("❌ apply_retainer_split_invoice error:", err);

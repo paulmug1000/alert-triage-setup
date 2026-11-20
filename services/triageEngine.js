@@ -29,7 +29,7 @@ import {
   checkAllGASLocks, setCRMMode, getToleranceValues,
   getCRMMatchingMode, fetchJobRowsForDisplay
 } from "./sharedHelpers.js";
-import { redisClient } from "./redisClient.js";
+import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { anthropic } from "./claudeClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
@@ -147,10 +147,15 @@ export function getBaseUrlFromReq(req, _ignoredFallbackUrl = "") {
   const { host, proto } = resolveCanonicalOAuthHost(req);
   const cleanUrl = (url) => (url ? (url.startsWith("http") ? url : `https://${url}`) : null);
   const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL);
-  if (prodUrl) {
+  if (prodUrl && prodUrl.includes("pulsedashboard.co.uk")) {
     try {
       const parsed = new URL(prodUrl);
-      if (isAllowedInternalChainHost_(parsed.hostname)) return prodUrl;
+      if (
+        isAllowedInternalChainHost_(parsed.hostname) &&
+        (parsed.hostname === "app.pulsedashboard.co.uk" || parsed.hostname === "pma.pulsedashboard.co.uk" || parsed.hostname === host)
+      ) {
+        return prodUrl;
+      }
     } catch (_) { }
   }
   return `${proto}://${host}`;
@@ -190,6 +195,27 @@ export function dispatchAsyncChainStep(baseUrl, payload, bypassToken = "") {
     redirect: "manual",
   })
     .then(async (res) => {
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get("location") || "";
+        if (loc) {
+          const redirUrl = new URL(loc, url);
+          if (isAllowedInternalChainHost_(redirUrl.hostname)) {
+            const redirRes = await fetch(redirUrl.toString(), {
+              method: "POST",
+              headers,
+              body: JSON.stringify(payload),
+              redirect: "manual",
+            });
+            if (!redirRes.ok) {
+              const rText = await redirRes.text().catch(() => "");
+              console.error(`❌ [Triage Chain] Step '${payload.action}' redirect HTTP error ${redirRes.status} (${redirUrl.toString()}): ${rText}`);
+            } else {
+              console.log(`🔗 [Triage Chain] Dispatched step '${payload.action}' via canonical redirect (status ${redirRes.status})`);
+            }
+            return;
+          }
+        }
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         console.error(`❌ [Triage Chain] Step '${payload.action}' HTTP error ${res.status}: ${text}`);
@@ -2085,13 +2111,14 @@ export async function handleStorePrecomputed(req, res, sheets) {
       await ensureAlertMemoryTab(sheets, acIdForMerge);
       existingHandledMap = await readHandledAlertHashes(sheets, acIdForMerge, false);
 
-      const currentMemoryRows = await readAlertMemory(sheets, acIdForMerge);
+      const currentMemoryRows = await readAlertMemory(sheets, acIdForMerge, { bypassCache: true });
       if (currentMemoryRows.length > 2000) {
         console.log(`[store_precomputed] AlertMemory row count (${currentMemoryRows.length}) exceeds 2,000 threshold. Triggering compaction...`);
         await compactAlertMemory(sheets, acIdForMerge);
+        memoryRowsForMerge = await readAlertMemory(sheets, acIdForMerge, { bypassCache: true });
+      } else {
+        memoryRowsForMerge = currentMemoryRows;
       }
-
-      memoryRowsForMerge = await readAlertMemory(sheets, acIdForMerge);
 
       const oldPathFingerprints = new Set(mergedAlerts.map(a => buildAlertFingerprint(a)));
       const oldPathNoActionKeys = new Set(mergedNoActionAlerts.map(na => `${na.clientId}|||${na.flagType}`));
@@ -2436,6 +2463,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
     };
 
     const serializedPrecomputed = JSON.stringify(precomputedData);
+    await ensureRedisConnected(2000).catch(() => false);
     await redisClient.set(
       PRECOMPUTED_KEY,
       serializedPrecomputed,
@@ -3176,7 +3204,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
     if (sweepItems.length > 0) {
       await ensureAlertMemoryTab(sheets, acIdSweep);
-      const memoryRows = await readAlertMemory(sheets, acIdSweep);
+      const memoryRows = await readAlertMemory(sheets, acIdSweep, { bypassCache: true });
       const handledHashes = getHandledFingerprintHashes_(memoryRows);
       const existingHashes = new Set(memoryRows.map(r => r.fingerprintHash).filter(Boolean));
       console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes, ${existingHashes.size} existing hashes`);
@@ -3427,6 +3455,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
         const currentItemFingerprints = new Set((item.alerts || []).map(a => a._fingerprint).filter(Boolean));
         const currentItemAlertKeys = new Set((item.alerts || []).map(a => a.alertKey).filter(Boolean));
         const claimedMemoryRowIndices = new Set();
+        const getMemoryClaimKey = (r) => r?.fingerprintHash || (r?.rowIndex != null ? `row:${r.rowIndex}` : null);
 
         for (const alert of item.alerts) {
           try {
@@ -3457,7 +3486,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
             };
             const candidateMatches = memoryRows.filter(r => {
               if (r.clientName !== item.clientName) return false;
-              if (r.rowIndex != null && claimedMemoryRowIndices.has(r.rowIndex)) return false;
+              const claimKey = getMemoryClaimKey(r);
+              if (claimKey && claimedMemoryRowIndices.has(claimKey)) return false;
               if (r.fingerprintHash === alert._fingerprint) return true;
               if (r.fingerprintHash && currentItemFingerprints.has(r.fingerprintHash)) return false;
               if (alert._legacyFingerprint && r.fingerprintHash === alert._legacyFingerprint) {
@@ -3513,13 +3543,15 @@ export async function handleRunFlagSweep(req, res, sheets) {
             });
 
             let exRow = candidateMatches[0] || null;
-            if (exRow?.rowIndex != null) claimedMemoryRowIndices.add(exRow.rowIndex);
+            const exClaimKey = getMemoryClaimKey(exRow);
+            if (exClaimKey) claimedMemoryRowIndices.add(exClaimKey);
             const detectedAtIso = new Date().toISOString();
 
             // If there are duplicate rows and the winning row is handled or active, suppress any duplicate cached/pending rows so they don't appear in PMA or revive
             if (candidateMatches.length > 1 && exRow && (exRow.status === "accepted" || exRow.status === "ignored" || exRow.status === "task" || exRow.status === "cached" || exRow.status === "pending_automation")) {
               for (const dup of candidateMatches.slice(1)) {
-                if (dup.rowIndex != null) claimedMemoryRowIndices.add(dup.rowIndex);
+                const dupClaimKey = getMemoryClaimKey(dup);
+                if (dupClaimKey) claimedMemoryRowIndices.add(dupClaimKey);
                 if (dup.status === "cached" || dup.status === "pending_automation") {
                   try {
                     await updateAlertMemoryRow(sheets, acIdSweep, dup.rowIndex, {
@@ -3763,7 +3795,13 @@ export async function handleRunFlagSweep(req, res, sheets) {
             };
             const appendedRow = await appendAlertMemoryRow(sheets, acIdSweep, newRow);
             memoryRows.push(appendedRow || newRow);
-            if (appendedRow?.rowIndex != null) claimedMemoryRowIndices.add(appendedRow.rowIndex);
+            const appendedClaimKey = getMemoryClaimKey(appendedRow || newRow);
+            if (appendedClaimKey) claimedMemoryRowIndices.add(appendedClaimKey);
+
+            if (appendedRow?.status && appendedRow.status !== status && (appendedRow.status === "accepted" || appendedRow.status === "ignored" || appendedRow.status === "task")) {
+              console.log(`  🛡️ Skipped raising ${item.clientName} / ${item.alertType} (${alert._fingerprint}) — already handled (${appendedRow.status})`);
+              continue;
+            }
 
             flagsRaised++;
             if (status === "pending_automation") {
@@ -3800,7 +3838,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
     if (req.body?.chain) {
       const effectiveBaseUrl = getBaseUrlFromReq(req);
       const effectiveBypass = String(
-        req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || ""
+        req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || process.env.VERCEL_AUTOMATION_BYPASS_SECRET || ""
       ).trim();
 
       if (hasMore) {
@@ -3881,7 +3919,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
   const buildStart = Date.now();
   try {
     await ensureAlertMemoryTab(sheets, acIdBuild);
-    const memoryRows = await readAlertMemory(sheets, acIdBuild);
+    const memoryRows = await readAlertMemory(sheets, acIdBuild, { bypassCache: true });
 
     const pending = memoryRows.filter(r => {
       if ((r.status !== "cached" && r.status !== "pending_automation") || r.category !== "discrepancy") return false;
@@ -3928,6 +3966,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     let built = 0, notFound = 0, errors = 0;
     let hasMore = false;
     let builtDetail = [];
+    const gasLocksByClient = new Map();
     const TIME_LIMIT_MS = 75000;
 
     for (const [key, rows] of groups.entries()) {
@@ -3946,6 +3985,20 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
       }
 
       try {
+        let gasLocks = gasLocksByClient.get(clientName);
+        if (!gasLocks) {
+          gasLocks = await checkAllGASLocks(sheets, client.masterSheetId);
+          gasLocksByClient.set(clientName, gasLocks);
+        }
+        const isInvType = alertType === "invoiceDashboardDiscr" || alertType === "invoice";
+        const isExpType = alertType === "contractorsDashboardDiscr" || alertType === "passThroughDashboardDiscr" || alertType === "expenseDashboardDiscr" || alertType === "expense";
+        const isCrmType = ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr", "crm"].includes(alertType);
+        if ((isInvType && gasLocks.invoice?.locked) || (isExpType && gasLocks.expense?.locked) || (isCrmType && gasLocks.crm?.locked)) {
+          console.log(`  ⏭ ${clientName}/${alertType}: automation lock active - deferring ${rows.length} row(s) without marking resolved`);
+          errors += rows.length;
+          continue;
+        }
+
         console.log(`  📊 Fetching shared sheet data for ${clientName} to prevent 429 errors...`);
         let sharedData = {};
         try {
@@ -4152,6 +4205,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
               ...row, cachedOptionsJSON: JSON.stringify(analyzeData), preserveHandledStatus: true,
             });
             richAnalyzed++;
+            builtDetail.push({ clientName: row.clientName, flagKey: row.alertType, fromCache: false });
             console.log(`  ✅ ${row.clientName}/${row.alertType}: targeted analysis stored`);
           } else {
             richErrors++;
@@ -4169,13 +4223,19 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     }
 
     await logBuildOptionsRun(sheets, acIdBuild, {
-      processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, builtDetail, isContinuation: req.body.isContinuation
+      processed: pending.length + pendingRich.length,
+      built: built + richAnalyzed,
+      notFound,
+      errors: errors + richErrors,
+      elapsedSeconds: elapsedS,
+      builtDetail,
+      isContinuation: req.body.isContinuation,
     });
 
     if (req.body?.chain) {
       const effectiveBaseUrl = getBaseUrlFromReq(req);
       const effectiveBypass = String(
-        req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || ""
+        req.body?.bypassToken || req.headers["x-vercel-protection-bypass"] || process.env.VERCEL_BYPASS_TOKEN || process.env.VERCEL_AUTOMATION_BYPASS_SECRET || ""
       ).trim();
 
       if (hasMore) {

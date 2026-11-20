@@ -10,6 +10,7 @@
  */
 
 import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import {
@@ -27,6 +28,8 @@ export default async function handler(req, res) {
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
+
+  installSheetIdBoundary(req, res, sessionUser);
 
   if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied: PMA configuration requires staff privileges." });

@@ -22,6 +22,18 @@ const SHEET_ID_KEYS = new Set([
   "reconId",
   "sheetIdToCheck",
   "expectedSheetId",
+  "client_sheet_id",
+  "master_sheet_id",
+  "recon_sheet_id",
+  "backup_sheet_id",
+]);
+
+const SHEET_ID_ARRAY_KEYS = new Set([
+  "sheetIds",
+  "clientSheetIds",
+  "masterSheetIds",
+  "reconSheetIds",
+  ...SHEET_ID_KEYS,
 ]);
 
 const CONDITIONAL_SHEET_ID_KEYS = new Set([
@@ -36,10 +48,20 @@ const STRIP_NON_ADMIN_KEYS = new Set([
   "masterSheetUrl",
   "reconUrl",
   "reconSheetUrl",
+  "client_sheet_url",
+  "master_sheet_url",
+  "recon_sheet_url",
+  "backup_sheet_url",
+  "scriptId",
   "masterScriptId",
   "clientScriptId",
+  "reconScriptId",
+  "client_script_id",
+  "master_script_id",
+  "recon_script_id",
   "gasUrl",
   "deploymentUrl",
+  "master_deployment_url",
   "parentTemplateUrl",
   "driveFolderUrl",
   "folderUrl",
@@ -52,7 +74,7 @@ const STRIP_NON_ADMIN_KEYS = new Set([
   "templateClientUrl",
   "spreadsheetUrl",
   "webAppUrl",
-  "reconScriptId",
+  "web_app_url",
   "reconSheetScriptId",
   "backupSheetId",
   "backupSheetUrl",
@@ -142,7 +164,11 @@ export function unwrapSheetId(idOrToken) {
  * Recursively unwraps any `ws_...` opaque workspace tokens (and `"default"` AC sheet aliases)
  * in-place across incoming request bodies or query objects.
  */
-export function unwrapRequestSheetIds(obj, seen = new WeakSet(), rawSheetRefs = null) {
+export function unwrapRequestSheetIds(obj, seen = new WeakSet(), rawSheetRefs = null, options = {}) {
+  const { allowExternalGoogleSheetIds = false, parentKey = "" } = options || {};
+  const isExternalExemptKey = (k) =>
+    allowExternalGoogleSheetIds && (k === "sheetId" || k === "spreadsheetId");
+
   if (!obj || typeof obj !== "object") {
     if (typeof obj === "string") {
       const t = obj.trim();
@@ -154,15 +180,25 @@ export function unwrapRequestSheetIds(obj, seen = new WeakSet(), rawSheetRefs = 
   seen.add(obj);
 
   if (Array.isArray(obj)) {
+    const parentIsSheetIdList =
+      !isExternalExemptKey(parentKey) &&
+      (SHEET_ID_ARRAY_KEYS.has(parentKey) || CONDITIONAL_SHEET_ID_KEYS.has(parentKey));
     for (let i = 0; i < obj.length; i++) {
       const val = obj[i];
       if (typeof val === "string") {
         const t = val.trim();
         if (t.startsWith(TOKEN_PREFIX)) {
           obj[i] = unwrapSheetId(t);
+        } else if (rawSheetRefs && parentIsSheetIdList && t.length > 0 && t !== "default") {
+          const looksLikeConditional = !CONDITIONAL_SHEET_ID_KEYS.has(parentKey) ||
+            /^[a-zA-Z0-9-_]{22,}$/.test(t) ||
+            /^sb-(?:client|master|recon)-[a-z0-9_-]+$/i.test(t);
+          if (looksLikeConditional) {
+            rawSheetRefs.push({ target: obj, key: i, fieldName: parentKey });
+          }
         }
       } else if (val && typeof val === "object") {
-        unwrapRequestSheetIds(val, seen, rawSheetRefs);
+        unwrapRequestSheetIds(val, seen, rawSheetRefs, { allowExternalGoogleSheetIds, parentKey });
       }
     }
     return obj;
@@ -180,17 +216,18 @@ export function unwrapRequestSheetIds(obj, seen = new WeakSet(), rawSheetRefs = 
         (t === "default" || t === canonicalAcId)
       ) {
         obj[key] = canonicalAcId;
-      } else if (rawSheetRefs && SHEET_ID_KEYS.has(key) && t.length > 0 && t !== "default") {
-        rawSheetRefs.push({ target: obj, key });
+      } else if (!isExternalExemptKey(key) && rawSheetRefs && SHEET_ID_KEYS.has(key) && t.length > 0 && t !== "default") {
+        rawSheetRefs.push({ target: obj, key, fieldName: key });
       } else if (
+        !isExternalExemptKey(key) &&
         rawSheetRefs &&
         CONDITIONAL_SHEET_ID_KEYS.has(key) &&
         (/^[a-zA-Z0-9-_]{22,}$/.test(t) || /^sb-(?:client|master|recon)-[a-z0-9_-]+$/i.test(t))
       ) {
-        rawSheetRefs.push({ target: obj, key });
+        rawSheetRefs.push({ target: obj, key, fieldName: key });
       }
     } else if (val && typeof val === "object") {
-      unwrapRequestSheetIds(val, seen, rawSheetRefs);
+      unwrapRequestSheetIds(val, seen, rawSheetRefs, { allowExternalGoogleSheetIds, parentKey: key });
     }
   }
   return obj;
@@ -199,9 +236,9 @@ export function unwrapRequestSheetIds(obj, seen = new WeakSet(), rawSheetRefs = 
 export function isSysAdminUser(sessionUser) {
   return Boolean(
     sessionUser &&
-      (sessionUser.isAdmin || sessionUser.role === "Admin") &&
-      !sessionUser.isReadOnly &&
-      sessionUser.authProvider !== "EmailOTP"
+    (sessionUser.isAdmin || sessionUser.role === "Admin") &&
+    !sessionUser.isReadOnly &&
+    sessionUser.authProvider !== "EmailOTP"
   );
 }
 
@@ -210,10 +247,14 @@ export function isSysAdminUser(sessionUser) {
  * and strips direct spreadsheet/GAS URLs for non-admin sessions (`MED-05` & Rule 13).
  * System administrators (`isAdmin && !isReadOnly`) receive the unmodified payload.
  */
-export function maskResponseSheetIdsForUser(data, sessionUser, seen = new WeakMap()) {
+export function maskResponseSheetIdsForUser(data, sessionUser, seen = new WeakMap(), options = {}) {
   if (isSysAdminUser(sessionUser)) {
     return data;
   }
+  const { allowExternalGoogleSheetIds = false, parentKey = "" } = options || {};
+  const isExternalExemptKey = (k) =>
+    allowExternalGoogleSheetIds && (k === "sheetId" || k === "spreadsheetId");
+
   if (!data || typeof data !== "object") {
     return data;
   }
@@ -227,8 +268,19 @@ export function maskResponseSheetIdsForUser(data, sessionUser, seen = new WeakMa
   if (Array.isArray(data)) {
     const outArr = new Array(data.length);
     seen.set(data, outArr);
+    const parentIsSheetIdList =
+      !isExternalExemptKey(parentKey) &&
+      (SHEET_ID_ARRAY_KEYS.has(parentKey) || CONDITIONAL_SHEET_ID_KEYS.has(parentKey));
     for (let i = 0; i < data.length; i++) {
-      outArr[i] = maskResponseSheetIdsForUser(data[i], sessionUser, seen);
+      const elem = data[i];
+      if (typeof elem === "string" && parentIsSheetIdList && elem.trim().length > 0) {
+        const shouldWrap = !CONDITIONAL_SHEET_ID_KEYS.has(parentKey) ||
+          /^[a-zA-Z0-9-_]{22,}$/.test(elem.trim()) ||
+          /^sb-(?:client|master|recon)-[a-z0-9_-]+$/i.test(elem.trim());
+        outArr[i] = shouldWrap ? wrapSheetId(elem) : elem;
+      } else {
+        outArr[i] = maskResponseSheetIdsForUser(elem, sessionUser, seen, { allowExternalGoogleSheetIds, parentKey });
+      }
     }
     return outArr;
   }
@@ -252,7 +304,7 @@ export function maskResponseSheetIdsForUser(data, sessionUser, seen = new WeakMa
       continue;
     }
 
-    if (SHEET_ID_KEYS.has(key)) {
+    if (!isExternalExemptKey(key) && SHEET_ID_KEYS.has(key)) {
       if (typeof val === "string" && val.trim().length > 0) {
         outObj[key] = wrapSheetId(val);
       } else {
@@ -261,7 +313,7 @@ export function maskResponseSheetIdsForUser(data, sessionUser, seen = new WeakMa
       continue;
     }
 
-    if (CONDITIONAL_SHEET_ID_KEYS.has(key)) {
+    if (!isExternalExemptKey(key) && CONDITIONAL_SHEET_ID_KEYS.has(key)) {
       if (typeof val === "string" && (/^[a-zA-Z0-9-_]{22,}$/.test(val.trim()) || /^sb-(?:client|master|recon)-[a-z0-9_-]+$/i.test(val.trim()))) {
         outObj[key] = wrapSheetId(val);
       } else {
@@ -271,7 +323,7 @@ export function maskResponseSheetIdsForUser(data, sessionUser, seen = new WeakMa
     }
 
     if (val && typeof val === "object") {
-      outObj[key] = maskResponseSheetIdsForUser(val, sessionUser, seen);
+      outObj[key] = maskResponseSheetIdsForUser(val, sessionUser, seen, { allowExternalGoogleSheetIds, parentKey: key });
     } else {
       outObj[key] = val;
     }
@@ -288,22 +340,28 @@ const _reqBoundaryState = new WeakMap();
  * Safe to call multiple times on the same request.
  */
 export function installSheetIdBoundary(req, res, sessionUser = null) {
+  const reqUrl = String(req?.url || "");
+  const allowExternalGoogleSheetIds =
+    reqUrl.startsWith("/api/integrations/google-sheet/") ||
+    reqUrl.startsWith("/api/integrations/googlesheet/");
+
   if (req) {
     let reqState = _reqBoundaryState.get(req);
     if (!reqState) {
       const rawSheetRefs = [];
       if (req.body && typeof req.body === "object") {
-        unwrapRequestSheetIds(req.body, new WeakSet(), rawSheetRefs);
+        unwrapRequestSheetIds(req.body, new WeakSet(), rawSheetRefs, { allowExternalGoogleSheetIds });
       }
       if (req.query && typeof req.query === "object") {
-        unwrapRequestSheetIds(req.query, new WeakSet(), rawSheetRefs);
+        unwrapRequestSheetIds(req.query, new WeakSet(), rawSheetRefs, { allowExternalGoogleSheetIds });
       }
       reqState = { unwrapped: true, rawSheetRefs };
       _reqBoundaryState.set(req, reqState);
     }
     if (sessionUser && !isSysAdminUser(sessionUser) && !req.isSystemAuthorized && reqState.rawSheetRefs.length > 0) {
       for (const ref of reqState.rawSheetRefs) {
-        if (ref.key === "automationCommanderSheetId" || ref.key === "acSheetId") {
+        const refField = ref.fieldName || ref.key;
+        if (refField === "automationCommanderSheetId" || refField === "acSheetId") {
           ref.target[ref.key] = unwrapSheetId("default");
         } else {
           ref.target[ref.key] = "__RAW_SHEET_ID_FORBIDDEN__";
@@ -324,7 +382,7 @@ export function installSheetIdBoundary(req, res, sessionUser = null) {
         return origJson(payload);
       }
       const effectiveUser = state.sessionUser !== undefined ? state.sessionUser : sessionUser;
-      const safePayload = maskResponseSheetIdsForUser(payload, effectiveUser);
+      const safePayload = maskResponseSheetIdsForUser(payload, effectiveUser, new WeakMap(), { allowExternalGoogleSheetIds });
       return origJson(safePayload);
     };
   } else if (sessionUser !== undefined) {

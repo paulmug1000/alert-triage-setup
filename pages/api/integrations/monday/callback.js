@@ -6,7 +6,7 @@
 
 import { exchangeMondayCodeForTokens, getMondayAccountInfo } from "../../../../services/mondayService.js";
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
-import { verifySignedOAuthState, safeCompareSecret, verifyCallbackSessionInitiator } from "../../../../services/authService.js";
+import { verifySignedOAuthState, safeCompareSecret, verifyCallbackSessionInitiator, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
@@ -27,6 +27,11 @@ function parseCookies(cookieHeader) {
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const rl = await checkRateLimit("oauth-int-callback", getTrustedClientIp(req), 30, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: "Too many OAuth callback requests. Please retry shortly." });
   }
 
   const { code, state, error, error_description } = req.query;

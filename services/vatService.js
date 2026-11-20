@@ -271,7 +271,7 @@ function buildSectionPayload({
 /**
  * Fetch and parse VAT tab data + VAT settings for a client.
  */
-export async function fetchVatData(clientName, clientSheetId, bypassCache = false) {
+export async function fetchVatData(clientName, clientSheetId, bypassCache = false, options = {}) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
 
   const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
@@ -280,6 +280,7 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
   const cachedResult = await resolvePortalCache({
     cacheKey,
     bypassCache: Boolean(bypassCache),
+    minBypassAgeMs: options?.minBypassAgeMs || 0,
     l1TtlSecs: 120,
     redisTtlSecs: 86400,
     isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.sections) && Array.isArray(p.fyConfigs)),
@@ -409,81 +410,81 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
       const isCash = vatScheme === "Cash";
       const sections = isCash
         ? [
-            buildSectionPayload({
-              sectionKey: "confirmed",
-              headerRowIdx: 16, // Row 17
-              lineRowIndices: [17, 18, 19, 20], // Rows 18-21
-              totalRowIdx: 21, // Row 22
-              defaultHeaderTitle: "VAT - confirmed only (cash)",
-              defaultLineLabels: [
-                "Input VAT on contractors",
-                "Input VAT on other expenses",
-                "Input VAT on confirmed 3P invoices",
-                "Output VAT on confirmed invoices",
-              ],
-              formattedRows,
-              unformattedRows,
-              fyConfigs,
-              allMonths,
-              quarterMod,
-            }),
-            buildSectionPayload({
-              sectionKey: "total",
-              headerRowIdx: 23, // Row 24
-              lineRowIndices: [24, 25, 26, 27], // Rows 25-28
-              totalRowIdx: 28, // Row 29
-              defaultHeaderTitle: "VAT - total (cash)",
-              defaultLineLabels: [
-                "Input VAT on contractors",
-                "Input VAT on other expenses",
-                "Input VAT on total 3P invoices",
-                "Output VAT on total invoices",
-              ],
-              formattedRows,
-              unformattedRows,
-              fyConfigs,
-              allMonths,
-              quarterMod,
-            }),
-          ]
+          buildSectionPayload({
+            sectionKey: "confirmed",
+            headerRowIdx: 16, // Row 17
+            lineRowIndices: [17, 18, 19, 20], // Rows 18-21
+            totalRowIdx: 21, // Row 22
+            defaultHeaderTitle: "VAT - confirmed only (cash)",
+            defaultLineLabels: [
+              "Input VAT on contractors",
+              "Input VAT on other expenses",
+              "Input VAT on confirmed 3P invoices",
+              "Output VAT on confirmed invoices",
+            ],
+            formattedRows,
+            unformattedRows,
+            fyConfigs,
+            allMonths,
+            quarterMod,
+          }),
+          buildSectionPayload({
+            sectionKey: "total",
+            headerRowIdx: 23, // Row 24
+            lineRowIndices: [24, 25, 26, 27], // Rows 25-28
+            totalRowIdx: 28, // Row 29
+            defaultHeaderTitle: "VAT - total (cash)",
+            defaultLineLabels: [
+              "Input VAT on contractors",
+              "Input VAT on other expenses",
+              "Input VAT on total 3P invoices",
+              "Output VAT on total invoices",
+            ],
+            formattedRows,
+            unformattedRows,
+            fyConfigs,
+            allMonths,
+            quarterMod,
+          }),
+        ]
         : [
-            buildSectionPayload({
-              sectionKey: "confirmed",
-              headerRowIdx: 2, // Row 3
-              lineRowIndices: [3, 4, 5, 6], // Rows 4-7
-              totalRowIdx: 7, // Row 8
-              defaultHeaderTitle: "VAT - confirmed only (accrual)",
-              defaultLineLabels: [
-                "Input VAT on contractors",
-                "Input VAT on other expenses",
-                "Input VAT on confirmed 3P invoices",
-                "Output VAT on confirmed invoices",
-              ],
-              formattedRows,
-              unformattedRows,
-              fyConfigs,
-              allMonths,
-              quarterMod,
-            }),
-            buildSectionPayload({
-              sectionKey: "total",
-              headerRowIdx: 9, // Row 10
-              lineRowIndices: [10, 11, 12, 13], // Rows 11-14
-              totalRowIdx: 14, // Row 15
-              defaultHeaderTitle: "VAT - total (accrual)",
-              defaultLineLabels: [
-                "Input VAT on contractors",
-                "Input VAT on other expenses",
-                "Input VAT on total 3P invoices",
-                "Output VAT on total invoices",
-              ],
-              formattedRows,
-              unformattedRows,
-              fyConfigs,
-              allMonths,
-              quarterMod,
-            }),
-          ];
+          buildSectionPayload({
+            sectionKey: "confirmed",
+            headerRowIdx: 2, // Row 3
+            lineRowIndices: [3, 4, 5, 6], // Rows 4-7
+            totalRowIdx: 7, // Row 8
+            defaultHeaderTitle: "VAT - confirmed only (accrual)",
+            defaultLineLabels: [
+              "Input VAT on contractors",
+              "Input VAT on other expenses",
+              "Input VAT on confirmed 3P invoices",
+              "Output VAT on confirmed invoices",
+            ],
+            formattedRows,
+            unformattedRows,
+            fyConfigs,
+            allMonths,
+            quarterMod,
+          }),
+          buildSectionPayload({
+            sectionKey: "total",
+            headerRowIdx: 9, // Row 10
+            lineRowIndices: [10, 11, 12, 13], // Rows 11-14
+            totalRowIdx: 14, // Row 15
+            defaultHeaderTitle: "VAT - total (accrual)",
+            defaultLineLabels: [
+              "Input VAT on contractors",
+              "Input VAT on other expenses",
+              "Input VAT on total 3P invoices",
+              "Output VAT on total invoices",
+            ],
+            formattedRows,
+            unformattedRows,
+            fyConfigs,
+            allMonths,
+            quarterMod,
+          }),
+        ];
 
       return {
         success: true,

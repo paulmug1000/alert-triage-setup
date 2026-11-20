@@ -540,7 +540,7 @@ export default function ViewsScreen({
             <a
               href={`https://docs.google.com/spreadsheets/d/${activeTab === "budgetOverview" && selectedClient.masterSheetId ? selectedClient.masterSheetId : selectedClient.clientSheetId}/edit`}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="triage-btn"
               style={{
                 display: "inline-flex",

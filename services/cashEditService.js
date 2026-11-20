@@ -101,7 +101,7 @@ export function isCashCellEditable(rowNum, colIdx) {
 /**
  * Fetch 36 months of data from Cash!A1:AK76
  */
-export async function fetchCashData(clientName, clientSheetId, bypassCache = false) {
+export async function fetchCashData(clientName, clientSheetId, bypassCache = false, options = {}) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
 
   const cleanId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || String(clientSheetId).trim());
@@ -110,6 +110,7 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
   const cachedResult = await resolvePortalCache({
     cacheKey,
     bypassCache: Boolean(bypassCache),
+    minBypassAgeMs: options?.minBypassAgeMs || 0,
     l1TtlSecs: 120,
     redisTtlSecs: 86400,
     isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.table1Rows)),

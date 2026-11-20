@@ -310,7 +310,7 @@ export default function EditableSheetEditor({
               <a
                 href={`https://docs.google.com/spreadsheets/d/${client.masterSheetId || client.clientSheetId}/edit`}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 style={{
                   padding: "6px 12px",
                   borderRadius: "6px",

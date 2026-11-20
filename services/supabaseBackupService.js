@@ -454,10 +454,33 @@ export async function importLocalSnapshotToCloud({
   const safeTs = nowIso.replace(/[:.]/g, "-");
   const storagePath = `snapshots/${slug}/${safeTs}_${snapshotId}.json.gz`;
 
+  const MAX_SNAPSHOT_ROWS = 50000;
+  const MAX_SNAPSHOT_COLS = 600;
   const tabsByRole = { master: [], recon: [], client: [] };
   for (const t of payload.tabs) {
-    if (t && tabsByRole[t.sheet_role]) {
-      tabsByRole[t.sheet_role].push(t.tab_name);
+    if (!t || typeof t !== "object") {
+      throw new Error("Invalid snapshot file: each tab entry must be an object.");
+    }
+    const tabName = t.tab_name;
+    if (
+      typeof tabName !== "string" ||
+      tabName.length < 1 ||
+      tabName.length > 100 ||
+      /[\x00-\x1f\x7f]/.test(tabName)
+    ) {
+      throw new Error("Invalid snapshot file: invalid tab_name.");
+    }
+    const valuesGrid = Array.isArray(t.values_grid) ? t.values_grid : [];
+    if (valuesGrid.length > MAX_SNAPSHOT_ROWS) {
+      throw new Error(`Invalid snapshot file: tab "${tabName}" exceeds ${MAX_SNAPSHOT_ROWS} rows.`);
+    }
+    for (const row of valuesGrid) {
+      if (Array.isArray(row) && row.length > MAX_SNAPSHOT_COLS) {
+        throw new Error(`Invalid snapshot file: tab "${tabName}" exceeds ${MAX_SNAPSHOT_COLS} columns.`);
+      }
+    }
+    if (tabsByRole[t.sheet_role]) {
+      tabsByRole[t.sheet_role].push(tabName);
     }
   }
 

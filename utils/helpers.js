@@ -2557,6 +2557,21 @@ export function assertTrustedOrigin(req, res) {
       }
       return false;
     }
+  } else if (req.headers.referer) {
+    try {
+      const refParsed = new URL(req.headers.referer);
+      if (!isTrustedHostname(refParsed.hostname)) {
+        if (res && typeof res.status === "function") {
+          res.status(403).json({ success: false, error: "Forbidden: Untrusted request referer." });
+        }
+        return false;
+      }
+    } catch (_) {
+      if (res && typeof res.status === "function") {
+        res.status(403).json({ success: false, error: "Forbidden: Invalid request referer." });
+      }
+      return false;
+    }
   } else if (secFetchSite === "cross-site") {
     if (res && typeof res.status === "function") {
       res.status(403).json({ success: false, error: "Forbidden: Cross-site request blocked." });

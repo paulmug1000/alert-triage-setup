@@ -449,7 +449,7 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
             const bySheetId = new Map();
             const byClientName = new Map();
             for (const row of data) {
-              const normKey = String(row.normalized_key || normalizeKey_(row.client_name || "")).trim();
+              const normKey = String(row.normalized_key || normalizeClientKey_(row.client_name || "")).trim();
               const cId =
                 extractSheetIdFromUrl(row.client_sheet_id) ||
                 String(row.client_sheet_id || "").trim() ||
@@ -701,7 +701,7 @@ export function expandClientTabFromStorage_(data, tabName, { valuesOnly = false 
   const hasLegacyEmbeddedFormulas = Array.isArray(rawNotes.__formulas_grid);
   const hasDbFormulasCol = Array.isArray(data.formulas_grid) && data.formulas_grid.length > 0;
   const storedVals = Array.isArray(data.values_grid) ? data.values_grid : [];
-  const minCols = Number(data.col_count) || 0;
+  const minCols = Math.min(Math.max(0, Number(data.col_count) || 0), 600);
   let meta = rawNotes.__compact_meta;
   if (
     !meta &&
@@ -3003,10 +3003,21 @@ export async function handleVirtualSheetsCall({
   if (namespace === "values" && method === "append") {
     const rangeStr = params.range || "AutoLog!A:D";
     const incomingValues = params.requestBody?.values || params.resource?.values || [];
+    if (!Array.isArray(incomingValues) || incomingValues.length > 50000) {
+      throw new Error("values.append payload exceeds maximum row limit (50,000).");
+    }
+    for (const row of incomingValues) {
+      if (Array.isArray(row) && row.length > 600) {
+        throw new Error("values.append payload exceeds maximum column limit (600).");
+      }
+    }
     const valueInputOption = params.valueInputOption || "USER_ENTERED";
     const parsed = parseA1Range(rangeStr);
     const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
     const baseRow0 = Array.isArray(rec.values_grid) ? rec.values_grid.length : 0;
+    if (baseRow0 + incomingValues.length > 50000) {
+      throw new Error(`values.append would exceed maximum tab row limit (50,000) for "${parsed.tabName}".`);
+    }
     const normRows = incomingValues.map((row, rIdx) =>
       (Array.isArray(row) ? row : [row]).map((v, cIdx) =>
         normalizeCellForStorage(

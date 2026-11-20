@@ -1350,6 +1350,7 @@ function writeToAutoLog(category, summary, details) {
 /**
  * PART 2: INTERNAL SHEET MANIPULATION FUNCTIONS
  *
+ * v3.13 (Preserve untouched formulas via getFormulas() in pushOutgoingsToClientSheet and sanitize external/overdue cell strings before setValues)
  * v3.12 (Preserve untouched formulas and prevent RAW-to-USER_ENTERED promotion in updateStaleUnsentInvoices, enforce numeric QuickBooks realmId, and disable HTTP redirects on API fetches)
  * v3.11 (Process Non-Operating Income & Expenses sections in pushOutgoingsWithPLAddsToClientSheet from PLComp F..K, matching pushOutgoingsToClientSheet)
  * v3.10 (Protect Outgoings system rows 225-226 in pushOutgoingsWithPLAddsToClientSheet and support 7-col Confirmed recharged/cost-month slots in processPartPaidInvoices)
@@ -1620,18 +1621,20 @@ async function pushOutgoingsToClientSheet(isHeadless = false) {
               if (isValidExpenseCategory_(cat)) dataMap.set(cat.toString().trim(), values[idx] || 0);
           });
 
-          // Read Current Target Data for this Month
+          // Read Current Target Data & Formulas for this Month
           const targetSectionRange = targetSheet.getRange(targetRangeDef.start, targetColumn, targetRangeDef.height, 1);
           const targetSectionData = targetSectionRange.getValues();
+          const targetSectionFormulas = targetSectionRange.getFormulas();
           const rowsToInit = [];
 
           // Map Data
           dataMap.forEach((val, cat) => {
               if (!isValidExpenseCategory_(cat)) return;
+              const safeVal = (typeof val === 'string' && typeof sanitizeSheetCell_ === 'function') ? sanitizeSheetCell_(val) : val;
               let idx = targetCatsList.indexOf(cat);
               if (idx !== -1) {
                   // Existing
-                  targetSectionData[idx][0] = val;
+                  targetSectionData[idx][0] = safeVal;
               } else {
                   // New -> Find Blank
                   const blankIdx = targetCatsList.indexOf('');
@@ -1640,7 +1643,7 @@ async function pushOutgoingsToClientSheet(isHeadless = false) {
                       
                       if (!isDepRow) {
                           targetCatsList[blankIdx] = cat;
-                          targetSectionData[blankIdx][0] = val;
+                          targetSectionData[blankIdx][0] = safeVal;
                           
                           const type = categoryTypeMap.get(cat);
                           let defaults = DEFAULTS_OVERHEAD;
@@ -1659,11 +1662,17 @@ async function pushOutgoingsToClientSheet(isHeadless = false) {
               }
           });
 
-          // Zero out missing
+          // Preserve untouched formulas or zero out missing categories
           targetCatsList.forEach((cat, idx) => {
+              if (targetSectionFormulas[idx] && targetSectionFormulas[idx][0]) {
+                  targetSectionData[idx][0] = targetSectionFormulas[idx][0];
+                  return;
+              }
               const isDep = (cat === expectedDepreciationName);
               if (cat && !isDep && !dataMap.has(cat)) {
                   targetSectionData[idx][0] = 0;
+              } else if (typeof targetSectionData[idx][0] === 'string' && typeof sanitizeSheetCell_ === 'function') {
+                  targetSectionData[idx][0] = sanitizeSheetCell_(targetSectionData[idx][0]);
               }
           });
 
@@ -1696,19 +1705,22 @@ async function pushOutgoingsToClientSheet(isHeadless = false) {
       cosCategories.forEach((c, ix) => { if(isValidExpenseCategory_(c)) mainDataMap.set(c.toString().trim(), cosVals[ix]||0); });
       overheadCategories.forEach((c, ix) => { if(isValidExpenseCategory_(c)) mainDataMap.set(c.toString().trim(), ovrVals[ix]||0); });
 
-      const mainRangeValues = targetSheet.getRange(expenseRange.start, targetColumn, expenseRange.height, 1).getValues();
+      const mainRange = targetSheet.getRange(expenseRange.start, targetColumn, expenseRange.height, 1);
+      const mainRangeValues = mainRange.getValues();
+      const mainRangeFormulas = mainRange.getFormulas();
       const mainNewRows = [];
       
       mainDataMap.forEach((val, cat) => {
           if (!isValidExpenseCategory_(cat)) return;
+          const safeVal = (typeof val === 'string' && typeof sanitizeSheetCell_ === 'function') ? sanitizeSheetCell_(val) : val;
           let idx = targetCatsOverhead.indexOf(cat);
           if (idx !== -1) {
-              mainRangeValues[idx][0] = val;
+              mainRangeValues[idx][0] = safeVal;
           } else {
               const blankIdx = targetCatsOverhead.indexOf('');
               if (blankIdx !== -1 && (expenseRange.start + blankIdx) !== depreciationTargetRow) {
                   targetCatsOverhead[blankIdx] = cat;
-                  mainRangeValues[blankIdx][0] = val;
+                  mainRangeValues[blankIdx][0] = safeVal;
                   const type = categoryTypeMap.get(cat) || 'Overhead';
                   mainNewRows.push({
                       row: expenseRange.start + blankIdx,
@@ -1721,11 +1733,19 @@ async function pushOutgoingsToClientSheet(isHeadless = false) {
           }
       });
       targetCatsOverhead.forEach((cat, idx) => {
+          if (mainRangeFormulas[idx] && mainRangeFormulas[idx][0]) {
+              mainRangeValues[idx][0] = mainRangeFormulas[idx][0];
+              return;
+          }
           const catLower = String(cat || "").trim().toLowerCase();
-          if (cat && cat !== expectedDepreciationName && !catLower.startsWith("recharged expenses") && !mainDataMap.has(cat)) mainRangeValues[idx][0] = 0;
+          if (cat && cat !== expectedDepreciationName && !catLower.startsWith("recharged expenses") && !mainDataMap.has(cat)) {
+              mainRangeValues[idx][0] = 0;
+          } else if (typeof mainRangeValues[idx][0] === 'string' && typeof sanitizeSheetCell_ === 'function') {
+              mainRangeValues[idx][0] = sanitizeSheetCell_(mainRangeValues[idx][0]);
+          }
       });
-      targetSheet.getRange(expenseRange.start, targetColumn, expenseRange.height, 1).setValues(mainRangeValues);
-      targetSheet.getRange(expenseRange.start, targetColumn, expenseRange.height, 1).setBackground(null);
+      mainRange.setValues(mainRangeValues);
+      mainRange.setBackground(null);
       mainNewRows.forEach(item => {
           targetSheet.getRange(item.row, 1).setValue(sanitizeSheetCell_(item.name)).setBackground("#ffcc99");
           targetSheet.getRange(item.row, 2, 1, 5).setValues([item.defaults]).setBackground("#ffcc99");
@@ -4112,7 +4132,9 @@ async function updateOverdueInvoicesInConfirmed(ss, alertSheet) {
       updates.forEach(u => {
          const rIdx = u.row - minRow;
          const cIdx = u.col - minCol;
-         values[rIdx][cIdx] = u.value;
+         values[rIdx][cIdx] = (typeof u.value === 'string' && typeof sanitizeSheetCell_ === 'function')
+           ? sanitizeSheetCell_(u.value)
+           : u.value;
          const oldNote = notes[rIdx][cIdx];
          notes[rIdx][cIdx] = oldNote ? `${u.note}\n\n${oldNote}` : u.note;
          rangesToFormat.push(`${colToLetter(u.col)}${u.row}`);
@@ -5903,6 +5925,7 @@ async function processPartPaidInvoices(ss, alertSheet) {
 /**
  * PART 3: QUICKBOOKS, "STARTER", AND "YEAR 0" FUNCTIONS
  *
+ * v2.78 (Preserve untouched formulas via getFormulas() in StarterPushExpToOutgoings and sanitize non-formula string cells in Year0Data/Outgoings batch writes)
  * v2.77 (Decommission KeyInfo!U2:U3 OAuth secret reads in refreshQBAccessToken, enforce numeric /^\d{1,30}$/ QuickBooks realmId validation, and disable HTTP redirects on API fetches)
  * v2.76 (Include Confirmed Col R recharged expenses and AP:BJ invoice columns in StarterPushInvToConfirmed zone check)
  * v2.75 (Expand syncYear0DataToClientSheet_ range from A1:BR205 to A1:BZ205 to preserve column BT annual salary overrides)
@@ -6962,14 +6985,16 @@ async function syncYear0DataToClientSheet_() {
         let f = formulas[r][c];
         if (f) {
           if (/Year0PLFromApp|KeyInfo!\$?B[AE]|CC2:CC502|AZ71/i.test(f)) {
-            row.push(values[r][c]);
+            const rawVal = values[r][c];
+            row.push(typeof rawVal === "string" && typeof sanitizeSheetCell_ === "function" ? sanitizeSheetCell_(rawVal) : rawVal);
           } else if (/SUM\(BE\$82:BE\$589\)/i.test(f)) {
             row.push(f.replace(/589/g, "205"));
           } else {
             row.push(f);
           }
         } else {
-          row.push(values[r][c]);
+          const rawVal = values[r][c];
+          row.push(typeof rawVal === "string" && typeof sanitizeSheetCell_ === "function" ? sanitizeSheetCell_(rawVal) : rawVal);
         }
       }
       out.push(row);
@@ -7358,18 +7383,31 @@ async function StarterPushPLToOutgoings() {
       });
       // 2. Perform Batch Writes for this Month 
       if (updates.length > 0) {
-         // Read current column data for the Expense Section
+         // Read current column data & formulas for the Expense Section
          const rangeHeight = categoriesToWrite.length;
          const targetRange = targetSheet.getRange(expenseStartRow, targetColIndex, rangeHeight, 1);
          const columnData = targetRange.getValues();
+         const columnFormulas = targetRange.getFormulas();
+         const updatedRows = new Set();
 
-         // Update in memory
+         // Update in memory (preserving untouched formulas and sanitizing external strings)
          updates.forEach(u => {
              const relativeRow = u.row - expenseStartRow;
              if (relativeRow >= 0 && relativeRow < rangeHeight) {
-                 columnData[relativeRow][0] = u.val;
+                 updatedRows.add(relativeRow);
+                 columnData[relativeRow][0] = (typeof u.val === 'string' && typeof sanitizeSheetCell_ === 'function')
+                   ? sanitizeSheetCell_(u.val)
+                   : u.val;
              }
          });
+         for (let rIdx = 0; rIdx < rangeHeight; rIdx++) {
+             if (updatedRows.has(rIdx)) continue;
+             if (columnFormulas[rIdx] && columnFormulas[rIdx][0]) {
+                 columnData[rIdx][0] = columnFormulas[rIdx][0];
+             } else if (typeof columnData[rIdx][0] === 'string' && typeof sanitizeSheetCell_ === 'function') {
+                 columnData[rIdx][0] = sanitizeSheetCell_(columnData[rIdx][0]);
+             }
+         }
 
          // Write back column at once
          targetRange.setValues(columnData);
@@ -13703,6 +13741,7 @@ async function runManualPartPaidExpensesAudit() {
  * ==          ROUTING FUNCTIONS          ==
  * =========================================
  *
+ * v2.83 (Remove SpreadsheetApp.openByUrl fallback in PullFromGoogleSheet_, reject internal KeyInfo/Pulse workbooks via metadata preflight, and fail closed without OAuth token)
  * v2.82 (Fail closed on HTTP 401/403 in PullFromGoogleSheet_ instead of falling back to openByUrl, and block any single internal Pulse tab match)
  * v2.81 (Guard PullFromGoogleSheet_ native open against internal Pulse workbooks, disable HTTP redirects on Token Broker and Microsoft Graph API fetches, and enforce canonical Pulse Broker host)
  * v2.80 (Normalize numeric, percent, and date comparisons in PullFromExcelSheet_ delta check to stop false-delta overwrites and stamp CRMComp!J2 when unchanged)
@@ -13879,60 +13918,70 @@ async function PullFromGoogleSheet_(isHeadless) {
       throw new Error("Missing URL (X11) or Tab Name (X12) in KeyInfo for Google Sheet sync.");
     }
 
-    // 2. Fetch raw data from remote client sheet (REST API with OAuth token or native openByUrl)
+    // 2. Fetch raw data from remote client sheet (strictly via OAuth REST API — never openByUrl)
     let rawData = null;
     const token = (await getBrokerGoogleSheetAccessToken_());
     const sheetIdMatch = String(url).match(/\/d\/([a-zA-Z0-9-_]+)/);
     const targetSheetId = sheetIdMatch ? sheetIdMatch[1] : (/^[a-zA-Z0-9-_]{20,}$/.test(String(url).trim()) ? String(url).trim() : null);
 
-    if (token && targetSheetId) {
-      try {
-        console.log("Fetching Google Sheet data via Google Sheets REST API with OAuth token...");
-        const apiUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSheetId)}/values/${encodeURIComponent(tabName)}?valueRenderOption=FORMATTED_VALUE`;
-        const res = (await UrlFetchApp.fetch(apiUrl, {
-          headers: { 'Authorization': `Bearer ${token}` },
-          muteHttpExceptions: true,
-          followRedirects: false
-        }));
-        if (res.getResponseCode() === 200) {
-          const json = JSON.parse(res.getContentText());
-          rawData = json.values || [];
-        } else if (res.getResponseCode() === 401 || res.getResponseCode() === 403) {
-          throw new Error(`Access denied (HTTP ${res.getResponseCode()}) while fetching the configured Google Sheet via OAuth.`);
-        } else {
-          console.warn(`Token Broker Google Sheets API returned HTTP ${res.getResponseCode()}: ${res.getContentText()}. Falling back to native open.`);
-        }
-      } catch (apiErr) {
-        if (String(apiErr && apiErr.message || "").indexOf("Access denied") !== -1) {
-          throw apiErr;
-        }
-        console.warn(`REST API fetch failed: ${apiErr.message}. Falling back to native open.`);
-      }
-    } else if (!token) {
-      console.warn("No active OAuth token returned from Token Broker for Google Sheets. Attempting native open...");
+    if (!token) {
+      throw new Error("Missing Google Sheets OAuth authorization. Connect Google Sheet via PMA Integrations.");
+    }
+    if (!targetSheetId) {
+      throw new Error("Invalid Google Sheet URL configured for CRM sync.");
     }
 
-    if (!rawData) {
-      try {
-        const remoteSs = (await SpreadsheetApp.openByUrl(url));
-        const forbiddenInternalTabs = ['KeyInfo', 'InvComp', 'DirComp', 'CRMComp', 'PLComp', 'AutoUpdates', 'RepControl'];
-        const remoteTabNames = remoteSs.getSheets().map(s => s.getName());
-        const matchedInternalTabs = forbiddenInternalTabs.filter(t => remoteTabNames.indexOf(t) !== -1);
-        if (matchedInternalTabs.length >= 1 || remoteSs.getId() === SpreadsheetApp.getActiveSpreadsheet().getId()) {
-          throw new Error("Access denied: Target spreadsheet appears to be an internal Pulse workbook rather than an external CRM sheet.");
-        }
-        const remoteSheet = remoteSs.getSheetByName(tabName);
-        if (!remoteSheet) {
-          throw new Error(`Tab "${tabName}" not found in the target Google Sheet.`);
-        }
-        rawData = remoteSheet.getDataRange().getValues();
-      } catch (nativeErr) {
-        if (!token) {
-          throw new Error("Missing Google Sheets authorization. Please connect Google Sheet via PMA Integrations (or ensure sheet is shared). Details: " + nativeErr.message);
-        }
-        throw nativeErr;
-      }
+    const extractSheetIdLocal_ = (val) => {
+      const str = String(val || "").trim();
+      const m = str.match(/\/d\/([a-zA-Z0-9-_]+)/);
+      if (m) return m[1];
+      return /^[a-zA-Z0-9-_]{20,}$/.test(str) ? str : "";
+    };
+    const activeMasterSs = SpreadsheetApp.getActiveSpreadsheet();
+    const forbiddenIds = new Set([activeMasterSs.getId()]);
+    for (const coord of ['C1', 'D1', 'G1', 'X28']) {
+      const refId = extractSheetIdLocal_((await getKeyInfoValue(coord)));
+      if (refId) forbiddenIds.add(refId);
     }
+    if (forbiddenIds.has(targetSheetId)) {
+      throw new Error("Access denied: Target spreadsheet matches an internal Pulse workbook rather than an external CRM sheet.");
+    }
+
+    const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSheetId)}?fields=sheets.properties.title`;
+    const metaRes = (await UrlFetchApp.fetch(metaUrl, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      muteHttpExceptions: true,
+      followRedirects: false
+    }));
+    if (metaRes.getResponseCode() !== 200) {
+      throw new Error(`Access denied (HTTP ${metaRes.getResponseCode()}) while verifying target Google Sheet metadata via OAuth.`);
+    }
+    const metaJson = JSON.parse(metaRes.getContentText() || "{}");
+    const forbiddenInternalTabs = new Set([
+      'KeyInfo', 'InvComp', 'DirComp', 'CRMComp', 'PLComp',
+      'Confirmed', 'Pipeline', 'Outgoings', 'Salaries', 'AppData',
+      'OutgNotes', 'ConfCalcs', 'PipeCalcs', 'AutoUpdates',
+      'RepControl', 'EomReportingConfig', 'Clients', 'DeployLog'
+    ]);
+    const remoteTabNames = Array.isArray(metaJson.sheets)
+      ? metaJson.sheets.map(s => s && s.properties ? s.properties.title : "")
+      : [];
+    if (remoteTabNames.some(t => forbiddenInternalTabs.has(String(t || "").trim()))) {
+      throw new Error("Access denied: Target spreadsheet appears to be an internal Pulse workbook rather than an external CRM sheet.");
+    }
+
+    console.log("Fetching Google Sheet data via Google Sheets REST API with OAuth token...");
+    const apiUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSheetId)}/values/${encodeURIComponent(tabName)}?valueRenderOption=FORMATTED_VALUE`;
+    const res = (await UrlFetchApp.fetch(apiUrl, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      muteHttpExceptions: true,
+      followRedirects: false
+    }));
+    if (res.getResponseCode() !== 200) {
+      throw new Error(`Google Sheets REST API fetch failed (HTTP ${res.getResponseCode()}) for the configured external sheet.`);
+    }
+    const json = JSON.parse(res.getContentText() || "{}");
+    rawData = json.values || [];
 
     if (!rawData || rawData.length === 0) {
       logOrAlert("The target Google Sheet is empty.", isHeadless);

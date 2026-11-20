@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * PULSE GAS RUNTIME ENVIRONMENT (services/gasRuntime/gasEnvironment.js)
- * Version: 1.06 — Align Master ConfCalcs/PipeCalcs zero-row trim check columns with direct-cost & start-date slots
+ * Version: 1.07 — Add DNS-pinned HTTP(S) transport, expanded IPv6 SSRF ranges, sheets.googleapis.com internal-sheet guard, and query-redacted fetch errors in UrlFetchApp
  * ============================================================================
  * Provides a 100% faithful Google Apps Script execution environment for the
  * verbatim compiled Master GAS scripts (`compiledMasterGas.js`), backed by:
@@ -13,7 +13,10 @@
 
 import { randomUUID } from "crypto";
 import dns from "dns";
+import http from "http";
+import https from "https";
 import net from "net";
+import zlib from "zlib";
 import { getSupabaseAdmin } from "../supabaseClient.js";
 import { extractSheetIdFromUrl } from "../sheetsClient.js";
 import { assertExternalCrmSpreadsheet } from "../googleSheetService.js";
@@ -2671,6 +2674,11 @@ export async function createGasEnvironment({
         const mappedV4 = `${(g[6] >> 8) & 0xff}.${g[6] & 0xff}.${(g[7] >> 8) & 0xff}.${g[7] & 0xff}`;
         return isBlockedIpv4_(mappedV4);
       }
+      // IPv4-translated (::ffff:0:0/96)
+      if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0xffff && g[5] === 0) {
+        const translatedV4 = `${(g[6] >> 8) & 0xff}.${g[6] & 0xff}.${(g[7] >> 8) & 0xff}.${g[7] & 0xff}`;
+        return isBlockedIpv4_(translatedV4);
+      }
       if (g[0] === 0x0064 && (g[1] & 0xfffe) === 0xff9a) {
         const nat64V4 = `${(g[6] >> 8) & 0xff}.${g[6] & 0xff}.${(g[7] >> 8) & 0xff}.${g[7] & 0xff}`;
         return isBlockedIpv4_(nat64V4);
@@ -2679,8 +2687,13 @@ export async function createGasEnvironment({
         const sixTo4V4 = `${(g[1] >> 8) & 0xff}.${g[1] & 0xff}.${(g[2] >> 8) & 0xff}.${g[2] & 0xff}`;
         if (isBlockedIpv4_(sixTo4V4)) return true;
       }
+      // Teredo (2001::/32), Documentation (2001:db8::/32), BMWG (2001:2::/48)
+      if (g[0] === 0x2001 && (g[1] === 0x0000 || g[1] === 0x0db8 || (g[1] === 0x0002 && g[2] === 0x0000))) {
+        return true;
+      }
       if ((g[0] & 0xfe00) === 0xfc00) return true;
       if ((g[0] & 0xffc0) === 0xfe80) return true;
+      if ((g[0] & 0xffc0) === 0xfec0) return true;
       if ((g[0] & 0xff00) === 0xff00) return true;
       if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true;
       return false;
@@ -2727,11 +2740,21 @@ export async function createGasEnvironment({
       process.env.NODE_ENV !== "production" &&
       targetUrlObj.protocol === "http:" &&
       (cleanHost === "localhost" || cleanHost === "127.0.0.1");
-    if (isLoopbackNonProd) return;
+    if (isLoopbackNonProd) {
+      return {
+        cleanHost,
+        pinnedAddress: cleanHost === "localhost" ? "127.0.0.1" : cleanHost,
+        pinnedFamily: 4,
+        isLoopbackNonProd: true,
+      };
+    }
     if (targetUrlObj.protocol !== "https:" || isBlockedSsrfHost_(cleanHost)) {
       throw new Error(`Blocked unsafe external fetch target in UrlFetchApp.fetch: ${targetUrlObj.origin}`);
     }
-    if (net.isIP(cleanHost.split("%")[0]) === 0) {
+
+    let pinnedAddress = cleanHost;
+    let pinnedFamily = net.isIP(cleanHost.split("%")[0]);
+    if (pinnedFamily === 0) {
       let resolved;
       try {
         resolved = await dns.promises.lookup(cleanHost, { all: true, verbatim: true });
@@ -2746,45 +2769,160 @@ export async function createGasEnvironment({
           throw new Error(`Blocked private or reserved DNS target in UrlFetchApp.fetch: ${cleanHost}`);
         }
       }
+      pinnedAddress = resolved[0].address;
+      pinnedFamily = resolved[0].family || net.isIP(pinnedAddress) || 4;
+    } else {
+      pinnedAddress = cleanHost.split("%")[0];
     }
+
+    if (cleanHost === "sheets.googleapis.com") {
+      const ssMatch = String(targetUrlObj.pathname || "").match(/\/v4\/spreadsheets\/([^/?#:]+)/);
+      if (ssMatch) {
+        let decodedId = ssMatch[1];
+        try { decodedId = decodeURIComponent(ssMatch[1]); } catch { }
+        if (decodedId && decodedId !== ctx.clientSheetId) {
+          await assertExternalCrmSpreadsheet(sheets, decodedId);
+        }
+      }
+    }
+
+    return { cleanHost, pinnedAddress, pinnedFamily, isLoopbackNonProd: false };
   };
 
-  const readBoundedResponseBuffer_ = async (resp, maxBytes = MAX_FETCH_RESPONSE_BYTES) => {
-    const clHeader = resp.headers?.get?.("content-length");
-    const clNum = clHeader !== null && clHeader !== undefined && clHeader !== "" ? Number(clHeader) : NaN;
-    if (Number.isFinite(clNum) && clNum > maxBytes) {
-      if (resp.body && typeof resp.body.cancel === "function") {
-        await resp.body.cancel().catch(() => {});
-      }
-      throw new Error(`Response content-length (${clNum}) exceeded ${maxBytes} byte limit in UrlFetchApp.fetch`);
+  const isSensitiveHeaderKey_ = (k) => {
+    const lk = String(k || "").trim().toLowerCase();
+    return (
+      [
+        "authorization",
+        "cookie",
+        "x-pulse-client-secret",
+        "x-cron-secret",
+        "x-internal-secret",
+        "x-api-key",
+        "api-key",
+        "api-token",
+        "x-auth-token",
+        "x-vercel-protection-bypass",
+        "harvest-account-id",
+      ].includes(lk) || /(?:token|secret|api[-_]?key|auth)/i.test(lk)
+    );
+  };
+
+  const executePinnedHttpRequest_ = async (
+    targetUrlObj,
+    { method = "GET", headers = {}, body = undefined, pinnedAddress, pinnedFamily = 4, cleanHost, timeoutMs = MAX_FETCH_TIMEOUT_MS, maxBytes = MAX_FETCH_RESPONSE_BYTES }
+  ) => {
+    const isHttps = targetUrlObj.protocol === "https:";
+    const transport = isHttps ? https : http;
+    const reqHeaders = {};
+    for (const [k, v] of Object.entries(headers || {})) {
+      if (v === undefined || v === null) continue;
+      reqHeaders[k] = String(v).replace(/[\r\n]+/g, " ");
     }
-    if (resp.body && typeof resp.body.getReader === "function") {
-      const reader = resp.body.getReader();
-      const chunks = [];
-      let totalBytes = 0;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value && value.byteLength) {
-            totalBytes += value.byteLength;
-            if (totalBytes > maxBytes) {
-              await reader.cancel().catch(() => {});
-              throw new Error(`Response exceeded ${maxBytes} byte limit in UrlFetchApp.fetch`);
-            }
-            chunks.push(Buffer.from(value));
+    const hasHost = Object.keys(reqHeaders).some((k) => k.toLowerCase() === "host");
+    if (!hasHost && targetUrlObj.host) {
+      reqHeaders["Host"] = targetUrlObj.host;
+    }
+    let bodyBuf = null;
+    if (body !== undefined && body !== null && method !== "GET" && method !== "HEAD") {
+      bodyBuf = Buffer.isBuffer(body) ? body : Buffer.from(String(body), "utf8");
+      const hasContentLen = Object.keys(reqHeaders).some((k) => k.toLowerCase() === "content-length");
+      if (!hasContentLen) {
+        reqHeaders["Content-Length"] = String(bodyBuf.byteLength);
+      }
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const doneReject = (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
+      const doneResolve = (val) => {
+        if (settled) return;
+        settled = true;
+        resolve(val);
+      };
+
+      const reqOpts = {
+        protocol: targetUrlObj.protocol,
+        hostname: cleanHost || targetUrlObj.hostname,
+        port: targetUrlObj.port ? Number(targetUrlObj.port) : (isHttps ? 443 : 80),
+        path: `${targetUrlObj.pathname}${targetUrlObj.search}`,
+        method,
+        headers: reqHeaders,
+        lookup: (_hostname, opts, cb) => {
+          const cbFn = typeof opts === "function" ? opts : cb;
+          const wantAll = typeof opts === "object" && opts !== null && Boolean(opts.all);
+          if (wantAll) {
+            return cbFn(null, [{ address: pinnedAddress, family: pinnedFamily }]);
           }
-        }
-      } finally {
-        reader.releaseLock();
+          return cbFn(null, pinnedAddress, pinnedFamily);
+        },
+      };
+      if (isHttps && net.isIP(String(cleanHost || "")) === 0) {
+        reqOpts.servername = cleanHost;
       }
-      return Buffer.concat(chunks);
-    }
-    const buf = Buffer.from(await resp.arrayBuffer());
-    if (buf.byteLength > maxBytes) {
-      throw new Error(`Response exceeded ${maxBytes} byte limit in UrlFetchApp.fetch`);
-    }
-    return buf;
+
+      const clientReq = transport.request(reqOpts, (res) => {
+        const resHeaders = {};
+        for (const [hk, hv] of Object.entries(res.headers || {})) {
+          resHeaders[hk.toLowerCase()] = Array.isArray(hv) ? hv.join(", ") : String(hv ?? "");
+        }
+        const clNum = resHeaders["content-length"] ? Number(resHeaders["content-length"]) : NaN;
+        if (Number.isFinite(clNum) && clNum > maxBytes) {
+          res.destroy();
+          clientReq.destroy();
+          return doneReject(new Error(`Response content-length (${clNum}) exceeded ${maxBytes} byte limit in UrlFetchApp.fetch`));
+        }
+
+        const chunks = [];
+        let totalBytes = 0;
+        res.on("data", (chunk) => {
+          totalBytes += chunk.length;
+          if (totalBytes > maxBytes) {
+            res.destroy();
+            clientReq.destroy();
+            return doneReject(new Error(`Response exceeded ${maxBytes} byte limit in UrlFetchApp.fetch`));
+          }
+          chunks.push(chunk);
+        });
+        res.on("error", (resErr) => doneReject(resErr));
+        res.on("end", () => {
+          try {
+            let buf = Buffer.concat(chunks);
+            const enc = String(resHeaders["content-encoding"] || "").toLowerCase().trim();
+            if (enc.includes("br")) {
+              buf = zlib.brotliDecompressSync(buf, { maxOutputLength: maxBytes });
+            } else if (enc.includes("gzip") || enc.includes("x-gzip")) {
+              buf = zlib.gunzipSync(buf, { maxOutputLength: maxBytes });
+            } else if (enc.includes("deflate")) {
+              buf = zlib.inflateSync(buf, { maxOutputLength: maxBytes });
+            }
+            const status = res.statusCode || 0;
+            doneResolve({
+              status,
+              ok: status >= 200 && status < 300,
+              headers: resHeaders,
+              bodyBuffer: buf,
+            });
+          } catch (decodeErr) {
+            doneReject(new Error(`Failed to decode response in UrlFetchApp.fetch: ${decodeErr.message}`));
+          }
+        });
+      });
+
+      clientReq.setTimeout(timeoutMs, () => {
+        clientReq.destroy(new Error(`Request timed out after ${timeoutMs}ms in UrlFetchApp.fetch`));
+      });
+      clientReq.on("error", (reqErr) => doneReject(reqErr));
+
+      if (bodyBuf) {
+        clientReq.write(bodyBuf);
+      }
+      clientReq.end();
+    });
   };
 
   const UrlFetchApp = {
@@ -2876,8 +3014,9 @@ export async function createGasEnvironment({
         }
       }
 
-      // 3. External HTTP fetch (SSRF + DNS + manual redirect + timeout + bounded response)
-      await assertSafeExternalTarget_(uObj, true);
+      // 3. External HTTP fetch (SSRF + DNS-pinned socket + manual redirect + timeout + bounded response)
+      let currentUrlObj = uObj;
+      let targetPin = await assertSafeExternalTarget_(currentUrlObj, true);
 
       let currentMethod = String(params.method || "GET").toUpperCase();
       let currentHeaders = { ...(params.headers || {}) };
@@ -2900,32 +3039,29 @@ export async function createGasEnvironment({
         }
       }
 
-      const hasAuthOrSecretHeader = Object.keys(currentHeaders).some((k) =>
-        ["authorization", "x-pulse-client-secret", "x-cron-secret", "x-internal-secret"].includes(k.toLowerCase())
-      );
+      const hasAuthOrSecretHeader = Object.keys(currentHeaders).some((k) => isSensitiveHeaderKey_(k));
       const allowRedirects = params.followRedirects !== false && !hasAuthOrSecretHeader;
 
-      let currentUrlObj = uObj;
       let resp = null;
       for (let hop = 0; hop <= MAX_SSRF_REDIRECT_HOPS; hop++) {
-        resp = await fetch(currentUrlObj.toString(), {
+        resp = await executePinnedHttpRequest_(currentUrlObj, {
           method: currentMethod,
           headers: currentHeaders,
           body: currentBody,
-          redirect: "manual",
-          signal: AbortSignal.timeout(MAX_FETCH_TIMEOUT_MS),
+          pinnedAddress: targetPin.pinnedAddress,
+          pinnedFamily: targetPin.pinnedFamily,
+          cleanHost: targetPin.cleanHost,
+          timeoutMs: MAX_FETCH_TIMEOUT_MS,
+          maxBytes: MAX_FETCH_RESPONSE_BYTES,
         });
 
         const isRedirect = [301, 302, 303, 307, 308].includes(resp.status);
         if (!isRedirect || !allowRedirects) {
           break;
         }
-        const location = resp.headers.get("location");
+        const location = resp.headers["location"];
         if (!location) {
           break;
-        }
-        if (resp.body && typeof resp.body.cancel === "function") {
-          await resp.body.cancel().catch(() => {});
         }
         if (hop === MAX_SSRF_REDIRECT_HOPS) {
           throw new Error(`Exceeded maximum redirect hops (${MAX_SSRF_REDIRECT_HOPS}) in UrlFetchApp.fetch`);
@@ -2937,13 +3073,12 @@ export async function createGasEnvironment({
         } catch {
           throw new Error(`Invalid redirect location in UrlFetchApp.fetch: ${location}`);
         }
-        await assertSafeExternalTarget_(nextUrlObj, false);
+        targetPin = await assertSafeExternalTarget_(nextUrlObj, false);
 
         if (nextUrlObj.origin !== currentUrlObj.origin) {
           const stripped = {};
           for (const [k, v] of Object.entries(currentHeaders)) {
-            const lk = k.toLowerCase();
-            if (!["authorization", "cookie", "x-pulse-client-secret", "x-cron-secret", "x-internal-secret"].includes(lk)) {
+            if (!isSensitiveHeaderKey_(k)) {
               stripped[k] = v;
             }
           }
@@ -2958,12 +3093,13 @@ export async function createGasEnvironment({
         currentUrlObj = nextUrlObj;
       }
 
-      const respBuffer = await readBoundedResponseBuffer_(resp, MAX_FETCH_RESPONSE_BYTES);
+      const respBuffer = resp.bodyBuffer || Buffer.alloc(0);
       const respText = respBuffer.toString("utf8");
-      const respHeaders = Object.fromEntries(resp.headers.entries());
+      const respHeaders = resp.headers || {};
 
       if (!resp.ok && !params.muteHttpExceptions) {
-        throw new Error(`Request failed for ${urlStr} returned code ${resp.status}: ${respText.slice(0, 500)}`);
+        const sanitizedErrUrl = `${currentUrlObj.origin}${currentUrlObj.pathname}`;
+        throw new Error(`Request failed for ${sanitizedErrUrl} returned code ${resp.status}: ${respText.slice(0, 500)}`);
       }
 
       return {

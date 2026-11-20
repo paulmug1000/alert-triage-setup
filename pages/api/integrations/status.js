@@ -12,7 +12,7 @@
 
 import { getIntegrationStatus, getSharedXeroGrant, INTEGRATIONS_STATUS_CACHE_KEY } from "../../../services/vaultService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, resolveClientNameBySheetId, canAccessPma, installSheetIdBoundary } from "../../../services/userPermissions.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, canAccessPma, installSheetIdBoundary } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
 import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "../../../services/supabaseClient.js";
@@ -291,33 +291,33 @@ export default async function handler(req, res) {
 
             const crmAuto = sched
               ? evaluateAutomationHealth({
-                  frequency: sched.crm_freq,
-                  isRunning: hasActiveInFlight && (!inFlightSeqs || inFlightSeqs.includes("crm")),
-                  lastCommandTime: sched.last_crm_run || "",
-                  signalFeedback: sched.crm_status || "",
-                  lastRunEndTime: sched.last_crm_run || "",
-                  summary: sched.crm_status || "",
-                })
+                frequency: sched.crm_freq,
+                isRunning: hasActiveInFlight && (!inFlightSeqs || inFlightSeqs.includes("crm")),
+                lastCommandTime: sched.last_crm_run || "",
+                signalFeedback: sched.crm_status || "",
+                lastRunEndTime: sched.last_crm_run || "",
+                summary: sched.crm_status || "",
+              })
               : defaultAuto;
             const invAuto = sched
               ? evaluateAutomationHealth({
-                  frequency: sched.inv_freq,
-                  isRunning: hasActiveInFlight && (!inFlightSeqs || inFlightSeqs.includes("invoice")),
-                  lastCommandTime: sched.last_inv_run || "",
-                  signalFeedback: sched.inv_status || "",
-                  lastRunEndTime: sched.last_inv_run || "",
-                  summary: sched.inv_status || "",
-                })
+                frequency: sched.inv_freq,
+                isRunning: hasActiveInFlight && (!inFlightSeqs || inFlightSeqs.includes("invoice")),
+                lastCommandTime: sched.last_inv_run || "",
+                signalFeedback: sched.inv_status || "",
+                lastRunEndTime: sched.last_inv_run || "",
+                summary: sched.inv_status || "",
+              })
               : defaultAuto;
             const expAuto = sched
               ? evaluateAutomationHealth({
-                  frequency: sched.exp_freq,
-                  isRunning: hasActiveInFlight && (!inFlightSeqs || inFlightSeqs.includes("expense")),
-                  lastCommandTime: sched.last_exp_run || "",
-                  signalFeedback: sched.exp_status || "",
-                  lastRunEndTime: sched.last_exp_run || "",
-                  summary: sched.exp_status || "",
-                })
+                frequency: sched.exp_freq,
+                isRunning: hasActiveInFlight && (!inFlightSeqs || inFlightSeqs.includes("expense")),
+                lastCommandTime: sched.last_exp_run || "",
+                signalFeedback: sched.exp_status || "",
+                lastRunEndTime: sched.last_exp_run || "",
+                summary: sched.exp_status || "",
+              })
               : defaultAuto;
             const accAuto = (healthPriority[expAuto.status] || 0) > (healthPriority[invAuto.status] || 0) ? expAuto : invAuto;
 
@@ -575,11 +575,19 @@ export default async function handler(req, res) {
     if (clientKey && !isUserAuthorizedForClient(sessionUser, clientKey)) {
       return res.status(403).json({ error: "Access denied to this client." });
     }
+    if (masterSheetId) {
+      const sheets = await getSheetsClient();
+      const sheetAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, targetClient, sheets);
+      if (!sheetAuth.authorized) {
+        return res.status(sheetAuth.status || 403).json({ error: sheetAuth.error || "Access denied to this client." });
+      }
+    }
   }
 
   try {
     const tools = ["xero", "quickbooks", "monday", "pipedrive", "clickup", "capsule", "close", "hubspot", "googlesheet", "excel"];
     const statuses = {};
+    const allowPmaDetails = Boolean(sessionUser.isAdmin || canAccessPma(sessionUser));
 
     for (const tool of tools) {
       const status = await getIntegrationStatus({
@@ -589,15 +597,27 @@ export default async function handler(req, res) {
       });
       if (!sessionUser.isAdmin && status && typeof status === "object") {
         delete status.availableTenants;
+        delete status.suggestedTenant;
         if (status.metadata && typeof status.metadata === "object") {
           status.metadata = { ...status.metadata };
           delete status.metadata.availableTenants;
+          delete status.metadata.suggestedTenant;
+          delete status.metadata.azureTenantId;
+          delete status.metadata.azureClientId;
+          if (!allowPmaDetails) {
+            delete status.metadata.url;
+            delete status.metadata.driveId;
+            delete status.metadata.fileId;
+            delete status.metadata.siteUrl;
+            delete status.metadata.userEmail;
+            delete status.metadata.authorizedByPulseEmail;
+          }
         }
       }
       statuses[tool] = status;
     }
 
-    const sharedXeroRaw = await getSharedXeroGrant();
+    const sharedXeroRaw = allowPmaDetails ? await getSharedXeroGrant() : null;
     const sharedXero = sharedXeroRaw ? {
       connected: sharedXeroRaw.status === "connected",
       status: sharedXeroRaw.status,
@@ -616,6 +636,6 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("Integrations status query error:", err);
-    return res.status(500).json({ error: err.message || "Failed to query integration status." });
+    return res.status(500).json({ error: sessionUser?.isAdmin ? (err.message || "Failed to query integration status.") : "Failed to query integration status." });
   }
 }

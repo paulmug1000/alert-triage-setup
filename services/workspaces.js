@@ -92,7 +92,7 @@ export async function getClientWebAppUrl(sheets, clientName, acId = DEFAULT_AC_S
       if (!error && (row?.master_deployment_url || row?.web_app_url)) {
         return String(row.master_deployment_url || row.web_app_url).trim();
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   try {
     const resp = await withRetry(() =>
@@ -219,7 +219,7 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
             clientsObj[clientName] = { ...item };
           }
           if (redisClient?.isOpen) {
-            await redisClient.set(cacheKey, JSON.stringify({ clientsArray, clientsObj }), { EX: 86400 * 7 }).catch(() => {});
+            await redisClient.set(cacheKey, JSON.stringify({ clientsArray, clientsObj }), { EX: 86400 * 7 }).catch(() => { });
           }
           _allClientsMemoryCache = { clientsArray, clientsObj };
           _allClientsCachedAt = now;
@@ -1184,10 +1184,10 @@ export async function handleGetOutgoings(req, res, sheets) {
       const RESTRICTED_OUTGOINGS_RE = /salar|divid|payroll|wages|director|remuneration|net pay|pension|paye|\bnic\b/i;
       const filteredExtra = Array.isArray(responsePayload.extraOutgoingsRows)
         ? responsePayload.extraOutgoingsRows.filter((row) => {
-            const sr = Number(row?.sheetRow);
-            if ((sr >= 115 && sr <= 124) || (sr >= 230 && sr <= 239)) return false;
-            return !RESTRICTED_OUTGOINGS_RE.test(String(row?.name || ""));
-          })
+          const sr = Number(row?.sheetRow);
+          if ((sr >= 115 && sr <= 124) || (sr >= 230 && sr <= 239)) return false;
+          return !RESTRICTED_OUTGOINGS_RE.test(String(row?.name || ""));
+        })
         : responsePayload.extraOutgoingsRows;
       responsePayload = {
         ...responsePayload,
@@ -1296,7 +1296,7 @@ export async function getSharedClientConfirmedAndKeyInfo(
           valueRenderOption: "FORMATTED_VALUE",
         });
         confRows = cResp.data.values || [];
-      } catch (_) {}
+      } catch (_) { }
       if (includePipeline) {
         try {
           const pResp = await sheets.spreadsheets.values.get({
@@ -1305,7 +1305,7 @@ export async function getSharedClientConfirmedAndKeyInfo(
             valueRenderOption: "FORMATTED_VALUE",
           });
           pipeRows = pResp.data.values || [];
-        } catch (_) {}
+        } catch (_) { }
       }
     }
 
@@ -1321,7 +1321,7 @@ export async function getSharedClientConfirmedAndKeyInfo(
           valueRenderOption: "FORMATTED_VALUE",
         });
         if (r.data?.values?.length) confRows = [...confRows, ...r.data.values];
-      } catch (_) {}
+      } catch (_) { }
     }
 
     if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
@@ -1335,7 +1335,7 @@ export async function getSharedClientConfirmedAndKeyInfo(
             if (parsedCfg?.accountingTool) accountingTool = parsedCfg.accountingTool;
           }
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const directCostsMode =
@@ -1726,7 +1726,7 @@ async function getPendingJobFieldOverlay_(sheetIdClean) {
           return parsed;
         }
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return [];
 }
@@ -1743,7 +1743,7 @@ async function recordPendingJobFieldOverlay_(sheetIdClean, batchData) {
   if (redisClient?.isOpen) {
     try {
       await redisClient.set(key, JSON.stringify(merged), { EX: PENDING_JOB_FIELDS_TTL_SECS });
-    } catch (_) {}
+    } catch (_) { }
   }
 
   // Also keep in-memory raw sheet cache warm for immediate subsequent reads
@@ -1770,14 +1770,14 @@ async function clearPendingJobFieldOverlay_(sheetIdClean, batchId) {
     if (redisClient?.isOpen) {
       try {
         await redisClient.set(key, JSON.stringify(remaining), { EX: PENDING_JOB_FIELDS_TTL_SECS });
-      } catch (_) {}
+      } catch (_) { }
     }
   } else {
     memoryCache.del(key);
     if (redisClient?.isOpen) {
       try {
         await redisClient.del(key);
-      } catch (_) {}
+      } catch (_) { }
     }
   }
 }
@@ -1851,7 +1851,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
 
     if (bypassCache && sbCtx?.clientName) {
       invalidateMasterEngineCache(sbCtx.clientName, "client", tabName === "All" ? ["Confirmed", "Pipeline", "ConfCalcs", "PipeCalcs", "Outgoings"] : [tabName]);
-      await invalidatePmaClientCache(sheetIdClean, sbCtx?.masterSheetId || null, ["jobs"]).catch(() => {});
+      await invalidatePmaClientCache(sheetIdClean, sbCtx?.masterSheetId || null, ["jobs"]).catch(() => { });
     }
 
     const result = await resolvePortalCache({
@@ -1903,15 +1903,15 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           }),
           initialNotesRanges.length > 0
             ? sheets.spreadsheets
-                .get({
-                  spreadsheetId: sheetIdClean,
-                  ranges: initialNotesRanges,
-                  fields: "sheets(properties.title,data(startRow,rowData.values.note))",
-                })
-                .then(populateNotesFromResp)
-                .catch((err) => {
-                  console.warn("⚠️ get_all_client_jobs: could not fetch cell notes:", err?.message);
-                })
+              .get({
+                spreadsheetId: sheetIdClean,
+                ranges: initialNotesRanges,
+                fields: "sheets(properties.title,data(startRow,rowData.values.note))",
+              })
+              .then(populateNotesFromResp)
+              .catch((err) => {
+                console.warn("⚠️ get_all_client_jobs: could not fetch cell notes:", err?.message);
+              })
             : Promise.resolve(),
         ]);
 
@@ -1955,7 +1955,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
               fields: "sheets(properties.title,data(startRow,rowData.values.note))",
             });
             populateNotesFromResp(overflowNotesResp);
-          } catch (_) {}
+          } catch (_) { }
         }
 
         const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
@@ -2198,36 +2198,89 @@ export async function handleGetAllClientJobs(req, res, sheets) {
   }
 }
 
+const JOB_COSTING_EDITABLE_COLS_ = new Set([5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29]);
+
+function isProtectedJobColumn_(tabName, colIdx0) {
+  if (!Number.isInteger(colIdx0) || colIdx0 < 0 || colIdx0 > 130) return true;
+  const invProtectedStart = tabName === "Confirmed" ? 62 : 60;
+  return (
+    (colIdx0 >= 5 && colIdx0 <= 29 && !JOB_COSTING_EDITABLE_COLS_.has(colIdx0)) ||
+    colIdx0 === 31 ||
+    colIdx0 === 40 ||
+    (colIdx0 >= invProtectedStart && colIdx0 <= 74) ||
+    (colIdx0 >= 96 && colIdx0 <= 106)
+  );
+}
+
+function resolveValidatedJobEditCoord_(tabName, { cellRef, colLetter, rowNum, fallbackRowNum } = {}) {
+  let colLetters = "";
+  let resolvedRowNum = NaN;
+
+  const hasCellRef = cellRef !== undefined && cellRef !== null && String(cellRef).trim() !== "";
+  if (hasCellRef) {
+    const cleanCellRef = String(cellRef).trim().toUpperCase();
+    if (!/^[A-Z]{1,2}\d{1,4}$/.test(cleanCellRef)) {
+      return { ok: false, error: `Invalid cell reference: ${cleanCellRef}` };
+    }
+    colLetters = cleanCellRef.replace(/[0-9]/g, "");
+    resolvedRowNum = parseInt(cleanCellRef.replace(/[^0-9]/g, ""), 10);
+
+    if (colLetter !== undefined && colLetter !== null && String(colLetter).trim() !== "") {
+      if (String(colLetter).trim().toUpperCase() !== colLetters) {
+        return { ok: false, error: "Mismatched colLetter and cellRef." };
+      }
+    }
+    if (rowNum !== undefined && rowNum !== null && String(rowNum).trim() !== "") {
+      const explicitRow = parseInt(String(rowNum), 10);
+      if (explicitRow !== resolvedRowNum) {
+        return { ok: false, error: "Mismatched rowNum and cellRef." };
+      }
+    }
+  } else {
+    colLetters = String(colLetter || "").trim().toUpperCase();
+    if (!/^[A-Z]{1,2}$/.test(colLetters)) {
+      return { ok: false, error: "Invalid colLetter format." };
+    }
+    const rawRow = rowNum !== undefined && rowNum !== null && String(rowNum).trim() !== "" ? rowNum : fallbackRowNum;
+    resolvedRowNum = parseInt(String(rawRow || ""), 10);
+  }
+
+  if (!Number.isInteger(resolvedRowNum) || resolvedRowNum < 2 || resolvedRowNum > 5000) {
+    return { ok: false, error: "Row number must be between 2 and 5000." };
+  }
+
+  const colIdx0 = colLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+  if (isProtectedJobColumn_(tabName, colIdx0)) {
+    return { ok: false, error: `Cannot overwrite protected formula column: ${colLetters}${resolvedRowNum}` };
+  }
+
+  return {
+    ok: true,
+    colLetters,
+    rowNum: resolvedRowNum,
+    cellRef: `${colLetters}${resolvedRowNum}`,
+    colIdx0,
+  };
+}
+
 export async function handleUpdateJobField(req, res, sheets) {
   const { clientSheetId, tabName, cellRef, value, colLetter, rowNum, fieldName, endClientName, jobName } = req.body;
-  if (!clientSheetId || !tabName || !cellRef) {
+  if (!clientSheetId || !tabName || (!cellRef && !colLetter)) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
   if (tabName !== "Confirmed" && tabName !== "Pipeline") {
     return res.status(400).json({ success: false, error: "Invalid tabName. Must be Confirmed or Pipeline." });
   }
-  const cleanCellRef = String(cellRef).trim().toUpperCase();
-  if (!/^[A-Z]{1,2}\d{1,4}$/.test(cleanCellRef)) {
-    return res.status(400).json({ success: false, error: "Invalid cellRef format." });
+  const coord = resolveValidatedJobEditCoord_(tabName, { cellRef, colLetter, rowNum });
+  if (!coord.ok) {
+    return res.status(400).json({ success: false, error: coord.error });
   }
-  const parsedColLetters = cleanCellRef.replace(/[0-9]/g, "");
-  const parsedRowNum = parseInt(cleanCellRef.replace(/[^0-9]/g, ""), 10);
-  const colIdx0 = parsedColLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-  const JOB_COSTING_EDITABLE_COLS = new Set([5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29]);
-  const invProtectedStart = tabName === "Confirmed" ? 62 : 60;
-  const isProtectedFormulaCol =
-    (colIdx0 >= 5 && colIdx0 <= 29 && !JOB_COSTING_EDITABLE_COLS.has(colIdx0)) ||
-    colIdx0 === 31 ||
-    colIdx0 === 40 ||
-    (colIdx0 >= invProtectedStart && colIdx0 <= 74) ||
-    (colIdx0 >= 96 && colIdx0 <= 106);
-  if (!Number.isFinite(parsedRowNum) || parsedRowNum < 2 || isProtectedFormulaCol) {
-    return res.status(400).json({ success: false, error: "Cannot overwrite header row or protected formula columns." });
-  }
+  const colIdx0 = coord.colIdx0;
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-    const targetCol = (colLetter || cellRef.replace(/[0-9]/g, "")).toUpperCase();
-    const targetRow = parseInt(rowNum || cellRef.replace(/[^0-9]/g, ""), 10);
+    const targetCol = coord.colLetters;
+    const targetRow = coord.rowNum;
+    const validatedCellRef = coord.cellRef;
     const normalizedVal = ((targetCol === "AM" || targetCol === "G") && isNoEndDateSentinel(value))
       ? NO_END_DATE_SHEET_VALUE
       : (targetCol === "AN" ? normalizeLikelihoodInput(value) : value);
@@ -2247,7 +2300,7 @@ export async function handleUpdateJobField(req, res, sheets) {
     if (isProvisioningRetainer) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
-        range: `${tabName}!${cellRef}`,
+        range: `${tabName}!${validatedCellRef}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [[safeValue]] },
         _skipFormulaRecompute: true,
@@ -2351,7 +2404,7 @@ export async function handleUpdateJobField(req, res, sheets) {
     } else {
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
-        range: `${tabName}!${cellRef}`,
+        range: `${tabName}!${validatedCellRef}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [[safeValue]] },
         _skipFormulaRecompute: true,
@@ -2428,7 +2481,7 @@ export async function handleUpdateJobField(req, res, sheets) {
         flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedClient).catch(e =>
           console.warn("Deferred client formula recompute failed in update_job_field:", e.message)
         ),
-        invalidatePmaClientCache(sheetIdClean, req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(() => {}),
+        invalidatePmaClientCache(sheetIdClean, req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(() => { }),
         logPmaActivity(sheets, {
           automationCommanderSheetId: req.body.automationCommanderSheetId,
           clientName: resolvedClient,
@@ -2465,38 +2518,39 @@ export async function handleUpdateJobFields(req, res, sheets) {
   if (tabName !== "Confirmed" && tabName !== "Pipeline") {
     return res.status(400).json({ success: false, error: "Invalid tabName. Must be Confirmed or Pipeline." });
   }
-  const JOB_COSTING_EDITABLE_COLS = new Set([5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29]);
-  for (const u of safeUpdates) {
-    const targetRef = String(u.cellRef || `${u.colLetter || ""}${u.rowNum || rowNum || ""}`).trim().toUpperCase();
-    if (!/^[A-Z]{1,2}\d{1,4}$/.test(targetRef)) {
-      return res.status(400).json({ success: false, error: `Invalid cell reference in updates: ${targetRef}` });
-    }
-    const parsedColLetters = targetRef.replace(/[0-9]/g, "");
-    const parsedRowNum = parseInt(targetRef.replace(/[^0-9]/g, ""), 10);
-    const colIdx0 = parsedColLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-    const invProtectedStart = tabName === "Confirmed" ? 62 : 60;
-    const isProtectedFormulaCol =
-      (colIdx0 >= 5 && colIdx0 <= 29 && !JOB_COSTING_EDITABLE_COLS.has(colIdx0)) ||
-      colIdx0 === 31 ||
-      colIdx0 === 40 ||
-      (colIdx0 >= invProtectedStart && colIdx0 <= 74) ||
-      (colIdx0 >= 96 && colIdx0 <= 106);
-    if (!Number.isFinite(parsedRowNum) || parsedRowNum < 2 || isProtectedFormulaCol) {
-      return res.status(400).json({ success: false, error: `Cannot overwrite header row or protected formula column: ${targetRef}` });
+
+  let targetRowNum = null;
+  if (rowNum !== undefined && rowNum !== null && String(rowNum).trim() !== "") {
+    targetRowNum = parseInt(String(rowNum), 10);
+    if (!Number.isInteger(targetRowNum) || targetRowNum < 2 || targetRowNum > 5000) {
+      return res.status(400).json({ success: false, error: "Invalid rowNum parameter (must be between 2 and 5000)." });
     }
   }
+
+  const normalizedUpdates = [];
+  for (const u of safeUpdates) {
+    const coord = resolveValidatedJobEditCoord_(tabName, {
+      cellRef: u?.cellRef,
+      colLetter: u?.colLetter,
+      rowNum: u?.rowNum,
+      fallbackRowNum: targetRowNum,
+    });
+    if (!coord.ok) {
+      return res.status(400).json({ success: false, error: coord.error });
+    }
+    normalizedUpdates.push({ ...u, _coord: coord });
+  }
+
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
-    const targetRowNum = rowNum ? parseInt(rowNum, 10) : null;
-    const typeUpdate = safeUpdates.find(u => (u.colLetter || "").toUpperCase() === "AJ" || (u.cellRef || "").toUpperCase().startsWith("AJ"));
-    const revUpdate = safeUpdates.find(u => ["AG", "I"].includes((u.colLetter || "").toUpperCase()) || (u.cellRef || "").toUpperCase().startsWith("AG") || /^I\d+$/.test((u.cellRef || "").toUpperCase()));
-    const rechUpdate = tabName === "Confirmed"
-      ? safeUpdates.find(u => (u.colLetter || "").toUpperCase() === "R" || /^R\d+$/i.test(String(u.cellRef || "")))
-      : null;
-    const costUpdate = safeUpdates.find(u => ["AH", "K"].includes((u.colLetter || "").toUpperCase()) || (u.cellRef || "").toUpperCase().startsWith("AH") || /^K\d+$/.test((u.cellRef || "").toUpperCase()));
-    const startDateUpdate = safeUpdates.find(u => ["AL", "F"].includes((u.colLetter || "").toUpperCase()) || (u.cellRef || "").toUpperCase().startsWith("AL") || /^F\d+$/.test((u.cellRef || "").toUpperCase()));
-    const endDateUpdate = safeUpdates.find(u => ["AM", "G"].includes((u.colLetter || "").toUpperCase()) || (u.cellRef || "").toUpperCase().startsWith("AM") || /^G\d+$/.test((u.cellRef || "").toUpperCase()));
+    const findUpdateByCol = (cols) => normalizedUpdates.find(u => cols.includes(u._coord.colLetters));
+    const typeUpdate = findUpdateByCol(["AJ"]);
+    const revUpdate = findUpdateByCol(["AG", "I"]);
+    const rechUpdate = tabName === "Confirmed" ? findUpdateByCol(["R"]) : null;
+    const costUpdate = findUpdateByCol(["AH", "K"]);
+    const startDateUpdate = findUpdateByCol(["AL", "F"]);
+    const endDateUpdate = findUpdateByCol(["AM", "G"]);
     const dateUpdate = startDateUpdate || endDateUpdate;
     const isPureConfirmedRetainerDateEdit =
       tabName === "Confirmed" &&
@@ -2526,11 +2580,11 @@ export async function handleUpdateJobFields(req, res, sheets) {
         needsGroupPreload ? resolveFullJobRowGroup_(sheets, sheetIdClean, tabName, [targetRowNum]) : Promise.resolve(null),
         needsTolerancesPreload
           ? (async () => {
-              if (!resolvedMasterSheetId) {
-                resolvedMasterSheetId = await resolveMasterSheetIdForClient_(sheets, sheetIdClean);
-              }
-              return resolvedMasterSheetId ? getToleranceValues(sheets, resolvedMasterSheetId) : null;
-            })()
+            if (!resolvedMasterSheetId) {
+              resolvedMasterSheetId = await resolveMasterSheetIdForClient_(sheets, sheetIdClean);
+            }
+            return resolvedMasterSheetId ? getToleranceValues(sheets, resolvedMasterSheetId) : null;
+          })()
           : Promise.resolve(null),
       ]);
     }
@@ -2550,15 +2604,14 @@ export async function handleUpdateJobFields(req, res, sheets) {
     const isChangingToRetainer = tabName === "Confirmed" && typeUpdate && String(typeUpdate.value || "").trim().toLowerCase() === "retainer";
     const isExistingRetainer = isRetainerJob && !isChangingToRetainer;
 
-    const isSettingRetainer = updates.some(
-      u => ((u.colLetter || "").toUpperCase() === "AJ" || (u.cellRef || "").toUpperCase().startsWith("AJ")) &&
-        String(u.value || "").trim().toLowerCase() === "retainer"
+    const isSettingRetainer = normalizedUpdates.some(
+      u => u._coord.colLetters === "AJ" && String(u.value || "").trim().toLowerCase() === "retainer"
     );
 
     // If it's an existing retainer on Confirmed and start/end dates changed, exclude those date columns from initial write
     // so executeChangeRetainerStartDate / executeChangeRetainerEndDate can inspect current sheet values and handle row manipulation safely.
-    const initialUpdates = updates.filter(u => {
-      const colUp = (u.colLetter || String(u.cellRef || "").replace(/[0-9]/g, "")).toUpperCase();
+    const initialUpdates = normalizedUpdates.filter(u => {
+      const colUp = u._coord.colLetters;
       if (isExistingRetainer) {
         if (startDateUpdate && (colUp === "AL" || colUp === "AM" || colUp === "F" || colUp === "G")) return false;
         if (endDateUpdate && (colUp === "AM" || colUp === "G")) return false;
@@ -2567,15 +2620,14 @@ export async function handleUpdateJobFields(req, res, sheets) {
     });
 
     const initialBatchData = initialUpdates.map(u => {
-      const colUp = (u.colLetter || String(u.cellRef || "").replace(/[0-9]/g, "")).toUpperCase();
+      const colUp = u._coord.colLetters;
+      const uRowNum = u._coord.rowNum;
       let v = u.value;
       if ((colUp === "AM" || colUp === "G") && (isNoEndDateSentinel(v) || (isSettingRetainer && !String(v || "").trim()))) {
         v = NO_END_DATE_SHEET_VALUE;
       } else if (colUp === "AN") {
         v = normalizeLikelihoodInput(v);
       }
-      const rawCellRef = String(u.cellRef || `${u.colLetter}${u.rowNum || rowNum}`).trim().toUpperCase();
-      const uRowNum = parseInt(rawCellRef.replace(/[^0-9]/g, ""), 10);
       let writeCol = colUp;
       if (isJobCosting) {
         if (colUp === "AL") writeCol = "F";
@@ -2583,18 +2635,21 @@ export async function handleUpdateJobFields(req, res, sheets) {
         else if (colUp === "AG") writeCol = "I";
         else if (colUp === "AH") writeCol = "K";
       }
+      const writeColIdx0 = writeCol.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+      if (isProtectedJobColumn_(tabName, writeColIdx0)) {
+        throw new Error(`Cannot overwrite protected formula column: ${writeCol}${uRowNum}`);
+      }
       const targetCellRef = `${writeCol}${uRowNum}`;
       const safeVal = sanitizeFormulaInput(v);
       if (preloadedGroup) {
-        const origColIdx0 = colUp.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-        const uColIdx0 = writeCol.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-        if (Number.isFinite(uRowNum) && uRowNum >= 1 && uColIdx0 >= 0) {
+        const origColIdx0 = u._coord.colIdx0;
+        if (Number.isFinite(uRowNum) && uRowNum >= 1 && writeColIdx0 >= 0) {
           if (!preloadedGroup.allRows[uRowNum - 1]) preloadedGroup.allRows[uRowNum - 1] = [];
-          preloadedGroup.allRows[uRowNum - 1][uColIdx0] = safeVal;
-          if (origColIdx0 !== uColIdx0 && origColIdx0 >= 0) preloadedGroup.allRows[uRowNum - 1][origColIdx0] = safeVal;
+          preloadedGroup.allRows[uRowNum - 1][writeColIdx0] = safeVal;
+          if (origColIdx0 !== writeColIdx0 && origColIdx0 >= 0) preloadedGroup.allRows[uRowNum - 1][origColIdx0] = safeVal;
           if (uRowNum === preloadedGroup.parentRowNum && preloadedGroup.parentRow) {
-            preloadedGroup.parentRow[uColIdx0] = safeVal;
-            if (origColIdx0 !== uColIdx0 && origColIdx0 >= 0) preloadedGroup.parentRow[origColIdx0] = safeVal;
+            preloadedGroup.parentRow[writeColIdx0] = safeVal;
+            if (origColIdx0 !== writeColIdx0 && origColIdx0 >= 0) preloadedGroup.parentRow[origColIdx0] = safeVal;
           }
         }
       }
@@ -2627,8 +2682,8 @@ export async function handleUpdateJobFields(req, res, sheets) {
     if (!resolvedClient) {
       resolvedClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
     }
-    const clientUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "A");
-    const jobNameUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "B");
+    const clientUpdate = findUpdateByCol(["A"]);
+    const jobNameUpdate = findUpdateByCol(["B"]);
     const effectiveClient = clientUpdate ? String(clientUpdate.value || "") : (endClientName || "");
     const effectiveJobName = jobNameUpdate ? String(jobNameUpdate.value || "") : (jobName || "");
 
@@ -2932,7 +2987,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
           } catch (writeErr) {
             console.error("❌ Deferred update_job_fields Google Sheet write failed:", writeErr);
           } finally {
-            await clearPendingJobFieldOverlay_(sheetIdClean, pendingBatchId).catch(() => {});
+            await clearPendingJobFieldOverlay_(sheetIdClean, pendingBatchId).catch(() => { });
           }
           await Promise.all([
             invalidatePmaClientCache(sheetIdClean, resolvedMasterSheetId || req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(e =>
@@ -7473,53 +7528,53 @@ export async function handleAddNewJob(req, res, sheets) {
       note: "",
       rows: isConfirmedRetainer
         ? [
-            {
-              rowNum: targetRow,
-              isParent: true,
-              tabName: targetTab,
-              note: "",
-              client: formattedClient,
-              jobName: formattedJobName,
-              projectCode: formattedCode,
-              dateConf: formattedDateConf,
-              leadSrc: formattedLeadSrc,
-              unevenSplit: sanitizeFormulaInput(jobData.unevenSplit || jobData.splitStr || ""),
-              revenue: `£${formattedRev.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-              directCosts: `£${formattedDc.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-              vat: formattedVat,
-              projectRetainer: formattedType,
-              prodLine: formattedProdLine,
-              startDate: formattedStartDate,
-              endDate: resolvedEndDate,
-              likelihood: formattedLikelihood,
-              copiedToConf: targetTab === "Pipeline" ? "" : null,
-              leftToInvoice: "",
-              costsOutstanding: "",
-              invoiceSlots: [1, 2, 3].map(n => ({
-                slotNum: n,
-                amount: "",
-                ref: "",
-                sentDate: "",
-                daysToPay: "",
-                status: "",
-                highlighted: false,
-                note: ""
-              })),
-              expenseSlots: [1, 2, 3].map(n => ({
-                slotNum: n,
-                description: "",
-                amount: "",
-                vat: "",
-                date: "",
-                daysToPay: "",
-                status: "",
-                transactionId: "",
-                highlighted: false,
-                note: ""
-              })),
-            },
-            ...(retainerPlan?.childRowsForUi || []),
-          ]
+          {
+            rowNum: targetRow,
+            isParent: true,
+            tabName: targetTab,
+            note: "",
+            client: formattedClient,
+            jobName: formattedJobName,
+            projectCode: formattedCode,
+            dateConf: formattedDateConf,
+            leadSrc: formattedLeadSrc,
+            unevenSplit: sanitizeFormulaInput(jobData.unevenSplit || jobData.splitStr || ""),
+            revenue: `£${formattedRev.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+            directCosts: `£${formattedDc.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+            vat: formattedVat,
+            projectRetainer: formattedType,
+            prodLine: formattedProdLine,
+            startDate: formattedStartDate,
+            endDate: resolvedEndDate,
+            likelihood: formattedLikelihood,
+            copiedToConf: targetTab === "Pipeline" ? "" : null,
+            leftToInvoice: "",
+            costsOutstanding: "",
+            invoiceSlots: [1, 2, 3].map(n => ({
+              slotNum: n,
+              amount: "",
+              ref: "",
+              sentDate: "",
+              daysToPay: "",
+              status: "",
+              highlighted: false,
+              note: ""
+            })),
+            expenseSlots: [1, 2, 3].map(n => ({
+              slotNum: n,
+              description: "",
+              amount: "",
+              vat: "",
+              date: "",
+              daysToPay: "",
+              status: "",
+              transactionId: "",
+              highlighted: false,
+              note: ""
+            })),
+          },
+          ...(retainerPlan?.childRowsForUi || []),
+        ]
         : nonRetainerRows
     };
 
@@ -7632,7 +7687,7 @@ async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMas
         valueInputOption: "RAW",
         data: outgNotesData,
       },
-    }).catch(() => {})
+    }).catch(() => { })
   ];
 
   if (targetMasterId) {
@@ -7932,10 +7987,15 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
 
     await invalidatePmaClientCache(sheetIdClean, null, ["outgoings", "views"]).catch(() => { });
 
-    return res.status(200).json({ success: true, cellRef, blockCount: (blocks || []).length, cellTotal });
+    return res.status(200).json({
+      success: true,
+      ...(sessionUser?.isAdmin ? { cellRef } : {}),
+      blockCount: (blocks || []).length,
+      cellTotal,
+    });
   } catch (err) {
     console.error("❌ update_outgoing_note error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message) });
   }
 }
 
@@ -8857,7 +8917,7 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
     );
 
     // Invalidate caches
-    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "retainers", "invoices", "cash"]).catch(() => {});
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "retainers", "invoices", "cash"]).catch(() => { });
 
     // Log activity
     const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));

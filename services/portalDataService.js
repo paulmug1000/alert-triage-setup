@@ -49,7 +49,7 @@ function getLondonYearMonth(now = new Date()) {
     if (Number.isFinite(yr) && Number.isFinite(mon) && mon >= 1 && mon <= 12) {
       return { year: yr, month0: mon - 1 };
     }
-  } catch (_) {}
+  } catch (_) { }
   return { year: now.getFullYear(), month0: now.getMonth() };
 }
 
@@ -257,8 +257,7 @@ function formatMonthCellForPortal(i, rawDisp, rawMath, currencySymbol, thousands
 }
 
 /**
- * Builds the exact Portal Home payload from KeyInfo, Dashboard, and Year0Data grids
- * (or legacy AppData grids when supplied directly).
+ * Builds the exact Portal Home payload directly from KeyInfo, Dashboard, and Year0Data grids.
  */
 export function buildPortalPayloadFromGrids({
   keyInfoData = [],
@@ -268,27 +267,23 @@ export function buildPortalPayloadFromGrids({
   year0Math = [],
   thresholdsRaw = [],
   featureFlags = {},
-  appDataDisp = [],
-  toggles = [],
-  chartRawRows = [],
   clientName = "",
 }) {
-  const hasSourceTabs = Array.isArray(dashDisp) && dashDisp.length > 0;
-  const labelGrid = hasSourceTabs ? dashDisp : appDataDisp;
+  const labelGrid = dashDisp;
 
   // --- 1. Client Info (from KeyInfo & feature flags) ---
   const sheetClientName = keyInfoData[0]?.[1] || clientName || "";
   const currencySymbol =
     String(
       keyInfoData[3]?.[3] ||
-        (keyInfoData[3]?.[2] && keyInfoData[3]?.[2] !== "Tracker currency" ? keyInfoData[3]?.[2] : "") ||
-        "£"
+      (keyInfoData[3]?.[2] && keyInfoData[3]?.[2] !== "Tracker currency" ? keyInfoData[3]?.[2] : "") ||
+      "£"
     ).trim() || "£";
   const thousandsSeparator =
     String(
       keyInfoData[4]?.[3] ||
-        (keyInfoData[4]?.[2] && keyInfoData[4]?.[2] !== "Thous. separator" ? keyInfoData[4]?.[2] : "") ||
-        ","
+      (keyInfoData[4]?.[2] && keyInfoData[4]?.[2] !== "Thous. separator" ? keyInfoData[4]?.[2] : "") ||
+      ","
     ).trim() || ",";
   const vatRate = parseFloat(keyInfoData[8]?.[1]) || 0.2;
   const splitMethod = keyInfoData[14]?.[3] || "Even By Month";
@@ -309,132 +304,77 @@ export function buildPortalPayloadFromGrids({
   const standardChargeOutRate = parseFloat(String(keyInfoData[11]?.[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
   const contractorDayRate = parseFloat(String(keyInfoData[12]?.[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
 
-  const version = featureFlags?.version || toggles[0]?.[0] || appDataDisp[39]?.[22] || keyInfoData[0]?.[0] || "";
+  const version = featureFlags?.version || keyInfoData[0]?.[0] || "";
   const showExtraRows =
-    normalizeYesNoFlag(
-      featureFlags?.showStaffCostsRatio ?? toggles[2]?.[0] ?? appDataDisp[41]?.[22],
-      "Yes"
-    ).toLowerCase() === "yes";
+    normalizeYesNoFlag(featureFlags?.showStaffCostsRatio, "Yes").toLowerCase() === "yes";
   const hasCash =
-    normalizeYesNoFlag(
-      featureFlags?.showCashMenu ?? toggles[3]?.[0] ?? appDataDisp[42]?.[22],
-      "Yes"
-    ).toLowerCase() === "yes";
+    normalizeYesNoFlag(featureFlags?.showCashMenu, "Yes").toLowerCase() === "yes";
   const hasBudget =
-    normalizeYesNoFlag(
-      featureFlags?.showBudget ?? toggles[4]?.[0] ?? appDataDisp[43]?.[22],
-      "Yes"
-    ).toLowerCase() === "yes";
+    normalizeYesNoFlag(featureFlags?.showBudget, "Yes").toLowerCase() === "yes";
   const numRows = showExtraRows ? 34 : 32;
 
   const zeroCcy = `${currencySymbol}0`;
 
   // --- 2. Month Breakdowns (Curr, Prev, Next) ---
-  let currMonthData;
-  let prevMonthData;
-  let nextMonthData;
+  const monthColMap = buildMonthColumnLookup({ dashDisp, dashMath, year0Disp, year0Math });
+  const londonYM = getLondonYearMonth();
 
-  if (hasSourceTabs) {
-    const monthColMap = buildMonthColumnLookup({ dashDisp, dashMath, year0Disp, year0Math });
-    const londonYM = getLondonYearMonth();
-
-    const extractMonthFromSource = (offsetMonths, bannerKind) => {
-      const targetYM = addMonthsYM(londonYM.year, londonYM.month0, offsetMonths);
-      const entry = monthColMap.get(ymKey(targetYM.year, targetYM.month0));
-      const rows = [];
-      for (let i = 0; i < numRows; i++) {
-        let label = labelGrid[i]?.[0] !== undefined ? String(labelGrid[i][0]) : "";
-        const lowerLabel = label.trim().toLowerCase();
-        if (splitEnabled && mode === "Revenue") {
-          if (i === 12) {
-            label = directCostsMode === "Pass-through" ? "Pass-through costs" : "Other expenses - delivery";
-          } else if (i === 13) {
-            label = directCostsMode === "Pass-through" ? "Other expenses - delivery" : "Hide";
-          }
-        } else if (lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
-          label = mode === "Revenue" && directCostsMode === "Pass-through" ? "Pass-through costs" : "Hide";
+  const extractMonthFromSource = (offsetMonths, bannerKind) => {
+    const targetYM = addMonthsYM(londonYM.year, londonYM.month0, offsetMonths);
+    const entry = monthColMap.get(ymKey(targetYM.year, targetYM.month0));
+    const rows = [];
+    for (let i = 0; i < numRows; i++) {
+      let label = labelGrid[i]?.[0] !== undefined ? String(labelGrid[i][0]) : "";
+      const lowerLabel = label.trim().toLowerCase();
+      if (splitEnabled && mode === "Revenue") {
+        if (i === 12) {
+          label = directCostsMode === "Pass-through" ? "Pass-through costs" : "Other expenses - delivery";
+        } else if (i === 13) {
+          label = directCostsMode === "Pass-through" ? "Other expenses - delivery" : "Hide";
         }
-        const rawDisp = entry ? entry.dispGrid?.[i]?.[entry.colIdx] : i === 0 ? `${MONTHS_SHORT[targetYM.month0]} ${String(targetYM.year).slice(-2)}` : "";
-        const rawMath = entry ? entry.mathGrid?.[i]?.[entry.colIdx] : undefined;
-        const val = formatMonthCellForPortal(i, rawDisp, rawMath, currencySymbol, thousandsSeparator);
-        rows.push({
-          rowIndex: i + 1,
-          label,
-          value: val,
-        });
+      } else if (lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
+        label = mode === "Revenue" && directCostsMode === "Pass-through" ? "Pass-through costs" : "Hide";
       }
+      const rawDisp = entry ? entry.dispGrid?.[i]?.[entry.colIdx] : i === 0 ? `${MONTHS_SHORT[targetYM.month0]} ${String(targetYM.year).slice(-2)}` : "";
+      const rawMath = entry ? entry.mathGrid?.[i]?.[entry.colIdx] : undefined;
+      const val = formatMonthCellForPortal(i, rawDisp, rawMath, currencySymbol, thousandsSeparator);
+      rows.push({
+        rowIndex: i + 1,
+        label,
+        value: val,
+      });
+    }
 
-      const revTopic = String(rows[2]?.label || (mode === "Income" ? "income" : "revenue")).trim().toLowerCase() || "revenue";
-      const revText = rows[8]?.value || zeroCcy;
-      const gpText = rows[17]?.value || zeroCcy;
-      const gpPctText = rows[19]?.value || "0%";
-      const opText = rows[29]?.value || zeroCcy;
-      const opPctText = rows[31]?.value || "0%";
-      const prefix =
-        bannerKind === "prev"
-          ? `Last month’s ${revTopic} was`
-          : bannerKind === "next"
-            ? `Next month’s ${revTopic} is forecast to be`
-            : `This month’s ${revTopic} is forecast to be`;
-      const hText = `${prefix}\n${revText}\nwith gross profit of  ${gpText}  (${gpPctText})\nand operating profit of  ${opText}  (${opPctText})`;
+    const revTopic = String(rows[2]?.label || (mode === "Income" ? "income" : "revenue")).trim().toLowerCase() || "revenue";
+    const revText = rows[8]?.value || zeroCcy;
+    const gpText = rows[17]?.value || zeroCcy;
+    const gpPctText = rows[19]?.value || "0%";
+    const opText = rows[29]?.value || zeroCcy;
+    const opPctText = rows[31]?.value || "0%";
+    const prefix =
+      bannerKind === "prev"
+        ? `Last month’s ${revTopic} was`
+        : bannerKind === "next"
+          ? `Next month’s ${revTopic} is forecast to be`
+          : `This month’s ${revTopic} is forecast to be`;
+    const hText = `${prefix}\n${revText}\nwith gross profit of  ${gpText}  (${gpPctText})\nand operating profit of  ${opText}  (${opPctText})`;
 
-      const mPeriod = rows[0]?.value || "";
-      const mStatus = rows[1]?.value || "Forecast";
-      return { rows, tableRows: rows, headerText: hText, monthPeriod: mPeriod, monthStatus: mStatus };
-    };
+    const mPeriod = rows[0]?.value || "";
+    const mStatus = rows[1]?.value || "Forecast";
+    return { rows, tableRows: rows, headerText: hText, monthPeriod: mPeriod, monthStatus: mStatus };
+  };
 
-    currMonthData = extractMonthFromSource(0, "curr");
-    prevMonthData = extractMonthFromSource(-1, "prev");
-    nextMonthData = extractMonthFromSource(1, "next");
-  } else {
-    const extractMonthDataLegacy = (labelCol, valCol, headerRowIdx) => {
-      const rows = [];
-      for (let i = 0; i < numRows; i++) {
-        let label = appDataDisp[i]?.[labelCol] !== undefined ? String(appDataDisp[i][labelCol]) : "";
-        const lowerLabel = label.trim().toLowerCase();
-        if (splitEnabled && mode === "Revenue") {
-          if (i === 12) {
-            label = directCostsMode === "Pass-through" ? "Pass-through costs" : "Other expenses - delivery";
-          } else if (i === 13) {
-            label = directCostsMode === "Pass-through" ? "Other expenses - delivery" : "Hide";
-          }
-        } else if (lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
-          label = mode === "Revenue" && directCostsMode === "Pass-through" ? "Pass-through costs" : "Hide";
-        }
-        let val = appDataDisp[i]?.[valCol] !== undefined ? String(appDataDisp[i][valCol]) : "";
-        if (i > 1 && val && !val.includes("%")) {
-          val = formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
-        }
-        rows.push({
-          rowIndex: i + 1,
-          label,
-          value: val,
-        });
-      }
-      const hText = appDataDisp[headerRowIdx]?.[labelCol] || "";
-      const mPeriod = rows[0]?.value || "";
-      const mStatus = rows[1]?.value || "Forecast";
-      return { rows, tableRows: rows, headerText: hText, monthPeriod: mPeriod, monthStatus: mStatus };
-    };
-
-    currMonthData = extractMonthDataLegacy(55, 56, 40);
-    prevMonthData = extractMonthDataLegacy(73, 74, 40);
-    nextMonthData = extractMonthDataLegacy(64, 65, 40);
-  }
+  const currMonthData = extractMonthFromSource(0, "curr");
+  const prevMonthData = extractMonthFromSource(-1, "prev");
+  const nextMonthData = extractMonthFromSource(1, "next");
 
   const tableRows = currMonthData.rows;
   const headerText = currMonthData.headerText;
 
-  // Thresholds: KeyInfo!B123:B140 (or legacy AppData!Z42:Z59)
+  // Thresholds: KeyInfo!B123:B140
   const thresholds = [];
-  if (Array.isArray(thresholdsRaw) && thresholdsRaw.length > 0) {
-    for (let i = 0; i < 18; i++) {
-      thresholds.push(thresholdsRaw[i] !== undefined && thresholdsRaw[i] !== null ? String(thresholdsRaw[i]) : "");
-    }
-  } else {
-    for (let i = 41; i <= 58; i++) {
-      thresholds.push(appDataDisp[i]?.[25] || "");
-    }
+  for (let i = 0; i < 18; i++) {
+    thresholds.push(thresholdsRaw[i] !== undefined && thresholdsRaw[i] !== null ? String(thresholdsRaw[i]) : "");
   }
 
   // Parse KPI values from the month rows
@@ -475,110 +415,60 @@ export function buildPortalPayloadFromGrids({
 
   // --- 3. Trailing 12-Month Chart Data ---
   let chartData = { showChart: false, showTrendlines: false };
-  if (hasSourceTabs) {
-    const showChart =
-      normalizeYesNoFlag(featureFlags?.showLast12MonthsChart, "Yes").toLowerCase() === "yes";
-    const showTrendlines =
-      normalizeYesNoFlag(featureFlags?.showTrendlines, "Yes").toLowerCase() === "yes";
+  const showChart =
+    normalizeYesNoFlag(featureFlags?.showLast12MonthsChart, "Yes").toLowerCase() === "yes";
+  const showTrendlines =
+    normalizeYesNoFlag(featureFlags?.showTrendlines, "Yes").toLowerCase() === "yes";
 
-    if (showChart) {
-      const monthColMap = buildMonthColumnLookup({ dashDisp, dashMath, year0Disp, year0Math });
-      const londonYM = getLondonYearMonth();
-      const monthsFormatted = [];
-      const revenue = [];
-      const grossProfit = [];
-      const operatingProfit = [];
+  if (showChart) {
+    const monthsFormatted = [];
+    const revenue = [];
+    const grossProfit = [];
+    const operatingProfit = [];
 
-      const readNumericCell = (entry, rowIdx) => {
-        if (!entry) return 0;
-        const mVal = entry.mathGrid?.[rowIdx]?.[entry.colIdx];
-        if (typeof mVal === "number" && Number.isFinite(mVal)) return mVal;
-        const dVal = entry.dispGrid?.[rowIdx]?.[entry.colIdx];
-        if (dVal !== undefined && dVal !== null && String(dVal).trim() !== "") {
-          return parseMoney(dVal, thousandsSeparator);
-        }
-        return 0;
-      };
-
-      for (let offset = -11; offset <= 0; offset++) {
-        const ym = addMonthsYM(londonYM.year, londonYM.month0, offset);
-        const entry = monthColMap.get(ymKey(ym.year, ym.month0));
-        const fallbackLabel = `${MONTHS_SHORT[ym.month0]} ${String(ym.year).slice(-2)}`;
-        monthsFormatted.push(entry?.label || fallbackLabel);
-        revenue.push(readNumericCell(entry, 8));
-        grossProfit.push(readNumericCell(entry, 17));
-        operatingProfit.push(readNumericCell(entry, 29));
+    const readNumericCell = (entry, rowIdx) => {
+      if (!entry) return 0;
+      const mVal = entry.mathGrid?.[rowIdx]?.[entry.colIdx];
+      if (typeof mVal === "number" && Number.isFinite(mVal)) return mVal;
+      const dVal = entry.dispGrid?.[rowIdx]?.[entry.colIdx];
+      if (dVal !== undefined && dVal !== null && String(dVal).trim() !== "") {
+        return parseMoney(dVal, thousandsSeparator);
       }
+      return 0;
+    };
 
-      const row9Label = String(dashDisp[8]?.[0] || "").trim().toLowerCase();
-      chartData = {
-        showChart: true,
-        showTrendlines,
-        months: monthsFormatted,
-        revenue,
-        grossProfit,
-        operatingProfit,
-        label1: row9Label === "total revenue" ? "Revenue" : row9Label === "total income" ? "Income" : mode === "Income" ? "Income" : "Revenue",
-        label2: "Gross profit",
-        label3: "Operating profit",
-      };
+    for (let offset = -11; offset <= 0; offset++) {
+      const ym = addMonthsYM(londonYM.year, londonYM.month0, offset);
+      const entry = monthColMap.get(ymKey(ym.year, ym.month0));
+      const fallbackLabel = `${MONTHS_SHORT[ym.month0]} ${String(ym.year).slice(-2)}`;
+      monthsFormatted.push(entry?.label || fallbackLabel);
+      revenue.push(readNumericCell(entry, 8));
+      grossProfit.push(readNumericCell(entry, 17));
+      operatingProfit.push(readNumericCell(entry, 29));
     }
-  } else {
-    const switchValues = chartRawRows[0] || [];
-    const showChart = String(switchValues[0] || "").trim().toLowerCase() === "yes";
-    const showTrendlines = String(switchValues[2] || "").trim().toLowerCase() === "yes";
 
-    if (showChart) {
-      const monthsFormatted = [];
-      const revenue = [];
-      const grossProfit = [];
-      const operatingProfit = [];
-
-      const monthRow = appDataDisp[86] || [];
-      const revRow = chartRawRows[17] || [];
-      const gpRow = chartRawRows[18] || [];
-      const opRow = chartRawRows[19] || [];
-
-      for (let j = 7; j <= 18; j++) {
-        const m = monthRow[j];
-        const cCol = j - 6;
-        if (m && String(m).trim() !== "") {
-          monthsFormatted.push(String(m).trim());
-          revenue.push(parseFloat(revRow[cCol]) || 0);
-          grossProfit.push(parseFloat(gpRow[cCol]) || 0);
-          operatingProfit.push(parseFloat(opRow[cCol]) || 0);
-        }
-      }
-
-      chartData = {
-        showChart: true,
-        showTrendlines,
-        months: monthsFormatted,
-        revenue,
-        grossProfit,
-        operatingProfit,
-        label1: revRow[0] ? String(revRow[0]).trim() : "Income",
-        label2: gpRow[0] ? String(gpRow[0]).trim() : "Gross profit",
-        label3: opRow[0] ? String(opRow[0]).trim() : "Operating profit",
-      };
-    }
+    const row9Label = String(dashDisp[8]?.[0] || "").trim().toLowerCase();
+    chartData = {
+      showChart: true,
+      showTrendlines,
+      months: monthsFormatted,
+      revenue,
+      grossProfit,
+      operatingProfit,
+      label1: row9Label === "total revenue" ? "Revenue" : row9Label === "total income" ? "Income" : mode === "Income" ? "Income" : "Revenue",
+      label2: "Gross profit",
+      label3: "Operating profit",
+    };
   }
 
   // --- 4. 48-Month Timeline for "At a glance" deltas & multi-year sparklines ---
   const glanceTimeline = [];
-  const glanceBlockConfigs = hasSourceTabs
-    ? [
-        { yIdx: 0, start: 0, disp: year0Disp, math: year0Math },
-        { yIdx: 1, start: 6, disp: dashDisp, math: dashMath },
-        { yIdx: 2, start: 21, disp: dashDisp, math: dashMath },
-        { yIdx: 3, start: 36, disp: dashDisp, math: dashMath },
-      ]
-    : [
-        { yIdx: 0, start: 82, disp: appDataDisp, math: [] },
-        { yIdx: 1, start: 6, disp: appDataDisp, math: [] },
-        { yIdx: 2, start: 21, disp: appDataDisp, math: [] },
-        { yIdx: 3, start: 36, disp: appDataDisp, math: [] },
-      ];
+  const glanceBlockConfigs = [
+    { yIdx: 0, start: 0, disp: year0Disp, math: year0Math },
+    { yIdx: 1, start: 6, disp: dashDisp, math: dashMath },
+    { yIdx: 2, start: 21, disp: dashDisp, math: dashMath },
+    { yIdx: 3, start: 36, disp: dashDisp, math: dashMath },
+  ];
 
   const readGlanceCellNum = (blk, rowIdx, colIdx) => {
     const rawM = blk.math?.[rowIdx]?.[colIdx];
@@ -681,8 +571,7 @@ export function buildPortalPayloadFromGrids({
 }
 
 /**
- * Builds the exact Portal Performance payload from KeyInfo, Dashboard, and Year0Data grids
- * (or legacy AppData grids when supplied directly).
+ * Builds the exact Portal Performance payload directly from KeyInfo, Dashboard, and Year0Data grids.
  */
 export function buildPortalPerformanceFromGrids({
   keyInfoData = [],
@@ -691,13 +580,9 @@ export function buildPortalPerformanceFromGrids({
   year0Disp = [],
   year0Math = [],
   featureFlags = {},
-  appDataDisp = [],
-  appDataMath = [],
-  toggles = [],
   thresholdsRaw = [],
 }) {
-  const hasSourceTabs = Array.isArray(dashDisp) && dashDisp.length > 0;
-  const labelGrid = hasSourceTabs ? dashDisp : appDataDisp;
+  const labelGrid = dashDisp;
 
   const mode = String(keyInfoData[14]?.[1] || "Revenue").trim();
   const rawDirectCostsMode = String(keyInfoData[7]?.[3] || "Contractors").trim();
@@ -711,22 +596,19 @@ export function buildPortalPerformanceFromGrids({
   const currencySymbol =
     String(
       keyInfoData[3]?.[3] ||
-        (keyInfoData[3]?.[2] && keyInfoData[3]?.[2] !== "Tracker currency" ? keyInfoData[3]?.[2] : "") ||
-        "£"
+      (keyInfoData[3]?.[2] && keyInfoData[3]?.[2] !== "Tracker currency" ? keyInfoData[3]?.[2] : "") ||
+      "£"
     ).trim() || "£";
   const thousandsSeparator =
     String(
       keyInfoData[4]?.[3] ||
-        (keyInfoData[4]?.[2] && keyInfoData[4]?.[2] !== "Thous. separator" ? keyInfoData[4]?.[2] : "") ||
-        ","
+      (keyInfoData[4]?.[2] && keyInfoData[4]?.[2] !== "Thous. separator" ? keyInfoData[4]?.[2] : "") ||
+      ","
     ).trim() || ",";
 
-  const version = featureFlags?.version || toggles[0]?.[0] || appDataDisp[39]?.[22] || keyInfoData[0]?.[0] || "";
+  const version = featureFlags?.version || keyInfoData[0]?.[0] || "";
   const showExtraRows =
-    normalizeYesNoFlag(
-      featureFlags?.showStaffCostsRatio ?? toggles[2]?.[0] ?? appDataDisp[41]?.[22],
-      "Yes"
-    ) === "Yes";
+    normalizeYesNoFlag(featureFlags?.showStaffCostsRatio, "Yes") === "Yes";
   const numRows = showExtraRows ? 34 : 32;
 
   const thresholds = thresholdsRaw.slice(0, 18).map((v) => {
@@ -737,19 +619,12 @@ export function buildPortalPerformanceFromGrids({
     return String(v).includes("%") || n > 1 ? n / 100 : n;
   });
 
-  const yearBlockConfigs = hasSourceTabs
-    ? [
-        { id: "hist", name: "Historical Year", start: 0, count: 14, disp: year0Disp, math: year0Math },
-        { id: "year1", name: "Year 1", start: 6, count: 14, disp: dashDisp, math: dashMath },
-        { id: "year2", name: "Year 2", start: 21, count: 14, disp: dashDisp, math: dashMath },
-        { id: "year3", name: "Year 3", start: 36, count: 14, disp: dashDisp, math: dashMath },
-      ]
-    : [
-        { id: "hist", name: "Historical Year", start: 82, count: 14, disp: appDataDisp, math: appDataMath },
-        { id: "year1", name: "Year 1", start: 6, count: 14, disp: appDataDisp, math: appDataMath },
-        { id: "year2", name: "Year 2", start: 21, count: 14, disp: appDataDisp, math: appDataMath },
-        { id: "year3", name: "Year 3", start: 36, count: 14, disp: appDataDisp, math: appDataMath },
-      ];
+  const yearBlockConfigs = [
+    { id: "hist", name: "Historical Year", start: 0, count: 14, disp: year0Disp, math: year0Math },
+    { id: "year1", name: "Year 1", start: 6, count: 14, disp: dashDisp, math: dashMath },
+    { id: "year2", name: "Year 2", start: 21, count: 14, disp: dashDisp, math: dashMath },
+    { id: "year3", name: "Year 3", start: 36, count: 14, disp: dashDisp, math: dashMath },
+  ];
 
   const today = new Date();
   let currentYearIdx = 1;
@@ -1171,7 +1046,7 @@ export async function getCachedPortalHomeAndPerformance(rawOrWrappedClientSheetI
     let performanceData = memoryCache.get(perfKey);
     if (!performanceData) {
       if (!redisClient?.isOpen) {
-        try { await ensureRedisConnected(400); } catch (_) {}
+        try { await ensureRedisConnected(400); } catch (_) { }
       }
       if (redisClient?.isOpen) {
         try {
@@ -1183,7 +1058,7 @@ export async function getCachedPortalHomeAndPerformance(rawOrWrappedClientSheetI
             performanceData = JSON.parse(rawPerf);
             memoryCache.set(perfKey, performanceData, PORTAL_L1_TTL_SECS);
           }
-        } catch (_) {}
+        } catch (_) { }
       }
     }
     return { payload: null, performanceData: performanceData || null };
@@ -1194,7 +1069,7 @@ export async function getCachedPortalHomeAndPerformance(rawOrWrappedClientSheetI
 
   if (!payload || !performanceData) {
     if (!redisClient?.isOpen) {
-      try { await ensureRedisConnected(400); } catch (_) {}
+      try { await ensureRedisConnected(400); } catch (_) { }
     }
     if (redisClient?.isOpen) {
       try {
@@ -1210,7 +1085,7 @@ export async function getCachedPortalHomeAndPerformance(rawOrWrappedClientSheetI
             performanceData = JSON.parse(pair[1]);
           }
         }
-      } catch (_) {}
+      } catch (_) { }
     }
   }
 
@@ -1247,7 +1122,7 @@ export async function warmAllClientsPortalHomeCache({
       try {
         const keys = candidates.map((c) => `pulse:portal:payload:${c.cleanId}`);
         existingPayloads = await redisClient.mGet(keys);
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const toWarm = [];

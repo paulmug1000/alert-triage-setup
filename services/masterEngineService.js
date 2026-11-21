@@ -88,7 +88,6 @@ export const CORE_CLIENT_TABS = [
   "Monthly",
   "ContrPayments",
   "Sessions",
-  "AppData",
   "AppLog",
   "ConfCalcs",
   "PipeCalcs",
@@ -2026,7 +2025,7 @@ async function recomputeAndPersistImmediateClientTabs_(
   const clientKey = String(ctx.clientName || "").toLowerCase();
   _lastClientEditTimestampMap.set(clientKey, Date.now());
 
-  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome", "AppData"]);
+  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
   const skippedSet = _unpersistedSkippedClientTabsByClient.get(clientKey);
   const pendingNotesSet = _pendingNotesChangedTabsByClient.get(clientKey);
 
@@ -2256,7 +2255,7 @@ const CLIENT_TAB_DIRECT_DEPS = {
 };
 
 async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs, rawSheetsApi) {
-  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome", "AppData"]);
+  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
   const hasCalcRelevantChange = allUpdatedTabs.some((t) => !nonFormulaTabs.has(t));
   if (!hasCalcRelevantChange) {
     return;

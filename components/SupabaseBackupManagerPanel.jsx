@@ -135,7 +135,7 @@ export default function SupabaseBackupManagerPanel({
       return availableTabs[targetRole];
     }
     if (targetRole === "client") {
-      return ["Confirmed", "Pipeline", "Outgoings", "Salaries", "Overhead", "AppData", "Performance", "Dashboard"];
+      return ["Confirmed", "Pipeline", "Outgoings", "Salaries", "Overhead", "Performance", "Dashboard"];
     }
     if (targetRole === "master") {
       return ["KeyInfo", "InvComp", "DirComp", "CRMComp", "PLComp", "InvAppList", "JnlAppList", "DataFromCRM"];

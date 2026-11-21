@@ -16,6 +16,7 @@ import {
   restoreClientSheetImportranges,
   getVirtualTabForInspector,
   updateVirtualTabCellFromInspector,
+  updateVirtualTabCellsFromInspector,
   getSupabaseClockStatusAndSyncConfig,
   setSupabaseClockEnabled,
   triggerSupabaseClockNow,
@@ -395,20 +396,47 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, ...gridData });
     }
 
-    if (action === "update_cell") {
-      if (rowIndex0 === undefined || colIndex0 === undefined) {
-        return res.status(400).json({ success: false, error: "rowIndex0 and colIndex0 are required." });
+    if (action === "update_cell" || action === "update_cells") {
+      const updatesList =
+        action === "update_cells"
+          ? req.body?.updates
+          : rowIndex0 !== undefined && colIndex0 !== undefined
+            ? [{ rowIndex0: Number(rowIndex0), colIndex0: Number(colIndex0), value: value ?? "" }]
+            : null;
+      if (!Array.isArray(updatesList) || updatesList.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error:
+            action === "update_cells"
+              ? "updates array is required."
+              : "rowIndex0 and colIndex0 are required.",
+        });
+      }
+      if (updatesList.length > 5000) {
+        return res.status(400).json({
+          success: false,
+          error: "Too many cells in a single batch update (max 5000).",
+        });
       }
       const sheets = await getSheetsClient();
-      const updateRes = await updateVirtualTabCellFromInspector({
-        sheets,
-        clientName: cleanClient,
-        sheetRole,
-        tabName,
-        rowIndex0: Number(rowIndex0),
-        colIndex0: Number(colIndex0),
-        value: value ?? "",
-      });
+      const updateRes =
+        action === "update_cells"
+          ? await updateVirtualTabCellsFromInspector({
+              sheets,
+              clientName: cleanClient,
+              sheetRole,
+              tabName,
+              updates: updatesList,
+            })
+          : await updateVirtualTabCellFromInspector({
+              sheets,
+              clientName: cleanClient,
+              sheetRole,
+              tabName,
+              rowIndex0: Number(rowIndex0),
+              colIndex0: Number(colIndex0),
+              value: value ?? "",
+            });
       if (sheetRole === "client" && updateRes?.clientSheetId) {
         scheduleBackgroundWork_(
           invalidatePmaClientCache(updateRes.clientSheetId, updateRes.masterSheetId, [
@@ -421,13 +449,18 @@ export default async function handler(req, res) {
           ]).catch(() => { })
         );
       }
+      const rangeLabel = String(req.body?.rangeLabel || "").trim();
+      const logSummary =
+        updatesList.length === 1
+          ? `Updated ${cleanClient} (${sheetRole}) ${tabName}!${updateRes.cellCoord} to "${updatesList[0]?.value ?? ""}"`
+          : `Updated ${updatesList.length} cells in ${cleanClient} (${sheetRole}) ${tabName}${rangeLabel ? `!${rangeLabel}` : ""}`;
       scheduleBackgroundWork_(
         logPmaActivity(sheets, {
           automationCommanderSheetId: acId,
           clientName: cleanClient,
           category: "SYSTEM",
-          action: "WORKBOOK_INSPECTOR_CELL_UPDATED",
-          summary: `Updated ${cleanClient} (${sheetRole}) ${tabName}!${updateRes.cellCoord} to "${value ?? ""}"`,
+          action: updatesList.length === 1 ? "WORKBOOK_INSPECTOR_CELL_UPDATED" : "WORKBOOK_INSPECTOR_CELLS_UPDATED",
+          summary: logSummary,
           details: updateRes,
           userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
         }).catch(() => { })

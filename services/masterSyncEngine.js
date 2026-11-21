@@ -28,6 +28,35 @@ import { createMasterGasInstance } from "./gasRuntime/compiledMasterGas.js";
 import { toNumber } from "./gasRuntime/sheetValueUtils.js";
 import { computeNativeMgmtRepForClient } from "./mgmtRepEngine.js";
 
+/**
+ * Returns true if a client is currently in setup/onboarding mode (not yet live for scheduled automation).
+ */
+export function isClientRecordInSetupMode(clientRow, setupStateRow) {
+  if (clientRow?.metadata?.setupMode === true) return true;
+  const setupStatus = String(setupStateRow?.setup_status || "").trim().toUpperCase();
+  return setupStatus === "IN_PROGRESS";
+}
+
+/**
+ * Mirrors updated automation frequencies (Invoices/CRM/Expenses) to Supabase `sync_schedules`.
+ * Only updates fields explicitly defined in the payload.
+ */
+export async function mirrorAutomationFrequenciesToSyncSchedules(clientName, { invoices, crm, expenses } = {}) {
+  if (!clientName) return;
+  try {
+    const sb = getSupabaseAdmin();
+    if (!sb) return;
+    const patch = { updated_at: new Date().toISOString() };
+    if (invoices !== undefined) patch.inv_freq = String(invoices ?? "").trim();
+    if (crm !== undefined) patch.crm_freq = String(crm ?? "").trim();
+    if (expenses !== undefined) patch.exp_freq = String(expenses ?? "").trim();
+    if (Object.keys(patch).length <= 1) return;
+    await sb.from("sync_schedules").update(patch).eq("client_name", clientName);
+  } catch (err) {
+    console.warn("⚠️ Failed to mirror automation frequencies to Supabase sync_schedules:", err.message);
+  }
+}
+
 async function resolveActiveAccountingSession_(ctx) {
   for (const tool of ["xero", "quickbooks"]) {
     const rec = await getIntegrationTokens({
@@ -947,7 +976,7 @@ export async function dispatchDueNativeMasterSyncs({
   }
 
   try {
-    const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }] = await Promise.all([
+    const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }, { data: setupStateRows }] = await Promise.all([
       supabase.from("sync_schedules").select("*"),
       supabase.from("clients").select("client_name, status, metadata, master_mode, master_sheet_id"),
       supabase
@@ -955,14 +984,22 @@ export async function dispatchDueNativeMasterSyncs({
         .select("client_name, values_grid")
         .eq("sheet_role", "master")
         .eq("tab_name", "DataChgAlert"),
+      supabase.from("client_setup_state").select("client_name, setup_status"),
     ]);
     if (!Array.isArray(schedRows) || schedRows.length === 0) return { dispatched: 0, syncs: [] };
+
+    const setupStateByClient = new Map();
+    for (const s of setupStateRows || []) {
+      if (s.client_name) setupStateByClient.set(String(s.client_name).trim().toLowerCase(), s);
+    }
 
     const supabaseClients = new Set();
     const sheetClientByName = new Map();
     for (const c of clientRows || []) {
       const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
       if (st !== "live") continue;
+      const cNameLower = String(c.client_name || "").trim().toLowerCase();
+      if (isClientRecordInSetupMode(c, setupStateByClient.get(cNameLower))) continue;
       if (c.master_mode === "supabase") {
         supabaseClients.add(c.client_name);
       } else if (c.master_sheet_id && !isVirtualSupabaseSheetId(c.master_sheet_id)) {

@@ -3,6 +3,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../serv
 import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { formatMoney as formatPortalMoney } from "../../../services/deepDiveHelper.js";
+import { getSupabaseAdmin, isSupabaseConfigured } from "../../../services/supabaseClient.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 const CASH_CACHE_TTL_SECS = 60; // 60s L1 fresh window
@@ -167,18 +168,45 @@ export default async function handler(req, res) {
         const resp = await withRetry(() =>
           sheets.spreadsheets.get({
             spreadsheetId: clientSheetId,
-            ranges: ["Cash!A1:AZ80", "AppData!G59", "KeyInfo!B10"],
+            ranges: ["Cash!A1:AZ80", "KeyInfo!B146", "KeyInfo!B10"],
             fields: "sheets(properties.title,data.rowData.values(formattedValue,effectiveValue,note))",
           })
         );
 
         const cashSheet = resp.data?.sheets?.find((s) => s.properties?.title === "Cash");
-        const appDataSheet = resp.data?.sheets?.find((s) => s.properties?.title === "AppData");
-        const keyInfoSheet = resp.data?.sheets?.find((s) => s.properties?.title === "KeyInfo");
+        const keyInfoSheets = resp.data?.sheets?.filter((s) => s.properties?.title === "KeyInfo") || [];
         const rawRows = cashSheet?.data?.[0]?.rowData || [];
-        const g59Val = String(appDataSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
-        const b10Val = String(keyInfoSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
-        const showChart = g59Val === "yes";
+        let b146Val = "";
+        let b10Val = "";
+        for (const ks of keyInfoSheets) {
+          for (const d of ks?.data || []) {
+            const valStr = String(d?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
+            if (d?.startRow === 145) b146Val = valStr;
+            else if (d?.startRow === 9) b10Val = valStr;
+          }
+        }
+        if (!b146Val && !b10Val && keyInfoSheets[0]?.data?.length >= 2) {
+          b146Val = String(keyInfoSheets[0]?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
+          b10Val = String(keyInfoSheets[0]?.data?.[1]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
+        }
+        if (!b146Val && isSupabaseConfigured()) {
+          try {
+            const sb = getSupabaseAdmin();
+            const targetName = auth.clientName || clientName;
+            if (sb && targetName) {
+              const { data: tki } = await sb
+                .from("tenant_key_info")
+                .select("portal_feature_flags")
+                .eq("client_name", targetName)
+                .limit(1);
+              const flag = tki?.[0]?.portal_feature_flags?.showCashflowChart;
+              if (flag !== undefined && flag !== null && String(flag).trim() !== "") {
+                b146Val = String(flag).trim().toLowerCase();
+              }
+            }
+          } catch (_) {}
+        }
+        const showChart = (b146Val || "yes") === "yes";
         const isTransfersMode = b10Val.includes("transfer");
 
         if (!rawRows.length) {

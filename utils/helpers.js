@@ -1401,7 +1401,7 @@ export function parseInfoAlertDetail(flagType, detail = "") {
 
   // 5. CRM Copied to Confirmed (Checked)
   if (flagType === "crmCopiedConfChecked" || clean.includes("Copied Pipeline Project") || clean.includes("Converted Pipeline Job")) {
-    const m = clean.match(/(?:Copied Pipeline Project (?:to Confirmed|\(with[^)]*\))|Converted Pipeline Job to Confirmed Retainer):\s*([^|]+)\|\s*([^[\n]+)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\s*->\s*Confirmed\s+row\s+(\d+)\))?/i);
+    const m = clean.match(/(?:Copied Pipeline Project(?:\s*\(with[^)]*\))?(?:\s+to Confirmed)?|Converted Pipeline Job to Confirmed Retainer):\s*([^|]+)\|\s*([\s\S]+?)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\s*->\s*Confirmed\s+row\s+(\d+)\))?\s*$/i);
     if (m) {
       const revMatch = clean.match(/Revenue:\s*([^|,;\n]+)/i);
       const dcMatch = clean.match(/Direct\s+costs:\s*([^|,;\n]+)/i);
@@ -2421,9 +2421,13 @@ export function isCopiedToConfYes(val) {
   return String(val || "").trim().toLowerCase() === "yes";
 }
 
+/**
+ * Returns true when a Pipeline job should be suppressed from Pipeline CRM discrepancy alerts:
+ * either % likelihood is 0%, or "Copied to confirmed tab?" is "Yes" (regardless of % likelihood).
+ */
 export function isPipelineJobSuppressed(likelihood, copiedToConf) {
   if (isLikelihoodZero(likelihood)) return true;
-  if (isLikelihoodHundred(likelihood) && isCopiedToConfYes(copiedToConf)) return true;
+  if (isCopiedToConfYes(copiedToConf)) return true;
   return false;
 }
 
@@ -3026,10 +3030,10 @@ function redactPortalMonthBlock_(monthBlock) {
   const redactRows = (arr) =>
     Array.isArray(arr)
       ? arr.map((r) =>
-          r && typeof r === "object" && PORTAL_SENSITIVE_SALARY_DIV_RE.test(String(r.label || ""))
-            ? { ...r, value: "—" }
-            : r
-        )
+        r && typeof r === "object" && PORTAL_SENSITIVE_SALARY_DIV_RE.test(String(r.label || ""))
+          ? { ...r, value: "—" }
+          : r
+      )
       : arr;
   return {
     ...monthBlock,
@@ -3052,13 +3056,13 @@ export function redactPortalPayloadForUser(payload, user) {
       ...redactPortalMonthBlock_(cloned.currMonth),
       ...(cloned.currMonth.kpis && typeof cloned.currMonth.kpis === "object"
         ? {
-            kpis: {
-              ...cloned.currMonth.kpis,
-              staffCostsDelivery: "—",
-              staffCostsNonDelivery: "—",
-              staffRatio: "—",
-            },
-          }
+          kpis: {
+            ...cloned.currMonth.kpis,
+            staffCostsDelivery: "—",
+            staffCostsNonDelivery: "—",
+            staffRatio: "—",
+          },
+        }
         : {}),
     };
   }
@@ -3082,28 +3086,144 @@ export function redactPortalPerformanceForUser(perfData, user) {
   }
   const years = Array.isArray(perfData.years)
     ? perfData.years.map((yr) => {
-        if (!yr || typeof yr !== "object" || !Array.isArray(yr.rows)) return yr;
-        return {
-          ...yr,
-          rows: yr.rows.map((row) => {
-            if (!row || typeof row !== "object") return row;
-            if (!PORTAL_SENSITIVE_SALARY_DIV_RE.test(String(row.label || ""))) return row;
-            return {
-              ...row,
-              monthlyValues: Array.isArray(row.monthlyValues) ? row.monthlyValues.map(() => "—") : row.monthlyValues,
-              monthlyMath: Array.isArray(row.monthlyMath) ? row.monthlyMath.map(() => null) : row.monthlyMath,
-              totalVal: "—",
-              totalMath: null,
-            };
-          }),
-        };
-      })
+      if (!yr || typeof yr !== "object" || !Array.isArray(yr.rows)) return yr;
+      return {
+        ...yr,
+        rows: yr.rows.map((row) => {
+          if (!row || typeof row !== "object") return row;
+          if (!PORTAL_SENSITIVE_SALARY_DIV_RE.test(String(row.label || ""))) return row;
+          return {
+            ...row,
+            monthlyValues: Array.isArray(row.monthlyValues) ? row.monthlyValues.map(() => "—") : row.monthlyValues,
+            monthlyMath: Array.isArray(row.monthlyMath) ? row.monthlyMath.map(() => null) : row.monthlyMath,
+            totalVal: "—",
+            totalMath: null,
+          };
+        }),
+      };
+    })
     : perfData.years;
   return {
     ...perfData,
     years,
   };
 }
+
+export const AUTOMATION_FREQUENCY_OPTIONS = [
+  "30 mins",
+  "1 hr",
+  "2 hrs",
+  "4 hrs",
+  "8 hrs",
+  "12 hrs",
+  "24 hrs",
+  "Week",
+  "2 weeks",
+  "4 weeks",
+  "Month on 1st",
+  "Month on 5th",
+  "Month on 10th",
+];
+
+export const INVOICE_NUMBER_FORMATTING_OPTIONS = [
+  { value: "StripPre", label: "Strip prefix (StripPre)" },
+  { value: "Full", label: "Full reference (Full)" },
+  { value: "Right5", label: "Right-hand 5 digits (Right5)" },
+  { value: "Right4", label: "Right-hand 4 digits (Right4)" },
+  { value: "Right3", label: "Right-hand 3 digits (Right3)" },
+];
+
+export function formatInvoiceNumber(raw, setting) {
+  if (!raw) return "";
+  const str = String(raw).trim();
+  switch (setting) {
+    case "Full":
+      return str;
+    case "StripPre":
+      return str.replace(/^[^-]+-/, "");
+    case "Right5":
+      return str.slice(-5);
+    case "Right4": {
+      const match = str.match(/\d+/g);
+      const digits = match ? match.join("") : str;
+      return digits.slice(-4);
+    }
+    case "Right3": {
+      const match = str.match(/\d+/g);
+      const digits = match ? match.join("") : str;
+      return digits.slice(-3);
+    }
+    default:
+      return str;
+  }
+}
+
+/**
+ * Computes UK tiered Corporation Tax for a given taxable profit using editable
+ * small-profits / main rates and marginal-relief thresholds.
+ */
+export function calculateUkTieredCorpTax(
+  profit,
+  {
+    smallRatePct = 19,
+    mainRatePct = 25,
+    lowerLimit = 50000,
+    upperLimit = 250000,
+  } = {}
+) {
+  const p = Number(profit) || 0;
+  const rSmall = Math.max(0, Number(smallRatePct) || 0) / 100;
+  const rMain = Math.max(0, Number(mainRatePct) || 0) / 100;
+  const lower = Math.max(0, Number(lowerLimit) || 0);
+  const upper = Math.max(lower, Number(upperLimit) || 0);
+  const round2Val = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+  if (p <= 0) {
+    return {
+      taxableProfit: round2Val(p),
+      tax: 0,
+      effectiveRatePct: 0,
+      marginalRelief: 0,
+      bandLabel: "No taxable profit (loss)",
+    };
+  }
+  if (lower > 0 && p <= lower) {
+    const tax = round2Val(p * rSmall);
+    return {
+      taxableProfit: round2Val(p),
+      tax,
+      effectiveRatePct: round2Val(rSmall * 100),
+      marginalRelief: 0,
+      bandLabel: `Small profits rate (${round2Val(rSmall * 100)}%)`,
+    };
+  }
+  if (upper <= lower || p >= upper) {
+    const tax = round2Val(p * rMain);
+    return {
+      taxableProfit: round2Val(p),
+      tax,
+      effectiveRatePct: round2Val(rMain * 100),
+      marginalRelief: 0,
+      bandLabel: `Main rate (${round2Val(rMain * 100)}%)`,
+    };
+  }
+
+  // Continuous marginal relief fraction bridging small profits rate at `lower` to main rate at `upper`
+  const mrf = ((rMain - rSmall) * lower) / (upper - lower);
+  const mainTax = p * rMain;
+  const marginalRelief = round2Val(mrf * (upper - p));
+  const tax = round2Val(Math.max(0, mainTax - marginalRelief));
+  const effectiveRatePct = p > 0 ? round2Val((tax / p) * 100) : 0;
+
+  return {
+    taxableProfit: round2Val(p),
+    tax,
+    effectiveRatePct,
+    marginalRelief,
+    bandLabel: `Marginal relief (${effectiveRatePct}% effective)`,
+  };
+}
+
 
 
 

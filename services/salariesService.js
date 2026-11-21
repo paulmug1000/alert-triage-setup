@@ -606,7 +606,7 @@ export async function saveEmployeeData({
       summary: `Updated employee "${employeeData.name || "Unnamed"}" for ${clientName || "Client"}`,
       details: `Updated employee row ${sheetRow} (${employeeData.name || "Unnamed"}) for client ${clientName}`,
     })
-  , 25);
+    , 25);
 
   return { success: true, message: "Employee updated successfully." };
 }
@@ -660,7 +660,7 @@ export async function saveSalaryAmountOverride({
       summary: `Updated salary amount override for ${clientName || "Client"}`,
       details: `Updated salary override row ${targetRow} col ${colLetterStart} for client ${clientName}`,
     })
-  , 25);
+    , 25);
 
   return { success: true, message: "Salary amount override saved." };
 }
@@ -740,7 +740,7 @@ export async function saveDividendsData({
       summary: `Updated dividends for ${clientName || "Client"}`,
       details: `Updated dividends row ${sheetRow} for client ${clientName}`,
     }).catch(() => { })
-  , 25);
+    , 25);
 
   return { success: true, message: "Dividends updated successfully." };
 }
@@ -817,17 +817,11 @@ export function findForecastOnlyEmployeesInMonth_({
     }
 
     const fcRow = forecastRows[i] || [];
-    const likelRaw = empRow[9];
-    const likel = (likelRaw === undefined || likelRaw === null || String(likelRaw).trim() === "")
-      ? 1
-      : parseSalaryCellNum_(likelRaw);
-    if (likel <= 0) continue;
-
-    const fcSalary = parseSalaryCellNum_(fcRow[colOffset + 0]) * likel;
-    const fcEeNic = parseSalaryCellNum_(fcRow[colOffset + 1]) * likel;
-    const fcErNic = parseSalaryCellNum_(fcRow[colOffset + 2]) * likel;
-    const fcErPen = parseSalaryCellNum_(fcRow[colOffset + 5]) * likel;
-    const fcPaye = parseSalaryCellNum_(fcRow[colOffset + 6]) * likel;
+    const fcSalary = parseSalaryCellNum_(fcRow[colOffset + 0]);
+    const fcEeNic = parseSalaryCellNum_(fcRow[colOffset + 1]);
+    const fcErNic = parseSalaryCellNum_(fcRow[colOffset + 2]);
+    const fcErPen = parseSalaryCellNum_(fcRow[colOffset + 5]);
+    const fcPaye = parseSalaryCellNum_(fcRow[colOffset + 6]);
     const forecastEmployerCost = Math.round((fcSalary + fcErNic + fcErPen) * 100) / 100;
 
     if (Math.abs(forecastEmployerCost) <= 0.01 && Math.abs(fcEeNic) <= 0.01 && Math.abs(fcPaye) <= 0.01) {
@@ -860,7 +854,6 @@ export function findForecastOnlyEmployeesInMonth_({
       endDate: parsedEnd ? toSheetDateFormat(parsedEnd) : String(empRow[5] || "").trim(),
       isoEndDate: parsedEnd ? toInputDateFormat(parsedEnd) : "",
       deliveryPct: Math.round(parseDeliveryFraction_(empRow[6]) * 100),
-      likelihood: likel,
       forecastSalary: Math.round(fcSalary * 100) / 100,
       forecastErNic: Math.round(fcErNic * 100) / 100,
       forecastErPen: Math.round(fcErPen * 100) / 100,
@@ -966,7 +959,7 @@ export async function applySalaryForecastResolution_({
       userEmail: sessionUser?.email || "unknown",
       action: "CONFIRM_SALARY_FORECAST",
       details: `Confirmed employee row ${rowNum} should remain on forecast for ${monthLabel || "month"} (${clientName || "Client"})`,
-    }).catch(() => {});
+    }).catch(() => { });
     return {
       success: true,
       resolutionAction,

@@ -22,10 +22,13 @@ export default function CategoryMappingSuggestionModal({
   onApplied,
   isAdmin = false
 }) {
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("Pulling P&L report and analysing categories...");
+  const [hasPulled, setHasPulled] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState(null);
   const [sourceOrigin, setSourceOrigin] = useState("");
+  const [totalCategories, setTotalCategories] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState("cosStaffCosts");
 
@@ -43,47 +46,81 @@ export default function CategoryMappingSuggestionModal({
   });
 
   useEffect(() => {
-    if (!isOpen || !clientName) return;
+    if (!isOpen) return;
+    setLoading(false);
+    setHasPulled(false);
+    setFeedback(null);
+    setSourceOrigin("");
+    setTotalCategories(0);
+    setSearchQuery("");
+    setActiveTab("cosStaffCosts");
+    setMappings({
+      cosStaffCosts: [],
+      revenue: [],
+      otherCostOfSale: [],
+      corporationTax: [],
+      depreciation: [],
+      nonOperatingIncome: [],
+      nonOperatingExpenses: [],
+      ignore: [],
+      overheads: []
+    });
+  }, [isOpen, clientName, masterSheetId]);
 
-    let isMounted = true;
+  const handlePullPl = async () => {
+    if (!clientName) return;
     setLoading(true);
     setFeedback(null);
 
-    fetch(`/api/setup/suggest-category-mappings?clientName=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(masterSheetId || "")}`)
-      .then(res => res.json())
-      .then(result => {
-        if (!isMounted) return;
-        if (result.success) {
-          setSourceOrigin(result.sourceOrigin || (isAdmin ? "Master sheet P&L" : "P&L"));
-          if (result.suggested) {
-            setMappings({
-              cosStaffCosts: result.suggested.cosStaffCosts || [],
-              revenue: result.suggested.revenue || [],
-              otherCostOfSale: result.suggested.otherCostOfSale || [],
-              corporationTax: result.suggested.corporationTax || [],
-              depreciation: result.suggested.depreciation || [],
-              nonOperatingIncome: result.suggested.nonOperatingIncome || [],
-              nonOperatingExpenses: result.suggested.nonOperatingExpenses || [],
-              ignore: result.suggested.ignore || [],
-              overheads: result.suggested.overheads || []
-            });
-          }
-        } else {
-          setFeedback({ type: "error", message: result.error || "Failed to load category mapping suggestions." });
+    try {
+      if (masterSheetId) {
+        setLoadingMessage("Pulling P&L report...");
+        const pullRes = await fetch("/api/client-settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "pull_fresh_pl",
+            clientName,
+            masterSheetId
+          })
+        });
+        const pullData = await pullRes.json().catch(() => ({}));
+        if (!pullRes.ok || pullData.success === false) {
+          throw new Error(pullData.error || "Failed to pull P&L report.");
         }
-      })
-      .catch(err => {
-        if (!isMounted) return;
-        setFeedback({ type: "error", message: err.message });
-      })
-      .finally(() => {
-        if (isMounted) setLoading(false);
-      });
+      }
 
-    return () => {
-      isMounted = false;
-    };
-  }, [isOpen, clientName, masterSheetId, isAdmin]);
+      setLoadingMessage("Analysing chart of accounts and classifying categories...");
+      const res = await fetch(
+        `/api/setup/suggest-category-mappings?clientName=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(masterSheetId || "")}`
+      );
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        throw new Error(result.error || "Failed to load category mapping suggestions.");
+      }
+
+      setSourceOrigin(result.sourceOrigin || (isAdmin ? "Master sheet P&L" : "P&L"));
+      setTotalCategories(Number(result.totalCandidateCategories) || 0);
+      if (result.suggested) {
+        setMappings({
+          cosStaffCosts: result.suggested.cosStaffCosts || [],
+          revenue: result.suggested.revenue || [],
+          otherCostOfSale: result.suggested.otherCostOfSale || [],
+          corporationTax: result.suggested.corporationTax || [],
+          depreciation: result.suggested.depreciation || [],
+          nonOperatingIncome: result.suggested.nonOperatingIncome || [],
+          nonOperatingExpenses: result.suggested.nonOperatingExpenses || [],
+          ignore: result.suggested.ignore || [],
+          overheads: result.suggested.overheads || []
+        });
+      }
+      setHasPulled(true);
+    } catch (err) {
+      setFeedback({ type: "error", message: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -200,9 +237,11 @@ export default function CategoryMappingSuggestionModal({
               Auto-suggest category mapping rules
             </h3>
             <p style={{ margin: "3px 0 0", fontSize: "12px", color: "#64748B" }}>
-              {isAdmin
-                ? `Classifying P&L categories from ${sourceOrigin} into Master Sheet KeyInfo!BA2:BA180`
-                : "Classifying P&L categories from connected accounting data"}
+              {!hasPulled
+                ? "Pull the client's P&L report to load and classify categories"
+                : isAdmin
+                  ? `Classifying ${totalCategories ? `${totalCategories} ` : ""}P&L categories from ${sourceOrigin} into Master Sheet KeyInfo!BA2:BA180`
+                  : `Classifying ${totalCategories ? `${totalCategories} ` : ""}P&L categories from connected accounting data`}
             </p>
           </div>
           <button
@@ -224,11 +263,53 @@ export default function CategoryMappingSuggestionModal({
 
         {/* Modal Body */}
         {loading ? (
-          <div style={{ padding: "60px 0", textAlign: "center", flex: 1 }}>
+          <div style={{ padding: "80px 24px", textAlign: "center", flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             <Spinner size={32} color="#023f98" />
-            <p style={{ marginTop: "12px", fontSize: "13px", color: "#64748B" }}>
-              Analysing chart of accounts and classifying categories...
+            <p style={{ marginTop: "14px", fontSize: "13px", color: "#64748B" }}>
+              {loadingMessage}
             </p>
+          </div>
+        ) : !hasPulled ? (
+          <div style={{ padding: "48px 32px", textAlign: "center", flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+            {feedback && (
+              <div
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: "6px",
+                  marginBottom: "18px",
+                  fontSize: "12px",
+                  maxWidth: "480px",
+                  width: "100%",
+                  background: feedback.type === "error" ? "#FEF2F2" : "#ECFDF5",
+                  border: `1px solid ${feedback.type === "error" ? "#FECACA" : "#A7F3D0"}`,
+                  color: feedback.type === "error" ? "#991B1B" : "#065F46"
+                }}
+              >
+                {feedback.message}
+              </div>
+            )}
+            <h4 style={{ margin: "0 0 8px", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
+              Ready to pull P&amp;L categories
+            </h4>
+            <p style={{ margin: "0 0 22px", fontSize: "13px", color: "#64748B", maxWidth: "460px", lineHeight: "1.5" }}>
+              Pull the P&amp;L report and Chart of Accounts from the connected accounting tool, then review and confirm the suggested category mappings.
+            </p>
+            <button
+              type="button"
+              onClick={handlePullPl}
+              style={{
+                padding: "10px 24px",
+                borderRadius: "8px",
+                border: "none",
+                background: "#023f98",
+                color: "#FFFFFF",
+                fontSize: "13px",
+                fontWeight: "700",
+                cursor: "pointer"
+              }}
+            >
+              Pull P&amp;L
+            </button>
           </div>
         ) : (
           <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
@@ -429,13 +510,15 @@ export default function CategoryMappingSuggestionModal({
           }}
         >
           <div style={{ fontSize: "12px", color: "#64748B" }}>
-            Total categories analysed: {Object.values(mappings).reduce((acc, list) => acc + (list?.length || 0), 0)}
+            {hasPulled
+              ? `Total categories analysed: ${Object.values(mappings).reduce((acc, list) => acc + (list?.length || 0), 0)}`
+              : ""}
           </div>
           <div style={{ display: "flex", gap: "12px" }}>
             <button
               type="button"
               onClick={onClose}
-              disabled={saving}
+              disabled={saving || loading}
               style={{
                 padding: "8px 16px",
                 borderRadius: "6px",
@@ -444,32 +527,34 @@ export default function CategoryMappingSuggestionModal({
                 color: "#475569",
                 fontSize: "13px",
                 fontWeight: "600",
-                cursor: saving ? "not-allowed" : "pointer"
+                cursor: saving || loading ? "not-allowed" : "pointer"
               }}
             >
               Cancel
             </button>
-            <button
-              type="button"
-              onClick={handleApply}
-              disabled={loading || saving}
-              style={{
-                padding: "8px 20px",
-                borderRadius: "6px",
-                border: "none",
-                background: "#023f98",
-                color: "#FFFFFF",
-                fontSize: "13px",
-                fontWeight: "700",
-                cursor: loading || saving ? "wait" : "pointer",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "8px"
-              }}
-            >
-              {saving && <Spinner size={14} color="#FFFFFF" />}
-              <span>{saving ? "Applying mappings..." : (isAdmin ? "Apply category mappings to master sheet" : "Apply category mappings")}</span>
-            </button>
+            {hasPulled && (
+              <button
+                type="button"
+                onClick={handleApply}
+                disabled={loading || saving}
+                style={{
+                  padding: "8px 20px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "13px",
+                  fontWeight: "700",
+                  cursor: loading || saving ? "wait" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "8px"
+                }}
+              >
+                {saving && <Spinner size={14} color="#FFFFFF" />}
+                <span>{saving ? "Applying mappings..." : (isAdmin ? "Save category mappings" : "Save category mappings")}</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

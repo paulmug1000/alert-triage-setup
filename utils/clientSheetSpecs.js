@@ -74,10 +74,15 @@ export const CLIENT_SHEET_SPECS = (() => {
   for (const tabName of CLIENT_SHEET_TABS) {
     const raw = templateData.tabs?.[tabName];
     if (!raw) continue;
+    const hiddenRows = new Set(raw.hiddenRows || []);
+    if (tabName === "Confirmed" || tabName === "Pipeline") {
+      // Keep spreadsheet row 2 (0-indexed row 1) visible by default in the DB screen
+      hiddenRows.delete(1);
+    }
     specs[tabName] = {
       ...raw,
       hiddenCols: new Set(raw.hiddenCols || []),
-      hiddenRows: new Set(raw.hiddenRows || []),
+      hiddenRows,
       bookmarks: BOOKMARKS_BY_TAB[tabName] || [],
     };
   }
@@ -113,11 +118,27 @@ function parseDateToSerial(val) {
       return Math.floor(Date.UTC(yr, mon, parseInt(m1[1], 10)) / 86400000) + 25569;
     }
   }
+  const mUk = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (mUk) {
+    const day = parseInt(mUk[1], 10);
+    const mon = parseInt(mUk[2], 10) - 1;
+    let yr = parseInt(mUk[3], 10);
+    if (yr < 100) yr += yr < 50 ? 2000 : 1900;
+    if (mon >= 0 && mon <= 11 && day >= 1 && day <= 31) {
+      return Math.floor(Date.UTC(yr, mon, day) / 86400000) + 25569;
+    }
+  }
   const mIso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (mIso) {
     return Math.floor(Date.UTC(parseInt(mIso[1], 10), parseInt(mIso[2], 10) - 1, parseInt(mIso[3], 10)) / 86400000) + 25569;
   }
   return NaN;
+}
+
+function getGridCellVal(grid, rawGrid, r, c) {
+  const raw = rawGrid?.[r]?.[c];
+  if (raw !== undefined && raw !== null && raw !== "") return raw;
+  return grid?.[r]?.[c];
 }
 
 function applyCashCf(style, { r, c, rawValue, displayValue, grid }) {
@@ -145,7 +166,7 @@ function applyCashCf(style, { r, c, rawValue, displayValue, grid }) {
   return style;
 }
 
-function applyConfirmedCf(style, { r, c, rawValue, displayValue, grid }) {
+function applyConfirmedCf(style, { r, c, rawValue, displayValue, grid, rawGrid }) {
   if (r < 1) return style;
   const n = getSheetNum(rawValue, displayValue);
   if ((c === 74 || c === 106) && (n > 1 || n < -1)) {
@@ -155,22 +176,22 @@ function applyConfirmedCf(style, { r, c, rawValue, displayValue, grid }) {
     return { ...style, bg: "#f4cccc" };
   }
   if (c === 32) {
-    const bw = toSheetNum(grid?.[r]?.[74]);
+    const bw = toSheetNum(getGridCellVal(grid, rawGrid, r, 74));
     if (Number.isFinite(bw) && (bw < -0.01 || bw > 0.01)) {
       return { ...style, bg: "#ffefe0" };
     }
   }
   if (c === 33) {
-    const dc = toSheetNum(grid?.[r]?.[106]);
+    const dc = toSheetNum(getGridCellVal(grid, rawGrid, r, 106));
     if (Number.isFinite(dc) && (dc < -0.01 || dc > 0.01)) {
       return { ...style, bg: "#ffefe0" };
     }
   }
   if (c === 43 || c === 50 || c === 57) {
-    const sendSerial = parseDateToSerial(grid?.[r]?.[c]);
+    const sendSerial = parseDateToSerial(getGridCellVal(grid, rawGrid, r, c));
     if (Number.isFinite(sendSerial)) {
       const today = todayUtcSerial();
-      const status = String(grid?.[r]?.[c + 2] ?? "").trim();
+      const status = String(getGridCellVal(grid, rawGrid, r, c + 2) ?? "").trim();
       const notSentOrPaid = status !== "Paid" && status !== "Sent" && status !== "Part-paid (received)";
       if (sendSerial < today && notSentOrPaid) {
         return { ...style, bg: "#e06666" };
@@ -178,7 +199,8 @@ function applyConfirmedCf(style, { r, c, rawValue, displayValue, grid }) {
       if (sendSerial < today + 30 && notSentOrPaid) {
         return { ...style, bg: "#fff2cc" };
       }
-      const daysToPay = toSheetNum(grid?.[r]?.[c + 1]);
+      const daysRaw = getGridCellVal(grid, rawGrid, r, c + 1);
+      const daysToPay = String(daysRaw ?? "").trim() === "" ? 0 : toSheetNum(daysRaw);
       if (
         Number.isFinite(daysToPay) &&
         sendSerial + daysToPay < today &&
@@ -190,10 +212,10 @@ function applyConfirmedCf(style, { r, c, rawValue, displayValue, grid }) {
     }
   }
   if (c === 41) {
-    const apNonBlank = String(grid?.[r]?.[41] ?? "").trim() !== "";
-    const aj = String(grid?.[r]?.[35] ?? "").trim();
-    const al = parseDateToSerial(grid?.[r]?.[37]);
-    const am = parseDateToSerial(grid?.[r]?.[38]);
+    const apNonBlank = String(getGridCellVal(grid, rawGrid, r, 41) ?? "").trim() !== "";
+    const aj = String(getGridCellVal(grid, rawGrid, r, 35) ?? "").trim();
+    const al = parseDateToSerial(getGridCellVal(grid, rawGrid, r, 37));
+    const am = parseDateToSerial(getGridCellVal(grid, rawGrid, r, 38));
     if (apNonBlank && aj === "Retainer" && Number.isFinite(al) && Number.isFinite(am)) {
       if (am > eomonthSerial(al, 0)) {
         return { ...style, bg: "#ead1dc" };
@@ -203,25 +225,59 @@ function applyConfirmedCf(style, { r, c, rawValue, displayValue, grid }) {
   return style;
 }
 
-function applyPipelineCf(style, { r, c, rawValue, displayValue, grid }) {
-  if (r < 1) return style;
+function isPipelineSssOrangeCol(c) {
+  return (
+    (c >= 3 && c <= 31) ||
+    c === 34 ||
+    c === 36 ||
+    (c >= 41 && c <= 74) ||
+    (c >= 76 && c <= 79) ||
+    c === 83 ||
+    (c >= 85 && c <= 86) ||
+    c === 90 ||
+    (c >= 92 && c <= 93) ||
+    c === 106
+  );
+}
+
+function applyPipelineCf(style, { r, c, rawValue, displayValue, grid, rawGrid }) {
+  if (r === 0) {
+    const ao1 = String(getGridCellVal(grid, rawGrid, 0, 40) ?? "").trim();
+    if (ao1 === "SSS") {
+      if (c >= 75 && c <= 94) {
+        return { ...style, bg: "#c27ba0" };
+      }
+      if (isPipelineSssOrangeCol(c)) {
+        return { ...style, bg: "#f6b26b" };
+      }
+    } else if (ao1 === "SSC" && (c === 3 || c === 4)) {
+      return { ...style, bg: "#f9cb9c" };
+    }
+    return style;
+  }
+
   const n = getSheetNum(rawValue, displayValue);
   if ((c === 74 || c === 106) && (n > 1 || n < -1)) {
     return { ...style, bg: "#f4c7c3" };
   }
-  if (c === 40 && (String(displayValue ?? "").includes("Err") || String(rawValue ?? "").includes("Err"))) {
-    return { ...style, bg: "#f4cccc" };
+  if (c === 40) {
+    if (String(displayValue ?? "").includes("Err") || String(rawValue ?? "").includes("Err")) {
+      return { ...style, bg: "#f4cccc" };
+    }
+    if (r === 2 && isSheetNonBlank(rawValue, displayValue)) {
+      return { ...style, bg: "#b7e1cd" };
+    }
   }
   if (c === 32) {
-    const ag = toSheetNum(grid?.[r]?.[32]);
-    const an = toSheetNum(grid?.[r]?.[39]);
-    const dd = String(grid?.[r]?.[107] ?? "").trim();
+    const ag = toSheetNum(getGridCellVal(grid, rawGrid, r, 32));
+    const an = toSheetNum(getGridCellVal(grid, rawGrid, r, 39));
+    const dd = String(getGridCellVal(grid, rawGrid, r, 107) ?? "").trim();
     if (Number.isFinite(ag) && ag !== 0 && Number.isFinite(an) && an !== 0 && dd !== "Yes") {
       return { ...style, bg: "#c9daf8" };
     }
   }
   if (c === 33) {
-    const dc = toSheetNum(grid?.[r]?.[106]);
+    const dc = toSheetNum(getGridCellVal(grid, rawGrid, r, 106));
     if (Number.isFinite(dc) && (dc < -0.01 || dc > 0.01)) {
       return { ...style, bg: "#fce5cd" };
     }
@@ -262,17 +318,7 @@ function applyOutgoingsCf(style, { r, c, rawValue, displayValue }) {
   return style;
 }
 
-function applySalariesCf(style, { r, c, rawValue, displayValue }) {
-  const n = getSheetNum(rawValue, displayValue);
-  if (
-    Number.isFinite(n) &&
-    n < 1 &&
-    ((r >= 3 && r <= 52 && (c === 9 || c === 10)) ||
-      (r >= 153 && r <= 202 && c === 10) ||
-      (r >= 303 && r <= 352 && c === 10))
-  ) {
-    return { ...style, bg: "#ffff00" };
-  }
+function applySalariesCf(style) {
   return style;
 }
 
@@ -327,7 +373,7 @@ function applyBudgetCf(style, { r, c, rawValue, displayValue }) {
   return style;
 }
 
-export function getClientCellPresentation({ tabName, r, c, rawValue, displayValue, grid, dynamicLists }) {
+export function getClientCellPresentation({ tabName, r, c, rawValue, displayValue, grid, rawGrid, dynamicLists }) {
   const spec = CLIENT_SHEET_SPECS[tabName];
   let rawStyle = null;
   if (spec) {
@@ -365,8 +411,8 @@ export function getClientCellPresentation({ tabName, r, c, rawValue, displayValu
   };
 
   if (tabName === "Cash") return applyCashCf(base, { r, c, rawValue, displayValue, grid });
-  if (tabName === "Confirmed") return applyConfirmedCf(base, { r, c, rawValue, displayValue, grid });
-  if (tabName === "Pipeline") return applyPipelineCf(base, { r, c, rawValue, displayValue, grid });
+  if (tabName === "Confirmed") return applyConfirmedCf(base, { r, c, rawValue, displayValue, grid, rawGrid });
+  if (tabName === "Pipeline") return applyPipelineCf(base, { r, c, rawValue, displayValue, grid, rawGrid });
   if (tabName === "NBtoFind") return applyNbToFindCf(base, { r, c, rawValue, displayValue });
   if (tabName === "Outgoings") return applyOutgoingsCf(base, { r, c, rawValue, displayValue });
   if (tabName === "Salaries") return applySalariesCf(base, { r, c, rawValue, displayValue });

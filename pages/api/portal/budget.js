@@ -84,7 +84,7 @@ export default async function handler(req, res) {
           withRetry(() =>
             sheets.spreadsheets.values.batchGet({
               spreadsheetId: clientSheetId,
-              ranges: ["Budget!A1:AX47", "AppData!A1:AX47", "KeyInfo!B15", "KeyInfo!D8"],
+              ranges: ["Budget!A1:AX47", "Performance!A1:AX47", "KeyInfo!B15", "KeyInfo!D8"],
               valueRenderOption: "FORMATTED_VALUE",
             })
           ),
@@ -98,7 +98,7 @@ export default async function handler(req, res) {
         ]);
 
         const budgetDisp = formattedBatchResp.data?.valueRanges?.[0]?.values || [];
-        const appDataDisp = formattedBatchResp.data?.valueRanges?.[1]?.values || [];
+        const actualsDisp = formattedBatchResp.data?.valueRanges?.[1]?.values || [];
         const budgetMath = mathResp.data?.values || [];
         const mode = String(formattedBatchResp.data?.valueRanges?.[2]?.values?.[0]?.[0] || "Revenue").trim();
         const rawDirectCostsMode = String(formattedBatchResp.data?.valueRanges?.[3]?.values?.[0]?.[0] || "Contractors").trim();
@@ -106,8 +106,8 @@ export default async function handler(req, res) {
           mode.toLowerCase() === "income"
             ? "Pass-through"
             : rawDirectCostsMode === "Pass-through"
-            ? "Pass-through"
-            : "Contractors";
+              ? "Pass-through"
+              : "Contractors";
 
         if (budgetDisp.length === 0) {
           return {
@@ -117,112 +117,112 @@ export default async function handler(req, res) {
           };
         }
 
-    // 3 Year blocks (Year 1: G:T = start 6, Year 2: V:AI = start 21, Year 3: AK:AX = start 36)
-    const yearBlocks = [
-      { id: "year1", label: "Year 1", start: 6, count: 14 },
-      { id: "year2", label: "Year 2", start: 21, count: 14 },
-      { id: "year3", label: "Year 3", start: 36, count: 14 },
-    ];
+        // 3 Year blocks (Year 1: G:T = start 6, Year 2: V:AI = start 21, Year 3: AK:AX = start 36)
+        const yearBlocks = [
+          { id: "year1", label: "Year 1", start: 6, count: 14 },
+          { id: "year2", label: "Year 2", start: 21, count: 14 },
+          { id: "year3", label: "Year 3", start: 36, count: 14 },
+        ];
 
-    const today = new Date();
-    let currentYearIdx = 0;
-    let fallbackIdx = 0;
+        const today = new Date();
+        let currentYearIdx = 0;
+        let fallbackIdx = 0;
 
-    const parsedYears = yearBlocks.map((blk, yIdx) => {
-      const startCol = blk.start;
-      const monthRow = budgetDisp[0] || [];
-      const statusRow = budgetDisp[1] || [];
+        const parsedYears = yearBlocks.map((blk, yIdx) => {
+          const startCol = blk.start;
+          const monthRow = budgetDisp[0] || [];
+          const statusRow = budgetDisp[1] || [];
 
-      // Extract 12 months
-      const months = [];
-      for (let m = 0; m < 12; m++) {
-        const colIdx = startCol + m;
-        const monthLabel = monthRow[colIdx] || `M${m + 1}`;
-        const status = statusRow[colIdx] || "Budget";
-        const dateObj = parseMonthYear(monthLabel);
+          // Extract 12 months
+          const months = [];
+          for (let m = 0; m < 12; m++) {
+            const colIdx = startCol + m;
+            const monthLabel = monthRow[colIdx] || `M${m + 1}`;
+            const status = statusRow[colIdx] || "Budget";
+            const dateObj = parseMonthYear(monthLabel);
 
-        if (dateObj) {
-          const fyStart = new Date(dateObj.getFullYear(), dateObj.getMonth(), 1);
-          const fyEnd = new Date(dateObj.getFullYear(), dateObj.getMonth() + 1, 0, 23, 59, 59);
-          if (today >= fyStart && today <= fyEnd) {
-            currentYearIdx = yIdx;
+            if (dateObj) {
+              const fyStart = new Date(dateObj.getFullYear(), dateObj.getMonth(), 1);
+              const fyEnd = new Date(dateObj.getFullYear(), dateObj.getMonth() + 1, 0, 23, 59, 59);
+              if (today >= fyStart && today <= fyEnd) {
+                currentYearIdx = yIdx;
+              }
+              if (today > fyEnd) fallbackIdx = yIdx;
+            }
+
+            months.push({
+              index: m + 1,
+              label: monthLabel,
+              status: status,
+              colIdx,
+            });
           }
-          if (today > fyEnd) fallbackIdx = yIdx;
-        }
 
-        months.push({
-          index: m + 1,
-          label: monthLabel,
-          status: status,
-          colIdx,
+          const totalColIdx = startCol + 13;
+          const fyTotalLabel = monthRow[totalColIdx] || "FY Total";
+
+          // Extract rows (Row 3 to 47)
+          const rows = [];
+          const numRows = Math.min(budgetDisp.length, 47);
+          for (let r = 2; r < numRows; r++) {
+            let rowLabel = String(budgetDisp[r]?.[0] || "").trim();
+            if (!rowLabel) continue;
+            if (r === 29 && mode.toLowerCase() !== "income") {
+              if (directCostsMode === "Contractors") continue;
+              if (directCostsMode === "Pass-through") rowLabel = "Pass-through costs";
+            }
+
+            const rowValues = [];
+            for (let m = 0; m < 12; m++) {
+              rowValues.push(String(budgetDisp[r]?.[startCol + m] || "£0").trim());
+            }
+            const totalVal = String(budgetDisp[r]?.[totalColIdx] || "£0").trim();
+
+            // Actual row from Performance for comparison
+            const actualRowValues = [];
+            for (let m = 0; m < 12; m++) {
+              actualRowValues.push(String(actualsDisp[r]?.[startCol + m] || "£0").trim());
+            }
+            const actualTotalVal = String(actualsDisp[r]?.[totalColIdx] || "£0").trim();
+
+            rows.push({
+              rowIndex: r + 1,
+              label: rowLabel,
+              values: rowValues,
+              total: totalVal,
+              actualValues: actualRowValues,
+              actualTotal: actualTotalVal,
+            });
+          }
+
+          return {
+            id: blk.id,
+            label: blk.label,
+            yearIndex: yIdx,
+            months,
+            fyTotalLabel,
+            rows,
+          };
         });
-      }
 
-      const totalColIdx = startCol + 13;
-      const fyTotalLabel = monthRow[totalColIdx] || "FY Total";
-
-      // Extract rows (Row 3 to 47)
-      const rows = [];
-      const numRows = Math.min(budgetDisp.length, 47);
-      for (let r = 2; r < numRows; r++) {
-        let rowLabel = String(budgetDisp[r]?.[0] || "").trim();
-        if (!rowLabel) continue;
-        if (r === 29 && mode.toLowerCase() !== "income") {
-          if (directCostsMode === "Contractors") continue;
-          if (directCostsMode === "Pass-through") rowLabel = "Pass-through costs";
+        if (currentYearIdx === 0 && fallbackIdx > 0) {
+          currentYearIdx = fallbackIdx;
         }
 
-        const rowValues = [];
-        for (let m = 0; m < 12; m++) {
-          rowValues.push(String(budgetDisp[r]?.[startCol + m] || "£0").trim());
-        }
-        const totalVal = String(budgetDisp[r]?.[totalColIdx] || "£0").trim();
+        const budgetPayload = {
+          _cachedAt: new Date().toISOString(),
+          hasBudget: true,
+          mode,
+          directCostsMode,
+          currentYearIdx,
+          years: parsedYears,
+          rawVals: budgetDisp,
+          mathVals: budgetMath,
+        };
 
-        // Actual row from AppData for comparison
-        const actualRowValues = [];
-        for (let m = 0; m < 12; m++) {
-          actualRowValues.push(String(appDataDisp[r]?.[startCol + m] || "£0").trim());
-        }
-        const actualTotalVal = String(appDataDisp[r]?.[totalColIdx] || "£0").trim();
-
-        rows.push({
-          rowIndex: r + 1,
-          label: rowLabel,
-          values: rowValues,
-          total: totalVal,
-          actualValues: actualRowValues,
-          actualTotal: actualTotalVal,
-        });
-      }
-
-      return {
-        id: blk.id,
-        label: blk.label,
-        yearIndex: yIdx,
-        months,
-        fyTotalLabel,
-        rows,
-      };
+        return budgetPayload;
+      },
     });
-
-    if (currentYearIdx === 0 && fallbackIdx > 0) {
-      currentYearIdx = fallbackIdx;
-    }
-
-    const budgetPayload = {
-      _cachedAt: new Date().toISOString(),
-      hasBudget: true,
-      mode,
-      directCostsMode,
-      currentYearIdx,
-      years: parsedYears,
-      rawVals: budgetDisp,
-      mathVals: budgetMath,
-    };
-
-    return budgetPayload;
-  },
-});
 
     if (result.data?._noBudgetTab) {
       return res.status(200).json({
@@ -249,11 +249,11 @@ export default async function handler(req, res) {
       const maskBudgetGrid = (grid) =>
         Array.isArray(grid)
           ? grid.map((r, rIdx) => {
-              if (rIdx >= 2 && Array.isArray(r) && SENSITIVE_BUDGET_RE.test(String(r[0] || ""))) {
-                return [r[0], ...r.slice(1).map(() => "")];
-              }
-              return r;
-            })
+            if (rIdx >= 2 && Array.isArray(r) && SENSITIVE_BUDGET_RE.test(String(r[0] || ""))) {
+              return [r[0], ...r.slice(1).map(() => "")];
+            }
+            return r;
+          })
           : grid;
       if (Array.isArray(responseData.rawVals)) responseData.rawVals = maskBudgetGrid(responseData.rawVals);
       if (Array.isArray(responseData.mathVals)) responseData.mathVals = maskBudgetGrid(responseData.mathVals);

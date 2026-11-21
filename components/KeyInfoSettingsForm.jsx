@@ -1,5 +1,21 @@
 import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
+import { AUTOMATION_FREQUENCY_OPTIONS } from "../utils/helpers";
+import InvoiceNumberFormattingControl from "./setup/InvoiceNumberFormattingControl";
+
+const VAT_QUARTERS_OPTIONS = [
+  "Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec",
+  "Feb-Apr, May-Jul, Aug-Oct, Nov-Jan",
+  "Mar-May, Jun-Aug, Sep-Nov, Dec-Feb",
+];
+
+function deriveVatMonthsFromQuarters(vatQuarters) {
+  const q = String(vatQuarters || "").trim().toLowerCase();
+  if (!q) return "";
+  if (q === "jan-mar, apr-jun, jul-sep, oct-dec") return "Feb, May, Aug, Nov, Feb";
+  if (q === "feb-apr, may-jul, aug-oct, nov-jan") return "Mar, Jun, Sep, Dec";
+  return "Jan, Apr, Jul, Oct";
+}
 
 export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved, isAdmin = false }) {
   const [loading, setLoading] = useState(false);
@@ -14,10 +30,16 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
   const [vatRate, setVatRate] = useState("20%");
   const [payeCycle, setPayeCycle] = useState("Monthly");
   const [revenueFocus, setRevenueFocus] = useState("Income");
+  const [invoiceMethod, setInvoiceMethod] = useState("Lines");
   const [directCostsMode, setDirectCostsMode] = useState("Contractors");
   const [profitShare, setProfitShare] = useState("0%");
   const [contractorMethod, setContractorMethod] = useState("Notes metadata");
   const [rechargedExpensesDeliveryPct, setRechargedExpensesDeliveryPct] = useState("100%");
+  const [invoiceNumberFormatting, setInvoiceNumberFormatting] = useState("StripPre");
+  const [sampleInvoiceNumbers, setSampleInvoiceNumbers] = useState([]);
+  const [invoicesFrequency, setInvoicesFrequency] = useState("");
+  const [crmFrequency, setCrmFrequency] = useState("");
+  const [expensesFrequency, setExpensesFrequency] = useState("");
 
   useEffect(() => {
     if (!masterSheetId) return;
@@ -31,16 +53,26 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
         if (data.success && data.settings) {
           const s = data.settings;
           if (s.startDate) setStartDate(s.startDate);
-          if (s.vatQuarters) setVatQuarters(s.vatQuarters);
-          if (s.vatMonths) setVatMonths(s.vatMonths);
+          if (s.vatQuarters) {
+            setVatQuarters(s.vatQuarters);
+            setVatMonths(deriveVatMonthsFromQuarters(s.vatQuarters) || s.vatMonths || "");
+          } else if (s.vatMonths) {
+            setVatMonths(s.vatMonths);
+          }
           if (s.vatScheme) setVatScheme(s.vatScheme);
           if (s.vatRate) setVatRate(s.vatRate);
           if (s.payeCycle) setPayeCycle(s.payeCycle);
           if (s.revenueFocus) setRevenueFocus(s.revenueFocus);
+          if (s.invoiceMethod) setInvoiceMethod(s.invoiceMethod);
           if (s.directCostsMode) setDirectCostsMode(s.revenueFocus === "Income" ? "Pass-through" : s.directCostsMode);
           if (s.profitShare) setProfitShare(s.profitShare);
           if (s.contractorMethod) setContractorMethod(s.contractorMethod);
           if (s.rechargedExpensesDeliveryPct) setRechargedExpensesDeliveryPct(s.rechargedExpensesDeliveryPct);
+          if (s.invoiceNumberFormatting) setInvoiceNumberFormatting(s.invoiceNumberFormatting);
+          if (Array.isArray(s.sampleInvoiceNumbers)) setSampleInvoiceNumbers(s.sampleInvoiceNumbers);
+          if (s.invoicesFrequency !== undefined) setInvoicesFrequency(s.invoicesFrequency);
+          if (s.crmFrequency !== undefined) setCrmFrequency(s.crmFrequency);
+          if (s.expensesFrequency !== undefined) setExpensesFrequency(s.expensesFrequency);
         }
       })
       .catch((err) => {
@@ -76,10 +108,15 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
             vatRate,
             payeCycle,
             revenueFocus,
+            invoiceMethod,
             directCostsMode: revenueFocus === "Income" ? "Pass-through" : directCostsMode,
             profitShare,
             contractorMethod,
-            rechargedExpensesDeliveryPct
+            rechargedExpensesDeliveryPct,
+            invoiceNumberFormatting,
+            invoicesFrequency,
+            crmFrequency,
+            expensesFrequency
           }
         })
       });
@@ -175,17 +212,36 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
           />
         </div>
 
-        {/* VAT Months */}
+        {/* VAT Quarters */}
+        <div>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+            VAT quarters{isAdmin ? " (B6)" : ""}
+          </label>
+          <select
+            value={VAT_QUARTERS_OPTIONS.includes(vatQuarters) ? vatQuarters : VAT_QUARTERS_OPTIONS[0]}
+            onChange={(e) => {
+              const nextQ = e.target.value;
+              setVatQuarters(nextQ);
+              setVatMonths(deriveVatMonthsFromQuarters(nextQ));
+            }}
+            style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", boxSizing: "border-box" }}
+          >
+            {VAT_QUARTERS_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* VAT Months (derived from VAT quarters) */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
             VAT payment months{isAdmin ? " (B7)" : ""}
           </label>
           <input
             type="text"
-            placeholder="e.g. Feb, May, Aug, Nov"
-            value={vatMonths}
-            onChange={(e) => setVatMonths(e.target.value)}
-            style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
+            readOnly
+            value={deriveVatMonthsFromQuarters(vatQuarters) || vatMonths}
+            style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#F8FAFC", color: "#475569", boxSizing: "border-box" }}
           />
         </div>
 
@@ -262,18 +318,33 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
           />
         </div>
 
+        {/* Invoice Type */}
+        <div>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+            Invoice type{isAdmin ? " (F8)" : ""}
+          </label>
+          <select
+            value={invoiceMethod}
+            onChange={(e) => setInvoiceMethod(e.target.value)}
+            style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", boxSizing: "border-box" }}
+          >
+            <option value="Lines">Lines</option>
+            <option value="Whole">Whole</option>
+          </select>
+        </div>
+
         {/* Contractors Method */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-            Contractors method{isAdmin ? " (B20)" : ""}
+            Contractors handling{isAdmin ? " (B20)" : ""}
           </label>
           <select
             value={contractorMethod}
             onChange={(e) => setContractorMethod(e.target.value)}
             style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", boxSizing: "border-box" }}
           >
-            <option value="Notes metadata">Notes metadata (Default)</option>
-            <option value="Cell value">{isAdmin ? "Cell value" : "Direct value"}</option>
+            <option value="Notes metadata">Metadata notes (Default)</option>
+            <option value="Cell value">Cell values</option>
           </select>
         </div>
 
@@ -290,6 +361,60 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
             <option value="100%">100% — Cost of sales (default)</option>
             <option value="0%">0% — Overhead categories</option>
           </select>
+        </div>
+      </div>
+
+      {/* Invoice number formatting + Live preview */}
+      <div style={{ paddingTop: "14px", marginBottom: "16px", borderTop: "1px solid #E2E8F0" }}>
+        <div style={{ marginBottom: "10px" }}>
+          <div style={{ fontSize: "13px", fontWeight: "700", color: "#1E293B" }}>
+            Invoice number formatting
+          </div>
+          <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748B" }}>
+            Configure how invoice reference numbers are formatted for comparison and display in Pulse.
+          </p>
+        </div>
+        <InvoiceNumberFormattingControl
+          value={invoiceNumberFormatting}
+          onChange={setInvoiceNumberFormatting}
+          sampleInvoiceNumbers={sampleInvoiceNumbers}
+          isAdmin={isAdmin}
+          showCellRef={isAdmin}
+        />
+      </div>
+
+      {/* Automation cadences */}
+      <div style={{ paddingTop: "14px", marginBottom: "16px", borderTop: "1px solid #E2E8F0" }}>
+        <div style={{ marginBottom: "10px" }}>
+          <div style={{ fontSize: "13px", fontWeight: "700", color: "#1E293B" }}>
+            Automation cadences
+          </div>
+          <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748B" }}>
+            Choose how frequently automated invoice, CRM, and expense syncs will run once client setup is completed (live mode).
+          </p>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "14px" }}>
+          {[
+            { label: "Invoices frequency", cell: "DataChgAlert!Y2", value: invoicesFrequency, onChange: setInvoicesFrequency },
+            { label: "CRM frequency", cell: "DataChgAlert!Y3", value: crmFrequency, onChange: setCrmFrequency },
+            { label: "Expenses frequency", cell: "DataChgAlert!Y4", value: expensesFrequency, onChange: setExpensesFrequency },
+          ].map((item) => (
+            <div key={item.label}>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+                {item.label}{isAdmin ? ` (${item.cell})` : ""}
+              </label>
+              <select
+                value={item.value}
+                onChange={(e) => item.onChange(e.target.value)}
+                style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", boxSizing: "border-box" }}
+              >
+                <option value="">-- Not scheduled --</option>
+                {AUTOMATION_FREQUENCY_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </div>
+          ))}
         </div>
       </div>
 

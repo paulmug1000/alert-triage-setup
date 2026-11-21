@@ -8,8 +8,17 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
     const raw = exp.vendor || exp.contactName || exp.description || exp.accountName || "";
     return String(raw).split(/[(\[]/)[0].trim();
   })();
+  const defaultVatFlag = (() => {
+    if (!exp) return "Yes";
+    if (exp.vatAmount !== undefined && exp.vatAmount !== null && exp.vatAmount !== "") {
+      const parsedVat = parseFloat(String(exp.vatAmount).replace(/[£$€,\s]/g, "")) || 0;
+      return parsedVat > 0 ? "Yes" : "No";
+    }
+    if (exp.vat === "Yes" || exp.vat === "No") return exp.vat;
+    return "Yes";
+  })();
   const [vendorName, setVendorName] = useState(defaultName);
-  const [vatFlag, setVatFlag] = useState("Yes");
+  const [vatFlag, setVatFlag] = useState(defaultVatFlag);
   const [invTiming, setInvTiming] = useState("Next");
   const [payTiming, setPayTiming] = useState("Next");
   const [deliveryPct, setDeliveryPct] = useState("100");

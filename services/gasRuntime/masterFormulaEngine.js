@@ -2171,6 +2171,58 @@ export function evaluateKeyInfoAndPLComp(grids) {
   const crmList = grids.CRMList;
   if (!Array.isArray(keyInfo)) return;
 
+  // Evaluate KeyInfo header/schedule formula cells verbatim from Master Template:
+  //   E2 = month(B2)
+  //   F2 = if(E2<=3,E2,if(E2-3<=3,E2-3,if(E2-6<=3,E2-6,E2-9)))
+  //   B4 = EOMONTH(B2,8)+1
+  //   E6 = if(B6="","1",if(B6="Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec",1,if(B6="Feb-Apr, May-Jul, Aug-Oct, Nov-Jan",2,3)))
+  //   F6 = if($F$2-$E$6=0,2,if($F$2-$E$6=-1,3,if($F$2-$E$6=2,3,1)))
+  //   B7 = if(B6="","",if(B6="Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec","Feb, May, Aug, Nov, Feb",if(B6="Feb-Apr, May-Jul, Aug-Oct, Nov-Jan","Mar, Jun, Sep, Dec","Jan, Apr, Jul, Oct")))
+  //   D9 = if(and(B15="Income",D8="Contractors"),"NOT ALLOWED","OK")
+  const b2Serial = toSerialOrNull(getCell(keyInfo, 1, 1));
+  if (b2Serial !== null) {
+    const { month1 } = serialToYMD(b2Serial);
+    const f2Val = month1 <= 3 ? month1 : month1 - 3 <= 3 ? month1 - 3 : month1 - 6 <= 3 ? month1 - 6 : month1 - 9;
+    setCell(keyInfo, 1, 4, month1); // E2
+    setCell(keyInfo, 1, 5, f2Val);  // F2
+    const eo8 = eomonthSerial(b2Serial, 8);
+    if (eo8 !== "") {
+      setCell(keyInfo, 3, 1, eo8 + 1); // B4
+    }
+  }
+  const b6Raw = String(getCell(keyInfo, 5, 1) ?? "").trim();
+  const e6Val =
+    b6Raw === ""
+      ? "1"
+      : gsEq(b6Raw, "Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec")
+        ? 1
+        : gsEq(b6Raw, "Feb-Apr, May-Jul, Aug-Oct, Nov-Jan")
+          ? 2
+          : 3;
+  setCell(keyInfo, 5, 4, e6Val); // E6
+
+  const f2Cur = Number(getCell(keyInfo, 1, 5));
+  const e6Num = Number(e6Val);
+  if (Number.isFinite(f2Cur) && Number.isFinite(e6Num)) {
+    const diff = f2Cur - e6Num;
+    const f6Val = diff === 0 ? 2 : diff === -1 ? 3 : diff === 2 ? 3 : 1;
+    setCell(keyInfo, 5, 5, f6Val); // F6
+  }
+
+  const b7Val =
+    b6Raw === ""
+      ? ""
+      : gsEq(b6Raw, "Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec")
+        ? "Feb, May, Aug, Nov, Feb"
+        : gsEq(b6Raw, "Feb-Apr, May-Jul, Aug-Oct, Nov-Jan")
+          ? "Mar, Jun, Sep, Dec"
+          : "Jan, Apr, Jul, Oct";
+  setCell(keyInfo, 6, 1, b7Val); // B7
+
+  const b15Val = getCell(keyInfo, 14, 1);
+  const d8Val = getCell(keyInfo, 7, 3);
+  setCell(keyInfo, 8, 3, gsEq(b15Val, "Income") && gsEq(d8Val, "Contractors") ? "NOT ALLOWED" : "OK"); // D9
+
   // KeyInfo!E21 (Product lines missing from E23:E75 vs CRMList!AN4:AN5004)
   // KeyInfo!I29 (Lead sources missing from I32:I75 vs CRMList!AL4:AL5004)
   if (Array.isArray(crmList)) {

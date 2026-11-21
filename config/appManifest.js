@@ -147,7 +147,7 @@ export const APP_MANIFEST = {
           query: { view: "cash" },
           hasChart: true,
           chartName: "Cashflow Trajectory Chart",
-          chartToggleCell: "AppData!G59",
+          chartToggleCell: "KeyInfo!B146",
           description: "Rolling 7-month cashflow forecast and SVG trajectory chart (excluding vs including pipeline).",
         },
         {

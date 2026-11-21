@@ -5,6 +5,9 @@ import DeferredSearchInput from "./DeferredSearchInput";
 import EditClientSelector from "./EditClientSelector";
 import AdminSettingNoteTooltip from "./AdminSettingNoteTooltip";
 import { MASTER_SHEET_SETTING_NOTES } from "../config/masterSheetSettingNotes";
+import { AUTOMATION_FREQUENCY_OPTIONS } from "../utils/helpers";
+import InvoiceNumberFormattingControl from "./setup/InvoiceNumberFormattingControl";
+import AutomationSettingsPanel from "./AutomationSettingsPanel";
 
 const SECTIONS = [
   { id: "main", label: "Main", icon: "🏢", adminOnly: true },
@@ -107,59 +110,6 @@ const MOVE_CRM_DATES_OPTIONS = [
 
 const CRM_START_DATE_RULES = ["1", "2", "3", "4", "5", "6"];
 
-const FREQUENCY_OPTIONS = [
-  "30 mins",
-  "1 hr",
-  "2 hrs",
-  "4 hrs",
-  "8 hrs",
-  "12 hrs",
-  "24 hrs",
-  "Week",
-  "2 weeks",
-  "4 weeks",
-  "Month on 1st",
-  "Month on 5th",
-  "Month on 10th"
-];
-
-const MONTHS_COMPARE_OPTIONS = ["1", "3", "6", "7", "12", "13"];
-
-const INVOICE_HANDLING_METHOD_OPTIONS = [
-  "None",
-  "Look for slot",
-  "Create new job",
-  "Look then create"
-];
-
-const EXPENSE_HANDLING_METHOD_OPTIONS = [
-  "None",
-  "Look for slot",
-  "Look then create"
-];
-
-const DEFAULT_INVOICING_DETAILS_OPTIONS = [
-  "None",
-  "100 at end",
-  "50-50",
-  "50-25-25",
-  "25-25-50",
-  "25-75",
-  "33-33-33",
-  "Even-Split"
-];
-
-const DISCREPANCY_GAS_OPTIONS = ["Include", "Exclude", "Ignore"];
-const DISCREPANCY_PMA_OPTIONS = ["Include", "Ignore"];
-
-const INVOICE_NUMBER_FORMATTING_OPTIONS = [
-  { value: "StripPre", label: "Strip prefix (StripPre)" },
-  { value: "Full", label: "Full reference (Full)" },
-  { value: "Right5", label: "Right-hand 5 digits (Right5)" },
-  { value: "Right4", label: "Right-hand 4 digits (Right4)" },
-  { value: "Right3", label: "Right-hand 3 digits (Right3)" }
-];
-
 const EXPENSE_STATUS_MAPPING_OPTIONS = [
   { value: "Actual", label: "Actual" },
   { value: "Xero conv", label: "Xero conv" },
@@ -220,31 +170,6 @@ const CRM_PULSE_FIELDS = [
   { key: "dateAddedToPipeline", label: "Date added to pipeline", colLetter: "L", crmColLetter: "AM", defaultFormat: "", formatOptions: [] },
   { key: "productLine", label: "Product line", colLetter: "M", crmColLetter: "AN", defaultFormat: "Mapped", formatOptions: ["Mapped", "Actual"] }
 ];
-
-function formatInvoiceNumber(raw, setting) {
-  if (!raw) return "";
-  const str = String(raw).trim();
-  switch (setting) {
-    case "Full":
-      return str;
-    case "StripPre":
-      return str.replace(/^[^-]+-/, "");
-    case "Right5":
-      return str.slice(-5);
-    case "Right4": {
-      const match = str.match(/\d+/g);
-      const digits = match ? match.join("") : str;
-      return digits.slice(-4);
-    }
-    case "Right3": {
-      const match = str.match(/\d+/g);
-      const digits = match ? match.join("") : str;
-      return digits.slice(-3);
-    }
-    default:
-      return str;
-  }
-}
 
 function parseDateToJsDate(val) {
   if (val === undefined || val === null) return null;
@@ -3638,7 +3563,7 @@ export default function ClientSettingsView({
                             style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
                           >
                             <option value="">-- Blank --</option>
-                            {FREQUENCY_OPTIONS.map(opt => (
+                            {AUTOMATION_FREQUENCY_OPTIONS.map(opt => (
                               <option key={opt} value={opt}>{opt}</option>
                             ))}
                           </select>
@@ -4487,87 +4412,21 @@ export default function ClientSettingsView({
                       {renderCellRef("InvAppList!F1")}
                     </div>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: "24px", alignItems: "start" }}>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "6px" }}>
-                          Formatting rule
-                        </label>
-                        <select
-                          value={settings.accounting?.invoiceNumberFormatting || "StripPre"}
-                          onChange={(e) => {
-                            updateSettingsField(prev => ({
-                              ...prev,
-                              accounting: {
-                                ...prev.accounting,
-                                invoiceNumberFormatting: e.target.value
-                              }
-                            }));
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "9px 12px",
-                            borderRadius: "6px",
-                            border: "1px solid #CBD5E1",
-                            fontSize: "13px",
-                            color: "#0F172A",
-                            background: "#FFFFFF",
-                            boxSizing: "border-box"
-                          }}
-                        >
-                          {INVOICE_NUMBER_FORMATTING_OPTIONS.map(opt => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                        {effectiveIsAdmin && (
-                          <div style={{ fontSize: "11px", color: "#64748B", marginTop: "6px" }}>
-                            Stored in Master Sheet cell <code style={{ background: "#F1F5F9", padding: "1px 4px", borderRadius: "4px" }}>InvAppList!F1</code>
-                          </div>
-                        )}
-                      </div>
-
-                      <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: "8px", padding: "14px 18px" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                          <span style={{ fontSize: "12px", fontWeight: "700", color: "#334155" }}>
-                            Live preview
-                          </span>
-                          {(settings.accounting?.sampleInvoiceNumbers || []).length > 0 ? (
-                            <span style={{ fontSize: "11px", color: "#166534", background: "#DCFCE7", border: "1px solid #86EFAC", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>
-                              ✓ Live client invoices
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: "11px", color: "#475569", background: "#E2E8F0", padding: "2px 8px", borderRadius: "10px" }}>
-                              Illustrative preview
-                            </span>
-                          )}
-                        </div>
-
-                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                          {((settings.accounting?.sampleInvoiceNumbers || []).length > 0
-                            ? settings.accounting.sampleInvoiceNumbers
-                            : ["INV-1065", "INV-5067"]
-                          ).map((rawInv, idx) => {
-                            const formatted = formatInvoiceNumber(rawInv, settings.accounting?.invoiceNumberFormatting || "StripPre");
-                            return (
-                              <div key={idx} style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px", fontFamily: "monospace" }}>
-                                <span style={{ color: "#475569", fontWeight: "600", minWidth: "95px" }}>{rawInv}</span>
-                                <span style={{ color: "#0066CC", fontWeight: "700" }}>➔</span>
-                                <span style={{ color: "#0F172A", fontWeight: "700", background: "#EFF6FF", padding: "3px 8px", borderRadius: "4px", border: "1px solid #BFDBFE" }}>
-                                  {formatted || "—"}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        {(settings.accounting?.sampleInvoiceNumbers || []).length === 0 && (
-                          <div style={{ fontSize: "11px", color: "#64748B", marginTop: "10px", fontStyle: "italic", borderTop: "1px dashed #CBD5E1", paddingTop: "8px" }}>
-                            Live invoices from your accounting tool will appear here once connected and synced.
-                          </div>
-                        )}
-                      </div>
-                    </div>
+                    <InvoiceNumberFormattingControl
+                      value={settings.accounting?.invoiceNumberFormatting || "StripPre"}
+                      onChange={(nextVal) => {
+                        updateSettingsField(prev => ({
+                          ...prev,
+                          accounting: {
+                            ...prev.accounting,
+                            invoiceNumberFormatting: nextVal
+                          }
+                        }));
+                      }}
+                      sampleInvoiceNumbers={settings.accounting?.sampleInvoiceNumbers || []}
+                      isAdmin={effectiveIsAdmin}
+                      showCellRef={effectiveIsAdmin}
+                    />
                   </div>
 
                   {/* Expense status mapping (JnlAppList!F2) - Admin only */}
@@ -6260,518 +6119,21 @@ export default function ClientSettingsView({
 
               {/* ── 6. AUTOMATIONS (ADMIN ONLY - ALL DISPLAYED WITH HEADERS) ── */}
               {activeSection === "automation" && (
-                <div>
-                  <div style={{ marginBottom: "20px", borderBottom: "1px solid #F1F5F9", paddingBottom: "12px" }}>
-                    <h3 style={{ margin: "0 0 4px", fontSize: "18px", fontWeight: "700", color: "#0F172A" }}>Automations & tolerances</h3>
-                    <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-                      Comparison rolling windows, tolerance thresholds, and discrepancy rules.
-                    </p>
-                  </div>
-
-                  {/* Sub-section 1: Invoices */}
-                  <div style={{ marginBottom: "28px" }}>
-                    <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Invoices</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px", marginBottom: "20px" }}>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Months to compare</span>
-                          {renderAdminNote("automation.inv.monthsToCompare")}
-                        </label>
-                        <select
-                          value={String(settings.automation?.invoices?.monthsToCompare || "6")}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, monthsToCompare: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {MONTHS_COMPARE_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt} months</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B32")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Months for others</span>
-                          {renderAdminNote("automation.inv.monthsForOthers")}
-                        </label>
-                        <select
-                          value={String(settings.automation?.invoices?.monthsForOthers || "6")}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, monthsForOthers: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {MONTHS_COMPARE_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt} months</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B33")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Handling method</label>
-                        <select
-                          value={settings.automation?.invoices?.handlingMethod || INVOICE_HANDLING_METHOD_OPTIONS[1]}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, handlingMethod: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {INVOICE_HANDLING_METHOD_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!D39")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Month tolerance</span>
-                          {renderAdminNote("automation.inv.monthTolerance")}
-                        </label>
-                        <input
-                          type="text"
-                          value={settings.automation?.invoices?.monthTolerance || "0"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, monthTolerance: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        />
-                        {renderCellRef("DataChgAlert!F39")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Include half/third amounts?</span>
-                          {renderAdminNote("automation.inv.includeHalfThird")}
-                        </label>
-                        <select
-                          value={settings.automation?.invoices?.includeHalfThird || "Yes"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, includeHalfThird: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {YES_NO_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!H39")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Default project invoicing</span>
-                          {renderAdminNote("automation.inv.defaultProjectInvoicing")}
-                        </label>
-                        <select
-                          value={settings.automation?.invoices?.defaultProjectInvoiceDetails || DEFAULT_INVOICING_DETAILS_OPTIONS[2]}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, defaultProjectInvoiceDetails: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {DEFAULT_INVOICING_DETAILS_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B50")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Default retainer invoice date</span>
-                          {renderAdminNote("automation.inv.defaultRetainerInvoiceDate")}
-                        </label>
-                        <input
-                          type="text"
-                          value={settings.automation?.invoices?.defaultRetainerInvoiceDate || "28"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, defaultRetainerInvoiceDate: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        />
-                        {renderCellRef("DataChgAlert!B51")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Default days to pay</span>
-                          {renderAdminNote("automation.inv.defaultDaysToPay")}
-                        </label>
-                        <input
-                          type="text"
-                          value={settings.automation?.invoices?.defaultDaysToPay || "30"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, defaultDaysToPay: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        />
-                        {renderCellRef("DataChgAlert!B52")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Update days to pay on new month</span>
-                          {renderAdminNote("automation.inv.updateDaysToPayNewMonth")}
-                        </label>
-                        <select
-                          value={settings.automation?.invoices?.updateDaysToPayNewMonth || "Yes"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, updateDaysToPayNewMonth: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {YES_NO_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B47")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Create invoices for retainers</span>
-                          {renderAdminNote("automation.inv.createInvoiceRowsRetainers")}
-                        </label>
-                        <select
-                          value={settings.automation?.invoices?.createInvoiceRowsRetainers || "Yes"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, invoices: { ...prev.automation.invoices, createInvoiceRowsRetainers: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {YES_NO_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B48")}
-                      </div>
-                    </div>
-
-                    {/* Discrepancy Rules for Invoices */}
-                    <div style={{ background: "#F8FAFC", borderRadius: "8px", padding: "16px", border: "1px solid #E2E8F0" }}>
-                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", marginBottom: "12px" }}>
-                        Invoice discrepancy rules (dashboard compare)
-                      </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: "10px" }}>
-                        {[
-                          { key: "missingInvoice", label: "Missing invoice?", cell: "DataChgAlert!B39" },
-                          { key: "clientMismatch", label: "Client mismatch", cell: "DataChgAlert!B40" },
-                          { key: "invAmtMismatch", label: "Inv amt mismatch?", cell: "DataChgAlert!B41", noteKey: "automation.inv.invAmtMismatch" },
-                          { key: "sentDateMismatch", label: "Sent date mismatch?", cell: "DataChgAlert!B42" },
-                          { key: "duplicateInvNo", label: "Duplicate inv no?", cell: "DataChgAlert!B43", noteKey: "automation.inv.duplicateInvNo" },
-                          { key: "fullyPaidMismatch", label: "Fully paid on mismatch?", cell: "DataChgAlert!B44" },
-                          { key: "statusMismatch", label: "Status mismatch?", cell: "DataChgAlert!B45" }
-                        ].map(r => (
-                          <div key={r.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FFFFFF", padding: "6px 10px", borderRadius: "6px", border: "1px solid #E2E8F0" }}>
-                            <div>
-                              <span style={{ fontSize: "12px", color: "#334155", display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                                <span>{r.label}</span>
-                                {r.noteKey && renderAdminNote(r.noteKey)}
-                              </span>
-                              {renderCellRef(r.cell)}
-                            </div>
-                            <select
-                              value={settings.automation?.invoices?.discrepancies?.[r.key] || "Include"}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                updateSettingsField(prev => ({
-                                  ...prev,
-                                  automation: {
-                                    ...prev.automation,
-                                    invoices: {
-                                      ...prev.automation.invoices,
-                                      discrepancies: { ...prev.automation.invoices.discrepancies, [r.key]: val }
-                                    }
-                                  }
-                                }));
-                              }}
-                              style={{ padding: "4px 8px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "11px", fontWeight: "600" }}
-                            >
-                              {DISCREPANCY_GAS_OPTIONS.map(opt => (
-                                <option key={opt} value={opt}>{opt}</option>
-                              ))}
-                            </select>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Sub-section 2: Expenses */}
-                  <div style={{ marginBottom: "28px", paddingTop: "20px", borderTop: "1px solid #F1F5F9" }}>
-                    <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Expenses</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px", marginBottom: "20px" }}>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Months to compare</label>
-                        <select
-                          value={String(settings.automation?.expenses?.monthsToCompare || "6")}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, expenses: { ...prev.automation.expenses, monthsToCompare: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {MONTHS_COMPARE_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt} months</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B101")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Months for others</label>
-                        <select
-                          value={String(settings.automation?.expenses?.monthsForOthers || "6")}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, expenses: { ...prev.automation.expenses, monthsForOthers: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {MONTHS_COMPARE_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt} months</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B102")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Default direct cost receiving</span>
-                          {renderAdminNote("automation.exp.defaultDirectCostDetails")}
-                        </label>
-                        <select
-                          value={settings.automation?.expenses?.defaultDirectCostDetails || DEFAULT_INVOICING_DETAILS_OPTIONS[2]}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, expenses: { ...prev.automation.expenses, defaultDirectCostDetails: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {DEFAULT_INVOICING_DETAILS_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B105")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Default retainer expense date</span>
-                          {renderAdminNote("automation.exp.defaultRetainerExpenseDate")}
-                        </label>
-                        <input
-                          type="text"
-                          value={settings.automation?.expenses?.defaultRetainerExpenseDate || "28"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, expenses: { ...prev.automation.expenses, defaultRetainerExpenseDate: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        />
-                        {renderCellRef("DataChgAlert!B106")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Handling method</label>
-                        <select
-                          value={settings.automation?.expenses?.handlingMethod || EXPENSE_HANDLING_METHOD_OPTIONS[1]}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, expenses: { ...prev.automation.expenses, handlingMethod: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {EXPENSE_HANDLING_METHOD_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!H111")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Month tolerance</span>
-                          {renderAdminNote("automation.exp.monthTolerance")}
-                        </label>
-                        <input
-                          type="text"
-                          value={settings.automation?.expenses?.monthTolerance || "0"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, expenses: { ...prev.automation.expenses, monthTolerance: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        />
-                        {renderCellRef("DataChgAlert!J111")}
-                      </div>
-                    </div>
-
-                    {/* Discrepancy Rules for Expenses */}
-                    <div style={{ background: "#F8FAFC", borderRadius: "8px", padding: "16px", border: "1px solid #E2E8F0" }}>
-                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", marginBottom: "12px" }}>
-                        Expense discrepancy rules (dashboard compare)
-                      </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: "10px" }}>
-                        {[
-                          { key: "missingCost", label: "Missing cost?", cell: "DataChgAlert!B111" },
-                          { key: "duplicateAppId", label: "Duplicate app ID?", cell: "DataChgAlert!B112" },
-                          { key: "descrMismatch", label: "Descr. mismatch?", cell: "DataChgAlert!B113" },
-                          { key: "amountMismatch", label: "Amount mismatch?", cell: "DataChgAlert!B114", noteKey: "automation.exp.amountAndVatMismatch" },
-                          { key: "vatMismatch", label: "VAT mismatch?", cell: "DataChgAlert!B115", noteKey: "automation.exp.amountAndVatMismatch" },
-                          { key: "recDateMismatch", label: "Rec date mismatch?", cell: "DataChgAlert!B116" },
-                          { key: "payDateMismatch", label: "Pay date mismatch?", cell: "DataChgAlert!B117" },
-                          { key: "statusMismatch", label: "Status mismatch?", cell: "DataChgAlert!B118" }
-                        ].map(r => (
-                          <div key={r.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FFFFFF", padding: "6px 10px", borderRadius: "6px", border: "1px solid #E2E8F0" }}>
-                            <div>
-                              <span style={{ fontSize: "12px", color: "#334155", display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                                <span>{r.label}</span>
-                                {r.noteKey && renderAdminNote(r.noteKey)}
-                              </span>
-                              {renderCellRef(r.cell)}
-                            </div>
-                            <select
-                              value={settings.automation?.expenses?.discrepancies?.[r.key] || "Include"}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                updateSettingsField(prev => ({
-                                  ...prev,
-                                  automation: {
-                                    ...prev.automation,
-                                    expenses: {
-                                      ...prev.automation.expenses,
-                                      discrepancies: { ...prev.automation.expenses.discrepancies, [r.key]: val }
-                                    }
-                                  }
-                                }));
-                              }}
-                              style={{ padding: "4px 8px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "11px", fontWeight: "600" }}
-                            >
-                              {DISCREPANCY_GAS_OPTIONS.map(opt => (
-                                <option key={opt} value={opt}>{opt}</option>
-                              ))}
-                            </select>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Sub-section 3: CRM Discrepancy Rules */}
-                  <div style={{ paddingTop: "20px", borderTop: "1px solid #F1F5F9" }}>
-                    <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>CRM discrepancy rules</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px", marginBottom: "18px" }}>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>CRM months to compare</span>
-                          {renderAdminNote("automation.crm.monthsToCompare")}
-                        </label>
-                        <select
-                          value={String(settings.automation?.crm?.monthsToCompare || "6")}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, crm: { ...prev.automation.crm, monthsToCompare: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {MONTHS_COMPARE_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt} months</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B55")}
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "5px", marginBottom: "3px" }}>
-                          <span>Pipeline mode - add jobs to confirmed?</span>
-                          {renderAdminNote("automation.crm.pipelineAddJobsToConf")}
-                        </label>
-                        <select
-                          value={settings.automation?.crm?.pipelineAddJobsToConf || "Yes"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, automation: { ...prev.automation, crm: { ...prev.automation.crm, pipelineAddJobsToConf: e.target.value } } }))}
-                          style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                        >
-                          {YES_NO_OPTIONS.map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                        {renderCellRef("DataChgAlert!B82")}
-                      </div>
-                    </div>
-
-                    {/* Dual Action Tables */}
-                    {[
-                      { key: "dashPipe", title: "Pipeline: dashboard compare", cell: "DataChgAlert!A59:C66" },
-                      { key: "dashConf", title: "Confirmed: dashboard compare", cell: "DataChgAlert!D59:F66" },
-                      { key: "crmPipe", title: "Pipeline: CRM app compare", cell: "DataChgAlert!A72:C79" },
-                      { key: "crmConf", title: "Confirmed: CRM app compare", cell: "DataChgAlert!D72:F79" }
-                    ].map(table => {
-                      const rules = settings.automation?.crm?.rules?.[table.key] || [];
-                      return (
-                        <div key={table.key} style={{ background: "#F8FAFC", borderRadius: "8px", padding: "14px", border: "1px solid #E2E8F0", marginBottom: "14px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                            <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "6px" }}>
-                              <span>{table.title}</span>
-                              {table.key === "crmConf" && renderAdminNote("automation.crm.table.crmConf")}
-                            </div>
-                            {renderCellRef(table.cell)}
-                          </div>
-                          <div className="mobile-table-scroll-hint" style={{ marginBottom: "6px" }}>
-                            <span>⇄</span>
-                            <span>Swipe horizontally to view rules</span>
-                          </div>
-                          <div style={{ border: "1px solid #E2E8F0", borderRadius: "6px", overflowX: "auto", WebkitOverflowScrolling: "touch", background: "#FFFFFF" }}>
-                            <table style={{ width: "100%", minWidth: "420px", borderCollapse: "collapse", fontSize: "12px" }}>
-                              <thead>
-                                <tr style={{ background: "#F1F5F9", borderBottom: "1px solid #E2E8F0", textAlign: "left" }}>
-                                  <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569" }}>Discrepancy rule</th>
-                                  <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "140px" }}>
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                                      <span>GAS automation</span>
-                                      {renderAdminNote("automation.crm.col.gasAutomation")}
-                                    </div>
-                                  </th>
-                                  <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "140px" }}>
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                                      <span>PMA alerts</span>
-                                      {renderAdminNote("automation.crm.col.pmaAlerts")}
-                                    </div>
-                                  </th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {rules.map((r, rIdx) => {
-                                  const lowerLabel = String(r.label || "").toLowerCase();
-                                  const isMissingJobRule =
-                                    (table.key === "crmPipe" || table.key === "crmConf") &&
-                                    lowerLabel.includes("missing job");
-                                  const isLikelihoodRule = lowerLabel.includes("likel");
-                                  return (
-                                    <tr key={rIdx} style={{ borderBottom: "1px solid #F1F5F9" }}>
-                                      <td style={{ padding: "6px 10px", color: "#334155", fontWeight: "500" }}>
-                                        <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                                          <span>{r.label}</span>
-                                          {isMissingJobRule && renderAdminNote("automation.crm.row.crmMissingJob")}
-                                          {isLikelihoodRule && renderAdminNote("automation.crm.row.likelihoodMismatch")}
-                                        </span>
-                                      </td>
-                                      <td style={{ padding: "6px 10px" }}>
-                                        <select
-                                          value={r.gasAction || "Include"}
-                                          onChange={(e) => {
-                                            const val = e.target.value;
-                                            updateSettingsField(prev => {
-                                              const nextRules = [...(prev.automation?.crm?.rules?.[table.key] || [])];
-                                              nextRules[rIdx] = { ...nextRules[rIdx], gasAction: val };
-                                              return {
-                                                ...prev,
-                                                automation: {
-                                                  ...prev.automation,
-                                                  crm: {
-                                                    ...prev.automation.crm,
-                                                    rules: { ...prev.automation.crm.rules, [table.key]: nextRules }
-                                                  }
-                                                }
-                                              };
-                                            });
-                                          }}
-                                          style={{ padding: "3px 6px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "11px", fontWeight: "600" }}
-                                        >
-                                          {DISCREPANCY_GAS_OPTIONS.map(opt => (
-                                            <option key={opt} value={opt}>{opt}</option>
-                                          ))}
-                                        </select>
-                                      </td>
-                                      <td style={{ padding: "6px 10px" }}>
-                                        <select
-                                          value={r.pmaAction || "Include"}
-                                          onChange={(e) => {
-                                            const val = e.target.value;
-                                            updateSettingsField(prev => {
-                                              const nextRules = [...(prev.automation?.crm?.rules?.[table.key] || [])];
-                                              nextRules[rIdx] = { ...nextRules[rIdx], pmaAction: val };
-                                              return {
-                                                ...prev,
-                                                automation: {
-                                                  ...prev.automation,
-                                                  crm: {
-                                                    ...prev.automation.crm,
-                                                    rules: { ...prev.automation.crm.rules, [table.key]: nextRules }
-                                                  }
-                                                }
-                                              };
-                                            });
-                                          }}
-                                          style={{ padding: "3px 6px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "11px", fontWeight: "600" }}
-                                        >
-                                          {DISCREPANCY_PMA_OPTIONS.map(opt => (
-                                            <option key={opt} value={opt}>{opt}</option>
-                                          ))}
-                                        </select>
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                <AutomationSettingsPanel
+                  automation={settings.automation || {}}
+                  onUpdateAutomation={(updater) =>
+                    updateSettingsField((prev) => ({
+                      ...prev,
+                      automation: updater(prev.automation || {}),
+                    }))
+                  }
+                  isAdmin={isSysAdmin}
+                  showCellRefs={effectiveIsAdmin && showCellRefs}
+                  showHeader
+                />
               )}
 
-              {/* ── 7. PULSE (CLIENT SHEET APPDATA) ─────────────────────────── */}
+              {/* ── 7. PULSE (KEYINFO PORTAL SETTINGS) ──────────────────────── */}
               {activeSection === "pulse" && (
                 <div>
                   <div style={{ marginBottom: "20px", borderBottom: "1px solid #F1F5F9", paddingBottom: "12px" }}>
@@ -6787,7 +6149,7 @@ export default function ClientSettingsView({
                       settings.pulse?.showStaffCostsRatio === "Yes",
                       (v) => updateSettingsField(prev => ({ ...prev, pulse: { ...prev.pulse, showStaffCostsRatio: v ? "Yes" : "No" } })),
                       "Controls visibility of the staff costs efficiency ratio card in the client portal.",
-                      "AppData!W42"
+                      "KeyInfo!B143"
                     )}
 
                     {renderToggle(
@@ -6795,7 +6157,7 @@ export default function ClientSettingsView({
                       settings.pulse?.showCashMenu === "Yes",
                       (v) => updateSettingsField(prev => ({ ...prev, pulse: { ...prev.pulse, showCashMenu: v ? "Yes" : "No" } })),
                       "Enables access to the rolling cash forecast screen in the client navigation.",
-                      "AppData!W43"
+                      "KeyInfo!B144"
                     )}
 
                     {renderToggle(
@@ -6803,7 +6165,7 @@ export default function ClientSettingsView({
                       settings.pulse?.showBudget === "Yes",
                       (v) => updateSettingsField(prev => ({ ...prev, pulse: { ...prev.pulse, showBudget: v ? "Yes" : "No" } })),
                       "Enables the annual budget and variance reporting view.",
-                      "AppData!W44"
+                      "KeyInfo!B145"
                     )}
 
                     {renderToggle(
@@ -6811,7 +6173,7 @@ export default function ClientSettingsView({
                       settings.pulse?.showCashflowChart === "Yes",
                       (v) => updateSettingsField(prev => ({ ...prev, pulse: { ...prev.pulse, showCashflowChart: v ? "Yes" : "No" } })),
                       "Renders the interactive cashflow chart on the Cash screen.",
-                      "AppData!G59"
+                      "KeyInfo!B146"
                     )}
 
                     {renderToggle(
@@ -6819,7 +6181,7 @@ export default function ClientSettingsView({
                       settings.pulse?.showLast12MonthsChart === "Yes",
                       (v) => updateSettingsField(prev => ({ ...prev, pulse: { ...prev.pulse, showLast12MonthsChart: v ? "Yes" : "No" } })),
                       "Displays historical 12-month performance trajectory charts.",
-                      "AppData!G71"
+                      "KeyInfo!B147"
                     )}
 
                     {renderToggle(
@@ -6827,7 +6189,7 @@ export default function ClientSettingsView({
                       settings.pulse?.showTrendlines === "Yes",
                       (v) => updateSettingsField(prev => ({ ...prev, pulse: { ...prev.pulse, showTrendlines: v ? "Yes" : "No" } })),
                       "Plots trendline regressions across monthly performance charts.",
-                      "AppData!I71"
+                      "KeyInfo!B148"
                     )}
                   </div>
                 </div>

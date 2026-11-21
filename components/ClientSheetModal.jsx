@@ -9,6 +9,7 @@ import {
 import {
   CLIENT_KEYINFO_CACHE,
   KEYINFO_CACHE_TTL_MS,
+  getClientMaxRowsForTab,
   invalidateClientSheetModalCache,
   prefetchClientSheetTab,
 } from "../utils/sheetModalCache";
@@ -118,7 +119,7 @@ export default function ClientSheetModal({
       getSpec={getSpec}
       getCellPresentation={getClientCellPresentation}
       formatCell={formatCellForClientSheet}
-      getMaxRows={getMaxRowsForTab}
+      getMaxRows={getClientMaxRowsForTab}
       getLastActiveRowIdx={getClientLastActiveRowIdx}
       getDynamicLists={fetchClientKeyInfoLists}
       defaultRowRenderLimit={370}

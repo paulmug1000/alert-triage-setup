@@ -27,6 +27,7 @@ const NBToFindView = dynamic(() => import("../components/NBToFindView"), { ssr: 
 const BudgetView = dynamic(() => import("../components/BudgetView"), { ssr: false, loading: () => <BudgetSkeleton /> });
 const CashEditView = dynamic(() => import("../components/CashEditView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
 const VATView = dynamic(() => import("../components/VATView"), { ssr: false, loading: () => <PmaVatSkeleton /> });
+const Year0EditView = dynamic(() => import("../components/Year0EditView"), { ssr: false, loading: () => <BudgetSkeleton /> });
 const ViewsScreen = dynamic(() => import("../components/ViewsScreen"), { ssr: false, loading: () => <MonthViewSkeleton /> });
 const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: () => <PmaActivitySkeleton /> });
 const ActivityView = dynamic(() => import("../components/ActivityView"), { loading: () => <PmaActivitySkeleton /> });
@@ -226,7 +227,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   const [alertAssignOverlay, setAlertAssignOverlay] = useState(null); // { mode: "invoices" | "outgoings", client }
 
   const EDIT_NAV_KEYS = useMemo(
-    () => new Set(["jobs", "outgoings", "passthrough", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash", "vat"]),
+    () => new Set(["jobs", "outgoings", "passthrough", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash", "vat", "year0"]),
     []
   );
 
@@ -873,6 +874,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   });
   const handleNavCash = () => navigateWithGuard(() => { setActiveNav("cash"); loadClients(); });
   const handleNavVat = () => navigateWithGuard(() => { setActiveNav("vat"); loadClients(); });
+  const handleNavYear0 = (clientName = "") => navigateWithGuard(() => {
+    if (typeof clientName === "string" && clientName.trim()) {
+      setEditStickyClient(clientName.trim());
+    }
+    setActiveNav("year0");
+    loadClients();
+  });
   const handleNavViews = (tabId = "fyPerformance") => navigateWithGuard(() => {
     fireOutgoingsPullIfPending();
     if (typeof tabId === "string" && tabId) {
@@ -1383,6 +1391,21 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       );
     }
 
+    // ── YEAR 0 SCREEN ───────────────────────────────────────────────────────────
+    if (activeNav === "year0") {
+      return (
+        <Year0EditView
+          allOutgoingsClients={allOutgoingsClients}
+          styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
+          initialClient={editStickyClient}
+          onSelectClient={setEditStickyClient}
+          onRegisterNavGuard={registerNavGuard}
+        />
+      );
+    }
+
     // ── TOOLS SCREEN ─────────────────────────────────────────────────────────────
     if (activeNav === "tools") {
       return (
@@ -1588,6 +1611,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onBudget={handleNavBudget}
         onCash={handleNavCash}
         onVat={handleNavVat}
+        onYear0={handleNavYear0}
         onViews={handleNavViews}
         onTools={handleNavTools}
         onIntegrations={handleNavIntegrations}

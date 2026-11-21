@@ -264,6 +264,7 @@ export default function MonthView({
       : performanceData;
 
   const glanceMetrics = computeGlanceMetrics({
+    glanceTimeline: payload?.glanceTimeline,
     performanceData: validPerformanceData,
     chartData,
     activeMonthData,
@@ -1831,6 +1832,7 @@ function HomeLineChart({
 
 // Compute At A Glance metrics + multi-year sparklines
 function computeGlanceMetrics({
+  glanceTimeline,
   performanceData,
   chartData,
   activeMonthData,
@@ -1846,9 +1848,46 @@ function computeGlanceMetrics({
     return isNaN(n) ? 0 : n;
   };
 
+  const resolveMarginFromRow = (margRow, m, profit, rev) => {
+    const rawMath = margRow?.monthlyMath?.[m];
+    const dispVal = margRow?.monthlyValues?.[m];
+    if (typeof rawMath === "number" && Number.isFinite(rawMath)) {
+      const dispStr = String(dispVal ?? "").trim();
+      const dispNum = parseNum(dispStr);
+      if (Math.abs(rawMath) > 1 && dispStr !== "" && Math.abs(rawMath - dispNum) < 1) {
+        return rawMath / 100;
+      }
+      return rawMath;
+    }
+    if (dispVal) {
+      const p = parseNum(dispVal);
+      return String(dispVal).includes("%") || Math.abs(p) > 1 ? p / 100 : p;
+    }
+    return rev ? profit / rev : 0;
+  };
+
   // Flatten years into a continuous timeline starting from Year 0 Month 0
+  // Prefer payload.glanceTimeline (embedded in home payload) so deltas & sparklines render in Stage 1
   const timeline = [];
-  if (performanceData?.years && performanceData.years.length > 0) {
+  if (Array.isArray(glanceTimeline) && glanceTimeline.length > 0) {
+    glanceTimeline.forEach((p) => {
+      const d =
+        typeof p.year === "number" && typeof p.month0 === "number"
+          ? new Date(p.year, p.month0, 1)
+          : DeepDiveEngine.parseHeaderDate(p.monthStr);
+      timeline.push({
+        yIdx: p.yIdx ?? 0,
+        mIdx: p.mIdx ?? 0,
+        monthStr: p.monthStr || "",
+        date: d,
+        rev: typeof p.rev === "number" ? p.rev : 0,
+        gp: typeof p.gp === "number" ? p.gp : 0,
+        op: typeof p.op === "number" ? p.op : 0,
+        gpMargin: typeof p.gpMargin === "number" ? p.gpMargin : 0,
+        opMargin: typeof p.opMargin === "number" ? p.opMargin : 0,
+      });
+    });
+  } else if (performanceData?.years && performanceData.years.length > 0) {
     performanceData.years.forEach((yr, yIdx) => {
       const months = yr.headerMonths || [];
       const revRow =
@@ -1875,31 +1914,8 @@ function computeGlanceMetrics({
             ? opRow.monthlyMath[m]
             : parseNum(opRow?.monthlyValues?.[m]);
 
-        let gpMargin = 0;
-        if (typeof gpMargRow?.monthlyMath?.[m] === "number") {
-          gpMargin =
-            String(gpMargRow?.monthlyValues?.[m] || "").includes("%") || Math.abs(gpMargRow.monthlyMath[m]) > 1
-              ? gpMargRow.monthlyMath[m] / 100
-              : gpMargRow.monthlyMath[m];
-        } else if (gpMargRow?.monthlyValues?.[m]) {
-          const p = parseNum(gpMargRow.monthlyValues[m]);
-          gpMargin = String(gpMargRow.monthlyValues[m]).includes("%") || Math.abs(p) > 1 ? p / 100 : p;
-        } else if (rev) {
-          gpMargin = gp / rev;
-        }
-
-        let opMargin = 0;
-        if (typeof opMargRow?.monthlyMath?.[m] === "number") {
-          opMargin =
-            String(opMargRow?.monthlyValues?.[m] || "").includes("%") || Math.abs(opMargRow.monthlyMath[m]) > 1
-              ? opMargRow.monthlyMath[m] / 100
-              : opMargRow.monthlyMath[m];
-        } else if (opMargRow?.monthlyValues?.[m]) {
-          const p = parseNum(opMargRow.monthlyValues[m]);
-          opMargin = String(opMargRow.monthlyValues[m]).includes("%") || Math.abs(p) > 1 ? p / 100 : p;
-        } else if (rev) {
-          opMargin = op / rev;
-        }
+        const gpMargin = resolveMarginFromRow(gpMargRow, m, gp, rev);
+        const opMargin = resolveMarginFromRow(opMargRow, m, op, rev);
 
         timeline.push({
           yIdx,

@@ -4,9 +4,8 @@
  * ============================================================================
  * 
  * Manages full multi-section client settings across:
- * - Master Sheet: KeyInfo (Main, Customisation, Accounting, CRM, Jobs)
+ * - Master Sheet: KeyInfo (Main, Customisation, Accounting, CRM, Jobs, Pulse portal features)
  * - Master Sheet: DataChgAlert (Automation frequencies & discrepancy rules)
- * - Client Sheet: AppData (Pulse portal feature switches)
  * 
  * Features:
  * - Redis-backed caching with automatic stale-while-revalidate TTL
@@ -25,10 +24,12 @@ import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import { del2TierCache, invalidatePmaClientCache, invalidateAllClientsRedisKeys } from "./cacheService.js";
 import { getSupabaseAdmin } from "./supabaseClient.js";
+import { clearPortalFeatureFlagsMemoryCache } from "./portalDataService.js";
 import {
   refreshNativeChartOfAccounts,
   pullLivePLToSupabaseNative,
   runNativeMasterAmdAction,
+  mirrorAutomationFrequenciesToSyncSchedules,
 } from "./masterSyncEngine.js";
 
 const REDIS_SETTINGS_PREFIX = "pulse:client_settings:";
@@ -103,6 +104,12 @@ export function getSettingsRedisKey(clientName) {
   return `${REDIS_SETTINGS_PREFIX}${clean}`;
 }
 
+function sanitizeCrmGoogleSheetUrl_(val) {
+  const trimmed = String(val || "").trim();
+  if (!trimmed || /^\d{1,4}$/.test(trimmed)) return "";
+  return trimmed;
+}
+
 /**
  * Reads all client settings for a given client from Redis or Google Sheets.
  */
@@ -132,7 +139,7 @@ function mergeCrmSpreadsheetIntoSetup(existingSetup, settings, clientName, maste
     nextSetup.crmTool = String(settings.crm.toolInUse).trim();
   }
   if (settings.crm?.googleSheetUrl !== undefined) {
-    nextSetup.googleSheetUrl = String(settings.crm.googleSheetUrl || "").trim();
+    nextSetup.googleSheetUrl = sanitizeCrmGoogleSheetUrl_(settings.crm.googleSheetUrl);
   }
   if (settings.crm?.googleSheetTab !== undefined) {
     nextSetup.googleSheetTab = String(settings.crm.googleSheetTab || "").trim();
@@ -166,8 +173,11 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
       const cached = await redisClient.get(redisKey);
       if (cached) {
         const parsed = JSON.parse(cached);
-        if (parsed?.crm?.excel?.azureClientSecret) {
-          parsed.crm.excel.azureClientSecret = "••••••••";
+        if (parsed?.crm) {
+          parsed.crm.googleSheetUrl = sanitizeCrmGoogleSheetUrl_(parsed.crm.googleSheetUrl);
+          if (parsed.crm.excel?.azureClientSecret) {
+            parsed.crm.excel.azureClientSecret = "••••••••";
+          }
         }
         if (parsed?.customisation) {
           const rf = String(parsed.customisation.revenueFocus || "Revenue").trim();
@@ -188,7 +198,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     "KeyInfo!A1:F21",      // [0] Main, Customisation, Date Adjust, Recharged expenses delivery % (C21:D21)
     "KeyInfo!Q1:Q10",      // [1] Q4 tool, Q8 CRM, Q9 drives
     "KeyInfo!X11:X41",     // [2] CRM connection parameters
-    "KeyInfo!A120:B141",   // [3] KPI Colouring rules
+    "KeyInfo!A120:B148",   // [3] KPI Colouring rules (120..140) & Pulse portal settings (142..148)
     "KeyInfo!AT4:AT22",    // [4] Contractors manual track
     "KeyInfo!AT24:AT40",   // [5] Other pass-through manual track
     "KeyInfo!BA2:BA180",   // [6] Accounting category mappings
@@ -223,11 +233,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   ];
 
   const clientRanges = [
-    "AppData!W42:W44",     // [0] W42 Staff costs ratio, W43 Cash menu, W44 Budget
-    "AppData!G59",         // [1] Cashflow chart toggle
-    "AppData!G71",         // [2] Last 12 months chart
-    "AppData!I71",         // [3] Trendlines
-    "Outgoings!A112"       // [4] Making up Cost of Sale %
+    "Outgoings!A112"       // [0] Making up Cost of Sale %
   ];
 
   const [masterResp, masterFormulaResp, clientResp] = await Promise.all([
@@ -309,12 +315,25 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const formulaA120 = String(masterFormulaResp.data?.values?.[0]?.[0] || "");
   const isKpiParentFormula = formulaA120.toLowerCase().includes("importrange");
 
-  // Client AppData & Outgoings ranges
-  const appDataW = cVals[0]?.values || [];
-  const appDataG59 = cVals[1]?.values?.[0]?.[0] || "";
-  const appDataG71 = cVals[2]?.values?.[0]?.[0] || "";
-  const appDataI71 = cVals[3]?.values?.[0]?.[0] || "";
-  const outgoingsA112 = String(cVals[4]?.values?.[0]?.[0] ?? "0%").trim() || "0%";
+  // Client Outgoings range
+  const outgoingsA112 = String(cVals[0]?.values?.[0]?.[0] ?? "0%").trim() || "0%";
+
+  // Pulse portal settings from KeyInfo!B143:B148 (rows 23..28 of KeyInfo!A120:B148) with Supabase fallback
+  let pulseDbFlags = null;
+  const sheetPulseVals = [23, 24, 25, 26, 27, 28].map((idx) => String(keyA120B141[idx]?.[1] || "").trim());
+  if (sheetPulseVals.some((v) => !v)) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb && clientName) {
+        const { data: tkiRows } = await sb
+          .from("tenant_key_info")
+          .select("portal_feature_flags")
+          .eq("client_name", clientName)
+          .limit(1);
+        pulseDbFlags = tkiRows?.[0]?.portal_feature_flags || null;
+      }
+    } catch (_) { }
+  }
 
   // --------------------------------------------------------------------------
   // Parse Accounting Categories Mapping (BA2:BA180)
@@ -524,40 +543,48 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     },
 
     // 4. CRM
-    crm: {
-      toolInUse: String(keyQ1Q10[7]?.[0] || "None").trim(), // Q8
-      crmDrives: String(keyQ1Q10[8]?.[0] || "Pipeline").trim(), // Q9
-      googleSheetUrl: String(keyX11X41[0]?.[0] || keyX11X41[3]?.[0] || "").trim(),   // X11 (fallback to legacy X14)
-      googleSheetTab: String(keyX11X41[1]?.[0] || keyX11X41[4]?.[0] || "").trim(),   // X12 (fallback to legacy X15)
-      googleSheetKeyHeaders: String(keyX11X41[2]?.[0] || "").trim(),                 // X13
-      googleSheetHeaderRow: String(keyX11X41[3]?.[0] || "1").trim(),                 // X14
-      clickUpListId: String(keyX11X41[5]?.[0] || "").trim(),    // X16
-      clickUpViewId: String(keyX11X41[6]?.[0] || "").trim(),    // X17
-      mondayBoardId: String(keyX11X41[13]?.[0] || "").trim(),   // X24
-      excel: {
-        azureTenantId: String(keyX11X41[22]?.[0] || "").trim(), // X33
-        azureClientId: String(keyX11X41[23]?.[0] || "").trim(), // X34
-        azureClientSecret: String(keyX11X41[24]?.[0] || "").trim() ? "••••••••" : "", // X35 (masked)
-        driveId: String(keyX11X41[25]?.[0] || "").trim(),       // X36
-        fileId: String(keyX11X41[26]?.[0] || "").trim(),        // X37
-        worksheetName: String(keyX11X41[27]?.[0] || "").trim(), // X38
-        range: String(keyX11X41[28]?.[0] || "").trim(),         // X39
-        columnRow: String(keyX11X41[29]?.[0] || "").trim(),     // X40
-        keyHeaders: String(keyX11X41[30]?.[0] || "").trim()     // X41
-      },
-      fieldMappings,
-      availableCrmHeaders,
-      rawCrmRows,
-      jobDefinitions: {
-        confirmedLikelihood,
-        confirmedStatus,
-        confirmedOperator: confirmedOperator || "Or",
-        pipelineExcludedStatuses
-      },
-      previewMappedJobs,
-      previewConfirmedJobs,
-      previewPipelineJobs
-    },
+    crm: (() => {
+      const rawX11 = sanitizeCrmGoogleSheetUrl_(keyX11X41[0]?.[0]);
+      const rawX14 = String(keyX11X41[3]?.[0] || "").trim();
+      const isX14LegacyUrl =
+        Boolean(rawX14) &&
+        !/^\d{1,4}$/.test(rawX14) &&
+        (rawX14.includes("docs.google.com") || /^[A-Za-z0-9_-]{15,120}$/.test(rawX14));
+      return {
+        toolInUse: String(keyQ1Q10[7]?.[0] || "None").trim(), // Q8
+        crmDrives: String(keyQ1Q10[8]?.[0] || "Pipeline").trim(), // Q9
+        googleSheetUrl: rawX11 || (isX14LegacyUrl ? rawX14 : ""), // X11 (safe fallback only when legacy X14 holds a Sheet URL/ID)
+        googleSheetTab: String(keyX11X41[1]?.[0] || keyX11X41[4]?.[0] || "").trim(),   // X12 (fallback to legacy X15)
+        googleSheetKeyHeaders: String(keyX11X41[2]?.[0] || "").trim(),                 // X13
+        googleSheetHeaderRow: /^\d{1,4}$/.test(rawX14) ? rawX14 : "1",                 // X14
+        clickUpListId: String(keyX11X41[5]?.[0] || "").trim(),    // X16
+        clickUpViewId: String(keyX11X41[6]?.[0] || "").trim(),    // X17
+        mondayBoardId: String(keyX11X41[13]?.[0] || "").trim(),   // X24
+        excel: {
+          azureTenantId: String(keyX11X41[22]?.[0] || "").trim(), // X33
+          azureClientId: String(keyX11X41[23]?.[0] || "").trim(), // X34
+          azureClientSecret: String(keyX11X41[24]?.[0] || "").trim() ? "••••••••" : "", // X35 (masked)
+          driveId: String(keyX11X41[25]?.[0] || "").trim(),       // X36
+          fileId: String(keyX11X41[26]?.[0] || "").trim(),        // X37
+          worksheetName: String(keyX11X41[27]?.[0] || "").trim(), // X38
+          range: String(keyX11X41[28]?.[0] || "").trim(),         // X39
+          columnRow: String(keyX11X41[29]?.[0] || "").trim(),     // X40
+          keyHeaders: String(keyX11X41[30]?.[0] || "").trim()     // X41
+        },
+        fieldMappings,
+        availableCrmHeaders,
+        rawCrmRows,
+        jobDefinitions: {
+          confirmedLikelihood,
+          confirmedStatus,
+          confirmedOperator: confirmedOperator || "Or",
+          pipelineExcludedStatuses
+        },
+        previewMappedJobs,
+        previewConfirmedJobs,
+        previewPipelineJobs
+      };
+    })(),
 
     // 5. CRM STATUS MAPPING
     crmStatusMapping: crmStatusMappings,
@@ -637,14 +664,14 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
       }
     },
 
-    // 8. PULSE (Client Sheet AppData)
+    // 8. PULSE (KeyInfo!B143:B148 & tenant_key_info.portal_feature_flags)
     pulse: {
-      showStaffCostsRatio: String(appDataW[0]?.[0] || "Yes").trim(), // W42
-      showCashMenu: String(appDataW[1]?.[0] || "Yes").trim(),        // W43
-      showBudget: String(appDataW[2]?.[0] || "Yes").trim(),          // W44
-      showCashflowChart: String(appDataG59 || "Yes").trim(),         // G59
-      showLast12MonthsChart: String(appDataG71 || "Yes").trim(),     // G71
-      showTrendlines: String(appDataI71 || "Yes").trim()             // I71
+      showStaffCostsRatio: String(sheetPulseVals[0] || pulseDbFlags?.showStaffCostsRatio || "Yes").trim(), // B143
+      showCashMenu: String(sheetPulseVals[1] || pulseDbFlags?.showCashMenu || "Yes").trim(),               // B144
+      showBudget: String(sheetPulseVals[2] || pulseDbFlags?.showBudget || "Yes").trim(),                   // B145
+      showCashflowChart: String(sheetPulseVals[3] || pulseDbFlags?.showCashflowChart || "Yes").trim(),     // B146
+      showLast12MonthsChart: String(sheetPulseVals[4] || pulseDbFlags?.showLast12MonthsChart || "Yes").trim(), // B147
+      showTrendlines: String(sheetPulseVals[5] || pulseDbFlags?.showTrendlines || "Yes").trim()            // B148
     }
   };
 
@@ -928,11 +955,11 @@ export async function saveClientSettings({
     }
 
     // Conditional Tool fields
-    const candidateSheetUrl = String(settings.crm.googleSheetUrl || "").trim();
+    const candidateSheetUrl = sanitizeCrmGoogleSheetUrl_(settings.crm.googleSheetUrl);
     if (candidateSheetUrl) {
       await assertExternalCrmSpreadsheet(sheets, candidateSheetUrl);
     }
-    addMasterCell("KeyInfo!X11", settings.crm.googleSheetUrl || "");
+    addMasterCell("KeyInfo!X11", candidateSheetUrl);
     addMasterCell("KeyInfo!X12", settings.crm.googleSheetTab || "");
     addMasterCell("KeyInfo!X13", settings.crm.googleSheetKeyHeaders || "");
     addMasterCell("KeyInfo!X14", settings.crm.googleSheetHeaderRow || "");
@@ -1193,14 +1220,30 @@ export async function saveClientSettings({
     }
   }
 
-  // 8. PULSE (Client Sheet AppData)
-  if (settings.pulse && clientSheetId) {
-    addClientCell("AppData!W42", settings.pulse.showStaffCostsRatio);
-    addClientCell("AppData!W43", settings.pulse.showCashMenu);
-    addClientCell("AppData!W44", settings.pulse.showBudget);
-    addClientCell("AppData!G59", settings.pulse.showCashflowChart);
-    addClientCell("AppData!G71", settings.pulse.showLast12MonthsChart);
-    addClientCell("AppData!I71", settings.pulse.showTrendlines);
+  // 8. PULSE (KeyInfo!A142:B148 & tenant_key_info.portal_feature_flags)
+  let updatedPulseFlags = null;
+  if (settings.pulse) {
+    const normToggle = (v) => (String(v ?? "").trim().toLowerCase() === "no" ? "No" : "Yes");
+    updatedPulseFlags = {
+      showStaffCostsRatio: normToggle(settings.pulse.showStaffCostsRatio),
+      showCashMenu: normToggle(settings.pulse.showCashMenu),
+      showBudget: normToggle(settings.pulse.showBudget),
+      showCashflowChart: normToggle(settings.pulse.showCashflowChart),
+      showLast12MonthsChart: normToggle(settings.pulse.showLast12MonthsChart),
+      showTrendlines: normToggle(settings.pulse.showTrendlines),
+    };
+    masterUpdates.push({
+      range: "KeyInfo!A142:B148",
+      values: [
+        ["Pulse portal settings", ""],
+        ["Show staff costs to revenue / income ratio?", updatedPulseFlags.showStaffCostsRatio],
+        ["Show cash menu?", updatedPulseFlags.showCashMenu],
+        ["Show budget functionality?", updatedPulseFlags.showBudget],
+        ["Show cashflow chart?", updatedPulseFlags.showCashflowChart],
+        ["Show last 12 months chart?", updatedPulseFlags.showLast12MonthsChart],
+        ["Show trendlines?", updatedPulseFlags.showTrendlines],
+      ],
+    });
   }
 
   // Execute Master batchUpdate
@@ -1214,25 +1257,37 @@ export async function saveClientSettings({
     }));
   }
 
-  // Mirror Automation frequencies (DataChgAlert!Y2:Y4) to Supabase sync_schedules
-  if (settings.automation?.frequencies) {
+  // Persist portal_feature_flags to Supabase tenant_key_info
+  if (updatedPulseFlags) {
     try {
       const sb = getSupabaseAdmin();
-      if (sb) {
-        const freq = settings.automation.frequencies;
+      if (sb && clientName) {
+        const { data: existingTki } = await sb
+          .from("tenant_key_info")
+          .select("portal_feature_flags")
+          .eq("client_name", clientName)
+          .limit(1);
+        const existingFlags = existingTki?.[0]?.portal_feature_flags && typeof existingTki[0].portal_feature_flags === "object"
+          ? existingTki[0].portal_feature_flags
+          : {};
         await sb
-          .from("sync_schedules")
+          .from("tenant_key_info")
           .update({
-            inv_freq: String(freq.invoices ?? "").trim(),
-            crm_freq: String(freq.crm ?? "").trim(),
-            exp_freq: String(freq.expenses ?? "").trim(),
-            updated_at: new Date().toISOString(),
+            portal_feature_flags: {
+              ...existingFlags,
+              ...updatedPulseFlags,
+            },
           })
           .eq("client_name", clientName);
       }
-    } catch (syncSchedErr) {
-      console.warn("⚠️ Failed to mirror automation frequencies to Supabase sync_schedules:", syncSchedErr.message);
+    } catch (err) {
+      console.warn("⚠️ Failed to persist portal_feature_flags to tenant_key_info:", err.message);
     }
+  }
+
+  // Mirror Automation frequencies (DataChgAlert!Y2:Y4) to Supabase sync_schedules
+  if (settings.automation?.frequencies) {
+    await mirrorAutomationFrequenciesToSyncSchedules(clientName, settings.automation.frequencies);
   }
 
   // Execute Client batchUpdate
@@ -1257,16 +1312,21 @@ export async function saveClientSettings({
     if (clientSheetId) {
       keysToDelete.push(
         `pulse:portal:payload:${clientSheetId}`,
-        `pulse:portal:performance:${clientSheetId}`
+        `pulse:portal:performance:${clientSheetId}`,
+        `pulse:portal:cash:${clientSheetId}`
       );
       if (cleanClientId && cleanClientId !== clientSheetId) {
         keysToDelete.push(
           `pulse:portal:payload:${cleanClientId}`,
-          `pulse:portal:performance:${cleanClientId}`
+          `pulse:portal:performance:${cleanClientId}`,
+          `pulse:portal:cash:${cleanClientId}`
         );
       }
     }
     invalidationOps.push(redisClient.del(keysToDelete).catch(() => { }));
+  }
+  if (cleanClientId || clientSheetId) {
+    clearPortalFeatureFlagsMemoryCache(cleanClientId || clientSheetId);
   }
   if (clientSheetId) {
     invalidationOps.push(del2TierCache(`pma_expenses_${cleanClientId}`).catch(() => { }));
@@ -1486,6 +1546,7 @@ export async function refreshChartOfAccountsService({ clientName, masterSheetId 
   const sheets = await getSheetsClient();
 
   let gasResult = null;
+  let refreshError = null;
   try {
     const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
     if (supaCtx && supaCtx.masterMode === "supabase") {
@@ -1502,7 +1563,12 @@ export async function refreshChartOfAccountsService({ clientName, masterSheetId 
       }
     }
   } catch (err) {
+    refreshError = err;
     console.warn("Could not refresh chart of accounts:", err.message);
+  }
+
+  if (gasResult && gasResult.success === false) {
+    throw new Error(gasResult.error || "Failed to refresh chart of accounts.");
   }
 
   const coaResp = await withRetry(() => sheets.spreadsheets.values.get({
@@ -1512,6 +1578,10 @@ export async function refreshChartOfAccountsService({ clientName, masterSheetId 
   }));
 
   const chartOfAccounts = (coaResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+
+  if (refreshError && chartOfAccounts.length === 0) {
+    throw refreshError;
+  }
 
   if (redisClient?.isOpen && clientName) {
     try {

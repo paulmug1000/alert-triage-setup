@@ -55,7 +55,7 @@ export default function FormattedVirtualSheetModal({
 
   const [activeTab, setActiveTab] = useState(safeInitialTab);
   const [loading, setLoading] = useState(false);
-  const [updatingCellKey, setUpdatingCellKey] = useState("");
+  const [updatingCellKeys, setUpdatingCellKeys] = useState(() => new Set());
   const [error, setError] = useState("");
   const [feedback, setFeedback] = useState(null);
   const [dynamicLists, setDynamicLists] = useState({});
@@ -75,23 +75,44 @@ export default function FormattedVirtualSheetModal({
   const [showHiddenRows, setShowHiddenRows] = useState(false);
   const [showTrailingCols, setShowTrailingCols] = useState(false);
   const [rowRenderLimit, setRowRenderLimit] = useState(defaultRowRenderLimit);
-  const [selectedCell, setSelectedCell] = useState({ r: 0, c: 0 });
-  const [editingTextCell, setEditingTextCell] = useState(false);
+  const [anchorCell, setAnchorCell] = useState({ r: 0, c: 0 });
+  const [focusCell, setFocusCell] = useState({ r: 0, c: 0 });
+  const [editingMode, setEditingMode] = useState(null); // null | "cell" | "formulaBar"
+  const [editingCell, setEditingCell] = useState(null);
+  const [inlineDraft, setInlineDraft] = useState("");
   const [formulaBarDraft, setFormulaBarDraft] = useState("");
 
   const scrollViewportRef = useRef(null);
   const reqIdRef = useRef(0);
+  const isDraggingSelectionRef = useRef(false);
+  const dragModeRef = useRef("cells"); // "cells" | "rows" | "cols"
+  const inlineInputRef = useRef(null);
+  const inlineInitialValueRef = useRef("");
+  const committingInlineRef = useRef(false);
+
+  const isMutating = updatingCellKeys.size > 0;
 
   useEffect(() => {
     if (isOpen) {
       setActiveTab(safeInitialTab);
       setError("");
       setFeedback(null);
-      setSelectedCell({ r: 0, c: 0 });
-      setEditingTextCell(false);
+      setAnchorCell({ r: 0, c: 0 });
+      setFocusCell({ r: 0, c: 0 });
+      setEditingMode(null);
+      setEditingCell(null);
       setRowRenderLimit(defaultRowRenderLimit);
     }
   }, [isOpen, safeInitialTab, clientName, defaultRowRenderLimit]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const handleWindowMouseUp = () => {
+      isDraggingSelectionRef.current = false;
+    };
+    window.addEventListener("mouseup", handleWindowMouseUp);
+    return () => window.removeEventListener("mouseup", handleWindowMouseUp);
+  }, [isOpen]);
 
   const spec = useMemo(() => getSpec(activeTab), [getSpec, activeTab]);
   const widthKey = useMemo(
@@ -170,61 +191,94 @@ export default function FormattedVirtualSheetModal({
     }
   }, [isOpen, activeTab, loadTab]);
 
-  const handleUpdateCell = async (r, c, newValue) => {
-    const key = `${r}:${c}`;
-    setUpdatingCellKey(key);
-    setFeedback(null);
-    setError("");
-    const startMs = Date.now();
-    try {
-      const res = await fetch("/api/pma/master-engine", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "update_cell",
-          clientName,
-          sheetRole,
-          tabName: activeTab,
-          rowIndex0: r,
-          colIndex0: c,
-          value: newValue,
-          maxRows: getMaxRows ? getMaxRows(activeTab) : 1200,
-          maxCols: spec?.totalCols || 200,
-          includeFormulas: true,
-          includeRawValues: true,
-          includeNotes: true,
-          trimTrailingEmptyRows: true,
-          returnUpdatedGrid: true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to update cell.");
+  const handleBatchUpdateCells = useCallback(
+    async (updates, { actionLabel = "Updated", rangeLabel = "" } = {}) => {
+      if (!Array.isArray(updates) || updates.length === 0) return;
+      const keySet = new Set(updates.map((u) => `${u.rowIndex0}:${u.colIndex0}`));
+      setUpdatingCellKeys(keySet);
+      setFeedback(null);
+      setError("");
+      const startMs = Date.now();
+      const isSingle = updates.length === 1;
+      const first = updates[0];
+      try {
+        const body = isSingle
+          ? {
+              action: "update_cell",
+              clientName,
+              sheetRole,
+              tabName: activeTab,
+              rowIndex0: first.rowIndex0,
+              colIndex0: first.colIndex0,
+              value: first.value ?? "",
+              maxRows: getMaxRows ? getMaxRows(activeTab) : 1200,
+              maxCols: spec?.totalCols || 200,
+              includeFormulas: true,
+              includeRawValues: true,
+              includeNotes: true,
+              trimTrailingEmptyRows: true,
+              returnUpdatedGrid: true,
+            }
+          : {
+              action: "update_cells",
+              clientName,
+              sheetRole,
+              tabName: activeTab,
+              updates,
+              rangeLabel,
+              maxRows: getMaxRows ? getMaxRows(activeTab) : 1200,
+              maxCols: spec?.totalCols || 200,
+              includeFormulas: true,
+              includeRawValues: true,
+              includeNotes: true,
+              trimTrailingEmptyRows: true,
+              returnUpdatedGrid: true,
+            };
+
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || "Failed to update cell(s).");
+        }
+        invalidateVirtualModalCache(sheetRole, clientName);
+        if (data.gridData) {
+          const normalized = normalizeGridPayload(data.gridData);
+          const cacheKey = makeCacheKey(sheetRole, clientName, activeTab);
+          VIRTUAL_TAB_CACHE.set(cacheKey, { payload: normalized, cachedAt: Date.now() });
+          setGridData(normalized);
+        } else {
+          await loadTab(activeTab, { forceNetwork: true });
+        }
+        const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(1);
+        const msg = isSingle
+          ? `${actionLabel} ${activeTab}!${colIndexToLetter(first.colIndex0)}${first.rowIndex0 + 1} (${elapsedSec}s)`
+          : `${actionLabel} ${updates.length} cells in ${activeTab}${rangeLabel ? `!${rangeLabel}` : ""} (${elapsedSec}s)`;
+        setFeedback({ type: "success", message: msg });
+        setEditingMode(null);
+        setEditingCell(null);
+        if (typeof onAfterMutate === "function") {
+          onAfterMutate(data);
+        }
+      } catch (err) {
+        setError(err.message || "Failed to save cell change(s).");
+      } finally {
+        setUpdatingCellKeys(new Set());
       }
-      invalidateVirtualModalCache(sheetRole, clientName);
-      if (data.gridData) {
-        const normalized = normalizeGridPayload(data.gridData);
-        const cacheKey = makeCacheKey(sheetRole, clientName, activeTab);
-        VIRTUAL_TAB_CACHE.set(cacheKey, { payload: normalized, cachedAt: Date.now() });
-        setGridData(normalized);
-      } else {
-        await loadTab(activeTab, { forceNetwork: true });
-      }
-      const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(1);
-      setFeedback({
-        type: "success",
-        message: `Updated ${activeTab}!${colIndexToLetter(c)}${r + 1} (${elapsedSec}s)`,
-      });
-      setEditingTextCell(false);
-      if (typeof onAfterMutate === "function") {
-        onAfterMutate(data);
-      }
-    } catch (err) {
-      setError(err.message || "Failed to save cell change.");
-    } finally {
-      setUpdatingCellKey("");
-    }
-  };
+    },
+    [clientName, sheetRole, activeTab, getMaxRows, spec?.totalCols, loadTab, onAfterMutate]
+  );
+
+  const handleUpdateCell = useCallback(
+    (r, c, newValue) =>
+      handleBatchUpdateCells([{ rowIndex0: r, colIndex0: c, value: newValue }], {
+        actionLabel: "Updated",
+      }),
+    [handleBatchUpdateCells]
+  );
 
   const visibleCols = useMemo(() => {
     if (!spec) return [];
@@ -310,29 +364,371 @@ export default function FormattedVirtualSheetModal({
     [filteredDataRows, rowRenderLimit]
   );
 
-  useEffect(() => {
-    const { r, c } = selectedCell;
-    const form = gridData.formulasGrid?.[r]?.[c];
-    const raw = gridData.rawValuesGrid?.[r]?.[c];
-    const disp = gridData.valuesGrid?.[r]?.[c] ?? "";
-    const pres = getCellPresentation({
-      tabName: activeTab,
-      r,
-      c,
-      rawValue: raw !== undefined ? raw : disp,
-      displayValue: disp,
-      grid: gridData.valuesGrid,
-      dynamicLists,
-    });
-    if (typeof form === "string" && form.startsWith("=")) {
-      setFormulaBarDraft(form);
-    } else if (pres.nf?.startsWith("DATE:") || pres.nf?.startsWith("PERCENT:")) {
-      setFormulaBarDraft(String(disp ?? ""));
-    } else {
-      setFormulaBarDraft(String(raw !== undefined && raw !== "" ? raw : disp));
+  const renderedRowIndices = useMemo(
+    () => [...frozenRowIndices, ...displayedDataRows],
+    [frozenRowIndices, displayedDataRows]
+  );
+
+  const selectionBounds = useMemo(
+    () => ({
+      minR: Math.min(anchorCell.r, focusCell.r),
+      maxR: Math.max(anchorCell.r, focusCell.r),
+      minC: Math.min(anchorCell.c, focusCell.c),
+      maxC: Math.max(anchorCell.c, focusCell.c),
+    }),
+    [anchorCell, focusCell]
+  );
+
+  const selectedVisibleRows = useMemo(
+    () => renderedRowIndices.filter((r) => r >= selectionBounds.minR && r <= selectionBounds.maxR),
+    [renderedRowIndices, selectionBounds]
+  );
+
+  const selectedVisibleCols = useMemo(
+    () => visibleCols.filter((c) => c >= selectionBounds.minC && c <= selectionBounds.maxC),
+    [visibleCols, selectionBounds]
+  );
+
+  const selectedCellsList = useMemo(() => {
+    const list = [];
+    for (const r of selectedVisibleRows) {
+      for (const c of selectedVisibleCols) {
+        list.push({ r, c });
+      }
     }
-    setEditingTextCell(false);
-  }, [selectedCell, gridData, activeTab, dynamicLists, getCellPresentation]);
+    return list;
+  }, [selectedVisibleRows, selectedVisibleCols]);
+
+  const selectedCellCount = selectedCellsList.length;
+  const firstSelRow = selectedVisibleRows[0];
+  const lastSelRow = selectedVisibleRows[selectedVisibleRows.length - 1];
+  const firstSelCol = selectedVisibleCols[0];
+  const lastSelCol = selectedVisibleCols[selectedVisibleCols.length - 1];
+
+  const selectionCoordLabel = useMemo(() => {
+    if (selectedCellCount <= 1 || firstSelRow === undefined || firstSelCol === undefined) {
+      return `${colIndexToLetter(anchorCell.c)}${anchorCell.r + 1}`;
+    }
+    return `${colIndexToLetter(firstSelCol)}${firstSelRow + 1}:${colIndexToLetter(lastSelCol)}${lastSelRow + 1}`;
+  }, [selectedCellCount, firstSelRow, lastSelRow, firstSelCol, lastSelCol, anchorCell]);
+
+  const getCellPresentationForCoord = useCallback(
+    (r, c) => {
+      const raw = gridData.rawValuesGrid?.[r]?.[c];
+      const disp = gridData.valuesGrid?.[r]?.[c] ?? "";
+      return getCellPresentation({
+        tabName: activeTab,
+        r,
+        c,
+        rawValue: raw !== undefined ? raw : disp,
+        displayValue: disp,
+        grid: gridData.valuesGrid,
+        rawGrid: gridData.rawValuesGrid,
+        dynamicLists,
+      });
+    },
+    [gridData.rawValuesGrid, gridData.valuesGrid, activeTab, dynamicLists, getCellPresentation]
+  );
+
+  const getEditableValue = useCallback(
+    (r, c) => {
+      const form = gridData.formulasGrid?.[r]?.[c];
+      const raw = gridData.rawValuesGrid?.[r]?.[c];
+      const disp = gridData.valuesGrid?.[r]?.[c] ?? "";
+      const pres = getCellPresentationForCoord(r, c);
+      if (typeof form === "string" && form.startsWith("=")) {
+        return form;
+      }
+      if (pres.nf?.startsWith("DATE:") || pres.nf?.startsWith("PERCENT:")) {
+        return String(disp ?? "");
+      }
+      return String(raw !== undefined && raw !== "" ? raw : disp);
+    },
+    [gridData.formulasGrid, gridData.rawValuesGrid, gridData.valuesGrid, getCellPresentationForCoord]
+  );
+
+  useEffect(() => {
+    if (editingMode === null) {
+      setFormulaBarDraft(getEditableValue(anchorCell.r, anchorCell.c));
+    }
+  }, [anchorCell, gridData, activeTab, getEditableValue, editingMode]);
+
+  useEffect(() => {
+    if (editingMode === "cell" && inlineInputRef.current) {
+      const el = inlineInputRef.current;
+      el.focus();
+      const len = el.value.length;
+      try {
+        el.setSelectionRange(len, len);
+      } catch (_) {}
+    }
+  }, [editingMode, editingCell]);
+
+  const scrollCellIntoView = useCallback((r, c) => {
+    const el = scrollViewportRef.current?.querySelector(`[data-cell="${r}:${c}"]`);
+    if (el && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, []);
+
+  const moveSelectionStep = useCallback(
+    (baseCell, dr, dc, extendSelection = false) => {
+      if (renderedRowIndices.length === 0 || visibleCols.length === 0) return;
+      let rIdx = renderedRowIndices.indexOf(baseCell.r);
+      if (rIdx === -1) rIdx = 0;
+      let cIdx = visibleCols.indexOf(baseCell.c);
+      if (cIdx === -1) cIdx = 0;
+
+      const nextRIdx = Math.max(0, Math.min(renderedRowIndices.length - 1, rIdx + dr));
+      const nextCIdx = Math.max(0, Math.min(visibleCols.length - 1, cIdx + dc));
+      const nextCell = { r: renderedRowIndices[nextRIdx], c: visibleCols[nextCIdx] };
+
+      if (extendSelection) {
+        setFocusCell(nextCell);
+      } else {
+        setAnchorCell(nextCell);
+        setFocusCell(nextCell);
+      }
+      scrollCellIntoView(nextCell.r, nextCell.c);
+    },
+    [renderedRowIndices, visibleCols, scrollCellIntoView]
+  );
+
+  const startInlineEdit = useCallback(
+    (r, c, overrideText = undefined) => {
+      const currentVal = getEditableValue(r, c);
+      inlineInitialValueRef.current = currentVal;
+      const nextDraft = overrideText !== undefined ? overrideText : currentVal;
+      committingInlineRef.current = false;
+      setAnchorCell({ r, c });
+      setFocusCell({ r, c });
+      setEditingCell({ r, c });
+      setEditingMode("cell");
+      setInlineDraft(nextDraft);
+      setFormulaBarDraft(nextDraft);
+    },
+    [getEditableValue]
+  );
+
+  const commitInlineEdit = useCallback(
+    async (moveDir = null) => {
+      if (committingInlineRef.current || editingMode !== "cell" || !editingCell) return;
+      committingInlineRef.current = true;
+      const { r, c } = editingCell;
+      const draft = inlineDraft;
+      const orig = inlineInitialValueRef.current;
+
+      setEditingMode(null);
+      setEditingCell(null);
+
+      if (moveDir === "down") moveSelectionStep({ r, c }, 1, 0, false);
+      else if (moveDir === "up") moveSelectionStep({ r, c }, -1, 0, false);
+      else if (moveDir === "right") moveSelectionStep({ r, c }, 0, 1, false);
+      else if (moveDir === "left") moveSelectionStep({ r, c }, 0, -1, false);
+
+      if (moveDir) {
+        scrollViewportRef.current?.focus({ preventScroll: true });
+      }
+
+      try {
+        if (draft !== orig) {
+          await handleUpdateCell(r, c, draft);
+        }
+      } finally {
+        committingInlineRef.current = false;
+      }
+    },
+    [editingMode, editingCell, inlineDraft, moveSelectionStep, handleUpdateCell]
+  );
+
+  const cancelInlineEdit = useCallback(() => {
+    committingInlineRef.current = true;
+    setEditingMode(null);
+    setEditingCell(null);
+    setFormulaBarDraft(getEditableValue(anchorCell.r, anchorCell.c));
+    scrollViewportRef.current?.focus({ preventScroll: true });
+    setTimeout(() => {
+      committingInlineRef.current = false;
+    }, 0);
+  }, [anchorCell, getEditableValue]);
+
+  const handleClearSelectedCells = useCallback(async () => {
+    if (isMutating || selectedCellsList.length === 0) return;
+    const toClear = [];
+    for (const { r, c } of selectedCellsList) {
+      const form = gridData.formulasGrid?.[r]?.[c];
+      const raw = gridData.rawValuesGrid?.[r]?.[c];
+      const disp = gridData.valuesGrid?.[r]?.[c];
+      const hasFormula = typeof form === "string" && form !== "";
+      const hasRaw = raw !== null && raw !== undefined && raw !== "" && raw !== false;
+      const hasDisp =
+        disp !== null &&
+        disp !== undefined &&
+        disp !== "" &&
+        disp !== false &&
+        String(disp).trim().toUpperCase() !== "FALSE";
+      if (hasFormula || hasRaw || hasDisp) {
+        toClear.push({ rowIndex0: r, colIndex0: c, value: "" });
+      }
+    }
+    if (toClear.length === 0) {
+      setFeedback({ type: "info", message: "Selected cells are already empty." });
+      return;
+    }
+    await handleBatchUpdateCells(toClear, {
+      actionLabel: "Cleared",
+      rangeLabel: selectionCoordLabel,
+    });
+  }, [isMutating, selectedCellsList, gridData.formulasGrid, gridData.rawValuesGrid, gridData.valuesGrid, handleBatchUpdateCells, selectionCoordLabel]);
+
+  const handleGridKeyDown = useCallback(
+    (e) => {
+      if (editingMode !== null) return;
+      const tag = e.target?.tagName;
+      if (tag === "TEXTAREA" || (tag === "INPUT" && e.target?.type !== "checkbox")) return;
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        if (!isMutating) {
+          handleClearSelectedCells();
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        if (selectedVisibleRows.length > 0 && selectedVisibleCols.length > 0) {
+          e.preventDefault();
+          const lines = selectedVisibleRows.map((r) =>
+            selectedVisibleCols
+              .map((c) => {
+                const v = gridData.valuesGrid?.[r]?.[c] ?? "";
+                return String(v);
+              })
+              .join("\t")
+          );
+          const tsv = lines.join("\n");
+          if (navigator?.clipboard?.writeText) {
+            navigator.clipboard.writeText(tsv).then(
+              () => {
+                setFeedback({
+                  type: "info",
+                  message: `Copied ${selectedCellCount} ${selectedCellCount === 1 ? "cell" : "cells"} to clipboard.`,
+                });
+              },
+              () => {}
+            );
+          }
+        }
+        return;
+      }
+
+      if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        if (tag === "SELECT" && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+          return;
+        }
+        e.preventDefault();
+        const dr = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
+        const dc = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+        const base = e.shiftKey ? focusCell : anchorCell;
+        moveSelectionStep(base, dr, dc, e.shiftKey);
+        return;
+      }
+
+      if (e.key === "Tab") {
+        e.preventDefault();
+        moveSelectionStep(anchorCell, 0, e.shiftKey ? -1 : 1, false);
+        return;
+      }
+
+      if (e.key === "Enter" || e.key === "F2") {
+        if (isMutating) return;
+        e.preventDefault();
+        const pres = getCellPresentationForCoord(anchorCell.r, anchorCell.c);
+        if (!pres.checkbox && !(Array.isArray(pres.dv) && pres.dv.length > 0)) {
+          startInlineEdit(anchorCell.r, anchorCell.c);
+        }
+        return;
+      }
+
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (isMutating) return;
+        const pres = getCellPresentationForCoord(anchorCell.r, anchorCell.c);
+        if (pres.checkbox) {
+          if (e.key === " ") {
+            e.preventDefault();
+            const raw = gridData.rawValuesGrid?.[anchorCell.r]?.[anchorCell.c];
+            const disp = gridData.valuesGrid?.[anchorCell.r]?.[anchorCell.c] ?? "";
+            const checked = raw === true || String(disp).trim().toUpperCase() === "TRUE";
+            handleUpdateCell(anchorCell.r, anchorCell.c, checked ? "FALSE" : "TRUE");
+          }
+          return;
+        }
+        if (Array.isArray(pres.dv) && pres.dv.length > 0) {
+          return;
+        }
+        e.preventDefault();
+        startInlineEdit(anchorCell.r, anchorCell.c, e.key);
+      }
+    },
+    [
+      editingMode,
+      isMutating,
+      handleClearSelectedCells,
+      selectedVisibleRows,
+      selectedVisibleCols,
+      selectedCellCount,
+      gridData.valuesGrid,
+      gridData.rawValuesGrid,
+      focusCell,
+      anchorCell,
+      moveSelectionStep,
+      getCellPresentationForCoord,
+      startInlineEdit,
+      handleUpdateCell,
+    ]
+  );
+
+  const handleGridPaste = useCallback(
+    (e) => {
+      if (editingMode !== null || isMutating) return;
+      const tag = e.target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const text = e.clipboardData?.getData("text/plain");
+      if (text === undefined || text === null || text === "") return;
+      e.preventDefault();
+
+      const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const trimmedEnd = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+      const matrix = trimmedEnd.split("\n").map((line) => line.split("\t"));
+
+      const startRIdx = renderedRowIndices.indexOf(anchorCell.r);
+      const startCIdx = visibleCols.indexOf(anchorCell.c);
+      if (startRIdx === -1 || startCIdx === -1) return;
+
+      const updates = [];
+      for (let dr = 0; dr < matrix.length; dr++) {
+        const targetR = renderedRowIndices[startRIdx + dr];
+        if (targetR === undefined) break;
+        const rowVals = matrix[dr];
+        for (let dc = 0; dc < rowVals.length; dc++) {
+          const targetC = visibleCols[startCIdx + dc];
+          if (targetC === undefined) break;
+          updates.push({ rowIndex0: targetR, colIndex0: targetC, value: rowVals[dc] });
+        }
+      }
+      if (updates.length > 0) {
+        const endR = updates[updates.length - 1].rowIndex0;
+        const endC = updates[updates.length - 1].colIndex0;
+        setFocusCell({ r: endR, c: endC });
+        const rangeLabel =
+          updates.length === 1
+            ? `${colIndexToLetter(anchorCell.c)}${anchorCell.r + 1}`
+            : `${colIndexToLetter(anchorCell.c)}${anchorCell.r + 1}:${colIndexToLetter(endC)}${endR + 1}`;
+        handleBatchUpdateCells(updates, { actionLabel: "Pasted", rangeLabel });
+      }
+    },
+    [editingMode, isMutating, renderedRowIndices, visibleCols, anchorCell, handleBatchUpdateCells]
+  );
 
   const handleExportCsv = () => {
     const values = gridData.valuesGrid || [];
@@ -361,9 +757,9 @@ export default function FormattedVirtualSheetModal({
 
   if (!isOpen || !spec) return null;
 
-  const selR = selectedCell.r;
-  const selC = selectedCell.c;
-  const selCoord = `${colIndexToLetter(selC)}${selR + 1}`;
+  const selR = anchorCell.r;
+  const selC = anchorCell.c;
+  const selCoord = selectionCoordLabel;
   const selNote = gridData.notesGrid?.[`${selR}:${selC}`] || "";
   const selFormula = gridData.formulasGrid?.[selR]?.[selC];
   const selRaw = gridData.rawValuesGrid?.[selR]?.[selC];
@@ -388,11 +784,21 @@ export default function FormattedVirtualSheetModal({
         rawValue: rawVal,
         displayValue: dispVal,
         grid: gridData.valuesGrid,
+        rawGrid: gridData.rawValuesGrid,
         dynamicLists,
       });
 
-      const isSelected = selR === r && selC === c;
-      const isCellUpdating = updatingCellKey === `${r}:${c}`;
+      const isAnchor = selR === r && selC === c;
+      const isInSelection =
+        r >= selectionBounds.minR &&
+        r <= selectionBounds.maxR &&
+        c >= selectionBounds.minC &&
+        c <= selectionBounds.maxC;
+      const isMultiSel = selectedCellCount > 1 && isInSelection;
+      const isInlineEditingThis =
+        editingMode === "cell" && editingCell?.r === r && editingCell?.c === c;
+      const isCellUpdating = updatingCellKeys.has(`${r}:${c}`);
+      const showCellSpinner = isCellUpdating && updatingCellKeys.size <= 3;
       const isHiddenCol = spec.hiddenCols?.has(c);
       const isFrozenCol = c < (spec.frozenCols || 0);
       const isLastFrozen = c === lastVisibleFrozenCol;
@@ -421,10 +827,35 @@ export default function FormattedVirtualSheetModal({
       const borderTop = pres.borders?.top ? "1px solid #000000" : "none";
       const borderLeft = pres.borders?.left ? "1px solid #000000" : "none";
 
+      const selShadows = [];
+      if (isMultiSel && !isAnchor) {
+        selShadows.push("inset 0 0 0 9999px rgba(26, 115, 232, 0.12)");
+      }
+      if (isInSelection && selectedCellCount > 1) {
+        if (r === firstSelRow) selShadows.push("inset 0 2px 0 0 #1a73e8");
+        if (r === lastSelRow) selShadows.push("inset 0 -2px 0 0 #1a73e8");
+        if (c === firstSelCol) selShadows.push("inset 2px 0 0 0 #1a73e8");
+        if (c === lastSelCol) selShadows.push("inset -2px 0 0 0 #1a73e8");
+      }
+
       const cellStyle = {
         position: isFrozenCol ? "sticky" : "relative",
         left: isFrozenCol ? `${colLeftOffsets.get(c) || 44}px` : undefined,
-        zIndex: isHeaderRow ? (isFrozenCol ? 26 : undefined) : isFrozenCol ? 11 : undefined,
+        zIndex: isHeaderRow
+          ? isFrozenCol
+            ? isAnchor
+              ? 27
+              : 26
+            : isAnchor
+              ? 21
+              : undefined
+          : isFrozenCol
+            ? isAnchor
+              ? 12
+              : 11
+            : isAnchor
+              ? 2
+              : undefined,
         backgroundColor: pres.bg || "#ffffff",
         color: pres.fg || "#000000",
         fontFamily: "Arial, sans-serif",
@@ -438,7 +869,7 @@ export default function FormattedVirtualSheetModal({
         minHeight: `${baseHeight}px`,
         height: isHeaderRow && pres.wrap ? "auto" : `${baseHeight}px`,
         lineHeight: isHeaderRow ? "1.18" : "1.2",
-        padding: "1px 4px",
+        padding: isInlineEditingThis ? "0 2px" : "1px 4px",
         borderTop,
         borderLeft,
         borderRight,
@@ -452,16 +883,69 @@ export default function FormattedVirtualSheetModal({
                 ? "middle"
                 : "bottom",
         whiteSpace: pres.wrap ? "normal" : "nowrap",
-        overflow: pres.wrapStrategy === "OVERFLOW_CELL" ? "visible" : "hidden",
+        overflow: isInlineEditingThis
+          ? "visible"
+          : pres.wrapStrategy === "OVERFLOW_CELL"
+            ? "visible"
+            : "hidden",
         textOverflow: pres.wrap ? "clip" : "ellipsis",
-        outline: isSelected ? "2px solid #1a73e8" : "none",
-        outlineOffset: isSelected ? "-2px" : "0px",
-        cursor: "cell",
+        outline: isAnchor ? "2px solid #1a73e8" : "none",
+        outlineOffset: isAnchor ? "-2px" : "0px",
+        boxShadow: selShadows.length > 0 ? selShadows.join(", ") : undefined,
+        opacity: isCellUpdating && !showCellSpinner ? 0.55 : 1,
+        userSelect: isInlineEditingThis ? "text" : "none",
+        cursor: isInlineEditingThis ? "text" : "cell",
         boxSizing: "border-box",
       };
 
       const renderInner = () => {
-        if (isCellUpdating) {
+        if (isInlineEditingThis) {
+          return (
+            <input
+              ref={inlineInputRef}
+              type="text"
+              value={inlineDraft}
+              onChange={(e) => {
+                setInlineDraft(e.target.value);
+                setFormulaBarDraft(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitInlineEdit(e.shiftKey ? "up" : "down");
+                } else if (e.key === "Tab") {
+                  e.preventDefault();
+                  commitInlineEdit(e.shiftKey ? "left" : "right");
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelInlineEdit();
+                }
+              }}
+              onBlur={() => commitInlineEdit(null)}
+              onMouseDown={(e) => e.stopPropagation()}
+              style={{
+                width: "100%",
+                height: "100%",
+                minHeight: `${Math.max(18, baseHeight - 2)}px`,
+                border: "none",
+                outline: "none",
+                padding: "0 2px",
+                margin: 0,
+                background: "#ffffff",
+                color: "#0f172a",
+                fontFamily: "inherit",
+                fontSize: "inherit",
+                fontWeight: "inherit",
+                fontStyle: "inherit",
+                textAlign: pres.align || "left",
+                boxSizing: "border-box",
+              }}
+            />
+          );
+        }
+
+        if (showCellSpinner) {
           return (
             <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
               <Spinner size={12} color={pres.fg === "#ffffff" ? "#ffffff" : "#2563eb"} style={{ marginRight: 0 }} />
@@ -481,12 +965,22 @@ export default function FormattedVirtualSheetModal({
                 height: "100%",
                 cursor: "pointer",
               }}
+              onMouseDown={(e) => {
+                if (e.shiftKey) {
+                  e.preventDefault();
+                }
+              }}
               onClick={(e) => e.stopPropagation()}
             >
               <input
                 type="checkbox"
                 checked={checked}
-                disabled={Boolean(updatingCellKey)}
+                disabled={isMutating}
+                onMouseDown={(e) => {
+                  if (e.shiftKey) {
+                    e.preventDefault();
+                  }
+                }}
                 onChange={(e) => handleUpdateCell(r, c, e.target.checked ? "TRUE" : "FALSE")}
                 style={{ width: "14px", height: "14px", accentColor: "#2563eb", cursor: "pointer" }}
               />
@@ -503,9 +997,18 @@ export default function FormattedVirtualSheetModal({
           return (
             <select
               value={currentStr}
-              disabled={Boolean(updatingCellKey)}
+              disabled={isMutating}
+              onMouseDown={(e) => {
+                if (e.shiftKey) {
+                  e.preventDefault();
+                }
+              }}
               onClick={(e) => e.stopPropagation()}
-              onChange={(e) => handleUpdateCell(r, c, e.target.value)}
+              onChange={(e) => {
+                handleUpdateCell(r, c, e.target.value);
+                e.target.blur();
+                scrollViewportRef.current?.focus({ preventScroll: true });
+              }}
               style={{
                 width: "100%",
                 height: "100%",
@@ -521,7 +1024,7 @@ export default function FormattedVirtualSheetModal({
                 cursor: "pointer",
               }}
             >
-              {currentStr === "" && <option value=""></option>}
+              <option value="" style={{ color: "#000000", backgroundColor: "#ffffff" }}></option>
               {options.map((opt) => (
                 <option key={opt} value={opt} style={{ color: "#000000", backgroundColor: "#ffffff" }}>
                   {opt}
@@ -537,12 +1040,43 @@ export default function FormattedVirtualSheetModal({
       return (
         <TdTag
           key={c}
+          data-cell={`${r}:${c}`}
           title={cellTooltip}
           style={cellStyle}
-          onClick={() => setSelectedCell({ r, c })}
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            if (isInlineEditingThis) return;
+            if (editingMode === "cell") {
+              commitInlineEdit(null);
+            } else if (editingMode === "formulaBar") {
+              setEditingMode(null);
+            }
+            const isInteractiveChild = Boolean(e.target?.closest?.("select, input[type='checkbox']"));
+            if (isInteractiveChild && !e.shiftKey) {
+              setAnchorCell({ r, c });
+              setFocusCell({ r, c });
+              isDraggingSelectionRef.current = false;
+              return;
+            }
+            e.preventDefault();
+            scrollViewportRef.current?.focus({ preventScroll: true });
+            if (e.shiftKey) {
+              setFocusCell({ r, c });
+            } else {
+              setAnchorCell({ r, c });
+              setFocusCell({ r, c });
+              isDraggingSelectionRef.current = true;
+              dragModeRef.current = "cells";
+            }
+          }}
+          onMouseEnter={(e) => {
+            if (isDraggingSelectionRef.current && dragModeRef.current === "cells" && (e.buttons & 1) === 1) {
+              setFocusCell((prev) => (prev.r === r && prev.c === c ? prev : { r, c }));
+            }
+          }}
           onDoubleClick={() => {
-            setSelectedCell({ r, c });
-            setEditingTextCell(true);
+            if (pres.checkbox || (Array.isArray(pres.dv) && pres.dv.length > 0)) return;
+            startInlineEdit(r, c);
           }}
         >
           {cellNote && (
@@ -564,21 +1098,51 @@ export default function FormattedVirtualSheetModal({
       );
     });
 
+    const isRowInSelection = r >= selectionBounds.minR && r <= selectionBounds.maxR;
+
     return (
       <tr key={r}>
         <th
+          onMouseDown={(e) => {
+            if (e.button !== 0 || visibleCols.length === 0) return;
+            e.preventDefault();
+            scrollViewportRef.current?.focus({ preventScroll: true });
+            const firstC = visibleCols[0];
+            const lastC = visibleCols[visibleCols.length - 1];
+            if (e.shiftKey) {
+              setAnchorCell((prev) => ({ r: prev.r, c: firstC }));
+              setFocusCell({ r, c: lastC });
+            } else {
+              setAnchorCell({ r, c: firstC });
+              setFocusCell({ r, c: lastC });
+              isDraggingSelectionRef.current = true;
+              dragModeRef.current = "rows";
+            }
+          }}
+          onMouseEnter={(e) => {
+            if (
+              isDraggingSelectionRef.current &&
+              dragModeRef.current === "rows" &&
+              (e.buttons & 1) === 1 &&
+              visibleCols.length > 0
+            ) {
+              const lastC = visibleCols[visibleCols.length - 1];
+              setFocusCell((prev) => (prev.r === r && prev.c === lastC ? prev : { r, c: lastC }));
+            }
+          }}
           style={{
             position: "sticky",
             left: 0,
             zIndex: isHeaderRow ? 28 : 12,
             userSelect: "none",
             textAlign: "center",
+            cursor: "pointer",
             width: "44px",
             minWidth: "44px",
             maxWidth: "44px",
-            backgroundColor: selR === r ? "#e8f0fe" : isHiddenRow ? "#e2e8f0" : "#f8f9fa",
-            color: selR === r ? "#1967d2" : "#5f6368",
-            fontWeight: selR === r ? 700 : 400,
+            backgroundColor: isRowInSelection ? "#e8f0fe" : isHiddenRow ? "#e2e8f0" : "#f8f9fa",
+            color: isRowInSelection ? "#1967d2" : "#5f6368",
+            fontWeight: isRowInSelection ? 700 : 400,
             fontSize: "10px",
             borderRight: "1px solid #c7ccd1",
             borderBottom: "1px solid #d0d7de",
@@ -889,13 +1453,39 @@ export default function FormattedVirtualSheetModal({
               minWidth: "54px",
               textAlign: "center",
             }}
+            title={
+              selectedCellCount > 1
+                ? `${selectedCellCount} cells selected (press Delete or Backspace to clear)`
+                : "Selected cell"
+            }
           >
             {selCoord}
           </span>
+          {selectedCellCount > 1 && (
+            <button
+              type="button"
+              disabled={isMutating}
+              onClick={handleClearSelectedCells}
+              style={{
+                padding: "2px 8px",
+                borderRadius: "4px",
+                border: "1px solid #fca5a5",
+                background: "#fef2f2",
+                color: "#b91c1c",
+                fontSize: "11px",
+                fontWeight: 600,
+                cursor: isMutating ? "wait" : "pointer",
+                flexShrink: 0,
+              }}
+              title="Clear content in all selected cells (Delete / Backspace)"
+            >
+              Clear {selectedCellCount} cells
+            </button>
+          )}
           <span style={{ color: "#94a3b8", fontFamily: "serif", fontStyle: "italic", fontWeight: 700, padding: "0 4px" }}>
             fx
           </span>
-          {editingTextCell ? (
+          {editingMode === "formulaBar" ? (
             <form
               style={{ flex: 1, display: "flex", alignItems: "center", gap: "8px" }}
               onSubmit={(e) => {
@@ -909,7 +1499,10 @@ export default function FormattedVirtualSheetModal({
                 value={formulaBarDraft}
                 onChange={(e) => setFormulaBarDraft(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Escape") setEditingTextCell(false);
+                  if (e.key === "Escape") {
+                    setEditingMode(null);
+                    setFormulaBarDraft(getEditableValue(selR, selC));
+                  }
                 }}
                 style={{
                   flex: 1,
@@ -924,7 +1517,7 @@ export default function FormattedVirtualSheetModal({
               />
               <button
                 type="submit"
-                disabled={Boolean(updatingCellKey)}
+                disabled={isMutating}
                 style={{
                   padding: "3px 10px",
                   borderRadius: "4px",
@@ -940,7 +1533,10 @@ export default function FormattedVirtualSheetModal({
               </button>
               <button
                 type="button"
-                onClick={() => setEditingTextCell(false)}
+                onClick={() => {
+                  setEditingMode(null);
+                  setFormulaBarDraft(getEditableValue(selR, selC));
+                }}
                 style={{
                   padding: "3px 8px",
                   borderRadius: "4px",
@@ -956,7 +1552,11 @@ export default function FormattedVirtualSheetModal({
             </form>
           ) : (
             <div
-              onClick={() => setEditingTextCell(true)}
+              onClick={() => {
+                setFormulaBarDraft(getEditableValue(selR, selC));
+                setEditingCell(null);
+                setEditingMode("formulaBar");
+              }}
               style={{
                 flex: 1,
                 padding: "3px 8px",
@@ -971,18 +1571,40 @@ export default function FormattedVirtualSheetModal({
                 whiteSpace: "nowrap",
                 cursor: "text",
               }}
-              title="Click or double-click any cell to inspect or edit"
+              title="Double-click or type in any cell to edit · Drag or Shift+click to select multiple cells · Delete/Backspace to clear"
             >
-              {typeof selFormula === "string" && selFormula.startsWith("=")
-                ? `${selFormula}  ->  ${selDisp}`
-                : String(selDisp ?? "")}
-              {selRaw !== undefined && String(selRaw) !== String(selDisp)
+              {editingMode === "cell"
+                ? inlineDraft
+                : typeof selFormula === "string" && selFormula.startsWith("=")
+                  ? `${selFormula}  ->  ${selDisp}`
+                  : String(selDisp ?? "")}
+              {editingMode !== "cell" && selRaw !== undefined && String(selRaw) !== String(selDisp)
                 ? `  (raw: ${selRaw})`
                 : ""}
-              {selNote ? `  [Note: ${selNote}]` : ""}
+              {editingMode !== "cell" && selNote ? `  [Note: ${selNote}]` : ""}
             </div>
           )}
 
+          {isMutating && (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px",
+                padding: "3px 8px",
+                borderRadius: "4px",
+                fontSize: "11px",
+                fontWeight: 600,
+                background: "#eff6ff",
+                color: "#1d4ed8",
+                border: "1px solid #bfdbfe",
+                flexShrink: 0,
+              }}
+            >
+              <Spinner size={11} color="#1d4ed8" style={{ marginRight: 0 }} />
+              <span>Saving...</span>
+            </span>
+          )}
           {feedback && (
             <span
               style={{
@@ -1020,11 +1642,15 @@ export default function FormattedVirtualSheetModal({
         {/* Sheet Grid Viewport */}
         <div
           ref={scrollViewportRef}
+          tabIndex={0}
+          onKeyDown={handleGridKeyDown}
+          onPaste={handleGridPaste}
           style={{
             flex: 1,
             overflow: "auto",
             position: "relative",
             background: "#f8f9fa",
+            outline: "none",
           }}
         >
           {loading && gridData.valuesGrid.length === 0 ? (
@@ -1055,11 +1681,23 @@ export default function FormattedVirtualSheetModal({
                   {/* Column Letters Header Row */}
                   <tr>
                     <th
+                      onMouseDown={(e) => {
+                        if (e.button !== 0 || renderedRowIndices.length === 0 || visibleCols.length === 0) return;
+                        e.preventDefault();
+                        scrollViewportRef.current?.focus({ preventScroll: true });
+                        setAnchorCell({ r: renderedRowIndices[0], c: visibleCols[0] });
+                        setFocusCell({
+                          r: renderedRowIndices[renderedRowIndices.length - 1],
+                          c: visibleCols[visibleCols.length - 1],
+                        });
+                      }}
+                      title="Select all visible cells"
                       style={{
                         position: "sticky",
                         left: 0,
                         zIndex: 30,
                         userSelect: "none",
+                        cursor: "pointer",
                         width: "44px",
                         minWidth: "44px",
                         maxWidth: "44px",
@@ -1071,7 +1709,7 @@ export default function FormattedVirtualSheetModal({
                     />
                     {visibleCols.map((c) => {
                       const widthPx = getColWidth(c);
-                      const isSelCol = selC === c;
+                      const isSelCol = c >= selectionBounds.minC && c <= selectionBounds.maxC;
                       const isHiddenCol = spec.hiddenCols?.has(c);
                       const isFrozenCol = c < (spec.frozenCols || 0);
                       const isLastFrozen = c === lastVisibleFrozenCol;
@@ -1079,7 +1717,33 @@ export default function FormattedVirtualSheetModal({
                       return (
                         <th
                           key={c}
-                          onClick={() => setSelectedCell((prev) => ({ ...prev, c }))}
+                          onMouseDown={(e) => {
+                            if (e.button !== 0 || renderedRowIndices.length === 0) return;
+                            e.preventDefault();
+                            scrollViewportRef.current?.focus({ preventScroll: true });
+                            const firstR = renderedRowIndices[0];
+                            const lastR = renderedRowIndices[renderedRowIndices.length - 1];
+                            if (e.shiftKey) {
+                              setAnchorCell((prev) => ({ r: firstR, c: prev.c }));
+                              setFocusCell({ r: lastR, c });
+                            } else {
+                              setAnchorCell({ r: firstR, c });
+                              setFocusCell({ r: lastR, c });
+                              isDraggingSelectionRef.current = true;
+                              dragModeRef.current = "cols";
+                            }
+                          }}
+                          onMouseEnter={(e) => {
+                            if (
+                              isDraggingSelectionRef.current &&
+                              dragModeRef.current === "cols" &&
+                              (e.buttons & 1) === 1 &&
+                              renderedRowIndices.length > 0
+                            ) {
+                              const lastR = renderedRowIndices[renderedRowIndices.length - 1];
+                              setFocusCell((prev) => (prev.r === lastR && prev.c === c ? prev : { r: lastR, c }));
+                            }
+                          }}
                           style={{
                             position: isFrozenCol ? "sticky" : "relative",
                             left: isFrozenCol ? `${colLeftOffsets.get(c) || 44}px` : undefined,
@@ -1121,7 +1785,10 @@ export default function FormattedVirtualSheetModal({
                           {colIndexToLetter(c)}
                           {isHiddenCol ? "*" : ""}
                           <div
-                            onMouseDown={(e) => startColumnResize(e, c)}
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              startColumnResize(e, c);
+                            }}
                             onDoubleClick={(e) =>
                               autoFitColumn(
                                 e,
@@ -1252,7 +1919,10 @@ export default function FormattedVirtualSheetModal({
                   key={tab}
                   type="button"
                   onClick={() => {
-                    setSelectedCell({ r: 0, c: 0 });
+                    setAnchorCell({ r: 0, c: 0 });
+                    setFocusCell({ r: 0, c: 0 });
+                    setEditingMode(null);
+                    setEditingCell(null);
                     setRowRenderLimit(defaultRowRenderLimit);
                     setActiveTab(tab);
                   }}

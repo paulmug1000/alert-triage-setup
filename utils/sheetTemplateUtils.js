@@ -138,6 +138,9 @@ export function formatCellFromTemplateNf(rawValue, displayValue, numberFormat) {
   if (nf === "NUMBER:0.00") {
     return num.toFixed(2);
   }
+  if (nf === "NUMBER:0.0") {
+    return num.toFixed(1);
+  }
   if (nf === "NUMBER:0") {
     return String(Math.round(num));
   }

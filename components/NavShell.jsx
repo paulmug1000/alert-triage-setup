@@ -281,7 +281,7 @@ if (typeof document !== "undefined") {
 export default function NavShell({
   activeNav, activeViewTab = "fyPerformance", onSelectViewTab,
   onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
-  onOutgoings, onPassThrough, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onVat, onViews, onTools, onIntegrations, onSetup, onSettings, onDb,
+  onOutgoings, onPassThrough, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onVat, onYear0, onViews, onTools, onIntegrations, onSetup, onSettings, onDb,
   homeAlertCount, taskCount, integrationsCount, user, onLogout, clients = [],
   managedClient, activeEditClient, onSelectManagedClient, onClearManagedClient,
   isSingleClientUser: propIsSingleClientUser, singleClient: propSingleClient,
@@ -527,6 +527,7 @@ export default function NavShell({
         { key: "budget", label: "Budget", handler: onBudget },
         { key: "cash", label: "Cash", handler: onCash },
         { key: "vat", label: "VAT", handler: onVat },
+        { key: "year0", label: "Year 0", handler: onYear0 },
       ],
     },
     {

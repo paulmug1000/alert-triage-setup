@@ -9,6 +9,8 @@ import {
   invalidateClientSheetModalCache,
   prefetchReconSheetTab,
   invalidateReconSheetModalCache,
+  prefetchTimeCompTab,
+  invalidateTimeCompModalCache,
 } from "../utils/sheetModalCache";
 import { CLIENT_SHEET_TABS, CLIENT_SHEET_SPECS } from "../utils/clientSheetSpecs";
 import { sortReconMonthTabsDescending } from "../utils/reconSheetSpecs";
@@ -18,6 +20,7 @@ const AdminWorkbookInspectorModal = dynamic(() => import("./AdminWorkbookInspect
 const MasterComparisonSheetModal = dynamic(() => import("./MasterComparisonSheetModal"), { ssr: false });
 const ClientSheetModal = dynamic(() => import("./ClientSheetModal"), { ssr: false });
 const ReconSheetModal = dynamic(() => import("./ReconSheetModal"), { ssr: false });
+const TimeCompSheetModal = dynamic(() => import("./TimeCompSheetModal"), { ssr: false });
 
 const SYNC_BUTTONS = [
   { type: "recompute", label: "Recompute comparisons" },
@@ -124,6 +127,7 @@ export default function DbView({
   const [clientSheetModalOpen, setClientSheetModalOpen] = useState(false);
   const [clientSheetModalTab, setClientSheetModalTab] = useState("Confirmed");
   const [reconModalOpen, setReconModalOpen] = useState(false);
+  const [timeCompModalOpen, setTimeCompModalOpen] = useState(false);
 
   // Elapsed timer tick while an async operation is running
   useEffect(() => {
@@ -231,6 +235,7 @@ export default function DbView({
         invalidateComparisonModalCache(selectedClient);
         invalidateClientSheetModalCache(selectedClient);
         invalidateReconSheetModalCache(selectedClient);
+        invalidateTimeCompModalCache(selectedClient);
       }
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
       if (result && result.text) {
@@ -1484,6 +1489,38 @@ export default function DbView({
                 })}
 
                 {(() => {
+                  const timeCompDisabled = !s2Ready || !hasMasterVirtualTabs;
+                  return (
+                    <button
+                      type="button"
+                      disabled={timeCompDisabled}
+                      onMouseEnter={() => {
+                        if (!timeCompDisabled) prefetchTimeCompTab(activeClientName);
+                      }}
+                      onClick={() => setTimeCompModalOpen(true)}
+                      style={{
+                        ...actionBtnBase,
+                        color: timeCompDisabled ? "#9ca3af" : "#1e3a8a",
+                        background: timeCompDisabled ? "#f3f4f6" : "#ffffff",
+                        borderColor: timeCompDisabled ? "#e5e7eb" : "#93c5fd",
+                        cursor: timeCompDisabled ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: "7px",
+                          height: "7px",
+                          borderRadius: "2px",
+                          background: timeCompDisabled ? "#cbd5e1" : "#0000ff",
+                        }}
+                      />
+                      <span>View TimeComp</span>
+                    </button>
+                  );
+                })()}
+
+                {(() => {
                   const reconDisabled = !s2Ready || !hasReconVirtualTabs;
                   return (
                     <button
@@ -2500,6 +2537,18 @@ export default function DbView({
           clientName={activeClientName}
           reconTabs={reconMonthTabs}
           initialTab={reconMonthTabs[0] || ""}
+          onAfterMutate={(resData) => {
+            if (resData?.status) setStage2Data(resData.status);
+          }}
+        />
+      )}
+
+      {/* Formatted TimeComp Sheet Modal */}
+      {timeCompModalOpen && (
+        <TimeCompSheetModal
+          isOpen={timeCompModalOpen}
+          onClose={() => setTimeCompModalOpen(false)}
+          clientName={activeClientName}
           onAfterMutate={(resData) => {
             if (resData?.status) setStage2Data(resData.status);
           }}

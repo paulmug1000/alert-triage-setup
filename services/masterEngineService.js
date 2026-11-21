@@ -1345,6 +1345,14 @@ export async function saveVirtualTabGrid_(
   }
 }
 
+function isNonFormulaKeyInfoOnlyUpdates_(updatesList) {
+  if (!Array.isArray(updatesList) || updatesList.length === 0) return false;
+  return updatesList.every((u) => {
+    const p = u?.parsed || (u?.range ? parseA1Range(u.range) : null);
+    return Boolean(p && p.tabName === "KeyInfo" && (p.startRow0 ?? 0) >= 119);
+  });
+}
+
 /**
  * Mirrors Master KeyInfo or Budget cell writes onto the Client Sheet (when client_mode = 'sheet')
  * AND into the virtual Client Sheet in Supabase (when seeded or client_mode = 'supabase').
@@ -1415,16 +1423,24 @@ async function mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, rangeU
             isFormulaGrid: true,
           });
           await saveVirtualTabGrid_(ctx, "client", u.parsed.tabName, nextVals, nextForms, rec.notes_grid, {
-            memoryOnly: !["Sessions", "AppLog", "Welcome", "OutgNotes"].includes(u.parsed.tabName),
+            memoryOnly:
+              !isNonFormulaKeyInfoOnlyUpdates_(clientDataUpdates) &&
+              !["Sessions", "AppLog", "Welcome", "OutgNotes"].includes(u.parsed.tabName),
           });
           updatedTabs.add(u.parsed.tabName);
         }
       }
       if (updatedTabs.size > 0) {
-        const clientCtx = { ...ctx, sheetRole: "client" };
-        await recomputeAndPersistImmediateClientTabs_(clientCtx, [...updatedTabs], rawSheetsApi, {
-          deferBackgroundRecompute: false,
-        });
+        if (isNonFormulaKeyInfoOnlyUpdates_(clientDataUpdates)) {
+          await import("./cacheService.js")
+            .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
+            .catch(() => { });
+        } else {
+          const clientCtx = { ...ctx, sheetRole: "client" };
+          await recomputeAndPersistImmediateClientTabs_(clientCtx, [...updatedTabs], rawSheetsApi, {
+            deferBackgroundRecompute: false,
+          });
+        }
       }
     } catch (err) {
       console.warn(`[masterEngineService] Virtual Client Sheet mirror warning (${ctx.clientName}):`, err.message);
@@ -1595,8 +1611,18 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     }
   }
 
-  const prevE21 = grids.KeyInfo?.[20]?.[4] ?? "";
-  const prevI29 = grids.KeyInfo?.[28]?.[8] ?? "";
+  const watchedKeyInfoCells = [
+    { range: "KeyInfo!E21", r: 20, c: 4 },
+    { range: "KeyInfo!I29", r: 28, c: 8 },
+    { range: "KeyInfo!E2",  r: 1,  c: 4 },
+    { range: "KeyInfo!F2",  r: 1,  c: 5 },
+    { range: "KeyInfo!B4",  r: 3,  c: 1 },
+    { range: "KeyInfo!E6",  r: 5,  c: 4 },
+    { range: "KeyInfo!F6",  r: 5,  c: 5 },
+    { range: "KeyInfo!B7",  r: 6,  c: 1 },
+    { range: "KeyInfo!D9",  r: 8,  c: 3 },
+  ];
+  const prevKeyInfoVals = watchedKeyInfoCells.map((cell) => grids.KeyInfo?.[cell.r]?.[cell.c] ?? "");
 
   const masterSnapCache = new Map();
   const snapMaster_ = (t) => {
@@ -1673,13 +1699,15 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     );
   }
 
-  const nextE21 = grids.KeyInfo?.[20]?.[4] ?? "";
-  const nextI29 = grids.KeyInfo?.[28]?.[8] ?? "";
-  if (nextE21 !== prevE21 || nextI29 !== prevI29) {
-    await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, [
-      { range: "KeyInfo!E21", values: [[nextE21]] },
-      { range: "KeyInfo!I29", values: [[nextI29]] },
-    ]);
+  const mirrorUpdates = [];
+  watchedKeyInfoCells.forEach((cell, idx) => {
+    const nextVal = grids.KeyInfo?.[cell.r]?.[cell.c] ?? "";
+    if (nextVal !== prevKeyInfoVals[idx]) {
+      mirrorUpdates.push({ range: cell.range, values: [[nextVal]] });
+    }
+  });
+  if (mirrorUpdates.length > 0) {
+    await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, mirrorUpdates);
   }
 }
 
@@ -1998,7 +2026,7 @@ async function recomputeAndPersistImmediateClientTabs_(
   const clientKey = String(ctx.clientName || "").toLowerCase();
   _lastClientEditTimestampMap.set(clientKey, Date.now());
 
-  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
+  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome", "AppData"]);
   const skippedSet = _unpersistedSkippedClientTabsByClient.get(clientKey);
   const pendingNotesSet = _pendingNotesChangedTabsByClient.get(clientKey);
 
@@ -2219,7 +2247,6 @@ const CLIENT_TAB_DIRECT_DEPS = {
   Cash: ["KeyInfo", "Calcs", "Outgoings", "Performance", "VAT"],
   GPbyPL: ["Performance", "Outgoings", "KeyInfo", "Dashboard", "Calcs"],
   Year0Data: ["Performance", "KeyInfo", "ErrorCheck"],
-  AppData: ["Dashboard", "Year0Data", "KeyInfo", "Cash"],
   InvoicesSent: ["Monthly"],
   CashIncomingConf: ["Monthly"],
   CashIncomingPipe: ["Monthly"],
@@ -2229,7 +2256,7 @@ const CLIENT_TAB_DIRECT_DEPS = {
 };
 
 async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs, rawSheetsApi) {
-  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
+  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome", "AppData"]);
   const hasCalcRelevantChange = allUpdatedTabs.some((t) => !nonFormulaTabs.has(t));
   if (!hasCalcRelevantChange) {
     return;
@@ -2568,6 +2595,32 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
         invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId)
       )
       .catch(() => { });
+    if (ctx.clientSheetId) {
+      const resolveCachedOrMemVals = async (tab) => {
+        if (Array.isArray(grids[tab]?.values) && grids[tab].values.length > 0) return grids[tab].values;
+        const memRec = _gridMemoryCache.get(`${clientKey}::client::${tab}`)?.record;
+        if (Array.isArray(memRec?.values_grid) && memRec.values_grid.length > 0) return memRec.values_grid;
+        const loaded = await getOrLoadVirtualTabGrid_(ctx, "client", tab, rawSheetsApi, { valuesOnly: true });
+        return Array.isArray(loaded?.values_grid) ? loaded.values_grid : [];
+      };
+      Promise.all([
+        resolveCachedOrMemVals("KeyInfo"),
+        resolveCachedOrMemVals("Dashboard"),
+        resolveCachedOrMemVals("Year0Data"),
+      ])
+        .then(async ([keyInfoValues, dashboardValues, year0Values]) => {
+          if (!dashboardValues.length) return;
+          const { warmPortalHomeFromVirtualGrids } = await import("./portalDataService.js");
+          await warmPortalHomeFromVirtualGrids({
+            clientSheetId: ctx.clientSheetId,
+            clientName: ctx.clientName,
+            keyInfoValues,
+            dashboardValues,
+            year0Values,
+          });
+        })
+        .catch(() => { });
+    }
   }
 
   // Refresh memory cache TTL for all loaded tabs of this client so consecutive operations stay warm
@@ -2675,8 +2728,10 @@ export async function handleVirtualSheetsCall({
     if (sheetRole === "client") {
       const clientKeyLower = ctx.clientName.toLowerCase();
       const uncachedTabs = [];
+      const inFlightWaits = [];
       for (const t of uniqueTabs) {
-        const cached = _gridMemoryCache.get(`${clientKeyLower}::client::${t}`);
+        const cKey = `${clientKeyLower}::client::${t}`;
+        const cached = _gridMemoryCache.get(cKey);
         if (
           cached &&
           cached.expiresAt > Date.now() &&
@@ -2684,7 +2739,18 @@ export async function handleVirtualSheetsCall({
         ) {
           byTab.set(t, cached.record);
         } else {
-          uncachedTabs.push(t);
+          const inflight =
+            _inFlightGridLoads.get(cKey) ||
+            (useValuesOnly ? _inFlightGridLoads.get(`${cKey}::vn`) || _inFlightGridLoads.get(`${cKey}::vo`) : null);
+          if (inflight) {
+            inFlightWaits.push(
+              inflight.then((rec) => {
+                if (rec) byTab.set(t, rec);
+              })
+            );
+          } else {
+            uncachedTabs.push(t);
+          }
         }
       }
       if (uncachedTabs.length > 0 && supabase) {
@@ -2695,23 +2761,47 @@ export async function handleVirtualSheetsCall({
         const selectCols = useValuesOnly
           ? "id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count, updated_at"
           : "id, client_id, client_name, sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count, updated_at";
-        const { data: rows } = await supabase
-          .from("master_sheet_grids")
-          .select(selectCols)
-          .eq("client_name", ctx.clientName)
-          .eq("sheet_role", dbRole)
-          .in("tab_name", targetNames);
-        for (const r of rows || []) {
-          const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
-          expandClientTabFromStorage_(r, cleanTab, { valuesOnly: useValuesOnly });
-          r._valuesOnlyLoaded = useValuesOnly;
-          r._notesLoaded = !useValuesOnly;
-          byTab.set(cleanTab, r);
-          const existing = _gridMemoryCache.get(`${clientKeyLower}::client::${cleanTab}`);
-          if (shouldStoreClientRecordInCache_(existing, { valuesOnly: useValuesOnly, includeNotes: false })) {
-            setGridMemoryCache_(`${clientKeyLower}::client::${cleanTab}`, r);
+        const flightSuffix = useValuesOnly ? "::vo" : "";
+        const batchPromise = (async () => {
+          const { data: rows } = await supabase
+            .from("master_sheet_grids")
+            .select(selectCols)
+            .eq("client_name", ctx.clientName)
+            .eq("sheet_role", dbRole)
+            .in("tab_name", targetNames);
+          const loadedMap = new Map();
+          for (const r of rows || []) {
+            const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
+            expandClientTabFromStorage_(r, cleanTab, { valuesOnly: useValuesOnly });
+            r._valuesOnlyLoaded = useValuesOnly;
+            r._notesLoaded = !useValuesOnly;
+            loadedMap.set(cleanTab, r);
+            byTab.set(cleanTab, r);
+            const existing = _gridMemoryCache.get(`${clientKeyLower}::client::${cleanTab}`);
+            if (shouldStoreClientRecordInCache_(existing, { valuesOnly: useValuesOnly, includeNotes: false })) {
+              setGridMemoryCache_(`${clientKeyLower}::client::${cleanTab}`, r);
+            }
+          }
+          return loadedMap;
+        })();
+        for (const t of uncachedTabs) {
+          const fKey = `${clientKeyLower}::client::${t}${flightSuffix}`;
+          _inFlightGridLoads.set(
+            fKey,
+            batchPromise.then((m) => m.get(t) || null)
+          );
+        }
+        try {
+          await batchPromise;
+        } finally {
+          for (const t of uncachedTabs) {
+            const fKey = `${clientKeyLower}::client::${t}${flightSuffix}`;
+            _inFlightGridLoads.delete(fKey);
           }
         }
+      }
+      if (inFlightWaits.length > 0) {
+        await Promise.all(inFlightWaits);
       }
       const remainingTabs = uniqueTabs.filter((t) => !byTab.has(t));
       for (let i = 0; i < remainingTabs.length; i += 3) {
@@ -2729,28 +2819,60 @@ export async function handleVirtualSheetsCall({
     } else {
       const clientKeyLower = ctx.clientName.toLowerCase();
       const uncachedTabs = [];
+      const inFlightWaits = [];
       for (const t of uniqueTabs) {
-        const cached = _gridMemoryCache.get(`${clientKeyLower}::${sheetRole}::${t}`);
+        const cKey = `${clientKeyLower}::${sheetRole}::${t}`;
+        const cached = _gridMemoryCache.get(cKey);
         if (cached && cached.expiresAt > Date.now()) {
           byTab.set(t, cached.record);
         } else {
-          uncachedTabs.push(t);
+          const inflight = _inFlightGridLoads.get(cKey) || _inFlightGridLoads.get(`${cKey}::vo`);
+          if (inflight) {
+            inFlightWaits.push(
+              inflight.then((rec) => {
+                if (rec) byTab.set(t, rec);
+              })
+            );
+          } else {
+            uncachedTabs.push(t);
+          }
         }
       }
       if (uncachedTabs.length > 0 && supabase) {
-        const { data: rows } = await supabase
-          .from("master_sheet_grids")
-          .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count, updated_at")
-          .eq("client_name", ctx.clientName)
-          .eq("sheet_role", sheetRole)
-          .in("tab_name", uncachedTabs);
-
-        for (const r of rows || []) {
-          r.values_grid = compactGrid2D(r.values_grid || []);
-          r.formulas_grid = r.values_grid;
-          byTab.set(r.tab_name, r);
-          setGridMemoryCache_(`${clientKeyLower}::${sheetRole}::${r.tab_name}`, r);
+        const batchPromise = (async () => {
+          const { data: rows } = await supabase
+            .from("master_sheet_grids")
+            .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count, updated_at")
+            .eq("client_name", ctx.clientName)
+            .eq("sheet_role", sheetRole)
+            .in("tab_name", uncachedTabs);
+          const loadedMap = new Map();
+          for (const r of rows || []) {
+            r.values_grid = compactGrid2D(r.values_grid || []);
+            r.formulas_grid = r.values_grid;
+            loadedMap.set(r.tab_name, r);
+            byTab.set(r.tab_name, r);
+            setGridMemoryCache_(`${clientKeyLower}::${sheetRole}::${r.tab_name}`, r);
+          }
+          return loadedMap;
+        })();
+        for (const t of uncachedTabs) {
+          const fKey = `${clientKeyLower}::${sheetRole}::${t}`;
+          _inFlightGridLoads.set(
+            fKey,
+            batchPromise.then((m) => m.get(t) || null)
+          );
         }
+        try {
+          await batchPromise;
+        } finally {
+          for (const t of uncachedTabs) {
+            _inFlightGridLoads.delete(`${clientKeyLower}::${sheetRole}::${t}`);
+          }
+        }
+      }
+      if (inFlightWaits.length > 0) {
+        await Promise.all(inFlightWaits);
       }
     }
 
@@ -2851,20 +2973,29 @@ export async function handleVirtualSheetsCall({
     }
     const formulasChanged =
       sheetRole === "client" ? hasFormulaCellsChanged_(prevFormulasGrid, updatedFormulas) : false;
+    const isNonFormulaKeyInfoOnly = isNonFormulaKeyInfoOnlyUpdates_([{ parsed }]);
     bumpTabWriteRevision_(ctx.clientName, sheetRole, parsed.tabName);
     const isDeferredClientSave =
-      sheetRole === "client" && !["Sessions", "AppLog", "Welcome"].includes(parsed.tabName);
+      sheetRole === "client" &&
+      !isNonFormulaKeyInfoOnly &&
+      !["Sessions", "AppLog", "Welcome"].includes(parsed.tabName);
     await saveVirtualTabGrid_(ctx, sheetRole, parsed.tabName, updatedValues, updatedFormulas, rec.notes_grid, {
       memoryOnly: isDeferredClientSave,
     });
 
-    if (sheetRole === "master" && !params._skipMasterFormulaRecompute) {
-      await recomputeMasterFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
-        console.warn("[masterEngineService] Formula recompute warning:", e.message)
-      );
+    if (sheetRole === "master") {
+      if (!params._skipMasterFormulaRecompute && !isNonFormulaKeyInfoOnly) {
+        await recomputeMasterFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Formula recompute warning:", e.message)
+        );
+      }
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, [{ range: rangeStr, values: incomingValues }]);
     } else if (sheetRole === "client") {
-      if (params._skipFormulaRecompute) {
+      if (isNonFormulaKeyInfoOnly) {
+        await import("./cacheService.js")
+          .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
+          .catch(() => { });
+      } else if (params._skipFormulaRecompute) {
         queuePendingClientTabs_(ctx, [parsed.tabName], {
           isSkippedStep: true,
           notesChangedTabs: formulasChanged ? [parsed.tabName] : null,
@@ -2909,6 +3040,9 @@ export async function handleVirtualSheetsCall({
     const actuallyChangedTabs = [];
     const formulasChangedTabs = new Set();
     const tabEntries = [...byTabUpdates.entries()];
+    const allBatchUpdates = [];
+    for (const [, updates] of tabEntries) allBatchUpdates.push(...updates);
+    const isNonFormulaKeyInfoOnlyBatch = isNonFormulaKeyInfoOnlyUpdates_(allBatchUpdates);
     const preloadedRecs = await Promise.all(
       tabEntries.map(([tabName]) => getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi))
     );
@@ -2953,21 +3087,31 @@ export async function handleVirtualSheetsCall({
       }
       actuallyChangedTabs.push(tabName);
       const isDeferredClientSave =
-        sheetRole === "client" && !["Sessions", "AppLog", "Welcome"].includes(tabName);
+        sheetRole === "client" &&
+        !isNonFormulaKeyInfoOnlyBatch &&
+        !["Sessions", "AppLog", "Welcome"].includes(tabName);
       await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid, {
         memoryOnly: isDeferredClientSave,
       });
     }
 
-    if (sheetRole === "master" && actuallyChangedTabs.length > 0 && !params._skipMasterFormulaRecompute) {
-      await recomputeMasterFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
-        console.warn("[masterEngineService] Formula recompute warning:", e.message)
-      );
+    if (sheetRole === "master" && actuallyChangedTabs.length > 0) {
+      if (!params._skipMasterFormulaRecompute && !isNonFormulaKeyInfoOnlyBatch) {
+        await recomputeMasterFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Formula recompute warning:", e.message)
+        );
+      }
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, dataItems);
     } else if (sheetRole === "client") {
       const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
       const hasWork = actuallyChangedTabs.length > 0 || (pendingSet && pendingSet.size > 0);
-      if (params._skipFormulaRecompute) {
+      if (isNonFormulaKeyInfoOnlyBatch && (!pendingSet || pendingSet.size === 0)) {
+        if (actuallyChangedTabs.length > 0) {
+          await import("./cacheService.js")
+            .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
+            .catch(() => { });
+        }
+      } else if (params._skipFormulaRecompute) {
         if (actuallyChangedTabs.length > 0) {
           queuePendingClientTabs_(ctx, actuallyChangedTabs, {
             isSkippedStep: true,
@@ -5084,7 +5228,6 @@ async function syncStructuredClientTablesFromGridsImpl_(ctx, grids, changedTabs 
           delivery_pct: parseNumericVal_(row[6]),
           student_loan_plan: String(row[7] ?? "None").trim(),
           pension_opt_in: String(row[8] ?? "Yes").trim(),
-          likelihood_pct: parseNumericVal_(row[9] ?? 1),
           raw_row: row.slice(0, 270),
           updated_at: nowIso,
         });
@@ -6037,6 +6180,91 @@ export async function getVirtualTabForInspector({
 }
 
 /**
+ * Updates one or more cells inside a virtual tab from the inspector/modal in a single batch
+ * (with one save, one formula recompute pass, and optional Master->Client mirroring).
+ */
+export async function updateVirtualTabCellsFromInspector({
+  sheets,
+  clientName = "APPTEST",
+  sheetRole = "master",
+  tabName = "KeyInfo",
+  updates = [],
+}) {
+  if (!Array.isArray(updates) || updates.length === 0) {
+    throw new Error("At least one cell update is required.");
+  }
+
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx) throw new Error(`Client "${clientName}" not found.`);
+
+  const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, null);
+  const nextVals = Array.isArray(rec.values_grid) ? rec.values_grid.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
+  const baseForms = rec.formulas_grid || rec.values_grid || [];
+  const nextForms = Array.isArray(baseForms) ? baseForms.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
+
+  const coords = [];
+  const masterMirrorRanges = [];
+  for (const item of updates) {
+    const r = Number(item?.rowIndex0);
+    const c = Number(item?.colIndex0);
+    if (!Number.isInteger(r) || r < 0 || r >= 50000) {
+      throw new Error(`Virtual sheet write row out of bounds (${item?.rowIndex0} in ${tabName})`);
+    }
+    if (!Number.isInteger(c) || c < 0 || c >= 600) {
+      throw new Error(`Virtual sheet write column out of bounds (${item?.colIndex0} in ${tabName})`);
+    }
+    const rawVal = item?.value ?? "";
+    while (nextVals.length <= r) nextVals.push([]);
+    while (nextVals[r].length <= c) nextVals[r].push("");
+    while (nextForms.length <= r) nextForms.push([]);
+    while (nextForms[r].length <= c) nextForms[r].push("");
+
+    nextVals[r][c] = normalizeCellForStorage(
+      sheetRole,
+      tabName,
+      r,
+      c,
+      rawVal,
+      "USER_ENTERED",
+      nextVals,
+      rec.notes_grid
+    );
+    nextForms[r][c] = rawVal === null || rawVal === undefined ? "" : rawVal;
+
+    const colLetter = colIdx0ToLetter(c);
+    const coord = `${colLetter}${r + 1}`;
+    coords.push(coord);
+    if (sheetRole === "master") {
+      masterMirrorRanges.push({ range: `${tabName}!${coord}`, values: [[rawVal]] });
+    }
+  }
+
+  await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid);
+
+  if (sheetRole === "master") {
+    await recomputeMasterFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
+    if (sheets && masterMirrorRanges.length > 0) {
+      await mirrorMasterWriteToClientSheetIfNeeded_(ctx, sheets, masterMirrorRanges);
+    }
+  } else if (sheetRole === "client") {
+    await recomputeClientFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
+  }
+
+  return {
+    success: true,
+    clientName,
+    sheetRole,
+    tabName,
+    cellCoord: coords[0],
+    updatedCoords: coords,
+    updatedCount: coords.length,
+    value: updates.length === 1 ? updates[0]?.value ?? "" : undefined,
+    clientSheetId: ctx.clientSheetId || "",
+    masterSheetId: ctx.masterSheetId || "",
+  };
+}
+
+/**
  * Updates a cell inside a virtual tab from the Admin Workbook Inspector (and mirrors to Client Sheet if KeyInfo/Budget)
  */
 export async function updateVirtualTabCellFromInspector({
@@ -6048,48 +6276,13 @@ export async function updateVirtualTabCellFromInspector({
   colIndex0,
   value,
 }) {
-  const ctx = await resolveSupabaseSheetContext({ clientName });
-  if (!ctx) throw new Error(`Client "${clientName}" not found.`);
-
-  const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, null);
-  const colLetter = colIdx0ToLetter(colIndex0);
-  const a1Coord = `'${tabName}'!${colLetter}${Number(rowIndex0) + 1}`;
-  const parsed = parseA1Range(a1Coord, tabName);
-
-  const nextVals = applyWriteToGrid2D_(rec.values_grid || [], parsed, [[value]], {
-    sheetRole,
-    tabName,
-    notesGrid: rec.notes_grid,
-  });
-  const nextForms = applyWriteToGrid2D_(rec.formulas_grid || rec.values_grid || [], parsed, [[value]], {
-    sheetRole,
-    tabName,
-    notesGrid: rec.notes_grid,
-    isFormulaGrid: true,
-  });
-  await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid);
-
-  if (sheetRole === "master") {
-    await recomputeMasterFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
-    if (sheets) {
-      await mirrorMasterWriteToClientSheetIfNeeded_(ctx, sheets, [
-        { range: `${tabName}!${colLetter}${Number(rowIndex0) + 1}`, values: [[value]] },
-      ]);
-    }
-  } else if (sheetRole === "client") {
-    await recomputeClientFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
-  }
-
-  return {
-    success: true,
+  return updateVirtualTabCellsFromInspector({
+    sheets,
     clientName,
     sheetRole,
     tabName,
-    cellCoord: `${colLetter}${Number(rowIndex0) + 1}`,
-    value,
-    clientSheetId: ctx.clientSheetId || "",
-    masterSheetId: ctx.masterSheetId || "",
-  };
+    updates: [{ rowIndex0, colIndex0, value }],
+  });
 }
 
 const TEMPLATE_SNAPSHOT_META_KEY = "template_snapshot_meta";

@@ -2320,6 +2320,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     startDate: paramStartDate,
     endDate: paramEndDate,
     invoiceFrequency = "monthly",
+    invoiceIntervalMonths = null,
     invoiceSendDay,
     initialInvoices = [],
   } = params;
@@ -2352,9 +2353,10 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     ]);
 
     const rows = resp.data?.values || [];
-    const confirmedSheet = (metaResp.data?.sheets || []).find(
-      s => s.properties?.title === "Confirmed" || s.properties?.title === "ConfCalcs"
-    );
+    const allMetaSheets = metaResp.data?.sheets || [];
+    const confirmedSheet =
+      allMetaSheets.find(s => s.properties?.title === "Confirmed") ||
+      allMetaSheets.find(s => s.properties?.title === "ConfCalcs");
     if (!confirmedSheet) {
       return { success: false, error: "Confirmed sheet not found" };
     }
@@ -2519,12 +2521,15 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
       initialInvoices.forEach(addRealInvoice);
     }
 
+    const explicitInterval = Number(invoiceIntervalMonths);
     const intervalMonths =
-      String(invoiceFrequency || "").toLowerCase() === "quarterly"
-        ? 3
-        : childDates.length >= 2
-          ? retDetectIntervalMonths(childDates)
-          : 1;
+      Number.isFinite(explicitInterval) && explicitInterval >= 1
+        ? Math.round(explicitInterval)
+        : String(invoiceFrequency || "").toLowerCase() === "quarterly"
+          ? 3
+          : childDates.length >= 2
+            ? retDetectIntervalMonths(childDates)
+            : 1;
     const perInvoiceAmount = monthlyFee * intervalMonths;
 
     const parsedExplicitDay = parseInt(invoiceSendDay, 10);
@@ -2541,7 +2546,8 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     if (childDates.length > 0) {
       lastDate = childDates[childDates.length - 1];
     } else {
-      const prevMonth = new Date(start.getFullYear(), start.getMonth() - 1, 1);
+      const anchorMonth = realInvoicesToPlace.find((ri) => ri.sentDate)?.sentDate || start;
+      const prevMonth = new Date(anchorMonth.getFullYear(), anchorMonth.getMonth() - intervalMonths, 1);
       const maxDayPrev = new Date(prevMonth.getFullYear(), prevMonth.getMonth() + 1, 0).getDate();
       lastDate = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), Math.min(sendDay, maxDayPrev));
     }
@@ -3145,9 +3151,10 @@ export async function groupAndCollapseRetainerChildRows_(
         },
         { timeout: 8000, retry: false }
       );
-      sheetObj = (metaResp.data?.sheets || []).find(
-        s => s.properties?.title === "Confirmed" || s.properties?.title === "ConfCalcs"
-      );
+      const allMetaSheets = metaResp.data?.sheets || [];
+      sheetObj =
+        allMetaSheets.find(s => s.properties?.title === "Confirmed") ||
+        allMetaSheets.find(s => s.properties?.title === "ConfCalcs");
     }
     if (!sheetObj || sheetObj.properties?.sheetId === undefined) return;
 

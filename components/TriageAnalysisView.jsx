@@ -239,7 +239,9 @@ export default function TriageAnalysisView({
       const amt = parseFloat(String(alert.summary?.amount || alert.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
       const desc = alert.summary?.description || alert.summary?.reference || alert.data?.accounting?.[1] || "Expense";
       const date = alert.summary?.date || alert.data?.accounting?.[0] || "";
-      const vat = (alert.summary?.vatAmount && parseFloat(String(alert.summary.vatAmount).replace(/,/g, "")) > 0) ? "Yes" : (alert.data?.accounting?.[8] ? "Yes" : "No");
+      const vatRaw = alert.summary?.vatAmount !== undefined && alert.summary?.vatAmount !== "" ? alert.summary.vatAmount : (alert.data?.accounting?.[8] ?? "0");
+      const vatNum = parseFloat(String(vatRaw).replace(/[£$€,\s]/g, "")) || 0;
+      const vat = vatNum > 0 ? "Yes" : "No";
       const txnId = alert.summary?.transactionId || alert.data?.accounting?.[11] || "";
       const status = alert.summary?.status || alert.data?.accounting?.[5] || "Received";
 
@@ -2285,7 +2287,9 @@ export default function TriageAnalysisView({
               vendor: alert?.summary?.description || alert?.summary?.reference || alert?.data?.accounting?.[1] || "",
               description: alert?.summary?.description || alert?.summary?.reference || alert?.data?.accounting?.[1] || "",
               date: alert?.summary?.date || alert?.data?.accounting?.[0] || "",
-              amount: parseFloat(String(alert?.summary?.amount || alert?.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0
+              amount: parseFloat(String(alert?.summary?.amount || alert?.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0,
+              vatAmount: parseFloat(String((alert?.summary?.vatAmount !== undefined && alert?.summary?.vatAmount !== "" ? alert.summary.vatAmount : alert?.data?.accounting?.[8]) ?? "0").replace(/[£$€,\s]/g, "")) || 0,
+              appId: alert?.summary?.transactionId || alert?.data?.accounting?.[6] || ""
             }}
             onSelectCell={(data) => {
               handleInitiatePlaceOnContractor(data);

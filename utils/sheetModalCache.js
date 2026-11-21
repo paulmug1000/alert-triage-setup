@@ -1,6 +1,7 @@
 import { COMPARISON_SHEET_SPECS } from "./masterComparisonSheetSpec";
 import { CLIENT_SHEET_SPECS } from "./clientSheetSpecs";
 import { getReconTabSpec } from "./reconSheetSpecs";
+import { TIME_COMP_SPEC } from "./timeCompSheetSpec";
 
 export const COMPARISON_TAB_CACHE = new Map();
 const COMPARISON_INFLIGHT = new Map();
@@ -198,7 +199,10 @@ export async function prefetchVirtualTab({
   }
 }
 
-function getClientLastMaxRows_(tabName) {
+/**
+ * Returns the maximum row count to load/query for a given Client sheet tab.
+ */
+export function getClientMaxRowsForTab(tabName) {
   if (tabName === "Confirmed") return 5002;
   if (tabName === "Pipeline") return 1000;
   return 1200;
@@ -220,7 +224,7 @@ export async function prefetchClientSheetTab(clientName, tabName) {
     sheetRole: "client",
     clientName,
     tabName,
-    maxRows: getClientLastMaxRows_(tabName),
+    maxRows: getClientMaxRowsForTab(tabName),
     maxCols: spec?.totalCols || 200,
   });
 }
@@ -244,5 +248,25 @@ export async function prefetchReconSheetTab(clientName, tabName) {
     tabName,
     maxRows: 500,
     maxCols: spec.totalCols || 119,
+  });
+}
+
+export function invalidateTimeCompModalCache(clientName = "") {
+  const clean = String(clientName || "").trim().toLowerCase();
+  if (!clean) {
+    invalidateVirtualModalCache("master", "");
+    return;
+  }
+  VIRTUAL_TAB_CACHE.delete(makeVirtualCacheKey("master", clean, "TimeComp"));
+}
+
+export async function prefetchTimeCompTab(clientName) {
+  if (!clientName) return null;
+  return prefetchVirtualTab({
+    sheetRole: "master",
+    clientName,
+    tabName: "TimeComp",
+    maxRows: 220,
+    maxCols: TIME_COMP_SPEC.totalCols || 471,
   });
 }

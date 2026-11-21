@@ -95,7 +95,7 @@ export function deriveVatQuarterCycle(endMonth) {
 /**
  * Resolves active accounting tool credentials from Vault for a client.
  */
-async function resolveAccountingToolAuth(clientName, masterSheetId) {
+export async function resolveAccountingToolAuth(clientName, masterSheetId) {
   const unwrappedId = masterSheetId ? unwrapSheetId(String(masterSheetId).trim()) : "";
   const cleanMasterId = unwrappedId ? (extractSheetIdFromUrl(unwrappedId) || unwrappedId) : "";
   const candidateTools = ["xero", "quickbooks"];
@@ -717,6 +717,171 @@ function cleanCategoryName(name) {
   return String(name || "").trim().toLowerCase();
 }
 
+function normalizeAccountTypeBucket(rawType) {
+  const t = String(rawType || "").trim().toUpperCase();
+  if (t === "REVENUE" || t === "INCOME" || t === "SALES") return "REVENUE";
+  if (t === "OTHERINCOME" || t === "OTHER INCOME") return "OTHERINCOME";
+  if (t === "DIRECTCOSTS" || t === "COST OF GOODS SOLD") return "DIRECTCOSTS";
+  if (t === "EXPENSE" || t === "OVERHEADS" || t === "OTHER EXPENSE") return "EXPENSE";
+  return "";
+}
+
+/**
+ * Fetches a 4-year P&L report (including section headers & summary rows) and active P&L Chart of Accounts from Xero.
+ */
+async function fetchXeroPlAndAccounts(auth) {
+  const oneYearAgo = new Date();
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+  const fromStr = oneYearAgo.toISOString().split("T")[0];
+  const toStr = new Date().toISOString().split("T")[0];
+
+  const headers = {
+    "Authorization": `Bearer ${auth.accessToken}`,
+    "Xero-tenant-id": auth.tenantId,
+    "Accept": "application/json"
+  };
+
+  const [plRes, accRes] = await Promise.all([
+    fetch(`https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=${fromStr}&toDate=${toStr}&periods=4&timeframe=YEAR&standardLayout=false`, { headers }).catch(() => null),
+    fetch("https://api.xero.com/api.xro/2.0/Accounts", { headers }).catch(() => null)
+  ]);
+
+  const accountTypeMap = new Map();
+  const activePlAccounts = [];
+  if (accRes && accRes.ok) {
+    const accData = await accRes.json();
+    for (const a of (accData.Accounts || [])) {
+      const bucket = normalizeAccountTypeBucket(a.Type);
+      const name = String(a.Name || "").trim();
+      if (!bucket || !name) continue;
+      accountTypeMap.set(name.toLowerCase(), bucket);
+      if (String(a.Status || "").toUpperCase() === "ACTIVE") {
+        activePlAccounts.push({ name, accountType: bucket });
+      }
+    }
+  }
+
+  const plRows = [];
+  if (plRes && plRes.ok) {
+    const plData = await plRes.json();
+    const walk = (node, sectionHint = "") => {
+      if (!node) return;
+      if (node.RowType === "Section") {
+        const title = String(node.Title || "").trim();
+        const nextSection = title || sectionHint;
+        if (title) {
+          plRows.push({ name: title, isStructural: true, sectionHint: nextSection, accountType: "" });
+        }
+        (node.Rows || []).forEach(child => walk(child, nextSection));
+      } else if (node.RowType === "SummaryRow") {
+        const title = String(node.Cells?.[0]?.Value || "").trim();
+        if (title) {
+          plRows.push({ name: title, isStructural: true, sectionHint, accountType: "" });
+        }
+      } else if (node.RowType === "Row") {
+        const title = String(node.Cells?.[0]?.Value || "").trim();
+        if (!title) return;
+        const attrs = node.Cells?.[0]?.Attributes || [];
+        const hasAccountAttr = attrs.some(a => String(a.Id || "").toLowerCase() === "account");
+        const acctType = accountTypeMap.get(title.toLowerCase()) || "";
+        plRows.push({
+          name: title,
+          isStructural: !hasAccountAttr && !acctType,
+          sectionHint,
+          accountType: acctType
+        });
+      }
+    };
+    (plData?.Reports?.[0]?.Rows || []).forEach(r => walk(r, ""));
+  }
+
+  return { plRows, activePlAccounts, accountTypeMap };
+}
+
+/**
+ * Fetches a 4-year P&L report (including section headers & summary rows) and active P&L Chart of Accounts from QuickBooks.
+ */
+async function fetchQuickBooksPlAndAccounts(auth) {
+  const safeRealmId = assertValidQBRealmId(auth.realmId);
+  const fourYearsAgo = new Date();
+  fourYearsAgo.setFullYear(fourYearsAgo.getFullYear() - 4);
+  const startStr = fourYearsAgo.toISOString().split("T")[0];
+  const endStr = new Date().toISOString().split("T")[0];
+
+  const headers = {
+    "Authorization": `Bearer ${auth.accessToken}`,
+    "Accept": "application/json"
+  };
+
+  const accQuery = "SELECT Id, Name, AccountType, Active FROM Account WHERE AccountType IN ('Income', 'Other Income', 'Cost of Goods Sold', 'Expense', 'Other Expense') AND Active = true MAXRESULTS 1000";
+  const [plRes, accRes] = await Promise.all([
+    fetch(`https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(safeRealmId)}/reports/ProfitAndLoss?start_date=${startStr}&end_date=${endStr}&minorversion=73`, { headers, redirect: "manual" }).catch(() => null),
+    fetch(`https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(safeRealmId)}/query?query=${encodeURIComponent(accQuery)}&minorversion=73`, { headers, redirect: "manual" }).catch(() => null)
+  ]);
+
+  const accountTypeMap = new Map();
+  const activePlAccounts = [];
+  if (accRes && accRes.ok) {
+    const accData = await accRes.json();
+    for (const a of (accData?.QueryResponse?.Account || [])) {
+      const bucket = normalizeAccountTypeBucket(a.AccountType);
+      const name = String(a.Name || "").trim();
+      if (!bucket || !name) continue;
+      accountTypeMap.set(name.toLowerCase(), bucket);
+      activePlAccounts.push({ name, accountType: bucket });
+    }
+  }
+
+  const plRows = [];
+  if (plRes && plRes.ok) {
+    const plData = await plRes.json();
+    const walk = (node, sectionHint = "") => {
+      if (!node || (!node.Header && !node.Summary && !node.ColData)) return;
+      if (node.type === "Section" && node.Header?.ColData?.length > 0) {
+        const headerCol = node.Header.ColData[0];
+        const title = String(headerCol?.value || "").trim();
+        const nextSection = title || sectionHint;
+        if (title) {
+          const isParentAccount = Boolean(headerCol?.id);
+          plRows.push({
+            name: title,
+            isStructural: !isParentAccount,
+            sectionHint: nextSection,
+            accountType: isParentAccount ? (accountTypeMap.get(title.toLowerCase()) || "") : ""
+          });
+        }
+        if (node.Rows?.Row) {
+          node.Rows.Row.forEach(child => walk(child, nextSection));
+        }
+        if (node.Summary?.ColData?.length > 0) {
+          const sumTitle = String(node.Summary.ColData[0]?.value || "").trim();
+          if (sumTitle) {
+            plRows.push({ name: sumTitle, isStructural: true, sectionHint: nextSection, accountType: "" });
+          }
+        }
+      } else if (node.Summary?.ColData?.length > 0) {
+        const title = String(node.Summary.ColData[0]?.value || "").trim();
+        if (title) {
+          plRows.push({ name: title, isStructural: true, sectionHint, accountType: "" });
+        }
+      } else if (node.ColData?.length > 0) {
+        const title = String(node.ColData[0]?.value || "").trim();
+        if (title) {
+          plRows.push({
+            name: title,
+            isStructural: false,
+            sectionHint,
+            accountType: accountTypeMap.get(title.toLowerCase()) || ""
+          });
+        }
+      }
+    };
+    (plData?.Rows?.Row || []).forEach(r => walk(r, ""));
+  }
+
+  return { plRows, activePlAccounts, accountTypeMap };
+}
+
 /**
  * Suggests classification of P&L categories into Pulse Master Sheet sections (KeyInfo!BA2:BA180).
  */
@@ -726,8 +891,8 @@ export async function suggestCategoryMappings({ clientName, masterSheetId, isAdm
   const cleanMasterId = unwrappedId ? (extractSheetIdFromUrl(unwrappedId) || unwrappedId) : "";
   const sheets = await getSheetsClient();
 
-  // Read existing categories from Master Sheet
-  const [beResp, bgResp, awResp, baResp] = await Promise.all([
+  // Read existing categories and current mappings from Master Sheet
+  const [beResp, bgResp, baResp] = await Promise.all([
     withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: cleanMasterId,
       range: "KeyInfo!BE2:BE"
@@ -738,49 +903,69 @@ export async function suggestCategoryMappings({ clientName, masterSheetId, isAdm
     })).catch(() => ({ data: { values: [] } })),
     withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: cleanMasterId,
-      range: "KeyInfo!AW2:AW"
-    })).catch(() => ({ data: { values: [] } })),
-    withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: cleanMasterId,
       range: "KeyInfo!BA2:BA180"
     })).catch(() => ({ data: { values: [] } }))
   ]);
 
   const rawPlCategories = (beResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
   const remainingCategories = (bgResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
-  const chartOfAccounts = (awResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
 
-  // If KeyInfo!BE has categories, use those; otherwise use Chart of Accounts from AW
-  let candidateCategories = rawPlCategories.length > 0 ? rawPlCategories : chartOfAccounts;
+  // Pull 4-year P&L (for all historical categories + section headers/subtotals) & full Chart of Accounts
+  const candidateEntries = [];
+  const seenLower = new Set();
+  const addCandidate = ({ name, isStructural = false, sectionHint = "", accountType = "" }) => {
+    const cleanName = String(name || "").trim();
+    if (!cleanName) return;
+    const key = cleanName.toLowerCase();
+    if (seenLower.has(key)) return;
+    seenLower.add(key);
+    candidateEntries.push({ name: cleanName, isStructural, sectionHint, accountType });
+  };
 
-  // Also check if we can query fresh Chart of Accounts from Xero/QBO if candidateCategories is empty
-  let sourceOrigin = rawPlCategories.length > 0
-    ? (isAdmin ? "Master Sheet P&L (KeyInfo!BE)" : "Saved P&L categories")
-    : (isAdmin ? "Master Sheet Chart of Accounts (KeyInfo!AW)" : "Saved chart of accounts");
+  let sourceOrigin = isAdmin ? "Master Sheet P&L (KeyInfo!BE)" : "Saved P&L categories";
+  let liveAccountTypeMap = new Map();
 
-  if (candidateCategories.length === 0) {
-    const auth = await resolveAccountingToolAuth(clientName, cleanMasterId);
-    if (auth && auth.tool === "Xero") {
-      try {
-        const accRes = await fetch("https://api.xero.com/api.xro/2.0/Accounts", {
-          headers: {
-            "Authorization": `Bearer ${auth.accessToken}`,
-            "Xero-tenant-id": auth.tenantId,
-            "Accept": "application/json"
-          }
-        });
-        if (accRes.ok) {
-          const accData = await accRes.json();
-          candidateCategories = (accData.Accounts || [])
-            .filter(a => ["REVENUE", "DIRECTCOSTS", "EXPENSE", "OVERHEADS", "OTHERINCOME"].includes(String(a.Type || "").toUpperCase()))
-            .map(a => `${a.Code ? `${a.Code} - ` : ""}${a.Name}`);
-          sourceOrigin = "Live Xero Accounts API";
-        }
-      } catch (err) {
-        console.warn("⚠️ Could not fetch Xero accounts:", err.message);
+  const auth = await resolveAccountingToolAuth(clientName, cleanMasterId);
+  if (auth && auth.tool === "Xero") {
+    try {
+      const { plRows, activePlAccounts, accountTypeMap } = await fetchXeroPlAndAccounts(auth);
+      liveAccountTypeMap = accountTypeMap;
+      plRows.forEach(addCandidate);
+      rawPlCategories.forEach(name => addCandidate({ name, accountType: liveAccountTypeMap.get(name.toLowerCase()) || "" }));
+      activePlAccounts.forEach(acc => addCandidate({ name: acc.name, accountType: acc.accountType }));
+
+      if (plRows.length > 0 && activePlAccounts.length > 0) {
+        sourceOrigin = "4-year Xero P&L & full Chart of Accounts";
+      } else if (plRows.length > 0) {
+        sourceOrigin = "4-year Xero P&L";
+      } else if (activePlAccounts.length > 0) {
+        sourceOrigin = "Xero Chart of Accounts";
       }
+    } catch (err) {
+      console.warn("⚠️ Could not fetch Xero P&L & accounts:", err.message);
+    }
+  } else if (auth && auth.tool === "QuickBooks") {
+    try {
+      const { plRows, activePlAccounts, accountTypeMap } = await fetchQuickBooksPlAndAccounts(auth);
+      liveAccountTypeMap = accountTypeMap;
+      plRows.forEach(addCandidate);
+      rawPlCategories.forEach(name => addCandidate({ name, accountType: liveAccountTypeMap.get(name.toLowerCase()) || "" }));
+      activePlAccounts.forEach(acc => addCandidate({ name: acc.name, accountType: acc.accountType }));
+
+      if (plRows.length > 0 && activePlAccounts.length > 0) {
+        sourceOrigin = "4-year QuickBooks P&L & full Chart of Accounts";
+      } else if (plRows.length > 0) {
+        sourceOrigin = "4-year QuickBooks P&L";
+      } else if (activePlAccounts.length > 0) {
+        sourceOrigin = "QuickBooks Chart of Accounts";
+      }
+    } catch (err) {
+      console.warn("⚠️ Could not fetch QuickBooks P&L & accounts:", err.message);
     }
   }
+
+  // Ensure any existing KeyInfo!BE2:BE categories are included (e.g. if no tool connected or live fetch failed)
+  rawPlCategories.forEach(name => addCandidate({ name, accountType: liveAccountTypeMap.get(name.toLowerCase()) || "" }));
 
   // Current BA mappings (BA2:BA180)
   const baValues = baResp.data.values || [];
@@ -822,16 +1007,16 @@ export async function suggestCategoryMappings({ clientName, masterSheetId, isAdm
 
   // Compile regex patterns
   // 1. Ignore headers and subtotal summary rows
-  const ignorePattern = /^(description|income|total income|turnover|total turnover|cost of sales|total cost of sales|cost of goods sold|gross profit|operating expenses|total operating expenses|total expenses|expenses|administrative expenses|total administrative expenses|operating profit|net profit|net income|net loss|net profit \/ \(loss\)|net operating income|non-operating income|non-operating expenses|total overheads|overheads)$/i;
+  const ignorePattern = /^(description|income|total income|trading income|total trading income|turnover|total turnover|revenue|total revenue|cost of sales|less cost of sales|total cost of sales|total less cost of sales|cost of goods sold|total cost of goods sold|cogs|total cogs|gross profit|operating expenses|less operating expenses|total operating expenses|total less operating expenses|total expenses|expenses|administrative expenses|total administrative expenses|administrative costs|total administrative costs|operating profit|net operating income|net profit|net income|net loss|net profit \/ \(loss\)|profit \/ \(loss\)|profit before tax|profit after tax|profit for the year|non-operating income|total non-operating income|non-operating expenses|total non-operating expenses|other income|total other income|other expenses|total other expenses|net other income|total overheads|overheads)$/i;
 
-  // 2. CoS staff costs (Crucially includes Salaries, Wages, Employers NI, Staff Pension, Direct Wages, Subcontractors)
-  const cosStaffPattern = /\b(salaries|salary|wages|direct wages|employers ni|employer ni|employer's ni|employers nic|employer's nic|national insurance|staff pension|pension contributions?|pension|subcontractors?|sub-contractors?|freelancers?|contractor wages|direct labour|direct labor)\b/i;
+  // 2. CoS staff costs (Crucially includes Salaries, Wages, Employers NI, Staff Pension, Freelancers)
+  const cosStaffPattern = /\b(salaries|salary|wages|direct wages|employers ni|employer ni|employer's ni|employers nic|employer's nic|employers national insurance|national insurance|staff pension|pension contributions?|pensions?(?:\s+costs?)?|subcontractors?|sub-contractors?|freelancers?|freelance(?:\s+work)?|contractor wages|direct labour|direct labor)\b/i;
 
   // 3. Non-CoS staff costs (Overhead staff expenses: training, welfare, directors remuneration)
-  const nonCosStaffPattern = /\b(staff training|staff welfare|staff entertainment|recruitment|recruitment fees|directors remuneration|directors salaries|director salaries)\b/i;
+  const nonCosStaffPattern = /\b(staff training|staff welfare|staff entertainment|recruitment|recruitment fees|directors'? remuneration|directors'? salaries|director salaries)\b/i;
 
-  // 4. Revenue
-  const revenuePattern = /\b(sales|fee income|turnover|fees|services|consulting income|client fees?|billable revenue|subscription income|retainers?)\b/i;
+  // 4. Revenue (excludes bare "fees" so Bank Fees / Stripe Fees / Accountancy fees don't false-match)
+  const revenuePattern = /\b(sales|revenue|fee income|turnover|client fees?|retainer fees?|consulting fees?|service fees?|management fees?|agency fees?|billable revenue|subscription income|retainers?)\b/i;
 
   // 5. Corporation Tax
   const corpTaxPattern = /\b(corporation tax|provision for corporation tax|corp tax|tax on profit|ct provision)\b/i;
@@ -840,20 +1025,34 @@ export async function suggestCategoryMappings({ clientName, masterSheetId, isAdm
   const depreciationPattern = /\b(depreciation|amortisation|amortization)\b/i;
 
   // 7. Other Cost of Sale (materials, hosting, disbursements, direct expenses)
-  const otherCosPattern = /\b(direct costs?|materials?|hosting|server hosting|domain|production|disbursements?|client expenses|rechargeable|sub-contracts?|freight|print|printing)\b/i;
+  const otherCosPattern = /(?:\bdirect\s*-|\b(?:cost of goods sold|direct costs?|direct expenses?|materials?|hosting|server hosting|domain|production|disbursements?|client expenses|rechargeable|sub-contracts?)\b)/i;
 
   // 8. Non-operating income
   const nonOpIncomePattern = /\b(interest income|interest received|bank interest received|grant income|other income|r&d tax credit|gain on disposal)\b/i;
 
   // 9. Non-operating expenses
-  const nonOpExpensePattern = /\b(bank interest paid|interest expense|loan interest|finance costs?|penalties|fines|loss on disposal)\b/i;
+  const nonOpExpensePattern = /\b(bank interest paid|interest expense|interest paid|loan interest|finance costs?|penalties|fines|fines and penalties|loss on disposal)\b/i;
 
-  candidateCategories.forEach(cat => {
+  candidateEntries.forEach(entry => {
+    const cat = entry.name;
     const clean = cleanCategoryName(cat);
     // Strip nominal code prefix if present for matching (e.g. "200 - Sales" -> "sales")
     const withoutCode = clean.replace(/^\d+[\s\-_:]+/, "").trim();
+    const sectionLower = cleanCategoryName(entry.sectionHint);
+    const acctType = entry.accountType;
 
-    if (ignorePattern.test(withoutCode) || ignorePattern.test(clean)) {
+    const inCosSection = /\b(cost of sales|cost of goods sold)\b/i.test(sectionLower);
+    const inOtherIncomeSection = /\b(non-operating income|other income)\b/i.test(sectionLower);
+    const inIncomeSection =
+      !inCosSection &&
+      !inOtherIncomeSection &&
+      !/\b(non-operating|operating expenses|administrative)\b/i.test(sectionLower) &&
+      /\b(income|turnover|revenue|sales)\b/i.test(sectionLower);
+
+    const isIgnoredByName =
+      !acctType && (ignorePattern.test(withoutCode) || ignorePattern.test(clean));
+
+    if (entry.isStructural || isIgnoredByName) {
       suggested.ignore.push(cat);
     } else if (cosStaffPattern.test(withoutCode) || cosStaffPattern.test(clean)) {
       suggested.cosStaffCosts.push(cat);
@@ -865,14 +1064,16 @@ export async function suggestCategoryMappings({ clientName, masterSheetId, isAdm
       suggested.depreciation.push(cat);
     } else if (otherCosPattern.test(withoutCode) || otherCosPattern.test(clean)) {
       suggested.otherCostOfSale.push(cat);
-    } else if (nonOpIncomePattern.test(withoutCode) || nonOpIncomePattern.test(clean)) {
+    } else if (nonOpIncomePattern.test(withoutCode) || nonOpIncomePattern.test(clean) || acctType === "OTHERINCOME" || inOtherIncomeSection) {
       suggested.nonOperatingIncome.push(cat);
     } else if (nonOpExpensePattern.test(withoutCode) || nonOpExpensePattern.test(clean)) {
       suggested.nonOperatingExpenses.push(cat);
-    } else if (revenuePattern.test(withoutCode) || revenuePattern.test(clean)) {
+    } else if (acctType === "REVENUE" || inIncomeSection || (acctType !== "EXPENSE" && (revenuePattern.test(withoutCode) || revenuePattern.test(clean)))) {
       suggested.revenue.push(cat);
+    } else if (acctType === "DIRECTCOSTS" || inCosSection) {
+      suggested.otherCostOfSale.push(cat);
     } else {
-      // General overheads (Rent, Software, Travel, Legal, Audit, etc.)
+      // General overheads (Rent, Software, Travel, Legal, Audit, Bank/Stripe fees, etc.)
       suggested.overheads.push(cat);
     }
   });
@@ -880,7 +1081,7 @@ export async function suggestCategoryMappings({ clientName, masterSheetId, isAdm
   return {
     success: true,
     sourceOrigin,
-    totalCandidateCategories: candidateCategories.length,
+    totalCandidateCategories: candidateEntries.length,
     currentMappings,
     suggested,
     remainingCategories

@@ -29,6 +29,7 @@ import {
   isVirtualSupabaseSheetId,
   seedNewClientTemplatesToSupabase,
 } from "./masterEngineService.js";
+import { mirrorAutomationFrequenciesToSyncSchedules } from "./masterSyncEngine.js";
 
 export const TRACKER_SHEET_ID = "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co";
 export const REPORTING_CONTROL_SHEET_ID = "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s";
@@ -93,34 +94,25 @@ export const SETUP_TASKS_CATALOG = [
   { id: "p2_select_tools", phaseId: "phase_2", title: "Select accounting tool and CRM in KeyInfo Q4, Q8 and Q9", autoCompletable: true },
   { id: "p2_connect_accounting", phaseId: "phase_2", title: "Connect to accounting tool via Pulse Vault", autoCompletable: true },
   { id: "p2_connect_crm", phaseId: "phase_2", title: "Connect to CRM tool via Pulse Vault", autoCompletable: true },
-  { id: "p2_keyinfo_settings", phaseId: "phase_2", title: "Adjust core settings in KeyInfo (Start date, VAT, PAYE, Revenue focus, Profit share %)" },
+  { id: "p2_keyinfo_settings", phaseId: "phase_2", title: "Adjust core settings in KeyInfo (Start date, VAT, PAYE, Revenue focus, Profit share %, Invoice formatting, Automation cadences)" },
+  { id: "p4_datachg_flags", phaseId: "phase_2", title: "Update other DataChgAlert flags as required" },
 
   // Phase 3: Accounting Setup & Baseline
   { id: "p3_chart_of_accounts", phaseId: "phase_3", title: "Pull Chart of Accounts (KeyInfo AV2) and select manual categories" },
   { id: "p3_pull_pl", phaseId: "phase_3", title: "Pull P&L (KeyInfo AY2) and Year 0 P&L (KeyInfo AY5) and assign categories" },
   { id: "p3_year0_setup", phaseId: "phase_3", title: "Check Year 0 setup, adding dividends in lieu of salary as required" },
-  { id: "p3_sync_invoices", phaseId: "phase_3", title: "Sync last x months of invoices (to 3 months before start date)" },
+  { id: "p3_sync_invoices", phaseId: "phase_3", title: "Initial invoice setup" },
   { id: "p3_starter_pl", phaseId: "phase_3", title: "Run StarterPL setup" },
-  { id: "p3_other_expenses", phaseId: "phase_3", title: "Add 'other expenses' forecast amounts into Outgoings tab" },
-  { id: "p3_contractors_info", phaseId: "phase_3", title: "Add contractor information to Outgoings tab" },
-  { id: "p3_employee_salaries", phaseId: "phase_3", title: "Add employee salaries information" },
-  { id: "p3_dividends_info", phaseId: "phase_3", title: "Add dividends in lieu of salary information to Outgoings tab" },
+  { id: "p3_other_expenses", phaseId: "phase_3", title: "Create budget" },
+  { id: "p3_select_bank_accounts", phaseId: "phase_3", title: "Select bank accounts" },
   { id: "p3_cash_opening", phaseId: "phase_3", title: "Add cash opening figure" },
+  { id: "p3_initial_tax_payments", phaseId: "phase_3", title: "Update initial tax payment amounts" },
 
   // Phase 4: Automations & Cadence
-  { id: "p4_review_crm", phaseId: "phase_4", title: "Review CRM data, match existing pipeline jobs, and check assumptions" },
   { id: "p4_crm_list_tab", phaseId: "phase_4", title: "Set up CRMList tab (mappings, Confirmed & Pipeline definitions)" },
-  { id: "p4_review_retainers", phaseId: "phase_4", title: "Review recurring invoices to check for retainers" },
-  { id: "p4_agent_trigger", phaseId: "phase_4", title: "Turn on agent check (Master menu: Install Trigger: Agent Check)" },
-  { id: "p4_pl_trigger", phaseId: "phase_4", title: "Turn on P&L download (Master menu: Install Trigger: P&L Download)" },
-  { id: "p4_ac_enrollment", phaseId: "phase_4", title: "Add client name to column A of Automation Commander sheet", autoCompletable: true },
-  { id: "p4_automation_freq", phaseId: "phase_4", title: "In master sheet DataChgAlert tab, select frequency of automations (Y2:Y5)" },
-  { id: "p4_datachg_flags", phaseId: "phase_4", title: "Update other DataChgAlert flags as required" },
-  { id: "p4_rep_control", phaseId: "phase_4", title: "Add client name to column A of Reporting Control sheet", autoCompletable: true },
-  { id: "p4_eom_jobs", phaseId: "phase_4", title: "Add client details and monthly jobs to EoM section of PMA" },
+  { id: "p4_review_crm", phaseId: "phase_4", title: "Review CRM data, match existing pipeline jobs, and check assumptions" },
 
   // Phase 5: Client Users & Go-Live
-  { id: "p5_add_users", phaseId: "phase_5", title: "Add client users in user management" },
   { id: "p5_email_client", phaseId: "phase_5", title: "Email client with login details and launch live access" }
 ];
 
@@ -937,6 +929,124 @@ function normalizeSetupPhases(phases = []) {
   });
 }
 
+const RETIRED_SETUP_TASK_IDS = new Set([
+  "p3_contractors_info",
+  "p3_employee_salaries",
+  "p3_dividends_info",
+  "p4_review_retainers",
+  "p4_agent_trigger",
+  "p4_pl_trigger",
+  "p4_automation_freq",
+  "p4_ac_enrollment",
+  "p4_rep_control",
+  "p4_eom_jobs",
+  "p5_add_users",
+]);
+
+const RENAMED_SETUP_TASK_TITLES = {
+  p2_keyinfo_settings: {
+    legacyMatches: [
+      "adjust core settings in keyinfo (start date, vat, paye, revenue focus, profit share %)",
+      "adjust core settings in keyinfo (start date, vat, paye, revenue focus, profit share %, automation cadences)",
+    ],
+    title: "Adjust core settings in KeyInfo (Start date, VAT, PAYE, Revenue focus, Profit share %, Invoice formatting, Automation cadences)",
+  },
+  p3_other_expenses: {
+    legacyMatches: ["add 'other expenses' forecast amounts into outgoings tab"],
+    title: "Create budget",
+  },
+};
+
+function normalizeSetupTasks(tasks = []) {
+  let changed = false;
+  const orderByDefaultId = new Map(
+    DEFAULT_SETUP_TASKS_CATALOG.map((t, idx) => [t.id, (idx + 1) * 10])
+  );
+  const defaultById = new Map(
+    DEFAULT_SETUP_TASKS_CATALOG.map((t) => [t.id, t])
+  );
+
+  const kept = [];
+  const seenIds = new Set();
+
+  for (const t of tasks || []) {
+    if (!t || !t.id) continue;
+    if (RETIRED_SETUP_TASK_IDS.has(t.id)) {
+      changed = true;
+      continue;
+    }
+    seenIds.add(t.id);
+    let nextTask = t;
+    const def = defaultById.get(t.id);
+    if (def && def.phaseId && t.phaseId !== def.phaseId) {
+      nextTask = {
+        ...nextTask,
+        phaseId: def.phaseId,
+        order: orderByDefaultId.get(t.id),
+      };
+      changed = true;
+    }
+    const renameRule = RENAMED_SETUP_TASK_TITLES[t.id];
+    if (renameRule) {
+      const lowerTitle = String(nextTask.title || "").trim().toLowerCase();
+      if (renameRule.legacyMatches.includes(lowerTitle)) {
+        nextTask = { ...nextTask, title: renameRule.title };
+        changed = true;
+      }
+    }
+    kept.push(nextTask);
+  }
+
+  // Ensure any newly introduced built-in catalog tasks (e.g. p3_select_bank_accounts, p3_starter_pl)
+  // are inserted cleanly at the appropriate position if missing from persisted template.
+  for (let i = 0; i < DEFAULT_SETUP_TASKS_CATALOG.length; i++) {
+    const def = DEFAULT_SETUP_TASKS_CATALOG[i];
+    if (seenIds.has(def.id)) continue;
+    // Pick an order placed cleanly between its predecessor and successor in the kept list
+    const prevDef = i > 0 ? DEFAULT_SETUP_TASKS_CATALOG[i - 1] : null;
+    const nextDef = i + 1 < DEFAULT_SETUP_TASKS_CATALOG.length ? DEFAULT_SETUP_TASKS_CATALOG[i + 1] : null;
+    const prevTask = prevDef ? kept.find((x) => x.id === prevDef.id) : null;
+    const nextTask = nextDef ? kept.find((x) => x.id === nextDef.id) : null;
+    let derivedOrder = orderByDefaultId.get(def.id);
+    if (prevTask && nextTask && Number.isFinite(Number(prevTask.order)) && Number.isFinite(Number(nextTask.order))) {
+      derivedOrder = Math.round((Number(prevTask.order) + Number(nextTask.order)) / 2);
+      if (derivedOrder === Number(prevTask.order) || derivedOrder === Number(nextTask.order)) {
+        derivedOrder = Number(prevTask.order) + 5;
+      }
+    } else if (prevTask && Number.isFinite(Number(prevTask.order))) {
+      derivedOrder = Number(prevTask.order) + 5;
+    } else if (nextTask && Number.isFinite(Number(nextTask.order))) {
+      derivedOrder = Math.max(1, Number(nextTask.order) - 5);
+    }
+
+    kept.push({
+      ...def,
+      order: derivedOrder,
+      active: true,
+      description: "",
+    });
+    seenIds.add(def.id);
+    changed = true;
+  }
+
+  // Ensure built-in phase order constraints (p4_crm_list_tab before p4_review_crm; p4_datachg_flags after p2_keyinfo_settings)
+  const ensureRelativeOrder = (firstId, secondId) => {
+    const first = kept.find((x) => x.id === firstId);
+    const second = kept.find((x) => x.id === secondId);
+    if (first && second && first.phaseId === second.phaseId && Number(first.order) >= Number(second.order)) {
+      const tmp = first.order;
+      first.order = second.order;
+      second.order = tmp === second.order ? tmp + 1 : tmp;
+      changed = true;
+    }
+  };
+  ensureRelativeOrder("p4_crm_list_tab", "p4_review_crm");
+  ensureRelativeOrder("p2_keyinfo_settings", "p4_datachg_flags");
+
+  kept.sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+  return { tasks: kept, changed };
+}
+
 const SETUP_PROCESS_TEMPLATE_CONFIG_KEY = "setup_process_template";
 
 function parseSetupTemplateSheetRows_(rows = []) {
@@ -1004,10 +1114,15 @@ export async function getSetupProcessTemplate(sheets, forceRefresh = false) {
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed?.phases?.length && parsed?.tasks?.length) {
-          return {
-            ...parsed,
-            phases: normalizeSetupPhases(parsed.phases)
-          };
+          const norm = normalizeSetupTasks(parsed.tasks);
+          if (!norm.changed) {
+            return {
+              ...parsed,
+              phases: normalizeSetupPhases(parsed.phases),
+              tasks: norm.tasks,
+            };
+          }
+          // Fall through to normalize and persist Supabase/Redis when catalog changed
         }
       }
     } catch (e) {
@@ -1024,10 +1139,30 @@ export async function getSetupProcessTemplate(sheets, forceRefresh = false) {
         .eq("key", SETUP_PROCESS_TEMPLATE_CONFIG_KEY)
         .maybeSingle();
       if (cfgRow?.value?.phases?.length && cfgRow?.value?.tasks?.length) {
+        const norm = normalizeSetupTasks(cfgRow.value.tasks);
         const templateData = {
           phases: normalizeSetupPhases(cfgRow.value.phases),
-          tasks: cfgRow.value.tasks.slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+          tasks: norm.tasks,
         };
+        if (norm.changed) {
+          try {
+            await sb.from("system_config").upsert({
+              key: SETUP_PROCESS_TEMPLATE_CONFIG_KEY,
+              value: {
+                ...cfgRow.value,
+                phases: templateData.phases,
+                tasks: templateData.tasks,
+                updatedAt: new Date().toISOString(),
+              },
+              description: "Client onboarding setup phases and task checklist catalog",
+              updated_by: "System (Catalog Sync)",
+            });
+          } catch (_) { }
+          try {
+            const keys = await scanRedisKeys("pulse:setup:checklist:*");
+            if (keys?.length) await redisClient.del(keys);
+          } catch (_) { }
+        }
         await redisClient.set(cacheKey, JSON.stringify(templateData), { EX: 86400 }).catch(() => { });
         return templateData;
       }
@@ -1052,6 +1187,7 @@ export async function getSetupProcessTemplate(sheets, forceRefresh = false) {
       const rows = res.data.values || [];
       if (rows.length > 0) {
         templateData = parseSetupTemplateSheetRows_(rows);
+        templateData.tasks = normalizeSetupTasks(templateData.tasks).tasks;
       }
     }
   } catch (err) {
@@ -1449,6 +1585,23 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
   return results;
 }
 
+function formatToolDisplayName(tool) {
+  const clean = String(tool || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const labels = {
+    xero: "Xero",
+    quickbooks: "QuickBooks",
+    clickup: "ClickUp",
+    close: "Close",
+    capsule: "Capsule",
+    hubspot: "HubSpot",
+    monday: "Monday",
+    pipedrive: "Pipedrive",
+    googlesheet: "Google Sheet",
+    excel: "Excel",
+  };
+  return labels[clean] || String(tool || "").trim();
+}
+
 /**
  * Returns full checklist state for a specific client (the 5 phases, tasks, completion status, metadata).
  */
@@ -1579,15 +1732,17 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
   const config = await getClientSetupConfig({ clientName, masterSheetId }).catch(() => null);
 
   // Auto-complete tool connections if connected in Vault
-  if (config?.accountingStatus?.connected && taskStatusMap.has("p2_connect_accounting")) {
-    const t = taskStatusMap.get("p2_connect_accounting");
-    t.isCompleted = true;
-    t.metadata = `${config.accountingTool} Connected`;
+  if (config?.accountingStatus?.connected) {
+    const existing = taskStatusMap.get("p2_connect_accounting") || { taskId: "p2_connect_accounting", phaseId: "phase_2" };
+    existing.isCompleted = true;
+    existing.metadata = `${formatToolDisplayName(config.accountingTool)} connected`;
+    taskStatusMap.set("p2_connect_accounting", existing);
   }
-  if (config?.crmStatus?.connected && taskStatusMap.has("p2_connect_crm")) {
-    const t = taskStatusMap.get("p2_connect_crm");
-    t.isCompleted = true;
-    t.metadata = `${config.crmTool} Connected`;
+  if (config?.crmStatus?.connected) {
+    const existing = taskStatusMap.get("p2_connect_crm") || { taskId: "p2_connect_crm", phaseId: "phase_2" };
+    existing.isCompleted = true;
+    existing.metadata = `${formatToolDisplayName(config.crmTool)} connected`;
+    taskStatusMap.set("p2_connect_crm", existing);
   }
 
   // Resolve client & master provisioning mode from Supabase clients registry
@@ -1616,7 +1771,26 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
   const hasRealReconSheet = masterMode === "sheet" && Boolean(resolvedReconSheetId && !isVirtualSupabaseSheetId(resolvedReconSheetId));
   const hasAnyGoogleSheet = clientMode === "sheet" || masterMode === "sheet";
 
+  const hasCrmSelected = Boolean(
+    config?.crmTool &&
+    !["none", "na", "n/a", ""].includes(String(config.crmTool).trim().toLowerCase())
+  );
+
+  // Fetch Master Sheet KeyInfo parameters before filtering applicability (e.g. Transfers hides initial tax payments)
+  let keyInfoSettings = null;
+  if (resolvedMasterSheetId) {
+    keyInfoSettings = await getMasterKeyInfoSettings(sheets, resolvedMasterSheetId).catch(() => null);
+  }
+  const isTransfersTaxMethod =
+    String(keyInfoSettings?.taxPaymentMethod || "Standard").trim().toLowerCase() === "transfers";
+
   const isTaskApplicableForMode = (taskId) => {
+    if (["p2_connect_crm", "p4_crm_list_tab", "p4_review_crm"].includes(taskId)) {
+      return hasCrmSelected;
+    }
+    if (taskId === "p3_initial_tax_payments") {
+      return !isTransfersTaxMethod;
+    }
     if (["p1_importrange_auth", "p1_agent_secret", "p1_gas_deployment"].includes(taskId)) {
       return masterMode === "sheet";
     }
@@ -1647,11 +1821,25 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
           completedCount++;
           phaseCompleted++;
         }
+
+        let taskTitle = catalogTask.title;
+        let waitingOnClient = false;
+        if (!isCompleted && config?.requestConnections) {
+          if (catalogTask.id === "p2_connect_accounting" && isOAuthTool(config.accountingTool)) {
+            taskTitle = `Waiting on client to connect to ${formatToolDisplayName(config.accountingTool)}`;
+            waitingOnClient = true;
+          } else if (catalogTask.id === "p2_connect_crm" && isOAuthTool(config.crmTool)) {
+            taskTitle = `Waiting on client to connect to ${formatToolDisplayName(config.crmTool)}`;
+            waitingOnClient = true;
+          }
+        }
+
         return {
           id: catalogTask.id,
           phaseId: catalogTask.phaseId,
-          title: catalogTask.title,
+          title: taskTitle,
           autoCompletable: Boolean(catalogTask.autoCompletable),
+          waitingOnClient,
           description: catalogTask.description || "",
           order: catalogTask.order,
           isCompleted,
@@ -1672,12 +1860,6 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
     .filter(phase => phase.tasks.length > 0);
 
   const progressPercent = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 100;
-
-  // Fetch Master Sheet KeyInfo parameters if resolvedMasterSheetId available
-  let keyInfoSettings = null;
-  if (resolvedMasterSheetId) {
-    keyInfoSettings = await getMasterKeyInfoSettings(sheets, resolvedMasterSheetId).catch(() => null);
-  }
 
   // Cache full catalog status back to Redis so mode toggles never lose task history
   const flatTaskList = allActiveTasksCatalog.map(catalogTask => {
@@ -1929,15 +2111,23 @@ export async function updateClientSetupOverviewRow(sheets, { clientName, status,
 export async function getMasterKeyInfoSettings(sheets, masterSheetId) {
   if (!masterSheetId) return null;
   const res = await withRetry(() =>
-    sheets.spreadsheets.values.get({
+    sheets.spreadsheets.values.batchGet({
       spreadsheetId: masterSheetId,
-      range: "KeyInfo!A1:X29"
+      ranges: ["KeyInfo!A1:X29", "DataChgAlert!Y2:Y4", "InvAppList!F1", "InvAppList!N4:N20"]
     })
   );
-  const rows = res.data.values || [];
+  const valueRanges = res.data.valueRanges || [];
+  const rows = valueRanges[0]?.values || [];
+  const dcaFreqRows = valueRanges[1]?.values || [];
+  const invFmtRaw = valueRanges[2]?.values?.[0]?.[0];
+  const rawInvRows = valueRanges[3]?.values || [];
 
   const getCell = (r, c) => (rows[r - 1] && rows[r - 1][c - 1] !== undefined ? String(rows[r - 1][c - 1]).trim() : "");
+  const getFreq = (idx) => (dcaFreqRows[idx] && dcaFreqRows[idx][0] !== undefined ? String(dcaFreqRows[idx][0]).trim() : "");
   const rawRechDel = getCell(21, 4);
+  const sampleInvoiceNumbers = Array.from(new Set(
+    rawInvRows.map((r) => String(r[0] || "").trim()).filter((v) => v && !v.startsWith("#"))
+  )).slice(0, 5);
 
   return {
     startDate: getCell(2, 2),        // B2: Tracker start date
@@ -1945,19 +2135,26 @@ export async function getMasterKeyInfoSettings(sheets, masterSheetId) {
     vatMonths: getCell(7, 2),        // B7: VAT payment months
     vatScheme: getCell(8, 2),        // B8: VAT payment scheme
     vatRate: getCell(9, 2),          // B9: VAT rate
+    taxPaymentMethod: getCell(10, 2) || "Standard", // B10: Tax payment method (Standard / Transfers)
     payeCycle: getCell(12, 2),       // B12: PAYE cycle
     payeQuarterMonths: getCell(13, 2), // B13: PAYE quarterly months
     revenueFocus: getCell(15, 2),    // B15: Revenue or income focus
+    invoiceMethod: getCell(8, 6) === "Whole" ? "Whole" : "Lines", // F8: Invoice method (Whole / Lines)
     directCostsMode: getCell(15, 2) === "Income" ? "Pass-through" : (getCell(8, 4) === "Pass-through" ? "Pass-through" : "Contractors"), // D8: Job direct costs treatment
     profitShare: getCell(11, 6),     // F11: Profit share %
     contractorMethod: getCell(20, 2),// B20: Cashflow contractors method
     rechargedExpensesDeliveryPct: rawRechDel === "0" || rawRechDel === "0%" || rawRechDel === "0.0%" ? "0%" : "100%", // D21: Recharged expenses delivery %
+    invoiceNumberFormatting: String(invFmtRaw || "StripPre").trim() || "StripPre", // InvAppList!F1
+    sampleInvoiceNumbers,
+    invoicesFrequency: getFreq(0),   // DataChgAlert!Y2: Invoices automation cadence
+    crmFrequency: getFreq(1),        // DataChgAlert!Y3: CRM automation cadence
+    expensesFrequency: getFreq(2),   // DataChgAlert!Y4: Expenses automation cadence
     masterDeploymentUrl: getCell(29, 24) // X29: Master deployment URL
   };
 }
 
 /**
- * Saves core KeyInfo financial parameters to Master Sheet and marks task complete.
+ * Saves core KeyInfo financial parameters (and optional automation cadences) to Master Sheet and marks task complete.
  */
 export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientName, settings, userEmail }) {
   if (!masterSheetId) throw new Error("Missing masterSheetId");
@@ -1970,6 +2167,7 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
   if (settings.vatRate !== undefined) updates.push({ range: "KeyInfo!B9", values: [[sanitizeFormulaInput(String(settings.vatRate))]] });
   if (settings.payeCycle !== undefined) updates.push({ range: "KeyInfo!B12", values: [[sanitizeFormulaInput(String(settings.payeCycle))]] });
   if (settings.revenueFocus !== undefined) updates.push({ range: "KeyInfo!B15", values: [[sanitizeFormulaInput(String(settings.revenueFocus))]] });
+  if (settings.invoiceMethod !== undefined) updates.push({ range: "KeyInfo!F8", values: [[sanitizeFormulaInput(String(settings.invoiceMethod === "Whole" ? "Whole" : "Lines"))]] });
   if (settings.directCostsMode !== undefined || settings.revenueFocus !== undefined) {
     const rf = settings.revenueFocus || "Revenue";
     const dcm = rf === "Income" ? "Pass-through" : (settings.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
@@ -1987,29 +2185,62 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
     updates.push(rechargedRow21Payload);
   }
 
-  if (updates.length > 0) {
+  const dcaUpdates = [];
+  if (settings.invoicesFrequency !== undefined) {
+    dcaUpdates.push({ range: "DataChgAlert!Y2", values: [[sanitizeFormulaInput(String(settings.invoicesFrequency || "").trim())]] });
+  }
+  if (settings.crmFrequency !== undefined) {
+    dcaUpdates.push({ range: "DataChgAlert!Y3", values: [[sanitizeFormulaInput(String(settings.crmFrequency || "").trim())]] });
+  }
+  if (settings.expensesFrequency !== undefined) {
+    dcaUpdates.push({ range: "DataChgAlert!Y4", values: [[sanitizeFormulaInput(String(settings.expensesFrequency || "").trim())]] });
+  }
+
+  const invAppUpdates = [];
+  if (settings.invoiceNumberFormatting !== undefined) {
+    invAppUpdates.push({
+      range: "InvAppList!F1",
+      values: [[sanitizeFormulaInput(String(settings.invoiceNumberFormatting || "StripPre").trim() || "StripPre")]],
+    });
+  }
+
+  const allMasterUpdates = [...updates, ...dcaUpdates, ...invAppUpdates];
+  if (allMasterUpdates.length > 0) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: masterSheetId,
         requestBody: {
           valueInputOption: "USER_ENTERED",
-          data: updates
+          data: allMasterUpdates
         }
       })
     );
 
-    // If Master is Google Sheet and Client is Supabase, mirror KeyInfo settings to virtual Client Sheet
-    try {
-      const ctx = await resolveSupabaseSheetContext({ spreadsheetId: masterSheetId, clientName }).catch(() => null);
-      if (ctx && ctx.masterMode === "sheet" && ctx.clientMode === "supabase" && ctx.clientSheetId) {
-        await withRetry(() =>
-          sheets.spreadsheets.values.batchUpdate({
-            spreadsheetId: ctx.clientSheetId,
-            requestBody: { valueInputOption: "USER_ENTERED", data: updates },
-          })
-        );
-      }
-    } catch (_) { }
+    // If Master is Google Sheet and Client is Supabase, mirror KeyInfo settings (never DataChgAlert/InvAppList) to virtual Client Sheet
+    if (updates.length > 0) {
+      try {
+        const ctx = await resolveSupabaseSheetContext({ spreadsheetId: masterSheetId, clientName }).catch(() => null);
+        if (ctx && ctx.masterMode === "sheet" && ctx.clientMode === "supabase" && ctx.clientSheetId) {
+          await withRetry(() =>
+            sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: ctx.clientSheetId,
+              requestBody: { valueInputOption: "USER_ENTERED", data: updates },
+            })
+          );
+        }
+      } catch (_) { }
+    }
+  }
+
+  if (dcaUpdates.length > 0 && clientName) {
+    await mirrorAutomationFrequenciesToSyncSchedules(clientName, {
+      invoices: settings.invoicesFrequency,
+      crm: settings.crmFrequency,
+      expenses: settings.expensesFrequency,
+    });
+  }
+  if ((dcaUpdates.length > 0 || invAppUpdates.length > 0) && clientName && redisClient?.isOpen) {
+    await redisClient.del(`pulse:client_settings:${normalizeKey(clientName)}`).catch(() => { });
   }
 
   if (rechargedRow21Payload) {
@@ -2708,11 +2939,11 @@ export async function provisionNewClientSystem({
   const now = new Date().toISOString();
   const autoDoneTaskIds = new Set([
     "p2_select_tools",
-    "p4_ac_enrollment",
-    "p4_rep_control",
-    "p4_eom_jobs",
     ...(needsDriveFolder ? ["p1_drive_folder", "p1_duplicate_templates"] : []),
   ]);
+  const hasCrmOnProvision = Boolean(
+    crmTool && !["none", "na", "n/a", ""].includes(String(crmTool).trim().toLowerCase())
+  );
   const template = await getSetupProcessTemplate(sheets).catch(() => null);
   const catalogTasks = (template?.tasks || DEFAULT_SETUP_TASKS_CATALOG).filter(t => t.active !== false);
   const initialTasksMap = {};
@@ -2728,17 +2959,16 @@ export async function provisionNewClientSystem({
     };
   }
 
-  const applicableTasksCount = catalogTasks.filter((t) => {
+  const isProvisionTaskApplicable = (t) => {
+    if (["p2_connect_crm", "p4_crm_list_tab", "p4_review_crm"].includes(t.id)) return hasCrmOnProvision;
     if (["p1_importrange_auth", "p1_agent_secret", "p1_gas_deployment"].includes(t.id)) return needsMasterSheet;
     if (["p1_drive_folder", "p1_duplicate_templates", "p1_bookmarks", "p1_rename_gas", "p1_script_ids"].includes(t.id)) return needsDriveFolder;
     return true;
-  }).length;
-  const applicableCompletedCount = catalogTasks.filter((t) => {
-    if (!autoDoneTaskIds.has(t.id)) return false;
-    if (["p1_importrange_auth", "p1_agent_secret", "p1_gas_deployment"].includes(t.id)) return needsMasterSheet;
-    if (["p1_drive_folder", "p1_duplicate_templates", "p1_bookmarks", "p1_rename_gas", "p1_script_ids"].includes(t.id)) return needsDriveFolder;
-    return true;
-  }).length;
+  };
+  const applicableTasksCount = catalogTasks.filter(isProvisionTaskApplicable).length;
+  const applicableCompletedCount = catalogTasks.filter(
+    (t) => autoDoneTaskIds.has(t.id) && isProvisionTaskApplicable(t)
+  ).length;
   const initialProgressPct = applicableTasksCount > 0
     ? Math.round((applicableCompletedCount / applicableTasksCount) * 100)
     : 0;

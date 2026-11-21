@@ -1,5 +1,5 @@
-//Version 1.10 - Enforce finite arithmetic checks across BinaryOp/Literal/setCellVal plus R1C1 relative AST template cache, targeted range-cache invalidation, Europe/London TODAY(), and Year0Data/ContrPayments/OutgNotes DAG parity
-// Evaluates all 32 Client Sheet tabs with 1:1 Google Sheets formula parity.
+//Version 1.11 - Retire AppData intermediate tab from Client Sheet formula recalculation pass
+// Evaluates Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
 
@@ -3527,7 +3527,6 @@ export function recalculateClientGrids(grids, options = {}) {
     "Dashboard",
     "GPbyPL",
     "Year0Data",
-    "AppData",
     "RevenueConf",
     "RevenuePipe",
     "InvoicesSent",

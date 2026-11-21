@@ -1,12 +1,22 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
 import { memoryCache, trackRedisKeyForClient } from "./cacheService.js";
-import { redisClient } from "./redisClient.js";
+import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { formatCurrencyString, parseMoney } from "./deepDiveHelper.js";
 import { getAllClients } from "./workspaces.js";
+import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
+import { formatGridForDisplay } from "./gasRuntime/sheetValueUtils.js";
 
 export const PORTAL_L1_TTL_SECS = 60;
 export const PORTAL_REDIS_TTL_SECS = 86400; // 24h Redis SWR retention
+
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const PERCENT_ROW_INDICES = new Set([19, 27, 31, 33]);
+const DASHBOARD_MONTH_COL_RANGES = [
+  [6, 17],
+  [21, 32],
+  [36, 47],
+];
 
 function parseMonthYear(str) {
   if (!str) return null;
@@ -27,17 +37,230 @@ function parseMonthYear(str) {
   return isNaN(d.getTime()) ? null : d;
 }
 
+function getLondonYearMonth(now = new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/London",
+      year: "numeric",
+      month: "numeric",
+    }).formatToParts(now);
+    const yr = parseInt(parts.find((p) => p.type === "year")?.value || "", 10);
+    const mon = parseInt(parts.find((p) => p.type === "month")?.value || "", 10);
+    if (Number.isFinite(yr) && Number.isFinite(mon) && mon >= 1 && mon <= 12) {
+      return { year: yr, month0: mon - 1 };
+    }
+  } catch (_) {}
+  return { year: now.getFullYear(), month0: now.getMonth() };
+}
+
+function addMonthsYM(year, month0, deltaMonths) {
+  const d = new Date(Date.UTC(year, month0 + deltaMonths, 1));
+  return { year: d.getUTCFullYear(), month0: d.getUTCMonth() };
+}
+
+function ymKey(year, month0) {
+  return `${year}-${String(month0 + 1).padStart(2, "0")}`;
+}
+
+function parseSheetMonthHeader(dispVal, mathVal) {
+  if (typeof mathVal === "number" && Number.isFinite(mathVal) && mathVal >= 20000 && mathVal <= 80000) {
+    const dt = new Date(Math.round((Math.floor(mathVal) - 25569) * 86400000));
+    const y = dt.getUTCFullYear();
+    const m0 = dt.getUTCMonth();
+    return {
+      year: y,
+      month0: m0,
+      label: dispVal ? String(dispVal).trim() : `${MONTHS_SHORT[m0]} ${String(y).slice(-2)}`,
+    };
+  }
+  const parsed = parseMonthYear(dispVal);
+  if (parsed) {
+    return {
+      year: parsed.getFullYear(),
+      month0: parsed.getMonth(),
+      label: String(dispVal).trim(),
+    };
+  }
+  return null;
+}
+
+function buildMonthColumnLookup({ dashDisp = [], dashMath = [], year0Disp = [], year0Math = [] }) {
+  const map = new Map();
+  // Year0Data!G1:T34 (monthly cols 0..11)
+  for (let c = 0; c < 12; c++) {
+    const parsed = parseSheetMonthHeader(year0Disp[0]?.[c], year0Math[0]?.[c]);
+    if (parsed) {
+      map.set(ymKey(parsed.year, parsed.month0), {
+        source: "year0",
+        colIdx: c,
+        dispGrid: year0Disp,
+        mathGrid: year0Math,
+        label: parsed.label,
+      });
+    }
+  }
+  // Dashboard!A1:AX34 (Year 1: 6..17, Year 2: 21..32, Year 3: 36..47)
+  for (const [startC, endC] of DASHBOARD_MONTH_COL_RANGES) {
+    for (let c = startC; c <= endC; c++) {
+      const parsed = parseSheetMonthHeader(dashDisp[0]?.[c], dashMath[0]?.[c]);
+      if (parsed) {
+        map.set(ymKey(parsed.year, parsed.month0), {
+          source: "dashboard",
+          colIdx: c,
+          dispGrid: dashDisp,
+          mathGrid: dashMath,
+          label: parsed.label,
+        });
+      }
+    }
+  }
+  return map;
+}
+
+function normalizeYesNoFlag(val, fallback = "Yes") {
+  const s = String(val ?? "").trim().toLowerCase();
+  if (!s) return fallback;
+  if (s === "no" || s === "false" || s === "0") return "No";
+  if (s === "yes" || s === "true" || s === "1") return "Yes";
+  return String(val).trim();
+}
+
+function extractMarginRatio_(rawMath, rawDisp, rev, profit, thousandsSeparator) {
+  if (typeof rawMath === "number" && Number.isFinite(rawMath)) {
+    const dispStr = String(rawDisp ?? "").trim();
+    const dispNum = parseFloat(dispStr.replace(/[£$€,\s%]/g, ""));
+    if (Math.abs(rawMath) > 1 && Number.isFinite(dispNum) && Math.abs(rawMath - dispNum) < 1) {
+      return rawMath / 100;
+    }
+    return rawMath;
+  }
+  if (rawDisp !== undefined && rawDisp !== null && String(rawDisp).trim() !== "") {
+    const dispStr = String(rawDisp).trim();
+    const p = parseMoney(dispStr, thousandsSeparator);
+    return dispStr.includes("%") || Math.abs(p) > 1 ? p / 100 : p;
+  }
+  return rev ? profit / rev : 0;
+}
+
+function parseCellMathValue_(rawMath, valDisp, isPercentRow, thousandsSeparator) {
+  if (typeof rawMath === "number") return rawMath;
+  if (!valDisp) return null;
+  const parsed = parseMoney(valDisp, thousandsSeparator);
+  return isPercentRow && String(valDisp).includes("%") ? parsed / 100 : parsed;
+}
+
+async function getCachedPortalFeatureFlags(cleanClientId, clientName = "") {
+  if (!cleanClientId) return null;
+  const cacheKey = `pulse:portal:flags:${cleanClientId}`;
+  const cached = memoryCache.get(cacheKey);
+  if (cached) return cached;
+
+  if (!isSupabaseConfigured()) return null;
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+
+  try {
+    const { data: clientRows } = await supabase
+      .from("clients")
+      .select("id, client_name, version_in_use, webapp_version")
+      .or(
+        clientName
+          ? `client_sheet_id.eq.${cleanClientId},client_name.eq.${clientName}`
+          : `client_sheet_id.eq.${cleanClientId}`
+      )
+      .limit(1);
+    const clientRow = clientRows?.[0] || null;
+    const resolvedName = clientRow?.client_name || clientName;
+
+    let flags = null;
+    if (resolvedName) {
+      const { data: tkiRows } = await supabase
+        .from("tenant_key_info")
+        .select("portal_feature_flags")
+        .eq("client_name", resolvedName)
+        .limit(1);
+      flags = tkiRows?.[0]?.portal_feature_flags || null;
+    }
+
+    const result = {
+      ...(flags && typeof flags === "object" ? flags : {}),
+      version:
+        (flags && typeof flags === "object" && flags.version) ||
+        clientRow?.version_in_use ||
+        clientRow?.webapp_version ||
+        "",
+    };
+    memoryCache.set(cacheKey, result, PORTAL_L1_TTL_SECS);
+    return result;
+  } catch (err) {
+    console.warn(`[portalDataService] Feature flags fallback warning for ${cleanClientId}:`, err?.message);
+    return null;
+  }
+}
+
+export function clearPortalFeatureFlagsMemoryCache(cleanClientId) {
+  if (!cleanClientId) return;
+  memoryCache.del(`pulse:portal:flags:${cleanClientId}`);
+}
+
+function formatMonthCellForPortal(i, rawDisp, rawMath, currencySymbol, thousandsSeparator) {
+  if (i === 0) {
+    if (rawDisp !== undefined && rawDisp !== null && String(rawDisp).trim() !== "") {
+      return String(rawDisp).trim();
+    }
+    const parsed = parseSheetMonthHeader(rawDisp, rawMath);
+    return parsed?.label || "";
+  }
+  if (i === 1) {
+    return rawDisp !== undefined && rawDisp !== null && String(rawDisp).trim() !== ""
+      ? String(rawDisp)
+      : "Forecast";
+  }
+  if (PERCENT_ROW_INDICES.has(i)) {
+    const dispStr = rawDisp !== undefined && rawDisp !== null ? String(rawDisp).trim() : "";
+    if (dispStr.includes("%")) return dispStr;
+    if (typeof rawMath === "number" && Number.isFinite(rawMath)) {
+      return `${Math.round(rawMath * 100)}%`;
+    }
+    if (dispStr !== "" && !Number.isNaN(Number(dispStr))) {
+      return `${Math.round(Number(dispStr) * 100)}%`;
+    }
+    return dispStr;
+  }
+  const dispStr = rawDisp !== undefined && rawDisp !== null ? String(rawDisp) : "";
+  if (dispStr !== "") {
+    if (typeof rawMath === "number" && Number.isFinite(rawMath) && !/[£$€¥%]/.test(dispStr)) {
+      return formatCurrencyString(Math.round(rawMath), 0, currencySymbol, thousandsSeparator);
+    }
+    return formatCurrencyString(dispStr, null, currencySymbol, thousandsSeparator);
+  }
+  if (typeof rawMath === "number" && Number.isFinite(rawMath)) {
+    return formatCurrencyString(Math.round(rawMath), 0, currencySymbol, thousandsSeparator);
+  }
+  return "";
+}
+
 /**
- * Builds the exact Portal Home payload from KeyInfo!A1:J20 and AppData!A1:CR90 grids.
+ * Builds the exact Portal Home payload from KeyInfo, Dashboard, and Year0Data grids
+ * (or legacy AppData grids when supplied directly).
  */
 export function buildPortalPayloadFromGrids({
   keyInfoData = [],
+  dashDisp = [],
+  dashMath = [],
+  year0Disp = [],
+  year0Math = [],
+  thresholdsRaw = [],
+  featureFlags = {},
   appDataDisp = [],
   toggles = [],
   chartRawRows = [],
   clientName = "",
 }) {
-  // --- 1. Client Info (from KeyInfo & AppData) ---
+  const hasSourceTabs = Array.isArray(dashDisp) && dashDisp.length > 0;
+  const labelGrid = hasSourceTabs ? dashDisp : appDataDisp;
+
+  // --- 1. Client Info (from KeyInfo & feature flags) ---
   const sheetClientName = keyInfoData[0]?.[1] || clientName || "";
   const currencySymbol =
     String(
@@ -70,54 +293,132 @@ export function buildPortalPayloadFromGrids({
   const standardChargeOutRate = parseFloat(String(keyInfoData[11]?.[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
   const contractorDayRate = parseFloat(String(keyInfoData[12]?.[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
 
-  const version = toggles[0]?.[0] || appDataDisp[39]?.[22] || ""; // W40
-  const showExtraRows = String(toggles[2]?.[0] || appDataDisp[41]?.[22] || "").trim().toLowerCase() === "yes"; // W42
-  const hasCash = String(toggles[3]?.[0] || appDataDisp[42]?.[22] || "").trim().toLowerCase() === "yes"; // W43
-  const hasBudget = String(toggles[4]?.[0] || appDataDisp[43]?.[22] || "").trim().toLowerCase() === "yes"; // W44
+  const version = featureFlags?.version || toggles[0]?.[0] || appDataDisp[39]?.[22] || keyInfoData[0]?.[0] || "";
+  const showExtraRows =
+    normalizeYesNoFlag(
+      featureFlags?.showStaffCostsRatio ?? toggles[2]?.[0] ?? appDataDisp[41]?.[22],
+      "Yes"
+    ).toLowerCase() === "yes";
+  const hasCash =
+    normalizeYesNoFlag(
+      featureFlags?.showCashMenu ?? toggles[3]?.[0] ?? appDataDisp[42]?.[22],
+      "Yes"
+    ).toLowerCase() === "yes";
+  const hasBudget =
+    normalizeYesNoFlag(
+      featureFlags?.showBudget ?? toggles[4]?.[0] ?? appDataDisp[43]?.[22],
+      "Yes"
+    ).toLowerCase() === "yes";
   const numRows = showExtraRows ? 34 : 32;
 
-  // --- 2. Month Breakdowns (Curr: BD:BE, Prev: BV:BW, Next: BM:BN) ---
-  const extractMonthData = (labelCol, valCol, headerRowIdx) => {
-    const rows = [];
-    for (let i = 0; i < numRows; i++) {
-      let label = appDataDisp[i]?.[labelCol] !== undefined ? String(appDataDisp[i][labelCol]) : "";
-      const lowerLabel = label.trim().toLowerCase();
-      if (splitEnabled && mode === "Revenue") {
-        if (i === 12) {
-          label = directCostsMode === "Pass-through" ? "Pass-through costs" : "Other expenses - delivery";
-        } else if (i === 13) {
-          label = directCostsMode === "Pass-through" ? "Other expenses - delivery" : "Hide";
-        }
-      } else if (lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
-        label = mode === "Revenue" && directCostsMode === "Pass-through" ? "Pass-through costs" : "Hide";
-      }
-      let val = appDataDisp[i]?.[valCol] !== undefined ? String(appDataDisp[i][valCol]) : "";
-      if (i > 1 && val && !val.includes("%")) {
-        val = formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
-      }
-      rows.push({
-        rowIndex: i + 1,
-        label,
-        value: val,
-      });
-    }
-    const hText = appDataDisp[headerRowIdx]?.[labelCol] || "";
-    const mPeriod = rows[0]?.value || "";
-    const mStatus = rows[1]?.value || "Forecast";
-    return { rows, tableRows: rows, headerText: hText, monthPeriod: mPeriod, monthStatus: mStatus };
-  };
+  const zeroCcy = `${currencySymbol}0`;
 
-  const currMonthData = extractMonthData(55, 56, 40);
-  const prevMonthData = extractMonthData(73, 74, 40);
-  const nextMonthData = extractMonthData(64, 65, 40);
+  // --- 2. Month Breakdowns (Curr, Prev, Next) ---
+  let currMonthData;
+  let prevMonthData;
+  let nextMonthData;
+
+  if (hasSourceTabs) {
+    const monthColMap = buildMonthColumnLookup({ dashDisp, dashMath, year0Disp, year0Math });
+    const londonYM = getLondonYearMonth();
+
+    const extractMonthFromSource = (offsetMonths, bannerKind) => {
+      const targetYM = addMonthsYM(londonYM.year, londonYM.month0, offsetMonths);
+      const entry = monthColMap.get(ymKey(targetYM.year, targetYM.month0));
+      const rows = [];
+      for (let i = 0; i < numRows; i++) {
+        let label = labelGrid[i]?.[0] !== undefined ? String(labelGrid[i][0]) : "";
+        const lowerLabel = label.trim().toLowerCase();
+        if (splitEnabled && mode === "Revenue") {
+          if (i === 12) {
+            label = directCostsMode === "Pass-through" ? "Pass-through costs" : "Other expenses - delivery";
+          } else if (i === 13) {
+            label = directCostsMode === "Pass-through" ? "Other expenses - delivery" : "Hide";
+          }
+        } else if (lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
+          label = mode === "Revenue" && directCostsMode === "Pass-through" ? "Pass-through costs" : "Hide";
+        }
+        const rawDisp = entry ? entry.dispGrid?.[i]?.[entry.colIdx] : i === 0 ? `${MONTHS_SHORT[targetYM.month0]} ${String(targetYM.year).slice(-2)}` : "";
+        const rawMath = entry ? entry.mathGrid?.[i]?.[entry.colIdx] : undefined;
+        const val = formatMonthCellForPortal(i, rawDisp, rawMath, currencySymbol, thousandsSeparator);
+        rows.push({
+          rowIndex: i + 1,
+          label,
+          value: val,
+        });
+      }
+
+      const revTopic = String(rows[2]?.label || (mode === "Income" ? "income" : "revenue")).trim().toLowerCase() || "revenue";
+      const revText = rows[8]?.value || zeroCcy;
+      const gpText = rows[17]?.value || zeroCcy;
+      const gpPctText = rows[19]?.value || "0%";
+      const opText = rows[29]?.value || zeroCcy;
+      const opPctText = rows[31]?.value || "0%";
+      const prefix =
+        bannerKind === "prev"
+          ? `Last month’s ${revTopic} was`
+          : bannerKind === "next"
+            ? `Next month’s ${revTopic} is forecast to be`
+            : `This month’s ${revTopic} is forecast to be`;
+      const hText = `${prefix}\n${revText}\nwith gross profit of  ${gpText}  (${gpPctText})\nand operating profit of  ${opText}  (${opPctText})`;
+
+      const mPeriod = rows[0]?.value || "";
+      const mStatus = rows[1]?.value || "Forecast";
+      return { rows, tableRows: rows, headerText: hText, monthPeriod: mPeriod, monthStatus: mStatus };
+    };
+
+    currMonthData = extractMonthFromSource(0, "curr");
+    prevMonthData = extractMonthFromSource(-1, "prev");
+    nextMonthData = extractMonthFromSource(1, "next");
+  } else {
+    const extractMonthDataLegacy = (labelCol, valCol, headerRowIdx) => {
+      const rows = [];
+      for (let i = 0; i < numRows; i++) {
+        let label = appDataDisp[i]?.[labelCol] !== undefined ? String(appDataDisp[i][labelCol]) : "";
+        const lowerLabel = label.trim().toLowerCase();
+        if (splitEnabled && mode === "Revenue") {
+          if (i === 12) {
+            label = directCostsMode === "Pass-through" ? "Pass-through costs" : "Other expenses - delivery";
+          } else if (i === 13) {
+            label = directCostsMode === "Pass-through" ? "Other expenses - delivery" : "Hide";
+          }
+        } else if (lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
+          label = mode === "Revenue" && directCostsMode === "Pass-through" ? "Pass-through costs" : "Hide";
+        }
+        let val = appDataDisp[i]?.[valCol] !== undefined ? String(appDataDisp[i][valCol]) : "";
+        if (i > 1 && val && !val.includes("%")) {
+          val = formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
+        }
+        rows.push({
+          rowIndex: i + 1,
+          label,
+          value: val,
+        });
+      }
+      const hText = appDataDisp[headerRowIdx]?.[labelCol] || "";
+      const mPeriod = rows[0]?.value || "";
+      const mStatus = rows[1]?.value || "Forecast";
+      return { rows, tableRows: rows, headerText: hText, monthPeriod: mPeriod, monthStatus: mStatus };
+    };
+
+    currMonthData = extractMonthDataLegacy(55, 56, 40);
+    prevMonthData = extractMonthDataLegacy(73, 74, 40);
+    nextMonthData = extractMonthDataLegacy(64, 65, 40);
+  }
 
   const tableRows = currMonthData.rows;
   const headerText = currMonthData.headerText;
 
-  // Thresholds: Z42:Z59 (indices 41 to 58)
+  // Thresholds: KeyInfo!B123:B140 (or legacy AppData!Z42:Z59)
   const thresholds = [];
-  for (let i = 41; i <= 58; i++) {
-    thresholds.push(appDataDisp[i]?.[25] || "");
+  if (Array.isArray(thresholdsRaw) && thresholdsRaw.length > 0) {
+    for (let i = 0; i < 18; i++) {
+      thresholds.push(thresholdsRaw[i] !== undefined && thresholdsRaw[i] !== null ? String(thresholdsRaw[i]) : "");
+    }
+  } else {
+    for (let i = 41; i <= 58; i++) {
+      thresholds.push(appDataDisp[i]?.[25] || "");
+    }
   }
 
   // Parse KPI values from the month rows
@@ -140,7 +441,6 @@ export function buildPortalPayloadFromGrids({
 
   const monthPeriod = tableRows[0]?.value || "";
   const monthStatus = tableRows[1]?.value || "Forecast";
-  const zeroCcy = `${currencySymbol}0`;
   const revenueFormatted = findRowVal(["Total revenue", "Total income", "Revenue", "Income"]) || zeroCcy;
   const confirmedFormatted = findRowVal(["Confirmed revenue", "Confirmed income", "Confirmed"]) || zeroCcy;
   const pipelineFormatted = findRowVal(["Pipeline revenue", "Pipeline income", "Pipeline"]) || zeroCcy;
@@ -157,45 +457,148 @@ export function buildPortalPayloadFromGrids({
   const staffCostsNonDelivery = findRowVal(["Staff costs - non-delivery", "Staff costs non-delivery"]) || zeroCcy;
   const staffRatio = findRowVal(["Staff costs to income", "Staff costs to revenue", "Staff ratio"]) || "0%";
 
-  // --- 3. Chart Data (Rows 71-90) ---
-  const switchValues = chartRawRows[0] || [];
-  const showChart = String(switchValues[0] || "").trim().toLowerCase() === "yes";
-  const showTrendlines = String(switchValues[2] || "").trim().toLowerCase() === "yes";
-
+  // --- 3. Trailing 12-Month Chart Data ---
   let chartData = { showChart: false, showTrendlines: false };
-  if (showChart) {
-    const monthsFormatted = [];
-    const revenue = [];
-    const grossProfit = [];
-    const operatingProfit = [];
+  if (hasSourceTabs) {
+    const showChart =
+      normalizeYesNoFlag(featureFlags?.showLast12MonthsChart, "Yes").toLowerCase() === "yes";
+    const showTrendlines =
+      normalizeYesNoFlag(featureFlags?.showTrendlines, "Yes").toLowerCase() === "yes";
 
-    const monthRow = appDataDisp[86] || [];
-    const revRow = chartRawRows[17] || [];
-    const gpRow = chartRawRows[18] || [];
-    const opRow = chartRawRows[19] || [];
+    if (showChart) {
+      const monthColMap = buildMonthColumnLookup({ dashDisp, dashMath, year0Disp, year0Math });
+      const londonYM = getLondonYearMonth();
+      const monthsFormatted = [];
+      const revenue = [];
+      const grossProfit = [];
+      const operatingProfit = [];
 
-    for (let j = 7; j <= 18; j++) {
-      const m = monthRow[j];
-      const cCol = j - 6;
-      if (m && String(m).trim() !== "") {
-        monthsFormatted.push(String(m).trim());
-        revenue.push(parseFloat(revRow[cCol]) || 0);
-        grossProfit.push(parseFloat(gpRow[cCol]) || 0);
-        operatingProfit.push(parseFloat(opRow[cCol]) || 0);
+      const readNumericCell = (entry, rowIdx) => {
+        if (!entry) return 0;
+        const mVal = entry.mathGrid?.[rowIdx]?.[entry.colIdx];
+        if (typeof mVal === "number" && Number.isFinite(mVal)) return mVal;
+        const dVal = entry.dispGrid?.[rowIdx]?.[entry.colIdx];
+        if (dVal !== undefined && dVal !== null && String(dVal).trim() !== "") {
+          return parseMoney(dVal, thousandsSeparator);
+        }
+        return 0;
+      };
+
+      for (let offset = -11; offset <= 0; offset++) {
+        const ym = addMonthsYM(londonYM.year, londonYM.month0, offset);
+        const entry = monthColMap.get(ymKey(ym.year, ym.month0));
+        const fallbackLabel = `${MONTHS_SHORT[ym.month0]} ${String(ym.year).slice(-2)}`;
+        monthsFormatted.push(entry?.label || fallbackLabel);
+        revenue.push(readNumericCell(entry, 8));
+        grossProfit.push(readNumericCell(entry, 17));
+        operatingProfit.push(readNumericCell(entry, 29));
       }
-    }
 
-    chartData = {
-      showChart: true,
-      showTrendlines,
-      months: monthsFormatted,
-      revenue,
-      grossProfit,
-      operatingProfit,
-      label1: revRow[0] ? String(revRow[0]).trim() : "Income",
-      label2: gpRow[0] ? String(gpRow[0]).trim() : "Gross profit",
-      label3: opRow[0] ? String(opRow[0]).trim() : "Operating profit",
-    };
+      const row9Label = String(dashDisp[8]?.[0] || "").trim().toLowerCase();
+      chartData = {
+        showChart: true,
+        showTrendlines,
+        months: monthsFormatted,
+        revenue,
+        grossProfit,
+        operatingProfit,
+        label1: row9Label === "total revenue" ? "Revenue" : row9Label === "total income" ? "Income" : mode === "Income" ? "Income" : "Revenue",
+        label2: "Gross profit",
+        label3: "Operating profit",
+      };
+    }
+  } else {
+    const switchValues = chartRawRows[0] || [];
+    const showChart = String(switchValues[0] || "").trim().toLowerCase() === "yes";
+    const showTrendlines = String(switchValues[2] || "").trim().toLowerCase() === "yes";
+
+    if (showChart) {
+      const monthsFormatted = [];
+      const revenue = [];
+      const grossProfit = [];
+      const operatingProfit = [];
+
+      const monthRow = appDataDisp[86] || [];
+      const revRow = chartRawRows[17] || [];
+      const gpRow = chartRawRows[18] || [];
+      const opRow = chartRawRows[19] || [];
+
+      for (let j = 7; j <= 18; j++) {
+        const m = monthRow[j];
+        const cCol = j - 6;
+        if (m && String(m).trim() !== "") {
+          monthsFormatted.push(String(m).trim());
+          revenue.push(parseFloat(revRow[cCol]) || 0);
+          grossProfit.push(parseFloat(gpRow[cCol]) || 0);
+          operatingProfit.push(parseFloat(opRow[cCol]) || 0);
+        }
+      }
+
+      chartData = {
+        showChart: true,
+        showTrendlines,
+        months: monthsFormatted,
+        revenue,
+        grossProfit,
+        operatingProfit,
+        label1: revRow[0] ? String(revRow[0]).trim() : "Income",
+        label2: gpRow[0] ? String(gpRow[0]).trim() : "Gross profit",
+        label3: opRow[0] ? String(opRow[0]).trim() : "Operating profit",
+      };
+    }
+  }
+
+  // --- 4. 48-Month Timeline for "At a glance" deltas & multi-year sparklines ---
+  const glanceTimeline = [];
+  const glanceBlockConfigs = hasSourceTabs
+    ? [
+        { yIdx: 0, start: 0, disp: year0Disp, math: year0Math },
+        { yIdx: 1, start: 6, disp: dashDisp, math: dashMath },
+        { yIdx: 2, start: 21, disp: dashDisp, math: dashMath },
+        { yIdx: 3, start: 36, disp: dashDisp, math: dashMath },
+      ]
+    : [
+        { yIdx: 0, start: 82, disp: appDataDisp, math: [] },
+        { yIdx: 1, start: 6, disp: appDataDisp, math: [] },
+        { yIdx: 2, start: 21, disp: appDataDisp, math: [] },
+        { yIdx: 3, start: 36, disp: appDataDisp, math: [] },
+      ];
+
+  const readGlanceCellNum = (blk, rowIdx, colIdx) => {
+    const rawM = blk.math?.[rowIdx]?.[colIdx];
+    if (typeof rawM === "number" && Number.isFinite(rawM)) return rawM;
+    const rawD = blk.disp?.[rowIdx]?.[colIdx];
+    if (rawD !== undefined && rawD !== null && String(rawD).trim() !== "") {
+      return parseMoney(rawD, thousandsSeparator);
+    }
+    return 0;
+  };
+
+  for (const blk of glanceBlockConfigs) {
+    for (let m = 0; m < 12; m++) {
+      const colIdx = blk.start + m;
+      const rawHeaderDisp = blk.disp?.[0]?.[colIdx];
+      const rawHeaderMath = blk.math?.[0]?.[colIdx];
+      const parsedHeader = parseSheetMonthHeader(rawHeaderDisp, rawHeaderMath);
+      const monthStr = String(rawHeaderDisp || parsedHeader?.label || `M${m + 1}`).trim();
+      const rev = readGlanceCellNum(blk, 8, colIdx);
+      const gp = readGlanceCellNum(blk, 17, colIdx);
+      const op = readGlanceCellNum(blk, 29, colIdx);
+      const gpMargin = extractMarginRatio_(blk.math?.[19]?.[colIdx], blk.disp?.[19]?.[colIdx], rev, gp, thousandsSeparator);
+      const opMargin = extractMarginRatio_(blk.math?.[31]?.[colIdx], blk.disp?.[31]?.[colIdx], rev, op, thousandsSeparator);
+      glanceTimeline.push({
+        yIdx: blk.yIdx,
+        mIdx: m,
+        monthStr,
+        year: parsedHeader?.year ?? null,
+        month0: parsedHeader?.month0 ?? null,
+        rev,
+        gp,
+        op,
+        gpMargin,
+        opMargin,
+      });
+    }
   }
 
   return {
@@ -252,6 +655,7 @@ export function buildPortalPayloadFromGrids({
       },
     },
     chartData,
+    glanceTimeline,
     months: {
       curr: { ...currMonthData, thresholds },
       prev: { ...prevMonthData, thresholds },
@@ -261,15 +665,24 @@ export function buildPortalPayloadFromGrids({
 }
 
 /**
- * Builds the exact Portal Performance payload from KeyInfo!A1:J20 and AppData!A1:CR90 grids.
+ * Builds the exact Portal Performance payload from KeyInfo, Dashboard, and Year0Data grids
+ * (or legacy AppData grids when supplied directly).
  */
 export function buildPortalPerformanceFromGrids({
   keyInfoData = [],
+  dashDisp = [],
+  dashMath = [],
+  year0Disp = [],
+  year0Math = [],
+  featureFlags = {},
   appDataDisp = [],
   appDataMath = [],
   toggles = [],
   thresholdsRaw = [],
 }) {
+  const hasSourceTabs = Array.isArray(dashDisp) && dashDisp.length > 0;
+  const labelGrid = hasSourceTabs ? dashDisp : appDataDisp;
+
   const mode = String(keyInfoData[14]?.[1] || "Revenue").trim();
   const rawDirectCostsMode = String(keyInfoData[7]?.[3] || "Contractors").trim();
   const directCostsMode =
@@ -292,8 +705,12 @@ export function buildPortalPerformanceFromGrids({
         ","
     ).trim() || ",";
 
-  const version = toggles[0]?.[0] || appDataDisp[39]?.[22] || ""; // W40
-  const showExtraRows = (toggles[2]?.[0] || appDataDisp[41]?.[22]) === "Yes"; // W42
+  const version = featureFlags?.version || toggles[0]?.[0] || appDataDisp[39]?.[22] || keyInfoData[0]?.[0] || "";
+  const showExtraRows =
+    normalizeYesNoFlag(
+      featureFlags?.showStaffCostsRatio ?? toggles[2]?.[0] ?? appDataDisp[41]?.[22],
+      "Yes"
+    ) === "Yes";
   const numRows = showExtraRows ? 34 : 32;
 
   const thresholds = thresholdsRaw.slice(0, 18).map((v) => {
@@ -304,12 +721,19 @@ export function buildPortalPerformanceFromGrids({
     return String(v).includes("%") || n > 1 ? n / 100 : n;
   });
 
-  const yearBlockConfigs = [
-    { id: "hist", name: "Historical Year", start: 82, count: 14 },
-    { id: "year1", name: "Year 1", start: 6, count: 14 },
-    { id: "year2", name: "Year 2", start: 21, count: 14 },
-    { id: "year3", name: "Year 3", start: 36, count: 14 },
-  ];
+  const yearBlockConfigs = hasSourceTabs
+    ? [
+        { id: "hist", name: "Historical Year", start: 0, count: 14, disp: year0Disp, math: year0Math },
+        { id: "year1", name: "Year 1", start: 6, count: 14, disp: dashDisp, math: dashMath },
+        { id: "year2", name: "Year 2", start: 21, count: 14, disp: dashDisp, math: dashMath },
+        { id: "year3", name: "Year 3", start: 36, count: 14, disp: dashDisp, math: dashMath },
+      ]
+    : [
+        { id: "hist", name: "Historical Year", start: 82, count: 14, disp: appDataDisp, math: appDataMath },
+        { id: "year1", name: "Year 1", start: 6, count: 14, disp: appDataDisp, math: appDataMath },
+        { id: "year2", name: "Year 2", start: 21, count: 14, disp: appDataDisp, math: appDataMath },
+        { id: "year3", name: "Year 3", start: 36, count: 14, disp: appDataDisp, math: appDataMath },
+      ];
 
   const today = new Date();
   let currentYearIdx = 1;
@@ -317,8 +741,10 @@ export function buildPortalPerformanceFromGrids({
 
   for (let bi = 0; bi < yearBlockConfigs.length; bi++) {
     const blk = yearBlockConfigs[bi];
-    const firstMonthStr = appDataDisp[0]?.[blk.start];
-    const d = parseMonthYear(firstMonthStr);
+    const firstMonthStr = blk.disp[0]?.[blk.start];
+    const firstMonthMath = blk.math[0]?.[blk.start];
+    const parsedHeader = parseSheetMonthHeader(firstMonthStr, firstMonthMath);
+    const d = parsedHeader ? new Date(parsedHeader.year, parsedHeader.month0, 1) : parseMonthYear(firstMonthStr);
 
     if (d) {
       const fyStart = new Date(d.getFullYear(), d.getMonth(), 1);
@@ -340,7 +766,7 @@ export function buildPortalPerformanceFromGrids({
 
   const lineItemLabels = [];
   for (let i = 0; i < numRows; i++) {
-    lineItemLabels.push(appDataDisp[i]?.[0] !== undefined ? String(appDataDisp[i][0]).trim() : "");
+    lineItemLabels.push(labelGrid[i]?.[0] !== undefined ? String(labelGrid[i][0]).trim() : "");
   }
   if (mode.toLowerCase() !== "income" && lineItemLabels.length > 13 && lineItemLabels[11]) {
     if (directCostsMode === "Contractors") {
@@ -353,16 +779,18 @@ export function buildPortalPerformanceFromGrids({
   }
 
   const years = yearBlockConfigs.map((blk, yIdx) => {
+    const srcDisp = blk.disp || [];
+    const srcMath = blk.math || [];
     const headerMonths = [];
     for (let j = 0; j < 12; j++) {
-      const mStr = appDataDisp[0]?.[blk.start + j] || `M${j + 1}`;
+      const mStr = srcDisp[0]?.[blk.start + j] || `M${j + 1}`;
       headerMonths.push(String(mStr).trim());
     }
-    const totalColHeader = appDataDisp[0]?.[blk.start + 13] || "FY Total";
+    const totalColHeader = srcDisp[0]?.[blk.start + 13] || "FY Total";
 
     const monthStatuses = [];
     for (let j = 0; j < 12; j++) {
-      monthStatuses.push(appDataDisp[1]?.[blk.start + j] || "Forecast");
+      monthStatuses.push(srcDisp[1]?.[blk.start + j] || "Forecast");
     }
 
     const rows = [];
@@ -373,24 +801,46 @@ export function buildPortalPerformanceFromGrids({
 
       for (let j = 0; j < 12; j++) {
         const colIdx = blk.start + j;
-        const valDisp = appDataDisp[i]?.[colIdx] !== undefined ? String(appDataDisp[i][colIdx]).trim() : "";
-        const rawMath = appDataMath[i]?.[colIdx];
-        const valMath =
-          typeof rawMath === "number" ? rawMath : valDisp ? parseMoney(valDisp, thousandsSeparator) : null;
-        monthlyValues.push(formatCurrencyString(valDisp, null, currencySymbol, thousandsSeparator));
+        const valDisp = srcDisp[i]?.[colIdx] !== undefined ? String(srcDisp[i][colIdx]).trim() : "";
+        const rawMath = srcMath[i]?.[colIdx];
+        const valMath = parseCellMathValue_(rawMath, valDisp, PERCENT_ROW_INDICES.has(i), thousandsSeparator);
+        if (PERCENT_ROW_INDICES.has(i)) {
+          const pctStr = valDisp.includes("%")
+            ? valDisp
+            : typeof rawMath === "number" && Number.isFinite(rawMath)
+              ? `${Math.round(rawMath * 100)}%`
+              : valDisp;
+          monthlyValues.push(pctStr);
+        } else if (i > 1 && typeof rawMath === "number" && Number.isFinite(rawMath) && valDisp && !/[£$€¥%]/.test(valDisp)) {
+          monthlyValues.push(formatCurrencyString(Math.round(rawMath), 0, currencySymbol, thousandsSeparator));
+        } else {
+          monthlyValues.push(formatCurrencyString(valDisp, null, currencySymbol, thousandsSeparator));
+        }
         monthlyMath.push(valMath);
       }
 
       const rawTotalVal =
-        appDataDisp[i]?.[blk.start + 13] !== undefined ? String(appDataDisp[i][blk.start + 13]).trim() : "";
-      const rawTotalMath = appDataMath[i]?.[blk.start + 13];
-      const totalVal = formatCurrencyString(rawTotalVal, null, currencySymbol, thousandsSeparator);
-      const totalMath =
-        typeof rawTotalMath === "number"
-          ? rawTotalMath
-          : rawTotalVal
-            ? parseMoney(rawTotalVal, thousandsSeparator)
-            : null;
+        srcDisp[i]?.[blk.start + 13] !== undefined ? String(srcDisp[i][blk.start + 13]).trim() : "";
+      const rawTotalMath = srcMath[i]?.[blk.start + 13];
+      let totalVal;
+      if (PERCENT_ROW_INDICES.has(i)) {
+        totalVal = rawTotalVal.includes("%")
+          ? rawTotalVal
+          : typeof rawTotalMath === "number" && Number.isFinite(rawTotalMath)
+            ? `${Math.round(rawTotalMath * 100)}%`
+            : rawTotalVal;
+      } else if (
+        i > 1 &&
+        typeof rawTotalMath === "number" &&
+        Number.isFinite(rawTotalMath) &&
+        rawTotalVal &&
+        !/[£$€¥%]/.test(rawTotalVal)
+      ) {
+        totalVal = formatCurrencyString(Math.round(rawTotalMath), 0, currencySymbol, thousandsSeparator);
+      } else {
+        totalVal = formatCurrencyString(rawTotalVal, null, currencySymbol, thousandsSeparator);
+      }
+      const totalMath = parseCellMathValue_(rawTotalMath, rawTotalVal, PERCENT_ROW_INDICES.has(i), thousandsSeparator);
 
       rows.push({
         rowIndex: i + 1,
@@ -437,10 +887,27 @@ export function buildPortalPerformanceFromGrids({
   };
 }
 
+function savePortalHomeToCaches_(cleanClientId, payload, performanceData) {
+  const payloadKey = `pulse:portal:payload:${cleanClientId}`;
+  const perfKey = `pulse:portal:performance:${cleanClientId}`;
+  memoryCache.set(payloadKey, payload, PORTAL_L1_TTL_SECS);
+  memoryCache.set(perfKey, performanceData, PORTAL_L1_TTL_SECS);
+  if (redisClient?.isOpen) {
+    Promise.all([
+      redisClient.set(payloadKey, JSON.stringify(payload), { EX: PORTAL_REDIS_TTL_SECS }),
+      redisClient.set(perfKey, JSON.stringify(performanceData), { EX: PORTAL_REDIS_TTL_SECS }),
+      trackRedisKeyForClient(payloadKey),
+      trackRedisKeyForClient(perfKey),
+    ]).catch((err) => {
+      console.warn(`[portalDataService] Redis cache write warning for ${cleanClientId}:`, err?.message);
+    });
+  }
+}
+
 const _inFlightHomeBuilds = new Map();
 
 /**
- * Fetches KeyInfo!A1:J20 and AppData!A1:CR90 (Formatted + Unformatted) in a single pass
+ * Fetches KeyInfo, Dashboard, and Year0Data directly (Formatted + Unformatted) in parallel
  * and constructs BOTH the Portal Home payload AND the Performance dataset simultaneously.
  * Coalesces concurrent requests for the same clientSheetId and saves both to L1 Memory and L2 Redis.
  */
@@ -464,72 +931,101 @@ export async function fetchAndBuildPortalHomeAndPerformance(
       withRetry(() =>
         activeSheets.spreadsheets.values.batchGet({
           spreadsheetId: cleanClientId,
-          ranges: ["KeyInfo!A1:J20", "AppData!A1:CR90"],
+          ranges: ["KeyInfo!A1:J21", "KeyInfo!B123:B148", "Dashboard!A1:AX34", "Year0Data!G1:T34"],
           valueRenderOption: "FORMATTED_VALUE",
         })
       ),
       withRetry(() =>
-        activeSheets.spreadsheets.values.get({
+        activeSheets.spreadsheets.values.batchGet({
           spreadsheetId: cleanClientId,
-          range: "AppData!A1:CR90",
+          ranges: ["Dashboard!A1:AX34", "Year0Data!G1:T34"],
           valueRenderOption: "UNFORMATTED_VALUE",
         })
       ),
     ]);
 
-    const keyInfoData = formattedResp.data.valueRanges?.[0]?.values || [];
-    const appDataDisp = formattedResp.data.valueRanges?.[1]?.values || [];
-    // Extract AppData!W40:W44 (rows 40..44 -> 0-indexed 39..43, col W -> 0-indexed 22)
-    const toggles = [];
-    for (let r = 39; r <= 43; r++) {
-      toggles.push([appDataDisp[r]?.[22] ?? ""]);
-    }
-    const appDataMath = unformattedResp.data?.values || [];
+    const fmtRanges = formattedResp.data?.valueRanges || [];
+    const keyInfoData = fmtRanges[0]?.values || [];
+    const keyInfoRulesAndFlags = fmtRanges[1]?.values || [];
+    const dashDisp = fmtRanges[2]?.values || [];
+    const year0Disp = fmtRanges[3]?.values || [];
 
-    // Extract AppData!G71:S90 (rows 71..90 -> 0-indexed 70..89, cols G..S -> 0-indexed 6..18)
-    const chartRawRows = [];
-    for (let r = 70; r < 90; r++) {
-      const row = appDataMath[r] || [];
-      chartRawRows.push(row.slice(6, 19));
-    }
+    const unfmtRanges = unformattedResp.data?.valueRanges || [];
+    const dashMath = unfmtRanges[0]?.values || [];
+    const year0Math = unfmtRanges[1]?.values || [];
 
-    // Extract AppData!Z42:Z59 (rows 42..59 -> 0-indexed 41..58, col Z -> 0-indexed 25)
+    // Extract thresholds from KeyInfo!B123:B140 (indices 0..17 of B123:B148)
     const thresholdsRaw = [];
-    for (let r = 41; r <= 58; r++) {
-      thresholdsRaw.push(appDataDisp[r]?.[25] ?? "");
+    for (let r = 0; r < 18; r++) {
+      thresholdsRaw.push(keyInfoRulesAndFlags[r]?.[0] ?? "");
     }
+
+    // Extract the 6 Pulse UI feature switches from KeyInfo!B143:B148 (indices 20..25 of B123:B148)
+    const sheetFlagRaw = {
+      showStaffCostsRatio: String(keyInfoRulesAndFlags[20]?.[0] ?? "").trim(),
+      showCashMenu: String(keyInfoRulesAndFlags[21]?.[0] ?? "").trim(),
+      showBudget: String(keyInfoRulesAndFlags[22]?.[0] ?? "").trim(),
+      showCashflowChart: String(keyInfoRulesAndFlags[23]?.[0] ?? "").trim(),
+      showLast12MonthsChart: String(keyInfoRulesAndFlags[24]?.[0] ?? "").trim(),
+      showTrendlines: String(keyInfoRulesAndFlags[25]?.[0] ?? "").trim(),
+    };
+
+    const hasMissingSheetFlags = Object.values(sheetFlagRaw).some((v) => !v);
+    const dbFallbackFlags = hasMissingSheetFlags
+      ? await getCachedPortalFeatureFlags(cleanClientId, keyInfoData[0]?.[1] || clientName)
+      : null;
+
+    const featureFlags = {
+      version: dbFallbackFlags?.version || keyInfoData[0]?.[0] || "",
+      showStaffCostsRatio: normalizeYesNoFlag(
+        sheetFlagRaw.showStaffCostsRatio || dbFallbackFlags?.showStaffCostsRatio,
+        "Yes"
+      ),
+      showCashMenu: normalizeYesNoFlag(
+        sheetFlagRaw.showCashMenu || dbFallbackFlags?.showCashMenu,
+        "Yes"
+      ),
+      showBudget: normalizeYesNoFlag(
+        sheetFlagRaw.showBudget || dbFallbackFlags?.showBudget,
+        "Yes"
+      ),
+      showCashflowChart: normalizeYesNoFlag(
+        sheetFlagRaw.showCashflowChart || dbFallbackFlags?.showCashflowChart,
+        "Yes"
+      ),
+      showLast12MonthsChart: normalizeYesNoFlag(
+        sheetFlagRaw.showLast12MonthsChart || dbFallbackFlags?.showLast12MonthsChart,
+        "Yes"
+      ),
+      showTrendlines: normalizeYesNoFlag(
+        sheetFlagRaw.showTrendlines || dbFallbackFlags?.showTrendlines,
+        "Yes"
+      ),
+    };
 
     const payload = buildPortalPayloadFromGrids({
       keyInfoData,
-      appDataDisp,
-      toggles,
-      chartRawRows,
+      dashDisp,
+      dashMath,
+      year0Disp,
+      year0Math,
+      thresholdsRaw,
+      featureFlags,
       clientName,
     });
 
     const performanceData = buildPortalPerformanceFromGrids({
       keyInfoData,
-      appDataDisp,
-      appDataMath,
-      toggles,
+      dashDisp,
+      dashMath,
+      year0Disp,
+      year0Math,
       thresholdsRaw,
+      featureFlags,
     });
 
     if (saveToCache) {
-      const payloadKey = `pulse:portal:payload:${cleanClientId}`;
-      const perfKey = `pulse:portal:performance:${cleanClientId}`;
-      memoryCache.set(payloadKey, payload, PORTAL_L1_TTL_SECS);
-      memoryCache.set(perfKey, performanceData, PORTAL_L1_TTL_SECS);
-      if (redisClient?.isOpen) {
-        Promise.all([
-          redisClient.set(payloadKey, JSON.stringify(payload), { EX: PORTAL_REDIS_TTL_SECS }),
-          redisClient.set(perfKey, JSON.stringify(performanceData), { EX: PORTAL_REDIS_TTL_SECS }),
-          trackRedisKeyForClient(payloadKey),
-          trackRedisKeyForClient(perfKey),
-        ]).catch((err) => {
-          console.warn(`[portalDataService] Redis cache write warning for ${cleanClientId}:`, err?.message);
-        });
-      }
+      savePortalHomeToCaches_(cleanClientId, payload, performanceData);
     }
 
     return { payload, performanceData, cleanClientId };
@@ -541,6 +1037,107 @@ export async function fetchAndBuildPortalHomeAndPerformance(
   } finally {
     _inFlightHomeBuilds.delete(cleanClientId);
   }
+}
+
+/**
+ * Re-warms the Portal Home & Performance caches directly in RAM from freshly evaluated
+ * virtual Client Sheet grids (zero extra DB or Google Sheets round-trips).
+ */
+export async function warmPortalHomeFromVirtualGrids({
+  clientSheetId,
+  clientName = "",
+  keyInfoValues = [],
+  dashboardValues = [],
+  year0Values = [],
+} = {}) {
+  const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
+  if (!cleanClientId || !Array.isArray(dashboardValues) || dashboardValues.length === 0) return null;
+
+  const keyInfoTopRaw = keyInfoValues.slice(0, 21).map((r) => (Array.isArray(r) ? r.slice(0, 10) : []));
+  const keyInfoData = formatGridForDisplay("client", "KeyInfo", keyInfoTopRaw, 0, 0, keyInfoValues);
+
+  const keyInfoRulesSlice = [];
+  for (let r = 122; r <= 147; r++) {
+    keyInfoRulesSlice.push([keyInfoValues[r]?.[1] ?? ""]);
+  }
+  const keyInfoRulesDisp = formatGridForDisplay("client", "KeyInfo", keyInfoRulesSlice, 122, 1, keyInfoValues);
+
+  const dashMath = dashboardValues.slice(0, 34).map((r) => (Array.isArray(r) ? r.slice(0, 50) : []));
+  const dashDisp = formatGridForDisplay("client", "Dashboard", dashMath, 0, 0, dashboardValues);
+
+  const year0Math = year0Values.slice(0, 34).map((r) => (Array.isArray(r) ? r.slice(6, 20) : []));
+  const year0Disp = formatGridForDisplay("client", "Year0Data", year0Math, 0, 6, year0Values);
+
+  const thresholdsRaw = [];
+  for (let r = 0; r < 18; r++) {
+    thresholdsRaw.push(keyInfoRulesDisp[r]?.[0] ?? "");
+  }
+
+  const sheetFlagRaw = {
+    showStaffCostsRatio: String(keyInfoRulesDisp[20]?.[0] ?? "").trim(),
+    showCashMenu: String(keyInfoRulesDisp[21]?.[0] ?? "").trim(),
+    showBudget: String(keyInfoRulesDisp[22]?.[0] ?? "").trim(),
+    showCashflowChart: String(keyInfoRulesDisp[23]?.[0] ?? "").trim(),
+    showLast12MonthsChart: String(keyInfoRulesDisp[24]?.[0] ?? "").trim(),
+    showTrendlines: String(keyInfoRulesDisp[25]?.[0] ?? "").trim(),
+  };
+
+  const hasMissingSheetFlags = Object.values(sheetFlagRaw).some((v) => !v);
+  const dbFallbackFlags = hasMissingSheetFlags
+    ? await getCachedPortalFeatureFlags(cleanClientId, keyInfoData[0]?.[1] || clientName)
+    : null;
+
+  const featureFlags = {
+    version: dbFallbackFlags?.version || keyInfoData[0]?.[0] || "",
+    showStaffCostsRatio: normalizeYesNoFlag(
+      sheetFlagRaw.showStaffCostsRatio || dbFallbackFlags?.showStaffCostsRatio,
+      "Yes"
+    ),
+    showCashMenu: normalizeYesNoFlag(
+      sheetFlagRaw.showCashMenu || dbFallbackFlags?.showCashMenu,
+      "Yes"
+    ),
+    showBudget: normalizeYesNoFlag(
+      sheetFlagRaw.showBudget || dbFallbackFlags?.showBudget,
+      "Yes"
+    ),
+    showCashflowChart: normalizeYesNoFlag(
+      sheetFlagRaw.showCashflowChart || dbFallbackFlags?.showCashflowChart,
+      "Yes"
+    ),
+    showLast12MonthsChart: normalizeYesNoFlag(
+      sheetFlagRaw.showLast12MonthsChart || dbFallbackFlags?.showLast12MonthsChart,
+      "Yes"
+    ),
+    showTrendlines: normalizeYesNoFlag(
+      sheetFlagRaw.showTrendlines || dbFallbackFlags?.showTrendlines,
+      "Yes"
+    ),
+  };
+
+  const payload = buildPortalPayloadFromGrids({
+    keyInfoData,
+    dashDisp,
+    dashMath,
+    year0Disp,
+    year0Math,
+    thresholdsRaw,
+    featureFlags,
+    clientName,
+  });
+
+  const performanceData = buildPortalPerformanceFromGrids({
+    keyInfoData,
+    dashDisp,
+    dashMath,
+    year0Disp,
+    year0Math,
+    thresholdsRaw,
+    featureFlags,
+  });
+
+  savePortalHomeToCaches_(cleanClientId, payload, performanceData);
+  return { payload, performanceData };
 }
 
 /**
@@ -556,17 +1153,22 @@ export async function getCachedPortalHomeAndPerformance(rawOrWrappedClientSheetI
 
   if (perfOnly) {
     let performanceData = memoryCache.get(perfKey);
-    if (!performanceData && redisClient?.isOpen) {
-      try {
-        const rawPerf = await Promise.race([
-          redisClient.get(perfKey),
-          new Promise((resolve) => setTimeout(() => resolve(null), 120)),
-        ]);
-        if (rawPerf) {
-          performanceData = JSON.parse(rawPerf);
-          memoryCache.set(perfKey, performanceData, PORTAL_L1_TTL_SECS);
-        }
-      } catch (_) {}
+    if (!performanceData) {
+      if (!redisClient?.isOpen) {
+        try { await ensureRedisConnected(400); } catch (_) {}
+      }
+      if (redisClient?.isOpen) {
+        try {
+          const rawPerf = await Promise.race([
+            redisClient.get(perfKey),
+            new Promise((resolve) => setTimeout(() => resolve(null), 500)),
+          ]);
+          if (rawPerf) {
+            performanceData = JSON.parse(rawPerf);
+            memoryCache.set(perfKey, performanceData, PORTAL_L1_TTL_SECS);
+          }
+        } catch (_) {}
+      }
     }
     return { payload: null, performanceData: performanceData || null };
   }
@@ -574,21 +1176,26 @@ export async function getCachedPortalHomeAndPerformance(rawOrWrappedClientSheetI
   let payload = memoryCache.get(payloadKey);
   let performanceData = memoryCache.get(perfKey);
 
-  if ((!payload || !performanceData) && redisClient?.isOpen) {
-    try {
-      const pair = await Promise.race([
-        redisClient.mGet([payloadKey, perfKey]),
-        new Promise((resolve) => setTimeout(() => resolve(null), 150)),
-      ]);
-      if (Array.isArray(pair)) {
-        if (!payload && pair[0]) {
-          payload = JSON.parse(pair[0]);
+  if (!payload || !performanceData) {
+    if (!redisClient?.isOpen) {
+      try { await ensureRedisConnected(400); } catch (_) {}
+    }
+    if (redisClient?.isOpen) {
+      try {
+        const pair = await Promise.race([
+          redisClient.mGet([payloadKey, perfKey]),
+          new Promise((resolve) => setTimeout(() => resolve(null), 500)),
+        ]);
+        if (Array.isArray(pair)) {
+          if (!payload && pair[0]) {
+            payload = JSON.parse(pair[0]);
+          }
+          if (!performanceData && pair[1]) {
+            performanceData = JSON.parse(pair[1]);
+          }
         }
-        if (!performanceData && pair[1]) {
-          performanceData = JSON.parse(pair[1]);
-        }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
   }
 
   return { payload: payload || null, performanceData: performanceData || null };

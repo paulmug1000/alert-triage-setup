@@ -18,6 +18,41 @@ export const FULL_MONTH_NAMES = [
   "July", "August", "September", "October", "November", "December"
 ];
 
+const SHORT_MONTH_NAMES = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+];
+
+function formatBudgetSerialMonth_(val) {
+  if (val === null || val === undefined || val === "") return val;
+  const s = String(val).trim();
+  if (!/^\d{5}(?:\.\d+)?$/.test(s)) return val;
+  const serial = Number(s);
+  if (!Number.isFinite(serial) || serial < 20000 || serial > 75000) return val;
+  const utc = new Date(Math.round((Math.floor(serial) - 25569) * 86400 * 1000));
+  if (Number.isNaN(utc.getTime())) return val;
+  const mShort = SHORT_MONTH_NAMES[utc.getUTCMonth()];
+  const yy = String(utc.getUTCFullYear()).slice(-2);
+  return `${mShort}-${yy}`;
+}
+
+function normalizeBudgetSalaryDatesInMatrix_(matrix) {
+  if (!Array.isArray(matrix)) return matrix;
+  for (let rIdx = 57; rIdx <= 111 && rIdx < matrix.length; rIdx++) {
+    const row = matrix[rIdx];
+    if (!Array.isArray(row)) continue;
+    for (const cIdx of [2, 3]) {
+      if (row[cIdx]?.v !== undefined && row[cIdx]?.v !== "") {
+        const formatted = formatBudgetSerialMonth_(row[cIdx].v);
+        if (formatted !== row[cIdx].v) {
+          row[cIdx] = { ...row[cIdx], v: formatted };
+        }
+      }
+    }
+  }
+  return matrix;
+}
+
 export function parseMonthHeader(label) {
   if (!label || typeof label !== "string") return null;
   const match = label.trim().match(/^([A-Za-z]{3})\s*'?(\d{2,4})$/);
@@ -410,7 +445,7 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
         ]);
 
         const rowData = budgetRes.data.sheets[0]?.data[0]?.rowData || [];
-        const matrix = rowData.map(r => (r.values || []).map(parseCell));
+        const matrix = normalizeBudgetSalaryDatesInMatrix_(rowData.map(r => (r.values || []).map(parseCell)));
         const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
 
         const fyConfigs = [
@@ -620,6 +655,9 @@ export async function handleUpdateViewCell(req, res, sheets) {
     if (returnedCellVal !== undefined) {
       formattedValue = returnedCellVal;
     }
+    if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112 && (colIndex === 2 || colIndex === 3)) {
+      formattedValue = formatBudgetSerialMonth_(formattedValue);
+    }
 
     let rawHeader = req.body.headerLabel || req.body.monthLabel || "";
     const monthText = colIndex >= 6 && rawHeader ? getFullMonthYear(rawHeader) : "";
@@ -635,7 +673,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
           })
         );
         const rData = getBudgetRes.data.sheets[0]?.data[0]?.rowData || [];
-        updatedMatrix = rData.map(r => (r.values || []).map(parseCell));
+        updatedMatrix = normalizeBudgetSalaryDatesInMatrix_(rData.map(r => (r.values || []).map(parseCell)));
       } catch (e) {
         console.warn("Could not fetch updated budget matrix:", e);
       }
@@ -876,7 +914,7 @@ export async function handleSpreadViewRow(req, res, sheets) {
         })
       );
       const rData = getBudgetRes.data.sheets[0]?.data[0]?.rowData || [];
-      updatedMatrix = rData.map((r) => (r.values || []).map(parseCell));
+      updatedMatrix = normalizeBudgetSalaryDatesInMatrix_(rData.map((r) => (r.values || []).map(parseCell)));
     } catch (e) {
       console.warn("Could not fetch updated budget matrix after spread:", e);
     }

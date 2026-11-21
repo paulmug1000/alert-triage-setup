@@ -25,16 +25,26 @@ function colIndexToLetter(colNum) {
   return letter;
 }
 
+const BUDGET_SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 export const parseSheetDate = (dStr) => {
-  if (!dStr) return null;
+  if (dStr === null || dStr === undefined || dStr === "") return null;
   if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
+  if (typeof dStr === "number" && Number.isFinite(dStr) && dStr >= 20000 && dStr <= 75000) {
+    const utc = new Date(Math.round((Math.floor(dStr) - 25569) * 86400 * 1000));
+    return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+  }
   const s = String(dStr).trim();
+  if (!s) return null;
   const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
-  // 0. Serial number (Google Sheets date integer)
-  if (/^\d{5}$/.test(s)) {
-    const serial = parseInt(s, 10);
-    return new Date((serial - 25569) * 86400 * 1000);
+  // 0. Serial number (Google Sheets date integer/float)
+  if (/^\d{5}(?:\.\d+)?$/.test(s)) {
+    const serial = parseFloat(s);
+    if (serial >= 20000 && serial <= 75000) {
+      const utc = new Date(Math.round((Math.floor(serial) - 25569) * 86400 * 1000));
+      return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+    }
   }
 
   // 1. ISO format: YYYY-MM-DD
@@ -76,9 +86,25 @@ export const parseSheetDate = (dStr) => {
     return new Date(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
   }
 
+  if (/^\d+$/.test(s)) return null;
+
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;
 };
+
+function formatBudgetSalaryDate(val, { parseAllDates = false } = {}) {
+  if (val === null || val === undefined || val === "") return "";
+  const isSerial =
+    (typeof val === "number" && Number.isFinite(val) && val >= 20000 && val <= 75000) ||
+    (typeof val === "string" && /^\d{5}(?:\.\d+)?$/.test(val.trim()) && Number(val.trim()) >= 20000 && Number(val.trim()) <= 75000);
+  if (isSerial || parseAllDates) {
+    const d = parseSheetDate(val);
+    if (d && !isNaN(d.getTime())) {
+      return `${BUDGET_SHORT_MONTHS[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+    }
+  }
+  return String(val);
+}
 
 function parseNum(val) {
   if (val === null || val === undefined || val === "") return 0;
@@ -816,6 +842,8 @@ export default function BudgetView({
       displayVal = formatMoney(parseNum(newValue));
     } else if (sheetRow >= 58 && sheetRow <= 112 && colIdx === 1 && newValue !== "") {
       displayVal = formatMoney(parseNum(newValue));
+    } else if (sheetRow >= 58 && sheetRow <= 112 && (colIdx === 2 || colIdx === 3) && newValue !== "") {
+      displayVal = formatBudgetSalaryDate(newValue, { parseAllDates: true });
     } else if (
       (colIdx === 4 || (sheetRow === 142 && colIdx === 1)) &&
       newValue !== ""
@@ -2064,8 +2092,8 @@ export default function BudgetView({
                     {filteredSalaryRows.map(({ sheetRow, row, hasContent }) => {
                       const name = row[0]?.v || "";
                       const equivSalary = row[1]?.v || "";
-                      const startMth = row[2]?.v || "";
-                      const endMth = row[3]?.v || "";
+                      const startMth = formatBudgetSalaryDate(row[2]?.v);
+                      const endMth = formatBudgetSalaryDate(row[3]?.v);
                       const delPct = row[4]?.v || "";
                       const costPm = row[5]?.v || "";
 

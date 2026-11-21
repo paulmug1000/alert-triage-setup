@@ -1375,14 +1375,25 @@ export default async function handler(req, res) {
             supabaseClockActive: false,
           });
         }
-        const [{ data: supaClients }, clockStatus] = await Promise.all([
+        const [{ data: allClients }, { data: setupStates }, clockStatus] = await Promise.all([
           sb
             .from("clients")
-            .select("client_name, normalized_key, master_mode, client_sheet_id, master_sheet_id")
-            .eq("master_mode", "supabase"),
+            .select("client_name, normalized_key, master_mode, metadata, client_sheet_id, master_sheet_id"),
+          sb.from("client_setup_state").select("client_name, setup_status"),
           getSupabaseClockStatusAndSyncConfig().catch(() => null),
         ]);
-        const list = Array.isArray(supaClients) ? supaClients : [];
+        const setupInProgressSet = new Set(
+          (setupStates || [])
+            .filter((s) => String(s.setup_status || "").trim().toUpperCase() === "IN_PROGRESS")
+            .map((s) => String(s.client_name || "").trim().toLowerCase())
+        );
+        // Include both Supabase-mode clients and setup-mode clients so legacy GAS commander skips them
+        const list = (Array.isArray(allClients) ? allClients : []).filter(
+          (r) =>
+            r.master_mode === "supabase" ||
+            r?.metadata?.setupMode === true ||
+            setupInProgressSet.has(String(r.client_name || "").trim().toLowerCase())
+        );
         return res.status(200).json({
           success: true,
           clients: list.map((r) => String(r.client_name || "").trim()).filter(Boolean),

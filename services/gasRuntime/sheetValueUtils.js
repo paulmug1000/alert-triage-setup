@@ -1,6 +1,6 @@
 /**
  * Sheet Value & Date/Display Conversion Utilities
- * Version: 1.03 — Support Confirmed recharged expenses currency & Inv N cost month date/split formatting, and Outgoings rows 225-226
+ * Version: 1.05 — Add KeyInfo KPI threshold %, Dashboard, Year0Data, and Performance display formatting
  *
  * Bridges Google Sheets' internal UNFORMATTED_VALUE representation (used by
  * master_sheet_grids.values_grid and masterFormulaEngine.js) with:
@@ -262,6 +262,9 @@ export function isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid = 
   if (tabName === "Salaries" && row0 >= 3 && (col0 === 4 || col0 === 5) && isPlausibleSerial) {
     return true;
   }
+  if (tabName === "Budget" && row0 >= 57 && row0 <= 111 && (col0 === 2 || col0 === 3) && isPlausibleSerial) {
+    return true;
+  }
   if (tabName === "Calcs" && row0 >= 1 && (col0 === 1 || col0 === 2) && isPlausibleSerial) {
     return true;
   }
@@ -419,6 +422,19 @@ export function formatCellForDisplay(sheetRole, tabName, row0, col0, val, fullGr
       }
     }
   }
+  if (
+    typeof val === "string" &&
+    tabName === "Budget" &&
+    row0 >= 57 &&
+    row0 <= 111 &&
+    (col0 === 2 || col0 === 3) &&
+    /^\d{5}(?:\.\d+)?$/.test(val.trim())
+  ) {
+    const parsedNum = Number(val.trim());
+    if (parsedNum >= 20000 && parsedNum <= 75000) {
+      val = parsedNum;
+    }
+  }
   if (typeof val === "number" && Number.isFinite(val)) {
     if (isDateCellCoord(sheetRole, tabName, row0, col0, val, fullGrid, notesGrid)) {
       return formatSerialForCell_(sheetRole, tabName, row0, col0, val);
@@ -453,10 +469,42 @@ export function formatCellForDisplay(sheetRole, tabName, row0, col0, val, fullGr
       if (row0 >= 3 && row0 <= 368) {
         if (col0 === 2) return formatTwoDecCurrency_(val);
         if (col0 === 3) return val.toFixed(2);
-        if (col0 === 6 || col0 === 8 || col0 === 9) return `${Math.round(val * 100)}%`;
+        if (col0 === 6 || col0 === 8) return `${Math.round(val * 100)}%`;
       }
       if (col0 >= 11 && row0 >= 3 && row0 <= 368) {
         return formatTwoDecCurrency_(val);
+      }
+    }
+    if (tabName === "KeyInfo") {
+      if (row0 >= 122 && row0 <= 137 && col0 === 1) {
+        return `${(val * 100).toFixed(2)}%`;
+      }
+      if ((row0 === 138 || row0 === 139) && col0 === 1) {
+        return `${Math.round(val * 100)}%`;
+      }
+    }
+    if (tabName === "Dashboard" && col0 >= 6) {
+      if (row0 === 19 || row0 === 27 || row0 === 31 || row0 === 33 || row0 === 41 || row0 === 45) {
+        return `${Math.round(val * 100)}%`;
+      }
+      if (row0 >= 2 && row0 <= 46) {
+        return formatWholeCurrency_(val);
+      }
+    }
+    if (tabName === "Year0Data" && col0 >= 6) {
+      if (row0 === 19 || row0 === 27 || row0 === 31 || row0 === 33) {
+        return `${Math.round(val * 100)}%`;
+      }
+      if (row0 >= 2 && row0 <= 33) {
+        return formatWholeCurrency_(val);
+      }
+    }
+    if (tabName === "Performance" && col0 >= 6) {
+      if (row0 === 36 || row0 === 44) {
+        return `${Math.round(val * 100)}%`;
+      }
+      if (row0 >= 2 && row0 <= 46) {
+        return formatWholeCurrency_(val);
       }
     }
     if (tabName === "NBtoFind" && row0 >= 2 && row0 <= 23 && col0 >= 6) {
@@ -549,9 +597,10 @@ function formatSerialForCell_(sheetRole, tabName, row0, col0, serial) {
   }
 
   if (
-    (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
-    row0 >= 1 &&
-    (col0 === 47 || col0 === 54 || col0 === 61)
+    ((tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
+      row0 >= 1 &&
+      (col0 === 47 || col0 === 54 || col0 === 61)) ||
+    (tabName === "Budget" && row0 >= 57 && row0 <= 111 && (col0 === 2 || col0 === 3))
   ) {
     return `${mShort}-${yy}`;
   }

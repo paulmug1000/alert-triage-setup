@@ -5,7 +5,15 @@ import AccountingSettingsSuggestionModal from "./setup/AccountingSettingsSuggest
 import CategoryMappingSuggestionModal from "./setup/CategoryMappingSuggestionModal";
 import CrmMappingSuggestionModal from "./setup/CrmMappingSuggestionModal";
 import MatchCrmPipelineModal from "./setup/MatchCrmPipelineModal";
-import UserManagementCard from "./UserManagementCard";
+import ManualCategoryTrackingPanel from "./setup/ManualCategoryTrackingPanel";
+import Year0SetupModal from "./setup/Year0SetupModal";
+import InitialInvoiceSetupModal from "./setup/InitialInvoiceSetupModal";
+import StarterPlModal from "./setup/StarterPlModal";
+import CreateBudgetModal from "./setup/CreateBudgetModal";
+import SelectBankAccountsModal from "./setup/SelectBankAccountsModal";
+import CashOpeningModal from "./setup/CashOpeningModal";
+import InitialTaxPaymentsModal from "./setup/InitialTaxPaymentsModal";
+import SetupAutomationFlagsPanel from "./setup/SetupAutomationFlagsPanel";
 
 export default function OnboardingChecklistView({
   clientName,
@@ -39,6 +47,13 @@ export default function OnboardingChecklistView({
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showCrmModal, setShowCrmModal] = useState(false);
   const [showCrmMatchModal, setShowCrmMatchModal] = useState(false);
+  const [showYear0Modal, setShowYear0Modal] = useState(false);
+  const [showInitialInvoicesModal, setShowInitialInvoicesModal] = useState(false);
+  const [showStarterPlModal, setShowStarterPlModal] = useState(false);
+  const [showCreateBudgetModal, setShowCreateBudgetModal] = useState(false);
+  const [showSelectBankAccountsModal, setShowSelectBankAccountsModal] = useState(false);
+  const [showCashOpeningModal, setShowCashOpeningModal] = useState(false);
+  const [showInitialTaxModal, setShowInitialTaxModal] = useState(false);
 
   // Script IDs form state
   const [clientScriptId, setClientScriptId] = useState("");
@@ -52,7 +67,6 @@ export default function OnboardingChecklistView({
 
   // Completing setup
   const [completingSetup, setCompletingSetup] = useState(false);
-  const [applyingEomTasks, setApplyingEomTasks] = useState(false);
 
   const formatPhaseTitle = (title) => {
     if (!title) return title;
@@ -71,6 +85,9 @@ export default function OnboardingChecklistView({
   const formatTaskTitle = (task) => {
     const title = task?.title || "";
     if (isUserAdmin || !title) return title;
+    if (task?.id === "p2_connect_accounting" || task?.id === "p2_connect_crm" || task?.waitingOnClient) {
+      return title;
+    }
     const nonAdminMap = {
       p1_drive_folder: "Create client workspace folder",
       p1_duplicate_templates: "Provision client financial models",
@@ -81,17 +98,18 @@ export default function OnboardingChecklistView({
       p1_rename_gas: "Configure background sync service identifiers",
       p1_script_ids: "Register client in system version tracker",
       p2_select_tools: "Select accounting tool and CRM in setup",
-      p2_keyinfo_settings: "Adjust core financial settings (Start date, VAT, PAYE, Revenue focus, Profit share %)",
+      p2_keyinfo_settings: "Adjust core financial settings (Start date, VAT, PAYE, Revenue focus, Profit share %, Invoice formatting, Automation cadences)",
       p3_chart_of_accounts: "Pull Chart of Accounts and select manual categories",
       p3_pull_pl: "Pull P&L and Year 0 P&L and assign categories",
-      p3_other_expenses: "Add 'other expenses' forecast amounts into Outgoings",
-      p3_contractors_info: "Add contractor information to Outgoings",
-      p3_dividends_info: "Add dividends in lieu of salary information to Outgoings",
+      p3_year0_setup: "Check Year 0 setup, adding dividends in lieu of salary as required",
+      p3_sync_invoices: "Initial invoice setup",
+      p3_starter_pl: "Run StarterPL setup",
+      p3_other_expenses: "Create budget",
+      p3_select_bank_accounts: "Select bank accounts",
+      p3_cash_opening: "Add cash opening figure",
+      p3_initial_tax_payments: "Update initial tax payment amounts",
       p4_crm_list_tab: "Set up CRM field mappings and Confirmed & Pipeline definitions",
-      p4_agent_trigger: "Enable automated proactive checks",
-      p4_pl_trigger: "Enable scheduled P&L sync",
       p4_ac_enrollment: "Enrol client in automated sync scheduler",
-      p4_automation_freq: "Select frequency of automations",
       p4_datachg_flags: "Configure automated alert flags as required",
       p4_rep_control: "Enrol client in month-end reporting",
       p5_add_users: "Add client users in Settings > Users"
@@ -112,10 +130,10 @@ export default function OnboardingChecklistView({
   const hasTaskAttachment = useCallback(
     (task) => {
       if (!task) return false;
-      if (isUserAdmin && ["p1_importrange_auth", "p1_gas_deployment", "p1_script_ids", "p5_add_users"].includes(task.id)) {
+      if (isUserAdmin && ["p1_importrange_auth", "p1_gas_deployment", "p1_script_ids"].includes(task.id)) {
         return true;
       }
-      if (["p2_keyinfo_settings", "p3_pull_pl", "p3_other_expenses", "p4_review_crm", "p4_crm_list_tab", "p4_eom_jobs"].includes(task.id)) {
+      if (["p2_keyinfo_settings", "p4_datachg_flags", "p3_chart_of_accounts", "p3_pull_pl", "p3_year0_setup", "p3_sync_invoices", "p3_starter_pl", "p3_other_expenses", "p3_select_bank_accounts", "p3_cash_opening", "p3_initial_tax_payments", "p4_review_crm", "p4_crm_list_tab"].includes(task.id)) {
         return true;
       }
       if (task.description && String(task.description).trim()) {
@@ -163,35 +181,6 @@ export default function OnboardingChecklistView({
     [checklist?.phases, hasTaskAttachment]
   );
 
-  const handleApplyDefaultEomTasks = async () => {
-    setApplyingEomTasks(true);
-    setFeedback(null);
-    try {
-      const res = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "eom_apply_default_tasks",
-          clientName
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setFeedback({
-          type: "success",
-          message: `Default EoM tasks applied successfully (${data.appliedCount} task${data.appliedCount !== 1 ? "s" : ""} added).`
-        });
-        loadChecklist();
-      } else {
-        throw new Error(data.error || "Failed to apply default EoM tasks.");
-      }
-    } catch (err) {
-      setFeedback({ type: "error", message: err.message });
-    } finally {
-      setApplyingEomTasks(false);
-    }
-  };
-
   // Load checklist data
   const loadChecklist = useCallback(async () => {
     if (!clientName) return;
@@ -230,6 +219,34 @@ export default function OnboardingChecklistView({
     loadChecklist();
   }, [loadChecklist]);
 
+  // Shared optimistic update helper (re-sums phase & total counts to prevent double-counting)
+  const applyOptimisticTaskStatus = useCallback((taskId, newStatus) => {
+    setChecklist((prev) => {
+      if (!prev?.phases) return prev;
+      let totalCompleted = 0;
+      let totalTasks = 0;
+      const newPhases = prev.phases.map((p) => {
+        const tasks = (p.tasks || []).map((t) => (t.id === taskId ? { ...t, isCompleted: newStatus } : t));
+        const phaseComp = tasks.filter((t) => t.isCompleted).length;
+        totalCompleted += phaseComp;
+        totalTasks += tasks.length;
+        return {
+          ...p,
+          completedCount: phaseComp,
+          isPhaseComplete: tasks.length > 0 && phaseComp === tasks.length,
+          tasks
+        };
+      });
+      return {
+        ...prev,
+        totalTasks: totalTasks || prev.totalTasks,
+        completedCount: totalCompleted,
+        progressPercent: totalTasks > 0 ? Math.round((totalCompleted / totalTasks) * 100) : 0,
+        phases: newPhases
+      };
+    });
+  }, []);
+
   // Handle task checkbox toggle
   const handleToggleTask = async (task) => {
     const newStatus = !task.isCompleted;
@@ -239,23 +256,7 @@ export default function OnboardingChecklistView({
       advanceTaskExpansion(task.id, checklist?.phases);
     }
 
-    // Optimistically update UI
-    setChecklist((prev) => {
-      if (!prev) return prev;
-      const newCompletedCount = prev.completedCount + (newStatus ? 1 : -1);
-      const newPhases = prev.phases.map((p) => {
-        if (p.id !== task.phaseId) return p;
-        const phaseComp = p.completedCount + (newStatus ? 1 : -1);
-        const tasks = p.tasks.map((t) => (t.id === task.id ? { ...t, isCompleted: newStatus } : t));
-        return { ...p, completedCount: phaseComp, isPhaseComplete: phaseComp === tasks.length, tasks };
-      });
-      return {
-        ...prev,
-        completedCount: newCompletedCount,
-        progressPercent: prev.totalTasks > 0 ? Math.round((newCompletedCount / prev.totalTasks) * 100) : 0,
-        phases: newPhases
-      };
-    });
+    applyOptimisticTaskStatus(task.id, newStatus);
 
     try {
       const res = await fetch("/api/setup/checklist", {
@@ -263,6 +264,7 @@ export default function OnboardingChecklistView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           clientName,
+          masterSheetId: masterSheetId || "",
           taskId: task.id,
           isCompleted: newStatus
         })
@@ -281,19 +283,29 @@ export default function OnboardingChecklistView({
   // Helper to mark a checklist task completed automatically (e.g. after suggestions applied)
   const handleAutoCompleteTask = async (taskId) => {
     advanceTaskExpansion(taskId, checklist?.phases);
+    applyOptimisticTaskStatus(taskId, true);
+
     try {
-      await fetch("/api/setup/checklist", {
+      const res = await fetch("/api/setup/checklist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           clientName,
+          masterSheetId: masterSheetId || "",
           taskId,
           isCompleted: true
         })
       });
-      loadChecklist();
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to persist task completion.");
+      }
+      if (Array.isArray(data.phases)) {
+        setChecklist((prev) => (prev ? { ...prev, ...data } : data));
+      }
     } catch (err) {
       console.warn("Could not auto-complete task:", err.message);
+      loadChecklist(); // Revert optimistic update on failure
     }
   };
 
@@ -630,12 +642,31 @@ export default function OnboardingChecklistView({
                 isAdmin={isUserAdmin}
                 onSaved={() => {
                   advanceTaskExpansion("p2_keyinfo_settings", checklist?.phases);
-                  loadChecklist();
+                  applyOptimisticTaskStatus("p2_keyinfo_settings", true);
                   onClientsChanged?.();
                 }}
               />
             </div>
           </div>
+        )}
+
+        {/* Step 2: Pull Chart of Accounts & select manual tracking categories */}
+        {task.id === "p3_chart_of_accounts" && (
+          <ManualCategoryTrackingPanel
+            clientName={clientName}
+            masterSheetId={effectiveMasterSheetId}
+            isAdmin={isUserAdmin}
+            onSaved={() => {
+              handleAutoCompleteTask("p3_chart_of_accounts");
+              setFeedback({
+                type: "success",
+                message: isUserAdmin
+                  ? "Manual tracking categories saved to Master Sheet KeyInfo!AT4:AT40."
+                  : "Manual tracking categories saved."
+              });
+              onClientsChanged?.();
+            }}
+          />
         )}
 
         {/* Step 2: Pull P&L and Year 0 P&L and assign categories */}
@@ -644,10 +675,10 @@ export default function OnboardingChecklistView({
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
               <div>
                 <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
-                  Auto-suggest category mappings
+                  Pull P&amp;L &amp; auto-suggest category mappings
                 </span>
                 <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
-                  Downloads P&L categories from accounting tool and auto-classifies into Revenue, CoS staff costs (Salaries, Wages, NI, Pension), Other CoS, Tax, Depreciation, and Ignore headers.
+                  Fetches multi-year P&amp;L categories, section headers, and Chart of Accounts accounts, and auto-classifies into Revenue, CoS staff costs, Other CoS, Tax, Depreciation, and Ignore.
                 </p>
               </div>
               <button
@@ -664,41 +695,253 @@ export default function OnboardingChecklistView({
                   cursor: "pointer"
                 }}
               >
-                Auto-suggest categories
+                Get started
               </button>
             </div>
           </div>
         )}
 
-        {/* Step 2: Add 'other expenses' forecast amounts into Outgoings */}
-        {task.id === "p3_other_expenses" && (
-          <div style={{ padding: "16px", borderRadius: "10px", background: "#FFFFFF", border: "1px solid #E2E8F0" }}>
-            <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "6px" }}>
-              Budget table editor
-            </span>
-            <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
-              Open the budget screen to populate client financial budget forecasts across financial years:
-            </p>
-            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+        {/* Step 2: Check Year 0 setup, adding dividends in lieu of salary as required */}
+        {task.id === "p3_year0_setup" && (
+          <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                  Review Year 0 P&amp;L &amp; dividends in lieu of salary
+                </span>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                  Pulls the 12 months of P&amp;L leading up to the system start date, lets you add dividends in lieu of salary with delivery %, and apply monthly category adjustments.
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={() => {
-                  if (onGoToBudget) onGoToBudget(clientName);
-                  else if (onOpenSheetEditor) onOpenSheetEditor("budget");
-                  else if (typeof window !== "undefined") window.location.href = `/pma?nav=budget&client=${encodeURIComponent(clientName || "")}`;
-                }}
+                onClick={() => setShowYear0Modal(true)}
                 style={{
-                  padding: "8px 14px",
+                  padding: "8px 16px",
                   borderRadius: "6px",
-                  border: "1px solid #CBD5E1",
-                  background: "#FFFFFF",
-                  color: "#1E293B",
-                  fontWeight: "600",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
                   fontSize: "12px",
+                  fontWeight: "700",
                   cursor: "pointer"
                 }}
               >
-                Edit budget table
+                Get started
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Initial invoice setup */}
+        {task.id === "p3_sync_invoices" && (
+          <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                  Initial invoice setup &amp; retainer detection
+                </span>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                  Imports 12 months of sales invoices leading up to the start date, suggests recurring retainer jobs, and creates project jobs for remaining recent invoices.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowInitialInvoicesModal(true)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                Get started
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Run StarterPL setup */}
+        {task.id === "p3_starter_pl" && (
+          <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                  StarterPL setup &amp; cost forecasting
+                </span>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                  Pulls historical P&amp;L categories, allocates contractor bills across months, estimates employee salaries, sets dividends in lieu of salary, and builds your FY1 and FY2 forecast.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowStarterPlModal(true)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                Get started
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Create budget */}
+        {task.id === "p3_other_expenses" && (
+          <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                  Create budget
+                </span>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                  Populates the FY1 budget from Confirmed + Pipeline + NB to find revenue, Staff salaries (actuals + forecast), Dividends, Contractors, and Other expenses with live editing.
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateBudgetModal(true)}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: "#023f98",
+                    color: "#FFFFFF",
+                    fontSize: "12px",
+                    fontWeight: "700",
+                    cursor: "pointer"
+                  }}
+                >
+                  Get started
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onGoToBudget) onGoToBudget(clientName);
+                    else if (onOpenSheetEditor) onOpenSheetEditor("budget");
+                    else if (typeof window !== "undefined") window.location.href = `/pma?nav=budget&client=${encodeURIComponent(clientName || "")}`;
+                  }}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: "6px",
+                    border: "1px solid #CBD5E1",
+                    background: "#FFFFFF",
+                    color: "#1E293B",
+                    fontWeight: "600",
+                    fontSize: "12px",
+                    cursor: "pointer"
+                  }}
+                >
+                  Open full budget view
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Select bank accounts */}
+        {task.id === "p3_select_bank_accounts" && (
+          <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                  Select bank accounts
+                </span>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                  Choose which accounting bank accounts are tracked as cash vs non-cash (used for opening cash figures and cash reconciliation).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSelectBankAccountsModal(true)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                Get started
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Add cash opening figure */}
+        {task.id === "p3_cash_opening" && (
+          <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                  Add cash opening figure
+                </span>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                  Detects month-end bank statement and ledger balances (flagging any unreconciled items) to set the opening cash figures for the previous and current months.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCashOpeningModal(true)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                Get started
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Update initial tax payment amounts */}
+        {task.id === "p3_initial_tax_payments" && (
+          <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                  Update initial tax payment amounts
+                </span>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                  Estimates the initial Year 0 corporation tax and opening quarter VAT payment(s) from Balance Sheet provisions, accounting transactions, and Year 0 P&amp;L.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowInitialTaxModal(true)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                Get started
               </button>
             </div>
           </div>
@@ -768,68 +1011,21 @@ export default function OnboardingChecklistView({
           </div>
         )}
 
-        {/* Step 3: Add client details and monthly jobs to EoM section */}
-        {task.id === "p4_eom_jobs" && (
-          <div style={{ padding: "16px", borderRadius: "10px", background: "#FFFFFF", border: "1px solid #E2E8F0" }}>
-            <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "6px" }}>
-              End-of-month (EoM) client tasks
-            </span>
-            <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
-              Default EoM tasks are automatically assigned to this client upon creation. You can apply or re-sync default tasks, or manage tasks directly in the EoM section:
-            </p>
-            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
-              <button
-                type="button"
-                onClick={() => handleApplyDefaultEomTasks()}
-                disabled={applyingEomTasks}
-                style={{
-                  padding: "8px 14px",
-                  borderRadius: "6px",
-                  border: "1px solid #CBD5E1",
-                  background: "#FFFFFF",
-                  color: "#1E293B",
-                  fontWeight: "600",
-                  fontSize: "12px",
-                  cursor: applyingEomTasks ? "wait" : "pointer"
-                }}
-              >
-                {applyingEomTasks ? "Applying defaults..." : "Seed / re-apply default EoM tasks"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (onGoToTasks) onGoToTasks();
-                  else if (typeof window !== "undefined") window.location.href = `/pma?nav=tasks`;
-                }}
-                style={{
-                  padding: "8px 14px",
-                  borderRadius: "6px",
-                  border: "none",
-                  background: "#023f98",
-                  color: "#FFFFFF",
-                  fontWeight: "600",
-                  fontSize: "12px",
-                  cursor: "pointer",
-                  display: "inline-block"
-                }}
-              >
-                Manage in EoM section →
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Step 4: Add client users */}
-        {task.id === "p5_add_users" && isUserAdmin && (
-          <div style={{ marginTop: "6px" }}>
-            <UserManagementCard
-              currentUserEmail={user?.email || ""}
-              defaultClientFilter={clientName}
-              onUsersUpdated={() => {
-                handleAutoCompleteTask("p5_add_users");
-              }}
-            />
-          </div>
+        {/* Step 1: Update other DataChgAlert / automation flags */}
+        {task.id === "p4_datachg_flags" && (
+          <SetupAutomationFlagsPanel
+            clientName={clientName}
+            masterSheetId={effectiveMasterSheetId}
+            clientSheetId={checklist?.clientSheetId || clientSheetId || ""}
+            isAdmin={isUserAdmin}
+            onSaved={() => {
+              handleAutoCompleteTask("p4_datachg_flags");
+              setFeedback({
+                type: "success",
+                message: "Automation flags and discrepancy rules saved."
+              });
+            }}
+          />
         )}
       </div>
     );
@@ -1108,6 +1304,23 @@ export default function OnboardingChecklistView({
                               )}
                             </div>
 
+                            {task.waitingOnClient && (
+                              <span
+                                style={{
+                                  fontSize: "10px",
+                                  fontWeight: "700",
+                                  color: "#B45309",
+                                  background: "#FEF3C7",
+                                  border: "1px solid #FDE68A",
+                                  padding: "2px 7px",
+                                  borderRadius: "6px",
+                                  whiteSpace: "nowrap"
+                                }}
+                              >
+                                Waiting on client
+                              </span>
+                            )}
+
                             {task.autoCompletable && (
                               <span style={{ fontSize: "10px", fontWeight: "700", color: "#64748B", background: "#E2E8F0", padding: "2px 6px", borderRadius: "6px" }}>
                                 Auto
@@ -1222,6 +1435,94 @@ export default function OnboardingChecklistView({
             type: "success",
             message: `Linked ${res?.appliedCount ?? 0} existing pipeline job(s) to CRM Project codes.`,
           });
+        }}
+      />
+
+      <Year0SetupModal
+        clientName={clientName}
+        masterSheetId={effectiveMasterSheetId}
+        isOpen={showYear0Modal}
+        onClose={() => setShowYear0Modal(false)}
+        onCompleted={() => {
+          handleAutoCompleteTask("p3_year0_setup");
+          setFeedback({ type: "success", message: "Year 0 setup saved." });
+        }}
+      />
+
+      <InitialInvoiceSetupModal
+        clientName={clientName}
+        masterSheetId={effectiveMasterSheetId}
+        isOpen={showInitialInvoicesModal}
+        onClose={() => setShowInitialInvoicesModal(false)}
+        onCompleted={() => {
+          handleAutoCompleteTask("p3_sync_invoices");
+          setFeedback({ type: "success", message: "Initial invoice setup completed." });
+          onClientsChanged?.();
+        }}
+      />
+
+      <StarterPlModal
+        clientName={clientName}
+        masterSheetId={effectiveMasterSheetId}
+        isAdmin={isUserAdmin}
+        isOpen={showStarterPlModal}
+        onClose={() => setShowStarterPlModal(false)}
+        onCompleted={() => {
+          handleAutoCompleteTask("p3_starter_pl");
+          setFeedback({ type: "success", message: "StarterPL setup completed." });
+          onClientsChanged?.();
+        }}
+      />
+
+      <CreateBudgetModal
+        clientName={clientName}
+        masterSheetId={effectiveMasterSheetId}
+        isAdmin={isUserAdmin}
+        isOpen={showCreateBudgetModal}
+        onClose={() => setShowCreateBudgetModal(false)}
+        onCompleted={() => {
+          handleAutoCompleteTask("p3_other_expenses");
+          setFeedback({ type: "success", message: "FY1 budget saved." });
+          onClientsChanged?.();
+        }}
+      />
+
+      <SelectBankAccountsModal
+        clientName={clientName}
+        masterSheetId={effectiveMasterSheetId}
+        isAdmin={isUserAdmin}
+        isOpen={showSelectBankAccountsModal}
+        onClose={() => setShowSelectBankAccountsModal(false)}
+        onCompleted={() => {
+          handleAutoCompleteTask("p3_select_bank_accounts");
+          setFeedback({ type: "success", message: "Bank accounts configuration saved." });
+          onClientsChanged?.();
+        }}
+      />
+
+      <CashOpeningModal
+        clientName={clientName}
+        masterSheetId={effectiveMasterSheetId}
+        isAdmin={isUserAdmin}
+        isOpen={showCashOpeningModal}
+        onClose={() => setShowCashOpeningModal(false)}
+        onCompleted={() => {
+          handleAutoCompleteTask("p3_cash_opening");
+          setFeedback({ type: "success", message: "Cash opening figures saved." });
+          onClientsChanged?.();
+        }}
+      />
+
+      <InitialTaxPaymentsModal
+        clientName={clientName}
+        masterSheetId={effectiveMasterSheetId}
+        isAdmin={isUserAdmin}
+        isOpen={showInitialTaxModal}
+        onClose={() => setShowInitialTaxModal(false)}
+        onCompleted={() => {
+          handleAutoCompleteTask("p3_initial_tax_payments");
+          setFeedback({ type: "success", message: "Initial tax payment estimates saved." });
+          onClientsChanged?.();
         }}
       />
     </div>

@@ -38,7 +38,7 @@ import { getSessionUser, safeCompareSecret } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId } from "./masterEngineService.js";
-import { runNativeMasterSync, ensureFreshMasterComparisons } from "./masterSyncEngine.js";
+import { runNativeMasterSync, ensureFreshMasterComparisons, isClientRecordInSetupMode } from "./masterSyncEngine.js";
 import { logClaudeUsage_ } from "./systemConfig.js";
 export { logClaudeUsage_ };
 
@@ -655,7 +655,7 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
 
   if (supaControlPlane && sb) {
     try {
-      const [{ data: dbClients, error: cErr }, { data: schedRows }, { data: dcaRows }] = await Promise.all([
+      const [{ data: dbClients, error: cErr }, { data: schedRows }, { data: dcaRows }, { data: setupStateRows }] = await Promise.all([
         sb
           .from("clients")
           .select("client_name, normalized_key, status, metadata, client_mode, master_mode, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url, client_script_id, auto_updates_row_index")
@@ -666,6 +666,7 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
           .select("client_name, values_grid")
           .eq("sheet_role", "master")
           .eq("tab_name", "DataChgAlert"),
+        sb.from("client_setup_state").select("client_name, setup_status"),
       ]);
 
       if (!cErr && Array.isArray(dbClients) && dbClients.length > 0) {
@@ -678,6 +679,10 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
           if (d.client_name && Array.isArray(d.values_grid)) {
             dcaByClient.set(String(d.client_name).trim().toLowerCase(), d.values_grid);
           }
+        }
+        const setupByClient = new Map();
+        for (const s of (setupStateRows || [])) {
+          if (s.client_name) setupByClient.set(String(s.client_name).trim().toLowerCase(), s);
         }
 
         const rows = [];
@@ -738,6 +743,7 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
             masterSheetUrl: String(masterSheetUrl),
             scriptId: String(c.client_script_id || "").trim(),
             hasWebAppUrl: !!webAppUrl,
+            setupMode: isClientRecordInSetupMode(c, setupByClient.get(cKey)),
             invFreq,
             crmFreq,
             expFreq,
@@ -1324,7 +1330,7 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
         // Pipeline CRM suppression rule:
         // Do not raise any alert if the job in the Pipeline tab has:
         // a) 0% likelihood, or
-        // b) 100% likelihood AND "copied to confirmed tab" says "Yes"
+        // b) "copied to confirmed tab" says "Yes" (regardless of % likelihood)
         if (mode === "Pipeline") {
           if (alertType === "crmPipeAppDiscr") {
             const shtCode = String(row[2] || "").trim().toLowerCase();
@@ -2850,6 +2856,10 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
     for (let chunkClientIdx = 0; chunkClientIdx < clientChunk.length; chunkClientIdx++) {
       const client = clientChunk[chunkClientIdx];
+      if (client.setupMode) {
+        console.log(`  ⏭️ Skipping ${client.clientName} during automated flag sweep (client is in setup mode).`);
+        continue;
+      }
       if (req.body?.chain) {
         await setTriageRefreshStatus({
           status: "running",
@@ -10141,6 +10151,49 @@ export async function handleDeleteJob(req, res, sheets) {
   }
 }
 
+const AUTOLOG_LOGICAL_LINE_START_RE = /^(?:\[|•|Updated\b|Created\b|Copied\b|Converted\b|Deleted\b|Removed\b|Skipped\b|Matched\b|Adjusted\b|No\s+(?:new|updates|changes))/i;
+
+/**
+ * Splits an AutoLog Details string into logical entries, rejoining continuation
+ * lines (from multi-line job names or descriptions) onto the preceding entry.
+ */
+function splitAutoLogLogicalLines_(details) {
+  const rawLines = String(details || "").split(/\r?\n/);
+  const logical = [];
+  for (const raw of rawLines) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    if (logical.length > 0 && !AUTOLOG_LOGICAL_LINE_START_RE.test(trimmed)) {
+      logical[logical.length - 1] = `${logical[logical.length - 1]} ${trimmed}`;
+    } else {
+      logical.push(trimmed);
+    }
+  }
+  return logical;
+}
+
+function normalizeJobText_(val) {
+  return String(val || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function normalizeProjectCode_(val) {
+  const s = String(val || "").trim().toLowerCase();
+  if (!s) return "";
+  // Handle accidental currency/thousand-separator formatting on numeric IDs (e.g. "£20,793,453" -> "20793453")
+  const stripped = s.replace(/^[£$€]\s*/, "").replace(/,/g, "");
+  return /^\d+(\.\d+)?$/.test(stripped) ? stripped : s;
+}
+
+function jobNamesMatch_(sheetJobName, logJobName) {
+  const lNorm = normalizeJobText_(logJobName);
+  if (!lNorm || lNorm === "-") return true;
+  const sNorm = normalizeJobText_(sheetJobName);
+  if (!sNorm) return false;
+  if (sNorm === lNorm) return true;
+  // Support legacy cached alerts where AutoLog split a multi-line job name at the first newline
+  return sNorm.startsWith(`${lNorm} `);
+}
+
 export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
   // Analyze a non-actionable flag by reading the client's AutoLog tab (master sheet)
   // to identify exactly which jobs were affected, then verify them.
@@ -10333,8 +10386,8 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         for (const entry of relevantEntries) {
           const details = String(entry[3] || "");
           // Format: "Updated Pipeline: Row N, ClientName | JobName - ... Copied Status: 'X' -> 'Yes'"
-          // Or direct copy line: "Copied Pipeline Project to Confirmed: ClientName | JobName"
-          const lines = details.split('\n');
+          // Or direct copy line: "Copied Pipeline Project to Confirmed: ClientName | JobName [ProjectCode]"
+          const lines = splitAutoLogLogicalLines_(details);
           for (const line of lines) {
             if (line.includes("Skipped Copy: Job with Project Code") || line.includes("already exists in Confirmed")) {
               continue;
@@ -10360,7 +10413,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               }
               continue;
             }
-            const copyMatch = line.match(/(?:Copied Pipeline Project (?:to Confirmed|\(with[^)]*\))|Converted Pipeline Job to Confirmed Retainer):\s*([^|]+)\|\s*([^[\n(]+)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\s*->\s*Confirmed\s+row\s+(\d+)\))?/i);
+            const copyMatch = line.match(/(?:Copied Pipeline Project(?:\s*\(with[^)]*\))?(?:\s+to Confirmed)?|Converted Pipeline Job to Confirmed Retainer):\s*([^|]+)\|\s*([\s\S]+?)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\s*->\s*Confirmed\s+row\s+(\d+)\))?\s*$/i);
             if (copyMatch) {
               const clientParsed = copyMatch[1] ? copyMatch[1].trim() : "";
               const jobName = copyMatch[2] ? copyMatch[2].trim() : "";
@@ -10375,7 +10428,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         // Deduplicate by clientParsed + jobName (preferring entries with pipelineRowFromLog / projectCodeFromLog)
         const byKey = new Map();
         for (const j of affectedJobs) {
-          const key = `${(j.clientParsed || "").toLowerCase()}|||${(j.jobName || "").toLowerCase()}`;
+          const key = `${normalizeJobText_(j.clientParsed)}|||${normalizeJobText_(j.jobName)}`;
           if (!byKey.has(key)) {
             byKey.set(key, j);
           } else {
@@ -10386,6 +10439,20 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         }
         affectedJobs.length = 0;
         affectedJobs.push(...byKey.values());
+        if (targetLine && affectedJobs.length > 1) {
+          const targetNorm = normalizeJobText_(targetLine);
+          const narrowed = affectedJobs.filter(j => {
+            const jNorm = normalizeJobText_(j.jobName);
+            const cNorm = normalizeJobText_(j.clientParsed);
+            const codeNorm = normalizeProjectCode_(j.projectCodeFromLog);
+            if (codeNorm && targetNorm.includes(`[${codeNorm}]`)) return true;
+            return jNorm && targetNorm.includes(jNorm) && (!cNorm || targetNorm.includes(cNorm));
+          });
+          if (narrowed.length > 0) {
+            affectedJobs.length = 0;
+            affectedJobs.push(...narrowed);
+          }
+        }
         console.log(`  ✓ Parsed ${affectedJobs.length} affected jobs: ${JSON.stringify(affectedJobs)}`);
       } else {
         // UNchecked: parse all relevant entries, same line-by-line approach as checked branch.
@@ -10393,7 +10460,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         // Format: "Updated Pipeline: Row N, ClientName | JobName - ... Copied Status: 'Yes' -> 'No'"
         for (const entry of relevantEntries) {
           const details = String(entry[3] || "");
-          const lines = details.split('\n');
+          const lines = splitAutoLogLogicalLines_(details);
           for (const line of lines) {
             // Must be a Pipeline update line
             if (!line.includes("Updated Pipeline:")) continue;
@@ -10422,7 +10489,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         // Deduplicate by clientParsed + jobName
         const seenU = new Set();
         const dedupedU = affectedJobs.filter(j => {
-          const k = `${j.clientParsed}|||${j.jobName}`;
+          const k = `${normalizeJobText_(j.clientParsed)}|||${normalizeJobText_(j.jobName)}`;
           if (seenU.has(k)) return false;
           seenU.add(k); return true;
         });
@@ -10489,8 +10556,9 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             // CRITICAL CHECK: Pipeline col DD must be "Yes"
             // Pipeline data: col A(0)=Client, B(1)=JobName, C(2)=ProjectCode, DD(107)=CopiedToConf?
             // Pipeline rows start at row 2 in the sheet; our slice starts at A1 so index 1 = row 2
-            const jobNameLower = job.jobName.toLowerCase();
+            const jobNameLower = normalizeJobText_(job.jobName);
             const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
+            const logCodeNorm = normalizeProjectCode_(job.projectCodeFromLog);
 
             // Primary: use the row number from the AutoLog (most reliable)
             if (job.pipelineRowFromLog) {
@@ -10499,9 +10567,11 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               if (pr) {
                 const prJobName = String(pr[1] || "").trim();
                 const prClientName = String(pr[0] || "").trim();
+                const prProjectCode = String(pr[2] || "").trim();
                 // When job name is blank or a placeholder "-", skip name validation and trust the row number
                 const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
-                const jobNameMatches = jobNameIsBlank || prJobName.toLowerCase() === jobNameLower;
+                const codeMatches = Boolean(logCodeNorm && prProjectCode && normalizeProjectCode_(prProjectCode) === logCodeNorm);
+                const jobNameMatches = jobNameIsBlank || codeMatches || jobNamesMatch_(prJobName, job.jobName);
                 const clientNameMatches = !clientParsedLower || !prClientName ||
                   prClientName.toLowerCase().includes(clientParsedLower) ||
                   clientParsedLower.includes(prClientName.toLowerCase());
@@ -10509,7 +10579,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                   pipelineJob = {
                     clientName: prClientName,
                     jobName: prJobName,
-                    projectCode: String(pr[2] || "").trim(),
+                    projectCode: prProjectCode,
                     copiedToConf: String(pr[107] || "").trim(),
                     rowNumber: job.pipelineRowFromLog,
                     ...extractJobExtras(pr),
@@ -10520,19 +10590,15 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               }
             }
 
-            // Fallback: search by job name + client name (skipped when job name is blank/placeholder)
-            if (!pipelineJob) {
-              const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
+            // Fallback 1: match by project code from AutoLog
+            if (!pipelineJob && logCodeNorm) {
               for (let pri = 1; pri < pipelineRows.length; pri++) {
                 const pr = pipelineRows[pri];
-                const pJobName = String(pr[1] || "").trim();
-                const pClientName = String(pr[0] || "").trim();
                 const pProjectCode = String(pr[2] || "").trim();
-
-                if (job.projectCodeFromLog && pProjectCode.toLowerCase() === job.projectCodeFromLog.toLowerCase()) {
+                if (pProjectCode && normalizeProjectCode_(pProjectCode) === logCodeNorm) {
                   pipelineJob = {
-                    clientName: pClientName,
-                    jobName: pJobName,
+                    clientName: String(pr[0] || "").trim(),
+                    jobName: String(pr[1] || "").trim(),
                     projectCode: pProjectCode,
                     copiedToConf: String(pr[107] || "").trim(),
                     rowNumber: pri + 1,
@@ -10540,12 +10606,20 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                   };
                   break;
                 }
-                if (job.projectCodeFromLog) continue; // If looking strictly by code, don't fallback to name check for this iteration
+              }
+            }
+
+            // Fallback 2: search by job name + client name (skipped when job name is blank/placeholder)
+            if (!pipelineJob) {
+              const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
+              for (let pri = 1; pri < pipelineRows.length; pri++) {
+                const pr = pipelineRows[pri];
+                const pJobName = String(pr[1] || "").trim();
+                const pClientName = String(pr[0] || "").trim();
 
                 // If job name is blank/placeholder, match on client name only (less reliable - only use as last resort)
-                if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
-                if (jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
-                if (!jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+                if (!jobNameIsBlank && (!pJobName || !jobNamesMatch_(pJobName, job.jobName))) continue;
+                if (clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
                 pipelineJob = {
                   clientName: pClientName,
                   jobName: pJobName,
@@ -10578,15 +10652,17 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             // Secondary check: job exists in Confirmed - search by project code first, then job+client name
             // Row numbers are unreliable (rows can shift), so we match on col C (project code) or cols A+B
             const pipelineProjectCode = pipelineJob?.projectCode || job.projectCodeFromLog || "";
+            const pipelineCodeNorm = normalizeProjectCode_(pipelineProjectCode);
             // Use the resolved client name from pipelineJob (more reliable than AutoLog-parsed clientParsed)
             const resolvedClientLower = (pipelineJob?.clientName || "").toLowerCase() || clientParsedLower;
+            const targetJobNameForConf = pipelineJob?.jobName || job.jobName;
             for (let cri = 0; cri < confirmedRows.length; cri++) {
               const cr = confirmedRows[cri];
               const crJobName = String(cr[1] || "").trim();
               const crClientName = String(cr[0] || "").trim();
               const crProjectCode = String(cr[2] || "").trim();
               // Primary match: project code (most reliable, unique per job)
-              if (pipelineProjectCode && crProjectCode && crProjectCode.toLowerCase() === pipelineProjectCode.toLowerCase()) {
+              if (pipelineCodeNorm && crProjectCode && normalizeProjectCode_(crProjectCode) === pipelineCodeNorm) {
                 confirmedMatch = {
                   jobName: crJobName,
                   projectCode: crProjectCode,
@@ -10599,7 +10675,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               // Fallback: job name + client name (skip if job name is blank/placeholder)
               const jobNameIsBlankConf = !jobNameLower || jobNameLower === "-";
               if (jobNameIsBlankConf) continue; // can't match on blank name - project code is the only key
-              if (crJobName.toLowerCase() !== jobNameLower) continue;
+              if (!jobNamesMatch_(crJobName, targetJobNameForConf) && !jobNamesMatch_(crJobName, job.jobName)) continue;
               // Use resolvedClientLower (from pipelineJob) for a more accurate client match
               if (resolvedClientLower && crClientName && !crClientName.toLowerCase().includes(resolvedClientLower) && !resolvedClientLower.includes(crClientName.toLowerCase())) continue;
               confirmedMatch = {
@@ -10630,7 +10706,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
 
           } else {
             // UNchecked: Pipeline DD should be No/blank, job should NOT be in Confirmed
-            const jobNameLower = job.jobName ? job.jobName.toLowerCase() : "";
+            const jobNameLower = job.jobName ? normalizeJobText_(job.jobName) : "";
             const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
             const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
 
@@ -10641,7 +10717,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               if (pr) {
                 const prJobName = String(pr[1] || "").trim();
                 const prClientName = String(pr[0] || "").trim();
-                const nameOk = jobNameIsBlank || prJobName.toLowerCase() === jobNameLower;
+                const nameOk = jobNameIsBlank || jobNamesMatch_(prJobName, job.jobName);
                 const clientOk = !clientParsedLower || !prClientName ||
                   prClientName.toLowerCase().includes(clientParsedLower) ||
                   clientParsedLower.includes(prClientName.toLowerCase());
@@ -10662,7 +10738,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                 const pr = pipelineRows[pri];
                 const pJobName = String(pr[1] || "").trim();
                 const pClientName = String(pr[0] || "").trim();
-                if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
+                if (!jobNameIsBlank && (!pJobName || !jobNamesMatch_(pJobName, job.jobName))) continue;
                 if (clientParsedLower && pClientName &&
                   !pClientName.toLowerCase().includes(clientParsedLower) &&
                   !clientParsedLower.includes(pClientName.toLowerCase())) continue;
@@ -10697,13 +10773,14 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
 
             // Check Confirmed - search by project code first, then job+client name
             const uncheckedProjectCode = pipelineJob?.projectCode || "";
+            const uncheckedCodeNorm = normalizeProjectCode_(uncheckedProjectCode);
             for (let cri = 0; cri < confirmedRows.length; cri++) {
               const cr = confirmedRows[cri];
               const crJobName = String(cr[1] || "").trim();
               const crClientName = String(cr[0] || "").trim();
               const crProjectCode = String(cr[2] || "").trim();
-              if (uncheckedProjectCode && crProjectCode &&
-                crProjectCode.toLowerCase() === uncheckedProjectCode.toLowerCase()) {
+              if (uncheckedCodeNorm && crProjectCode &&
+                normalizeProjectCode_(crProjectCode) === uncheckedCodeNorm) {
                 confirmedMatch = {
                   jobName: crJobName,
                   projectCode: crProjectCode,
@@ -10713,7 +10790,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                 };
                 break;
               }
-              if (!jobNameIsBlank && crJobName.toLowerCase() === jobNameLower) {
+              if (!jobNameIsBlank && jobNamesMatch_(crJobName, job.jobName)) {
                 const clientOk = !clientParsedLower || !crClientName ||
                   crClientName.toLowerCase().includes(clientParsedLower) ||
                   clientParsedLower.includes(crClientName.toLowerCase());
@@ -10748,7 +10825,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
           results.push({
             jobName: (job.jobName && job.jobName !== "-") ? job.jobName
               : pipelineJob?.jobName || confirmedMatch?.jobName || "-",
-            projectCode: pipelineJob?.projectCode || confirmedMatch?.projectCode || "",
+            projectCode: pipelineJob?.projectCode || confirmedMatch?.projectCode || job.projectCodeFromLog || "",
             clientName: job.clientParsed || pipelineJob?.clientName || confirmedMatch?.clientName || "",
             pipelineRow: pipelineJob?.rowNumber || null,
             confirmedRow: confirmedMatch?.rowNumber || null,
@@ -12109,7 +12186,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         const deletePattern = /\[Confirmed\]\s*Deleted Job:\s*Row\s*(\d+),\s*([^|]+)\|\s*([^(\n]+)\(ID:\s*([^)]+)\)/gi;
 
         for (const entry of deleteEntriesToUse) {
-          const details = String(entry[3] || "");
+          const details = splitAutoLogLogicalLines_(String(entry[3] || "")).join("\n");
           const timestamp = String(entry[0] || "");
           let match;
           while ((match = deletePattern.exec(details)) !== null) {
@@ -12150,24 +12227,21 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
           for (const job of deletedJobs) {
             const checks = [];
             const jobClientLower = job.clientName.toLowerCase();
-            const jobNameLower = job.jobName.toLowerCase();
-            const projectCodeLower = job.projectCode.toLowerCase();
+            const projectCodeNorm = normalizeProjectCode_(job.projectCode);
 
             // ── Check 1: Confirmed tab ──────────────────────────────────
             // Search by project code (col C = index 2), fallback client+job (cols A+B)
             let confirmedRowIdx = -1;
             for (let ri = 1; ri < confirmedRows.length; ri++) {
               const r = confirmedRows[ri] || [];
-              const pc = String(r[2] || "").trim().toLowerCase();
-              if (pc === projectCodeLower) { confirmedRowIdx = ri; break; }
+              if (projectCodeNorm && normalizeProjectCode_(r[2]) === projectCodeNorm) { confirmedRowIdx = ri; break; }
             }
             // Fallback: client + job name
             if (confirmedRowIdx === -1) {
               for (let ri = 1; ri < confirmedRows.length; ri++) {
                 const r = confirmedRows[ri] || [];
                 const rc = String(r[0] || "").trim().toLowerCase();
-                const rj = String(r[1] || "").trim().toLowerCase();
-                if (rc === jobClientLower && rj === jobNameLower) { confirmedRowIdx = ri; break; }
+                if (rc === jobClientLower && jobNamesMatch_(r[1], job.jobName)) { confirmedRowIdx = ri; break; }
               }
             }
 
@@ -12182,15 +12256,13 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             let pipelineRowIdx = -1;
             for (let ri = 1; ri < pipelineRows.length; ri++) {
               const r = pipelineRows[ri] || [];
-              const pc = String(r[2] || "").trim().toLowerCase();
-              if (pc === projectCodeLower) { pipelineRowIdx = ri; break; }
+              if (projectCodeNorm && normalizeProjectCode_(r[2]) === projectCodeNorm) { pipelineRowIdx = ri; break; }
             }
             if (pipelineRowIdx === -1) {
               for (let ri = 1; ri < pipelineRows.length; ri++) {
                 const r = pipelineRows[ri] || [];
                 const rc = String(r[0] || "").trim().toLowerCase();
-                const rj = String(r[1] || "").trim().toLowerCase();
-                if (rc === jobClientLower && rj === jobNameLower) { pipelineRowIdx = ri; break; }
+                if (rc === jobClientLower && jobNamesMatch_(r[1], job.jobName)) { pipelineRowIdx = ri; break; }
               }
             }
 

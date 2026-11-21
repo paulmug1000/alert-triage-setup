@@ -962,6 +962,30 @@ export default function PortalPage({
     }
   }, [selectedClient, logWorkspaceAccess]);
 
+  const lastConsumedQueryClientRef = useRef("");
+
+  // Handle in-page client parameter updates (e.g. shallow router changes or preview links)
+  // Runs before URL cleanup so an explicit ?client= param is consumed once and never re-applied from stale router.query state.
+  useEffect(() => {
+    if (!clientsLoaded || clients.length === 0) return;
+    const liveUrlClient =
+      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("client") : null;
+    const rawQueryClient = liveUrlClient || (typeof router.query.client === "string" ? router.query.client : "");
+    const normQueryClient = String(rawQueryClient || "").trim().toLowerCase();
+    if (!normQueryClient) {
+      lastConsumedQueryClientRef.current = "";
+      return;
+    }
+    if (!liveUrlClient && lastConsumedQueryClientRef.current === normQueryClient) {
+      return;
+    }
+    lastConsumedQueryClientRef.current = normQueryClient;
+    const target = clients.find((c) => c.clientName.toLowerCase() === normQueryClient);
+    if (target && target.clientSheetId !== selectedClientRef.current?.clientSheetId) {
+      handleSelectClient(target);
+    }
+  }, [clientsLoaded, router.query.client, clients, handleSelectClient]);
+
   // Clean URL: Strip any legacy ?client=... or ?choose=... so the address bar stays clean (/pulse)
   useEffect(() => {
     // Only clean URL once clients have actually finished loading and selection is settled!
@@ -973,18 +997,7 @@ export default function PortalPage({
       const qs = p.toString();
       window.history.replaceState({}, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
     }
-  }, [clientsLoaded]);
-
-  // Handle in-page client parameter updates (e.g. shallow router changes or preview links)
-  useEffect(() => {
-    if (!clientsLoaded || !router.query.client || clients.length === 0) return;
-    const target = clients.find(
-      (c) => c.clientName.toLowerCase() === String(router.query.client).toLowerCase()
-    );
-    if (target && target.clientSheetId !== selectedClient?.clientSheetId) {
-      handleSelectClient(target);
-    }
-  }, [clientsLoaded, router.query.client, clients, selectedClient, handleSelectClient]);
+  }, [clientsLoaded, router.query.client, router.query.choose]);
 
   const handleLogout = async () => {
     activeClientSheetIdRef.current = null;

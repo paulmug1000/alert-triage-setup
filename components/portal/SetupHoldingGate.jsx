@@ -432,7 +432,7 @@ export default function SetupHoldingGate({
                             borderBottom: "1px solid #e2e8f0"
                           }}
                         >
-                          Switch Client
+                          Switch client
                         </div>
                         {clients.map((c) => {
                           const isCurrent = c.clientName === clientName;
@@ -459,7 +459,7 @@ export default function SetupHoldingGate({
                                 whiteSpace: "nowrap"
                               }}
                               onMouseEnter={(e) => {
-                                if (!isCurrent) e.currentTarget.style.background = "#f1f5f9";
+                                if (!isCurrent) e.currentTarget.style.background = "rgba(0, 71, 171, 0.1)";
                               }}
                               onMouseLeave={(e) => {
                                 if (!isCurrent) e.currentTarget.style.background = "transparent";

@@ -456,6 +456,7 @@ export default function PortalShell({
                         <a
                           key={c.clientName}
                           href={`/pulse?client=${encodeURIComponent(c.clientName)}&view=${encodeURIComponent(activeView || "month")}`}
+                          className={`portal-dropdown-item${c.clientName === clientName ? " is-active" : ""}`}
                           onClick={(e) => {
                             if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
                               e.preventDefault();
@@ -539,6 +540,7 @@ export default function PortalShell({
                 <div style={dropdownMenuStyle}>
                   <a
                     href={getPortalViewHref("dashboard")}
+                    className={`portal-dropdown-item${activeView === "dashboard" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "dashboard")}
                     style={dropdownItemStyle(activeView === "dashboard")}
                   >
@@ -546,6 +548,7 @@ export default function PortalShell({
                   </a>
                   <a
                     href={getPortalViewHref("ytd")}
+                    className={`portal-dropdown-item${activeView === "ytd" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "ytd")}
                     style={dropdownItemStyle(activeView === "ytd")}
                   >
@@ -553,6 +556,7 @@ export default function PortalShell({
                   </a>
                   <a
                     href={getPortalViewHref("perfBreakdown")}
+                    className={`portal-dropdown-item${activeView === "perfBreakdown" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "perfBreakdown")}
                     style={dropdownItemStyle(activeView === "perfBreakdown")}
                   >
@@ -607,6 +611,7 @@ export default function PortalShell({
                 <div style={dropdownMenuStyle}>
                   <a
                     href={getPortalViewHref("cash")}
+                    className={`portal-dropdown-item${activeView === "cash" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "cash")}
                     style={dropdownItemStyle(activeView === "cash")}
                   >
@@ -614,6 +619,7 @@ export default function PortalShell({
                   </a>
                   <a
                     href={getPortalViewHref("cashBreakdown")}
+                    className={`portal-dropdown-item${activeView === "cashBreakdown" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "cashBreakdown")}
                     style={dropdownItemStyle(activeView === "cashBreakdown")}
                   >
@@ -651,6 +657,7 @@ export default function PortalShell({
                 <div style={dropdownMenuStyle}>
                   <a
                     href={getPortalViewHref("jobs")}
+                    className={`portal-dropdown-item${activeView === "jobs" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "jobs")}
                     style={dropdownItemStyle(activeView === "jobs")}
                   >
@@ -658,6 +665,7 @@ export default function PortalShell({
                   </a>
                   <a
                     href={getPortalViewHref("contractors")}
+                    className={`portal-dropdown-item${activeView === "contractors" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "contractors")}
                     style={dropdownItemStyle(activeView === "contractors")}
                   >
@@ -665,6 +673,7 @@ export default function PortalShell({
                   </a>
                   <a
                     href={getPortalViewHref("expenses")}
+                    className={`portal-dropdown-item${activeView === "expenses" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "expenses")}
                     style={dropdownItemStyle(activeView === "expenses")}
                   >
@@ -674,6 +683,7 @@ export default function PortalShell({
                     <>
                       <a
                         href={getPortalViewHref("salaries")}
+                        className={`portal-dropdown-item${activeView === "salaries" ? " is-active" : ""}`}
                         onClick={(e) => handleLinkClick(e, "salaries")}
                         style={dropdownItemStyle(activeView === "salaries")}
                       >
@@ -681,6 +691,7 @@ export default function PortalShell({
                       </a>
                       <a
                         href={getPortalViewHref("dividends")}
+                        className={`portal-dropdown-item${activeView === "dividends" ? " is-active" : ""}`}
                         onClick={(e) => handleLinkClick(e, "dividends")}
                         style={dropdownItemStyle(activeView === "dividends")}
                       >
@@ -690,6 +701,7 @@ export default function PortalShell({
                   )}
                   <a
                     href={getPortalViewHref("nbtofind")}
+                    className={`portal-dropdown-item${activeView === "nbtofind" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "nbtofind")}
                     style={dropdownItemStyle(activeView === "nbtofind")}
                   >
@@ -727,6 +739,7 @@ export default function PortalShell({
                 <div style={dropdownMenuStyle}>
                   <a
                     href={getPortalViewHref("scenarios")}
+                    className={`portal-dropdown-item${activeView === "scenarios" ? " is-active" : ""}`}
                     onClick={(e) => handleLinkClick(e, "scenarios")}
                     style={dropdownItemStyle(activeView === "scenarios")}
                   >
@@ -748,6 +761,7 @@ export default function PortalShell({
                       </div>
                       <a
                         href={getPortalViewHref("viewBudget")}
+                        className={`portal-dropdown-item${activeView === "viewBudget" ? " is-active" : ""}`}
                         onClick={(e) => handleLinkClick(e, "viewBudget")}
                         style={dropdownItemStyle(activeView === "viewBudget")}
                       >
@@ -755,6 +769,7 @@ export default function PortalShell({
                       </a>
                       <a
                         href={getPortalViewHref("budgetVariance")}
+                        className={`portal-dropdown-item${activeView === "budgetVariance" ? " is-active" : ""}`}
                         onClick={(e) => handleLinkClick(e, "budgetVariance")}
                         style={dropdownItemStyle(activeView === "budgetVariance")}
                       >
@@ -1320,6 +1335,10 @@ export default function PortalShell({
         }
         .portal-main-content-wrapper > *:not([data-pulse-skeleton="true"]) {
           animation: portalContentFadeIn 0.22s ease-out;
+        }
+        .portal-dropdown-item:not(.is-active):hover {
+          background-color: rgba(0, 71, 171, 0.1) !important;
+          color: #0047AB !important;
         }
         @keyframes portalSpin {
           from {

@@ -1,30 +1,28 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import Head from "next/head";
-import dynamic from "next/dynamic";
 import { useRouter } from "next/router";
 import { useAuth } from "../../hooks/useAuth";
 import AuthGateView from "../../components/AuthGateView";
 import PortalShell from "../../components/portal/PortalShell";
 import MonthView from "../../components/portal/MonthView";
+import PerformanceFYView from "../../components/portal/PerformanceFYView";
+import PerformanceYTDView from "../../components/portal/PerformanceYTDView";
+import PerformanceBreakdownView from "../../components/portal/PerformanceBreakdownView";
+import CashflowView from "../../components/portal/CashflowView";
+import CashflowBreakdownView from "../../components/portal/CashflowBreakdownView";
+import PortalJobsView from "../../components/portal/PortalJobsView";
+import PortalOutgoingsView from "../../components/portal/PortalOutgoingsView";
+import PortalSalariesView from "../../components/portal/PortalSalariesView";
+import PortalNBToFindView from "../../components/portal/PortalNBToFindView";
+import BudgetView from "../../components/portal/BudgetView";
+import BudgetVarianceView from "../../components/portal/BudgetVarianceView";
+import ScenariosView from "../../components/portal/ScenariosView";
 import {
   MonthViewSkeleton
 } from "../../components/Skeleton";
 import CompanyChooser from "../../components/portal/CompanyChooser";
 import SetupHoldingGate from "../../components/portal/SetupHoldingGate";
 import Spinner from "../../components/Spinner";
-
-const PerformanceFYView = dynamic(() => import("../../components/portal/PerformanceFYView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const PerformanceYTDView = dynamic(() => import("../../components/portal/PerformanceYTDView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const PerformanceBreakdownView = dynamic(() => import("../../components/portal/PerformanceBreakdownView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const CashflowView = dynamic(() => import("../../components/portal/CashflowView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const CashflowBreakdownView = dynamic(() => import("../../components/portal/CashflowBreakdownView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const PortalJobsView = dynamic(() => import("../../components/portal/PortalJobsView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const PortalOutgoingsView = dynamic(() => import("../../components/portal/PortalOutgoingsView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const PortalSalariesView = dynamic(() => import("../../components/portal/PortalSalariesView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const PortalNBToFindView = dynamic(() => import("../../components/portal/PortalNBToFindView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const BudgetView = dynamic(() => import("../../components/portal/BudgetView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const BudgetVarianceView = dynamic(() => import("../../components/portal/BudgetVarianceView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
-const ScenariosView = dynamic(() => import("../../components/portal/ScenariosView"), { ssr: false, loading: () => <MonthViewSkeleton /> });
 
 const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
@@ -214,6 +212,10 @@ export default function PortalPage({
   const [budgetError, setBudgetError] = useState(null);
 
   const inFlightPayloadRef = useRef(false);
+  const inFlightPerfSheetIdRef = useRef(null);
+  const inFlightCashSheetIdRef = useRef(null);
+  const inFlightKeyDataSheetIdRef = useRef(null);
+  const inFlightBudgetSheetIdRef = useRef(null);
 
   const fetchPayload = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
@@ -311,6 +313,8 @@ export default function PortalPage({
   const fetchPerformance = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
     if (client.clientSheetId !== activeClientSheetIdRef.current) return;
+    if (!bypassCache && inFlightPerfSheetIdRef.current === client.clientSheetId) return;
+    inFlightPerfSheetIdRef.current = client.clientSheetId;
     if (!isSilent) {
       setLoadingPerformance(true);
       setPerfError(null);
@@ -341,6 +345,9 @@ export default function PortalPage({
       }
     } finally {
       clearTimeout(timeoutId);
+      if (inFlightPerfSheetIdRef.current === client.clientSheetId) {
+        inFlightPerfSheetIdRef.current = null;
+      }
       if (!isSilent) {
         setLoadingPerformance(false);
       }
@@ -368,6 +375,8 @@ export default function PortalPage({
   const fetchCashflow = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
     if (client.clientSheetId !== activeClientSheetIdRef.current) return;
+    if (!bypassCache && inFlightCashSheetIdRef.current === client.clientSheetId) return;
+    inFlightCashSheetIdRef.current = client.clientSheetId;
     if (!isSilent) {
       setLoadingCashflow(true);
       setCashError(null);
@@ -398,6 +407,9 @@ export default function PortalPage({
       }
     } finally {
       clearTimeout(timeoutId);
+      if (inFlightCashSheetIdRef.current === client.clientSheetId) {
+        inFlightCashSheetIdRef.current = null;
+      }
       if (!isSilent) {
         setLoadingCashflow(false);
       }
@@ -416,6 +428,8 @@ export default function PortalPage({
   const fetchKeyData = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
     if (client.clientSheetId !== activeClientSheetIdRef.current) return;
+    if (!bypassCache && inFlightKeyDataSheetIdRef.current === client.clientSheetId) return;
+    inFlightKeyDataSheetIdRef.current = client.clientSheetId;
     if (!isSilent) {
       setLoadingKeyData(true);
       setKeyDataError(null);
@@ -446,6 +460,9 @@ export default function PortalPage({
       }
     } finally {
       clearTimeout(timeoutId);
+      if (inFlightKeyDataSheetIdRef.current === client.clientSheetId) {
+        inFlightKeyDataSheetIdRef.current = null;
+      }
       if (!isSilent) {
         setLoadingKeyData(false);
       }
@@ -494,6 +511,8 @@ export default function PortalPage({
   const fetchBudget = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
     if (client.clientSheetId !== activeClientSheetIdRef.current) return;
+    if (!bypassCache && inFlightBudgetSheetIdRef.current === client.clientSheetId) return;
+    inFlightBudgetSheetIdRef.current = client.clientSheetId;
     if (!isSilent) {
       setLoadingBudget(true);
       setBudgetError(null);
@@ -524,6 +543,9 @@ export default function PortalPage({
       }
     } finally {
       clearTimeout(timeoutId);
+      if (inFlightBudgetSheetIdRef.current === client.clientSheetId) {
+        inFlightBudgetSheetIdRef.current = null;
+      }
       if (!isSilent) {
         setLoadingBudget(false);
       }
@@ -548,7 +570,7 @@ export default function PortalPage({
   }, [activeView, selectedClient, performanceData, loadingPerformance, keyData, loadingKeyData, fetchPerformance, fetchKeyData]);
 
   // Background preloading queue: ONLY after the Pulse Home Page (payload + performanceData) has 100% finished
-  // loading, preload secondary sections with generous idle spacing so Home Page speed is never contested.
+  // loading, preload secondary sections promptly so switching views is instant without contesting Home paint.
   const hasHomeFullyLoaded = Boolean(payload && performanceData && !loadingPayload && !loadingPerformance);
   const currentClientSheetId = selectedClient?.clientSheetId || null;
   useEffect(() => {
@@ -560,15 +582,16 @@ export default function PortalPage({
       if (!s.keyData && !s.loadingKeyData) {
         fetchKeyData(s.selectedClient, false, true);
       }
-    }, 2500);
+    }, 100);
 
     const t3 = setTimeout(() => {
       const s = dataStateRef.current;
       if (s.selectedClient?.clientSheetId !== currentClientSheetId) return;
-      if (!s.cashflowData && !s.loadingCashflow) {
+      const clientHasCash = Boolean(s.payload?.clientInfo?.hasCash ?? s.payload?.hasCash);
+      if (clientHasCash && !s.cashflowData && !s.loadingCashflow) {
         fetchCashflow(s.selectedClient, false, true);
       }
-    }, 5000);
+    }, 200);
 
     const t4 = setTimeout(() => {
       const s = dataStateRef.current;
@@ -577,7 +600,7 @@ export default function PortalPage({
       if (clientHasBudget && !s.budgetData && !s.loadingBudget) {
         fetchBudget(s.selectedClient, false, true);
       }
-    }, 7500);
+    }, 300);
 
     return () => {
       clearTimeout(t2);

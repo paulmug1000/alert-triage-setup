@@ -42,6 +42,15 @@ const GLOBAL_STYLES = `
   .triage-client-card { transition: background 0.12s, border-color 0.12s, box-shadow 0.12s !important; }
   .triage-client-card:active { background: #e3ecff !important; transform: scale(0.995); }
   .pulse-nav-item { transition: color 0.15s, border-color 0.15s, background 0.15s !important; }
+  @media (hover: hover) and (pointer: fine) {
+    .pma-pulse-dropdown a:hover,
+    .pma-manage-dropdown a:hover,
+    .pma-edit-dropdown a:hover,
+    .pma-views-dropdown a:hover {
+      background: #f0f7ff !important;
+      color: #0047AB !important;
+    }
+  }
   .pma-page-container {
     width: 100%;
     max-width: 1440px !important;
@@ -1201,10 +1210,16 @@ export default function NavShell({
                             boxSizing: "border-box"
                           }}
                           onMouseEnter={(e) => {
-                            if (!active) e.currentTarget.style.background = "#f8fafc";
+                            if (!active) {
+                              e.currentTarget.style.background = "#f0f7ff";
+                              e.currentTarget.style.color = "#0047AB";
+                            }
                           }}
                           onMouseLeave={(e) => {
-                            if (!active) e.currentTarget.style.background = "transparent";
+                            if (!active) {
+                              e.currentTarget.style.background = "transparent";
+                              e.currentTarget.style.color = "#334155";
+                            }
                           }}
                         >
                           <span>{sub.label}</span>

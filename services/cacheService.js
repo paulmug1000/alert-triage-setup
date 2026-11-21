@@ -71,7 +71,7 @@ if (!global._pulseMemoryCache) {
 }
 
 import { waitUntil } from "@vercel/functions";
-import { redisClient, scanRedisKeys } from "./redisClient.js";
+import { redisClient, ensureRedisConnected, scanRedisKeys } from "./redisClient.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
 
 const CACHE_IDX_PREFIX = "pulse:cache_idx:";
@@ -157,6 +157,9 @@ export async function get2TierCache(key) {
   }
   // 2. Try L2 Redis Cache
   try {
+    if (!redisClient?.isOpen) {
+      await ensureRedisConnected(500);
+    }
     if (redisClient?.isOpen) {
       const redisVal = await redisClient.get(key);
       if (redisVal) {
@@ -267,6 +270,9 @@ export async function resolvePortalCache({
 
   // 2. Check L2 Redis Cache
   try {
+    if (!redisClient?.isOpen) {
+      await ensureRedisConnected(500);
+    }
     if (redisClient?.isOpen) {
       const cachedRaw = await redisClient.get(cacheKey);
       if (cachedRaw) {

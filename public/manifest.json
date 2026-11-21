@@ -227,7 +227,7 @@
             "query_param": "view=cash",
             "has_chart": true,
             "chart_name": "Cashflow Trajectory Chart (Excl. vs Incl. Pipeline)",
-            "chart_toggle": "AppData!G59",
+            "chart_toggle": "KeyInfo!B146",
             "description": "Rolling 7-month cashflow forecast tables and SVG cash trajectory line chart."
           },
           {

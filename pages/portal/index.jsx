@@ -1152,7 +1152,7 @@ export default function PortalPage({
     }
   }, [payload, hasBudget, activeView]);
 
-  // Guard cash views when client does not have cash enabled (AppData!W43 !== 'Yes')
+  // Guard cash views when client does not have cash enabled (KeyInfo!B144 !== 'Yes')
   useEffect(() => {
     if (payload && !hasCash && (activeView === "cash" || activeView === "cashBreakdown")) {
       setActiveView("month");

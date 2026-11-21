@@ -160,17 +160,33 @@ async function getCachedPortalFeatureFlags(cleanClientId, clientName = "") {
   if (!supabase) return null;
 
   try {
-    const { data: clientRows } = await supabase
-      .from("clients")
-      .select("id, client_name, version_in_use, webapp_version")
-      .or(
-        clientName
-          ? `client_sheet_id.eq.${cleanClientId},client_name.eq.${clientName}`
-          : `client_sheet_id.eq.${cleanClientId}`
-      )
-      .limit(1);
-    const clientRow = clientRows?.[0] || null;
-    const resolvedName = clientRow?.client_name || clientName;
+    let clientRow = null;
+    const cleanStr = String(cleanClientId).trim();
+    if (cleanStr.startsWith("sb-client-")) {
+      const { data: normRows } = await supabase
+        .from("clients")
+        .select("id, client_name, version_in_use, webapp_version")
+        .eq("normalized_key", cleanStr.slice("sb-client-".length))
+        .limit(1);
+      clientRow = normRows?.[0] || null;
+    } else {
+      const { data: idRows } = await supabase
+        .from("clients")
+        .select("id, client_name, version_in_use, webapp_version")
+        .eq("client_sheet_id", cleanStr)
+        .limit(1);
+      clientRow = idRows?.[0] || null;
+    }
+    const trimmedName = String(clientName || "").trim();
+    if (!clientRow && trimmedName) {
+      const { data: nameRows } = await supabase
+        .from("clients")
+        .select("id, client_name, version_in_use, webapp_version")
+        .eq("client_name", trimmedName)
+        .limit(1);
+      clientRow = nameRows?.[0] || null;
+    }
+    const resolvedName = clientRow?.client_name || trimmedName;
 
     let flags = null;
     if (resolvedName) {

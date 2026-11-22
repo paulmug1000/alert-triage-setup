@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import KeyInfoSettingsForm from "./KeyInfoSettingsForm";
 import AccountingSettingsSuggestionModal from "./setup/AccountingSettingsSuggestionModal";
@@ -14,6 +14,53 @@ import SelectBankAccountsModal from "./setup/SelectBankAccountsModal";
 import CashOpeningModal from "./setup/CashOpeningModal";
 import InitialTaxPaymentsModal from "./setup/InitialTaxPaymentsModal";
 import SetupAutomationFlagsPanel from "./setup/SetupAutomationFlagsPanel";
+import { buildConnectionEmailContent } from "../utils/helpers";
+
+const FINAL_DATA_CAPTURE_ITEMS = [
+  {
+    key: "payroll_info",
+    label: "Payroll info - including full staff list with salaries, plus payroll summary for previous period",
+  },
+  {
+    key: "contractor_info",
+    label: "Contractor info - including whether they are regular etc",
+  },
+  {
+    key: "cash_opening",
+    label: "Confirming cash opening balance for previous / current month",
+  },
+  {
+    key: "delivery_pct",
+    label: "Delivery % for all staff, including directors",
+  },
+  {
+    key: "initial_tax_bills",
+    label: "Confirming initial corp tax and VAT bills",
+  },
+];
+
+function parseFinalDataCaptureMetadata(rawMeta) {
+  if (!rawMeta || typeof rawMeta !== "string") return { items: {} };
+  const trimmed = rawMeta.trim();
+  if (!trimmed.startsWith("{")) return { items: {} };
+  try {
+    const parsed = JSON.parse(trimmed);
+    return {
+      items: parsed?.items && typeof parsed.items === "object" ? parsed.items : {},
+    };
+  } catch {
+    return { items: {} };
+  }
+}
+
+function formatTaskMetadataSummary(rawMeta) {
+  if (!rawMeta) return "";
+  const trimmed = String(rawMeta).trim();
+  if (!trimmed.startsWith("{")) return trimmed;
+  const parsed = parseFinalDataCaptureMetadata(trimmed);
+  const doneCount = FINAL_DATA_CAPTURE_ITEMS.filter((it) => Boolean(parsed.items?.[it.key])).length;
+  return `${doneCount} of ${FINAL_DATA_CAPTURE_ITEMS.length} items received and actioned`;
+}
 
 export default function OnboardingChecklistView({
   clientName,
@@ -33,8 +80,9 @@ export default function OnboardingChecklistView({
   const [loading, setLoading] = useState(true);
   const [checklist, setChecklist] = useState(null);
   const [feedback, setFeedback] = useState(null);
-  const [openPhaseId, setOpenPhaseId] = useState(() => (isUserAdmin ? "phase_1" : "phase_2"));
+  const [openPhaseId, setOpenPhaseId] = useState("");
   const [expandedTaskIds, setExpandedTaskIds] = useState({});
+  const initialPhaseSetForClientRef = useRef("");
 
   useEffect(() => {
     if (!isUserAdmin && openPhaseId === "phase_1") {
@@ -65,14 +113,38 @@ export default function OnboardingChecklistView({
   const [deploymentUrl, setDeploymentUrl] = useState("");
   const [savingDeploymentUrl, setSavingDeploymentUrl] = useState(false);
 
-  // Completing setup
+  // Completing setup & Stage 4 controls
   const [completingSetup, setCompletingSetup] = useState(false);
+  const [makingPulseLive, setMakingPulseLive] = useState(false);
+  const [savingCaptureItemKey, setSavingCaptureItemKey] = useState("");
+  const [copiedGoLiveEmail, setCopiedGoLiveEmail] = useState(false);
 
-  const formatPhaseTitle = (title) => {
+  // Step 1 tool confirmation & connection-request email state
+  const [toolAcc, setToolAcc] = useState("None");
+  const [toolCrm, setToolCrm] = useState("None");
+  const [toolCrmDrives, setToolCrmDrives] = useState("NA");
+  const [confirmingTools, setConfirmingTools] = useState(false);
+
+  const [inviteContacts, setInviteContacts] = useState([]);
+  const [inviteEmailTo, setInviteEmailTo] = useState("");
+  const [inviteContactName, setInviteContactName] = useState("");
+  const [inviteEmailSubject, setInviteEmailSubject] = useState("");
+  const [inviteEmailBody, setInviteEmailBody] = useState("");
+  const [inviteBodyDirty, setInviteBodyDirty] = useState(false);
+  const [sendingInviteEmail, setSendingInviteEmail] = useState(false);
+  const loadedContactsClientRef = useRef("");
+
+  const formatPhaseTitle = (title, displayStepNum = null) => {
     if (!title) return title;
-    const raw = String(title);
-    if (isUserAdmin) return raw;
-    return raw.replace(/Infrastructure & Sheet Linking/gi, "System provisioning & initialisation");
+    let raw = String(title);
+    if (!isUserAdmin) {
+      raw = raw.replace(/Infrastructure & Sheet Linking/gi, "System provisioning & initialisation");
+    }
+    if (displayStepNum !== null && displayStepNum !== undefined) {
+      const withoutPrefix = raw.replace(/^Step\s+\d+\s*:\s*/i, "");
+      return `Step ${displayStepNum}: ${withoutPrefix}`;
+    }
+    return raw;
   };
 
   const formatPhaseDescription = (desc) => {
@@ -97,13 +169,16 @@ export default function OnboardingChecklistView({
       p1_gas_deployment: "Deploy background sync service",
       p1_rename_gas: "Configure background sync service identifiers",
       p1_script_ids: "Register client in system version tracker",
-      p2_select_tools: "Select accounting tool and CRM in setup",
+      p2_confirm_tools: "Confirm accounting and CRM tools",
+      p2_request_connections_email: "Email client to request connections",
+      p2_connect_accounting: "Awaiting client connection to accounting tool",
+      p2_connect_crm: "Awaiting client connection to CRM tool",
       p2_keyinfo_settings: "Adjust core financial settings (Start date, VAT, PAYE, Revenue focus, Profit share %, Invoice formatting, Automation cadences)",
       p3_chart_of_accounts: "Pull Chart of Accounts and select manual categories",
-      p3_pull_pl: "Pull P&L and Year 0 P&L and assign categories",
+      p3_pull_pl: "Pull P&L and assign accounts to categories",
       p3_year0_setup: "Check Year 0 setup, adding dividends in lieu of salary as required",
-      p3_sync_invoices: "Initial invoice setup",
-      p3_starter_pl: "Run StarterPL setup",
+      p3_sync_invoices: "Initial job setup from invoices sent",
+      p3_starter_pl: "Set up initial P&L and forecast",
       p3_other_expenses: "Create budget",
       p3_select_bank_accounts: "Select bank accounts",
       p3_cash_opening: "Add cash opening figure",
@@ -112,7 +187,8 @@ export default function OnboardingChecklistView({
       p4_ac_enrollment: "Enrol client in automated sync scheduler",
       p4_datachg_flags: "Configure automated alert flags as required",
       p4_rep_control: "Enrol client in month-end reporting",
-      p5_add_users: "Add client users in Settings > Users"
+      p5_make_live: "Make Pulse live",
+      p5_email_client: "Email client saying Pulse is live and requesting further information"
     };
     if (task?.id && nonAdminMap[task.id]) return nonAdminMap[task.id];
     return String(title)
@@ -126,6 +202,13 @@ export default function OnboardingChecklistView({
       .replace(/\s+sheet\b/gi, "");
   };
 
+  // Toggle expansion of a single task's attached box
+  const toggleTaskExpanded = (taskId) => {
+    setExpandedTaskIds((prev) => ({
+      ...prev,
+      [taskId]: !prev[taskId]
+    }));
+  };
   // Determine whether a task has an expandable action box / details panel
   const hasTaskAttachment = useCallback(
     (task) => {
@@ -133,7 +216,7 @@ export default function OnboardingChecklistView({
       if (isUserAdmin && ["p1_importrange_auth", "p1_gas_deployment", "p1_script_ids"].includes(task.id)) {
         return true;
       }
-      if (["p2_keyinfo_settings", "p4_datachg_flags", "p3_chart_of_accounts", "p3_pull_pl", "p3_year0_setup", "p3_sync_invoices", "p3_starter_pl", "p3_other_expenses", "p3_select_bank_accounts", "p3_cash_opening", "p3_initial_tax_payments", "p4_review_crm", "p4_crm_list_tab"].includes(task.id)) {
+      if (["p2_confirm_tools", "p2_request_connections_email", "p2_keyinfo_settings", "p4_datachg_flags", "p3_chart_of_accounts", "p3_pull_pl", "p3_year0_setup", "p3_sync_invoices", "p3_starter_pl", "p3_other_expenses", "p3_select_bank_accounts", "p3_cash_opening", "p3_initial_tax_payments", "p4_review_crm", "p4_crm_list_tab", "p5_make_live", "p5_email_client"].includes(task.id)) {
         return true;
       }
       if (task.description && String(task.description).trim()) {
@@ -143,14 +226,6 @@ export default function OnboardingChecklistView({
     },
     [isUserAdmin]
   );
-
-  // Toggle expansion of a single task's attached box
-  const toggleTaskExpanded = (taskId) => {
-    setExpandedTaskIds((prev) => ({
-      ...prev,
-      [taskId]: !prev[taskId]
-    }));
-  };
 
   // Collapse the completed task and auto-expand the next task in the phase if it has an attached box
   const advanceTaskExpansion = useCallback(
@@ -190,6 +265,11 @@ export default function OnboardingChecklistView({
       const data = await res.json();
       if (data.success) {
         setChecklist(data);
+        if (data.config) {
+          setToolAcc(data.config.accountingTool || "None");
+          setToolCrm(data.config.crmTool || "None");
+          setToolCrmDrives(data.config.crmDrives || "NA");
+        }
         if (data.deploymentUrl || data.keyInfoSettings?.masterDeploymentUrl) {
           setDeploymentUrl(data.deploymentUrl || data.keyInfoSettings.masterDeploymentUrl);
         }
@@ -199,10 +279,21 @@ export default function OnboardingChecklistView({
           setReconScriptId(data.scriptIds.reconScriptId || "");
         }
         if (Array.isArray(data.phases) && data.phases.length > 0) {
-          setOpenPhaseId((prev) => {
-            const exists = data.phases.some((p) => p.id === prev);
-            return exists ? prev : data.phases[0].id;
-          });
+          const clientInitKey = `${clientName}::${isUserAdmin ? 1 : 0}`;
+          const visibleOnLoad = data.phases.filter((p) => isUserAdmin || (p.id !== "phase_1" && !p.adminOnly));
+          if (initialPhaseSetForClientRef.current !== clientInitKey) {
+            initialPhaseSetForClientRef.current = clientInitKey;
+            const firstIncomplete = visibleOnLoad.find((p) => !p.isPhaseComplete);
+            setOpenPhaseId(firstIncomplete ? firstIncomplete.id : "");
+          } else {
+            setOpenPhaseId((prev) => {
+              if (prev === "") return "";
+              const exists = visibleOnLoad.some((p) => p.id === prev);
+              if (exists) return prev;
+              const firstIncomplete = visibleOnLoad.find((p) => !p.isPhaseComplete);
+              return firstIncomplete ? firstIncomplete.id : "";
+            });
+          }
         }
       } else {
         throw new Error(data.error || "Failed to load onboarding checklist.");
@@ -213,7 +304,7 @@ export default function OnboardingChecklistView({
     } finally {
       setLoading(false);
     }
-  }, [clientName, masterSheetId]);
+  }, [clientName, masterSheetId, isUserAdmin]);
 
   useEffect(() => {
     loadChecklist();
@@ -266,7 +357,8 @@ export default function OnboardingChecklistView({
           clientName,
           masterSheetId: masterSheetId || "",
           taskId: task.id,
-          isCompleted: newStatus
+          isCompleted: newStatus,
+          ...(task.metadata ? { metadata: task.metadata } : {})
         })
       });
       const data = await res.json();
@@ -396,9 +488,262 @@ export default function OnboardingChecklistView({
     }
   };
 
-  // Complete Onboarding & Go Live
+  // Make Pulse live while leaving client in setup mode
+  const handleMakePulseLive = async () => {
+    setMakingPulseLive(true);
+    setFeedback(null);
+    try {
+      const res = await fetch("/api/setup/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientName,
+          masterSheetId,
+          setupMode: true,
+          pulseLive: true,
+          requestConnections: false,
+          accountingTool: checklist?.config?.accountingTool || "None",
+          crmTool: checklist?.config?.crmTool || "None",
+          crmDrives: checklist?.config?.crmDrives || "NA"
+        })
+      });
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || "Failed to make Pulse live.");
+      }
+      setChecklist((prev) =>
+        prev
+          ? {
+            ...prev,
+            pulseLive: true,
+            config: data.config || { ...(prev.config || {}), pulseLive: true, requestConnections: false }
+          }
+          : prev
+      );
+      await handleAutoCompleteTask("p5_make_live");
+      setFeedback({
+        type: "success",
+        message: "Pulse is now live for client users and scheduled automations, while setup mode remains active."
+      });
+      if (onSetupModeToggled) onSetupModeToggled({ setupMode: true, pulseLive: true });
+      if (onClientsChanged) onClientsChanged();
+    } catch (err) {
+      setFeedback({ type: "error", message: err.message });
+    } finally {
+      setMakingPulseLive(false);
+    }
+  };
+
+  // Toggle one of the 5 final data capture sub-checkboxes inside Stage 4 Task 2
+  const handleToggleFinalCaptureItem = async (task, itemKey) => {
+    const current = parseFinalDataCaptureMetadata(task?.metadata);
+    const nextItems = {
+      ...current.items,
+      [itemKey]: !current.items?.[itemKey],
+    };
+    const nextMetadataStr = JSON.stringify({ items: nextItems });
+    const allChecked = FINAL_DATA_CAPTURE_ITEMS.every((it) => Boolean(nextItems[it.key]));
+    const nextIsCompleted = allChecked ? true : Boolean(task?.isCompleted);
+
+    setSavingCaptureItemKey(itemKey);
+    setFeedback(null);
+
+    // Optimistic update preserving metadata + updating completion if all 5 checked
+    setChecklist((prev) => {
+      if (!prev?.phases) return prev;
+      let totalCompleted = 0;
+      let totalTasks = 0;
+      const newPhases = prev.phases.map((p) => {
+        const tasks = (p.tasks || []).map((t) =>
+          t.id === task.id ? { ...t, metadata: nextMetadataStr, isCompleted: nextIsCompleted } : t
+        );
+        const phaseComp = tasks.filter((t) => t.isCompleted).length;
+        totalCompleted += phaseComp;
+        totalTasks += tasks.length;
+        return {
+          ...p,
+          completedCount: phaseComp,
+          isPhaseComplete: tasks.length > 0 && phaseComp === tasks.length,
+          tasks,
+        };
+      });
+      return {
+        ...prev,
+        totalTasks: totalTasks || prev.totalTasks,
+        completedCount: totalCompleted,
+        progressPercent: totalTasks > 0 ? Math.round((totalCompleted / totalTasks) * 100) : 0,
+        phases: newPhases,
+      };
+    });
+
+    try {
+      const res = await fetch("/api/setup/checklist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientName,
+          masterSheetId: masterSheetId || "",
+          taskId: task.id,
+          isCompleted: nextIsCompleted,
+          metadata: nextMetadataStr,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to save item status.");
+      }
+      if (Array.isArray(data.phases)) {
+        setChecklist((prev) => (prev ? { ...prev, ...data } : data));
+      }
+    } catch (err) {
+      setFeedback({ type: "error", message: `Failed to save checklist item: ${err.message}` });
+      loadChecklist();
+    } finally {
+      setSavingCaptureItemKey("");
+    }
+  };
+
+  const handleCopyGoLiveEmail = async () => {
+    const text = [
+      `Hi there,`,
+      ``,
+      `Pulse is now live for ${clientName}. You can log in at https://app.pulsedashboard.co.uk/ using the Microsoft or Google buttons as before.`,
+      ``,
+      `There are a few remaining items needed to ensure the details in Pulse are as accurate as possible. Could you please share / confirm:`,
+      ``,
+      ...FINAL_DATA_CAPTURE_ITEMS.map((it) => `- ${it.label}`),
+      ``,
+      `Thanks,`
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedGoLiveEmail(true);
+      setTimeout(() => setCopiedGoLiveEmail(false), 2500);
+    } catch {
+      setFeedback({ type: "error", message: "Could not copy email draft to clipboard." });
+    }
+  };
+
+  // Load assigned client contacts to prefill the connection-request email draft
+  useEffect(() => {
+    if (!clientName) return;
+    if (loadedContactsClientRef.current === clientName) return;
+    loadedContactsClientRef.current = clientName;
+    setInviteBodyDirty(false);
+    setInviteContacts([]);
+    setInviteEmailTo("");
+    setInviteContactName("");
+
+    fetch(`/api/setup/client-invite?clientName=${encodeURIComponent(clientName)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.success && Array.isArray(d.contacts) && d.contacts.length > 0) {
+          setInviteContacts(d.contacts);
+          setInviteEmailTo(d.contacts[0].email || "");
+          setInviteContactName(d.contacts[0].name || "");
+        }
+      })
+      .catch(() => { });
+  }, [clientName]);
+
+  // Keep default email subject/body synced with confirmed tools & contact until manually edited
+  useEffect(() => {
+    if (inviteBodyDirty) return;
+    const draft = buildConnectionEmailContent({
+      contactName: inviteContactName,
+      accountingTool: checklist?.config?.accountingTool || toolAcc,
+      crmTool: checklist?.config?.crmTool || toolCrm,
+    });
+    setInviteEmailSubject(draft.subject);
+    setInviteEmailBody(draft.body);
+  }, [inviteBodyDirty, inviteContactName, checklist?.config?.accountingTool, checklist?.config?.crmTool, toolAcc, toolCrm]);
+
+  // Step 1 Task 1: Confirm accounting & CRM tools selected during provisioning
+  const handleConfirmTools = async (e) => {
+    e?.preventDefault();
+    setConfirmingTools(true);
+    setFeedback(null);
+    try {
+      const nextDrives = toolCrm === "None" ? "NA" : (toolCrmDrives || "NA");
+      const res = await fetch("/api/setup/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientName,
+          masterSheetId: effectiveMasterSheetId || "",
+          setupMode: checklist?.setupMode ?? true,
+          pulseLive: checklist?.pulseLive ?? false,
+          requestConnections: checklist?.config?.requestConnections ?? false,
+          accountingTool: toolAcc,
+          crmTool: toolCrm,
+          crmDrives: nextDrives,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to confirm tools.");
+      }
+      await handleAutoCompleteTask("p2_confirm_tools");
+      await loadChecklist();
+      setFeedback({ type: "success", message: "Accounting and CRM tools confirmed." });
+      if (onSetupModeToggled) {
+        onSetupModeToggled({ setupMode: checklist?.setupMode ?? true, pulseLive: checklist?.pulseLive ?? false });
+      }
+      if (onClientsChanged) onClientsChanged();
+    } catch (err) {
+      setFeedback({ type: "error", message: err.message });
+    } finally {
+      setConfirmingTools(false);
+    }
+  };
+
+  // Step 1 Task 2: Send connection-request email to client
+  const handleSendConnectionRequestEmail = async (e) => {
+    e?.preventDefault();
+    const cleanTo = String(inviteEmailTo || "").toLowerCase().trim();
+    if (!cleanTo || !cleanTo.includes("@")) {
+      setFeedback({ type: "error", message: "Please enter a valid client email address." });
+      return;
+    }
+    if (!inviteEmailSubject.trim() || !inviteEmailBody.trim()) {
+      setFeedback({ type: "error", message: "Please enter both an email subject and message body." });
+      return;
+    }
+    setSendingInviteEmail(true);
+    setFeedback(null);
+    try {
+      const res = await fetch("/api/setup/client-invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send_connection_email",
+          clientName,
+          masterSheetId: effectiveMasterSheetId || "",
+          toEmail: cleanTo,
+          subject: inviteEmailSubject.trim(),
+          body: inviteEmailBody.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to send connection request email.");
+      }
+      advanceTaskExpansion("p2_request_connections_email", checklist?.phases);
+      await loadChecklist();
+      setFeedback({ type: "success", message: `Connection request email sent to ${cleanTo}.` });
+      if (onSetupModeToggled) {
+        onSetupModeToggled({ setupMode: checklist?.setupMode ?? true, pulseLive: checklist?.pulseLive ?? false });
+      }
+    } catch (err) {
+      setFeedback({ type: "error", message: err.message });
+    } finally {
+      setSendingInviteEmail(false);
+    }
+  };
+
+  // End setup mode for client
   const handleCompleteSetup = async () => {
-    if (!confirm(`Are you ready to complete setup for ${clientName} and activate live dashboards for client users?`)) {
+    if (!confirm(`End setup mode for ${clientName}? This will mark onboarding complete.`)) {
       return;
     }
     setCompletingSetup(true);
@@ -412,6 +757,7 @@ export default function OnboardingChecklistView({
           clientName,
           masterSheetId,
           setupMode: false,
+          pulseLive: true,
           requestConnections: false,
           accountingTool: checklist?.config?.accountingTool || "None",
           crmTool: checklist?.config?.crmTool || "None",
@@ -420,10 +766,11 @@ export default function OnboardingChecklistView({
       });
       const data = await res.json();
       if (data.success) {
-        setFeedback({ type: "success", message: "Setup mode deactivated. Live financial dashboards are now active." });
+        setFeedback({ type: "success", message: "Setup mode ended. Onboarding is now complete." });
         if (onSetupModeToggled) onSetupModeToggled(false);
+        if (onClientsChanged) onClientsChanged();
       } else {
-        throw new Error(data.error || "Failed to deactivate setup mode.");
+        throw new Error(data.error || "Failed to end setup mode.");
       }
     } catch (err) {
       setFeedback({ type: "error", message: err.message });
@@ -598,6 +945,207 @@ export default function OnboardingChecklistView({
               </div>
             </form>
           </div>
+        )}
+
+        {/* Step 1 Task 1: Confirm accounting and CRM tools */}
+        {task.id === "p2_confirm_tools" && (
+          <form
+            onSubmit={handleConfirmTools}
+            style={{ padding: "14px 16px", borderRadius: "10px", background: "#FFFFFF", border: "1px solid #CBD5E1", display: "flex", flexDirection: "column", gap: "12px" }}
+          >
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "12px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+                  Accounting tool
+                </label>
+                <select
+                  value={toolAcc}
+                  onChange={(e) => setToolAcc(e.target.value)}
+                  disabled={confirmingTools}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", color: "#1E293B", boxSizing: "border-box" }}
+                >
+                  <option value="None">None</option>
+                  <option value="Xero">Xero</option>
+                  <option value="Quickbooks">QuickBooks Online</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+                  CRM tool
+                </label>
+                <select
+                  value={toolCrm}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setToolCrm(next);
+                    if (next === "None") setToolCrmDrives("NA");
+                  }}
+                  disabled={confirmingTools}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", color: "#1E293B", boxSizing: "border-box" }}
+                >
+                  <option value="None">None</option>
+                  <option value="ClickUp">ClickUp</option>
+                  <option value="Close">Close CRM</option>
+                  <option value="Capsule">Capsule CRM</option>
+                  <option value="HubSpot">HubSpot</option>
+                  <option value="Monday">Monday.com</option>
+                  <option value="Pipedrive">Pipedrive</option>
+                  <option value="Google Sheet">Google Sheet</option>
+                  <option value="Excel">Excel</option>
+                </select>
+              </div>
+
+              {toolCrm !== "None" && (
+                <div>
+                  <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+                    CRM integration type
+                  </label>
+                  <select
+                    value={toolCrmDrives}
+                    onChange={(e) => setToolCrmDrives(e.target.value)}
+                    disabled={confirmingTools}
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", color: "#1E293B", boxSizing: "border-box" }}
+                  >
+                    <option value="NA">NA</option>
+                    <option value="Pipeline">Pipeline (Just pipeline)</option>
+                    <option value="PipeAndConf">PipeAndConf (Pipeline and confirmed)</option>
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="submit"
+                disabled={confirmingTools}
+                style={{
+                  padding: "8px 18px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "12.5px",
+                  fontWeight: "700",
+                  cursor: confirmingTools ? "wait" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+              >
+                {confirmingTools && <Spinner size={12} color="#FFFFFF" />}
+                <span>{confirmingTools ? "Confirming..." : "Confirm"}</span>
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Step 1 Task 2: Email client to request connections */}
+        {task.id === "p2_request_connections_email" && (
+          <form
+            onSubmit={handleSendConnectionRequestEmail}
+            style={{ padding: "14px 16px", borderRadius: "10px", background: "#FFFFFF", border: "1px solid #CBD5E1", display: "flex", flexDirection: "column", gap: "10px" }}
+          >
+            {inviteContacts.length > 1 && (
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+                  Select client contact
+                </label>
+                <select
+                  value={inviteEmailTo}
+                  onChange={(e) => {
+                    const chosen = inviteContacts.find((c) => c.email === e.target.value);
+                    setInviteEmailTo(e.target.value);
+                    setInviteContactName(chosen?.name || "");
+                    setInviteBodyDirty(false);
+                  }}
+                  style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12.5px", background: "#FFFFFF", boxSizing: "border-box" }}
+                >
+                  {inviteContacts.map((c) => (
+                    <option key={c.email} value={c.email}>
+                      {c.name ? `${c.name} (${c.email})` : c.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+                  To
+                </label>
+                <input
+                  type="email"
+                  required
+                  placeholder="client@company.co.uk"
+                  value={inviteEmailTo}
+                  onChange={(e) => setInviteEmailTo(e.target.value)}
+                  disabled={sendingInviteEmail}
+                  style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12.5px", boxSizing: "border-box" }}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+                  Subject
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={inviteEmailSubject}
+                  onChange={(e) => {
+                    setInviteEmailSubject(e.target.value);
+                    setInviteBodyDirty(true);
+                  }}
+                  disabled={sendingInviteEmail}
+                  style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12.5px", boxSizing: "border-box" }}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+                Message
+              </label>
+              <textarea
+                rows={10}
+                required
+                value={inviteEmailBody}
+                onChange={(e) => {
+                  setInviteEmailBody(e.target.value);
+                  setInviteBodyDirty(true);
+                }}
+                disabled={sendingInviteEmail}
+                style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12.5px", lineHeight: 1.5, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }}
+              />
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+              <span style={{ fontSize: "11px", color: "#64748B" }}>
+                Sending from pulse@pulsedashboard.co.uk
+              </span>
+              <button
+                type="submit"
+                disabled={sendingInviteEmail}
+                style={{
+                  padding: "8px 18px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "12.5px",
+                  fontWeight: "700",
+                  cursor: sendingInviteEmail ? "wait" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+              >
+                {sendingInviteEmail && <Spinner size={12} color="#FFFFFF" />}
+                <span>{sendingInviteEmail ? "Sending..." : "Send"}</span>
+              </button>
+            </div>
+          </form>
         )}
 
         {/* Step 1: Adjust core settings in KeyInfo */}
@@ -1027,6 +1575,142 @@ export default function OnboardingChecklistView({
             }}
           />
         )}
+
+        {/* Step 4 Task 1: Make Pulse live (leaving client in setup mode) */}
+        {task.id === "p5_make_live" && (
+          <div
+            style={{
+              padding: "14px 16px",
+              borderRadius: "10px",
+              background: checklist?.pulseLive ? "#F0FDF4" : "#EFF6FF",
+              border: `1px solid ${checklist?.pulseLive ? "#BBF7D0" : "#BFDBFE"}`,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+              <div style={{ flex: "1 1 280px" }}>
+                <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: checklist?.pulseLive ? "#166534" : "#1E40AF" }}>
+                  {checklist?.pulseLive ? "Pulse is live (setup mode remains active)" : "Activate client access while staying in setup mode"}
+                </span>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: checklist?.pulseLive ? "#15803D" : "#3B82F6" }}>
+                  {checklist?.pulseLive
+                    ? "Client users can access live dashboards and scheduled automations are active. Finish final data capture below, then confirm ending setup mode."
+                    : "Opens live dashboards for client users and starts scheduled automation syncs while keeping the client in setup mode for final data capture."}
+                </p>
+              </div>
+              {checklist?.pulseLive ? (
+                <span
+                  style={{
+                    fontSize: "12px",
+                    fontWeight: "700",
+                    color: "#15803D",
+                    background: "#DCFCE7",
+                    border: "1px solid #86EFAC",
+                    padding: "6px 12px",
+                    borderRadius: "8px",
+                  }}
+                >
+                  Pulse is live
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleMakePulseLive}
+                  disabled={makingPulseLive}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: "#16A34A",
+                    color: "#FFFFFF",
+                    fontSize: "12px",
+                    fontWeight: "700",
+                    cursor: makingPulseLive ? "wait" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  {makingPulseLive && <Spinner size={12} color="#FFFFFF" />}
+                  <span>Make Pulse live</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step 4 Task 2: Email client & track final data capture items */}
+        {task.id === "p5_email_client" && (() => {
+          const parsedMeta = parseFinalDataCaptureMetadata(task.metadata);
+          const itemStates = parsedMeta.items || {};
+          const checkedCount = FINAL_DATA_CAPTURE_ITEMS.filter((it) => Boolean(itemStates[it.key])).length;
+
+          return (
+            <div style={{ padding: "14px 16px", borderRadius: "10px", background: "#FFFFFF", border: "1px solid #CBD5E1", display: "flex", flexDirection: "column", gap: "12px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                <div>
+                  <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#0F172A" }}>
+                    Final data capture checklist ({checkedCount} of {FINAL_DATA_CAPTURE_ITEMS.length} received &amp; actioned)
+                  </span>
+                  <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748B" }}>
+                    Send the go-live email to the client requesting the items below, then tick each item as it is received and actioned.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyGoLiveEmail}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: "6px",
+                    border: "1px solid #CBD5E1",
+                    background: copiedGoLiveEmail ? "#ECFDF5" : "#F8FAFC",
+                    color: copiedGoLiveEmail ? "#047857" : "#023f98",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copiedGoLiveEmail ? "Copied email points" : "Copy email points"}
+                </button>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {FINAL_DATA_CAPTURE_ITEMS.map((item) => {
+                  const isItemDone = Boolean(itemStates[item.key]);
+                  const isSavingThis = savingCaptureItemKey === item.key;
+                  return (
+                    <label
+                      key={item.key}
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: "10px",
+                        padding: "8px 10px",
+                        borderRadius: "6px",
+                        background: isItemDone ? "#F0FDF4" : "#F8FAFC",
+                        border: `1px solid ${isItemDone ? "#BBF7D0" : "#E2E8F0"}`,
+                        cursor: isSavingThis ? "wait" : "pointer",
+                        fontSize: "12.5px",
+                        color: isItemDone ? "#166534" : "#1E293B",
+                        fontWeight: isItemDone ? "600" : "500",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isItemDone}
+                        disabled={Boolean(savingCaptureItemKey)}
+                        onChange={() => handleToggleFinalCaptureItem(task, item.key)}
+                        style={{ width: "16px", height: "16px", marginTop: "2px", cursor: savingCaptureItemKey ? "wait" : "pointer", flexShrink: 0 }}
+                      />
+                      <span style={{ textDecoration: isItemDone ? "line-through" : "none" }}>
+                        {item.label}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -1089,8 +1773,17 @@ export default function OnboardingChecklistView({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "10px" }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-              <span style={{ fontSize: "12px", fontWeight: "700", padding: "2px 8px", borderRadius: "10px", background: "#FEF3C7", color: "#B45309" }}>
-                SETUP MODE ACTIVE
+              <span
+                style={{
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  padding: "2px 8px",
+                  borderRadius: "10px",
+                  background: checklist?.pulseLive ? "#DBEAFE" : "#FEF3C7",
+                  color: checklist?.pulseLive ? "#1D4ED8" : "#B45309",
+                }}
+              >
+                {checklist?.pulseLive ? "PULSE LIVE (IN SETUP)" : "SETUP MODE ACTIVE"}
               </span>
               {isUserAdmin && (
                 <>
@@ -1152,193 +1845,197 @@ export default function OnboardingChecklistView({
 
       {/* Phases Accordion */}
       <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "24px" }}>
-        {visiblePhases.map((phase) => {
-          const isOpen = openPhaseId === phase.id;
-          return (
-            <div
-              key={phase.id}
-              style={{
-                background: "#FFFFFF",
-                borderRadius: "12px",
-                border: "1px solid #E2E8F0",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
-                overflow: "hidden"
-              }}
-            >
-              {/* Phase Header */}
-              <button
-                type="button"
-                onClick={() => setOpenPhaseId(isOpen ? "" : phase.id)}
+        {(() => {
+          let seqStep = 0;
+          return visiblePhases.map((phase) => {
+            const displayStepNum = phase.id === "phase_1" || phase.adminOnly ? null : ++seqStep;
+            const isOpen = openPhaseId === phase.id;
+            return (
+              <div
+                key={phase.id}
                 style={{
-                  width: "100%",
-                  padding: "16px 20px",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  background: isOpen ? "#F8FAFC" : "#FFFFFF",
-                  border: "none",
-                  borderBottom: isOpen ? "1px solid #E2E8F0" : "none",
-                  cursor: "pointer",
-                  textAlign: "left"
+                  background: "#FFFFFF",
+                  borderRadius: "12px",
+                  border: "1px solid #E2E8F0",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+                  overflow: "hidden"
                 }}
               >
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <h3 style={{ margin: "0 0 2px", fontSize: "15px", fontWeight: "700", color: "#0F172A" }}>
-                      {formatPhaseTitle(phase.title)}
-                    </h3>
-                    {phase.id === "phase_1" && isUserAdmin && (
-                      <span
-                        style={{
-                          fontSize: "10px",
-                          fontWeight: "700",
-                          padding: "2px 6px",
-                          borderRadius: "6px",
-                          background: "#EFF6FF",
-                          color: "#1E40AF",
-                          border: "1px solid #BFDBFE"
-                        }}
-                      >
-                        Admin only
-                      </span>
-                    )}
-                  </div>
-                  <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>{formatPhaseDescription(phase.description)}</p>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                  <span
-                    style={{
-                      fontSize: "12px",
-                      fontWeight: "700",
-                      padding: "3px 10px",
-                      borderRadius: "12px",
-                      background: phase.isPhaseComplete ? "#DCFCE7" : "#F1F5F9",
-                      color: phase.isPhaseComplete ? "#15803D" : "#475569"
-                    }}
-                  >
-                    {phase.isPhaseComplete ? "✓ Complete" : `${phase.completedCount} / ${phase.totalCount}`}
-                  </span>
-                  <span style={{ fontSize: "14px", color: "#94A3B8" }}>{isOpen ? "▲" : "▼"}</span>
-                </div>
-              </button>
-
-              {/* Phase Body */}
-              {isOpen && (
-                <div style={{ padding: "20px" }}>
-                  {/* Tasks List */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {phase.tasks.map((task) => {
-                      const attachable = hasTaskAttachment(task);
-                      const isTaskExpanded = Boolean(expandedTaskIds[task.id]);
-
-                      return (
-                        <div
-                          key={task.id}
+                {/* Phase Header */}
+                <button
+                  type="button"
+                  onClick={() => setOpenPhaseId(isOpen ? "" : phase.id)}
+                  style={{
+                    width: "100%",
+                    padding: "16px 20px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    background: isOpen ? "#F8FAFC" : "#FFFFFF",
+                    border: "none",
+                    borderBottom: isOpen ? "1px solid #E2E8F0" : "none",
+                    cursor: "pointer",
+                    textAlign: "left"
+                  }}
+                >
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <h3 style={{ margin: "0 0 2px", fontSize: "15px", fontWeight: "700", color: "#0F172A" }}>
+                        {formatPhaseTitle(phase.title, displayStepNum)}
+                      </h3>
+                      {phase.id === "phase_1" && isUserAdmin && (
+                        <span
                           style={{
-                            padding: "10px 14px",
-                            borderRadius: "8px",
-                            background: task.isCompleted ? "#F0FDF4" : "#F8FAFC",
-                            border: `1px solid ${task.isCompleted ? "#BBF7D0" : isTaskExpanded ? "#93C5FD" : "#E2E8F0"}`,
-                            transition: "border-color 0.15s ease"
+                            fontSize: "10px",
+                            fontWeight: "700",
+                            padding: "2px 6px",
+                            borderRadius: "6px",
+                            background: "#EFF6FF",
+                            color: "#1E40AF",
+                            border: "1px solid #BFDBFE"
                           }}
                         >
+                          Admin only
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>{formatPhaseDescription(phase.description)}</p>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <span
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: "700",
+                        padding: "3px 10px",
+                        borderRadius: "12px",
+                        background: phase.isPhaseComplete ? "#DCFCE7" : "#F1F5F9",
+                        color: phase.isPhaseComplete ? "#15803D" : "#475569"
+                      }}
+                    >
+                      {phase.isPhaseComplete ? "✓ Complete" : `${phase.completedCount} / ${phase.totalCount}`}
+                    </span>
+                    <span style={{ fontSize: "14px", color: "#94A3B8" }}>{isOpen ? "▲" : "▼"}</span>
+                  </div>
+                </button>
+
+                {/* Phase Body */}
+                {isOpen && (
+                  <div style={{ padding: "20px" }}>
+                    {/* Tasks List */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {phase.tasks.map((task) => {
+                        const attachable = hasTaskAttachment(task);
+                        const isTaskExpanded = Boolean(expandedTaskIds[task.id]);
+
+                        return (
                           <div
-                            onClick={() => {
-                              if (attachable) toggleTaskExpanded(task.id);
-                            }}
+                            key={task.id}
                             style={{
-                              display: "flex",
-                              alignItems: "flex-start",
-                              gap: "10px",
-                              cursor: attachable ? "pointer" : "default"
+                              padding: "10px 14px",
+                              borderRadius: "8px",
+                              background: task.isCompleted ? "#F0FDF4" : "#F8FAFC",
+                              border: `1px solid ${task.isCompleted ? "#BBF7D0" : isTaskExpanded ? "#93C5FD" : "#E2E8F0"}`,
+                              transition: "border-color 0.15s ease"
                             }}
                           >
-                            {attachable ? (
-                              <button
-                                type="button"
-                                aria-label={isTaskExpanded ? "Collapse task details" : "Expand task details"}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleTaskExpanded(task.id);
-                                }}
-                                style={{
-                                  background: "transparent",
-                                  border: "none",
-                                  padding: "2px 4px",
-                                  marginTop: "1px",
-                                  fontSize: "11px",
-                                  color: isTaskExpanded ? "#023f98" : "#64748B",
-                                  cursor: "pointer",
-                                  lineHeight: 1
-                                }}
-                              >
-                                {isTaskExpanded ? "▼" : "▶"}
-                              </button>
-                            ) : (
-                              <span style={{ width: "19px", display: "inline-block" }} />
-                            )}
+                            <div
+                              onClick={() => {
+                                if (attachable) toggleTaskExpanded(task.id);
+                              }}
+                              style={{
+                                display: "flex",
+                                alignItems: "flex-start",
+                                gap: "10px",
+                                cursor: attachable ? "pointer" : "default"
+                              }}
+                            >
+                              {attachable ? (
+                                <button
+                                  type="button"
+                                  aria-label={isTaskExpanded ? "Collapse task details" : "Expand task details"}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleTaskExpanded(task.id);
+                                  }}
+                                  style={{
+                                    background: "transparent",
+                                    border: "none",
+                                    padding: "2px 4px",
+                                    marginTop: "1px",
+                                    fontSize: "11px",
+                                    color: isTaskExpanded ? "#023f98" : "#64748B",
+                                    cursor: "pointer",
+                                    lineHeight: 1
+                                  }}
+                                >
+                                  {isTaskExpanded ? "▼" : "▶"}
+                                </button>
+                              ) : (
+                                <span style={{ width: "19px", display: "inline-block" }} />
+                              )}
 
-                            <input
-                              type="checkbox"
-                              checked={task.isCompleted}
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={() => handleToggleTask(task)}
-                              style={{ width: "18px", height: "18px", marginTop: "2px", cursor: "pointer" }}
-                            />
+                              <input
+                                type="checkbox"
+                                checked={task.isCompleted}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={() => handleToggleTask(task)}
+                                style={{ width: "18px", height: "18px", marginTop: "2px", cursor: "pointer" }}
+                              />
 
-                            <div style={{ flex: 1 }}>
-                              <span
-                                style={{
-                                  fontSize: "13px",
-                                  fontWeight: "600",
-                                  color: task.isCompleted ? "#166534" : "#1E293B",
-                                  textDecoration: task.isCompleted ? "line-through" : "none"
-                                }}
-                              >
-                                {formatTaskTitle(task)}
-                              </span>
-                              {task.metadata && isUserAdmin && (
-                                <span style={{ display: "block", fontSize: "11px", color: "#64748B", marginTop: "2px" }}>
-                                  {task.metadata}
+                              <div style={{ flex: 1 }}>
+                                <span
+                                  style={{
+                                    fontSize: "13px",
+                                    fontWeight: "600",
+                                    color: task.isCompleted ? "#166534" : "#1E293B",
+                                    textDecoration: task.isCompleted ? "line-through" : "none"
+                                  }}
+                                >
+                                  {formatTaskTitle(task)}
+                                </span>
+                                {task.metadata && (isUserAdmin || String(task.metadata).trim().startsWith("{")) && (
+                                  <span style={{ display: "block", fontSize: "11px", color: "#64748B", marginTop: "2px" }}>
+                                    {formatTaskMetadataSummary(task.metadata)}
+                                  </span>
+                                )}
+                              </div>
+
+                              {task.waitingOnClient && (
+                                <span
+                                  style={{
+                                    fontSize: "10px",
+                                    fontWeight: "700",
+                                    color: "#B45309",
+                                    background: "#FEF3C7",
+                                    border: "1px solid #FDE68A",
+                                    padding: "2px 7px",
+                                    borderRadius: "6px",
+                                    whiteSpace: "nowrap"
+                                  }}
+                                >
+                                  Waiting on client
+                                </span>
+                              )}
+
+                              {task.autoCompletable && (
+                                <span style={{ fontSize: "10px", fontWeight: "700", color: "#64748B", background: "#E2E8F0", padding: "2px 6px", borderRadius: "6px" }}>
+                                  Auto
                                 </span>
                               )}
                             </div>
 
-                            {task.waitingOnClient && (
-                              <span
-                                style={{
-                                  fontSize: "10px",
-                                  fontWeight: "700",
-                                  color: "#B45309",
-                                  background: "#FEF3C7",
-                                  border: "1px solid #FDE68A",
-                                  padding: "2px 7px",
-                                  borderRadius: "6px",
-                                  whiteSpace: "nowrap"
-                                }}
-                              >
-                                Waiting on client
-                              </span>
-                            )}
-
-                            {task.autoCompletable && (
-                              <span style={{ fontSize: "10px", fontWeight: "700", color: "#64748B", background: "#E2E8F0", padding: "2px 6px", borderRadius: "6px" }}>
-                                Auto
-                              </span>
-                            )}
+                            {/* Attached collapsible action box */}
+                            {attachable && isTaskExpanded && renderTaskAttachment(task)}
                           </div>
-
-                          {/* Attached collapsible action box */}
-                          {attachable && isTaskExpanded && renderTaskAttachment(task)}
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
+                )}
+              </div>
+            );
+          });
+        })()}
       </div>
 
       {/* Go Live Footer Action */}
@@ -1357,10 +2054,10 @@ export default function OnboardingChecklistView({
       >
         <div>
           <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
-            Ready to launch live dashboards?
+            End setup mode for client
           </h3>
           <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-            Completing setup will turn off setup mode and allow client users to access their live financial dashboards.
+            Confirming will take the client out of setup mode and mark onboarding complete.
           </p>
         </div>
         <button
@@ -1382,7 +2079,7 @@ export default function OnboardingChecklistView({
           }}
         >
           {completingSetup && <Spinner size={16} color="#FFFFFF" />}
-          <span>Complete onboarding & go live →</span>
+          <span>Confirm</span>
         </button>
       </div>
 

@@ -95,6 +95,7 @@ export default function SetupView({
   const [config, setConfig] = useState(null);
 
   const [setupMode, setSetupMode] = useState(false);
+  const [pulseLive, setPulseLive] = useState(false);
   const [requestConnections, setRequestConnections] = useState(false);
   const [accountingTool, setAccountingTool] = useState("None");
   const [crmTool, setCrmTool] = useState("None");
@@ -147,6 +148,7 @@ export default function SetupView({
       if (data.success && data.config) {
         setConfig(data.config);
         setSetupMode(Boolean(data.config.setupMode));
+        setPulseLive(Boolean(data.config.pulseLive) || !data.config.setupMode);
         setRequestConnections(Boolean(data.config.requestConnections));
         setAccountingTool(data.config.accountingTool || "None");
         setCrmTool(data.config.crmTool || "None");
@@ -214,6 +216,7 @@ export default function SetupView({
           clientName: selectedClient.clientName,
           masterSheetId: selectedClient.masterSheetId || config?.masterSheetId || "",
           setupMode: newVal,
+          pulseLive: !newVal,
           requestConnections,
           accountingTool: config?.accountingTool || accountingTool,
           crmTool: config?.crmTool || crmTool,
@@ -225,6 +228,7 @@ export default function SetupView({
       if (data.success && data.config) {
         setConfig(data.config);
         setSetupMode(Boolean(data.config.setupMode));
+        setPulseLive(Boolean(data.config.pulseLive) || !data.config.setupMode);
         setRequestConnections(Boolean(data.config.requestConnections));
         setFeedback({
           type: "success",
@@ -259,6 +263,7 @@ export default function SetupView({
           clientName: selectedClient.clientName,
           masterSheetId: selectedClient.masterSheetId || config?.masterSheetId || "",
           setupMode,
+          pulseLive,
           requestConnections: newVal,
           accountingTool: config?.accountingTool || accountingTool,
           crmTool: config?.crmTool || crmTool,
@@ -303,6 +308,7 @@ export default function SetupView({
           clientName: selectedClient.clientName,
           masterSheetId: selectedClient.masterSheetId || config?.masterSheetId || "",
           setupMode,
+          pulseLive,
           requestConnections,
           accountingTool,
           crmTool,
@@ -609,11 +615,11 @@ export default function SetupView({
                             fontWeight: "700",
                             padding: "3px 8px",
                             borderRadius: "12px",
-                            background: client.setupMode ? "#FEF3C7" : "#DCFCE7",
-                            color: client.setupMode ? "#B45309" : "#15803D"
+                            background: client.setupMode ? (client.pulseLive ? "#DBEAFE" : "#FEF3C7") : "#DCFCE7",
+                            color: client.setupMode ? (client.pulseLive ? "#1D4ED8" : "#B45309") : "#15803D"
                           }}
                         >
-                          {client.setupMode ? "● SETUP MODE" : "✓ LIVE"}
+                          {client.setupMode ? (client.pulseLive ? "● LIVE (IN SETUP)" : "● SETUP MODE") : "✓ LIVE"}
                         </span>
                       </td>
                       <td style={{ padding: "14px 16px", color: "#475569" }}>
@@ -680,6 +686,13 @@ export default function SetupView({
     );
   }
 
+  const activeTargetClientName = selectedClient?.clientName || selectedClientName || "";
+  const isConfigLoading = Boolean(
+    loading ||
+    !config ||
+    String(config.clientName || "").toLowerCase() !== String(activeTargetClientName).toLowerCase()
+  );
+
   // ============================================================================
   // VIEW 2: SINGLE CLIENT SETUP VIEW
   // ============================================================================
@@ -726,23 +739,27 @@ export default function SetupView({
 
           <h1 style={{ margin: "0 0 4px 0", fontSize: "20px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "10px" }}>
             <span>{selectedClient ? selectedClient.clientName : selectedClientName}</span>
-            <span
-              style={{
-                fontSize: "12px",
-                fontWeight: "700",
-                padding: "3px 10px",
-                borderRadius: "12px",
-                background: setupMode ? "#FEF3C7" : "#DCFCE7",
-                color: setupMode ? "#B45309" : "#15803D"
-              }}
-            >
-              {setupMode ? "● SETUP MODE" : "✓ LIVE"}
-            </span>
+            {!isConfigLoading && (
+              <span
+                style={{
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  padding: "3px 10px",
+                  borderRadius: "12px",
+                  background: setupMode ? (pulseLive ? "#DBEAFE" : "#FEF3C7") : "#DCFCE7",
+                  color: setupMode ? (pulseLive ? "#1D4ED8" : "#B45309") : "#15803D"
+                }}
+              >
+                {setupMode ? (pulseLive ? "● LIVE (IN SETUP)" : "● SETUP MODE") : "✓ LIVE"}
+              </span>
+            )}
           </h1>
           <p style={{ margin: 0, color: "#64748B", fontSize: "13px" }}>
-            {setupMode
-              ? "Follow the phased checklist below to onboard this client and connect tools."
-              : (isUserAdmin ? "Control client setup mode, configure tool integrations, and edit budget/outgoings spreadsheets." : "Control client setup mode, configure tool integrations, and edit client budgets.")}
+            {isConfigLoading
+              ? "Loading client setup..."
+              : setupMode
+                ? "Follow the phased checklist below to onboard this client and connect tools."
+                : (isUserAdmin ? "Control client setup mode, configure tool integrations, and edit budget/outgoings spreadsheets." : "Control client setup mode, configure tool integrations, and edit client budgets.")}
           </p>
         </div>
 
@@ -848,7 +865,8 @@ export default function SetupView({
         </div>
       )}
 
-      {loading && (!config || (config.clientName || "").toLowerCase() !== (selectedClient?.clientName || selectedClientName || "").toLowerCase()) ? (
+        {
+          isConfigLoading?(
         <PmaSetupDetailSkeleton />
       ) : (
         <>
@@ -912,12 +930,12 @@ export default function SetupView({
                     fontSize: "12px",
                     fontWeight: "700",
                     letterSpacing: "0.3px",
-                    background: setupMode ? "#FEF3C7" : "#DCFCE7",
-                    color: setupMode ? "#B45309" : "#15803D",
-                    border: `1px solid ${setupMode ? "#FCD34D" : "#86EFAC"}`
+                    background: setupMode ? (pulseLive ? "#DBEAFE" : "#FEF3C7") : "#DCFCE7",
+                    color: setupMode ? (pulseLive ? "#1D4ED8" : "#B45309") : "#15803D",
+                    border: `1px solid ${setupMode ? (pulseLive ? "#93C5FD" : "#FCD34D") : "#86EFAC"}`
                   }}
                 >
-                  {setupMode ? "Setup mode active" : "● Live dashboards active"}
+                  {setupMode ? (pulseLive ? "● Pulse live (in setup)" : "Setup mode active") : "● Live dashboards active"}
                 </div>
                 <a
                   href={`/pulse?client=${encodeURIComponent(selectedClient?.clientName || selectedClientName)}&preview=setup`}
@@ -1028,13 +1046,19 @@ export default function SetupView({
                     id="request-conn-toggle"
                     type="checkbox"
                     checked={requestConnections}
-                    disabled={savingLifecycle}
+                    disabled={savingLifecycle || Boolean(config?.requiredOAuthTools?.length > 0 && config?.allRequiredToolsConnected)}
                     onChange={(e) => handleToggleRequestConnections(e.target.checked)}
-                    style={{ width: "18px", height: "18px", cursor: savingLifecycle ? "not-allowed" : "pointer" }}
+                    style={{
+                      width: "18px",
+                      height: "18px",
+                      cursor: savingLifecycle || (config?.requiredOAuthTools?.length > 0 && config?.allRequiredToolsConnected) ? "not-allowed" : "pointer"
+                    }}
                   />
                 </div>
-                <p style={{ margin: 0, fontSize: "12px", color: "#64748B", lineHeight: "1.4" }}>
-                  Prompt client users in Setup Mode to authorize third-party tools via Central Pulse Vault.
+                <p style={{ margin: 0, fontSize: "12px", color: config?.requiredOAuthTools?.length > 0 && config?.allRequiredToolsConnected ? "#047857" : "#64748B", lineHeight: "1.4" }}>
+                  {config?.requiredOAuthTools?.length > 0 && config?.allRequiredToolsConnected
+                    ? "All required tools are connected — automatically unchecked."
+                    : "Prompt client users in setup mode to authorise third-party tools via Central Pulse Vault."}
                 </p>
               </div>
             </div>
@@ -1052,8 +1076,14 @@ export default function SetupView({
               onOpenSheetEditor={(editor) => setActiveSheetEditor(editor)}
               onGoToBudget={onGoToBudget}
               onGoToTasks={onGoToTasks}
-              onSetupModeToggled={(newMode) => {
-                setSetupMode(newMode);
+              onSetupModeToggled={(nextState) => {
+                if (nextState && typeof nextState === "object") {
+                  if (nextState.setupMode !== undefined) setSetupMode(Boolean(nextState.setupMode));
+                  if (nextState.pulseLive !== undefined) setPulseLive(Boolean(nextState.pulseLive));
+                } else {
+                  setSetupMode(Boolean(nextState));
+                  if (!nextState) setPulseLive(true);
+                }
                 if (selectedClient) loadConfig(selectedClient);
               }}
               onClientsChanged={onClientsChanged}

@@ -485,6 +485,8 @@ export async function getSsrInitialPmaData(sessionUser) {
                       if (cfg.accountingTool) c.accountingTool = cfg.accountingTool;
                       if (cfg.crmTool) c.crmTool = cfg.crmTool;
                       if (cfg.crmDrives) c.crmDrives = cfg.crmDrives;
+                      c.setupMode = Boolean(cfg.setupMode);
+                      c.pulseLive = Boolean(cfg.pulseLive) || !c.setupMode;
                     } catch { }
                   }
                 });
@@ -528,13 +530,16 @@ export async function getSsrInitialPmaData(sessionUser) {
         const crmTool = c.crmTool || ic?.crmTool || "None";
         const crmDrives = c.crmDrives || ic?.crmDrives || "NA";
         const hasAccountingIntegration = c.hasAccountingIntegration ?? ["xero", "quickbooks", "qb"].some(t => String(accTool).toLowerCase().includes(t));
+        const nextSetupMode = Boolean(c.setupMode ?? (ic?.setupMode || ic?.isSetupMode));
+        const nextPulseLive = !nextSetupMode || Boolean(c.pulseLive ?? ic?.pulseLive);
         return {
           ...c,
           accountingTool: accTool,
           crmTool,
           crmDrives,
           hasAccountingIntegration,
-          setupMode: Boolean(ic?.setupMode || ic?.isSetupMode)
+          setupMode: nextSetupMode,
+          pulseLive: nextPulseLive
         };
       })
       .sort((a, b) => String(a.clientName || "").localeCompare(String(b.clientName || "")));
@@ -685,13 +690,15 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
 
     const cleanClients = authorizedClients.map((c) => {
       const setupMode = Boolean(c.setupMode);
+      const pulseLive = !setupMode || Boolean(c.pulseLive);
       return isPulseOnly
-        ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode }
+        ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode, pulseLive }
         : {
           clientName: c.clientName,
           clientSheetId: c.clientSheetId,
           masterSheetId: c.masterSheetId,
           setupMode,
+          pulseLive,
         };
     });
 
@@ -746,6 +753,9 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
               selectedSetupConfig = JSON.parse(cachedTriple[2]);
               if (selectedSetupConfig?.setupMode === true) {
                 selectedRaw.setupMode = true;
+                selectedRaw.pulseLive = Boolean(selectedSetupConfig?.pulseLive);
+              } else if (selectedSetupConfig) {
+                selectedRaw.pulseLive = true;
               }
             }
           }
@@ -761,12 +771,13 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
       sessionUser
     );
 
+    const isSelectedHoldingGated = Boolean(selectedRaw?.setupMode && !selectedRaw?.pulseLive);
     const safePayload =
-      selectedRaw?.setupMode || query?.preview === "setup" || !initialPayload
+      isSelectedHoldingGated || query?.preview === "setup" || !initialPayload
         ? null
         : redactPortalPayloadForUser(initialPayload, sessionUser);
     const safePerfData =
-      selectedRaw?.setupMode || query?.preview === "setup" || !initialPerformanceData
+      isSelectedHoldingGated || query?.preview === "setup" || !initialPerformanceData
         ? null
         : redactPortalPerformanceForUser(initialPerformanceData, sessionUser);
 

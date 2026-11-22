@@ -74,7 +74,7 @@ export async function setTriageRefreshStatus(statusObj, ttlSecs = 600) {
   }
 }
 
-async function syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options) {
+async function syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options, pipelineChecked = false) {
   if (!alert || !Array.isArray(options)) return;
   try {
     if (!redisClient?.isOpen) await redisClient.connect();
@@ -96,6 +96,7 @@ async function syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options
       for (const a of pre.alerts) {
         if (matchAlert(a)) {
           a.options = options;
+          if (pipelineChecked) a._pipelineChecked = true;
           updated = true;
         }
       }
@@ -107,6 +108,7 @@ async function syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options
           for (const a of list) {
             if (matchAlert(a)) {
               a.options = options;
+              if (pipelineChecked) a._pipelineChecked = true;
               updated = true;
             }
           }
@@ -3779,6 +3781,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
               try { oldSnap = JSON.parse(exRow.dataSnapshot || "{}"); } catch (e) { }
               const preservedDetectedAt = oldSnap.detectedAt || detectedAtIso;
               const snapshotToSave = { ...alertForSnapshot, detectedAt: preservedDetectedAt };
+              if (oldSnap._pipelineChecked) snapshotToSave._pipelineChecked = true;
 
               let newSnapshotStr;
               if (exRow.status === "task") {
@@ -4026,6 +4029,9 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
       try {
         const parsed = JSON.parse(r.cachedOptionsJSON);
         if (!Array.isArray(parsed)) return true;
+        if (parsed.length === 0 && isMissingItemAlertForPipelineCheck_(r) && !hasPipelineCheckedFlag_(r.dataSnapshot)) {
+          return true;
+        }
         const isStale = parsed.some(opt => {
           const title = String(opt.title || "").toLowerCase();
           if (title.includes("no confident automatic match") || (title.includes("manual investigation") && (title.includes("no confident") || title.includes("automatic match")))) return true;
@@ -4239,6 +4245,9 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
                   if (match.flagType) {
                     snapObj.flagType = match.flagType;
                     snapObj.alertType = match.flagType;
+                  }
+                  if (analyzeData.pipelineChecked) {
+                    snapObj._pipelineChecked = true;
                   }
                   updatedSnapshot = JSON.stringify(snapObj);
                 } catch (e) { }
@@ -4801,7 +4810,12 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           return false;
         });
 
-        const isLegitimatelyEmpty = Array.isArray(cachedOptions) && cachedOptions.length === 0;
+        const isMissingInvOrExp = (
+          (alert.type === "invoice" || alert.sheetName === "InvComp" || alert.flagType === "invoiceDashboardDiscr" || alert.alertType === "invoiceDashboardDiscr") ||
+          (alert.type === "expense" || alert.sheetName === "DirComp" || alert.flagType === "expenseDashboardDiscr" || alert.flagType === "contractorsDashboardDiscr" || alert.flagType === "passThroughDashboardDiscr" || alert.alertType === "expenseDashboardDiscr" || alert.alertType === "contractorsDashboardDiscr" || alert.alertType === "passThroughDashboardDiscr")
+        ) && String(alert.data?.flags?.[0] || "").trim() === "1";
+        const needsPipelineFallbackCheck = isMissingInvOrExp && !hasPipelineCheckedFlag_(memoryRow.dataSnapshot) && !alert._pipelineChecked;
+        const isLegitimatelyEmpty = Array.isArray(cachedOptions) && cachedOptions.length === 0 && !needsPipelineFallbackCheck;
         if ((validCachedOptions.length > 0 && !isCacheStale) || isLegitimatelyEmpty) {
           // For crmPipeAppDiscr Pipeline alerts, re-fetch copiedToConf live
           // since it can change in the sheet independently of the cached options
@@ -4831,7 +4845,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           // missing entirely (cached before this feature existed) or stale (sheet
           // has changed since the options were cached). Determine the correct tab:
           // CRM alerts use Pipeline/Confirmed per their mode; invoice/expense options
-          // always reference the Confirmed tab.
+          // reference Confirmed (or Pipeline for pipeline_info informational matches).
           try {
             const jrdTabName = (alert.type === "crm" || alert.sheetName === "CRMComp")
               ? (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr" || alert.alertType === "crmPipeDashDiscr" ? "Pipeline" : "Confirmed")
@@ -4839,8 +4853,9 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             const jrdSheetId = alert.clientId;
             const jrdCache = new Map();
             optionsToReturn = await Promise.all(optionsToReturn.map(async (opt) => {
-              if (!opt.jobRow || (opt.matchType !== "existing_job" && opt.matchType !== "job")) return opt;
+              if (!opt.jobRow || (opt.matchType !== "existing_job" && opt.matchType !== "job" && opt.matchType !== "pipeline_info")) return opt;
               if (opt.jobRowsData && opt.jobRowsData.length > 0) return opt;
+              const optTabName = opt.tabName || opt.jobDetails?.tabName || (opt.matchType === "pipeline_info" ? "Pipeline" : jrdTabName);
               // Prefer explicit target fields (set at generation time) over parsing
               // recommendedActions text - explicit fields can't be mismatched.
               let highlightSlot = null;
@@ -4854,9 +4869,9 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 if (expSlotMatch) highlightSlot = { type: "expense", rowNum: opt.jobRow, slotNum: parseInt(expSlotMatch[1]) };
                 else if (invSlotMatch) highlightSlot = { type: "invoice", rowNum: opt.jobRow, slotNum: parseInt(invSlotMatch[1]) };
               }
-              const cacheKey = `${opt.jobRow}-${highlightSlot?.slotNum ?? "none"}`;
+              const cacheKey = `${optTabName}-${opt.jobRow}-${highlightSlot?.slotNum ?? "none"}`;
               if (!jrdCache.has(cacheKey)) {
-                jrdCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, jrdSheetId, jrdTabName, opt.jobRow, highlightSlot, sharedData));
+                jrdCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, jrdSheetId, optTabName, opt.jobRow, highlightSlot, sharedData));
               }
               return { ...opt, jobRowsData: jrdCache.get(cacheKey) };
             }));
@@ -4869,6 +4884,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             options: optionsToReturn,
             alertId: alert.rowNumber,
             fromCache: true,
+            pipelineChecked: hasPipelineCheckedFlag_(memoryRow.dataSnapshot) || Boolean(alert._pipelineChecked),
             previousIgnoreReason: await findPreviousIgnoreReason(memoryRows, alert),
           });
         }
@@ -6119,32 +6135,71 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
       const filteredJobSysOptions = allowJobOptions ? jobSysOptions : [];
       const filteredVendorSysOptions = allowVendorOptions ? vendorSysOptions : [];
       const sysOptions = [...filteredJobSysOptions, ...filteredVendorSysOptions].slice(0, 4);
-      // Renumber optionIds
-      const options = sysOptions.map((o, i) => ({ ...o, optionId: i + 1 }));
-      console.log(`  ✅ System-generated ${options.length} expense options`);
 
-      // Attach jobRowsData for spreadsheet-style display - only for job matches
-      // (Outgoings vendor/category matches don't have a Confirmed job row to show)
+      // If no Confirmed job matches were found for this expense, scan Pipeline jobs for informational matches
+      let pipelineInfoExpOptions = [];
+      if (allowJobOptions && filteredJobSysOptions.length === 0) {
+        try {
+          let pipelineData = [];
+          if (sharedData && Array.isArray(sharedData.pipelineData)) {
+            pipelineData = sharedData.pipelineData;
+          } else if (alert.clientId) {
+            const pipeResp = await withRetry(() => sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: "Pipeline!A1:DD5000",
+            }));
+            pipelineData = pipeResp.data.values || [];
+          }
+          if (pipelineData.length > 0) {
+            pipelineInfoExpOptions = findPipelineExpenseInfoMatches_({
+              pipelineData,
+              expenseDescription,
+              expenseRef,
+              expenseAmount,
+              expDateParsed,
+              expAmtTolFn,
+              dateWithinToleranceExp,
+              normExpWords,
+              expDescWords,
+              expBracketMatch,
+              expBracketWords,
+            });
+          }
+        } catch (pipeExpErr) {
+          console.log(`  ⚠️ Pipeline informational check (expense) failed (non-fatal): ${pipeExpErr.message}`);
+        }
+      }
+
+      // Renumber optionIds
+      const options = [...sysOptions, ...pipelineInfoExpOptions].map((o, i) => ({ ...o, optionId: i + 1 }));
+      console.log(`  ✅ System-generated ${options.length} expense options (${pipelineInfoExpOptions.length} pipeline info)`);
+
+      // Attach jobRowsData for spreadsheet-style display - for job matches and informational pipeline matches
+      // (Outgoings vendor/category matches don't have a Confirmed/Pipeline job row to show)
       const expJobRowCache = new Map();
       for (const opt of options) {
-        if (opt.matchType !== "job" || !opt.jobRow) continue;
+        if ((opt.matchType !== "job" && opt.matchType !== "pipeline_info") || !opt.jobRow) continue;
+        const optTab = opt.tabName || opt.jobDetails?.tabName || (opt.matchType === "pipeline_info" ? "Pipeline" : "Confirmed");
         const highlightSlot = (opt.targetSlotType && opt.targetSlotNum)
           ? { type: opt.targetSlotType, rowNum: opt.targetRowNum || opt.jobRow, slotNum: opt.targetSlotNum }
           : null;
-        const cacheKey = `${opt.jobRow}-${highlightSlot?.rowNum ?? "same"}-${highlightSlot?.slotNum ?? "none"}`;
+        const cacheKey = `${optTab}-${opt.jobRow}-${highlightSlot?.rowNum ?? "same"}-${highlightSlot?.slotNum ?? "none"}`;
         if (!expJobRowCache.has(cacheKey)) {
-          expJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot, sharedData));
+          expJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.clientId, optTab, opt.jobRow, highlightSlot, sharedData));
         }
         opt.jobRowsData = expJobRowCache.get(cacheKey);
       }
 
       // Cache in AlertMemory
       const alertSummary = alert.summary?.summary || `Expense ${alert.summary?.reference || ""} £${alert.summary?.amount || ""}`;
+      const expPipelineChecked = Boolean(allowJobOptions);
       if (memoryRow) {
+        const updatedExpSnapshot = expPipelineChecked ? withPipelineCheckedSnapshot_(memoryRow.dataSnapshot) : memoryRow.dataSnapshot;
         await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
           ...memoryRow,
           alertType: resolvedExpAlertType,
           cachedOptionsJSON: JSON.stringify(options),
+          dataSnapshot: updatedExpSnapshot,
         });
       } else {
         await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
@@ -6153,16 +6208,18 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           clientName: alert.clientName || "",
           alertSummary,
           cachedOptionsJSON: JSON.stringify(options),
+          dataSnapshot: expPipelineChecked ? withPipelineCheckedSnapshot_(JSON.stringify(alert)) : JSON.stringify(alert),
           status: "cached",
         });
       }
-      await syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options);
+      await syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options, expPipelineChecked);
       console.log(`  💾 Options cached in AlertMemory`);
 
       return res.status(200).json({
         success: true,
         options,
         alertId: alert.rowNumber,
+        pipelineChecked: expPipelineChecked,
         previousIgnoreReason
       });
     }
@@ -8419,37 +8476,82 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
     });
     console.log(`  ✅ System-generated ${options.length} invoice options (capped at top 2)`);
 
-    // Attach jobRowsData for spreadsheet-style display - cache by row+slot since
-    // different options can target the same row with different slots highlighted
+    // If no Confirmed job matches were found for this missing invoice, scan Pipeline jobs
+    // to provide informational matches only (user cannot place directly onto Pipeline).
+    if (isMissingInvoice && options.length === 0) {
+      try {
+        let pipelineData = [];
+        if (sharedData && Array.isArray(sharedData.pipelineData)) {
+          pipelineData = sharedData.pipelineData;
+        } else if (alert.clientId) {
+          const pipeResp = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId: alert.clientId,
+            range: "Pipeline!A1:DD5000",
+          }));
+          pipelineData = pipeResp.data.values || [];
+        }
+        if (pipelineData.length > 0) {
+          options = findPipelineInvoiceInfoMatches_({
+            pipelineData,
+            effectiveInvClient,
+            effectiveInvJob,
+            invoiceAmtForMatch,
+            invSentDateParsed,
+            sentDate,
+            amtToleranceFn,
+            dateWithinTolerance,
+            normInvWords,
+            invClientWords,
+            invJobWords,
+          });
+          console.log(`  ℹ️ Pipeline informational scan found ${options.length} potential match(es)`);
+        }
+      } catch (pipeErr) {
+        console.log(`  ⚠️ Pipeline informational check (invoice) failed (non-fatal): ${pipeErr.message}`);
+      }
+    }
+
+    // Attach jobRowsData for spreadsheet-style display - cache by tab+row+slot since
+    // different options can target different tabs or slots
     const invJobRowCache = new Map();
     for (const opt of options) {
       if (!opt.jobRow) continue;
+      const optTab = opt.tabName || opt.jobDetails?.tabName || (opt.matchType === "pipeline_info" ? "Pipeline" : "Confirmed");
       const highlightSlot = (opt.targetSlotType && opt.targetSlotNum)
         ? { type: opt.targetSlotType, rowNum: opt.targetRowNum || opt.jobRow, slotNum: opt.targetSlotNum }
         : null;
-      const cacheKey = `${opt.jobRow}-${highlightSlot?.rowNum ?? "same"}-${highlightSlot?.slotNum ?? "none"}`;
+      const cacheKey = `${optTab}-${opt.jobRow}-${highlightSlot?.rowNum ?? "same"}-${highlightSlot?.slotNum ?? "none"}`;
       if (!invJobRowCache.has(cacheKey)) {
-        invJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot, sharedData));
+        invJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.clientId, optTab, opt.jobRow, highlightSlot, sharedData));
       }
       opt.jobRowsData = invJobRowCache.get(cacheKey);
     }
 
     const invSummary = `Invoice ${invoiceRef} ${effectiveInvClient} - ${effectiveInvJob}`;
+    const invPipelineChecked = Boolean(isMissingInvoice);
     if (memoryRow) {
-      await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(options) });
+      const updatedInvSnapshot = invPipelineChecked ? withPipelineCheckedSnapshot_(memoryRow.dataSnapshot) : memoryRow.dataSnapshot;
+      await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+        ...memoryRow,
+        cachedOptionsJSON: JSON.stringify(options),
+        dataSnapshot: updatedInvSnapshot,
+      });
     } else {
       await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
         fingerprintHash, alertType: "invoice", clientName: alert.clientName || "",
-        alertSummary: invSummary, cachedOptionsJSON: JSON.stringify(options), status: "cached",
+        alertSummary: invSummary, cachedOptionsJSON: JSON.stringify(options),
+        dataSnapshot: invPipelineChecked ? withPipelineCheckedSnapshot_(JSON.stringify(alert)) : JSON.stringify(alert),
+        status: "cached",
       });
     }
-    await syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options);
+    await syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options, invPipelineChecked);
     console.log(`  💾 Options cached in AlertMemory`);
 
     res.status(200).json({
       success: true,
       options,
       alertId: alert.rowNumber,
+      pipelineChecked: invPipelineChecked,
       previousIgnoreReason
     });
   } catch (err) {
@@ -12405,6 +12507,615 @@ export function monthsWithinTolerance_(date1, date2, toleranceMonths) {
   const m1 = date1.getFullYear() * 12 + date1.getMonth();
   const m2 = date2.getFullYear() * 12 + date2.getMonth();
   return Math.abs(m1 - m2) <= Math.max(0, toleranceMonths);
+}
+
+function hasPipelineCheckedFlag_(dataSnapshot) {
+  if (!dataSnapshot) return false;
+  try {
+    const snap = typeof dataSnapshot === "string" ? JSON.parse(dataSnapshot) : dataSnapshot;
+    return snap?._pipelineChecked === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function withPipelineCheckedSnapshot_(dataSnapshot) {
+  try {
+    const snap = dataSnapshot ? (typeof dataSnapshot === "string" ? JSON.parse(dataSnapshot) : { ...dataSnapshot }) : {};
+    if (snap && typeof snap === "object") {
+      snap._pipelineChecked = true;
+      return JSON.stringify(snap);
+    }
+  } catch (_) { }
+  return JSON.stringify({ _pipelineChecked: true });
+}
+
+function isMissingItemAlertForPipelineCheck_(row) {
+  const at = String(row?.alertType || "");
+  const isInv = at === "invoiceDashboardDiscr" || at === "invoice";
+  const isExp = at === "contractorsDashboardDiscr" || at === "passThroughDashboardDiscr" || at === "expenseDashboardDiscr" || at === "expense";
+  if (!isInv && !isExp) return false;
+  try {
+    const snap = JSON.parse(row?.dataSnapshot || "{}");
+    return String(snap?.data?.flags?.[0] || "").trim() === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function trimPipelineActiveRows_(pipelineData) {
+  if (!Array.isArray(pipelineData) || pipelineData.length <= 1) return [];
+  const colsToCheck = [
+    0, 1, 2, 3, 4, 5, 6, 32, 33, 34, 35, 36, 37, 38, 39,
+    41, 42, 43, 44, 45, 48, 49, 50, 51, 52, 55, 56, 57, 58, 59,
+    75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95,
+    107,
+  ];
+  let lastRow = 0;
+  for (let r = pipelineData.length - 1; r > 0; r--) {
+    const rowData = pipelineData[r] || [];
+    if (colsToCheck.some(col => rowData[col])) {
+      lastRow = r;
+      break;
+    }
+  }
+  return pipelineData.slice(0, lastRow + 1);
+}
+
+function parsePipelineRankDate_(d) {
+  if (!d) return null;
+  const MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if (!m) return null;
+  const mIdx = MONTHS_MAP[m[2].toLowerCase()];
+  if (mIdx === undefined) return null;
+  const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+  return new Date(yr, mIdx, parseInt(m[1], 10)).getTime();
+}
+
+function formatGbpAmount_(val) {
+  const num = Number(val) || 0;
+  return `£${num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function findPipelineInvoiceInfoMatches_({
+  pipelineData,
+  effectiveInvClient,
+  effectiveInvJob,
+  invoiceAmtForMatch,
+  invSentDateParsed,
+  amtToleranceFn,
+  dateWithinTolerance,
+  normInvWords,
+  invClientWords,
+  invJobWords,
+}) {
+  const activePipeData = trimPipelineActiveRows_(pipelineData);
+  if (activePipeData.length <= 1) return [];
+
+  const INV_SLOT_DEFS = [
+    { amtIdx: 41, refIdx: 42, sentIdx: 43, slotNum: 1 },
+    { amtIdx: 48, refIdx: 49, sentIdx: 50, slotNum: 2 },
+    { amtIdx: 55, refIdx: 56, sentIdx: 57, slotNum: 3 },
+  ];
+
+  const pipeCandidateJobs = [];
+  let cji = 1;
+  while (cji < activePipeData.length) {
+    const row = activePipeData[cji] || [];
+    const client = String(row[0] || "").trim();
+    const jobName = String(row[1] || "").trim();
+    const code = String(row[2] || "").trim();
+    const revRaw = String(row[32] || "").trim();
+    const directCostsRaw = String(row[33] || "").trim();
+    const vatYesNo = String(row[34] || "").trim();
+    const projType = String(row[35] || "").trim();
+    const startDate = String(row[37] || "").trim();
+    const endDate = String(row[38] || "").trim();
+    const likelihood = String(row[39] || "").trim();
+    const copiedToConf = String(row[107] || "").trim();
+
+    if ((!client && !jobName) || client.toLowerCase() === "client") {
+      cji++;
+      continue;
+    }
+
+    const parentIdx = cji;
+    const isRetainer = projType.toLowerCase().includes("retainer");
+    const jobRows = [{ row, sheetRow: cji + 1, isParent: true }];
+
+    let cjNext = cji + 1;
+    while (cjNext < activePipeData.length) {
+      const nextRow = activePipeData[cjNext] || [];
+      const nc = String(nextRow[0] || "").trim();
+      const nj = String(nextRow[1] || "").trim();
+      const nRev = String(nextRow[32] || "").trim();
+      const nCode = String(nextRow[2] || "").trim();
+      const nStart = String(nextRow[37] || "").trim();
+      const nType = String(nextRow[35] || "").trim();
+
+      const isExplicitChild = (nc.toLowerCase() === client.toLowerCase() && nj.toLowerCase() === jobName.toLowerCase()) && !nRev && !nCode && !nStart && !nType;
+      const isInheritedChild = (!nc && !nj) && nextRow.some(cell => String(cell || "").trim() !== "");
+      if (isExplicitChild || isInheritedChild) {
+        jobRows.push({ row: nextRow, sheetRow: cjNext + 1, isParent: false });
+        cjNext++;
+      } else {
+        break;
+      }
+    }
+    cji = cjNext;
+
+    if (isPipelineJobSuppressed(likelihood, copiedToConf)) {
+      continue;
+    }
+
+    let totalRealInvoiced = 0;
+    let totalPlaceholderAmts = 0;
+    const nonRealSlots = [];
+
+    for (const { row: jr, sheetRow: rNum } of jobRows) {
+      for (const sd of INV_SLOT_DEFS) {
+        const ref = String(jr[sd.refIdx] || "").trim();
+        const rawAmt = jr[sd.amtIdx];
+        const slotDate = String(jr[sd.sentIdx] || "").trim();
+        const amt = (rawAmt !== undefined && rawAmt !== "") ? (parseFloat(String(rawAmt).replace(/[£$€,\s]/g, "")) || 0) : 0;
+        const isAuto = isAutoInvoicePlaceholderRef_(ref);
+        const isManualPlaceholder = !ref && amt > 0;
+        const isManual = isPlaceholderInvoice(ref);
+        const isDraft = isDraftInvoice(ref, jr[sd.amtIdx + 4]);
+        const isReal = !!(ref && !isManual && !isAuto && !isDraft);
+        const isEmpty = !ref && amt === 0;
+
+        if (isReal) {
+          totalRealInvoiced += amt;
+        } else {
+          totalPlaceholderAmts += amt;
+        }
+
+        if (!isReal) {
+          nonRealSlots.push({
+            sheetRow: rNum,
+            slotNum: sd.slotNum,
+            amt,
+            ref,
+            slotDate,
+            isAuto,
+            isManualPlaceholder,
+            isManual,
+            isEmpty,
+          });
+        }
+      }
+    }
+
+    const revParsed = parseFloat(revRaw.replace(/[£$€,\s]/g, "")) || 0;
+    let jobRevenue = revParsed;
+    if (isRetainer) {
+      let contractMonths = jobRows.length;
+      if (startDate && endDate) {
+        const sDate = parseSheetOrJsDate_(startDate);
+        const eDate = parseSheetOrJsDate_(endDate);
+        if (sDate && eDate && eDate > sDate) {
+          contractMonths = Math.max(1, Math.round((eDate.getTime() - sDate.getTime()) / (30.4375 * 24 * 60 * 60 * 1000)));
+        }
+      }
+      jobRevenue = revParsed > 0 ? revParsed * contractMonths : 0;
+    }
+    const effectiveBillable = (jobRevenue === 0 && (totalRealInvoiced + totalPlaceholderAmts) > 0)
+      ? (totalRealInvoiced + totalPlaceholderAmts)
+      : jobRevenue;
+    const uninvoicedRevenue = effectiveBillable - totalRealInvoiced;
+
+    if (uninvoicedRevenue <= 0.01 || nonRealSlots.length === 0) {
+      continue;
+    }
+
+    const prioritisedAvailSlot =
+      nonRealSlots.find(s => s.isManualPlaceholder && amtToleranceFn(s.amt)) ||
+      nonRealSlots.find(s => s.isAuto) ||
+      nonRealSlots.find(s => s.isManualPlaceholder) ||
+      nonRealSlots.find(s => s.isEmpty) ||
+      nonRealSlots[0];
+
+    pipeCandidateJobs.push({
+      parentRowNum: parentIdx + 1,
+      client,
+      jobName,
+      projectCode: code,
+      revenue: revRaw || String(jobRevenue),
+      revenueNum: effectiveBillable,
+      totalRealInvoiced,
+      uninvoicedRevenue,
+      directCosts: directCostsRaw,
+      vatYesNo,
+      projectRetainer: projType,
+      startDate,
+      endDate,
+      likelihood,
+      nonRealSlots,
+      firstAvailSlot: prioritisedAvailSlot,
+    });
+  }
+
+  const pipeMatches = [];
+  const seenKeys = new Set();
+
+  for (const job of pipeCandidateJobs) {
+    const jClientWords = normInvWords(job.client);
+    const jJobWords = normInvWords(job.jobName);
+
+    const isExactClient = !!(effectiveInvClient && job.client.toLowerCase() === effectiveInvClient.toLowerCase());
+    const isPartialClient = !isExactClient && (
+      fuzzyClientMatch_(effectiveInvClient, job.client) ||
+      (invClientWords.length > 0 && invClientWords.some(w => jClientWords.includes(w)))
+    );
+    const hasClientMatch = isExactClient || isPartialClient;
+    const isJobNameMatch = invJobWords.length > 0 && invJobWords.some(w => jJobWords.includes(w));
+    const hasNameOverlap = hasClientMatch || isJobNameMatch;
+    const clientRank = isExactClient ? 3 : (isPartialClient ? 2 : (isJobNameMatch ? 1 : 0));
+
+    let matchingSlot =
+      job.nonRealSlots.find(s => s.isManualPlaceholder && amtToleranceFn(s.amt)) ||
+      job.nonRealSlots.find(s => s.amt > 0 && amtToleranceFn(s.amt)) ||
+      null;
+    let isJobTotalMatch = false;
+
+    if (!matchingSlot) {
+      const manualSlots = job.nonRealSlots.filter(s => s.isManual && s.amt > 0);
+      if (manualSlots.length > 1) {
+        const totalManual = manualSlots.reduce((s, sl) => s + sl.amt, 0);
+        if (amtToleranceFn(totalManual)) {
+          matchingSlot = job.firstAvailSlot;
+          isJobTotalMatch = true;
+        }
+      }
+    }
+
+    const isAmountMatch = !!matchingSlot;
+    let signalType = null;
+    let targetSlot = null;
+
+    if (isAmountMatch && hasNameOverlap) {
+      signalType = "Signal A";
+      targetSlot = matchingSlot;
+    } else if (!isAmountMatch && hasClientMatch) {
+      signalType = "Signal B";
+      targetSlot = job.firstAvailSlot;
+    } else if (isAmountMatch && !hasNameOverlap) {
+      signalType = "Signal C";
+      targetSlot = matchingSlot;
+    } else {
+      continue;
+    }
+
+    const jobKey = `${job.parentRowNum}-${job.client}-${job.jobName}`;
+    if (seenKeys.has(jobKey)) continue;
+    seenKeys.add(jobKey);
+
+    const newTotal = job.totalRealInvoiced + invoiceAmtForMatch;
+    const budgetFits = job.revenueNum === 0 || newTotal <= (job.revenueNum + 0.01);
+    const targetDate = targetSlot.slotDate;
+    const dateMatch = dateWithinTolerance(targetDate);
+    let dateDiffMs = null;
+    if (invSentDateParsed && targetDate) {
+      const parsedTargetDate = parseSheetOrJsDate_(targetDate);
+      if (parsedTargetDate) {
+        dateDiffMs = Math.abs(parsedTargetDate.getTime() - invSentDateParsed.getTime());
+      }
+    }
+
+    let confidence = "Medium";
+    let optExplanation = "";
+    if (signalType === "Signal A") {
+      confidence = dateMatch ? "High" : "Medium";
+      optExplanation = isJobTotalMatch
+        ? `Invoice amount (${formatGbpAmount_(invoiceAmtForMatch)}) matches total expected invoices on this pipeline job. Move or copy this job to confirmed jobs first if you want to place this invoice on it.`
+        : `Invoice amount ${formatGbpAmount_(invoiceAmtForMatch)} matches expected invoice of ${formatGbpAmount_(targetSlot.amt)} on this pipeline job. Move or copy this job to confirmed jobs first if you want to place this invoice on it.`;
+    } else if (signalType === "Signal B") {
+      confidence = dateMatch ? "Medium" : "Low";
+      optExplanation = `Client name matches this pipeline job, which has ${formatGbpAmount_(job.uninvoicedRevenue)} uninvoiced revenue. Move or copy this job to confirmed jobs first if you want to place this invoice on it.`;
+    } else {
+      confidence = "Low";
+      optExplanation = `Invoice amount ${formatGbpAmount_(invoiceAmtForMatch)} matches expected invoice of ${formatGbpAmount_(targetSlot.amt)} on this pipeline job (under client "${job.client}"). Move or copy this job to confirmed jobs first if you want to place this invoice on it.`;
+    }
+
+    const label = job.jobName ? `${job.client} - ${job.jobName}` : job.client;
+    pipeMatches.push({
+      title: `Potential pipeline match: ${label}`,
+      matchType: "pipeline_info",
+      isPipelineInfo: true,
+      tabName: "Pipeline",
+      jobRow: job.parentRowNum,
+      jobName: job.jobName,
+      jobRevenue: job.revenue,
+      likelihood: job.likelihood,
+      targetRowNum: targetSlot.sheetRow,
+      targetSlotType: "invoice",
+      targetSlotNum: targetSlot.slotNum,
+      explanation: optExplanation,
+      jobDetails: {
+        clientName: job.client,
+        jobName: job.jobName,
+        projectCode: job.projectCode,
+        revenue: job.revenue,
+        directCosts: job.directCosts || "£0",
+        projectRetainer: job.projectRetainer,
+        startDate: job.startDate,
+        endDate: job.endDate,
+        likelihood: job.likelihood,
+        tabName: "Pipeline",
+        rowNum: job.parentRowNum,
+      },
+      matchAnalysis: {
+        matchConfidence: confidence,
+        reasonForChoice: optExplanation,
+        discrepancies: "Job is currently in pipeline (not confirmed)",
+      },
+      _clientRank: clientRank,
+      _rankStartDate: job.startDate || "",
+      _rankBudgetFits: budgetFits,
+      _rankDateMatch: dateMatch === true,
+      _dateDiffMs: dateDiffMs,
+    });
+  }
+
+  pipeMatches.sort((a, b) => {
+    if (a._clientRank !== b._clientRank) return b._clientRank - a._clientRank;
+    if (a._rankBudgetFits !== b._rankBudgetFits) return a._rankBudgetFits ? -1 : 1;
+    if (a._rankDateMatch !== b._rankDateMatch) return a._rankDateMatch ? -1 : 1;
+    if (a._dateDiffMs !== null && b._dateDiffMs !== null && a._dateDiffMs !== b._dateDiffMs) {
+      return a._dateDiffMs - b._dateDiffMs;
+    }
+    const da = parsePipelineRankDate_(a._rankStartDate);
+    const db = parsePipelineRankDate_(b._rankStartDate);
+    if (da !== null && db !== null && da !== db) return db - da;
+    if (da !== null && db === null) return -1;
+    if (da === null && db !== null) return 1;
+    return (a.jobRow || 0) - (b.jobRow || 0);
+  });
+
+  return pipeMatches.slice(0, 2).map((o, i) => {
+    const { _clientRank, _rankStartDate, _rankBudgetFits, _rankDateMatch, _dateDiffMs, ...clean } = o;
+    return { ...clean, optionId: i + 1 };
+  });
+}
+
+function findPipelineExpenseInfoMatches_({
+  pipelineData,
+  expenseDescription,
+  expenseAmount,
+  expAmtTolFn,
+  dateWithinToleranceExp,
+  normExpWords,
+  expDescWords,
+  expBracketMatch,
+  expBracketWords,
+}) {
+  const activePipeData = trimPipelineActiveRows_(pipelineData);
+  if (activePipeData.length <= 1) return [];
+
+  const slotColDefs = [
+    { d: 75, a: 76, dt: 78, s: 80, id: 81 },
+    { d: 82, a: 83, dt: 85, s: 87, id: 88 },
+    { d: 89, a: 90, dt: 92, s: 94, id: 95 },
+  ];
+
+  const pipeCandidateJobs = [];
+  let ci = 1;
+  while (ci < activePipeData.length) {
+    const row = activePipeData[ci] || [];
+    const parentClient = String(row[0] || "").trim();
+    const parentJob = String(row[1] || "").trim();
+    if (parentClient.toLowerCase() === "client") {
+      ci++;
+      continue;
+    }
+    const budgetRaw = String(row[33] || "").replace(/[£$€,\s]/g, "");
+    const budget = parseFloat(budgetRaw) || 0;
+
+    if (budget > 0) {
+      const parentIdx = ci;
+      const projType = String(row[35] || "").trim();
+      const likelihood = String(row[39] || "").trim();
+      const copiedToConf = String(row[107] || "").trim();
+      const isRetainer = projType.toLowerCase().includes("retainer");
+
+      const jobRows = [{ row, sheetRow: ci + 1, isParent: true }];
+      let cj = ci + 1;
+      while (cj < activePipeData.length) {
+        const next = activePipeData[cj] || [];
+        const nc = String(next[0] || "").trim();
+        const nj = String(next[1] || "").trim();
+        const nb = String(next[33] || "").replace(/[£$€,\s]/g, "");
+        if (nc === parentClient && nj === parentJob && !next[32] && !parseFloat(nb) && !next[37]) {
+          jobRows.push({ row: next, sheetRow: cj + 1, isParent: false });
+          cj++;
+        } else {
+          break;
+        }
+      }
+      ci = cj;
+
+      if (isPipelineJobSuppressed(likelihood, copiedToConf)) {
+        continue;
+      }
+
+      if (isRetainer) {
+        const parentMonthlyRevenue = parseFloat(String(row[32] || "0").replace(/[£$€,\s]/g, "")) || 0;
+        const parentMonthlyBudget = budget;
+        for (const { row: cr, sheetRow: childSheetRow } of jobRows.filter(r => !r.isParent)) {
+          const childInvoiceAmt = parseFloat(String(cr[41] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          let periodMultiplier = 1;
+          if (parentMonthlyRevenue > 0 && childInvoiceAmt > 0) {
+            periodMultiplier = Math.max(1, Math.round(childInvoiceAmt / parentMonthlyRevenue));
+          }
+          const childBudget = parentMonthlyBudget * periodMultiplier;
+          let childAllocated = 0;
+          const childSlots = [];
+          for (let s = 0; s < slotColDefs.length; s++) {
+            const { d, a, dt, id } = slotColDefs[s];
+            const descr = String(cr[d] || "").trim();
+            const amt = cr[a] !== undefined ? cr[a] : "";
+            const date = cr[dt] || "";
+            const appId = String(cr[id] || "").trim();
+            if (!descr && !appId && !amt) {
+              childSlots.push({ empty: true, isAutoPlaceholder: false, isManualPlaceholder: false, isAllocated: false, amtNum: 0, date, sheetRow: childSheetRow, slotNum: s + 1 });
+              continue;
+            }
+            const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, "")) || 0;
+            const isAutoPlaceholder = isAutoExpensePlaceholderId_(appId) || (!appId && /^placeholder/i.test(descr));
+            const isManualPlaceholder = !appId && !isAutoPlaceholder && amtNum > 0;
+            const isAllocated = !!(appId && !isAutoPlaceholder && !isPlaceholderExpense(appId));
+            if (isAllocated) childAllocated += amtNum;
+            childSlots.push({ descr, amt, amtNum, date, appId, isAllocated, isAutoPlaceholder, isManualPlaceholder, empty: false, sheetRow: childSheetRow, slotNum: s + 1 });
+          }
+          const remainingBudget = childBudget - childAllocated;
+          if (remainingBudget <= 0.01) continue;
+          pipeCandidateJobs.push({
+            parentRow: parentIdx + 1, parentClient, parentJob,
+            projectCode: row[2] || "",
+            revenue: row[32] !== undefined ? row[32] : "",
+            projType, startDate: row[37] || "", endDate: row[38] || "", likelihood,
+            budget: childBudget, totalBudget: childBudget,
+            slots: childSlots,
+          });
+        }
+      } else {
+        let totalAllocated = 0;
+        const slots = [];
+        for (const { row: r, sheetRow } of jobRows) {
+          for (let s = 0; s < slotColDefs.length; s++) {
+            const { d, a, dt, id } = slotColDefs[s];
+            const descr = String(r[d] || "").trim();
+            const amt = r[a] !== undefined ? r[a] : "";
+            const date = r[dt] || "";
+            const appId = String(r[id] || "").trim();
+            if (!descr && !appId && !amt) {
+              slots.push({ empty: true, isAutoPlaceholder: false, isManualPlaceholder: false, isAllocated: false, amtNum: 0, date, sheetRow, slotNum: s + 1 });
+              continue;
+            }
+            const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, "")) || 0;
+            const isAutoPlaceholder = isAutoExpensePlaceholderId_(appId) || (!appId && /^placeholder/i.test(descr));
+            const isManualPlaceholder = !appId && !isAutoPlaceholder && amtNum > 0;
+            const isAllocated = !!(appId && !isAutoPlaceholder && !isPlaceholderExpense(appId));
+            if (isAllocated) totalAllocated += amtNum;
+            slots.push({ descr, amt, amtNum, date, appId, isAllocated, isAutoPlaceholder, isManualPlaceholder, empty: false, sheetRow, slotNum: s + 1 });
+          }
+        }
+        const remainingBudget = budget - totalAllocated;
+        if (remainingBudget > 0.01) {
+          pipeCandidateJobs.push({
+            parentRow: parentIdx + 1, parentClient, parentJob,
+            projectCode: row[2] || "",
+            revenue: row[32] !== undefined ? row[32] : "",
+            projType, startDate: row[37] || "", endDate: row[38] || "", likelihood,
+            budget, totalBudget: budget,
+            slots,
+          });
+        }
+      }
+    } else {
+      ci++;
+    }
+  }
+
+  const pipeMatches = [];
+  const d1 = String(expenseDescription || "").toLowerCase();
+  for (const job of pipeCandidateJobs) {
+    const jobWords = normExpWords(job.parentJob);
+    const clientWords = normExpWords(job.parentClient);
+    const jobOverlap = expDescWords.some(w => jobWords.includes(w));
+    const clientOverlap = (expBracketWords.length > 0 &&
+      (expBracketWords.some(w => clientWords.includes(w)) || clientWords.some(w => expBracketWords.includes(w)))) ||
+      (clientWords.length > 0 && expDescWords.some(w => clientWords.includes(w)));
+    const manualSupplierSlot = job.slots.find(s =>
+      s.isManualPlaceholder && s.descr && normExpWords(s.descr).some(w => expDescWords.includes(w))
+    );
+    const exactPlaceholderSlot = job.slots.find(s => {
+      if (s.empty || s.isAllocated || !expAmtTolFn(s.amtNum)) return false;
+      if (s.isManualPlaceholder && s.descr && !/^placeholder/i.test(s.descr)) {
+        const d2 = String(s.descr || "").toLowerCase();
+        return d1.includes(d2) || d2.includes(d1);
+      }
+      return false;
+    });
+    if (!jobOverlap && !clientOverlap && !manualSupplierSlot && !exactPlaceholderSlot) continue;
+
+    const availSlot =
+      exactPlaceholderSlot ||
+      job.slots.find(s => s.isManualPlaceholder && expAmtTolFn(s.amtNum)) ||
+      job.slots.find(s => s.isAutoPlaceholder) ||
+      job.slots.find(s => s.isManualPlaceholder) ||
+      job.slots.find(s => s.empty) ||
+      job.slots.find(s => !s.isAllocated);
+    if (!availSlot) continue;
+
+    const realAllocated = job.slots.filter(s => !s.empty && s.isAllocated).reduce((sum, s) => sum + s.amtNum, 0);
+    const newTotal = realAllocated + expenseAmount;
+    const budgetNum = parseFloat(String(job.totalBudget || "0").replace(/[£$€,]/g, "")) || 0;
+    const budgetFits = budgetNum === 0 || newTotal <= budgetNum;
+    const bracketText = expBracketMatch ? expBracketMatch[1].trim().toLowerCase() : "";
+    const isExactClient = !!bracketText && bracketText === String(job.parentClient || "").trim().toLowerCase();
+    const dateMatch = dateWithinToleranceExp(availSlot.date, job.startDate, job.endDate, availSlot.isAutoPlaceholder);
+    const isAmtMatch = !availSlot.empty && expAmtTolFn(availSlot.amtNum);
+    pipeMatches.push({ job, availSlot, budgetFits, isExactClient, clientOverlap, dateMatch, isAmtMatch, isExactPlaceholder: Boolean(exactPlaceholderSlot) });
+  }
+
+  pipeMatches.sort((a, b) => {
+    if (a.isExactPlaceholder !== b.isExactPlaceholder) return a.isExactPlaceholder ? -1 : 1;
+    if (a.budgetFits !== b.budgetFits) return a.budgetFits ? -1 : 1;
+    if (a.isExactClient !== b.isExactClient) return a.isExactClient ? -1 : 1;
+    if (a.clientOverlap !== b.clientOverlap) return a.clientOverlap ? -1 : 1;
+    const aDateMatch = a.dateMatch === true;
+    const bDateMatch = b.dateMatch === true;
+    if (aDateMatch !== bDateMatch) return aDateMatch ? -1 : 1;
+    const da = parsePipelineRankDate_(a.job.startDate);
+    const db = parsePipelineRankDate_(b.job.startDate);
+    if (da === null && db === null) return 0;
+    if (da === null) return 1;
+    if (db === null) return -1;
+    return db - da;
+  });
+
+  return pipeMatches.slice(0, 2).map((jm, i) => {
+    const { job, availSlot, dateMatch, isAmtMatch } = jm;
+    const jobClientLabel = job.parentClient ? `${job.parentClient} - ${job.parentJob}` : job.parentJob;
+    const parentRow = job.parentRow || availSlot.sheetRow;
+    const expExplanation = `${job.parentJob || job.parentClient} in pipeline matches this expense (${isAmtMatch ? `expected cost ${formatGbpAmount_(availSlot.amtNum)} matches ${formatGbpAmount_(expenseAmount)}` : "client/job description overlap"}). Move or copy this job to confirmed jobs first if you want to place this expense on it.`;
+    return {
+      optionId: i + 1,
+      title: `Potential pipeline match: ${jobClientLabel}`,
+      matchType: "pipeline_info",
+      isPipelineInfo: true,
+      tabName: "Pipeline",
+      jobRow: parentRow,
+      jobName: job.parentJob,
+      jobRevenue: job.revenue,
+      likelihood: job.likelihood,
+      targetRowNum: availSlot.sheetRow,
+      targetSlotType: "expense",
+      targetSlotNum: availSlot.slotNum,
+      explanation: expExplanation,
+      jobDetails: {
+        clientName: job.parentClient,
+        jobName: job.parentJob,
+        projectCode: job.projectCode,
+        revenue: String(job.revenue || ""),
+        directCosts: String(job.budget || job.totalBudget || "£0"),
+        projectRetainer: job.projType,
+        startDate: job.startDate,
+        endDate: job.endDate,
+        likelihood: job.likelihood,
+        tabName: "Pipeline",
+        rowNum: parentRow,
+      },
+      matchAnalysis: {
+        matchConfidence: (dateMatch || isAmtMatch) ? "High" : "Medium",
+        reasonForChoice: expExplanation,
+        discrepancies: "Job is currently in pipeline (not confirmed)",
+      },
+    };
+  });
 }
 
 // ============================================================================

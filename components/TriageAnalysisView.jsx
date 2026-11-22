@@ -1416,7 +1416,8 @@ export default function TriageAnalysisView({
                           type: j.projectRetainer || j.type || m.projectRetainer || m.type || "",
                           startDate: j.startDate || m.startDate || "",
                           endDate: j.endDate || m.endDate || "",
-                          tabName: j.tabName || m.tabName || "Confirmed",
+                          tabName: j.tabName || m.tabName || opt?.tabName || "Confirmed",
+                          likelihood: j.likelihood ?? m.likelihood ?? opt?.likelihood ?? undefined,
                           rowNum: j.rowNum || opt?.jobRow || 1,
                           vatSetting: j.vatSetting || j.vat || m.vat || "Yes"
                         };
@@ -1427,19 +1428,27 @@ export default function TriageAnalysisView({
                       // They should be rendered directly as Action Cards.
                       const isDataMismatch = ((isInvoiceType || isExpenseType) && !isMissingFlag) || isCrmMismatch;
 
+                      // Informational pipeline matches (when no Confirmed matches exist — display only, never actionable placement)
+                      const pipelineInfoOptions = (isDataMismatch || isCrmType)
+                        ? []
+                        : options.filter(opt => opt.matchType === "pipeline_info" || opt.isPipelineInfo);
+
                       // Check if there are candidate job match options (only for unplaced / missing items, NEVER for CRM or data mismatches)
                       const candidateJobOptions = (isDataMismatch || isCrmType)
                         ? []
                         : options.filter(opt =>
-                          (Array.isArray(opt.jobRowsData) && opt.jobRowsData.length > 0) ||
-                          opt.jobDetails ||
-                          opt.matchType === "existing_job" ||
-                          opt.matchType === "job_match"
+                          !(opt.matchType === "pipeline_info" || opt.isPipelineInfo) &&
+                          (
+                            (Array.isArray(opt.jobRowsData) && opt.jobRowsData.length > 0) ||
+                            opt.jobDetails ||
+                            opt.matchType === "existing_job" ||
+                            opt.matchType === "job_match"
+                          )
                         );
 
                       // Suppress generic AI fallback option only when candidate job match cards actually exist
                       const otherOptions = options.filter(opt => {
-                        if (candidateJobOptions.includes(opt)) return false;
+                        if (candidateJobOptions.includes(opt) || pipelineInfoOptions.includes(opt)) return false;
                         if (candidateJobOptions.length > 0) {
                           const title = String(opt.title || "").toLowerCase();
                           const reason = String(opt.matchAnalysis?.reasonForChoice || "").toLowerCase();
@@ -1450,29 +1459,33 @@ export default function TriageAnalysisView({
                         return true;
                       });
 
-                      if (candidateJobOptions.length === 0 && otherOptions.length === 0) {
-                        return (
-                          <div style={{
-                            padding: "14px 18px",
-                            backgroundColor: "#f8fafc",
-                            border: "1px solid #e2e8f0",
-                            borderRadius: "8px",
-                            color: "#64748b",
-                            fontSize: "13px",
-                            marginBottom: "16px",
-                            lineHeight: "1.5"
-                          }}>
-                            {isInvoiceType
-                              ? "No potential job matches found for this invoice."
-                              : isExpenseType
-                                ? "No potential job matches found for this expense."
-                                : "No potential matches found for this alert."}
-                          </div>
-                        );
-                      }
+                      const noConfirmedMatchesMessage = isInvoiceType
+                        ? (pipelineInfoOptions.length > 0
+                            ? "No potential confirmed job matches found for this invoice."
+                            : "No potential job matches found for this invoice.")
+                        : isExpenseType
+                          ? (pipelineInfoOptions.length > 0
+                              ? "No potential confirmed job matches found for this expense."
+                              : "No potential job matches found for this expense.")
+                          : "No potential matches found for this alert.";
 
                       return (
                         <div>
+                          {candidateJobOptions.length === 0 && otherOptions.length === 0 && (
+                            <div style={{
+                              padding: "14px 18px",
+                              backgroundColor: "#f8fafc",
+                              border: "1px solid #e2e8f0",
+                              borderRadius: "8px",
+                              color: "#64748b",
+                              fontSize: "13px",
+                              marginBottom: "16px",
+                              lineHeight: "1.5"
+                            }}>
+                              {noConfirmedMatchesMessage}
+                            </div>
+                          )}
+
                           {/* 1. Candidate Job Match Cards (CRM Style - Missing items only) */}
                           {candidateJobOptions.map((option, idx) => {
                             const conf = option.matchAnalysis?.matchConfidence || (idx === 0 ? "High confidence" : null);
@@ -1505,6 +1518,60 @@ export default function TriageAnalysisView({
                               />
                             );
                           })}
+
+                          {/* 1b. Potential Match in Pipeline Jobs (For information only) */}
+                          {pipelineInfoOptions.length > 0 && (
+                            <div style={{ marginBottom: "16px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", flexWrap: "wrap" }}>
+                                <span style={{ fontSize: "14px", fontWeight: "700", color: "#92400e" }}>
+                                  Potential match in pipeline jobs
+                                </span>
+                                <span style={{
+                                  fontSize: "11px",
+                                  fontWeight: "600",
+                                  padding: "2px 8px",
+                                  borderRadius: "12px",
+                                  backgroundColor: "#fef3c7",
+                                  color: "#92400e",
+                                  border: "1px solid #fcd34d"
+                                }}>
+                                  For information only
+                                </span>
+                              </div>
+                              {pipelineInfoOptions.map((option, idx) => {
+                                const conf = option.matchAnalysis?.matchConfidence || null;
+                                const reason = option.explanation || option.matchAnalysis?.reasonForChoice || null;
+                                const fbDetails = getOptionJobDetails({ ...option, tabName: "Pipeline" }, alert);
+                                const rawJobs = option.jobRowsData ? buildJobsFromRows(option.jobRowsData, fbDetails) : null;
+                                const candidateJob = rawJobs?.[0] || null;
+
+                                return (
+                                  <JobMatchCard
+                                    key={`pipeline-info-job-${idx}`}
+                                    candidateIndex={idx}
+                                    job={candidateJob}
+                                    jobDetails={fbDetails}
+                                    mode={isExpenseType ? "expense" : "invoice"}
+                                    isAdmin={isAdmin}
+                                    infoOnly={true}
+                                    confidence={conf}
+                                    recommendationReason={reason}
+                                    alertSummary={alert.summary}
+                                    onViewJob={(job) => {
+                                      setViewingJobTarget({
+                                        clientSheetId: targetClientSheetId,
+                                        clientName: job.client || selectedClient?.clientName,
+                                        jobName: job.jobName,
+                                        projectCode: job.projectCode || fbDetails.projectCode || "",
+                                        rowNum: job.rows?.[0]?.rowNum || job.rowNum,
+                                        tabName: job.tabName || "Pipeline"
+                                      });
+                                    }}
+                                  />
+                                );
+                              })}
+                            </div>
+                          )}
 
                           {/* 2. Generic / Info Options or Data Mismatch Action Cards */}
                           {otherOptions.map((option, idx) => {

@@ -272,9 +272,10 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
     } else if (sharedData && tabName === "Pipeline" && sharedData.pipelineData) {
       rows = sharedData.pipelineData;
     } else {
+      const rangeEndCol = tabName === "Pipeline" ? "DD" : "CR";
       const resp = await withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `${tabName}!A1:CR${parentRowNum + 30}`,
+        range: `${tabName}!A1:${rangeEndCol}${parentRowNum + 30}`,
         valueRenderOption: "FORMATTED_VALUE",
       }));
       rows = resp.data.values || [];
@@ -370,6 +371,7 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
     const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
     const buildRowData = ({ rowNum, row, isParent }) => ({
       rowNum,
+      tabName,
       isParent,
       client:            colVal(row, 0),
       jobName:           colVal(row, 1),

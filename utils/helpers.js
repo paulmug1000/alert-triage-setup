@@ -3224,6 +3224,58 @@ export function calculateUkTieredCorpTax(
   };
 }
 
+/**
+ * Formats an accounting/CRM tool identifier into a human-friendly display label.
+ */
+export function formatConnectionToolLabel(tool) {
+  if (!tool || tool === "None") return "";
+  if (tool === "Quickbooks") return "QuickBooks Online";
+  if (tool === "Monday") return "Monday.com";
+  return tool;
+}
+
+/**
+ * Builds the default email requesting a client user to log into Pulse and connect their tools.
+ */
+export function buildConnectionEmailContent({ contactName, accountingTool, crmTool }) {
+  const firstName = String(contactName || "").trim().split(/\s+/)[0] || "there";
+  const accLabel = formatConnectionToolLabel(accountingTool);
+  const crmLabel = formatConnectionToolLabel(crmTool);
+
+  let toolSentence = "";
+  if (accLabel && crmLabel) {
+    toolSentence = `We're setting up Pulse for you, and need to create a link to your accounting (${accLabel}) and CRM (${crmLabel}) tools.`;
+  } else if (accLabel) {
+    toolSentence = `We're setting up Pulse for you, and need to create a link to your accounting tool (${accLabel}).`;
+  } else if (crmLabel) {
+    toolSentence = `We're setting up Pulse for you, and need to create a link to your CRM tool (${crmLabel}).`;
+  } else {
+    toolSentence = "We're setting up Pulse for you, and need to create a link to your tools.";
+  }
+
+  const subject = "Pulse setup: Please connect your tools";
+  const body = [
+    `Dear ${firstName},`,
+    "",
+    toolSentence,
+    "",
+    "To do this, please log in to Pulse by following this link:",
+    "",
+    "https://app.pulsedashboard.co.uk/pulse",
+    "",
+    "Then choose the service that drives your email account (eg Google or Microsoft), and approve the connection to Pulse.",
+    "",
+    "Once this is done, just follow the on-screen instructions to authorise the connections to the tools you use.",
+    "",
+    "Please reply to this email with any questions.",
+    "",
+    "Thanks,",
+    "The Pulse Team",
+  ].join("\n");
+
+  return { subject, body };
+}
+
 
 
 

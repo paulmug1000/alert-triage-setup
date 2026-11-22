@@ -18,7 +18,14 @@ import {
   createOrUpdateUser,
   matchesClientName,
   getCanonicalAcSheetId,
+  canAccessPma,
+  isUserAuthorizedForClient,
 } from "../../../services/userPermissions.js";
+import {
+  updateClientChecklistTask,
+  getClientSetupConfig,
+  saveClientSetupConfig,
+} from "../../../services/setupService.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
@@ -57,21 +64,62 @@ function formatPlainTextToHtml(text) {
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
+  if (req.method !== "POST" && req.method !== "GET") {
     return res.status(405).json({ success: false, error: "Method not allowed." });
   }
-  if (!assertTrustedOrigin(req, res)) return;
+  if (req.method === "POST" && !assertTrustedOrigin(req, res)) return;
 
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  if (sessionUser.isReadOnly || (!sessionUser.isAdmin && sessionUser.role !== "Admin")) {
-    return res.status(403).json({ success: false, error: "Only administrators can manage onboarding invites." });
+  if (!canAccessPma(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Access denied: Staff privileges required." });
+  }
+
+  if (req.method === "GET") {
+    const clientName = String(req.query?.clientName || "").trim();
+    if (!clientName) {
+      return res.status(400).json({ success: false, error: "Client name is required." });
+    }
+    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+      return res.status(403).json({ success: false, error: "Access denied to this client." });
+    }
+    try {
+      const sheets = await getSheetsClient().catch(() => null);
+      const acId = getCanonicalAcSheetId();
+      const allUsers = await getAllUsers(sheets, acId, true).catch(() => []);
+      const contacts = (allUsers || [])
+        .filter((u) => {
+          const role = String(u.role || "");
+          if (["Admin", "ClientManager"].includes(role)) return false;
+          if (String(u.status || "Active").toLowerCase() === "suspended") return false;
+          const assigned = Array.isArray(u.assignedClients) ? u.assignedClients : [];
+          return assigned.some((c) => matchesClientName(c, clientName));
+        })
+        .map((u) => ({
+          name: String(u.name || "").trim(),
+          email: String(u.email || "").toLowerCase().trim(),
+          role: u.role || "ClientUser",
+        }))
+        .filter((u) => u.email);
+      return res.status(200).json({ success: true, contacts });
+    } catch (err) {
+      console.error("GET /api/setup/client-invite error:", err);
+      return res.status(500).json({ success: false, error: err.message || "Failed to load client contacts." });
+    }
   }
 
   const { action } = req.body || {};
+
+  if (action === "create_client_user") {
+    if (sessionUser.isReadOnly || (!sessionUser.isAdmin && sessionUser.role !== "Admin")) {
+      return res.status(403).json({ success: false, error: "Only administrators can manage onboarding invites." });
+    }
+  } else if (sessionUser.isReadOnly) {
+    return res.status(403).json({ success: false, error: "Read-only session cannot send onboarding emails." });
+  }
 
   try {
     const sheets = await getSheetsClient().catch(() => null);
@@ -133,10 +181,14 @@ export default async function handler(req, res) {
 
     if (action === "send_connection_email") {
       const clientName = String(req.body?.clientName || "").trim();
+      const masterSheetId = String(req.body?.masterSheetId || "").trim();
       const toEmail = String(req.body?.toEmail || "").toLowerCase().trim();
       const subject = String(req.body?.subject || "").trim();
       const body = String(req.body?.body || "").trim();
 
+      if (clientName && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        return res.status(403).json({ success: false, error: "Access denied to this client." });
+      }
       if (!toEmail || !toEmail.includes("@")) {
         return res.status(400).json({ success: false, error: "Please enter a valid recipient email address." });
       }
@@ -175,6 +227,32 @@ export default async function handler(req, res) {
         text: body,
         html: formatPlainTextToHtml(body),
       });
+
+      if (clientName) {
+        try {
+          const cfg = await getClientSetupConfig({ clientName, masterSheetId }).catch(() => null);
+          if (cfg && !cfg.requestConnections && cfg.requiredOAuthTools?.length > 0 && !cfg.allRequiredToolsConnected) {
+            await saveClientSetupConfig({
+              clientName,
+              masterSheetId: masterSheetId || cfg.masterSheetId || "",
+              setupMode: cfg.setupMode,
+              pulseLive: cfg.pulseLive,
+              requestConnections: true,
+              accountingTool: cfg.accountingTool,
+              crmTool: cfg.crmTool,
+              crmDrives: cfg.crmDrives,
+              updatedBy: sessionUser.name || sessionUser.email,
+            }).catch(() => {});
+          }
+          await updateClientChecklistTask(sheets, {
+            clientName,
+            taskId: "p2_request_connections_email",
+            isCompleted: true,
+            metadata: `Sent to ${toEmail}`,
+            userEmail: sessionUser.email || "Admin",
+          }).catch(() => {});
+        } catch (_) {}
+      }
 
       logPmaActivity({
         action: "setup_connection_email_sent",

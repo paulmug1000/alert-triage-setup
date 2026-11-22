@@ -6,7 +6,7 @@ import {
   getJobExpenseItems,
   getJobFinancialMetrics
 } from "./JobsView";
-import { isPlaceholderInvoice, isPlaceholderExpense, cleanUserFacingText, getRetainerRowMonthLabel, formatLikelihood } from "../utils/helpers";
+import { isPlaceholderInvoice, isPlaceholderExpense, cleanUserFacingText, sanitizeSpreadsheetTerms, getRetainerRowMonthLabel, formatLikelihood } from "../utils/helpers";
 
 const fmtGBP = (val) => {
   const num = typeof val === "number" ? val : (parseFloat(String(val || "0").replace(/[£$€,\s]/g, "")) || 0);
@@ -78,6 +78,10 @@ export function buildJobsFromRows(input, fallbackDetails = null) {
       let projectRetainer = j.projectRetainer || p.projectRetainer || fbType;
       let startDate = j.startDate || p.startDate || fbStart;
       let endDate = j.endDate || p.endDate || fbEnd;
+      const tabName = j.tabName || p.tabName || fbTab;
+      const likelihood = (j.likelihood !== undefined && j.likelihood !== null && String(j.likelihood).trim() !== "")
+        ? j.likelihood
+        : ((p.likelihood !== undefined && p.likelihood !== null && String(p.likelihood).trim() !== "") ? p.likelihood : fallbackDetails?.likelihood);
 
 
       // Scan rows for monthly amount if revenue is blank or zero
@@ -134,6 +138,8 @@ export function buildJobsFromRows(input, fallbackDetails = null) {
         projectRetainer,
         startDate,
         endDate,
+        tabName,
+        ...(likelihood !== undefined ? { likelihood } : {}),
         projectCode: j.projectCode || p?.projectCode || fbProjectCode
       };
     });
@@ -164,7 +170,9 @@ export function buildJobsFromRows(input, fallbackDetails = null) {
         vat: r.vat || "Yes",
         startDate: r.startDate || fbStart || "",
         endDate: r.endDate || fbEnd || "",
-        likelihood: r.likelihood !== undefined ? r.likelihood : 100,
+        likelihood: (r.likelihood !== undefined && r.likelihood !== null && String(r.likelihood).trim() !== "")
+          ? r.likelihood
+          : (fallbackDetails?.likelihood !== undefined ? fallbackDetails.likelihood : 100),
         unevenSplit: r.unevenSplit || "",
         rows: [r]
       };
@@ -227,6 +235,10 @@ export function buildJobsFromRows(input, fallbackDetails = null) {
 
     if (!j.projectRetainer && fbType) j.projectRetainer = fbType;
     if (!j.projectCode && fbProjectCode) j.projectCode = fbProjectCode;
+    if (!j.tabName && fbTab) j.tabName = fbTab;
+    if ((j.likelihood === undefined || j.likelihood === null || String(j.likelihood).trim() === "") && fallbackDetails?.likelihood !== undefined) {
+      j.likelihood = fallbackDetails.likelihood;
+    }
 
     // Sync resolved fields to parent row
     if (j.rows && j.rows[0]) {
@@ -255,7 +267,8 @@ export default function JobMatchCard({
   confidence,
   recommendationReason,
   candidateIndex,
-  alertSummary
+  alertSummary,
+  infoOnly = false
 }) {
   const [showHistory, setShowHistory] = useState(false);
 
@@ -446,6 +459,23 @@ export default function JobMatchCard({
                 {projectCode}
               </span>
             )}
+
+            {(!isConfirmed || infoOnly) && (
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "600",
+                  background: "#fef3c7",
+                  color: "#92400e",
+                  border: "1px solid #fcd34d",
+                  padding: "2px 8px",
+                  borderRadius: "12px",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                Pipeline job
+              </span>
+            )}
           </div>
         </div>
 
@@ -624,8 +654,27 @@ export default function JobMatchCard({
         </div>
       )}
 
+      {/* ── Informational Note (for read-only pipeline matches) ── */}
+      {infoOnly && recommendationReason && (
+        <div
+          style={{
+            marginTop: "12px",
+            padding: "10px 14px",
+            background: "#fffbeb",
+            border: "1px solid #fde68a",
+            borderLeft: "3px solid #f59e0b",
+            borderRadius: "6px",
+            fontSize: "13px",
+            lineHeight: "1.5",
+            color: "#92400e"
+          }}
+        >
+          {isAdmin ? cleanUserFacingText(recommendationReason) : sanitizeSpreadsheetTerms(recommendationReason)}
+        </div>
+      )}
+
       {/* ── Primary Action Bar ── */}
-      {activeTarget && (
+      {!infoOnly && activeTarget && (
         <div
           style={{
             marginTop: "12px",

@@ -286,11 +286,15 @@ export default function PortalPage({
       lastFetchedPayloadSheetIdRef.current = null;
       return;
     }
-    // Skip dashboard payload fetch for ClientUser when client is in setupMode
+    // Skip dashboard payload fetch for ClientUser when client is in setup holding gate (setupMode && !pulseLive)
     const isClientOnly = Boolean(
       user && !(!user.isReadOnly && (user.isAdmin || user.role === "Admin" || user.role === "ClientManager"))
     );
-    if (isClientOnly && (selectedClient?.setupMode === true || setupStatus?.setupMode === true)) {
+    const blockedBySetupGate =
+      setupStatus?.setupMode !== undefined
+        ? Boolean(setupStatus?.setupMode === true && !setupStatus?.pulseLive)
+        : Boolean(selectedClient?.setupMode === true && !selectedClient?.pulseLive);
+    if (isClientOnly && blockedBySetupGate) {
       return;
     }
     if (lastFetchedPayloadSheetIdRef.current !== sheetId) {
@@ -308,7 +312,7 @@ export default function PortalPage({
         fetchPayload(selectedClient, false, true);
       }
     }
-  }, [selectedClient, fetchPayload, user, setupStatus?.setupMode, initialPayload, performanceData]);
+  }, [selectedClient, fetchPayload, user, setupStatus?.setupMode, setupStatus?.pulseLive, initialPayload, performanceData]);
 
   const fetchPerformance = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
@@ -759,11 +763,13 @@ export default function PortalPage({
                 String(parsed.clientName || "").trim().toLowerCase()
               ) {
                 const nextSetupMode = Boolean(curr.setupMode ?? parsed.setupMode);
+                const nextPulseLive = !nextSetupMode || Boolean(curr.pulseLive ?? parsed.pulseLive);
                 const nextSetupStatus = curr.setupStatus || parsed.setupStatus || null;
                 if (
                   curr.clientSheetId === parsed.clientSheetId &&
                   (curr.masterSheetId || "") === (parsed.masterSheetId || "") &&
                   Boolean(curr.setupMode) === nextSetupMode &&
+                  Boolean(curr.pulseLive) === nextPulseLive &&
                   curr.setupStatus === nextSetupStatus
                 ) {
                   return curr;
@@ -774,6 +780,7 @@ export default function PortalPage({
                   clientSheetId: curr.clientSheetId || parsed.clientSheetId,
                   masterSheetId: curr.masterSheetId || parsed.masterSheetId,
                   setupMode: nextSetupMode,
+                  pulseLive: nextPulseLive,
                   setupStatus: nextSetupStatus
                 };
               }
@@ -892,6 +899,7 @@ export default function PortalPage({
               initial &&
               curr.clientSheetId === initial.clientSheetId &&
               Boolean(curr.setupMode) === Boolean(initial.setupMode) &&
+              Boolean(curr.pulseLive) === Boolean(initial.pulseLive) &&
               (curr.masterSheetId || "") === (initial.masterSheetId || "") &&
               !initial.setupStatus
             ) {
@@ -930,8 +938,8 @@ export default function PortalPage({
     activeClientSheetIdRef.current = client?.clientSheetId || null;
     if (client?.setupStatus) {
       setSetupStatus(client.setupStatus);
-    } else if (!client?.setupMode) {
-      setSetupStatus({ setupMode: false });
+    } else if (!client?.setupMode || client?.pulseLive) {
+      setSetupStatus({ setupMode: Boolean(client?.setupMode), pulseLive: !client?.setupMode || Boolean(client?.pulseLive) });
     } else {
       setSetupStatus(null);
     }
@@ -1092,12 +1100,18 @@ export default function PortalPage({
       return;
     }
 
-    const isLiveOnly = !selectedClient.setupMode && !isPreviewSetup;
+    const isLiveOnly = (!selectedClient.setupMode || selectedClient.pulseLive === true) && !isPreviewSetup;
     const clientChanged = lastSetupStatusClientRef.current !== selectedClient.clientName;
     lastSetupStatusClientRef.current = selectedClient.clientName;
 
     if (isLiveOnly) {
-      setSetupStatus((prev) => (!clientChanged && prev?.setupMode === false ? prev : { setupMode: false }));
+      const nextSetupFlag = Boolean(selectedClient.setupMode);
+      const nextPulseLive = !nextSetupFlag || Boolean(selectedClient.pulseLive);
+      setSetupStatus((prev) =>
+        !clientChanged && prev?.setupMode === nextSetupFlag && Boolean(prev?.pulseLive) === nextPulseLive
+          ? prev
+          : { setupMode: nextSetupFlag, pulseLive: nextPulseLive }
+      );
       setLoadingSetupStatus(false);
     } else {
       setLoadingSetupStatus(true);
@@ -1135,7 +1149,7 @@ export default function PortalPage({
 
     fetchSetupStatus();
     return () => { isMounted = false; };
-  }, [selectedClient?.clientName, selectedClient?.masterSheetId, selectedClient?.clientSheetId, selectedClient?.setupMode, selectedClient?.setupStatus, isPreviewSetup]);
+  }, [selectedClient?.clientName, selectedClient?.masterSheetId, selectedClient?.clientSheetId, selectedClient?.setupMode, selectedClient?.pulseLive, selectedClient?.setupStatus, isPreviewSetup]);
 
   const hasBudget = payload ? Boolean(payload.clientInfo?.hasBudget ?? payload.hasBudget) : true;
   const hasCash = payload ? Boolean(payload.clientInfo?.hasCash ?? payload.hasCash) : true;
@@ -1233,7 +1247,7 @@ export default function PortalPage({
   // details are still fetching, render SetupHoldingGate in its clean loading state (NEVER PortalShell / MonthViewSkeleton!).
   const isSetupCheckPending = Boolean(
     selectedClient &&
-    ((isClientUser && selectedClient.setupMode === true && setupStatus === null) ||
+    ((isClientUser && selectedClient.setupMode === true && selectedClient.pulseLive !== true && setupStatus === null) ||
       (isPreviewSetup && setupStatus === null))
   );
 
@@ -1274,8 +1288,8 @@ export default function PortalPage({
   }
 
   // ── CLIENT USER SETUP MODE GATE ─────────────────────────────────────
-  // If this client is in Setup Mode and the logged-in user is a ClientUser:
-  if (selectedClient && isClientUser && setupStatus?.setupMode === true) {
+  // If this client is in Setup Mode AND Pulse has NOT been made live yet for client users:
+  if (selectedClient && isClientUser && setupStatus?.setupMode === true && setupStatus?.pulseLive !== true) {
     return (
       <SetupHoldingGate
         clientName={selectedClient.clientName}
@@ -1681,7 +1695,12 @@ export async function getServerSideProps(context) {
             parsedSetup = rawSetup ? JSON.parse(rawSetup) : null;
           }
         }
-        if (parsedSetup?.setupMode === true || ssrPortalData.initialSelectedClient?.setupMode === true || isPreview) {
+        const needsSsrHoldingCheck = Boolean(
+          (parsedSetup?.setupMode === true && parsedSetup?.pulseLive !== true) ||
+          (ssrPortalData.initialSelectedClient?.setupMode === true && ssrPortalData.initialSelectedClient?.pulseLive !== true) ||
+          isPreview
+        );
+        if (needsSsrHoldingCheck) {
           initialSetupStatus = await getClientSetupStatusForPortal({
             clientName: parsedSetup?.clientName || candidateClientName,
             masterSheetId: parsedSetup?.masterSheetId || "",
@@ -1691,6 +1710,7 @@ export async function getServerSideProps(context) {
             ...(ssrPortalData.initialSelectedClient || {}),
             clientName: parsedSetup?.clientName || candidateClientName,
             setupMode: Boolean(initialSetupStatus?.setupMode),
+            pulseLive: Boolean(initialSetupStatus?.pulseLive),
             setupStatus: initialSetupStatus
           };
         }

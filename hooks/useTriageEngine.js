@@ -708,7 +708,13 @@ export function useTriageEngine({
         return false;
       });
 
-      if (Array.isArray(alert.options) && !hasStaleOrIncompleteCache) {
+      const needsPipelineFallbackCheck =
+        Array.isArray(alert.options) &&
+        alert.options.length === 0 &&
+        ((isInvoiceAlert && isInvMissing) || (isExpAlert && !isExpMismatch)) &&
+        !alert._pipelineChecked;
+
+      if (Array.isArray(alert.options) && !hasStaleOrIncompleteCache && !needsPipelineFallbackCheck) {
         console.log(`✅ Using cached options instantly`);
         setFromCache(true);
         setClaudeAnalysis(JSON.stringify(alert.options, null, 2));
@@ -752,7 +758,8 @@ export function useTriageEngine({
           newAlerts[idx] = {
             ...newAlerts[idx],
             options: data.options,
-            previousIgnoreReason: formattedPir
+            previousIgnoreReason: formattedPir,
+            ...(data.pipelineChecked ? { _pipelineChecked: true } : {}),
           };
         }
         return newAlerts;

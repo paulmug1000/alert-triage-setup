@@ -59,23 +59,23 @@ export const SETUP_PHASES = [
   },
   {
     id: "phase_2",
-    title: "Step 1: Settings & tool connections",
-    description: "Core accounting & CRM tool choices, OAuth connections, and financial KeyInfo anchors."
+    title: "Step 1: Initial settings",
+    description: "Core accounting, CRM tool and Pulse settings."
   },
   {
     id: "phase_3",
-    title: "Step 2: Accounting baseline & data",
-    description: "Chart of Accounts, P&L baselines, starter PL, invoices sync, and outgoings breakdown."
+    title: "Step 2: Accounting setup and initial data",
+    description: "Chart of accounts, P&L baselines, initial P&L, invoices, cash and outgoings breakdown."
   },
   {
     id: "phase_4",
-    title: "Step 3: Automations & cadence",
-    description: "CRM data review, trigger scheduling, automation flags, and EoM inclusion."
+    title: "Step 3: CRM setup and initial data",
+    description: "CRM field mappings, confirmed and pipeline definitions, and pipeline deal matching."
   },
   {
     id: "phase_5",
-    title: "Step 4: User access & go-live",
-    description: "Client user assignment, welcome notifications, and live dashboard launch."
+    title: "Step 4: Go-live and final data capture",
+    description: "Make Pulse live for client users, send go-live email, and confirm receipt of final baseline details."
   }
 ];
 
@@ -91,18 +91,19 @@ export const SETUP_TASKS_CATALOG = [
   { id: "p1_script_ids", phaseId: "phase_1", title: "Copy GAS script IDs into Client Version Tracker doc" },
 
   // Phase 2: Initial Settings & Integrations
-  { id: "p2_select_tools", phaseId: "phase_2", title: "Select accounting tool and CRM in KeyInfo Q4, Q8 and Q9", autoCompletable: true },
-  { id: "p2_connect_accounting", phaseId: "phase_2", title: "Connect to accounting tool via Pulse Vault", autoCompletable: true },
-  { id: "p2_connect_crm", phaseId: "phase_2", title: "Connect to CRM tool via Pulse Vault", autoCompletable: true },
+  { id: "p2_confirm_tools", phaseId: "phase_2", title: "Confirm accounting and CRM tools" },
+  { id: "p2_request_connections_email", phaseId: "phase_2", title: "Email client to request connections" },
+  { id: "p2_connect_accounting", phaseId: "phase_2", title: "Awaiting client connection to accounting tool", autoCompletable: true },
+  { id: "p2_connect_crm", phaseId: "phase_2", title: "Awaiting client connection to CRM tool", autoCompletable: true },
   { id: "p2_keyinfo_settings", phaseId: "phase_2", title: "Adjust core settings in KeyInfo (Start date, VAT, PAYE, Revenue focus, Profit share %, Invoice formatting, Automation cadences)" },
   { id: "p4_datachg_flags", phaseId: "phase_2", title: "Update other DataChgAlert flags as required" },
 
   // Phase 3: Accounting Setup & Baseline
-  { id: "p3_chart_of_accounts", phaseId: "phase_3", title: "Pull Chart of Accounts (KeyInfo AV2) and select manual categories" },
-  { id: "p3_pull_pl", phaseId: "phase_3", title: "Pull P&L (KeyInfo AY2) and Year 0 P&L (KeyInfo AY5) and assign categories" },
-  { id: "p3_year0_setup", phaseId: "phase_3", title: "Check Year 0 setup, adding dividends in lieu of salary as required" },
+  { id: "p3_chart_of_accounts", phaseId: "phase_3", title: "Pull Chart of Accounts and select manual categories" },
+  { id: "p3_pull_pl", phaseId: "phase_3", title: "Pull P&L and Year 0 P&L and assign accounts to categories" },
+  { id: "p3_year0_setup", phaseId: "phase_3", title: "Finalise Year 0 setup, adding dividends in lieu of salary as required" },
   { id: "p3_sync_invoices", phaseId: "phase_3", title: "Initial invoice setup" },
-  { id: "p3_starter_pl", phaseId: "phase_3", title: "Run StarterPL setup" },
+  { id: "p3_starter_pl", phaseId: "phase_3", title: "Set up initial P&L and forecast" },
   { id: "p3_other_expenses", phaseId: "phase_3", title: "Create budget" },
   { id: "p3_select_bank_accounts", phaseId: "phase_3", title: "Select bank accounts" },
   { id: "p3_cash_opening", phaseId: "phase_3", title: "Add cash opening figure" },
@@ -112,8 +113,9 @@ export const SETUP_TASKS_CATALOG = [
   { id: "p4_crm_list_tab", phaseId: "phase_4", title: "Set up CRMList tab (mappings, Confirmed & Pipeline definitions)" },
   { id: "p4_review_crm", phaseId: "phase_4", title: "Review CRM data, match existing pipeline jobs, and check assumptions" },
 
-  // Phase 5: Client Users & Go-Live
-  { id: "p5_email_client", phaseId: "phase_5", title: "Email client with login details and launch live access" }
+  // Phase 5: Go live and final data capture
+  { id: "p5_make_live", phaseId: "phase_5", title: "Make Pulse live" },
+  { id: "p5_email_client", phaseId: "phase_5", title: "Email client saying Pulse is live and requesting further information" }
 ];
 
 export const DEFAULT_SETUP_PHASES = SETUP_PHASES;
@@ -140,6 +142,41 @@ export function isOAuthTool(tool) {
   return OAUTH_TOOLS.some(t => t.replace(/[^a-z0-9]/g, "") === clean);
 }
 
+async function autoClearRequestConnectionsIfReady_({ clientName, redisKey, config, hasRequiredTools, allConnected }) {
+  if (!config || config.requestConnections !== true || !hasRequiredTools || !allConnected) {
+    return Boolean(config?.requestConnections);
+  }
+  const now = new Date().toISOString();
+  const nextRecord = {
+    ...config,
+    requestConnections: false,
+    updatedAt: now,
+  };
+  await redisClient.set(redisKey, JSON.stringify(nextRecord)).catch(() => { });
+  await redisClient.del(INTEGRATIONS_STATUS_CACHE_KEY).catch(() => { });
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const norm = normalizeKey(clientName);
+      const { data: existingClient } = await sb
+        .from("clients")
+        .select("id, metadata")
+        .eq("normalized_key", norm)
+        .maybeSingle();
+      if (existingClient?.id && existingClient.metadata?.requestConnections !== false) {
+        await sb
+          .from("clients")
+          .update({
+            metadata: { ...(existingClient.metadata || {}), requestConnections: false },
+            updated_at: now,
+          })
+          .eq("id", existingClient.id);
+      }
+    } catch (_) { }
+  }
+  return false;
+}
+
 /**
  * Returns full setup configuration for a client (for PMA Setup view).
  */
@@ -156,6 +193,31 @@ export async function getClientSetupConfig({ clientName, masterSheetId, clientSh
     }
   } catch (err) {
     console.error(`Failed to read Redis setup config for ${clientName}:`, err);
+  }
+
+  // Fallback to Supabase clients.metadata on Redis cache miss
+  if (!config && isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data: dbClient } = await sb
+        .from("clients")
+        .select("master_sheet_id, client_sheet_id, metadata")
+        .eq("normalized_key", normalizeKey(clientName))
+        .maybeSingle();
+      if (dbClient?.metadata && typeof dbClient.metadata === "object") {
+        config = {
+          clientName,
+          masterSheetId: dbClient.master_sheet_id || "",
+          clientSheetId: dbClient.client_sheet_id || "",
+          setupMode: dbClient.metadata.setupMode === true,
+          pulseLive: dbClient.metadata.pulseLive === true || dbClient.metadata.setupMode !== true,
+          requestConnections: dbClient.metadata.requestConnections === true,
+          accountingTool: dbClient.metadata.accountingTool || "None",
+          crmTool: dbClient.metadata.crmTool || "None",
+          crmDrives: dbClient.metadata.crmDrives || "NA",
+        };
+      }
+    } catch (_) { }
   }
 
   // Fast path: Only query Google Sheets API if:
@@ -207,6 +269,7 @@ export async function getClientSetupConfig({ clientName, masterSheetId, clientSh
           clientName,
           masterSheetId: resolvedMasterSheetId,
           setupMode: config?.setupMode === true,
+          pulseLive: config?.pulseLive === true || config?.setupMode !== true,
           requestConnections: config?.requestConnections === true,
           accountingTool: sheetQ4,
           crmTool: sheetQ8,
@@ -231,7 +294,8 @@ export async function getClientSetupConfig({ clientName, masterSheetId, clientSh
 
   // Merge Redis config with sheet values
   const setupMode = config?.setupMode === true;
-  const requestConnections = config?.requestConnections === true;
+  const pulseLive = !setupMode || config?.pulseLive === true;
+  let requestConnections = config?.requestConnections === true;
   const accountingTool = config?.accountingTool || sheetQ4 || "None";
   const crmTool = config?.crmTool || sheetQ8 || "None";
   const crmDrives = config?.crmDrives || sheetQ9 || "NA";
@@ -302,12 +366,34 @@ export async function getClientSetupConfig({ clientName, masterSheetId, clientSh
     });
   }
 
-  const allRequiredToolsConnected = requiredOAuthTools.length === 0 || requiredOAuthTools.every(t => t.connected);
+  const hasRequiredTools = requiredOAuthTools.length > 0;
+  const allRequiredToolsConnected = !hasRequiredTools || requiredOAuthTools.every(t => t.connected);
+
+  if (requestConnections && hasRequiredTools && allRequiredToolsConnected) {
+    requestConnections = await autoClearRequestConnectionsIfReady_({
+      clientName,
+      redisKey,
+      config: {
+        ...(config || {}),
+        clientName,
+        masterSheetId: masterSheetId || config?.masterSheetId || "",
+        setupMode,
+        pulseLive,
+        requestConnections,
+        accountingTool,
+        crmTool,
+        crmDrives,
+      },
+      hasRequiredTools,
+      allConnected: allRequiredToolsConnected,
+    });
+  }
 
   const fullConfig = {
     clientName,
     masterSheetId: masterSheetId || config?.masterSheetId || "",
     setupMode,
+    pulseLive,
     requestConnections,
     accountingTool,
     crmTool,
@@ -330,6 +416,7 @@ export async function saveClientSetupConfig({
   clientName,
   masterSheetId,
   setupMode,
+  pulseLive,
   requestConnections,
   accountingTool,
   crmTool,
@@ -350,12 +437,18 @@ export async function saveClientSetupConfig({
     // Ignore read error
   }
 
+  const nextSetupMode = Boolean(setupMode);
+  const nextPulseLive = !nextSetupMode
+    ? true
+    : (pulseLive !== undefined ? Boolean(pulseLive) : Boolean(existing.pulseLive));
+
   const record = {
     ...existing,
     clientName,
     masterSheetId: masterSheetId || existing.masterSheetId || "",
-    setupMode: Boolean(setupMode),
-    requestConnections: Boolean(requestConnections),
+    setupMode: nextSetupMode,
+    pulseLive: nextPulseLive,
+    requestConnections: nextSetupMode ? Boolean(requestConnections) : false,
     accountingTool: accountingTool !== undefined ? accountingTool : (existing.accountingTool || "None"),
     crmTool: crmTool !== undefined ? crmTool : (existing.crmTool || "None"),
     crmDrives: crmDrives !== undefined ? crmDrives : (existing.crmDrives || "NA"),
@@ -410,6 +503,7 @@ export async function saveClientSetupConfig({
         const nextMeta = {
           ...(existingClient.metadata || {}),
           setupMode: Boolean(record.setupMode),
+          pulseLive: Boolean(record.pulseLive),
           requestConnections: Boolean(record.requestConnections),
           accountingTool: record.accountingTool || "None",
           crmTool: record.crmTool || "None",
@@ -431,27 +525,24 @@ export async function saveClientSetupConfig({
     }
   }
 
-  // 3. Update ClientSetupOverview in Automation Commander (when legacy dual-write or Sheets control plane is active)
-  if (!(await isSupabaseControlPlaneActive()) || shouldDualWriteLegacyControlPlaneSheets()) {
-    try {
-      const sheets = await getSheetsClient();
-      if (!record.setupMode) {
-        await updateClientSetupOverviewRow(sheets, {
-          clientName,
-          status: "LIVE",
-          progressPercent: 100,
-          completedTasks: 34,
-          completedAt: now
-        });
-      } else {
-        await updateClientSetupOverviewRow(sheets, {
-          clientName,
-          status: "IN_PROGRESS"
-        });
-      }
-    } catch (overviewErr) {
-      console.warn("ClientSetupOverview sync notice:", overviewErr.message);
+  // 3. Update setup status in Supabase client_setup_state (and AC in legacy mode)
+  try {
+    const sheets = await getSheetsClient().catch(() => null);
+    if (!record.setupMode) {
+      await updateClientSetupOverviewRow(sheets, {
+        clientName,
+        status: "LIVE",
+        progressPercent: 100,
+        completedAt: now
+      });
+    } else {
+      await updateClientSetupOverviewRow(sheets, {
+        clientName,
+        status: "IN_PROGRESS"
+      });
     }
+  } catch (overviewErr) {
+    console.warn("ClientSetupOverview sync notice:", overviewErr.message);
   }
 
   return await getClientSetupConfig({ clientName, masterSheetId });
@@ -528,8 +619,36 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId,
     }
   }
 
+  // Also load Supabase metadata fallback if Redis has no config yet
+  if (!config && isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data: dbClient } = await sb
+        .from("clients")
+        .select("master_sheet_id, client_sheet_id, metadata")
+        .eq("normalized_key", normalizeKey(clientName))
+        .maybeSingle();
+      if (dbClient?.metadata && typeof dbClient.metadata === "object") {
+        config = {
+          clientName,
+          masterSheetId: dbClient.master_sheet_id || resolvedMasterSheetId,
+          clientSheetId: dbClient.client_sheet_id || resolvedClientSheetId,
+          setupMode: dbClient.metadata.setupMode === true,
+          pulseLive: dbClient.metadata.pulseLive === true || dbClient.metadata.setupMode !== true,
+          requestConnections: dbClient.metadata.requestConnections === true,
+          accountingTool: dbClient.metadata.accountingTool || accountingTool,
+          crmTool: dbClient.metadata.crmTool || crmTool,
+          crmDrives: dbClient.metadata.crmDrives || "NA",
+        };
+        accountingTool = config.accountingTool;
+        crmTool = config.crmTool;
+      }
+    } catch (_) { }
+  }
+
   const setupMode = config?.setupMode === true;
-  const requestConnections = config?.requestConnections === true;
+  const pulseLive = !setupMode || config?.pulseLive === true;
+  let requestConnections = config?.requestConnections === true;
 
   // Evaluate configured tools and connection health
   const configuredTools = [];
@@ -663,11 +782,33 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId,
 
   const unconnectedTools = configuredTools.filter(t => !t.connected);
   const connectedTools = configuredTools.filter(t => t.connected);
-  const allToolsConnected = configuredTools.length === 0 || unconnectedTools.length === 0;
+  const hasRequiredTools = configuredTools.length > 0;
+  const allToolsConnected = !hasRequiredTools || unconnectedTools.length === 0;
   const hasDisconnectedTools = configuredTools.some(t => !t.connected || t.needsReconnect);
+
+  if (requestConnections && hasRequiredTools && allToolsConnected) {
+    requestConnections = await autoClearRequestConnectionsIfReady_({
+      clientName,
+      redisKey,
+      config: {
+        ...(config || {}),
+        clientName,
+        masterSheetId: resolvedMasterSheetId,
+        clientSheetId: resolvedClientSheetId,
+        setupMode,
+        pulseLive,
+        requestConnections,
+        accountingTool,
+        crmTool,
+      },
+      hasRequiredTools,
+      allConnected: allToolsConnected,
+    });
+  }
 
   return {
     setupMode,
+    pulseLive,
     requestConnections,
     requiredTools: configuredTools,
     unconnectedTools,
@@ -912,24 +1053,33 @@ function normalizeSetupPhases(phases = []) {
     "1. settings & tool connections": "Step 1: Settings & tool connections",
     "3. accounting baseline & data": "Step 2: Accounting baseline & data",
     "2. accounting baseline & data": "Step 2: Accounting baseline & data",
-    "4. automations & cadence": "Step 3: Automations & cadence",
-    "3. automations & cadence": "Step 3: Automations & cadence",
-    "5. user access & go-live": "Step 4: User access & go-live",
-    "4. user access & go-live": "Step 4: User access & go-live"
+    "4. automations & cadence": "Step 3: CRM setup & review",
+    "3. automations & cadence": "Step 3: CRM setup & review",
+    "step 3: automations & cadence": "Step 3: CRM setup & review",
+    "5. user access & go-live": "Step 4: Go live and final data capture",
+    "4. user access & go-live": "Step 4: Go live and final data capture",
+    "step 4: user access & go-live": "Step 4: Go live and final data capture"
   };
   return (phases || []).map(p => {
     const def = defaultMap.get(p.id);
     const lowerTitle = String(p.title || "").trim().toLowerCase();
     const normalizedTitle = legacyTitleMap[lowerTitle] || p.title || def?.title || p.id;
+    const normalizedDesc =
+      (p.id === "phase_5" && String(p.description || "").trim().toLowerCase().includes("client user assignment")) ||
+        (p.id === "phase_4" && String(p.description || "").trim().toLowerCase().includes("trigger scheduling"))
+        ? def?.description || p.description
+        : p.description;
     return {
       ...p,
       title: normalizedTitle,
+      description: normalizedDesc,
       adminOnly: p.id === "phase_1" || Boolean(p.adminOnly || def?.adminOnly)
     };
   });
 }
 
 const RETIRED_SETUP_TASK_IDS = new Set([
+  "p2_select_tools",
   "p3_contractors_info",
   "p3_employee_salaries",
   "p3_dividends_info",
@@ -944,6 +1094,20 @@ const RETIRED_SETUP_TASK_IDS = new Set([
 ]);
 
 const RENAMED_SETUP_TASK_TITLES = {
+  p2_connect_accounting: {
+    legacyMatches: [
+      "connect to accounting tool via pulse vault",
+      "connect to accounting tool",
+    ],
+    title: "Awaiting client connection to accounting tool",
+  },
+  p2_connect_crm: {
+    legacyMatches: [
+      "connect to crm tool via pulse vault",
+      "connect to crm tool",
+    ],
+    title: "Awaiting client connection to CRM tool",
+  },
   p2_keyinfo_settings: {
     legacyMatches: [
       "adjust core settings in keyinfo (start date, vat, paye, revenue focus, profit share %)",
@@ -954,6 +1118,10 @@ const RENAMED_SETUP_TASK_TITLES = {
   p3_other_expenses: {
     legacyMatches: ["add 'other expenses' forecast amounts into outgoings tab"],
     title: "Create budget",
+  },
+  p5_email_client: {
+    legacyMatches: ["email client with login details and launch live access"],
+    title: "Email client saying Pulse is live and requesting further information",
   },
 };
 
@@ -1040,8 +1208,13 @@ function normalizeSetupTasks(tasks = []) {
       changed = true;
     }
   };
+  ensureRelativeOrder("p2_confirm_tools", "p2_request_connections_email");
+  ensureRelativeOrder("p2_request_connections_email", "p2_connect_accounting");
+  ensureRelativeOrder("p2_connect_accounting", "p2_connect_crm");
+  ensureRelativeOrder("p2_connect_accounting", "p2_keyinfo_settings");
   ensureRelativeOrder("p4_crm_list_tab", "p4_review_crm");
   ensureRelativeOrder("p2_keyinfo_settings", "p4_datachg_flags");
+  ensureRelativeOrder("p5_make_live", "p5_email_client");
 
   kept.sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
   return { tasks: kept, changed };
@@ -1547,8 +1720,13 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
       if (raw) cached = JSON.parse(raw);
     } catch { }
 
+    const cMeta = clientMetaMap.get(normalizeKey(c.clientName)) || clientMetaMap.get(c.clientName.trim().toLowerCase());
     const overview = overviewMap.get(c.clientName.toLowerCase());
-    const setupMode = cached?.setupMode === true || String(overview?.status || "").toUpperCase() === "IN_PROGRESS";
+    const setupMode =
+      cached?.setupMode === true ||
+      cMeta?.metadata?.setupMode === true ||
+      String(overview?.status || "").toUpperCase() === "IN_PROGRESS";
+    const pulseLive = !setupMode || cached?.pulseLive === true || cMeta?.metadata?.pulseLive === true;
     const accountingTool = cached?.accountingTool || overview?.accountingTool || "None";
     const crmTool = cached?.crmTool || overview?.crmTool || "None";
 
@@ -1565,6 +1743,7 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
       reconUrl: c.reconUrl || overview?.reconSheetUrl || "",
       driveFolderUrl: overview?.driveFolderUrl || "",
       setupMode,
+      pulseLive,
       status,
       progressPercent,
       completedTasks,
@@ -1823,13 +2002,18 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
         }
 
         let taskTitle = catalogTask.title;
+        if (catalogTask.id === "p1_bookmarks") {
+          if (clientMode === "sheet" && masterMode !== "sheet") {
+            taskTitle = "Create bookmark for new client sheet";
+          } else if (clientMode !== "sheet" && masterMode === "sheet") {
+            taskTitle = "Create bookmarks for new master and recon sheets";
+          }
+        }
         let waitingOnClient = false;
         if (!isCompleted && config?.requestConnections) {
           if (catalogTask.id === "p2_connect_accounting" && isOAuthTool(config.accountingTool)) {
-            taskTitle = `Waiting on client to connect to ${formatToolDisplayName(config.accountingTool)}`;
             waitingOnClient = true;
           } else if (catalogTask.id === "p2_connect_crm" && isOAuthTool(config.crmTool)) {
-            taskTitle = `Waiting on client to connect to ${formatToolDisplayName(config.crmTool)}`;
             waitingOnClient = true;
           }
         }
@@ -1883,6 +2067,7 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
   return {
     clientName,
     setupMode: Boolean(config?.setupMode),
+    pulseLive: Boolean(config?.pulseLive) || !config?.setupMode,
     clientMode,
     masterMode,
     hasRealClientSheet,
@@ -2056,9 +2241,16 @@ export async function updateClientSetupOverviewRow(sheets, { clientName, status,
           .eq("normalized_key", norm)
           .maybeSingle();
         if (existingClient) {
+          const nextSetupMode = status === "IN_PROGRESS";
           await sb
             .from("clients")
-            .update({ metadata: { ...(existingClient.metadata || {}), setupMode: status === "IN_PROGRESS" } })
+            .update({
+              metadata: {
+                ...(existingClient.metadata || {}),
+                setupMode: nextSetupMode,
+                ...(nextSetupMode ? {} : { pulseLive: true }),
+              },
+            })
             .eq("normalized_key", norm);
         }
       }
@@ -2938,7 +3130,6 @@ export async function provisionNewClientSystem({
   // 9. Seed Overview & Initial Tasks
   const now = new Date().toISOString();
   const autoDoneTaskIds = new Set([
-    "p2_select_tools",
     ...(needsDriveFolder ? ["p1_drive_folder", "p1_duplicate_templates"] : []),
   ]);
   const hasCrmOnProvision = Boolean(

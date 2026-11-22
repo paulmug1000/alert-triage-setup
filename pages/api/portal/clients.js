@@ -165,8 +165,8 @@ export default async function handler(req, res) {
 
     authorizedClients.sort((a, b) => a.clientName.localeCompare(b.clientName));
 
-    // Attach lightweight setupMode boolean (and full setupStatus for setupMode clients) so the Portal never flashes a skeleton before SetupHoldingGate
-    let setupModes = [];
+    // Attach setupMode & pulseLive booleans (and full setupStatus when holding gate applies) so Portal never flashes before SetupHoldingGate
+    let setupFlags = [];
     let setupStatuses = [];
     if (redisClient?.isOpen && authorizedClients.length > 0) {
       try {
@@ -174,17 +174,21 @@ export default async function handler(req, res) {
           (c) => `pulse:setup:${String(c.clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`
         );
         const rawList = await redisClient.mGet(keys);
-        setupModes = rawList.map((raw) => {
-          if (!raw) return false;
+        setupFlags = rawList.map((raw) => {
+          if (!raw) return { setupMode: false, pulseLive: true };
           try {
-            return Boolean(JSON.parse(raw)?.setupMode);
+            const parsed = JSON.parse(raw);
+            const setupMode = Boolean(parsed?.setupMode);
+            const pulseLive = !setupMode || Boolean(parsed?.pulseLive);
+            return { setupMode, pulseLive };
           } catch {
-            return false;
+            return { setupMode: false, pulseLive: true };
           }
         });
         setupStatuses = await Promise.all(
           authorizedClients.map(async (c, idx) => {
-            if (!setupModes[idx]) return null;
+            const flags = setupFlags[idx];
+            if (!flags?.setupMode || flags?.pulseLive) return null;
             try {
               return await getClientSetupStatusForPortal({
                 clientName: c.clientName,
@@ -201,11 +205,12 @@ export default async function handler(req, res) {
 
     const hideMasterId = isPulseOnlyUser(sessionUser);
     const safeClients = authorizedClients.map((c, idx) => {
-      const setupMode = Boolean(setupModes[idx]);
+      const setupMode = Boolean(setupFlags[idx]?.setupMode);
+      const pulseLive = setupFlags[idx] ? Boolean(setupFlags[idx].pulseLive) : !setupMode;
       const setupStatus = setupStatuses[idx] || null;
       return hideMasterId
-        ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode, ...(setupStatus ? { setupStatus } : {}) }
-        : { ...c, setupMode, ...(setupStatus ? { setupStatus } : {}) };
+        ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode, pulseLive, ...(setupStatus ? { setupStatus } : {}) }
+        : { ...c, setupMode, pulseLive, ...(setupStatus ? { setupStatus } : {}) };
     });
 
     return res.status(200).json({

@@ -29,9 +29,10 @@ import { toNumber } from "./gasRuntime/sheetValueUtils.js";
 import { computeNativeMgmtRepForClient } from "./mgmtRepEngine.js";
 
 /**
- * Returns true if a client is currently in setup/onboarding mode (not yet live for scheduled automation).
+ * Returns true if a client is currently in setup/onboarding mode and NOT yet marked live for Pulse/automations.
  */
 export function isClientRecordInSetupMode(clientRow, setupStateRow) {
+  if (clientRow?.metadata?.pulseLive === true) return false;
   if (clientRow?.metadata?.setupMode === true) return true;
   const setupStatus = String(setupStateRow?.setup_status || "").trim().toUpperCase();
   return setupStatus === "IN_PROGRESS";
@@ -961,7 +962,7 @@ export async function dispatchDueNativeMasterSyncs({
   const supabase = getSupabaseAdmin();
   if (!supabase) return { dispatched: 0, syncs: [] };
 
-  await ensureRedisConnected(800).catch(() => {});
+  await ensureRedisConnected(800).catch(() => { });
   const lockKey = "pulse:lock:cron_master_dispatch";
   let lockAcquired = false;
   if (redisClient?.isOpen) {
@@ -972,7 +973,7 @@ export async function dispatchDueNativeMasterSyncs({
         console.log("dispatchDueNativeMasterSyncs: Another cron dispatch wave is currently active; skipping.");
         return { dispatched: 0, syncs: [], skipped: true };
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   try {
@@ -1277,7 +1278,7 @@ export async function dispatchDueNativeMasterSyncs({
     return { dispatched: queue.length + sheetSignals.length, syncs: results };
   } finally {
     if (lockAcquired && redisClient?.isOpen) {
-      await redisClient.del(lockKey).catch(() => {});
+      await redisClient.del(lockKey).catch(() => { });
     }
   }
 }

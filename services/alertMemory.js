@@ -2239,3 +2239,125 @@ export async function deleteAlertMemoryEntryByHash(sheets, automationCommanderSh
   };
 }
 
+/**
+ * Marks active ("cached" / "pending_automation") AlertMemory entries for archived, suspended,
+ * inactive, or deleted clients as "superseded" without modifying handled ("accepted", "ignored",
+ * "task", "task_resolved") history.
+ */
+export async function archiveClientAlertMemory(sheets, automationCommanderSheetId, clientNames) {
+  const rawList = Array.isArray(clientNames) ? clientNames : [clientNames];
+  const cleanNames = Array.from(
+    new Set(rawList.map((n) => String(n || "").trim()).filter(Boolean))
+  );
+  if (cleanNames.length === 0) {
+    return { success: true, archivedCount: 0, fingerprintHashes: [] };
+  }
+
+  const targetLowerSet = new Set(cleanNames.map((n) => n.toLowerCase()));
+  const now = new Date().toISOString();
+  const archivedHashes = new Set();
+
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        for (const name of cleanNames) {
+          const rows = await fetchAllSupabaseRows_(() =>
+            sb
+              .from("alert_memory")
+              .select("fingerprint_hash")
+              .ilike("client_name", escapeIlikeExact(name))
+              .in("status", ["cached", "pending_automation"])
+              .order("fingerprint_hash", { ascending: true })
+          );
+          for (const r of rows) {
+            if (r?.fingerprint_hash) archivedHashes.add(r.fingerprint_hash);
+          }
+        }
+        const hashesToUpdate = Array.from(archivedHashes);
+        for (let i = 0; i < hashesToUpdate.length; i += 200) {
+          const chunk = hashesToUpdate.slice(i, i + 200);
+          const { error } = await sb
+            .from("alert_memory")
+            .update({ status: "superseded", last_rechecked: now })
+            .in("fingerprint_hash", chunk);
+          if (error) {
+            console.warn("⚠️ Supabase archiveClientAlertMemory chunk update warning:", error.message);
+          }
+        }
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase archiveClientAlertMemory warning:", sbErr.message);
+    }
+  }
+
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  if ((!supabaseActive || shouldDualWriteLegacyControlPlaneSheets()) && sheets && automationCommanderSheetId) {
+    try {
+      const resp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: automationCommanderSheetId,
+          range: `${ALERT_MEMORY_TAB}!A2:F50000`,
+        })
+      );
+      const sheetRows = resp.data?.values || [];
+      const dataUpdates = [];
+      sheetRows.forEach((r, idx) => {
+        const cName = String(r[2] || "").trim().toLowerCase();
+        const st = String(r[5] || "").trim().toLowerCase();
+        if (targetLowerSet.has(cName) && (st === "cached" || st === "pending_automation")) {
+          if (r[0]) archivedHashes.add(String(r[0]).trim());
+          dataUpdates.push({
+            range: `${ALERT_MEMORY_TAB}!F${idx + 2}`,
+            values: [["superseded"]],
+          });
+        }
+      });
+      for (let i = 0; i < dataUpdates.length; i += 200) {
+        const chunk = dataUpdates.slice(i, i + 200);
+        await withRetry(() =>
+          sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: automationCommanderSheetId,
+            requestBody: {
+              valueInputOption: "RAW",
+              data: chunk,
+            },
+          })
+        );
+      }
+    } catch (sheetErr) {
+      console.warn("⚠️ Sheet archiveClientAlertMemory warning:", sheetErr.message);
+    }
+  }
+
+  if (archivedHashes.size > 0) {
+    const statusByHash = {};
+    for (const h of archivedHashes) {
+      statusByHash[h] = "superseded";
+    }
+    await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
+  }
+
+  await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
+    for (let i = 0; i < cache.length; i++) {
+      const entry = cache[i];
+      if (!entry) continue;
+      const entryClient = String(entry.clientName || "").trim().toLowerCase();
+      const entryStatus = String(entry.status || "").trim().toLowerCase();
+      if (
+        (entry.fingerprintHash && archivedHashes.has(entry.fingerprintHash)) ||
+        (targetLowerSet.has(entryClient) && (entryStatus === "cached" || entryStatus === "pending_automation"))
+      ) {
+        cache[i] = { ...entry, status: "superseded", lastRechecked: now };
+      }
+    }
+  });
+  await invalidateAlertMemoryCache(automationCommanderSheetId);
+
+  return {
+    success: true,
+    archivedCount: archivedHashes.size,
+    fingerprintHashes: Array.from(archivedHashes),
+  };
+}
+

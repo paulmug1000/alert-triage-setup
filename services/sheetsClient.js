@@ -364,6 +364,17 @@ export function getServiceAccountPoolEmails() {
   return [...emails];
 }
 
+export function getPrimaryRawGoogleClients() {
+  const entries = getPoolEntries_();
+  const primary = entries[0] || null;
+  return {
+    rawSheets: primary?.rawSheets || null,
+    rawDrive: primary?.rawDrive || null,
+    primaryEmail: String(primary?.email || "").toLowerCase(),
+    serviceAccountEmails: getServiceAccountPoolEmails().map((e) => String(e || "").toLowerCase()).filter(Boolean),
+  };
+}
+
 function buildSingleflightKey_(namespace, method, params) {
   if (!params || typeof params !== "object") return null;
   try {

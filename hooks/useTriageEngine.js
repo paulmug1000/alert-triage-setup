@@ -708,13 +708,19 @@ export function useTriageEngine({
         return false;
       });
 
+      const isMissingInvOrExp = (isInvoiceAlert && isInvMissing) || (isExpAlert && !isExpMismatch);
+      const needsLiveRecheckForUnconfirmed =
+        isMissingInvOrExp &&
+        Array.isArray(alert.options) &&
+        !alert._liveRecheckedInSession &&
+        (alert.options.length === 0 || alert.options.some(opt => opt && (opt.matchType === "pipeline_info" || opt.isPipelineInfo)));
       const needsPipelineFallbackCheck =
         Array.isArray(alert.options) &&
         alert.options.length === 0 &&
-        ((isInvoiceAlert && isInvMissing) || (isExpAlert && !isExpMismatch)) &&
+        isMissingInvOrExp &&
         !alert._pipelineChecked;
 
-      if (Array.isArray(alert.options) && !hasStaleOrIncompleteCache && !needsPipelineFallbackCheck) {
+      if (Array.isArray(alert.options) && !hasStaleOrIncompleteCache && !needsPipelineFallbackCheck && !needsLiveRecheckForUnconfirmed) {
         console.log(`✅ Using cached options instantly`);
         setFromCache(true);
         setClaudeAnalysis(JSON.stringify(alert.options, null, 2));
@@ -733,6 +739,7 @@ export function useTriageEngine({
           action: "analyze_alert",
           alert,
           automationCommanderSheetId,
+          forceFresh: Boolean(needsLiveRecheckForUnconfirmed || hasStaleOrIncompleteCache),
         }),
       });
 
@@ -759,6 +766,7 @@ export function useTriageEngine({
             ...newAlerts[idx],
             options: data.options,
             previousIgnoreReason: formattedPir,
+            _liveRecheckedInSession: true,
             ...(data.pipelineChecked ? { _pipelineChecked: true } : {}),
           };
         }

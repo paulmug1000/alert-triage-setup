@@ -40,6 +40,10 @@ import {
   updateBackupPolicy,
   runDailyAutoBackupSweep,
 } from "../../../services/supabaseBackupService.js";
+import {
+  setClientSheetBridgeMode,
+  checkAndSyncClientSheetBridge,
+} from "../../../services/clientSheetBridgeService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -228,6 +232,65 @@ export default async function handler(req, res) {
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "set_sheet_bridge_mode") {
+      const bridgeMode = String(req.body?.bridgeMode || "").trim().toLowerCase();
+      if (!["off", "dry_run", "live"].includes(bridgeMode)) {
+        return res.status(400).json({ success: false, error: "Invalid bridgeMode. Expected 'off', 'dry_run', or 'live'." });
+      }
+      const sheets = await getSheetsClient();
+      const updated = await setClientSheetBridgeMode(sheets, cleanClient, bridgeMode);
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_SHEET_BRIDGE_MODE_CHANGED",
+        summary: `Switched ${cleanClient} Google Sheet bridge mode to "${bridgeMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "sync_sheet_bridge_inbound") {
+      const sheets = await getSheetsClient();
+      const syncSummary = await checkAndSyncClientSheetBridge(cleanClient, {
+        direction: "inbound",
+        force: true,
+        allowDryRunApplyInbound: Boolean(req.body?.applyInDryRun),
+      });
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_SHEET_BRIDGE_INBOUND",
+        summary: `Sheet bridge inbound check for ${cleanClient}: ${syncSummary.summary || syncSummary.reason || "complete"}`,
+        details: syncSummary,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, syncSummary, status });
+    }
+
+    if (action === "sync_sheet_bridge_outbound") {
+      const sheets = await getSheetsClient();
+      const syncSummary = await checkAndSyncClientSheetBridge(cleanClient, {
+        direction: "outbound",
+        force: true,
+      });
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_SHEET_BRIDGE_OUTBOUND",
+        summary: `Sheet bridge outbound check for ${cleanClient}: ${syncSummary.summary || syncSummary.reason || "complete"}`,
+        details: syncSummary,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, syncSummary, status });
     }
 
     if (action === "materialize_client_sheet") {

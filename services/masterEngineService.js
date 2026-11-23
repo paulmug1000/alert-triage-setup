@@ -443,7 +443,7 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
         try {
           const { data, error } = await supabase
             .from("clients")
-            .select("id, client_name, normalized_key, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id");
+            .select("id, client_name, normalized_key, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
           if (!error && Array.isArray(data)) {
             const bySheetId = new Map();
             const byClientName = new Map();
@@ -469,6 +469,7 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                 normalizedKey: normKey,
                 masterMode: row.master_mode || "sheet",
                 clientMode: row.client_mode || "sheet",
+                sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
                 clientSheetId: cId,
                 masterSheetId: mId,
                 reconSheetId: rId,
@@ -812,7 +813,7 @@ function shouldStoreClientRecordInCache_(existingEntry, { valuesOnly = false, in
   return Boolean(existingEntry.record?._valuesOnlyLoaded && existingEntry.record?._notesLoaded === false);
 }
 
-async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = null, options = {}) {
+export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = null, options = {}) {
   const valuesOnly = Boolean(options?.valuesOnly);
   const includeNotes = Boolean(options?.includeNotes);
   const supabase = getSupabaseAdmin();
@@ -1439,6 +1440,13 @@ async function mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, rangeU
           await recomputeAndPersistImmediateClientTabs_(clientCtx, [...updatedTabs], rawSheetsApi, {
             deferBackgroundRecompute: false,
           });
+        }
+        if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+          import("./clientSheetBridgeService.js")
+            .then(({ scheduleOutboundSheetBridgeSync }) =>
+              scheduleOutboundSheetBridgeSync(ctx.clientName, [...updatedTabs])
+            )
+            .catch(() => { });
         }
       }
     } catch (err) {
@@ -2177,6 +2185,14 @@ async function recomputeAndPersistImmediateClientTabs_(
   }
   for (const t of allImmediateTabs) activeSourceSet.add(t);
 
+  if (ctx.clientMode === "supabase" && ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+    import("./clientSheetBridgeService.js")
+      .then(({ scheduleOutboundSheetBridgeSync }) =>
+        scheduleOutboundSheetBridgeSync(ctx.clientName, allImmediateTabs)
+      )
+      .catch(() => { });
+  }
+
   queuePendingClientTabs_(ctx, allImmediateTabs);
   if (!deferBackgroundRecompute) {
     scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
@@ -2226,6 +2242,13 @@ async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
       }
     }
   }
+}
+
+export async function recomputeClientFormulasForBridge(clientName, changedTabs = []) {
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx || ctx.clientMode !== "supabase") return;
+  const tabs = Array.isArray(changedTabs) && changedTabs.length > 0 ? changedTabs : ["Confirmed"];
+  await recomputeClientFormulasAfterVirtualWrite_({ ...ctx, sheetRole: "client" }, tabs, null);
 }
 
 const CLIENT_TAB_DIRECT_DEPS = {
@@ -2643,6 +2666,17 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
       console.warn("[masterEngineService] Stage 4 relational sync warning:", e.message)
     );
   }
+
+  if (ctx.clientMode === "supabase" && ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+    const bridgeTabs = [...new Set([...allUpdatedTabs, ...dirtyTabs])];
+    if (bridgeTabs.length > 0) {
+      import("./clientSheetBridgeService.js")
+        .then(({ scheduleOutboundSheetBridgeSync }) =>
+          scheduleOutboundSheetBridgeSync(ctx.clientName, bridgeTabs)
+        )
+        .catch(() => { });
+    }
+  }
 }
 
 /**
@@ -2664,6 +2698,11 @@ export async function handleVirtualSheetsCall({
   if (namespace === "values" && method === "get") {
     const rangeStr = params.range || "KeyInfo!A1:Z100";
     const parsed = parseA1Range(rangeStr);
+    if (sheetRole === "client" && ctx.sheetBridgeMode === "live") {
+      await import("./clientSheetBridgeService.js")
+        .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
+        .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
+    }
     if (
       sheetRole === "client" &&
       params.valueRenderOption !== "FORMULA" &&
@@ -2711,6 +2750,11 @@ export async function handleVirtualSheetsCall({
   if (namespace === "values" && method === "batchGet") {
     const ranges = Array.isArray(params.ranges) ? params.ranges : [params.ranges].filter(Boolean);
     const parsedList = ranges.map((r) => ({ raw: r, parsed: parseA1Range(r) }));
+    if (sheetRole === "client" && ctx.sheetBridgeMode === "live") {
+      await import("./clientSheetBridgeService.js")
+        .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
+        .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
+    }
     if (
       sheetRole === "client" &&
       params.valueRenderOption !== "FORMULA" &&
@@ -2998,6 +3042,13 @@ export async function handleVirtualSheetsCall({
         await import("./cacheService.js")
           .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
           .catch(() => { });
+        if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+          import("./clientSheetBridgeService.js")
+            .then(({ scheduleOutboundSheetBridgeSync }) =>
+              scheduleOutboundSheetBridgeSync(ctx.clientName, [parsed.tabName])
+            )
+            .catch(() => { });
+        }
       } else if (params._skipFormulaRecompute) {
         queuePendingClientTabs_(ctx, [parsed.tabName], {
           isSkippedStep: true,
@@ -3113,6 +3164,13 @@ export async function handleVirtualSheetsCall({
           await import("./cacheService.js")
             .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
             .catch(() => { });
+          if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+            import("./clientSheetBridgeService.js")
+              .then(({ scheduleOutboundSheetBridgeSync }) =>
+                scheduleOutboundSheetBridgeSync(ctx.clientName, actuallyChangedTabs)
+              )
+              .catch(() => { });
+          }
         }
       } else if (params._skipFormulaRecompute) {
         if (actuallyChangedTabs.length > 0) {
@@ -3280,6 +3338,11 @@ export async function handleVirtualSheetsCall({
   if (namespace === "spreadsheets" && method === "get") {
     const requestedRanges = Array.isArray(params.ranges) ? params.ranges : params.ranges ? [params.ranges] : [];
     const includeGridData = Boolean(params.includeGridData || requestedRanges.length > 0);
+    if (sheetRole === "client" && includeGridData && ctx.sheetBridgeMode === "live") {
+      await import("./clientSheetBridgeService.js")
+        .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
+        .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
+    }
     if (
       sheetRole === "client" &&
       includeGridData &&
@@ -3979,6 +4042,17 @@ export async function handleVirtualSheetsCall({
         syncStructuredClientTablesFromGrids_(ctx, noteGrids, [...noteOnlyClientTabs]).catch((e) =>
           console.warn("[masterEngineService] Stage 4 relational note sync warning:", e.message)
         );
+      }
+
+      if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+        import("./clientSheetBridgeService.js")
+          .then(({ recordBridgeStructuralRequests, scheduleOutboundSheetBridgeSync }) => {
+            recordBridgeStructuralRequests(ctx.clientName, requests, metaBySheetId);
+            if (dirtyTargets.size > 0) {
+              scheduleOutboundSheetBridgeSync(ctx.clientName, [...dirtyTargets.keys()]);
+            }
+          })
+          .catch(() => { });
       }
     }
 
@@ -5037,20 +5111,29 @@ export async function setClientMode(clientName, clientMode) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
 
+  let resetMetadataPatch = null;
   if (cleanMode === "sheet") {
     const { data: cur } = await supabase
       .from("clients")
-      .select("client_sheet_id")
+      .select("client_sheet_id, metadata")
       .eq("client_name", clientName)
       .maybeSingle();
     if (!cur?.client_sheet_id || isVirtualSupabaseSheetId(cur.client_sheet_id)) {
       throw new Error(`Cannot switch "${clientName}" Client Portal to Google Sheets because no Google Client Sheet was provisioned for this client.`);
     }
+    resetMetadataPatch = {
+      ...(cur?.metadata && typeof cur.metadata === "object" ? cur.metadata : {}),
+      sheet_bridge_mode: "off",
+    };
   }
 
   const { data, error } = await supabase
     .from("clients")
-    .update({ client_mode: cleanMode, updated_at: new Date().toISOString() })
+    .update({
+      client_mode: cleanMode,
+      ...(resetMetadataPatch ? { metadata: resetMetadataPatch } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq("client_name", clientName)
     .select("id, client_name, master_mode, client_mode")
     .maybeSingle();
@@ -5410,6 +5493,10 @@ export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") 
     console.warn("[masterEngineService] Stage 4 relational sync warning:", e.message)
   );
 
+  await import("./clientSheetBridgeService.js")
+    .then(({ seedSheetBridgeBaselineFromSheetSeed }) => seedSheetBridgeBaselineFromSheetSeed(ctx, grids))
+    .catch((e) => console.warn("[masterEngineService] Sheet bridge baseline seed warning:", e.message));
+
   invalidateMasterEngineCache(ctx.clientName);
 
   return {
@@ -5668,7 +5755,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     ),
     supabase
       .from("clients")
-      .select("id, client_name, normalized_key, status, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id")
+      .select("id, client_name, normalized_key, status, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
       .order("client_name", { ascending: true }),
     supabase
       .from("tenant_key_info")
@@ -5766,7 +5853,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         st.clientTabCount++;
       } else if (g.tab_name === "GasExecLogs") {
         st.hasExecLogs = true;
-      } else if (g.tab_name !== "GasScriptProps") {
+      } else if (g.tab_name !== "GasScriptProps" && g.tab_name !== "SheetBridgeBaseline") {
         st.masterTabCount++;
       }
       if (g.updated_at && (!st.lastUpdatedAt || g.updated_at > st.lastUpdatedAt)) {
@@ -5784,7 +5871,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
           sheet_role: "client",
           tab_name: String(g.tab_name || "").startsWith("Client::") ? g.tab_name.slice(8) : g.tab_name,
         });
-      } else if (g.tab_name !== "GasExecLogs" && g.tab_name !== "GasScriptProps") {
+      } else if (g.tab_name !== "GasExecLogs" && g.tab_name !== "GasScriptProps" && g.tab_name !== "SheetBridgeBaseline") {
         availableTabs.master.push(g);
       }
     }
@@ -5809,6 +5896,8 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         hasRealClientSheet: Boolean(c.client_sheet_id && !isVirtualSupabaseSheetId(c.client_sheet_id)),
         hasRealMasterSheet: Boolean(c.master_sheet_id && !isVirtualSupabaseSheetId(c.master_sheet_id)),
         hasRealReconSheet: Boolean(c.recon_sheet_id && !isVirtualSupabaseSheetId(c.recon_sheet_id)),
+        sheetBridgeMode: String(c.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
+        sheetBridgeState: c.metadata?.sheet_bridge_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,

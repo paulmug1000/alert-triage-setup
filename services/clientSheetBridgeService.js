@@ -1,0 +1,1649 @@
+/**
+ * ============================================================================
+ * PULSE CLIENT SHEET BIDIRECTIONAL BRIDGE SERVICE (Phase 1)
+ * ============================================================================
+ * Enables Supabase-primary execution (`client_mode = 'supabase'`) while keeping
+ * an editable Google Client Sheet bidirectionally synchronized with:
+ * - Zero synchronous Google Sheets latency on PMA / Triage / Sync saves
+ * - 3-way cell & note merge against a per-revision baseline (human Sheet wins conflicts)
+ * - Strict formula-cell & formula-column protection on outbound writes
+ * - Echo-free Google Drive `version` tracking (no GAS trigger changes needed)
+ * - Full `dry_run` preview mode & instant rollback to `sheet` mode
+ * ============================================================================
+ */
+
+import { waitUntil } from "@vercel/functions";
+import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
+import {
+  withRetry,
+  getSheetGid,
+  sanitizeFormulaInput,
+  getPrimaryRawGoogleClients,
+} from "./sheetsClient.js";
+import {
+  resolveSupabaseSheetContext,
+  invalidateMasterEngineCache,
+  invalidateSheetContextCache,
+  saveVirtualTabGrid_,
+  getOrLoadVirtualTabGrid_,
+  recomputeClientFormulasForBridge,
+  isVirtualSupabaseSheetId,
+  colIdx0ToLetter,
+} from "./masterEngineService.js";
+import { isCashCellEditable } from "./cashEditService.js";
+import { redisClient } from "./redisClient.js";
+import { invalidatePmaClientCache } from "./cacheService.js";
+import { isJobCostingStyle, toSheetDateFormat } from "../utils/helpers.js";
+
+export const BRIDGE_BIDIRECTIONAL_TABS = [
+  "Confirmed",
+  "Pipeline",
+  "Outgoings",
+  "Salaries",
+  "Budget",
+  "NBtoFind",
+  "Cash",
+];
+export const BRIDGE_OUTBOUND_ONLY_TABS = ["KeyInfo"];
+export const BRIDGE_ALL_SYNCED_TABS = [...BRIDGE_BIDIRECTIONAL_TABS, ...BRIDGE_OUTBOUND_ONLY_TABS];
+export const BRIDGE_NOTE_TABS = new Set(["Confirmed", "Pipeline", "Outgoings", "Cash"]);
+
+const BRIDGE_BIDIRECTIONAL_TAB_SET = new Set(BRIDGE_BIDIRECTIONAL_TABS);
+const BRIDGE_OUTBOUND_ONLY_SET = new Set(BRIDGE_OUTBOUND_ONLY_TABS);
+const BASELINE_TAB_NAME = "SheetBridgeBaseline";
+const OUTBOUND_DEBOUNCE_MS = 3000;
+const READ_CHECK_THROTTLE_MS = 10000;
+const RECENT_LOG_LIMIT = 15;
+const TEXT_ONLY_SLOT_COLS = new Set([42, 49, 56, 81, 88, 95]); // AQ, AX, BE, CD, CK, CR
+const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+const NOTE_FETCH_RANGES = {
+  Outgoings: { range: "Outgoings!G13:AV112", startRow0: 12, startCol0: 6 },
+  Confirmed: { range: "Confirmed!AP2:CR500", startRow0: 1, startCol0: 41 },
+  Pipeline: { range: "Pipeline!AP2:CR300", startRow0: 1, startCol0: 41 },
+  Cash: { range: "Cash!B1:AK76", startRow0: 0, startCol0: 1 },
+};
+
+const _lastReadCheckByClient = new Map();
+const _inFlightBridgeByClient = new Map();
+const _pendingOutboundByClient = new Map();
+const _pendingStructuralOpsByClient = new Map();
+const _suppressOutboundByClient = new Set();
+
+function normalizeKey_(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "_");
+}
+
+function createSafeMap_() {
+  return Object.create(null);
+}
+
+function parseNoteKey_(key) {
+  if (!key || typeof key !== "string" || key.startsWith("__") || PROTOTYPE_KEYS.has(key)) {
+    return null;
+  }
+  const colonIdx = key.indexOf(":");
+  if (colonIdx <= 0) return null;
+  const r0 = parseInt(key.slice(0, colonIdx), 10);
+  const c0 = parseInt(key.slice(colonIdx + 1), 10);
+  if (!Number.isFinite(r0) || !Number.isFinite(c0) || r0 < 0 || c0 < 0) return null;
+  return { r0, c0 };
+}
+
+function trimRowTrailing_(row) {
+  if (!Array.isArray(row)) return [];
+  let end = row.length;
+  while (end > 0) {
+    const v = row[end - 1];
+    if (v !== undefined && v !== null && v !== "") break;
+    end--;
+  }
+  return row.slice(0, end);
+}
+
+function cloneSafeNotes_(notesObj) {
+  const out = createSafeMap_();
+  if (!notesObj || typeof notesObj !== "object") return out;
+  for (const [k, v] of Object.entries(notesObj)) {
+    const parsed = parseNoteKey_(k);
+    if (!parsed) continue;
+    const str = String(v ?? "");
+    if (str) out[k] = str;
+  }
+  return out;
+}
+
+function clone2DGrid_(grid) {
+  if (!Array.isArray(grid)) return [];
+  return grid.map((r) => (Array.isArray(r) ? [...r] : []));
+}
+
+function compactBaselineTab_(valuesGrid, notesGrid) {
+  const vals = Array.isArray(valuesGrid) ? valuesGrid : [];
+  let lastNonEmptyRow = 0;
+  const trimmedRows = new Array(vals.length);
+  for (let r = 0; r < vals.length; r++) {
+    const tr = trimRowTrailing_(vals[r]);
+    trimmedRows[r] = tr;
+    if (tr.length > 0) lastNonEmptyRow = r + 1;
+  }
+  return {
+    values: trimmedRows.slice(0, lastNonEmptyRow),
+    notes: cloneSafeNotes_(notesGrid),
+  };
+}
+
+function normalizeSheetDateForCompare_(s) {
+  const m = String(s || "")
+    .trim()
+    .match(/^0?(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if (!m) return null;
+  const yr = m[3].length === 4 ? m[3].slice(-2) : m[3];
+  return `${parseInt(m[1], 10)}-${m[2].toLowerCase()}-${yr}`;
+}
+
+function parseComparableNumber_(val) {
+  if (typeof val === "number") return Number.isFinite(val) ? val : null;
+  if (typeof val !== "string") return null;
+  const s = val.trim();
+  if (!s || s.startsWith("'")) return null;
+  if (!/^[-+]?[£$€]?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(s)) return null;
+  const cleaned = s.replace(/[£$€,\s]/g, "");
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function areBridgeCellsEquivalent(a, b) {
+  const normA = a === null || a === undefined ? "" : a;
+  const normB = b === null || b === undefined ? "" : b;
+  if (normA === normB) return true;
+  if (normA === "" && normB === "") return true;
+
+  const numA = parseComparableNumber_(normA);
+  const numB = parseComparableNumber_(normB);
+  if (numA !== null && numB !== null) {
+    return Math.abs(numA - numB) < 1e-6;
+  }
+
+  // Serial Excel/Sheets date number vs formatted d-mmm-yy string
+  if (typeof normA === "number" && normA >= 25000 && normA <= 80000 && typeof normB === "string") {
+    const dStr = normalizeSheetDateForCompare_(toSheetDateFormat(normA));
+    const bStr = normalizeSheetDateForCompare_(normB);
+    if (dStr && bStr && dStr === bStr) return true;
+  }
+  if (typeof normB === "number" && normB >= 25000 && normB <= 80000 && typeof normA === "string") {
+    const dStr = normalizeSheetDateForCompare_(toSheetDateFormat(normB));
+    const aStr = normalizeSheetDateForCompare_(normA);
+    if (dStr && aStr && dStr === aStr) return true;
+  }
+  if (typeof normA === "string" && typeof normB === "string") {
+    const aDate = normalizeSheetDateForCompare_(normA);
+    const bDate = normalizeSheetDateForCompare_(normB);
+    if (aDate && bDate) return aDate === bDate;
+  }
+
+  return String(normA) === String(normB);
+}
+
+/**
+ * Hard cell-level and tab-level safety boundary ensuring outbound bridge writes
+ * NEVER overwrite live Google Sheet formulas or calculated columns/rows.
+ */
+export function isCellAllowedForOutboundBridgeWrite(
+  tabName,
+  row0,
+  col0,
+  sheetFormulaCell,
+  nextFormulaOrVal,
+  options = {}
+) {
+  if (!Number.isInteger(row0) || !Number.isInteger(col0) || row0 < 0 || col0 < 0) {
+    return false;
+  }
+
+  const isSheetFormula = typeof sheetFormulaCell === "string" && sheetFormulaCell.trim().startsWith("=");
+  const isNextFormula = typeof nextFormulaOrVal === "string" && nextFormulaOrVal.trim().startsWith("=");
+  if (isSheetFormula && !isNextFormula) {
+    return false;
+  }
+
+  if (BRIDGE_BIDIRECTIONAL_TAB_SET.has(tabName) && row0 <= 0) {
+    return false;
+  }
+
+  if (tabName === "Confirmed" || tabName === "Pipeline") {
+    const revStart = tabName === "Confirmed" ? 62 : 60;
+    if ((col0 >= revStart && col0 <= 74) || (col0 >= 96 && col0 <= 106) || col0 === 40) {
+      return false;
+    }
+    const isJc = Boolean(
+      options.isJobCosting !== undefined
+        ? options.isJobCosting
+        : options.headerRow
+          ? isJobCostingStyle({ headers: options.headerRow })
+          : false
+    );
+    if (isJc) {
+      if (
+        col0 === 10 ||
+        (col0 >= 12 && col0 <= 14) ||
+        col0 === 20 ||
+        col0 === 24 ||
+        col0 === 32 ||
+        col0 === 33 ||
+        col0 === 37 ||
+        col0 === 38
+      ) {
+        return false;
+      }
+    } else {
+      if ((col0 >= 5 && col0 <= 29 && !(tabName === "Confirmed" && col0 === 17)) || col0 === 31) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (tabName === "Outgoings") {
+    // Master-pushed actual transaction JSON (Row 300 -> idx 299) and VAT actuals (Rows 304–305 -> idx 303..304)
+    if (row0 === 299 || row0 === 303 || row0 === 304) {
+      return col0 >= 0 && col0 <= 60;
+    }
+    // Never write Making up CoS formula row (Row 111 -> idx 110) or Recharged expenses system rows (225–226)
+    if (row0 === 110 || row0 === 224 || row0 === 225) {
+      return false;
+    }
+    const isAllowedRow =
+      (row0 >= 12 && row0 <= 109) ||
+      row0 === 111 ||
+      (row0 >= 114 && row0 <= 122) ||
+      (row0 >= 125 && row0 <= 223) ||
+      (row0 >= 229 && row0 <= 237);
+    const isAllowedCol =
+      (col0 >= 0 && col0 <= 5) ||
+      (col0 >= 6 && col0 <= 17) ||
+      (col0 >= 21 && col0 <= 32) ||
+      (col0 >= 36 && col0 <= 47);
+    return isAllowedRow && isAllowedCol;
+  }
+
+  if (tabName === "Cash") {
+    return isCashCellEditable(row0 + 1, col0);
+  }
+
+  if (tabName === "KeyInfo") {
+    if (row0 < 0 || row0 > 149 || col0 < 0 || col0 > 51) return false;
+    if (row0 === 0 && col0 >= 2 && col0 <= 6) return false; // Preserve C1:G1 sheet pointers
+    return true;
+  }
+
+  if (tabName === "OutgNotes") {
+    // Only sync A1:AV111; never touch parser formula columns CH:HG
+    return row0 >= 0 && row0 <= 110 && col0 >= 0 && col0 <= 47;
+  }
+
+  if (tabName === "Salaries" || tabName === "Budget" || tabName === "NBtoFind") {
+    return row0 >= 1;
+  }
+
+  return false;
+}
+
+function formatBridgeCellValueForSheet_(col0, val, { isFormula = false } = {}) {
+  if (val === undefined || val === null) return "";
+  if (isFormula && typeof val === "string" && val.trim().startsWith("=")) {
+    return val;
+  }
+  if (typeof val === "number" || typeof val === "boolean") {
+    return val;
+  }
+  const s = String(val);
+  if (TEXT_ONLY_SLOT_COLS.has(col0)) {
+    const trimmed = s.trim();
+    if (!trimmed) return "";
+    if (trimmed.startsWith("'")) return trimmed;
+    const safe = sanitizeFormulaInput(trimmed);
+    if (typeof safe === "string" && safe.startsWith("'")) return safe;
+    if (/^\d+$/.test(String(safe))) return `'${safe}`;
+    return safe;
+  }
+  return sanitizeFormulaInput(s);
+}
+
+/**
+ * Groups dirty cells on the same row and adjacent columns into contiguous
+ * Google Sheets A1 batchUpdate ranges so recalculations stay minimal.
+ */
+export function coalesceRowChangesToBatchRanges(tabName, cellChanges = []) {
+  if (!Array.isArray(cellChanges) || cellChanges.length === 0) return [];
+  const byRow = new Map();
+  for (const ch of cellChanges) {
+    if (!ch || !Number.isInteger(ch.row0) || !Number.isInteger(ch.col0)) continue;
+    if (!byRow.has(ch.row0)) byRow.set(ch.row0, []);
+    byRow.get(ch.row0).push(ch);
+  }
+
+  const rowNums = [...byRow.keys()].sort((a, b) => a - b);
+  const ranges = [];
+  for (const r0 of rowNums) {
+    const rowChanges = byRow.get(r0).sort((a, b) => a.col0 - b.col0);
+    let idx = 0;
+    while (idx < rowChanges.length) {
+      let endIdx = idx;
+      while (
+        endIdx + 1 < rowChanges.length &&
+        rowChanges[endIdx + 1].col0 === rowChanges[endIdx].col0 + 1
+      ) {
+        endIdx++;
+      }
+      const startCol0 = rowChanges[idx].col0;
+      const endCol0 = rowChanges[endIdx].col0;
+      const rowValues = [];
+      for (let p = idx; p <= endIdx; p++) {
+        rowValues.push(
+          formatBridgeCellValueForSheet_(rowChanges[p].col0, rowChanges[p].to, {
+            isFormula: Boolean(rowChanges[p].isFormula),
+          })
+        );
+      }
+      const r1 = r0 + 1;
+      const range =
+        startCol0 === endCol0
+          ? `${tabName}!${colIdx0ToLetter(startCol0)}${r1}`
+          : `${tabName}!${colIdx0ToLetter(startCol0)}${r1}:${colIdx0ToLetter(endCol0)}${r1}`;
+      ranges.push({ range, values: [rowValues] });
+      idx = endIdx + 1;
+    }
+  }
+  return ranges;
+}
+
+/**
+ * Computes a 3-way cell & note merge between Google Sheet (human edits),
+ * Supabase virtual grids (PMA/Triage/Sync edits), and the last-synced baseline.
+ * On same-cell conflicts where both changed differently, human Sheet wins.
+ */
+export function computeThreeWayTabMerge({
+  tabName,
+  baselineValues = [],
+  baselineNotes = {},
+  sheetValues = [],
+  sheetFormulas = [],
+  sheetNotes = {},
+  supaValues = [],
+  supaFormulas = [],
+  supaNotes = {},
+  applyOutboundToBaseline = true,
+}) {
+  const isOutboundOnly = BRIDGE_OUTBOUND_ONLY_SET.has(tabName);
+  const supportsNotes = BRIDGE_NOTE_TABS.has(tabName);
+
+  const headerRow =
+    (Array.isArray(sheetFormulas?.[0]) && sheetFormulas[0].length > 0 ? sheetFormulas[0] : null) ||
+    (Array.isArray(sheetValues?.[0]) && sheetValues[0].length > 0 ? sheetValues[0] : null) ||
+    supaValues?.[0] ||
+    [];
+  const isJobCosting =
+    tabName === "Confirmed" || tabName === "Pipeline"
+      ? isJobCostingStyle({ headers: headerRow })
+      : false;
+
+  const maxRows = Math.max(baselineValues.length, sheetValues.length, supaValues.length);
+  const mergedValues = clone2DGrid_(supaValues);
+  const mergedFormulas = clone2DGrid_(supaFormulas?.length ? supaFormulas : supaValues);
+  while (mergedValues.length < maxRows) mergedValues.push([]);
+  while (mergedFormulas.length < maxRows) mergedFormulas.push([]);
+
+  const nextBaselineValues = [];
+  const inboundCellChanges = [];
+  const outboundCellChanges = [];
+  const conflicts = [];
+  let formulaCellsProtectedCount = 0;
+
+  for (let r = 0; r < maxRows; r++) {
+    const bRow = Array.isArray(baselineValues[r]) ? baselineValues[r] : [];
+    const sRow = Array.isArray(sheetValues[r]) ? sheetValues[r] : [];
+    const sfRow = Array.isArray(sheetFormulas[r]) ? sheetFormulas[r] : [];
+    const uRow = Array.isArray(supaValues[r]) ? supaValues[r] : [];
+    const ufRow = Array.isArray(supaFormulas[r]) ? supaFormulas[r] : [];
+    const maxCols = Math.max(bRow.length, sRow.length, sfRow.length, uRow.length, ufRow.length);
+
+    if (!mergedValues[r]) mergedValues[r] = [];
+    if (!mergedFormulas[r]) mergedFormulas[r] = [];
+    const nextBaseRow = new Array(maxCols).fill("");
+
+    for (let c = 0; c < maxCols; c++) {
+      const baseVal = bRow[c] ?? "";
+      const sheetVal = sRow[c] ?? "";
+      const sheetForm = sfRow[c] ?? "";
+      const supaVal = uRow[c] ?? "";
+      const supaForm = ufRow[c] ?? "";
+
+      const isSheetFormula = typeof sheetForm === "string" && sheetForm.trim().startsWith("=");
+      const isPureFormulaRecalcDrift = isSheetFormula && String(sheetForm) === String(supaForm || "");
+
+      const inChanged =
+        !isOutboundOnly &&
+        !isPureFormulaRecalcDrift &&
+        !areBridgeCellsEquivalent(sheetVal, baseVal);
+      const outChanged = !areBridgeCellsEquivalent(supaVal, baseVal);
+
+      if (inChanged && outChanged) {
+        if (areBridgeCellsEquivalent(sheetVal, supaVal)) {
+          nextBaseRow[c] = sheetVal;
+          continue;
+        }
+        // Conflict on the exact same cell -> human Google Sheet edit wins
+        conflicts.push({
+          tabName,
+          cellA1: `${colIdx0ToLetter(c)}${r + 1}`,
+          row0: r,
+          col0: c,
+          sheetVal,
+          supaVal,
+        });
+        mergedValues[r][c] = sheetVal;
+        mergedFormulas[r][c] = isSheetFormula ? sheetForm : sheetVal;
+        nextBaseRow[c] = sheetVal;
+        inboundCellChanges.push({
+          tabName,
+          row0: r,
+          col0: c,
+          cellA1: `${colIdx0ToLetter(c)}${r + 1}`,
+          from: supaVal,
+          to: sheetVal,
+          conflictWinner: "sheet",
+        });
+      } else if (inChanged) {
+        mergedValues[r][c] = sheetVal;
+        mergedFormulas[r][c] = isSheetFormula ? sheetForm : sheetVal;
+        nextBaseRow[c] = sheetVal;
+        inboundCellChanges.push({
+          tabName,
+          row0: r,
+          col0: c,
+          cellA1: `${colIdx0ToLetter(c)}${r + 1}`,
+          from: baseVal,
+          to: sheetVal,
+        });
+      } else if (outChanged) {
+        const nextCandidate =
+          typeof supaForm === "string" && supaForm.trim().startsWith("=") ? supaForm : supaVal;
+        const allowed = isCellAllowedForOutboundBridgeWrite(tabName, r, c, sheetForm, nextCandidate, {
+          isJobCosting,
+          headerRow,
+        });
+        if (!allowed) {
+          if (isSheetFormula) formulaCellsProtectedCount++;
+          // Keep Google Sheet formula cell intact in baseline
+          nextBaseRow[c] = baseVal;
+        } else {
+          const isAllowedFormula =
+            typeof supaForm === "string" && supaForm.trim().startsWith("=");
+          outboundCellChanges.push({
+            tabName,
+            row0: r,
+            col0: c,
+            cellA1: `${colIdx0ToLetter(c)}${r + 1}`,
+            from: sheetVal,
+            to: isAllowedFormula ? supaForm : supaVal,
+            isFormula: isAllowedFormula,
+          });
+          nextBaseRow[c] = applyOutboundToBaseline ? supaVal : baseVal;
+        }
+      } else {
+        nextBaseRow[c] = baseVal;
+      }
+    }
+
+    const trimmedBase = trimRowTrailing_(nextBaseRow);
+    nextBaselineValues.push(trimmedBase);
+  }
+
+  // 3-way Note diffing for note-bearing tabs
+  const safeBaseNotes = supportsNotes ? cloneSafeNotes_(baselineNotes) : createSafeMap_();
+  const safeSheetNotes = supportsNotes ? cloneSafeNotes_(sheetNotes) : createSafeMap_();
+  const safeSupaNotes = supportsNotes ? cloneSafeNotes_(supaNotes) : createSafeMap_();
+  const mergedNotes = cloneSafeNotes_(supaNotes);
+  const nextBaselineNotes = createSafeMap_();
+  const inboundNoteChanges = [];
+  const outboundNoteChanges = [];
+
+  if (supportsNotes) {
+    const allNoteKeys = new Set([
+      ...Object.keys(safeBaseNotes),
+      ...Object.keys(safeSheetNotes),
+      ...Object.keys(safeSupaNotes),
+    ]);
+    for (const k of allNoteKeys) {
+      const coords = parseNoteKey_(k);
+      if (!coords) continue;
+      // Preserve untouched non-fetched Outgoings note rows (only sync G13:AV112 on Sheet)
+      if (tabName === "Outgoings" && (coords.r0 < 12 || coords.r0 > 111 || coords.c0 < 6 || coords.c0 > 47)) {
+        if (safeSupaNotes[k]) nextBaselineNotes[k] = safeSupaNotes[k];
+        continue;
+      }
+      const bN = safeBaseNotes[k] || "";
+      const sN = safeSheetNotes[k] || "";
+      const uN = safeSupaNotes[k] || "";
+      const inNoteChanged = !isOutboundOnly && sN !== bN;
+      const outNoteChanged = uN !== bN;
+      const cellA1 = `${colIdx0ToLetter(coords.c0)}${coords.r0 + 1}`;
+
+      if (inNoteChanged && outNoteChanged) {
+        if (sN === uN) {
+          if (sN) nextBaselineNotes[k] = sN;
+        } else {
+          conflicts.push({ tabName, cellA1, row0: coords.r0, col0: coords.c0, isNote: true, sheetVal: sN, supaVal: uN });
+          if (sN) mergedNotes[k] = sN;
+          else delete mergedNotes[k];
+          if (sN) nextBaselineNotes[k] = sN;
+          inboundNoteChanges.push({ tabName, row0: coords.r0, col0: coords.c0, cellA1, from: uN, to: sN, conflictWinner: "sheet" });
+        }
+      } else if (inNoteChanged) {
+        if (sN) mergedNotes[k] = sN;
+        else delete mergedNotes[k];
+        if (sN) nextBaselineNotes[k] = sN;
+        inboundNoteChanges.push({ tabName, row0: coords.r0, col0: coords.c0, cellA1, from: bN, to: sN });
+      } else if (outNoteChanged) {
+        outboundNoteChanges.push({ tabName, row0: coords.r0, col0: coords.c0, cellA1, from: sN, to: uN });
+        const keptNote = applyOutboundToBaseline ? uN : bN;
+        if (keptNote) nextBaselineNotes[k] = keptNote;
+      } else if (bN) {
+        nextBaselineNotes[k] = bN;
+      }
+    }
+  }
+
+  // Copy non-coordinate metadata keys from supaNotes (if any) back safely without touching __proto__
+  if (supaNotes && typeof supaNotes === "object") {
+    for (const [k, v] of Object.entries(supaNotes)) {
+      if (k.startsWith("__") && !PROTOTYPE_KEYS.has(k) && k !== "__formulas_grid" && k !== "__compact_meta") {
+        mergedNotes[k] = v;
+      }
+    }
+  }
+
+  return {
+    tabName,
+    mergedValues,
+    mergedFormulas,
+    mergedNotes,
+    nextBaselineValues,
+    nextBaselineNotes,
+    inboundCellChanges,
+    outboundCellChanges,
+    inboundNoteChanges,
+    outboundNoteChanges,
+    conflicts,
+    formulaCellsProtectedCount,
+  };
+}
+
+/**
+ * Mirrors Outgoings outbound note updates into OutgNotes!A1:AV111 with the exact
+ * formula escaping used in client-GAS-scripts/Code.gs (line 575), leaving parser
+ * columns OutgNotes!CH:HG completely untouched.
+ */
+export function buildOutgNotesMirrorUpdates(outboundOutgoingsNoteChanges = [], currentOutgNotesValues = []) {
+  const cellChanges = [];
+  for (const ch of outboundOutgoingsNoteChanges) {
+    if (!ch || !Number.isInteger(ch.row0) || !Number.isInteger(ch.col0)) continue;
+    if (ch.row0 < 0 || ch.row0 > 110 || ch.col0 < 0 || ch.col0 > 47) continue;
+    const rawNote = String(ch.to ?? "");
+    const safeNote = rawNote
+      ? (/^[\s'’]*[=+\-@]/.test(rawNote) ? `'${rawNote.replace(/^[\s'’]+/, "")}` : rawNote)
+      : "";
+    const curVal = String(currentOutgNotesValues?.[ch.row0]?.[ch.col0] ?? "");
+    if (safeNote !== curVal) {
+      cellChanges.push({
+        tabName: "OutgNotes",
+        row0: ch.row0,
+        col0: ch.col0,
+        cellA1: `${colIdx0ToLetter(ch.col0)}${ch.row0 + 1}`,
+        from: curVal,
+        to: safeNote,
+        isFormula: false,
+      });
+    }
+  }
+  return coalesceRowChangesToBatchRanges("OutgNotes", cellChanges);
+}
+
+function buildUpdateCellsNoteRequests_(gid, noteChanges = []) {
+  if (gid === null || gid === undefined || !Array.isArray(noteChanges) || noteChanges.length === 0) {
+    return [];
+  }
+  return noteChanges.map((n) => ({
+    updateCells: {
+      range: {
+        sheetId: gid,
+        startRowIndex: n.row0,
+        endRowIndex: n.row0 + 1,
+        startColumnIndex: n.col0,
+        endColumnIndex: n.col0 + 1,
+      },
+      rows: [{ values: [{ note: String(n.to ?? "") }] }],
+      fields: "note",
+    },
+  }));
+}
+
+async function fetchDriveVersionMeta_(rawDrive, spreadsheetId) {
+  const resp = await withRetry(() =>
+    rawDrive.files.get({
+      fileId: spreadsheetId,
+      fields: "version,modifiedTime,lastModifyingUser(emailAddress,displayName)",
+      supportsAllDrives: true,
+    })
+  );
+  const d = resp?.data || {};
+  return {
+    version: d.version !== undefined && d.version !== null ? String(d.version) : "",
+    modifiedTime: String(d.modifiedTime || ""),
+    lastModifyingEmail: String(d.lastModifyingUser?.emailAddress || "").trim().toLowerCase(),
+    lastModifyingName: String(d.lastModifyingUser?.displayName || "").trim(),
+  };
+}
+
+async function loadBaselineRecord_(supabase, ctx) {
+  if (!supabase || !ctx?.clientName) return { driveVersion: "", updatedAt: null, tabs: createSafeMap_() };
+  const { data } = await supabase
+    .from("master_sheet_grids")
+    .select("notes_grid, updated_at")
+    .eq("client_name", ctx.clientName)
+    .eq("sheet_role", "master")
+    .eq("tab_name", BASELINE_TAB_NAME)
+    .maybeSingle();
+
+  const ng = data?.notes_grid && typeof data.notes_grid === "object" ? data.notes_grid : {};
+  const tabsOut = createSafeMap_();
+  if (ng.tabs && typeof ng.tabs === "object") {
+    for (const [k, v] of Object.entries(ng.tabs)) {
+      if (PROTOTYPE_KEYS.has(k) || !v || typeof v !== "object") continue;
+      tabsOut[k] = {
+        values: Array.isArray(v.values) ? v.values : [],
+        notes: cloneSafeNotes_(v.notes),
+      };
+    }
+  }
+  return {
+    driveVersion: String(ng.driveVersion || ""),
+    updatedAt: ng.updatedAt || data?.updated_at || null,
+    tabs: tabsOut,
+  };
+}
+
+async function saveBaselineRecord_(supabase, ctx, { driveVersion = "", tabs = {} }) {
+  if (!supabase || !ctx?.clientName) return;
+  const compactedTabs = createSafeMap_();
+  for (const [tName, tObj] of Object.entries(tabs || {})) {
+    if (PROTOTYPE_KEYS.has(tName) || !tObj) continue;
+    compactedTabs[tName] = compactBaselineTab_(tObj.values || [], tObj.notes || {});
+  }
+  const payload = {
+    driveVersion: String(driveVersion || ""),
+    updatedAt: new Date().toISOString(),
+    tabs: compactedTabs,
+  };
+  await supabase.from("master_sheet_grids").upsert(
+    {
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      sheet_role: "master",
+      tab_name: BASELINE_TAB_NAME,
+      values_grid: [],
+      formulas_grid: [],
+      notes_grid: payload,
+      row_count: 0,
+      col_count: 0,
+      updated_at: payload.updatedAt,
+    },
+    { onConflict: "client_name,sheet_role,tab_name" }
+  );
+}
+
+async function updateClientBridgeState_(supabase, clientName, patchState = {}, newLogEntry = null, overrideMode = undefined) {
+  if (!supabase || !clientName) return null;
+  const { data: curRow } = await supabase
+    .from("clients")
+    .select("id, metadata, client_mode")
+    .eq("client_name", clientName)
+    .maybeSingle();
+  if (!curRow) return null;
+
+  const curMeta = curRow.metadata && typeof curRow.metadata === "object" ? { ...curRow.metadata } : {};
+  const curState =
+    curMeta.sheet_bridge_state && typeof curMeta.sheet_bridge_state === "object"
+      ? { ...curMeta.sheet_bridge_state }
+      : {};
+
+  let nextLogs = Array.isArray(curState.recentLogs) ? [...curState.recentLogs] : [];
+  if (newLogEntry) {
+    nextLogs = [newLogEntry, ...nextLogs].slice(0, RECENT_LOG_LIMIT);
+  }
+
+  const nextState = {
+    ...curState,
+    ...patchState,
+    recentLogs: nextLogs,
+  };
+  const nextMeta = {
+    ...curMeta,
+    sheet_bridge_state: nextState,
+  };
+  if (overrideMode !== undefined) {
+    nextMeta.sheet_bridge_mode = overrideMode;
+  }
+
+  await supabase
+    .from("clients")
+    .update({ metadata: nextMeta, updated_at: new Date().toISOString() })
+    .eq("id", curRow.id);
+
+  invalidateSheetContextCache();
+  return nextMeta;
+}
+
+async function fetchRealSheetTabsAndNotes_(rawSheets, spreadsheetId, tabNames) {
+  const uniqueTabs = [...new Set(tabNames)].filter(Boolean);
+  const metaResp = await withRetry(() =>
+    rawSheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets(properties(sheetId,title,gridProperties.rowCount))",
+    })
+  );
+  const sheetPropsByTitle = createSafeMap_();
+  for (const s of metaResp?.data?.sheets || []) {
+    const title = s?.properties?.title;
+    if (title && !PROTOTYPE_KEYS.has(title)) {
+      sheetPropsByTitle[title] = {
+        sheetId: s.properties.sheetId,
+        rowCount: Number(s.properties?.gridProperties?.rowCount || 1000),
+      };
+    }
+  }
+
+  const existingTabs = uniqueTabs.filter((t) => Boolean(sheetPropsByTitle[t]));
+  const resultByTab = createSafeMap_();
+  const chunkSize = 8;
+
+  for (let i = 0; i < existingTabs.length; i += chunkSize) {
+    const batch = existingTabs.slice(i, i + chunkSize);
+    const ranges = batch.map((t) => `'${t}'`);
+    const [valResp, formResp] = await Promise.all([
+      withRetry(() =>
+        rawSheets.spreadsheets.values.batchGet({
+          spreadsheetId,
+          ranges,
+          valueRenderOption: "UNFORMATTED_VALUE",
+        })
+      ),
+      withRetry(() =>
+        rawSheets.spreadsheets.values.batchGet({
+          spreadsheetId,
+          ranges,
+          valueRenderOption: "FORMULA",
+        })
+      ),
+    ]);
+    for (let j = 0; j < batch.length; j++) {
+      const tName = batch[j];
+      resultByTab[tName] = {
+        sheetId: sheetPropsByTitle[tName].sheetId,
+        rowCount: sheetPropsByTitle[tName].rowCount,
+        values: valResp?.data?.valueRanges?.[j]?.values || [],
+        formulas: formResp?.data?.valueRanges?.[j]?.values || [],
+        notes: createSafeMap_(),
+      };
+    }
+  }
+
+  // Batch fetch cell notes on note-bearing tabs
+  const noteTabsPresent = existingTabs.filter((t) => Boolean(NOTE_FETCH_RANGES[t]));
+  if (noteTabsPresent.length > 0) {
+    try {
+      const noteResp = await withRetry(() =>
+        rawSheets.spreadsheets.get({
+          spreadsheetId,
+          ranges: noteTabsPresent.map((t) => NOTE_FETCH_RANGES[t].range),
+          fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
+        })
+      );
+      for (const sheetObj of noteResp?.data?.sheets || []) {
+        const tName = sheetObj?.properties?.title;
+        const cfg = NOTE_FETCH_RANGES[tName];
+        if (!tName || !cfg || !resultByTab[tName]) continue;
+        const gridData = sheetObj?.data?.[0];
+        const sR = Number(gridData?.startRow ?? cfg.startRow0);
+        const sC = Number(gridData?.startColumn ?? cfg.startCol0);
+        const notesOut = createSafeMap_();
+        (gridData?.rowData || []).forEach((rowObj, rOff) => {
+          (rowObj?.values || []).forEach((cellObj, cOff) => {
+            if (cellObj?.note) {
+              notesOut[`${sR + rOff}:${sC + cOff}`] = String(cellObj.note);
+            }
+          });
+        });
+        resultByTab[tName].notes = notesOut;
+      }
+    } catch (noteErr) {
+      console.warn("[clientSheetBridge] Note batch read warning:", noteErr.message);
+    }
+  }
+
+  return { sheetPropsByTitle, resultByTab };
+}
+
+/**
+ * Seeds `SheetBridgeBaseline` right after `seedClientSheetToSupabase` so the
+ * bridge always has an exact initial baseline matching the Google Sheet.
+ */
+export async function seedSheetBridgeBaselineFromSheetSeed(ctx, gridsByTab = {}) {
+  try {
+    if (!ctx?.clientName || !ctx?.clientSheetId || isVirtualSupabaseSheetId(ctx.clientSheetId)) return null;
+    const supabase = getSupabaseAdmin();
+    if (!supabase) return null;
+    const { rawDrive } = getPrimaryRawGoogleClients();
+    let driveVersion = "";
+    let modifiedTime = "";
+    if (rawDrive) {
+      const meta = await fetchDriveVersionMeta_(rawDrive, ctx.clientSheetId).catch(() => null);
+      if (meta) {
+        driveVersion = meta.version;
+        modifiedTime = meta.modifiedTime;
+      }
+    }
+    const baselineTabs = createSafeMap_();
+    for (const tName of BRIDGE_ALL_SYNCED_TABS) {
+      const g = gridsByTab?.[tName];
+      if (!g) continue;
+      baselineTabs[tName] = {
+        values: g.values || [],
+        notes: g.notes || {},
+      };
+    }
+    await saveBaselineRecord_(supabase, ctx, { driveVersion, tabs: baselineTabs });
+    await updateClientBridgeState_(supabase, ctx.clientName, {
+      lastSyncedDriveVersion: driveVersion,
+      lastSyncedModifiedTime: modifiedTime,
+      lastError: "",
+      lastSummary: `Baseline seeded (${Object.keys(baselineTabs).length} tabs${driveVersion ? `, Drive v${driveVersion}` : ""})`,
+    });
+    return { driveVersion, tabsCount: Object.keys(baselineTabs).length };
+  } catch (err) {
+    console.warn(`[clientSheetBridge] Baseline seed warning (${ctx?.clientName}):`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Records structural row/group batchUpdate requests executed on virtual client tabs
+ * so they can be replayed to the paired Google Sheet on the next bridge flush.
+ */
+export function recordBridgeStructuralRequests(clientName, requests = [], metaBySheetId = new Map()) {
+  const key = normalizeKey_(clientName);
+  if (!key || _suppressOutboundByClient.has(key) || !Array.isArray(requests) || requests.length === 0) {
+    return;
+  }
+  const structuralOps = [];
+  for (const req of requests) {
+    if (!req || typeof req !== "object") continue;
+    let srcSheetId = null;
+    if (req.moveDimension?.source?.dimension === "ROWS") srcSheetId = req.moveDimension.source.sheetId;
+    else if (req.insertDimension?.range?.dimension === "ROWS") srcSheetId = req.insertDimension.range.sheetId;
+    else if (req.deleteDimension?.range?.dimension === "ROWS") srcSheetId = req.deleteDimension.range.sheetId;
+    else if (req.addDimensionGroup?.range?.dimension === "ROWS") srcSheetId = req.addDimensionGroup.range.sheetId;
+    else if (req.deleteDimensionGroup?.range?.dimension === "ROWS") srcSheetId = req.deleteDimensionGroup.range.sheetId;
+    else if (req.updateDimensionGroup?.dimensionGroup?.range?.dimension === "ROWS") {
+      srcSheetId = req.updateDimensionGroup.dimensionGroup.range.sheetId;
+    } else if (req.updateDimensionProperties?.range?.dimension === "ROWS") {
+      srcSheetId = req.updateDimensionProperties.range.sheetId;
+    }
+    if (srcSheetId === null) continue;
+    const meta = metaBySheetId.get(srcSheetId);
+    const tabName = meta?.tab_name;
+    if (!tabName || (!BRIDGE_BIDIRECTIONAL_TAB_SET.has(tabName) && tabName !== "OutgNotes")) continue;
+    structuralOps.push({ tabName, req: structuredClone(req) });
+  }
+  if (structuralOps.length > 0) {
+    const prev = _pendingStructuralOpsByClient.get(key) || [];
+    prev.push(...structuralOps);
+    _pendingStructuralOpsByClient.set(key, prev);
+  }
+}
+
+function rewriteStructuralRequestSheetId_(req, realGid) {
+  const cloned = structuredClone(req);
+  if (cloned.moveDimension?.source) cloned.moveDimension.source.sheetId = realGid;
+  if (cloned.insertDimension?.range) cloned.insertDimension.range.sheetId = realGid;
+  if (cloned.deleteDimension?.range) cloned.deleteDimension.range.sheetId = realGid;
+  if (cloned.addDimensionGroup?.range) cloned.addDimensionGroup.range.sheetId = realGid;
+  if (cloned.deleteDimensionGroup?.range) cloned.deleteDimensionGroup.range.sheetId = realGid;
+  if (cloned.updateDimensionGroup?.dimensionGroup?.range) {
+    cloned.updateDimensionGroup.dimensionGroup.range.sheetId = realGid;
+  }
+  if (cloned.updateDimensionProperties?.range) cloned.updateDimensionProperties.range.sheetId = realGid;
+  return cloned;
+}
+
+async function acquireRedisBridgeLock_(normKey, ttlSecs = 30) {
+  if (!redisClient?.isOpen) return true;
+  try {
+    const res = await redisClient.set(`pulse:sheet_bridge_lock:${normKey}`, String(Date.now()), {
+      NX: true,
+      EX: ttlSecs,
+    });
+    return res === "OK";
+  } catch {
+    return true;
+  }
+}
+
+async function releaseRedisBridgeLock_(normKey) {
+  if (!redisClient?.isOpen) return;
+  try {
+    await redisClient.del(`pulse:sheet_bridge_lock:${normKey}`);
+  } catch { }
+}
+
+/**
+ * Throttled read-time check: if `sheet_bridge_mode === 'live'`, runs a ~60 ms Drive
+ * `version` check (at most once per 10s per tenant) and pulls any human sheet edits
+ * into Supabase before returning data to PMA / Portal / Proactive checks.
+ */
+export async function ensureClientSheetBridgeFreshOnRead(ctx, { throttleMs = READ_CHECK_THROTTLE_MS } = {}) {
+  if (
+    !ctx ||
+    ctx.clientMode !== "supabase" ||
+    ctx.sheetBridgeMode !== "live" ||
+    !ctx.clientSheetId ||
+    isVirtualSupabaseSheetId(ctx.clientSheetId)
+  ) {
+    return null;
+  }
+  const key = normalizeKey_(ctx.clientName);
+  if (!key || _suppressOutboundByClient.has(key)) return null;
+
+  const now = Date.now();
+  if (now - (_lastReadCheckByClient.get(key) || 0) < throttleMs) {
+    return null;
+  }
+  _lastReadCheckByClient.set(key, now);
+
+  if (redisClient?.isOpen) {
+    try {
+      const ok = await redisClient.set(`pulse:sheet_bridge_read_check:${key}`, String(now), {
+        NX: true,
+        EX: Math.max(3, Math.ceil(throttleMs / 1000)),
+      });
+      if (ok !== "OK") return null;
+    } catch { }
+  }
+
+  return await checkAndSyncClientSheetBridge(ctx.clientName, { direction: "inbound_check" }).catch((err) => {
+    console.warn(`[clientSheetBridge] Read freshness check warning (${ctx.clientName}):`, err.message);
+    return null;
+  });
+}
+
+/**
+ * Schedules a 3-second debounced outbound bridge flush using Vercel `waitUntil`
+ * so rapid edits (e.g. multiple triage placements) coalesce into one minimal
+ * Google Sheets batchUpdate without blocking interactive HTTP responses.
+ */
+export function scheduleOutboundSheetBridgeSync(clientName, dirtyTabs = []) {
+  const cleanName = String(clientName || "").trim();
+  const key = normalizeKey_(cleanName);
+  if (!key || _suppressOutboundByClient.has(key)) return;
+
+  const relevantTabs = (Array.isArray(dirtyTabs) ? dirtyTabs : []).filter(
+    (t) => BRIDGE_BIDIRECTIONAL_TAB_SET.has(t) || BRIDGE_OUTBOUND_ONLY_SET.has(t)
+  );
+  if (relevantTabs.length === 0) return;
+
+  if (redisClient?.isOpen) {
+    redisClient.sAdd(`pulse:sheet_bridge_dirty:${key}`, relevantTabs).catch(() => { });
+    redisClient.expire(`pulse:sheet_bridge_dirty:${key}`, 3600).catch(() => { });
+  }
+
+  let entry = _pendingOutboundByClient.get(key);
+  if (!entry) {
+    let resolveFlush;
+    const promise = new Promise((resolve) => {
+      resolveFlush = resolve;
+    });
+    entry = {
+      clientName: cleanName,
+      dirtyTabs: new Set(relevantTabs),
+      timer: null,
+      promise,
+      resolveFlush,
+    };
+    _pendingOutboundByClient.set(key, entry);
+    try {
+      waitUntil(promise);
+    } catch { }
+  } else {
+    for (const t of relevantTabs) entry.dirtyTabs.add(t);
+    if (entry.timer) clearTimeout(entry.timer);
+  }
+
+  entry.timer = setTimeout(async () => {
+    const current = _pendingOutboundByClient.get(key);
+    if (current) _pendingOutboundByClient.delete(key);
+    try {
+      await checkAndSyncClientSheetBridge(cleanName, {
+        direction: "both",
+        dirtyTabsHint: current ? [...current.dirtyTabs] : relevantTabs,
+      });
+    } catch (err) {
+      console.warn(`[clientSheetBridge] Debounced flush warning (${cleanName}):`, err.message);
+    } finally {
+      if (current?.resolveFlush) current.resolveFlush();
+    }
+  }, OUTBOUND_DEBOUNCE_MS);
+}
+
+/**
+ * Main bidirectional synchronization routine for a single client.
+ * - `direction`: `"inbound_check"` | `"inbound"` | `"outbound"` | `"both"`
+ */
+export async function checkAndSyncClientSheetBridge(
+  clientName,
+  { direction = "both", force = false, allowDryRunApplyInbound = false, dirtyTabsHint = null } = {}
+) {
+  if (!isSupabaseConfigured()) throw new Error("Supabase is not configured.");
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx) throw new Error(`Client "${clientName}" not found.`);
+  if (ctx.clientMode !== "supabase") {
+    return { skipped: true, reason: `Client portal mode is "${ctx.clientMode}", expected "supabase".` };
+  }
+  if (!ctx.clientSheetId || isVirtualSupabaseSheetId(ctx.clientSheetId)) {
+    return { skipped: true, reason: "No Google Client Sheet linked for this tenant." };
+  }
+
+  const mode = String(ctx.sheetBridgeMode || "off").toLowerCase();
+  if (mode === "off" && !force) {
+    return { skipped: true, reason: "Sheet bridge mode is off." };
+  }
+  const effectiveMode = mode === "live" ? "live" : "dry_run";
+  const key = normalizeKey_(ctx.clientName);
+
+  if (_inFlightBridgeByClient.has(key)) {
+    return await _inFlightBridgeByClient.get(key);
+  }
+
+  const runPromise = (async () => {
+    const lockOk = await acquireRedisBridgeLock_(key, 30);
+    if (!lockOk && !force) {
+      return { skipped: true, reason: "Another bridge sync is already in progress." };
+    }
+
+    const supabase = getSupabaseAdmin();
+    try {
+      const { rawDrive, rawSheets, serviceAccountEmails } = getPrimaryRawGoogleClients();
+      if (!rawDrive || !rawSheets) {
+        throw new Error("Primary Google Service Account Drive/Sheets clients unavailable.");
+      }
+
+      const [clientRowRes, baseline, driveMeta] = await Promise.all([
+        supabase
+          .from("clients")
+          .select("metadata")
+          .eq("client_name", ctx.clientName)
+          .maybeSingle(),
+        loadBaselineRecord_(supabase, ctx),
+        fetchDriveVersionMeta_(rawDrive, ctx.clientSheetId),
+      ]);
+
+      const curMeta = clientRowRes?.data?.metadata || {};
+      const curState = curMeta.sheet_bridge_state || {};
+      const lastSyncedVersion = String(baseline.driveVersion || curState.lastSyncedDriveVersion || "");
+      const lastPulseWrittenVersion = String(curState.lastPulseWrittenVersion || "");
+
+      const lastOutboundMs = curState.lastOutboundAt ? new Date(curState.lastOutboundAt).getTime() : 0;
+      const isRecentSaWrite =
+        Boolean(driveMeta.lastModifyingEmail && serviceAccountEmails.includes(driveMeta.lastModifyingEmail)) &&
+        Date.now() - lastOutboundMs < 20000;
+
+      const driveVersionChanged = Boolean(
+        driveMeta.version &&
+          driveMeta.version !== lastSyncedVersion &&
+          driveMeta.version !== lastPulseWrittenVersion &&
+          !isRecentSaWrite
+      );
+
+      const wantsInbound =
+        direction === "inbound" ||
+        direction === "inbound_check" ||
+        direction === "both";
+      const wantsOutbound = direction === "outbound" || direction === "both";
+      const forceInboundFetch = direction === "inbound" || force;
+
+      // Fast-path exit on pure inbound read check (~60ms Drive metadata check only!)
+      if (direction === "inbound_check" && !driveVersionChanged && !force) {
+        return {
+          success: true,
+          mode: effectiveMode,
+          checked: true,
+          driveVersion: driveMeta.version,
+          inboundChanged: false,
+          outboundChanged: false,
+        };
+      }
+
+      let redisDirtyTabs = [];
+      if (redisClient?.isOpen) {
+        try {
+          redisDirtyTabs = await redisClient.sMembers(`pulse:sheet_bridge_dirty:${key}`);
+        } catch { }
+      }
+
+      const queuedStructOps = _pendingStructuralOpsByClient.get(key) || [];
+      const needRealSheetFetch =
+        (wantsInbound && (driveVersionChanged || forceInboundFetch)) ||
+        wantsOutbound;
+
+      let sheetBundle = null;
+      if (needRealSheetFetch) {
+        const tabsToLoad = wantsInbound && (driveVersionChanged || forceInboundFetch)
+          ? [...BRIDGE_BIDIRECTIONAL_TABS, "KeyInfo", "OutgNotes"]
+          : [
+              ...new Set([
+                ...(Array.isArray(dirtyTabsHint) && dirtyTabsHint.length > 0 ? dirtyTabsHint : BRIDGE_ALL_SYNCED_TABS),
+                ...redisDirtyTabs,
+                ...BRIDGE_ALL_SYNCED_TABS,
+                "OutgNotes",
+              ]),
+            ];
+        sheetBundle = await fetchRealSheetTabsAndNotes_(rawSheets, ctx.clientSheetId, tabsToLoad);
+      }
+
+      const mergeResults = [];
+      const inboundAppliedTabs = [];
+      const allInboundDiffs = [];
+      const allOutboundDiffs = [];
+      const allConflicts = [];
+      let totalFormulaProtected = 0;
+      const outboundValueRanges = [];
+      const outboundNoteRequests = [];
+      let outboundOutgoingsNoteChanges = [];
+      const nextBaselineTabs = { ...baseline.tabs };
+      const maxTargetRowByTab = createSafeMap_();
+
+      const tabsToProcess = wantsOutbound
+        ? BRIDGE_ALL_SYNCED_TABS
+        : BRIDGE_BIDIRECTIONAL_TABS;
+
+      for (const tabName of tabsToProcess) {
+        const sheetTab = sheetBundle?.resultByTab?.[tabName];
+        if (!sheetTab) continue;
+
+        const supaRec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheets, {
+          includeNotes: BRIDGE_NOTE_TABS.has(tabName),
+        }).catch(() => null);
+        if (!supaRec) continue;
+
+        const baseTab = baseline.tabs?.[tabName] || { values: [], notes: createSafeMap_() };
+        const merge = computeThreeWayTabMerge({
+          tabName,
+          baselineValues: baseTab.values,
+          baselineNotes: baseTab.notes,
+          sheetValues: sheetTab.values,
+          sheetFormulas: sheetTab.formulas,
+          sheetNotes: sheetTab.notes,
+          supaValues: supaRec.values_grid || [],
+          supaFormulas: supaRec.formulas_grid || supaRec.values_grid || [],
+          supaNotes: supaRec.notes_grid || {},
+          applyOutboundToBaseline: Boolean(wantsOutbound && effectiveMode === "live"),
+        });
+        mergeResults.push({ tabName, merge, supaRec, sheetTab });
+
+        if (merge.inboundCellChanges.length > 0 || merge.inboundNoteChanges.length > 0) {
+          allInboundDiffs.push(...merge.inboundCellChanges, ...merge.inboundNoteChanges);
+          inboundAppliedTabs.push(tabName);
+        }
+        if (merge.outboundCellChanges.length > 0 || merge.outboundNoteChanges.length > 0) {
+          allOutboundDiffs.push(...merge.outboundCellChanges, ...merge.outboundNoteChanges);
+        }
+        if (merge.conflicts.length > 0) {
+          allConflicts.push(...merge.conflicts);
+        }
+        totalFormulaProtected += merge.formulaCellsProtectedCount;
+
+        if (wantsOutbound && merge.outboundCellChanges.length > 0) {
+          for (const ch of merge.outboundCellChanges) {
+            const curMax = maxTargetRowByTab[tabName] || 0;
+            if (ch.row0 + 1 > curMax) maxTargetRowByTab[tabName] = ch.row0 + 1;
+          }
+          outboundValueRanges.push(...coalesceRowChangesToBatchRanges(tabName, merge.outboundCellChanges));
+        }
+        if (wantsOutbound && merge.outboundNoteChanges.length > 0) {
+          for (const n of merge.outboundNoteChanges) {
+            const curMax = maxTargetRowByTab[tabName] || 0;
+            if (n.row0 + 1 > curMax) maxTargetRowByTab[tabName] = n.row0 + 1;
+          }
+          outboundNoteRequests.push(...buildUpdateCellsNoteRequests_(sheetTab.sheetId, merge.outboundNoteChanges));
+          if (tabName === "Outgoings") {
+            outboundOutgoingsNoteChanges = merge.outboundNoteChanges;
+          }
+        }
+
+        nextBaselineTabs[tabName] = {
+          values: merge.nextBaselineValues,
+          notes: merge.nextBaselineNotes,
+        };
+      }
+
+      // Mirror outbound Outgoings notes into OutgNotes!A1:AV111 on Google Sheet
+      if (wantsOutbound && outboundOutgoingsNoteChanges.length > 0 && sheetBundle?.resultByTab?.OutgNotes) {
+        const outgNotesRanges = buildOutgNotesMirrorUpdates(
+          outboundOutgoingsNoteChanges,
+          sheetBundle.resultByTab.OutgNotes.values || []
+        );
+        outboundValueRanges.push(...outgNotesRanges);
+      }
+
+      const shouldApplyInboundNow =
+        inboundAppliedTabs.length > 0 &&
+        wantsInbound &&
+        (effectiveMode === "live" || allowDryRunApplyInbound);
+
+      if (shouldApplyInboundNow) {
+        _suppressOutboundByClient.add(key);
+        try {
+          for (const item of mergeResults) {
+            if (!inboundAppliedTabs.includes(item.tabName)) continue;
+            await saveVirtualTabGrid_(
+              ctx,
+              "client",
+              item.tabName,
+              item.merge.mergedValues,
+              item.merge.mergedFormulas,
+              item.merge.mergedNotes,
+              { markPersistedImmediate: true, markPersistedToDbImmediate: true }
+            );
+          }
+          await recomputeClientFormulasForBridge(ctx.clientName, inboundAppliedTabs).catch((e) =>
+            console.warn(`[clientSheetBridge] Post-inbound recompute warning (${ctx.clientName}):`, e.message)
+          );
+          invalidateMasterEngineCache(ctx.clientName, "client");
+          await invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId).catch(() => { });
+          try {
+            const { invalidatePrecomputedMemoryCache } = await import("./triageEngine.js");
+            invalidatePrecomputedMemoryCache();
+          } catch { }
+        } finally {
+          _suppressOutboundByClient.delete(key);
+        }
+      }
+
+      let finalDriveVersion = driveMeta.version;
+      let finalModifiedTime = driveMeta.modifiedTime;
+      const hasOutboundWork = outboundValueRanges.length > 0 || outboundNoteRequests.length > 0 || queuedStructOps.length > 0;
+
+      if (wantsOutbound && effectiveMode === "live" && hasOutboundWork) {
+        // 1. Expand target tabs if rows grew beyond current Google Sheet grid rowCount + replay structural ops
+        const structuralBatch = [];
+        for (const [tName, reqMaxRow] of Object.entries(maxTargetRowByTab)) {
+          if (PROTOTYPE_KEYS.has(tName)) continue;
+          const props = sheetBundle?.sheetPropsByTitle?.[tName];
+          if (props && reqMaxRow > props.rowCount) {
+            structuralBatch.push({
+              insertDimension: {
+                range: {
+                  sheetId: props.sheetId,
+                  dimension: "ROWS",
+                  startIndex: props.rowCount,
+                  endIndex: reqMaxRow + 15,
+                },
+                inheritFromBefore: true,
+              },
+            });
+          }
+        }
+        if (queuedStructOps.length > 0) {
+          for (const op of queuedStructOps) {
+            const realGid =
+              sheetBundle?.sheetPropsByTitle?.[op.tabName]?.sheetId ??
+              (await getSheetGid(rawSheets, ctx.clientSheetId, op.tabName).catch(() => null));
+            if (realGid !== null && realGid !== undefined) {
+              structuralBatch.push(rewriteStructuralRequestSheetId_(op.req, realGid));
+            }
+          }
+          _pendingStructuralOpsByClient.delete(key);
+        }
+        if (structuralBatch.length > 0) {
+          await withRetry(() =>
+            rawSheets.spreadsheets.batchUpdate({
+              spreadsheetId: ctx.clientSheetId,
+              requestBody: { requests: structuralBatch },
+            })
+          );
+        }
+
+        // 2. Write minimal coalesced cell-diff batch
+        if (outboundValueRanges.length > 0) {
+          await withRetry(() =>
+            rawSheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: ctx.clientSheetId,
+              requestBody: {
+                valueInputOption: "USER_ENTERED",
+                data: outboundValueRanges,
+              },
+            })
+          );
+        }
+
+        // 3. Apply note updates
+        if (outboundNoteRequests.length > 0) {
+          await withRetry(() =>
+            rawSheets.spreadsheets.batchUpdate({
+              spreadsheetId: ctx.clientSheetId,
+              requestBody: { requests: outboundNoteRequests },
+            })
+          );
+        }
+
+        const postMeta = await fetchDriveVersionMeta_(rawDrive, ctx.clientSheetId).catch(() => null);
+        if (postMeta?.version) {
+          finalDriveVersion = postMeta.version;
+          finalModifiedTime = postMeta.modifiedTime;
+        }
+      } else if (wantsOutbound && queuedStructOps.length > 0 && effectiveMode === "dry_run") {
+        _pendingStructuralOpsByClient.delete(key);
+      }
+
+      if (redisClient?.isOpen && wantsOutbound && (effectiveMode === "live" || !hasOutboundWork)) {
+        redisClient.del(`pulse:sheet_bridge_dirty:${key}`).catch(() => { });
+      }
+
+      // Persist updated baseline whenever inbound applied in live/manual mode, outbound committed in live mode, or baseline was missing
+      const shouldSaveBaseline =
+        !baseline.driveVersion ||
+        shouldApplyInboundNow ||
+        (wantsOutbound && effectiveMode === "live" && hasOutboundWork) ||
+        (effectiveMode === "live" && driveVersionChanged);
+
+      if (shouldSaveBaseline) {
+        // In dry_run when inbound wasn't forced, avoid overwriting baseline with un-applied outbound changes
+        if (effectiveMode === "dry_run" && !allowDryRunApplyInbound) {
+          await saveBaselineRecord_(supabase, ctx, {
+            driveVersion: baseline.driveVersion || finalDriveVersion,
+            tabs: baseline.tabs,
+          });
+        } else {
+          await saveBaselineRecord_(supabase, ctx, {
+            driveVersion: finalDriveVersion,
+            tabs: nextBaselineTabs,
+          });
+        }
+      }
+
+      const sampleDiffs = [
+        ...allInboundDiffs.slice(0, 10).map((d) => ({ direction: "in", tab: d.tabName, cell: d.cellA1, from: d.from, to: d.to })),
+        ...allOutboundDiffs.slice(0, 15).map((d) => ({ direction: "out", tab: d.tabName, cell: d.cellA1, from: d.from, to: d.to })),
+      ].slice(0, 20);
+
+      const summaryParts = [];
+      if (allInboundDiffs.length > 0) {
+        summaryParts.push(
+          `${shouldApplyInboundNow ? "Pulled" : "Would pull"} ${allInboundDiffs.length} sheet change(s) (${inboundAppliedTabs.join(", ")})`
+        );
+      }
+      if (allOutboundDiffs.length > 0 || queuedStructOps.length > 0) {
+        summaryParts.push(
+          `${effectiveMode === "live" && wantsOutbound ? "Pushed" : "Would push"} ${allOutboundDiffs.length} cell(s) in ${outboundValueRanges.length} range(s)${
+            queuedStructOps.length > 0 ? ` + ${queuedStructOps.length} row op(s)` : ""
+          }`
+        );
+      }
+      if (allConflicts.length > 0) {
+        summaryParts.push(`${allConflicts.length} same-cell conflict(s) (Sheet kept)`);
+      }
+      if (totalFormulaProtected > 0) {
+        summaryParts.push(`${totalFormulaProtected} formula cell(s) protected`);
+      }
+      if (summaryParts.length === 0) {
+        summaryParts.push(`In sync (Drive v${finalDriveVersion || "?"})`);
+      }
+
+      const nowIso = new Date().toISOString();
+      const summaryText = summaryParts.join("; ");
+      const shouldLog =
+        force ||
+        allInboundDiffs.length > 0 ||
+        allOutboundDiffs.length > 0 ||
+        allConflicts.length > 0 ||
+        queuedStructOps.length > 0;
+
+      const logEntry = shouldLog
+        ? {
+            timestamp: nowIso,
+            mode: effectiveMode,
+            direction,
+            driveVersion: finalDriveVersion,
+            inboundCount: allInboundDiffs.length,
+            outboundCount: allOutboundDiffs.length,
+            rangeCount: outboundValueRanges.length,
+            structuralCount: queuedStructOps.length,
+            conflictCount: allConflicts.length,
+            formulaProtectedCount: totalFormulaProtected,
+            summary: summaryText,
+            sampleDiffs,
+          }
+        : null;
+
+      const statePatch = {
+        lastSyncedDriveVersion: shouldSaveBaseline ? finalDriveVersion : (baseline.driveVersion || finalDriveVersion),
+        lastSyncedModifiedTime: finalModifiedTime || driveMeta.modifiedTime,
+        lastError: "",
+        lastSummary: summaryText,
+        ...(shouldApplyInboundNow ? { lastInboundAt: nowIso } : {}),
+        ...(wantsOutbound && effectiveMode === "live" && hasOutboundWork
+          ? { lastOutboundAt: nowIso, lastPulseWrittenVersion: finalDriveVersion }
+          : {}),
+        ...(effectiveMode === "dry_run" ? { lastDryRunAt: nowIso } : {}),
+      };
+      await updateClientBridgeState_(supabase, ctx.clientName, statePatch, logEntry);
+
+      return {
+        success: true,
+        mode: effectiveMode,
+        direction,
+        driveVersion: finalDriveVersion,
+        inboundChanged: allInboundDiffs.length > 0,
+        inboundCount: allInboundDiffs.length,
+        outboundChanged: allOutboundDiffs.length > 0 || queuedStructOps.length > 0,
+        outboundCount: allOutboundDiffs.length,
+        outboundRangesCount: outboundValueRanges.length,
+        structuralCount: queuedStructOps.length,
+        conflictCount: allConflicts.length,
+        formulaCellsProtectedCount: totalFormulaProtected,
+        summary: summaryText,
+        sampleDiffs,
+      };
+    } catch (err) {
+      await updateClientBridgeState_(
+        supabase,
+        ctx.clientName,
+        { lastError: err.message },
+        {
+          timestamp: new Date().toISOString(),
+          mode: effectiveMode,
+          direction,
+          summary: `Bridge error: ${err.message}`,
+          error: true,
+        }
+      ).catch(() => { });
+      throw err;
+    } finally {
+      if (lockOk) await releaseRedisBridgeLock_(key);
+    }
+  })();
+
+  _inFlightBridgeByClient.set(key, runPromise);
+  try {
+    return await runPromise;
+  } finally {
+    if (_inFlightBridgeByClient.get(key) === runPromise) {
+      _inFlightBridgeByClient.delete(key);
+    }
+  }
+}
+
+/**
+ * Admin toggle for a tenant's `sheet_bridge_mode` (`"off"` | `"dry_run"` | `"live"`).
+ * Automatically initializes `SheetBridgeBaseline` when enabling if one does not exist yet.
+ */
+export async function setClientSheetBridgeMode(sheets, clientName, targetMode) {
+  const cleanMode = String(targetMode || "off").trim().toLowerCase();
+  if (!["off", "dry_run", "live"].includes(cleanMode)) {
+    throw new Error(`Invalid sheet_bridge_mode "${targetMode}". Expected "off", "dry_run", or "live".`);
+  }
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const { data: clientRow, error } = await supabase
+    .from("clients")
+    .select("id, client_name, client_mode, client_sheet_id, metadata")
+    .eq("client_name", clientName)
+    .maybeSingle();
+  if (error || !clientRow) throw new Error(`Client "${clientName}" not found.`);
+
+  if (cleanMode !== "off") {
+    if (clientRow.client_mode !== "supabase") {
+      throw new Error(`Enable Client Portal Supabase engine (Step 5) for "${clientName}" before enabling the Google Sheet bridge.`);
+    }
+    if (!clientRow.client_sheet_id || isVirtualSupabaseSheetId(clientRow.client_sheet_id)) {
+      throw new Error(`"${clientName}" has no Google Client Sheet linked for bidirectional syncing.`);
+    }
+    const { count: clientTabCount } = await supabase
+      .from("master_sheet_grids")
+      .select("id", { count: "exact", head: true })
+      .eq("client_name", clientRow.client_name)
+      .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)");
+    if (!clientTabCount) {
+      throw new Error(`Seed "${clientName}" Client Sheet into Supabase (Step 4) before enabling the Google Sheet bridge.`);
+    }
+
+    const ctx = {
+      clientId: clientRow.id,
+      clientName: clientRow.client_name,
+      clientSheetId: clientRow.client_sheet_id,
+      clientMode: clientRow.client_mode,
+    };
+    const existingBase = await loadBaselineRecord_(supabase, ctx);
+    if (!existingBase.driveVersion || Object.keys(existingBase.tabs || {}).length === 0) {
+      const { rawDrive } = getPrimaryRawGoogleClients();
+      let driveVersion = "";
+      let modifiedTime = "";
+      if (rawDrive) {
+        const meta = await fetchDriveVersionMeta_(rawDrive, clientRow.client_sheet_id).catch(() => null);
+        if (meta) {
+          driveVersion = meta.version;
+          modifiedTime = meta.modifiedTime;
+        }
+      }
+      const tabs = createSafeMap_();
+      for (const tName of BRIDGE_ALL_SYNCED_TABS) {
+        const rec = await getOrLoadVirtualTabGrid_(ctx, "client", tName, sheets, {
+          includeNotes: BRIDGE_NOTE_TABS.has(tName),
+        }).catch(() => null);
+        if (rec) {
+          tabs[tName] = { values: rec.values_grid || [], notes: rec.notes_grid || {} };
+        }
+      }
+      await saveBaselineRecord_(supabase, ctx, { driveVersion, tabs });
+      await updateClientBridgeState_(
+        supabase,
+        clientRow.client_name,
+        {
+          lastSyncedDriveVersion: driveVersion,
+          lastSyncedModifiedTime: modifiedTime,
+          lastSummary: `Bridge enabled (${cleanMode}); baseline captured at Drive v${driveVersion || "?"}`,
+          lastError: "",
+        },
+        {
+          timestamp: new Date().toISOString(),
+          mode: cleanMode,
+          direction: "mode_change",
+          driveVersion,
+          summary: `Switched bridge mode to "${cleanMode}" (Drive v${driveVersion || "?"})`,
+        },
+        cleanMode
+      );
+      return { clientName: clientRow.client_name, sheetBridgeMode: cleanMode, driveVersion };
+    }
+  }
+
+  await updateClientBridgeState_(
+    supabase,
+    clientRow.client_name,
+    {
+      lastSummary: cleanMode === "off" ? "Sheet bridge turned off" : `Switched bridge mode to "${cleanMode}"`,
+      lastError: "",
+    },
+    {
+      timestamp: new Date().toISOString(),
+      mode: cleanMode,
+      direction: "mode_change",
+      summary: `Switched bridge mode to "${cleanMode}"`,
+    },
+    cleanMode
+  );
+  return { clientName: clientRow.client_name, sheetBridgeMode: cleanMode };
+}
+
+/**
+ * Runs a sequential sweep across all live `supabase` clients with
+ * `sheet_bridge_mode` set to `'dry_run'` or `'live'`.
+ */
+export async function runScheduledSheetBridgeSweep() {
+  if (!isSupabaseConfigured()) return { checked: 0, synced: 0 };
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return { checked: 0, synced: 0 };
+
+  const { data: clients, error } = await supabase
+    .from("clients")
+    .select("client_name, status, client_mode, client_sheet_id, metadata")
+    .eq("status", "live")
+    .eq("client_mode", "supabase");
+  if (error || !Array.isArray(clients) || clients.length === 0) {
+    return { checked: 0, synced: 0 };
+  }
+
+  const activeBridgeClients = clients.filter((c) => {
+    const mode = String(c.metadata?.sheet_bridge_mode || "off").toLowerCase();
+    return (
+      (mode === "dry_run" || mode === "live") &&
+      c.client_sheet_id &&
+      !isVirtualSupabaseSheetId(c.client_sheet_id)
+    );
+  });
+
+  if (activeBridgeClients.length === 0) {
+    return { checked: 0, synced: 0 };
+  }
+
+  let synced = 0;
+  const errors = [];
+  for (const c of activeBridgeClients) {
+    try {
+      const res = await checkAndSyncClientSheetBridge(c.client_name, { direction: "both" });
+      if (res?.inboundChanged || res?.outboundChanged) synced++;
+    } catch (err) {
+      errors.push({ clientName: c.client_name, error: err.message });
+    }
+  }
+
+  return {
+    checked: activeBridgeClients.length,
+    synced,
+    errors,
+  };
+}

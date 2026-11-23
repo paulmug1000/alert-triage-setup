@@ -407,6 +407,59 @@ export default function DbView({
     });
   };
 
+  const handleSetSheetBridgeMode = (targetMode, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    const modeLabel = targetMode === "live" ? "Live sync" : targetMode === "dry_run" ? "Dry run" : "Off";
+    runTrackedOperation(`bridge_mode_${targetMode}`, `Switching ${targetClient} Google Sheet bridge to ${modeLabel}...`, async () => {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_sheet_bridge_mode",
+          clientName: targetClient,
+          bridgeMode: targetMode,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Could not update Google Sheet bridge mode.");
+      if (data.status) setStage2Data(data.status);
+      return {
+        type: "success",
+        text: `Switched ${targetClient} Google Sheet bridge mode to ${modeLabel}.`,
+      };
+    });
+  };
+
+  const handleSheetBridgeSync = (direction, applyInDryRun = false, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    const action = direction === "inbound" ? "sync_sheet_bridge_inbound" : "sync_sheet_bridge_outbound";
+    const opLabel =
+      direction === "inbound"
+        ? `Checking Google Sheet edits for ${targetClient}...`
+        : `Checking outbound diff to Google Sheet for ${targetClient}...`;
+    runTrackedOperation(`bridge_${direction}`, opLabel, async () => {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          clientName: targetClient,
+          applyInDryRun,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Sheet bridge sync failed.");
+      if (data.status) setStage2Data(data.status);
+      const s = data.syncSummary || {};
+      return {
+        type: "success",
+        text: s.summary || s.reason || `Completed ${direction} bridge check for ${targetClient}.`,
+      };
+    });
+  };
+
   const handleNativeSync = (syncType, label, clientOverride) => {
     const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
     runTrackedOperation(`sync_${syncType}`, `Running "${label}" on ${targetClient}...`, async () => {
@@ -699,6 +752,8 @@ export default function DbView({
   const activeClientName = activeClientObj?.client_name || selectedClient || "APPTEST";
   const activeClientMode = activeClientObj?.master_mode || "sheet";
   const activeClientPortalMode = activeClientObj?.client_mode || "sheet";
+  const activeSheetBridgeMode = activeClientObj?.sheetBridgeMode || "off";
+  const activeSheetBridgeState = activeClientObj?.sheetBridgeState || null;
   const hasRealMasterSheet = activeClientObj ? activeClientObj.hasRealMasterSheet !== false : true;
   const hasRealClientSheet = activeClientObj ? activeClientObj.hasRealClientSheet !== false : true;
   const isMaterialized = Boolean(
@@ -1839,18 +1894,24 @@ export default function DbView({
                               >
                                 {isSupabase ? "Master: Supabase" : "Master: Sheets"}
                               </span>
-                              <span
-                                style={{
-                                  padding: "2px 7px",
-                                  borderRadius: "999px",
-                                  fontWeight: 600,
-                                  fontSize: "10px",
-                                  background: isClientSupabase ? "#dbeafe" : "#f1f5f9",
-                                  color: isClientSupabase ? "#1e40af" : "#475569",
-                                }}
-                              >
-                                {isClientSupabase ? "Portal: Supabase" : "Portal: Sheets"}
-                              </span>
+                                <span
+                                  style={{
+                                    padding: "2px 7px",
+                                    borderRadius: "999px",
+                                    fontWeight: 600,
+                                    fontSize: "10px",
+                                    background: isClientSupabase ? "#dbeafe" : "#f1f5f9",
+                                    color: isClientSupabase ? "#1e40af" : "#475569",
+                                  }}
+                                >
+                                  {isClientSupabase
+                                    ? c.sheetBridgeMode === "live"
+                                      ? "Portal: Supabase + Sheet"
+                                      : c.sheetBridgeMode === "dry_run"
+                                        ? "Portal: Supabase (dry run)"
+                                        : "Portal: Supabase"
+                                    : "Portal: Sheets"}
+                                </span>
                             </div>
                           </td>
                           <td style={{ padding: "8px 10px", color: hasTabs ? "#1e293b" : "#94a3b8" }}>
@@ -2342,6 +2403,238 @@ export default function DbView({
                   </button>
                 </div>
               </div>
+            </div>
+
+            {/* Step 6: Bidirectional Google Sheet bridge */}
+            <div
+              style={{
+                marginTop: "12px",
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "8px",
+                padding: "12px 14px",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: "12px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ flex: "1 1 260px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: "12.5px", fontWeight: 700, color: "#1e293b" }}>
+                      6. {activeClientName} Google Sheet bidirectional bridge
+                    </span>
+                    <span
+                      style={{
+                        padding: "2px 7px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background:
+                          activeSheetBridgeMode === "live"
+                            ? "#dcfce7"
+                            : activeSheetBridgeMode === "dry_run"
+                              ? "#fef3c7"
+                              : "#e2e8f0",
+                        color:
+                          activeSheetBridgeMode === "live"
+                            ? "#166534"
+                            : activeSheetBridgeMode === "dry_run"
+                              ? "#92400e"
+                              : "#475569",
+                      }}
+                    >
+                      {activeSheetBridgeMode === "live"
+                        ? "Live sync"
+                        : activeSheetBridgeMode === "dry_run"
+                          ? "Dry run"
+                          : "Off"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "3px", lineHeight: 1.45 }}>
+                    {!hasRealClientSheet
+                      ? "No Google Client Sheet is linked for this tenant."
+                      : activeClientPortalMode !== "supabase" || !hasClientVirtualTabs
+                        ? "Requires Step 4 (Seed Client Sheet) and Step 5 (Supabase engine) to be active before enabling."
+                        : activeSheetBridgeMode === "live"
+                          ? `Supabase-primary with automatic 3-way cell sync to and from ${activeClientName}'s editable Google Client Sheet (Drive v${activeSheetBridgeState?.lastSyncedDriveVersion || "?"}).`
+                          : activeSheetBridgeMode === "dry_run"
+                            ? `Logs exact outbound cell diffs without writing to ${activeClientName}'s Google Sheet (Drive v${activeSheetBridgeState?.lastSyncedDriveVersion || "?"}).`
+                            : "Turn on Dry run first to preview diffs safely, then Live sync when verified."}
+                  </div>
+                  {activeSheetBridgeState?.lastSummary && (
+                    <div style={{ fontSize: "11px", color: "#334155", marginTop: "4px" }}>
+                      <strong>Latest status:</strong> {activeSheetBridgeState.lastSummary}
+                      {activeSheetBridgeState.lastInboundAt && (
+                        <span> · Inbound {formatTimestamp(activeSheetBridgeState.lastInboundAt)}</span>
+                      )}
+                      {activeSheetBridgeState.lastOutboundAt && (
+                        <span> · Outbound {formatTimestamp(activeSheetBridgeState.lastOutboundAt)}</span>
+                      )}
+                    </div>
+                  )}
+                  {activeSheetBridgeState?.lastError && (
+                    <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "3px" }}>
+                      <strong>Last error:</strong> {activeSheetBridgeState.lastError}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ display: "inline-flex", background: "#e2e8f0", borderRadius: "6px", padding: "3px", gap: "3px" }}>
+                    {[
+                      { id: "off", label: "Off" },
+                      { id: "dry_run", label: "Dry run" },
+                      { id: "live", label: "Live sync" },
+                    ].map((opt) => {
+                      const canEnable = s2Ready && hasRealClientSheet && hasClientVirtualTabs && activeClientPortalMode === "supabase";
+                      const disabledOpt = (opt.id !== "off" && !canEnable) || isBusy;
+                      const isActive = activeSheetBridgeMode === opt.id;
+                      const activeBg =
+                        opt.id === "live" ? "#166534" : opt.id === "dry_run" ? "#b45309" : "#ffffff";
+                      const activeFg = opt.id === "off" ? "#0f172a" : "#ffffff";
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          disabled={disabledOpt}
+                          title={
+                            opt.id !== "off" && !canEnable
+                              ? "Requires Step 4 (Seed Client Sheet), Step 5 (Supabase engine), and a linked Google Client Sheet."
+                              : undefined
+                          }
+                          onClick={() => handleSetSheetBridgeMode(opt.id, activeClientName)}
+                          style={{
+                            padding: "5px 10px",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            borderRadius: "5px",
+                            border: "none",
+                            cursor: disabledOpt && !isBusy ? "not-allowed" : isBusy ? "wait" : "pointer",
+                            background: isActive ? activeBg : "transparent",
+                            color: disabledOpt && opt.id !== "off" && !isActive ? "#94a3b8" : isActive ? activeFg : "#475569",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "5px",
+                          }}
+                        >
+                          {activeOp?.key === `bridge_mode_${opt.id}` && (
+                            <Spinner size={11} color={isActive ? activeFg : "#475569"} style={{ marginRight: 0 }} />
+                          )}
+                          <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {activeSheetBridgeMode !== "off" && (
+                    <>
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => handleSheetBridgeSync("inbound", true, activeClientName)}
+                        style={{
+                          padding: "6px 10px",
+                          fontSize: "11.5px",
+                          fontWeight: 600,
+                          borderRadius: "6px",
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                          color: "#1e293b",
+                          cursor: isBusy ? "wait" : "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                        }}
+                      >
+                        {activeOp?.key === "bridge_inbound" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
+                        <span>Pull from sheet now</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => handleSheetBridgeSync("outbound", false, activeClientName)}
+                        style={{
+                          padding: "6px 10px",
+                          fontSize: "11.5px",
+                          fontWeight: 600,
+                          borderRadius: "6px",
+                          border: "1px solid #93c5fd",
+                          background: "#eff6ff",
+                          color: "#1e40af",
+                          cursor: isBusy ? "wait" : "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                        }}
+                      >
+                        {activeOp?.key === "bridge_outbound" && <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />}
+                        <span>
+                          {activeSheetBridgeMode === "dry_run" ? "Preview outbound diff" : "Push diff to sheet now"}
+                        </span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {Array.isArray(activeSheetBridgeState?.recentLogs) && activeSheetBridgeState.recentLogs.length > 0 && (
+                <div
+                  style={{
+                    marginTop: "10px",
+                    borderTop: "1px solid #e2e8f0",
+                    paddingTop: "8px",
+                    maxHeight: "190px",
+                    overflowY: "auto",
+                  }}
+                >
+                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "5px" }}>
+                    Recent bridge activity
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    {activeSheetBridgeState.recentLogs.slice(0, 8).map((log, idx) => (
+                      <div
+                        key={`${log.timestamp || idx}-${idx}`}
+                        style={{
+                          fontSize: "11px",
+                          background: "#ffffff",
+                          border: `1px solid ${log.error ? "#fecaca" : "#e2e8f0"}`,
+                          borderRadius: "5px",
+                          padding: "5px 8px",
+                          color: log.error ? "#b91c1c" : "#334155",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+                          <span>
+                            <strong style={{ textTransform: "uppercase", fontSize: "10px", marginRight: "6px" }}>
+                              [{log.mode === "dry_run" ? "Dry run" : log.mode || "Bridge"}]
+                            </strong>
+                            {log.summary}
+                          </span>
+                          <span style={{ color: "#64748b", fontSize: "10px" }}>
+                            {formatTimestamp(log.timestamp)}
+                          </span>
+                        </div>
+                        {Array.isArray(log.sampleDiffs) && log.sampleDiffs.length > 0 && (
+                          <div style={{ marginTop: "3px", fontFamily: "monospace", fontSize: "10px", color: "#475569" }}>
+                            {log.sampleDiffs.slice(0, 5).map((d, dIdx) => (
+                              <span key={dIdx} style={{ marginRight: "10px" }}>
+                                {d.direction === "in" ? "Sheet→SB" : "SB→Sheet"} {d.tab}!{d.cell}: {JSON.stringify(d.from ?? "")} → {JSON.stringify(d.to ?? "")}
+                              </span>
+                            ))}
+                            {log.sampleDiffs.length > 5 && <span>+{log.sampleDiffs.length - 5} more</span>}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

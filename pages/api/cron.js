@@ -19,6 +19,7 @@ import { sendDailyAlertsSummary, checkAndNotifyTabErrors } from "../../services/
 import { warmAllClientsPortalHomeCache } from "../../services/portalDataService";
 import { compactAlertMemory } from "../../services/alertMemory";
 import { resolveCanonicalOAuthHost } from "../../utils/helpers";
+import { runScheduledSheetBridgeSweep } from "../../services/clientSheetBridgeService";
 
 export const config = {
   maxDuration: 300,
@@ -144,6 +145,14 @@ export default async function handler(req, res) {
       }
 
       if (shouldRunTenMinHousekeeping) {
+        try {
+          const bridgeRes = await runScheduledSheetBridgeSweep();
+          if (bridgeRes?.checked > 0) {
+            console.log(`CRON: Checked ${bridgeRes.checked} synced client sheet bridge(s) (${bridgeRes.synced} synced).`);
+          }
+        } catch (bridgeErr) {
+          console.warn("⚠️ CRON: Non-fatal error in runScheduledSheetBridgeSweep:", bridgeErr.message);
+        }
         const currentStatus = await getTriageRefreshStatus().catch(() => null);
         const triageAlreadyRunning = Boolean(currentStatus && currentStatus.status === "running");
         if (triageAlreadyRunning) {

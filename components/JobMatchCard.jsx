@@ -574,17 +574,51 @@ export default function JobMatchCard({
         {/* Clean 1-Line Financial Progress Summary inside Grid */}
         <div style={{ gridColumn: "1 / -1", paddingTop: "8px", borderTop: "1px solid #e2e8f0", fontSize: "12px" }}>
           {mode === "invoice" ? (
-            <span style={{ color: metrics.leftToInvoice > 0 ? "#92400e" : "#15803d", fontWeight: "600" }}>
-              {metrics.leftToInvoice > 0
-                ? `${fmtGBP(metrics.leftToInvoice)} left to invoice (${metrics.realInvoiced > 0 ? fmtGBP(metrics.realInvoiced) : "£0"} invoiced so far - ${metrics.revenue > 0 ? Math.round((metrics.realInvoiced / metrics.revenue) * 100) : 0}%)`
-                : `Fully invoiced (${metrics.revenue > 0 ? fmtGBP(metrics.revenue) : "£0"} invoiced so far - 100%)`}
-            </span>
+            !isConfirmed ? (
+              metrics.realInvoiced > 0 ? (() => {
+                const pipeLeft = Math.max(0, metrics.revenue - metrics.realInvoiced);
+                return (
+                  <span style={{ color: pipeLeft > 0 ? "#92400e" : "#15803d", fontWeight: "600" }}>
+                    {pipeLeft > 0
+                      ? `${fmtGBP(pipeLeft)} left to invoice (${fmtGBP(metrics.realInvoiced)} invoiced so far - ${metrics.revenue > 0 ? Math.round((metrics.realInvoiced / metrics.revenue) * 100) : 0}%)`
+                      : `Fully invoiced (${metrics.revenue > 0 ? fmtGBP(metrics.revenue) : "£0"} invoiced so far - 100%)`}
+                  </span>
+                );
+              })() : (
+                <span style={{ color: "#92400e", fontWeight: "600" }}>
+                  Not yet invoiced (pipeline job — {fmtGBP(metrics.revenue)} expected revenue)
+                </span>
+              )
+            ) : (
+              <span style={{ color: metrics.leftToInvoice > 0 ? "#92400e" : "#15803d", fontWeight: "600" }}>
+                {metrics.leftToInvoice > 0
+                  ? `${fmtGBP(metrics.leftToInvoice)} left to invoice (${metrics.realInvoiced > 0 ? fmtGBP(metrics.realInvoiced) : "£0"} invoiced so far - ${metrics.revenue > 0 ? Math.round((metrics.realInvoiced / metrics.revenue) * 100) : 0}%)`
+                  : `Fully invoiced (${metrics.revenue > 0 ? fmtGBP(metrics.revenue) : "£0"} invoiced so far - 100%)`}
+              </span>
+            )
           ) : (
-            <span style={{ color: metrics.costsLeftToReceive > 0 ? "#92400e" : "#15803d", fontWeight: "600" }}>
-              {metrics.costsLeftToReceive > 0
-                ? `${fmtGBP(metrics.costsLeftToReceive)} left to receive (${metrics.realCostsReceived > 0 ? fmtGBP(metrics.realCostsReceived) : "£0"} received so far - ${metrics.directCosts > 0 ? Math.round((metrics.realCostsReceived / metrics.directCosts) * 100) : 0}%)`
-                : `Fully received (${metrics.directCosts > 0 ? fmtGBP(metrics.directCosts) : "£0"} received so far - 100%)`}
-            </span>
+            !isConfirmed ? (
+              metrics.realCostsReceived > 0 ? (() => {
+                const pipeCostsLeft = Math.max(0, metrics.directCosts - metrics.realCostsReceived);
+                return (
+                  <span style={{ color: pipeCostsLeft > 0 ? "#92400e" : "#15803d", fontWeight: "600" }}>
+                    {pipeCostsLeft > 0
+                      ? `${fmtGBP(pipeCostsLeft)} left to receive (${fmtGBP(metrics.realCostsReceived)} received so far - ${metrics.directCosts > 0 ? Math.round((metrics.realCostsReceived / metrics.directCosts) * 100) : 0}%)`
+                      : `Fully received (${metrics.directCosts > 0 ? fmtGBP(metrics.directCosts) : "£0"} received so far - 100%)`}
+                  </span>
+                );
+              })() : (
+                <span style={{ color: "#92400e", fontWeight: "600" }}>
+                  Not yet received (pipeline job — {fmtGBP(metrics.directCosts)} budgeted direct costs)
+                </span>
+              )
+            ) : (
+              <span style={{ color: metrics.costsLeftToReceive > 0 ? "#92400e" : "#15803d", fontWeight: "600" }}>
+                {metrics.costsLeftToReceive > 0
+                  ? `${fmtGBP(metrics.costsLeftToReceive)} left to receive (${metrics.realCostsReceived > 0 ? fmtGBP(metrics.realCostsReceived) : "£0"} received so far - ${metrics.directCosts > 0 ? Math.round((metrics.realCostsReceived / metrics.directCosts) * 100) : 0}%)`
+                  : `Fully received (${metrics.directCosts > 0 ? fmtGBP(metrics.directCosts) : "£0"} received so far - 100%)`}
+              </span>
+            )
           )}
         </div>
       </div>

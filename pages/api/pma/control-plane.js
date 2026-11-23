@@ -8,7 +8,7 @@ import { getAllUsers, createOrUpdateUser, deleteUserByEmail, getCanonicalAcSheet
 import { getAllClients, clearAllClientsMemoryCache } from "../../../services/workspaces.js";
 import { clearSsrClientsMemoryCache } from "../../../services/ssrSession.js";
 import { memoryCache } from "../../../services/cacheService.js";
-import { flushAllAlertMemoryCaches, searchAlertMemoryEntries, deleteAlertMemoryEntryByHash } from "../../../services/alertMemory.js";
+import { flushAllAlertMemoryCaches, searchAlertMemoryEntries, deleteAlertMemoryEntryByHash, archiveClientAlertMemory } from "../../../services/alertMemory.js";
 import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
 import { syncProvisioningTemplateSnapshots, getProvisioningTemplateSnapshotsMeta } from "../../../services/masterEngineService.js";
 import { renameTenantClient } from "../../../services/tenantRenameService.js";
@@ -16,6 +16,11 @@ import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 const VALID_CLIENT_STATUSES = new Set(["live", "setup", "paused", "suspended", "archived"]);
 const VALID_ENGINE_MODES = new Set(["sheet", "supabase", "shadow"]);
+const EXCLUDED_CLIENT_STATUSES = new Set(["inactive", "archived", "suspended"]);
+
+function isExcludedClientStatus_(status) {
+  return EXCLUDED_CLIENT_STATUSES.has(String(status || "").trim().toLowerCase());
+}
 
 function normalizeClientStatusFromDb_(row) {
   if (!row || typeof row !== "object") return row;
@@ -258,7 +263,7 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
   return normalizeClientStatusFromDb_(data);
 }
 
-async function invalidateClientsCache_(acId) {
+async function invalidateClientsCache_(acId, extraExcludedNames = []) {
   clearAllClientsMemoryCache();
   clearSsrClientsMemoryCache();
   invalidatePrecomputedMemoryCache();
@@ -286,7 +291,7 @@ async function invalidateClientsCache_(acId) {
     await redisClient.del(k).catch(() => { });
   }
 
-  // Prune any inactive/archived/suspended clients from triage_precomputed so PMA Alerts updates immediately
+  // Prune any inactive/archived/suspended/deleted clients from triage_precomputed so PMA Alerts updates immediately
   try {
     const sb = getSupabaseAdmin();
     const rawPre = await redisClient.get("triage_precomputed");
@@ -302,6 +307,10 @@ async function invalidateClientsCache_(acId) {
           })
           .map((c) => String(c.client_name).trim().toLowerCase())
       );
+      for (const extraName of (Array.isArray(extraExcludedNames) ? extraExcludedNames : [])) {
+        const cleanExtra = String(extraName || "").trim().toLowerCase();
+        if (cleanExtra) excluded.add(cleanExtra);
+      }
       if (excluded.size > 0) {
         const pre = JSON.parse(rawPre);
         const keep = (item) => !excluded.has(String(item?.clientName || "").trim().toLowerCase());
@@ -584,11 +593,19 @@ export default async function handler(req, res) {
       }
       const sb = getSupabaseAdmin();
       const saved = await upsertClientRegistryRecord_(sb, row);
-      await syncReportsFolderToEomConfig_(sb, [saved], sessionUser.email || "Admin");
-      await invalidateClientsCache_(automationCommanderSheetId);
+      const acId = automationCommanderSheetId || getCanonicalAcSheetId();
       const sheets = await getSheetsClient().catch(() => null);
+      await syncReportsFolderToEomConfig_(sb, [saved], sessionUser.email || "Admin");
+      let archiveRes = { archivedCount: 0 };
+      if (isExcludedClientStatus_(saved.status)) {
+        archiveRes = await archiveClientAlertMemory(sheets, acId, [saved.client_name]).catch((e) => {
+          console.warn("archiveClientAlertMemory warning:", e.message);
+          return { archivedCount: 0 };
+        });
+      }
+      await invalidateClientsCache_(acId);
       await logPmaActivity(sheets, {
-        automationCommanderSheetId,
+        automationCommanderSheetId: acId,
         clientName: saved.client_name,
         category: "SYSTEM",
         action: "CLIENT_REGISTRY_SAVED",
@@ -598,6 +615,7 @@ export default async function handler(req, res) {
           status: saved.status,
           driveFolderId: saved.drive_folder_id,
           reportsFolderId: saved.reports_folder_id,
+          archivedAlertMemoryCount: archiveRes?.archivedCount || 0,
         },
         userEmail: sessionUser.email || "Admin",
       }).catch(() => { });
@@ -618,11 +636,18 @@ export default async function handler(req, res) {
         const saved = await upsertClientRegistryRecord_(sb, row);
         savedClients.push(saved);
       }
-      await syncReportsFolderToEomConfig_(sb, savedClients, sessionUser.email || "Admin");
-      await invalidateClientsCache_(automationCommanderSheetId);
+      const acId = automationCommanderSheetId || getCanonicalAcSheetId();
       const sheets = await getSheetsClient().catch(() => null);
+      await syncReportsFolderToEomConfig_(sb, savedClients, sessionUser.email || "Admin");
+      const excludedSavedNames = savedClients.filter((c) => isExcludedClientStatus_(c.status)).map((c) => c.client_name);
+      if (excludedSavedNames.length > 0) {
+        await archiveClientAlertMemory(sheets, acId, excludedSavedNames).catch((e) => {
+          console.warn("archiveClientAlertMemory batch warning:", e.message);
+        });
+      }
+      await invalidateClientsCache_(acId);
       await logPmaActivity(sheets, {
-        automationCommanderSheetId,
+        automationCommanderSheetId: acId,
         clientName: savedClients.length === 1 ? savedClients[0].client_name : "Global",
         category: "SYSTEM",
         action: "CLIENT_REGISTRY_SAVED",
@@ -644,20 +669,35 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, error: "Client ID or name is required." });
       }
       const sb = getSupabaseAdmin();
+      let resolvedClientName = cleanName;
+      if (!resolvedClientName && cleanId) {
+        const { data: existingClient } = await sb
+          .from("clients")
+          .select("client_name")
+          .eq("id", cleanId)
+          .maybeSingle();
+        if (existingClient?.client_name) resolvedClientName = String(existingClient.client_name).trim();
+      }
       let query = sb.from("clients").delete();
       query = cleanId ? query.eq("id", cleanId) : query.eq("client_name", cleanName);
       const { error: delErr } = await query;
       if (delErr) throw new Error(delErr.message);
 
-      await invalidateClientsCache_(automationCommanderSheetId);
+      const acId = automationCommanderSheetId || getCanonicalAcSheetId();
       const sheets = await getSheetsClient().catch(() => null);
+      if (resolvedClientName) {
+        await archiveClientAlertMemory(sheets, acId, [resolvedClientName]).catch((e) => {
+          console.warn("archiveClientAlertMemory delete warning:", e.message);
+        });
+      }
+      await invalidateClientsCache_(acId, resolvedClientName ? [resolvedClientName] : []);
       await logPmaActivity(sheets, {
-        automationCommanderSheetId,
-        clientName: cleanName || "Global",
+        automationCommanderSheetId: acId,
+        clientName: resolvedClientName || "Global",
         category: "SYSTEM",
         action: "CLIENT_REGISTRY_DELETED",
-        summary: `Deleted client registry record "${cleanName || cleanId}"`,
-        details: { id: cleanId || null, clientName: cleanName || null },
+        summary: `Deleted client registry record "${resolvedClientName || cleanId}"`,
+        details: { id: cleanId || null, clientName: resolvedClientName || null },
         userEmail: sessionUser.email || "Admin",
       }).catch(() => { });
       return res.status(200).json({ success: true });

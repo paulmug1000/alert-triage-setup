@@ -163,7 +163,7 @@ export default function TriageAnalysisView({
                   action: "analyze_alert",
                   alert: sibAlert,
                   automationCommanderSheetId,
-                  forceRefresh: true,
+                  forceFresh: true,
                 }),
               });
               const resData = await r.json();
@@ -726,6 +726,7 @@ export default function TriageAnalysisView({
                     // CRITICAL FIX: Delete the old options from local React memory so selectAlert is forced to fetch fresh data
                     const freshAlert = { ...clientAlerts[currentClientAlertIndex] };
                     delete freshAlert.options;
+                    delete freshAlert._liveRecheckedInSession;
 
                     setClientAlerts(prev => {
                       const newAlerts = [...prev];

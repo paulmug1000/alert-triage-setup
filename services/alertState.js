@@ -14,7 +14,7 @@ import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, canAccessPma, canViewSalariesAndDividends, DEFAULT_AC_SHEET_ID } from "./userPermissions.js";
 import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat, KNOWN_PROACTIVE_ALERT_TYPES } from "../utils/helpers.js";
 import { getAllClients } from "./workspaces.js";
-import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
+import { invalidatePrecomputedMemoryCache, getExcludedClientNamesSet } from "./triageEngine.js";
 
 export const PRECOMPUTED_KEY = "triage_precomputed";
 
@@ -111,9 +111,10 @@ export async function handleGetAlerts(req, res) {
   console.log(`\n🔍 get_alerts request: sessionId=${sessionId}`);
   if (!sessionId) return res.status(400).json({ success: false, error: "Missing sessionId" });
   try {
-    const [sessionData, preRaw] = await Promise.all([
+    const [sessionData, preRaw, excludedClientNamesSet] = await Promise.all([
       redisClient.get(`triage_alerts:${sessionId}`),
       redisClient.get(PRECOMPUTED_KEY).catch(() => null),
+      getExcludedClientNamesSet().catch(() => new Set()),
     ]);
     if (!sessionData) return res.status(404).json({ success: false, error: "Session not found" });
     const parsedSession = JSON.parse(sessionData);
@@ -175,6 +176,14 @@ export async function handleGetAlerts(req, res) {
     }
 
     let { alerts, noActionAlerts, proactiveAlerts, clientsWithFlags, resolvedNoActionFlags } = parsedSession;
+
+    if (excludedClientNamesSet && excludedClientNamesSet.size > 0) {
+      const keepActiveClient = (item) => !excludedClientNamesSet.has(String(item?.clientName || "").trim().toLowerCase());
+      alerts = (alerts || []).filter(keepActiveClient);
+      noActionAlerts = (noActionAlerts || []).filter(keepActiveClient);
+      proactiveAlerts = (proactiveAlerts || []).filter(keepActiveClient);
+      clientsWithFlags = (clientsWithFlags || []).filter(keepActiveClient);
+    }
 
     const sessionUser = getSessionUser(req);
     if (!sessionUser) {
@@ -1787,13 +1796,15 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
   if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const [all, handledMap] = await Promise.all([
+    const [all, handledMap, excludedClientNamesSet] = await Promise.all([
       queryAlertMemoryTargeted(sheets, acId, {
         category: "proactive",
         ...(req.body?.clientName ? { clientName: req.body.clientName } : {}),
       }),
       readHandledAlertHashes(sheets, acId, false),
+      getExcludedClientNamesSet(),
     ]);
+    const isClientExcluded = (name) => excludedClientNamesSet.has(String(name || "").trim().toLowerCase());
     const PROACTIVE_HANDLED_STATUSES = new Set(["accepted", "ignored", "task", "task_resolved", "superseded"]);
     const metaFields = [
       "jobName", "endClientName", "confirmedRow", "revenue", "startDate", "endDate",
@@ -1811,6 +1822,7 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
 
     let active = all
       .filter(r => {
+        if (isClientExcluded(r.clientName)) return false;
         if (r.category !== "proactive" || r.status !== "cached" || !KNOWN_PROACTIVE_ALERT_TYPES.has(r.alertType)) return false;
         if (r.fingerprintHash && PROACTIVE_HANDLED_STATUSES.has(handledMap?.[r.fingerprintHash])) return false;
         return true;
@@ -1832,6 +1844,7 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
         };
       })
       .filter(a => {
+        if (isClientExcluded(a.clientName)) return false;
         if (!handledMap) return true;
         if (a.fingerprintHash && PROACTIVE_HANDLED_STATUSES.has(handledMap[a.fingerprintHash])) return false;
         if (a.alertKey) {

@@ -529,6 +529,41 @@ export function invalidatePrecomputedMemoryCache() {
   _excludedClientsCachedAt = 0;
 }
 
+/**
+ * Returns a lowercase Set of client names whose effective status is inactive, archived, or suspended.
+ * Avoids caching an empty set if the Supabase query errors.
+ */
+export async function getExcludedClientNamesSet({ bypassCache = false } = {}) {
+  const nowMs = Date.now();
+  if (!bypassCache && _excludedClientsMemoryCache && (nowMs - _excludedClientsCachedAt < 30000)) {
+    return _excludedClientsMemoryCache;
+  }
+  try {
+    const sb = getSupabaseAdmin();
+    if (!sb) return _excludedClientsMemoryCache || new Set();
+    const { data: statusRows, error } = await sb
+      .from("clients")
+      .select("client_name, status, metadata");
+    if (error || !Array.isArray(statusRows)) {
+      console.warn("⚠️ getExcludedClientNamesSet Supabase query warning:", error?.message || "no rows returned");
+      return _excludedClientsMemoryCache || new Set();
+    }
+    const excluded = new Set();
+    for (const c of statusRows) {
+      const eff = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+      if (c.client_name && (eff === "inactive" || eff === "archived" || eff === "suspended")) {
+        excluded.add(String(c.client_name).trim().toLowerCase());
+      }
+    }
+    _excludedClientsMemoryCache = excluded;
+    _excludedClientsCachedAt = nowMs;
+    return excluded;
+  } catch (err) {
+    console.warn("⚠️ getExcludedClientNamesSet error:", err?.message || err);
+    return _excludedClientsMemoryCache || new Set();
+  }
+}
+
 export const FLAG_NAMES = {
   invoiceDashboardDiscr: "Invoice dashboard discr",
   crmPipeDashDiscr: "CRM pipe dash discr",
@@ -1931,30 +1966,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
     // Pass allowFallback = false so we NEVER download the 8.5MB AlertMemory sheet during user page load
     const [handledMap, excludedClientNamesSet, cmMap] = await Promise.all([
       readHandledAlertHashes(sheets, automationCommanderSheetId, false),
-      (async () => {
-        const nowMs = Date.now();
-        if (_excludedClientsMemoryCache && (nowMs - _excludedClientsCachedAt < 30000)) {
-          return _excludedClientsMemoryCache;
-        }
-        const excluded = new Set();
-        try {
-          const sb = getSupabaseAdmin();
-          if (sb) {
-            const { data: statusRows } = await sb
-              .from("clients")
-              .select("client_name, status, metadata");
-            for (const c of (statusRows || [])) {
-              const eff = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
-              if (c.client_name && (eff === "inactive" || eff === "archived" || eff === "suspended")) {
-                excluded.add(String(c.client_name).trim().toLowerCase());
-              }
-            }
-            _excludedClientsMemoryCache = excluded;
-            _excludedClientsCachedAt = nowMs;
-          }
-        } catch (_) { }
-        return excluded;
-      })(),
+      getExcludedClientNamesSet({ bypassCache: Boolean(bustCache) }),
       getClientManagerClientMap(sheets, automationCommanderSheetId),
     ]);
     const tMem = Date.now() - tMem0;
@@ -2245,7 +2257,10 @@ export async function handleStorePrecomputed(req, res, sheets) {
       const extraFlagsByClient = new Map();
       const newClientMeta = new Map();
 
-      const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdForMerge);
+      const [{ clientRows }, excludedClientNamesSet] = await Promise.all([
+        readAutoUpdatesClientRows_(sheets, acIdForMerge),
+        getExcludedClientNamesSet({ bypassCache: true }),
+      ]);
       const clientNameToMeta = new Map(clientRows.map(c => [c.clientName, c]));
 
       for (const row of memoryRowsForMerge) {
@@ -2254,6 +2269,8 @@ export async function handleStorePrecomputed(req, res, sheets) {
           const hStatus = existingHandledMap[row.fingerprintHash];
           if (hStatus === "accepted" || hStatus === "ignored" || hStatus === "task") continue;
         }
+        const rowClientNorm = String(row.clientName || "").trim().toLowerCase();
+        if (rowClientNorm && excludedClientNamesSet.has(rowClientNorm)) continue;
 
         if (Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) {
           row.category = "info";
@@ -2358,9 +2375,11 @@ export async function handleStorePrecomputed(req, res, sheets) {
           if (row.fingerprintHash && oldPathFingerprints.has(row.fingerprintHash)) continue;
           if (!Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) {
             if (row.category === "proactive") {
-              if (row.fingerprintHash) oldPathFingerprints.add(row.fingerprintHash);
               let alertObj = {};
               try { alertObj = JSON.parse(row.dataSnapshot || "{}"); } catch (e) { alertObj = {}; }
+              const effProactiveClient = String(alertObj.clientName || row.clientName || "").trim().toLowerCase();
+              if (effProactiveClient && excludedClientNamesSet.has(effProactiveClient)) continue;
+              if (row.fingerprintHash) oldPathFingerprints.add(row.fingerprintHash);
               const metaFields = ["jobName", "endClientName", "confirmedRow", "revenue", "startDate", "endDate",
                 "frequencyDays", "lastInvoiceDate", "expectedByDate", "timestamp", "sequenceType", "summary", "jobInfo", "detailsSnippet",
                 "childRowNum", "clientJobStr", "pipelineRow", "likelihood", "copiedToConf", "jobType",
@@ -4138,7 +4157,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
       try {
         const parsed = JSON.parse(r.cachedOptionsJSON);
         if (!Array.isArray(parsed)) return true;
-        if (parsed.length === 0 && isMissingItemAlertForPipelineCheck_(r) && !hasPipelineCheckedFlag_(r.dataSnapshot)) {
+        if (isMissingItemAlertForPipelineCheck_(r) && hasPipelineOrEmptyMissingOptions_(parsed)) {
           return true;
         }
         const isStale = parsed.some(opt => {
@@ -4342,6 +4361,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
               memoryRow: row,
               automationCommanderSheetId: acIdBuild,
               sharedData,
+              forceFresh: true,
             });
             if (analyzeData.success) {
               if (analyzeData.options) {
@@ -4876,7 +4896,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
         console.log(`  ⏭ Alert is ignored - returning ignored status`);
         return res.status(200).json({ success: true, ignored: true });
       }
-      if (!req.body.forceFresh && memoryRow.status === "cached" && memoryRow.cachedOptionsJSON) {
+      if (!req.body.forceFresh && !req.body.forceRefresh && memoryRow.status === "cached" && memoryRow.cachedOptionsJSON) {
         console.log(`  ✅ Cache HIT for ${fingerprintHash} - returning stored options`);
         // Update lastSeen
         await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
@@ -4923,9 +4943,10 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           (alert.type === "invoice" || alert.sheetName === "InvComp" || alert.flagType === "invoiceDashboardDiscr" || alert.alertType === "invoiceDashboardDiscr") ||
           (alert.type === "expense" || alert.sheetName === "DirComp" || alert.flagType === "expenseDashboardDiscr" || alert.flagType === "contractorsDashboardDiscr" || alert.flagType === "passThroughDashboardDiscr" || alert.alertType === "expenseDashboardDiscr" || alert.alertType === "contractorsDashboardDiscr" || alert.alertType === "passThroughDashboardDiscr")
         ) && String(alert.data?.flags?.[0] || "").trim() === "1";
+        const needsMissingItemLiveRecheck = isMissingInvOrExp && hasPipelineOrEmptyMissingOptions_(cachedOptions);
         const needsPipelineFallbackCheck = isMissingInvOrExp && !hasPipelineCheckedFlag_(memoryRow.dataSnapshot) && !alert._pipelineChecked;
-        const isLegitimatelyEmpty = Array.isArray(cachedOptions) && cachedOptions.length === 0 && !needsPipelineFallbackCheck;
-        if ((validCachedOptions.length > 0 && !isCacheStale) || isLegitimatelyEmpty) {
+        const isLegitimatelyEmpty = Array.isArray(cachedOptions) && cachedOptions.length === 0 && !needsPipelineFallbackCheck && !needsMissingItemLiveRecheck;
+        if ((validCachedOptions.length > 0 && !isCacheStale && !needsMissingItemLiveRecheck) || isLegitimatelyEmpty) {
           // For crmPipeAppDiscr Pipeline alerts, re-fetch copiedToConf live
           // since it can change in the sheet independently of the cached options
           let liveCopiedToConf = null;
@@ -12680,6 +12701,12 @@ function isMissingItemAlertForPipelineCheck_(row) {
   } catch (_) {
     return false;
   }
+}
+
+function hasPipelineOrEmptyMissingOptions_(parsedOptions) {
+  if (!Array.isArray(parsedOptions)) return true;
+  if (parsedOptions.length === 0) return true;
+  return parsedOptions.some(opt => opt && (opt.matchType === "pipeline_info" || opt.isPipelineInfo));
 }
 
 function trimPipelineActiveRows_(pipelineData) {

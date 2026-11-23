@@ -80,7 +80,7 @@ export async function retFindTrueLastRow(sheets, spreadsheetId, allRows) {
   for (let r = rows.length - 1; r >= 0; r--) {
     const row = rows[r] || [];
     const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
-    const hasRech = row[17] !== "" && row[17] != null;
+    const hasRech = Math.abs(retParseMoney(row[17])) > 0.001;
     const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
     const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
     const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
@@ -795,7 +795,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         if (trimSet.has(r + 1)) continue;
         const row = rows[r] || [];
         const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
-        const hasRech = row[17] !== "" && row[17] != null;
+        const hasRech = Math.abs(retParseMoney(row[17])) > 0.001;
         const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
         const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
         const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
@@ -1349,7 +1349,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
         if (trimSet.has(r + 1)) continue;
         const row = rows[r] || [];
         const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
-        const hasRech = row[17] !== "" && row[17] != null;
+        const hasRech = Math.abs(retParseMoney(row[17])) > 0.001;
         const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
         const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
         const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
@@ -3458,7 +3458,7 @@ export async function handleTidyUpRetainers(req, res, sheets) {
     for (let r = allRows.length - 1; r >= 0; r--) {
       const row = allRows[r] || [];
       const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
-      const hasRech = row[17] !== "" && row[17] != null;
+      const hasRech = Math.abs(retParseMoney(row[17])) > 0.001;
       const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
       const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
       const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
@@ -3522,7 +3522,7 @@ export async function handleTidyUpRetainers(req, res, sheets) {
     while (r < trueLastRow) {
       const row = allRows[r] || [];
       const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
-      const hasRech = row[17] !== "" && row[17] != null;
+      const hasRech = Math.abs(retParseMoney(row[17])) > 0.001;
       const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
       const z3 = row.slice(41, 62).some(c => c !== "" && c != null);
       const z4 = row.slice(75, 96).some(c => c !== "" && c != null);

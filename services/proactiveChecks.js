@@ -57,6 +57,15 @@ export function parseMoney_(val) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function hasNonZeroMoney_(val) {
+  if (val === undefined || val === null || val === "") return false;
+  if (typeof val === "number") return Number.isFinite(val) && Math.abs(val) > 0.001;
+  const s = String(val).trim();
+  if (!s) return false;
+  const n = parseFloat(s.replace(/[£$€,\s]/g, ""));
+  return Number.isFinite(n) && Math.abs(n) > 0.001;
+}
+
 export function detectPeriodMultiplier_(childRow, monthlyRevenue) {
   if (!monthlyRevenue || monthlyRevenue <= 0) return 1;
   let totalInvAmt = 0;
@@ -149,7 +158,7 @@ export function collectJobRows_(data, parentIdx) {
     const rj = String(r[1] || "").trim().toLowerCase();
     if (!rc || !rj) break;
     if (rc !== parentClient || rj !== parentJob) break;
-    if (r[17] || r[32] || r[37] || r[38]) break;
+    if (hasNonZeroMoney_(r[17]) || hasNonZeroMoney_(r[32]) || r[37] || r[38]) break;
     rows.push({ row: r, sheetRow: ri + 1, isParent: false });
   }
   return rows;
@@ -362,9 +371,9 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         const childRow = data[cr];
         const childClient = String(childRow[0] || "").trim();
         const childJob = String(childRow[1] || "").trim();
-        if ((childRow[17] || childRow[32] || childRow[37] || childRow[38]) && (childClient !== clientNameRow || childJob !== jobName)) break;
+        if ((hasNonZeroMoney_(childRow[17]) || hasNonZeroMoney_(childRow[32]) || childRow[37] || childRow[38]) && (childClient !== clientNameRow || childJob !== jobName)) break;
         if (childClient !== clientNameRow || childJob !== jobName) break;
-        if (childRow[17] || childRow[32] || childRow[37] || childRow[38]) break;
+        if (hasNonZeroMoney_(childRow[17]) || hasNonZeroMoney_(childRow[32]) || childRow[37] || childRow[38]) break;
         collectSentInvoices_(childRow, sentInvoices);
         childRows.push({ crIndex: cr, sheetRow: cr + 1, row: childRow });
       }
@@ -1252,6 +1261,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
       const jobRows = collectJobRows_(data, r);
       const hasChildren = jobRows.length > 1;
       const problems = [];
+      let hasAutoFixableLayoutIssue = false;
 
       const parsedStart = parseConfirmedDate_(startVal);
       const parsedEnd = parseConfirmedDate_(endVal);
@@ -1308,10 +1318,91 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
             problems.push(`${rowLabel}: retainer has child rows but the parent row also holds a direct cost / expense - once child rows exist, the parent should stay empty`);
           }
         }
-        if (hasInvSlotData(jRow, 1) && !hasInvSlotData(jRow, 0)) problems.push(`${rowLabel}: invoice slot 2 has data but slot 1 is empty`);
-        if (hasInvSlotData(jRow, 2) && (!hasInvSlotData(jRow, 0) || !hasInvSlotData(jRow, 1))) problems.push(`${rowLabel}: invoice slot 3 has data but slot 1 or 2 is empty`);
-        if (hasExpSlotData(jRow, 1) && !hasExpSlotData(jRow, 0)) problems.push(`${rowLabel}: expense slot 2 has data but slot 1 is empty`);
-        if (hasExpSlotData(jRow, 2) && (!hasExpSlotData(jRow, 0) || !hasExpSlotData(jRow, 1))) problems.push(`${rowLabel}: expense slot 3 has data but slot 1 or 2 is empty`);
+        if (hasInvSlotData(jRow, 1) && !hasInvSlotData(jRow, 0)) {
+          problems.push(`${rowLabel}: invoice slot 2 has data but slot 1 is empty`);
+          hasAutoFixableLayoutIssue = true;
+        }
+        if (hasInvSlotData(jRow, 2) && (!hasInvSlotData(jRow, 0) || !hasInvSlotData(jRow, 1))) {
+          problems.push(`${rowLabel}: invoice slot 3 has data but slot 1 or 2 is empty`);
+          hasAutoFixableLayoutIssue = true;
+        }
+        if (hasExpSlotData(jRow, 1) && !hasExpSlotData(jRow, 0)) {
+          problems.push(`${rowLabel}: expense slot 2 has data but slot 1 is empty`);
+          hasAutoFixableLayoutIssue = true;
+        }
+        if (hasExpSlotData(jRow, 2) && (!hasExpSlotData(jRow, 0) || !hasExpSlotData(jRow, 1))) {
+          problems.push(`${rowLabel}: expense slot 3 has data but slot 1 or 2 is empty`);
+          hasAutoFixableLayoutIssue = true;
+        }
+      }
+
+      if (!isRetainer) {
+        let firstEmptyInv = null;
+        let firstAutoInv = null;
+        let reportedInvGap = false;
+        let reportedInvOrder = false;
+
+        let firstEmptyExp = null;
+        let firstAutoExp = null;
+        let reportedExpGap = false;
+        let reportedExpOrder = false;
+
+        for (let jr = 0; jr < jobRows.length; jr++) {
+          const jRow = jobRows[jr].row;
+          const jSheetRow = jobRows[jr].sheetRow;
+          const rowLabel = `Row ${jSheetRow} (${jobRows[jr].isParent ? "parent" : "child"})`;
+
+          for (let sIdx = 0; sIdx < 3; sIdx++) {
+            const invBase = sIdx === 0 ? 41 : sIdx === 1 ? 48 : 55;
+            const invOccupied = hasInvSlotData(jRow, sIdx);
+            const invRef = String(jRow[invBase + 1] || "").trim();
+            const isAutoInv = invRef !== "" && /^(PLACE|MANUAL-INV|UNRECON-GAP)/i.test(invRef);
+            const isRealInv = invRef !== "" && !isAutoInv && !isPlaceholderInvoice(invRef, jRow[invBase + 4]);
+
+            if (!invOccupied) {
+              if (!firstEmptyInv) firstEmptyInv = { jr, rowLabel, slotNum: sIdx + 1 };
+            } else {
+              if (firstEmptyInv && firstEmptyInv.jr !== jr && !reportedInvGap) {
+                problems.push(`${firstEmptyInv.rowLabel}: empty invoice slot ${firstEmptyInv.slotNum} ahead of populated invoice on ${rowLabel}`);
+                reportedInvGap = true;
+                hasAutoFixableLayoutIssue = true;
+              }
+              if (isAutoInv && !firstAutoInv) {
+                firstAutoInv = { rowLabel, slotNum: sIdx + 1 };
+              } else if (isRealInv && firstAutoInv && !reportedInvOrder) {
+                problems.push(`${rowLabel}: real invoice (slot ${sIdx + 1}) placed after an automatic placeholder (${firstAutoInv.rowLabel})`);
+                reportedInvOrder = true;
+                hasAutoFixableLayoutIssue = true;
+              }
+            }
+
+            const expBase = sIdx === 0 ? 75 : sIdx === 1 ? 82 : 89;
+            const expOccupied = hasExpSlotData(jRow, sIdx);
+            const expDesc = String(jRow[expBase] || "").trim();
+            const expSt = String(jRow[expBase + 5] || "").trim().toLowerCase();
+            const expId = String(jRow[expBase + 6] || "").trim();
+            const isPaidExp = ["paid", "complete", "part-paid (paid)"].includes(expSt);
+            const isAutoExp = !isPaidExp && (/^(PLACE-EXP|PLACE-GAP|MANUAL-ENTRY|MANUAL-GAP|UNRECON-GAP)/i.test(expId) || (!expId && /^placeholder/i.test(expDesc)));
+            const isRealExp = Boolean((expId && !isAutoExp && !isPlaceholderExpense(expId, expDesc, expSt)) || isPaidExp);
+
+            if (!expOccupied) {
+              if (!firstEmptyExp) firstEmptyExp = { jr, rowLabel, slotNum: sIdx + 1 };
+            } else {
+              if (firstEmptyExp && firstEmptyExp.jr !== jr && !reportedExpGap) {
+                problems.push(`${firstEmptyExp.rowLabel}: empty expense slot ${firstEmptyExp.slotNum} ahead of populated expense on ${rowLabel}`);
+                reportedExpGap = true;
+                hasAutoFixableLayoutIssue = true;
+              }
+              if (isAutoExp && !firstAutoExp) {
+                firstAutoExp = { rowLabel, slotNum: sIdx + 1 };
+              } else if (isRealExp && firstAutoExp && !reportedExpOrder) {
+                problems.push(`${rowLabel}: real expense (slot ${sIdx + 1}) placed after an automatic placeholder (${firstAutoExp.rowLabel})`);
+                reportedExpOrder = true;
+                hasAutoFixableLayoutIssue = true;
+              }
+            }
+          }
+        }
       }
 
       if (problems.length > 0) {
@@ -1322,9 +1413,9 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
           alertKey: `job_structure_error|${clientName}|${jobClient}|${jobNameV}${projectCode ? `|${projectCode}` : ""}|${problemFootprint}`,
           heading: "Job structure doesn't match expected invoice/expense layout",
           detail: `${jobClient} | ${jobNameV}${projectCode ? ` [${projectCode}]` : ""} (${isRetainer ? "Retainer" : "Project"}): ${problems.join("; ")}`,
-          jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,
+          jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer, canAutoTidy: hasAutoFixableLayoutIssue,
           metadata: {
-            jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer, clientName
+            jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer, clientName, canAutoTidy: hasAutoFixableLayoutIssue
           }
         });
       }

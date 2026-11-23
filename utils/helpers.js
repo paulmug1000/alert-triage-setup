@@ -692,6 +692,7 @@ export function stripRowInfo(text) {
     .replace(/\(\s*(?:sheet\s+)?rows?\s+\d+,\s*/gi, "(")
     .replace(/\(\s*(?:Confirmed|Pipeline|Outgoings)?\s*(?:sheet\s+|tab\s+)?rows?\s+\d+,\s*/gi, "(")
     // Strip inline Row / Slot / Cell references: "slot 1", "slot 2", "Row 362,", "Cell D14"
+    .replace(/\b(?:Confirmed|Pipeline|Outgoings)?\s*(?:Sheet\s+|Tab\s+)?Row\s+\d+\s*\((?:parent|child)\)\s*:?\s*/gi, "")
     .replace(/\b(?:Confirmed|Pipeline|Outgoings)?\s*(?:Sheet\s+|Tab\s+)?Row\s+\d+,\s*/gi, "")
     .replace(/\b(Confirmed|Pipeline|Outgoings)\s+(?:sheet\s+|tab\s+)?rows?\s+\d+\b/gi, "$1")
     .replace(/\bchild\s+rows?\s+\d+\b/gi, "child entry")
@@ -706,7 +707,8 @@ export function stripRowInfo(text) {
     .replace(/\b(?:in|into|on|at)\s+(?:sheet\s+)?rows?\s+\d+\b/gi, "")
     .replace(/\bslots?\s+\d+\b/gi, "")
     .replace(/\bslot\s+amount\b/gi, "expected amount")
-    .replace(/\bslots\b/gi, "entries")
+    .replace(/\b(?:invoice|expense)\s+slots?\b/gi, "entry")
+    .replace(/\bslots?\b/gi, "entries")
     .replace(/\bmulti-row\b/gi, "recurring")
     .replace(/\bnew\s+row\b/gi, "new entry")
     .replace(/\bempty\s+slots?\b/gi, "unbilled entries")

@@ -75,6 +75,7 @@ export function buildJobsFromRows(input, fallbackDetails = null) {
       const jobName = j.jobName || p.jobName || fbJobName;
       let revenue = (j.revenue && j.revenue !== "0") ? j.revenue : (p.revenue && p.revenue !== "0" ? p.revenue : fbRev);
       let directCosts = (j.directCosts && j.directCosts !== "0") ? j.directCosts : (p.directCosts && p.directCosts !== "0" ? p.directCosts : fbCosts);
+      const rechargedExpenses = j.rechargedExpenses ?? p.rechargedExpenses ?? fallbackDetails?.rechargedExpenses ?? "";
       let projectRetainer = j.projectRetainer || p.projectRetainer || fbType;
       let startDate = j.startDate || p.startDate || fbStart;
       let endDate = j.endDate || p.endDate || fbEnd;
@@ -123,6 +124,7 @@ export function buildJobsFromRows(input, fallbackDetails = null) {
         p.jobName = jobName;
         p.revenue = revenue;
         p.directCosts = directCosts;
+        p.rechargedExpenses = rechargedExpenses;
         p.projectRetainer = projectRetainer;
         p.startDate = startDate;
         p.endDate = endDate;
@@ -135,6 +137,7 @@ export function buildJobsFromRows(input, fallbackDetails = null) {
         jobName,
         revenue,
         directCosts,
+        rechargedExpenses,
         projectRetainer,
         startDate,
         endDate,
@@ -167,6 +170,7 @@ export function buildJobsFromRows(input, fallbackDetails = null) {
         projectRetainer: r.projectRetainer || fbType || "",
         revenue: (r.revenue && r.revenue !== "0") ? r.revenue : fbRev,
         directCosts: (r.directCosts && r.directCosts !== "0") ? r.directCosts : fbCosts,
+        rechargedExpenses: r.rechargedExpenses ?? fallbackDetails?.rechargedExpenses ?? "",
         vat: r.vat || "Yes",
         startDate: r.startDate || fbStart || "",
         endDate: r.endDate || fbEnd || "",
@@ -246,6 +250,7 @@ export function buildJobsFromRows(input, fallbackDetails = null) {
       j.rows[0].jobName = j.jobName;
       j.rows[0].revenue = j.revenue;
       j.rows[0].directCosts = j.directCosts;
+      j.rows[0].rechargedExpenses = j.rechargedExpenses;
       j.rows[0].projectRetainer = j.projectRetainer;
       j.rows[0].startDate = j.startDate;
       j.rows[0].endDate = j.endDate;

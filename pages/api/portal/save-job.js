@@ -21,7 +21,9 @@ import {
   isJobCostingStyle,
   getJobCostingRowFormulasMap,
   buildJobRowClearAndRestorePlan,
-  normalizeLikelihoodInput
+  normalizeLikelihoodInput,
+  isPlaceholderInvoice,
+  isPlaceholderExpense
 } from "../../../utils/helpers.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
@@ -783,7 +785,8 @@ export default async function handler(req, res) {
               const r = oldNextRows[i] || [];
               const rRev = (r[cols.revenue] || "").trim();
               const rDc = (r[cols.directCosts] || "").trim();
-              const rRech = oldSheetName === "Confirmed" ? String(r[17] || "").trim() : "";
+              const rRechRaw = oldSheetName === "Confirmed" ? String(r[17] || "").trim() : "";
+              const rRech = (rRechRaw && Math.abs(parseFloat(rRechRaw.replace(/[£$€,\s]/g, "")) || 0) > 0.001) ? rRechRaw : "";
               if (rRev === "" && rDc === "" && rRech === "") verifiedOldChildren.push(oldRow + 1 + i);
               else break;
             }
@@ -884,6 +887,28 @@ export default async function handler(req, res) {
     );
 
     const isRetainer = String(job.projectRetainer || "").toLowerCase() === "retainer";
+
+    // Canonical slot ordering for non-retainer jobs: [Real -> Manual placeholder -> Auto placeholder]
+    if (!isRetainer) {
+      const invTier = (inv) => {
+        const ref = String(inv?.ref || "").trim();
+        const isAuto = ref !== "" && /^(PLACE|MANUAL-INV|UNRECON-GAP)/i.test(ref);
+        if (ref && !isAuto && !isPlaceholderInvoice(ref, inv?.status)) return 0;
+        if (!isAuto) return 1;
+        return 2;
+      };
+      const expTier = (exp) => {
+        const id = String(exp?.appId || exp?.transactionId || "").trim();
+        const st = String(exp?.status || "").trim().toLowerCase();
+        const isPaid = ["paid", "complete", "part-paid (paid)"].includes(st);
+        const isAuto = !isPaid && (/^(PLACE-EXP|PLACE-GAP|MANUAL-ENTRY|MANUAL-GAP|UNRECON-GAP)/i.test(id) || (!id && /^placeholder/i.test(String(exp?.desc || "").trim())));
+        if ((id && !isAuto && !isPlaceholderExpense(id, exp?.desc, exp?.status)) || isPaid) return 0;
+        if (!isAuto) return 1;
+        return 2;
+      };
+      validInvoices.sort((a, b) => invTier(a) - invTier(b));
+      validExpenses.sort((a, b) => expTier(a) - expTier(b));
+    }
     const wasPreviouslyRetainer =
       !isNewJob &&
       cols.projectRetainer !== -1 &&

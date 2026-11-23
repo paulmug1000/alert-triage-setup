@@ -41,7 +41,7 @@ import {
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
   handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleVerifyExpenseInPulse, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote, handleUpdateOutgoingNotesBatch, handleSetMakingUpCosZero, handleSetMakingUpCosTarget,
-  handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, handleGetDefaultDaysToPay, getClientWebAppUrl
+  handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, handleGetDefaultDaysToPay, handleTidyJobLayout, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
   handleGetRetainerJobs, handleRenameRetainerJob, handleChangeRetainerStartDate, handleChangeRetainerEndDate,
@@ -269,6 +269,7 @@ export default async function handler(req, res) {
       add_new_job: ["jobs", "retainers", "invoices", "outgoings", "cash"],
       mark_pipeline_copied: ["jobs", "retainers", "cash"],
       mark_pipeline_already_confirmed: ["jobs", "retainers", "cash"],
+      tidy_job_layout: ["jobs", "invoices", "outgoings", "retainers", "cash"],
       delete_direct_job: ["jobs", "retainers", "invoices", "outgoings", "cash"],
       rename_retainer_job: ["retainers", "jobs", "invoices", "cash"],
       change_retainer_start_date: ["retainers", "jobs", "invoices", "cash"],
@@ -776,6 +777,8 @@ export default async function handler(req, res) {
       return await handleMarkPipelineCopied(req, res, sheets);
     } else if (action === "mark_pipeline_already_confirmed") {
       return await handleMarkPipelineAlreadyConfirmed(req, res, sheets);
+    } else if (action === "tidy_job_layout") {
+      return await handleTidyJobLayout(req, res, sheets);
     } else if (action === "delete_direct_job") {
       return await handleDeleteDirectJob(req, res, sheets);
     } else if (action === "get_retainer_jobs") {

@@ -4,6 +4,15 @@ import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus } from "../utils/h
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import { recomputeCrmComparisonInSupabase } from "./masterSyncEngine.js";
 
+function hasNonZeroMoney_(val) {
+  if (val === undefined || val === null || val === "") return false;
+  if (typeof val === "number") return Math.abs(val) > 0.001;
+  const s = String(val).trim();
+  if (!s) return false;
+  const n = parseFloat(s.replace(/[£$€,\s]/g, ""));
+  return !isNaN(n) && Math.abs(n) > 0.001;
+}
+
 export async function getToleranceValues(sheets, masterSheetId) {
   const cleanId = masterSheetId
     ? String(masterSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1")
@@ -37,11 +46,11 @@ export async function getToleranceValues(sheets, masterSheetId) {
     const result = {
       invoiceMonthsTolerance: ranges[0]?.values?.[0]?.[0] || 2,
       expenseMonthsTolerance: ranges[1]?.values?.[0]?.[0] || 1,
-      defaultDaysToPay:       !isNaN(b52Val) && b52Val > 0 ? b52Val : 30,
-      invoiceLogicMode:       String(ranges[3]?.values?.[0]?.[0] || "50-50").trim(),
-      retainerInvoiceDay:     !isNaN(b51Val) && b51Val > 0 ? b51Val : 28,
-      expenseLogicMode:       String(ranges[5]?.values?.[0]?.[0] || "100 at start").trim(),
-      retainerExpenseDay:     !isNaN(b106Val) && b106Val > 0 ? b106Val : 28,
+      defaultDaysToPay: !isNaN(b52Val) && b52Val > 0 ? b52Val : 30,
+      invoiceLogicMode: String(ranges[3]?.values?.[0]?.[0] || "50-50").trim(),
+      retainerInvoiceDay: !isNaN(b51Val) && b51Val > 0 ? b51Val : 28,
+      expenseLogicMode: String(ranges[5]?.values?.[0]?.[0] || "100 at start").trim(),
+      retainerExpenseDay: !isNaN(b106Val) && b106Val > 0 ? b106Val : 28,
     };
     if (cacheKey) {
       memoryCache.set(cacheKey, result, 300);
@@ -88,7 +97,7 @@ export async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
         console.log(`  ✅ ${sheetName} switch already ON - skipping write and delay`);
         return;
       }
-    } catch(e) {
+    } catch (e) {
       console.log(`  ⚠ Could not check ${sheetName} switch state: ${e.message} - proceeding with write`);
     }
     await sheets.spreadsheets.values.update({
@@ -213,7 +222,7 @@ export async function checkAllGASLocks(sheets, masterSheetId, cachedData = null)
     const metaByType = {
       invoice: { category: "INVOICES", label: "Invoice Sequence" },
       expense: { category: "EXPENSES", label: "Expenses Sequence" },
-      crm:     { category: "CRM",      label: "CRM Sequence" },
+      crm: { category: "CRM", label: "CRM Sequence" },
     };
     const check = async (fIdx, tIdx, name, fCell, tCell) => {
       const flag = String(row[fIdx] || "").trim().toUpperCase();
@@ -245,7 +254,7 @@ export async function checkAllGASLocks(sheets, masterSheetId, cachedData = null)
                   valueInputOption: "RAW"
                 }
               }));
-            } catch (e) {}
+            } catch (e) { }
           } else {
             console.log(`  ⚠️ GAS lock for ${name} is >10m stale (${Math.round(ageMs / 60000)}m) - treating as timed out`);
           }
@@ -306,7 +315,7 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
 
     // Check if targetRow is already the parent row
     const targetRev = String(targetRow[32] || "").trim();
-    const targetRech = tabName === "Confirmed" ? String(targetRow[17] || "").trim() : "";
+    const targetRech = tabName === "Confirmed" && hasNonZeroMoney_(targetRow[17]);
     const targetType = String(targetRow[35] || "").trim();
     const targetStart = String(targetRow[37] || "").trim();
     const targetCode = String(targetRow[2] || "").trim();
@@ -319,17 +328,17 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
         const prev = rows[pIdx] || [];
         const prevClient = String(prev[0] || "").trim();
         const prevJob = String(prev[1] || "").trim();
-        
+
         // Blank row means boundary of the job reached
         if (!prevClient && !prevJob) break;
 
         const matchesJob = (!prevClient || prevClient.toLowerCase() === curClient.toLowerCase()) &&
-                           (!prevJob || prevJob.toLowerCase() === curJob.toLowerCase());
+          (!prevJob || prevJob.toLowerCase() === curJob.toLowerCase());
         if (!matchesJob) break;
 
         trueParentIndex = pIdx;
         const pRevenue = String(prev[32] || "").trim();
-        const pRech = tabName === "Confirmed" ? String(prev[17] || "").trim() : "";
+        const pRech = tabName === "Confirmed" && hasNonZeroMoney_(prev[17]);
         const pBudget = parseFloat(String(prev[33] || "").replace(/[£$€,\s]/g, "")) || 0;
         const pStart = String(prev[37] || "").trim();
         const pType = String(prev[35] || "").trim();
@@ -350,7 +359,7 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
       const rc = String(r[0] || "").trim();
       const rj = String(r[1] || "").trim();
       const rRevenue = String(r[32] || "").trim();
-      const rRech = tabName === "Confirmed" ? String(r[17] || "").trim() : "";
+      const rRech = tabName === "Confirmed" && hasNonZeroMoney_(r[17]);
       const rBudget = parseFloat(String(r[33] || "").replace(/[£$€,\s]/g, "")) || 0;
       const rStart = String(r[37] || "").trim();
       const rType = String(r[35] || "").trim();
@@ -373,48 +382,60 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
       rowNum,
       tabName,
       isParent,
-      client:            colVal(row, 0),
-      jobName:           colVal(row, 1),
-      projectCode:       colVal(row, 2),
-      unevenSplit:       colVal(row, 30),
+      client: colVal(row, 0),
+      jobName: colVal(row, 1),
+      projectCode: colVal(row, 2),
+      unevenSplit: colVal(row, 30),
       rechargedExpenses: tabName === "Confirmed" ? colVal(row, 17) : null,
-      revenue:           colVal(row, 32),
-      directCosts:       colVal(row, 33),
-      vat:               colVal(row, 34),
-      projectRetainer:   colVal(row, 35),
-      startDate:         colVal(row, 37),
-      endDate:           colVal(row, 38),
-      likelihood:        tabName === "Pipeline" ? colVal(row, 39) : null,
-      copiedToConf:      tabName === "Pipeline" ? colVal(row, 107) : null,
+      revenue: colVal(row, 32),
+      directCosts: colVal(row, 33),
+      vat: colVal(row, 34),
+      projectRetainer: colVal(row, 35),
+      startDate: colVal(row, 37),
+      endDate: colVal(row, 38),
+      likelihood: tabName === "Pipeline" ? colVal(row, 39) : null,
+      copiedToConf: tabName === "Pipeline" ? colVal(row, 107) : null,
       invoiceSlots: [
-        { slotNum: 1, amount: colVal(row,41), ref: colVal(row,42), sentDate: colVal(row,43), daysToPay: colVal(row,44), status: canonicalizeInvoiceStatus(colVal(row,45)),
+        {
+          slotNum: 1, amount: colVal(row, 41), ref: colVal(row, 42), sentDate: colVal(row, 43), daysToPay: colVal(row, 44), status: canonicalizeInvoiceStatus(colVal(row, 45)),
           ofWhichRechgd: tabName === "Confirmed" ? colVal(row, 46) : null, costMonth: tabName === "Confirmed" ? colVal(row, 47) : null,
-          highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 1 && highlightSlot.rowNum === rowNum },
-        { slotNum: 2, amount: colVal(row,48), ref: colVal(row,49), sentDate: colVal(row,50), daysToPay: colVal(row,51), status: canonicalizeInvoiceStatus(colVal(row,52)),
+          highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 1 && highlightSlot.rowNum === rowNum
+        },
+        {
+          slotNum: 2, amount: colVal(row, 48), ref: colVal(row, 49), sentDate: colVal(row, 50), daysToPay: colVal(row, 51), status: canonicalizeInvoiceStatus(colVal(row, 52)),
           ofWhichRechgd: tabName === "Confirmed" ? colVal(row, 53) : null, costMonth: tabName === "Confirmed" ? colVal(row, 54) : null,
-          highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 2 && highlightSlot.rowNum === rowNum },
-        { slotNum: 3, amount: colVal(row,55), ref: colVal(row,56), sentDate: colVal(row,57), daysToPay: colVal(row,58), status: canonicalizeInvoiceStatus(colVal(row,59)),
+          highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 2 && highlightSlot.rowNum === rowNum
+        },
+        {
+          slotNum: 3, amount: colVal(row, 55), ref: colVal(row, 56), sentDate: colVal(row, 57), daysToPay: colVal(row, 58), status: canonicalizeInvoiceStatus(colVal(row, 59)),
           ofWhichRechgd: tabName === "Confirmed" ? colVal(row, 60) : null, costMonth: tabName === "Confirmed" ? colVal(row, 61) : null,
-          highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 3 && highlightSlot.rowNum === rowNum },
+          highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 3 && highlightSlot.rowNum === rowNum
+        },
       ],
       expenseSlots: [
-        { slotNum: 1, description: colVal(row,75), amount: colVal(row,76), vat: colVal(row,77), date: colVal(row,78), daysToPay: colVal(row,79), status: canonicalizeExpenseStatus(colVal(row,80)), transactionId: colVal(row,81),
-          highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 1 && highlightSlot.rowNum === rowNum },
-        { slotNum: 2, description: colVal(row,82), amount: colVal(row,83), vat: colVal(row,84), date: colVal(row,85), daysToPay: colVal(row,86), status: canonicalizeExpenseStatus(colVal(row,87)), transactionId: colVal(row,88),
-          highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 2 && highlightSlot.rowNum === rowNum },
-        { slotNum: 3, description: colVal(row,89), amount: colVal(row,90), vat: colVal(row,91), date: colVal(row,92), daysToPay: colVal(row,93), status: canonicalizeExpenseStatus(colVal(row,94)), transactionId: colVal(row,95),
-          highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 3 && highlightSlot.rowNum === rowNum },
+        {
+          slotNum: 1, description: colVal(row, 75), amount: colVal(row, 76), vat: colVal(row, 77), date: colVal(row, 78), daysToPay: colVal(row, 79), status: canonicalizeExpenseStatus(colVal(row, 80)), transactionId: colVal(row, 81),
+          highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 1 && highlightSlot.rowNum === rowNum
+        },
+        {
+          slotNum: 2, description: colVal(row, 82), amount: colVal(row, 83), vat: colVal(row, 84), date: colVal(row, 85), daysToPay: colVal(row, 86), status: canonicalizeExpenseStatus(colVal(row, 87)), transactionId: colVal(row, 88),
+          highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 2 && highlightSlot.rowNum === rowNum
+        },
+        {
+          slotNum: 3, description: colVal(row, 89), amount: colVal(row, 90), vat: colVal(row, 91), date: colVal(row, 92), daysToPay: colVal(row, 93), status: canonicalizeExpenseStatus(colVal(row, 94)), transactionId: colVal(row, 95),
+          highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 3 && highlightSlot.rowNum === rowNum
+        },
       ],
     });
 
     let resultData = allRows.map(buildRowData);
-    
+
     if (resultData.length > 8) {
       const parent = resultData[0];
-      const targetIdx = resultData.findIndex(r => 
+      const targetIdx = resultData.findIndex(r =>
         r.invoiceSlots.some(s => s.highlighted) || r.expenseSlots.some(s => s.highlighted)
       );
-      
+
       if (targetIdx > 0) {
         const start = Math.max(1, targetIdx - 2);
         const end = Math.min(resultData.length, targetIdx + 3);
@@ -430,4 +451,109 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
     console.log(`  ⚠ fetchJobRowsForDisplay error: ${e.message}`);
     return null;
   }
+}
+
+/**
+ * Builds a lookup index from InvFromApp!A1:S rows containing auto-detected
+ * recharged amounts (col R) and line-item breakdowns (col S), converted to GBP
+ * via CurrencyRate (col Q).
+ */
+export function buildInvFromAppMetaMap(invFromAppRows, invFormatRule = "") {
+  const exact = new Map();
+  const derived = new Map();
+  if (!Array.isArray(invFromAppRows) || invFromAppRows.length < 2) {
+    return { exact, derived };
+  }
+
+  const headers = (invFromAppRows[0] || []).map((h) => String(h || "").trim().toLowerCase());
+  const findCol = (names, fallbackIdx) => {
+    for (const n of names) {
+      const idx = headers.indexOf(n);
+      if (idx !== -1) return idx;
+    }
+    return fallbackIdx;
+  };
+
+  const invIdx = findCol(["invoicenumber", "invoice number", "invoiceno"], 2);
+  const rateIdx = findCol(["currencyrate", "currency rate"], 16);
+  const rechIdx = findCol(["rechargedamount", "recharged amount"], 17);
+  const bkIdx = findCol(["linebreakdown", "line breakdown"], 18);
+  const rule = String(invFormatRule || "").trim().toLowerCase();
+
+  for (let r = 1; r < invFromAppRows.length; r++) {
+    const row = invFromAppRows[r];
+    if (!Array.isArray(row) || row.length === 0) continue;
+    const rawInvNo = String(row[invIdx] ?? "").replace(/^'/, "").trim();
+    if (!rawInvNo) continue;
+
+    const rateRaw = parseFloat(String(row[rateIdx] ?? "").replace(/,/g, ""));
+    const rate = (!isNaN(rateRaw) && rateRaw > 0) ? rateRaw : 1;
+    const rawRech = parseFloat(String(row[rechIdx] ?? "").replace(/,/g, "")) || 0;
+    const rechargedAmountGbp = Math.max(0, Math.round((rawRech / rate) * 100) / 100);
+
+    const rawBk = String(row[bkIdx] ?? "").replace(/^'/, "").trim();
+    let lineItems = [];
+    if (rawBk && rawBk.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(rawBk);
+        if (Array.isArray(parsed)) {
+          lineItems = parsed.map((item) => ({
+            description: String(item?.d || "").trim(),
+            amountGbp: Math.round((((Number(item?.a) || 0) / rate)) * 100) / 100,
+            accountCode: String(item?.ac || "").trim(),
+            accountName: String(item?.an || "").trim(),
+            isRecharged: Boolean(item?.r),
+            reason: String(item?.rr || "").trim(),
+          }));
+        }
+      } catch (_) {
+        lineItems = [];
+      }
+    }
+
+    if (rechargedAmountGbp <= 0 && lineItems.length === 0) continue;
+
+    const entry = { rechargedAmountGbp, lineItems };
+    const lower = rawInvNo.toLowerCase();
+    const strippedHash = lower.replace(/^#/, "");
+    exact.set(lower, entry);
+    if (strippedHash && !exact.has(strippedHash)) exact.set(strippedHash, entry);
+
+    if (/^0+\d+$/.test(strippedHash)) {
+      const noZeros = strippedHash.replace(/^0+(?=\d)/, "");
+      if (!derived.has(noZeros)) derived.set(noZeros, entry);
+    }
+    if (rule === "strippre") {
+      const sp = strippedHash.replace(/^[^-]+-/, "");
+      if (sp && !derived.has(sp)) derived.set(sp, entry);
+    } else if (rule === "right3" || rule === "right4" || rule === "right5") {
+      const n = parseInt(rule.replace("right", ""), 10);
+      if (n > 0 && strippedHash.length >= n) {
+        const tail = strippedHash.slice(-n);
+        if (!derived.has(tail)) derived.set(tail, entry);
+      }
+    }
+  }
+
+  return { exact, derived };
+}
+
+/**
+ * Looks up enriched InvFromApp metadata for an invoice number.
+ */
+export function lookupInvFromAppMeta(metaIndex, invoiceNo) {
+  if (!metaIndex || !invoiceNo) return null;
+  const raw = String(invoiceNo).trim().toLowerCase();
+  if (!raw) return null;
+  const clean = raw.replace(/^#/, "");
+  if (metaIndex.exact instanceof Map) {
+    if (metaIndex.exact.has(raw)) return metaIndex.exact.get(raw);
+    if (metaIndex.exact.has(clean)) return metaIndex.exact.get(clean);
+  }
+  if (metaIndex.derived instanceof Map) {
+    if (metaIndex.derived.has(clean)) return metaIndex.derived.get(clean);
+    const noZeros = clean.replace(/^0+(?=\d)/, "");
+    if (noZeros && metaIndex.derived.has(noZeros)) return metaIndex.derived.get(noZeros);
+  }
+  return null;
 }

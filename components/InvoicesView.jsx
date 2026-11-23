@@ -8,6 +8,7 @@ import EditClientSelector from "./EditClientSelector";
 import JobDetailModal from "./JobDetailModal";
 import PlaceholderChoiceModal from "./PlaceholderChoiceModal";
 import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
+import PlaceInvoiceModal from "./PlaceInvoiceModal";
 import { getJobInvoiceItems } from "../utils/jobItemsHelpers";
 import { useInvoices } from "../hooks/useInvoices";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -237,15 +238,12 @@ export default function InvoicesView({
   const [invoiceSearchTerm, setInvoiceSearchTerm] = useState("");
   const [invoiceSortOrder, setInvoiceSortOrder] = useState("inv_desc");
   const [expandedRetainerKeys, setExpandedRetainerKeys] = useState(() => new Set());
-  const [placementConfirmPrompt, setPlacementConfirmPrompt] = useState(null);
+  const [placeModalState, setPlaceModalState] = useState(null);
+  const [placeModalError, setPlaceModalError] = useState("");
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [invoicesNewJob, setInvoicesNewJob] = useState(null);
-  const [clientMismatchPrompt, setClientMismatchPrompt] = useState(null);
-  const [revenueExceedPrompt, setRevenueExceedPrompt] = useState(null);
   const [placeholderChoicePrompt, setPlaceholderChoicePrompt] = useState(null);
   const [selectedJobForDetail, setSelectedJobForDetail] = useState(null);
-  const [updateJobNameChecked, setUpdateJobNameChecked] = useState(false);
-  const [newJobNameInput, setNewJobNameInput] = useState("");
 
   useFocusRevalidate({
     enabled: Boolean(invoicesClient?.clientSheetId),
@@ -255,11 +253,9 @@ export default function InvoicesView({
       !invoicesInboxLoading &&
       !invoicesSavingCell &&
       !invoicesPlacing &&
-      !placementConfirmPrompt &&
+      !placeModalState &&
       !invoicesEditSlot &&
       !invoicesNewJob &&
-      !clientMismatchPrompt &&
-      !revenueExceedPrompt &&
       !placeholderChoicePrompt &&
       !selectedJobForDetail,
     onRevalidate: () => {
@@ -397,46 +393,11 @@ export default function InvoicesView({
   }, [allInvoices, invoiceSearchTerm, invoiceSortOrder]);
 
   const initiatePlacement = (promptPayload) => {
-    const { job, inv } = promptPayload;
-    const sheetClient = String(job.client || "").trim();
-    const invClient = String(inv.client || "").trim();
-    const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
-
-    const currentRealInvoiced = (job.rows || []).reduce((sum, r) => {
-      return sum + (r.invoiceSlots || []).reduce((sSum, sl) => {
-        if (sl.ref && !isPlaceholderInvoice(sl.ref, sl.status) && !isDraftInvoice(sl.ref, sl.status)) {
-          const val = parseFloat(String(sl.amount).replace(/[£$€,\s]/g, "")) || 0;
-          return sSum + val;
-        }
-        return sSum;
-      }, 0);
-    }, 0);
-    const invAmount = parseFloat(String(inv.amount).replace(/[£$€,\s]/g, "")) || 0;
-    const projectedTotalInvoiced = currentRealInvoiced + invAmount;
-    const jobRevenue = parseFloat(String(job.rows?.[0]?.revenue || job.revenue || "").replace(/[£$€,\s]/g, "")) || 0;
-    const exceedsRevenue = projectedTotalInvoiced > jobRevenue && jobRevenue > 0;
-
-    if (exceedsRevenue) {
-      setRevenueExceedPrompt({
-        promptPayload,
-        hasMismatch,
-        currentRevenue: jobRevenue,
-        projectedRevenue: projectedTotalInvoiced,
-      });
-      return;
-    }
-
-    if (hasMismatch) {
-      setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
-      setNewJobNameInput(inv.job || job.jobName || "");
-      setClientMismatchPrompt(promptPayload);
-      return;
-    }
-
-    executePlacement(promptPayload, false);
+    setPlaceModalError("");
+    setPlaceModalState(promptPayload);
   };
 
-  const proceedWithAutoPlacement = (job, inv, targetRowNum = null) => {
+  const proceedWithAutoPlacement = (job, inv, targetRowNum = null, monthLabel = "") => {
     const targetRows = targetRowNum
       ? (job.rows || []).filter(r => r.rowNum === targetRowNum)
       : (job.rows || []);
@@ -456,6 +417,8 @@ export default function InvoicesView({
             isNewRow: false,
             rowNum: r.rowNum,
             slotNum: s.slotNum,
+            slot: s,
+            monthLabel,
             sheetClientName: sheetClient,
             invoiceClientName: invClient,
             savingKey: `${r.rowNum}-${s.slotNum}`,
@@ -477,6 +440,8 @@ export default function InvoicesView({
             isNewRow: false,
             rowNum: r.rowNum,
             slotNum: s.slotNum,
+            slot: s,
+            monthLabel,
             sheetClientName: sheetClient,
             invoiceClientName: invClient,
             savingKey: `${r.rowNum}-${s.slotNum}`,
@@ -495,6 +460,7 @@ export default function InvoicesView({
         inv,
         isNewRow: true,
         jobLastRow,
+        monthLabel,
         sheetClientName: sheetClient,
         invoiceClientName: invClient,
         savingKey: `newrow-${job.client}|||${job.jobName}`,
@@ -505,7 +471,7 @@ export default function InvoicesView({
     }
   };
 
-  const handleInitiateJobPlacement = (job, targetRowNum = null, explicitInv = null) => {
+  const handleInitiateJobPlacement = (job, targetRowNum = null, explicitInv = null, monthLabel = "") => {
     const inv = explicitInv || invoicesPlacingRef.current;
     if (!inv) return;
     if (explicitInv) {
@@ -535,19 +501,25 @@ export default function InvoicesView({
         job,
         inv,
         targetRowNum,
+        monthLabel,
         manualPlaceholders,
       });
       return;
     }
 
-    proceedWithAutoPlacement(job, inv, targetRowNum);
+    proceedWithAutoPlacement(job, inv, targetRowNum, monthLabel);
   };
 
-  const executePlacement = async (promptData, shouldUpdateClientName, shouldUpdateJobName = false, customJobName = "") => {
-    const { job, inv, isNewRow, rowNum, slotNum, jobLastRow, savingKey, revenueUpdate } = promptData;
-    setClientMismatchPrompt(null);
-    setRevenueExceedPrompt(null);
-    setInvoicesPlacing(null);
+  const executePlacement = async (promptData, confirmResult = {}) => {
+    const { job, inv, isNewRow, rowNum, slotNum, jobLastRow, savingKey } = promptData;
+    const shouldUpdateClientName = Boolean(confirmResult.updateClientName);
+    const shouldUpdateJobName = Boolean(confirmResult.updateJobName);
+    const customJobName = confirmResult.newJobName || "";
+    const ofWhichRechgd = confirmResult.ofWhichRechgd;
+    const costMonth = confirmResult.costMonth;
+    const hasRechFields = ofWhichRechgd !== undefined && ofWhichRechgd !== "";
+
+    setPlaceModalError("");
     setInvoicesSavingCell(savingKey);
 
     const effectiveClientSheetId = invoicesClient?.clientSheetId ||
@@ -562,13 +534,13 @@ export default function InvoicesView({
       Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === (invoicesClient?.clientName || "").toLowerCase())?.masterSheetId;
 
     if (!effectiveClientSheetId) {
-      alert("Could not determine client spreadsheet for placing this invoice.");
+      setPlaceModalError("Could not determine client spreadsheet for placing this invoice.");
       setInvoicesSavingCell(null);
       return;
     }
 
     const jobRowNums = job?.rows ? job.rows.map(r => r.rowNum) : (rowNum ? [rowNum] : []);
-    const effectiveClientName = shouldUpdateClientName ? String(inv.client || "").trim() : job.client;
+    const effectiveClientName = shouldUpdateClientName ? String(confirmResult.newClientName || inv.client || "").trim() : job.client;
     const effectiveJobName = shouldUpdateJobName && customJobName ? String(customJobName).trim() : job.jobName;
 
     try {
@@ -585,14 +557,19 @@ export default function InvoicesView({
         slotNum: !isNewRow ? slotNum : undefined,
         jobClient: effectiveClientName,
         jobName: job.jobName,
-        invoice: inv,
+        invoice: {
+          ...inv,
+          ...(hasRechFields ? { ofWhichRechgd, costMonth: costMonth || "" } : {}),
+        },
         updateClientName: shouldUpdateClientName,
         newClientName: shouldUpdateClientName ? effectiveClientName : undefined,
         updateJobName: shouldUpdateJobName && !!customJobName,
         newJobName: effectiveJobName,
         jobRowNums,
-        updateJobRevenue: !!revenueUpdate?.updateJobRevenue,
-        newJobRevenue: revenueUpdate?.newJobRevenue,
+        updateJobRevenue: Boolean(confirmResult.updateJobRevenue),
+        newJobRevenue: confirmResult.newJobRevenue,
+        updateJobRecharged: Boolean(confirmResult.updateJobRecharged),
+        newJobRecharged: confirmResult.newJobRecharged,
       };
 
       const res = await fetch("/api/triage", {
@@ -606,10 +583,13 @@ export default function InvoicesView({
       }
       const data = await res.json();
       if (!data.success) {
-        alert(data.error || "Failed to place invoice");
+        setPlaceModalError(data.error || "Failed to place invoice");
         await loadInvoicesJobs(invoicesClient, invoicesShowAll);
         return;
       }
+
+      setPlaceModalState(null);
+      setInvoicesPlacing(null);
 
       // ONLY remove from inbox and record as assigned once the server confirmed the write
       if (addAssignedAppId) {
@@ -657,7 +637,7 @@ export default function InvoicesView({
               revenue: 0,
               directCosts: 0,
               invoiceSlots: [
-                { slotNum: 1, amount: inv.amount || 0, ref: inv.invoiceNo || "", sentDate: inv.sentDate || "", status: inv.status || "" },
+                { slotNum: 1, amount: inv.amount || 0, ref: inv.invoiceNo || "", sentDate: inv.sentDate || "", status: inv.status || "", ofWhichRechgd: hasRechFields ? ofWhichRechgd : "", costMonth: hasRechFields ? (costMonth || "") : "" },
                 { slotNum: 2, amount: "", ref: "", sentDate: "", status: "" },
                 { slotNum: 3, amount: "", ref: "", sentDate: "", status: "" }
               ],
@@ -687,6 +667,7 @@ export default function InvoicesView({
                       ref: inv.invoiceNo || "",
                       sentDate: inv.sentDate || "",
                       status: inv.status || "",
+                      ...(hasRechFields ? { ofWhichRechgd, costMonth: costMonth || "" } : {}),
                     }
                 ),
               };
@@ -762,12 +743,18 @@ export default function InvoicesView({
             nextRevenue = data.updatedRevenue;
             updatedRows = updatedRows.map((r) => ({ ...r, revenue: data.updatedRevenue }));
           }
+          let nextRecharged = j.rechargedExpenses;
+          if (data.updatedRechargedExpenses !== undefined) {
+            nextRecharged = data.updatedRechargedExpenses;
+            updatedRows = updatedRows.map((r) => ({ ...r, rechargedExpenses: data.updatedRechargedExpenses }));
+          }
 
           return {
             ...j,
             client: updatedClient,
             jobName: updatedJob,
             revenue: nextRevenue,
+            rechargedExpenses: nextRecharged,
             rows: updatedRows,
           };
         });
@@ -777,6 +764,7 @@ export default function InvoicesView({
       loadInvoicesJobs(invoicesClient, invoicesShowAll, true);
     } catch (e) {
       console.error("assign_invoice_to_job error:", e);
+      setPlaceModalError(e.message || "Failed to place invoice");
     } finally {
       setInvoicesSavingCell(null);
     }
@@ -786,216 +774,29 @@ export default function InvoicesView({
 
   return (
     <>
-      {clientMismatchPrompt && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={e => { if (e.target === e.currentTarget) setClientMismatchPrompt(null); }}>
-          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
-              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e3a8a", display: "flex", alignItems: "center", gap: "8px" }}>
-                <span>🏢 Client Name Difference</span>
-              </h3>
-              <button onClick={() => setClientMismatchPrompt(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
-            </div>
-            <p style={{ fontSize: "13px", color: "#555", lineHeight: "1.5", marginTop: 0, marginBottom: "14px" }}>
-              The client name on the invoice differs from the client name {isAdmin ? "on the sheet" : "in Pulse"} for <strong>{clientMismatchPrompt.job.jobName}</strong>:
-            </p>
-            <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "12px", marginBottom: "14px", fontSize: "13px" }}>
-              <div style={{ marginBottom: "6px" }}>
-                <span style={{ color: "#64748b", fontWeight: "600", display: "inline-block", width: "70px" }}>{isAdmin ? "Sheet:" : "Pulse:"}</span>
-                <strong style={{ color: "#334155" }}>{clientMismatchPrompt.sheetClientName}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", fontWeight: "600", display: "inline-block", width: "70px" }}>Invoice:</span>
-                <strong style={{ color: "#2563eb" }}>{clientMismatchPrompt.invoiceClientName}</strong>
-              </div>
-            </div>
-            <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "14px" }}>
-              {isAdmin
-                ? "Updating will change the client name across all rows for this job in the Confirmed sheet."
-                : "Updating will change the client name for this job in Confirmed jobs."}
-            </div>
-
-            <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "12px", marginBottom: "16px" }}>
-              <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", fontWeight: "600", color: "#1e293b", cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={updateJobNameChecked}
-                  onChange={e => setUpdateJobNameChecked(e.target.checked)}
-                  style={{ accentColor: "#2563eb", cursor: "pointer" }}
-                />
-                Also update job name
-              </label>
-              {updateJobNameChecked && (
-                <div style={{ marginTop: "8px" }}>
-                  <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "4px" }}>
-                    Current {isAdmin ? "sheet" : "job"} name: <strong>{clientMismatchPrompt.job.jobName}</strong>
-                    {clientMismatchPrompt.inv.job && clientMismatchPrompt.inv.job !== clientMismatchPrompt.job.jobName && (
-                      <span> · Invoice suggests: <strong>{clientMismatchPrompt.inv.job}</strong></span>
-                    )}
-                  </div>
-                  <input
-                    type="text"
-                    value={newJobNameInput}
-                    onChange={e => setNewJobNameInput(e.target.value)}
-                    placeholder="Enter new job name"
-                    style={{
-                      width: "100%",
-                      padding: "7px 10px",
-                      border: "1px solid #cbd5e1",
-                      borderRadius: "6px",
-                      fontSize: "13px",
-                      boxSizing: "border-box",
-                      backgroundColor: "#ffffff"
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              <button className="triage-btn"
-                onClick={() => executePlacement(clientMismatchPrompt, true, updateJobNameChecked, newJobNameInput)}
-                style={{ background: "#2563eb", color: "white", border: "none", padding: "10px 14px", borderRadius: "6px", fontWeight: "600", fontSize: "13px", cursor: "pointer" }}
-              >
-                ✓ Update {isAdmin ? "sheet" : "Pulse"} to &ldquo;{clientMismatchPrompt.invoiceClientName}&rdquo;
-              </button>
-              <button className="triage-btn"
-                onClick={() => executePlacement(clientMismatchPrompt, false, updateJobNameChecked, newJobNameInput)}
-                style={{ ...styles.buttonSecondary, padding: "10px 14px", fontSize: "13px", textAlign: "center" }}
-              >
-                Keep existing name &ldquo;{clientMismatchPrompt.sheetClientName}&rdquo;
-              </button>
-              <button className="triage-btn"
-                onClick={() => setClientMismatchPrompt(null)}
-                style={{ padding: "8px 14px", fontSize: "12px", color: "#64748b", background: "none", border: "none", cursor: "pointer", textAlign: "center" }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {revenueExceedPrompt && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.5)",
-            zIndex: 2000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center"
+      {placeModalState && (
+        <PlaceInvoiceModal
+          isOpen={true}
+          onClose={() => {
+            if (!invoicesSavingCell) {
+              setPlaceModalState(null);
+              setPlaceModalError("");
+            }
           }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setRevenueExceedPrompt(null);
-          }}
-        >
-          <div
-            style={{
-              background: "#fff",
-              borderRadius: "12px",
-              padding: "24px",
-              width: "min(92vw, 480px)",
-              maxHeight: "85vh",
-              overflowY: "auto",
-              boxShadow: "0 20px 60px rgba(0,0,0,0.3)"
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
-              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e3a8a" }}>
-                Increase job revenue?
-              </h3>
-              <button
-                type="button"
-                onClick={() => setRevenueExceedPrompt(null)}
-                style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}
-              >
-                ×
-              </button>
-            </div>
-
-            <p style={{ fontSize: "13px", color: "#334155", lineHeight: "1.5", marginTop: 0, marginBottom: "14px" }}>
-              Placing invoice <strong>{revenueExceedPrompt.promptPayload.inv.invoiceNo}</strong> ({formatCurrency(revenueExceedPrompt.promptPayload.inv.amount)}) would bring total invoiced to <strong>{formatCurrency(revenueExceedPrompt.projectedRevenue)}</strong>, which exceeds the current job revenue of <strong>{formatCurrency(revenueExceedPrompt.currentRevenue)}</strong>.
-            </p>
-
-            <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "8px", padding: "12px", marginBottom: "16px", fontSize: "13px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                <span style={{ color: "#64748b" }}>Current revenue:</span>
-                <span style={{ fontWeight: "600", color: "#0f172a" }}>{formatCurrency(revenueExceedPrompt.currentRevenue)}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "#1d4ed8", fontWeight: "600" }}>Projected total invoiced:</span>
-                <strong style={{ color: "#1d4ed8" }}>{formatCurrency(revenueExceedPrompt.projectedRevenue)}</strong>
-              </div>
-            </div>
-
-            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.45", marginTop: 0, marginBottom: "20px" }}>
-              Would you like to increase the job revenue to {formatCurrency(revenueExceedPrompt.projectedRevenue)} to match?
-            </p>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              <button
-                type="button"
-                className="triage-btn"
-                onClick={() => {
-                  const updatedPayload = {
-                    ...revenueExceedPrompt.promptPayload,
-                    revenueUpdate: { updateJobRevenue: true, newJobRevenue: revenueExceedPrompt.projectedRevenue }
-                  };
-                  setRevenueExceedPrompt(null);
-                  if (revenueExceedPrompt.hasMismatch) {
-                    setUpdateJobNameChecked(!!(updatedPayload.inv.job && updatedPayload.inv.job.trim().toLowerCase() !== (updatedPayload.job.jobName || "").trim().toLowerCase()));
-                    setNewJobNameInput(updatedPayload.inv.job || updatedPayload.job.jobName || "");
-                    setClientMismatchPrompt(updatedPayload);
-                  } else {
-                    executePlacement(updatedPayload, false);
-                  }
-                }}
-                style={{
-                  background: "#2563eb",
-                  color: "white",
-                  border: "none",
-                  padding: "10px 14px",
-                  borderRadius: "6px",
-                  fontWeight: "600",
-                  fontSize: "13px",
-                  cursor: "pointer"
-                }}
-              >
-                Increase revenue to {formatCurrency(revenueExceedPrompt.projectedRevenue)}
-              </button>
-              <button
-                type="button"
-                className="triage-btn"
-                onClick={() => {
-                  const updatedPayload = {
-                    ...revenueExceedPrompt.promptPayload,
-                    revenueUpdate: { updateJobRevenue: false }
-                  };
-                  setRevenueExceedPrompt(null);
-                  if (revenueExceedPrompt.hasMismatch) {
-                    setUpdateJobNameChecked(!!(updatedPayload.inv.job && updatedPayload.inv.job.trim().toLowerCase() !== (updatedPayload.job.jobName || "").trim().toLowerCase()));
-                    setNewJobNameInput(updatedPayload.inv.job || updatedPayload.job.jobName || "");
-                    setClientMismatchPrompt(updatedPayload);
-                  } else {
-                    executePlacement(updatedPayload, false);
-                  }
-                }}
-                style={{ ...styles.buttonSecondary, padding: "10px 14px", fontSize: "13px", textAlign: "center" }}
-              >
-                Keep revenue as {formatCurrency(revenueExceedPrompt.currentRevenue)}
-              </button>
-              <button
-                type="button"
-                className="triage-btn"
-                onClick={() => setRevenueExceedPrompt(null)}
-                style={{ padding: "8px 14px", fontSize: "12px", color: "#64748b", background: "none", border: "none", cursor: "pointer", textAlign: "center" }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
+          onConfirm={(confirmResult) => executePlacement(placeModalState, confirmResult)}
+          isSaving={Boolean(invoicesSavingCell)}
+          error={placeModalError}
+          job={placeModalState.job}
+          invoice={placeModalState.inv}
+          targetRowNum={placeModalState.rowNum}
+          targetSlotNum={placeModalState.slotNum}
+          slot={placeModalState.slot}
+          monthLabel={placeModalState.monthLabel}
+          isRetainer={String(placeModalState.job?.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer")}
+          createNewRow={placeModalState.isNewRow}
+          isAdmin={isAdmin}
+          allowJobNameEdit={true}
+        />
       )}
       {placeholderChoicePrompt && (
         <PlaceholderChoiceModal
@@ -1005,7 +806,7 @@ export default function InvoicesView({
           itemToPlace={placeholderChoicePrompt.inv}
           manualPlaceholders={placeholderChoicePrompt.manualPlaceholders}
           onReplaceManual={(p) => {
-            const { job, inv } = placeholderChoicePrompt;
+            const { job, inv, monthLabel } = placeholderChoicePrompt;
             setPlaceholderChoicePrompt(null);
             const sheetClient = String(job.client || "").trim();
             const invClient = String(inv.client || "").trim();
@@ -1015,15 +816,17 @@ export default function InvoicesView({
               isNewRow: false,
               rowNum: p.rowNum,
               slotNum: p.slotNum,
+              slot: p,
+              monthLabel: monthLabel || "",
               sheetClientName: sheetClient,
               invoiceClientName: invClient,
               savingKey: `${p.rowNum}-${p.slotNum}`,
             });
           }}
           onUseAuto={() => {
-            const { job, inv, targetRowNum } = placeholderChoicePrompt;
+            const { job, inv, targetRowNum, monthLabel } = placeholderChoicePrompt;
             setPlaceholderChoicePrompt(null);
-            proceedWithAutoPlacement(job, inv, targetRowNum);
+            proceedWithAutoPlacement(job, inv, targetRowNum, monthLabel || "");
           }}
           onClose={() => setPlaceholderChoicePrompt(null)}
         />
@@ -1268,84 +1071,6 @@ export default function InvoicesView({
         />
       )}
 
-      {placementConfirmPrompt && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(15, 23, 42, 0.4)",
-            backdropFilter: "blur(2px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 9999,
-            padding: "20px",
-          }}
-          onClick={() => setPlacementConfirmPrompt(null)}
-        >
-          <div
-            style={{
-              background: "#ffffff",
-              borderRadius: "10px",
-              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)",
-              maxWidth: "440px",
-              width: "100%",
-              padding: "22px 24px",
-              border: "1px solid #e2e8f0",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{ margin: "0 0 10px 0", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
-              Place invoice
-            </h3>
-            <p style={{ margin: "0 0 20px 0", fontSize: "14px", color: "#334155", lineHeight: "1.5" }}>
-              Place invoice <strong>#{placementConfirmPrompt.inv.invoiceNo}</strong> ({formatCurrency(placementConfirmPrompt.inv.amount)}) against <strong>{placementConfirmPrompt.job.jobName}</strong>{placementConfirmPrompt.monthLabel ? ` (${placementConfirmPrompt.monthLabel})` : ""}?
-            </p>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-              <button
-                type="button"
-                onClick={() => setPlacementConfirmPrompt(null)}
-                style={{
-                  padding: "8px 16px",
-                  borderRadius: "6px",
-                  border: "1px solid #cbd5e1",
-                  background: "#ffffff",
-                  color: "#475569",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  cursor: "pointer",
-                }}
-              >
-                No
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const p = placementConfirmPrompt;
-                  setPlacementConfirmPrompt(null);
-                  handleInitiateJobPlacement(p.job, p.targetRowNum, p.inv);
-                }}
-                style={{
-                  padding: "8px 16px",
-                  borderRadius: "6px",
-                  border: "1px solid #2563eb",
-                  background: "#2563eb",
-                  color: "#ffffff",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  cursor: "pointer",
-                  boxShadow: "0 1px 2px rgba(37,99,235,0.2)",
-                }}
-              >
-                Yes
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: isModalOverlay ? "16px 24px 32px" : "20px 32px 60px", boxSizing: "border-box" }}>
         {!isModalOverlay && (
           <div
@@ -1632,6 +1357,20 @@ export default function InvoicesView({
                             <div style={{ fontWeight: "700" }}>#{inv.invoiceNo} - £{inv.amount.toFixed(2)}</div>
                             <div style={{ opacity: 0.85 }}>{inv.client}{inv.job ? ` - ${inv.job}` : ""}</div>
                             <div style={{ opacity: 0.7 }}>{inv.sentDate}{inv.status ? ` · ${inv.status}` : ""}</div>
+                            {inv.detectedRechargedAmount > 0 && (
+                              <div style={{
+                                display: "inline-block",
+                                marginTop: "4px",
+                                padding: "1px 6px",
+                                borderRadius: "10px",
+                                fontSize: "10px",
+                                fontWeight: "600",
+                                background: isPlacing ? "rgba(255,255,255,0.22)" : "#dbeafe",
+                                color: isPlacing ? "#ffffff" : "#1d4ed8",
+                              }}>
+                                Incl. £{Number(inv.detectedRechargedAmount).toFixed(2)} recharged
+                              </div>
+                            )}
                           </div>
                           <button onClick={e => { e.stopPropagation(); setInvoicesNewJob({ inv }); }}
                             title="Create new job for this invoice"
@@ -1791,7 +1530,8 @@ export default function InvoicesView({
                                   return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
                                 }, 0), 0);
                                 const jobRevenue = parseFloat(String(job.rows[0]?.revenue || "").replace(/[£$€,\s]/g, "")) || 0;
-                                const uninvoiced = jobRevenue - jobTotalInvoiced;
+                                const jobRecharged = parseFloat(String(job.rows[0]?.rechargedExpenses || "").replace(/[£$€,\s]/g, "")) || 0;
+                                const uninvoiced = (jobRevenue + jobRecharged) - jobTotalInvoiced;
                                 const jobHasEmptySlot = visibleRows.some(jr => jr.invoiceSlots.some(s => (!s.ref || String(s.ref).trim() === "") && !s.amount));
                                 const jobLastRow = job.rows[job.rows.length - 1]?.rowNum;
 
@@ -1809,12 +1549,7 @@ export default function InvoicesView({
                                             return;
                                           }
                                           const monthLabel = isRetainer ? getRetainerRowMonthLabel(jr, rIdx, job) : null;
-                                          setPlacementConfirmPrompt({
-                                            job,
-                                            targetRowNum: isRetainer ? jr.rowNum : null,
-                                            inv: invoicesPlacing,
-                                            monthLabel,
-                                          });
+                                          handleInitiateJobPlacement(job, isRetainer ? jr.rowNum : null, invoicesPlacing, monthLabel || "");
                                         }
                                       }}
                                       style={{
@@ -1972,6 +1707,11 @@ export default function InvoicesView({
                                         {rIdx === 0 ? (
                                           <div>
                                             <div style={{ fontWeight: "600", color: "#0f172a" }}>{formatCurrency(jr.revenue) || jr.revenue}</div>
+                                            {jobRecharged > 0 && (
+                                              <div style={{ fontSize: "10.5px", color: "#475569", marginTop: "2px" }}>
+                                                + {formatCurrency(jobRecharged)} recharged
+                                              </div>
+                                            )}
                                             {uninvoiced > 0 && (
                                               <div style={{ display: "inline-block", marginTop: "3px", padding: "1px 6px", borderRadius: "4px", background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", fontSize: "10px", fontWeight: "600" }}>
                                                 £{uninvoiced.toLocaleString("en-GB", { minimumFractionDigits: 2 })} left
@@ -2143,12 +1883,7 @@ export default function InvoicesView({
                                                   return;
                                                 }
                                                 const monthLabel = isRetainer ? getRetainerRowMonthLabel(jr, rIdx, job) : null;
-                                                setPlacementConfirmPrompt({
-                                                  job,
-                                                  targetRowNum: isRetainer ? jr.rowNum : null,
-                                                  inv: invoicesPlacing,
-                                                  monthLabel,
-                                                });
+                                                handleInitiateJobPlacement(job, isRetainer ? jr.rowNum : null, invoicesPlacing, monthLabel || "");
                                               }}
                                               style={{
                                                 padding: "5px 10px",
@@ -2183,12 +1918,7 @@ export default function InvoicesView({
                                                     return;
                                                   }
                                                   const monthLabel = isRetainer ? getRetainerRowMonthLabel(jr, rIdx, job) : null;
-                                                  setPlacementConfirmPrompt({
-                                                    job,
-                                                    targetRowNum: isRetainer ? jr.rowNum : null,
-                                                    inv: chosenInv,
-                                                    monthLabel,
-                                                  });
+                                                  handleInitiateJobPlacement(job, isRetainer ? jr.rowNum : null, chosenInv, monthLabel || "");
                                                 }
                                                 e.target.value = "";
                                               }}
@@ -2268,7 +1998,8 @@ export default function InvoicesView({
                                   return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
                                 }, 0), 0);
                                 const jobRevenue = parseFloat(String(job.rows[0].revenue).replace(/[£$€,\s]/g, "")) || 0;
-                                const uninvoiced = jobRevenue - jobTotalInvoiced;
+                                const jobRecharged = parseFloat(String(job.rows[0].rechargedExpenses || "").replace(/[£$€,\s]/g, "")) || 0;
+                                const uninvoiced = (jobRevenue + jobRecharged) - jobTotalInvoiced;
                                 const jobHasEmptySlot = job.rows.some(jr => jr.invoiceSlots.some(s => (!s.ref || String(s.ref).trim() === "") && !s.amount));
                                 const jobLastRow = job.rows[job.rows.length - 1].rowNum;
 
@@ -2350,9 +2081,8 @@ export default function InvoicesView({
                                                 if (!inv) return;
                                                 const sheetClient = String(job.client || "").trim();
                                                 const invClient = String(inv.client || "").trim();
-                                                const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
                                                 const promptPayload = {
-                                                  job, inv, isNewRow: false, rowNum: jr.rowNum, slotNum: s.slotNum,
+                                                  job, inv, isNewRow: false, rowNum: jr.rowNum, slotNum: s.slotNum, slot: s,
                                                   sheetClientName: sheetClient, invoiceClientName: invClient,
                                                   savingKey: cellSavingKey,
                                                 };
@@ -2404,7 +2134,6 @@ export default function InvoicesView({
                                               const savingKey = `newrow-${job.client}|||${job.jobName}`;
                                               const sheetClient = String(job.client || "").trim();
                                               const invClient = String(inv.client || "").trim();
-                                              const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
                                               const promptPayload = {
                                                 job, inv, isNewRow: true, jobLastRow,
                                                 sheetClientName: sheetClient, invoiceClientName: invClient,

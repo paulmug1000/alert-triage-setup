@@ -12,7 +12,8 @@ import {
 import {
   handleFireOutgoingsPull, handleMarkExpenseAssigned, getAllClients,
   resolveLiveInvoiceSlot_, resolveLiveExpenseSlot_,
-  adjustJobInvoicePlaceholders_, adjustJobExpensePlaceholders_,
+  runAdjustAndNormalizeJobSlots_, mergeSlotBatchWrites_,
+  applySlotNoteAndFormattingRelocations_, resolveFullJobRowGroup_,
   isAutoInvoicePlaceholderRef_, isAutoExpensePlaceholderId_
 } from "./workspaces.js";
 import { provisionRetainerScheduleInBackground } from "./retainers.js";
@@ -27,7 +28,8 @@ import {
 } from "./proactiveChecks.js";
 import {
   checkAllGASLocks, setCRMMode, getToleranceValues,
-  getCRMMatchingMode, fetchJobRowsForDisplay
+  getCRMMatchingMode, fetchJobRowsForDisplay,
+  buildInvFromAppMetaMap, lookupInvFromAppMeta
 } from "./sharedHelpers.js";
 import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { anthropic } from "./claudeClient.js";
@@ -41,6 +43,15 @@ import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId } from "./masterE
 import { runNativeMasterSync, ensureFreshMasterComparisons, isClientRecordInSetupMode } from "./masterSyncEngine.js";
 import { logClaudeUsage_ } from "./systemConfig.js";
 export { logClaudeUsage_ };
+
+function hasNonZeroMoney_(val) {
+  if (val === undefined || val === null || val === "") return false;
+  if (typeof val === "number") return Math.abs(val) > 0.001;
+  const s = String(val).trim();
+  if (!s) return false;
+  const n = parseFloat(s.replace(/[£$€,\s]/g, ""));
+  return !isNaN(n) && Math.abs(n) > 0.001;
+}
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -910,13 +921,15 @@ export async function readRecentAutoLogEntries_(sheets, masterSheetId, limit = 3
   }
 }
 
-export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null) {
+export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null, cachedInvFromApp = null, cachedInvFormatRule = "") {
   try {
     console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
     if (!cachedData) {
       await ensureFreshMasterComparisons(sheets, { spreadsheetId });
     }
     let allRows = [];
+    let invFromAppRows = Array.isArray(cachedInvFromApp) ? cachedInvFromApp : null;
+    let invFormatRule = String(cachedInvFormatRule || "").trim();
     if (cachedData && cachedData.length > 0) {
       allRows = cachedData;
       // If cachedData only had columns A to Y, fetch right-hand columns AT to BD
@@ -937,12 +950,37 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
           console.warn("Could not fetch right columns for InvComp cachedData:", e.message);
         }
       }
+      if (!invFromAppRows) {
+        try {
+          const metaResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+            spreadsheetId,
+            ranges: ["InvFromApp!A1:S5000", "InvAppList!F1"],
+          }));
+          invFromAppRows = metaResp.data.valueRanges?.[0]?.values || [];
+          if (!invFormatRule) invFormatRule = String(metaResp.data.valueRanges?.[1]?.values?.[0]?.[0] || "").trim();
+        } catch (_) {
+          invFromAppRows = [];
+        }
+      }
     } else {
-      const dataResponse = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId, range: "InvComp!A5:BD1000",
-      }));
-      allRows = dataResponse.data.values || [];
+      try {
+        const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+          spreadsheetId,
+          ranges: ["InvComp!A5:BD1000", "InvFromApp!A1:S5000", "InvAppList!F1"],
+        }));
+        const vRanges = batchResp.data.valueRanges || [];
+        allRows = vRanges[0]?.values || [];
+        invFromAppRows = vRanges[1]?.values || [];
+        invFormatRule = String(vRanges[2]?.values?.[0]?.[0] || "").trim();
+      } catch (_) {
+        const dataResponse = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId, range: "InvComp!A5:BD1000",
+        }));
+        allRows = dataResponse.data.values || [];
+        invFromAppRows = [];
+      }
     }
+    const invMetaIndex = buildInvFromAppMetaMap(invFromAppRows || [], invFormatRule);
     const headers = allRows[0] || [];
     const rows = allRows.slice(1);
 
@@ -1020,6 +1058,19 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
         }
         const isDuplicate = String(alert.data.flags[4] || "").trim() === "1" || items.length > 1;
         alert.isDuplicateInvoice = isDuplicate;
+
+        const invMeta = lookupInvFromAppMeta(invMetaIndex, invNo);
+        if (invMeta) {
+          alert.summary.rechargedAmount = invMeta.rechargedAmountGbp || 0;
+          alert.summary.lineItems = invMeta.lineItems || [];
+          alert.detectedRechargedAmount = invMeta.rechargedAmountGbp || 0;
+          alert.invoiceLineItems = invMeta.lineItems || [];
+        } else {
+          alert.summary.rechargedAmount = 0;
+          alert.summary.lineItems = [];
+          alert.detectedRechargedAmount = 0;
+          alert.invoiceLineItems = [];
+        }
 
         alerts.push(alert);
       }
@@ -2954,7 +3005,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
               "KeyInfo!B15",
               "KeyInfo!D8",
               (hasExpense && actionableDue) ? "KeyInfo!AT4:AT22" : "DataChgAlert!A1",
-              (hasExpense && actionableDue) ? "KeyInfo!AT24:AT40" : "DataChgAlert!A1"
+              (hasExpense && actionableDue) ? "KeyInfo!AT24:AT40" : "DataChgAlert!A1",
+              (hasInvoice && actionableDue) ? "InvFromApp!A1:S5000" : "DataChgAlert!A1",
+              (hasInvoice && actionableDue) ? "InvAppList!F1" : "DataChgAlert!A1"
             ]
           });
           const ranges = batchResp.data.valueRanges || [];
@@ -2971,6 +3024,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
             contractorsList: (ranges[7]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
             passThroughList: (ranges[8]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
           };
+          batchData.invFromApp = ranges[9]?.values || [];
+          batchData.invFormatRule = String(ranges[10]?.values?.[0]?.[0] || "").trim();
           masterBatchSuccess = true;
         } catch (e) {
           console.log(`  ⚠️ Batch fetch failed for ${client.clientName}: ${e.message}`);
@@ -2985,7 +3040,13 @@ export async function handleRunFlagSweep(req, res, sheets) {
         if (hasInvoice && actionableDue) {
           const invLock = gasLocks.invoice;
           if (!invLock.locked) {
-            const invAlerts = await readInvCompAlerts(sheets, client.masterSheetId, batchData.invComp);
+            const invAlerts = await readInvCompAlerts(
+              sheets,
+              client.masterSheetId,
+              batchData.invComp,
+              batchData.invFromApp,
+              batchData.invFormatRule
+            );
             invAlerts.forEach(a => {
               a.clientName = client.clientName;
               a.clientId = client.clientSheetId;
@@ -6595,7 +6656,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const rClient = String(r[0] || "").trim().toLowerCase();
             const rJob = String(r[1] || "").trim().toLowerCase();
             // If it shares the identity but has no revenue/dates/recharged expenses of its own, it's a child row
-            if (rClient === clientToFind && rJob === jobToFind && !String(r[32] || "").trim() && !(tabName === "Confirmed" && String(r[17] || "").trim()) && !String(r[37] || "").trim()) {
+            if (rClient === clientToFind && rJob === jobToFind && !String(r[32] || "").trim() && !(tabName === "Confirmed" && hasNonZeroMoney_(r[17])) && !String(r[37] || "").trim()) {
               jobRowsToUpdate.push(i + 1);
             } else {
               break;
@@ -7223,7 +7284,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const rJob = String(r[1] || "").trim().toLowerCase();
             if (!rClient && !rJob) break;
             if (rClient !== jcLower || rJob !== jnLower) break;
-            if (String(r[17] || "").trim() || String(r[32] || "").trim()) break;
+            if (hasNonZeroMoney_(r[17]) || String(r[32] || "").trim()) break;
             allJobRows.push({ row: r, rowNum: ri + 1 });
           }
           for (const { rowNum } of allJobRows) {
@@ -7241,7 +7302,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const rJob = String(r[1] || "").trim().toLowerCase();
             if (!rClient && !rJob) break;
             if (rClient !== jcLower || rJob !== jnLower) break;
-            if (String(r[17] || "").trim() || String(r[32] || "").trim()) break;
+            if (hasNonZeroMoney_(r[17]) || String(r[32] || "").trim()) break;
             allJobRows.push({ row: r, rowNum: ri + 1 });
           }
           for (const { rowNum } of allJobRows) {
@@ -7310,7 +7371,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               continue;
             }
             if (rClient.toLowerCase() !== parentClientLower || rJob.toLowerCase() !== parentJobLower) break;
-            if (String(r[17] || "").trim() || String(r[32] || "").trim()) break;
+            if (hasNonZeroMoney_(r[17]) || String(r[32] || "").trim()) break;
             clientWriteRows.push(ri + 1);
           }
           for (const rNum of clientWriteRows) {
@@ -7649,7 +7710,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const nStart = String(nextRow[37] || "").trim();
           const nType = String(nextRow[35] || "").trim();
 
-          const isExplicitChild = (nc.toLowerCase() === client.toLowerCase() && nj.toLowerCase() === jobName.toLowerCase()) && !nRev && !String(nextRow[17] || "").trim() && !nCode && !nStart && !nType;
+          const isExplicitChild = (nc.toLowerCase() === client.toLowerCase() && nj.toLowerCase() === jobName.toLowerCase()) && !nRev && !hasNonZeroMoney_(nextRow[17]) && !nCode && !nStart && !nType;
           const isInheritedChild = (!nc && !nj) && nextRow.some(cell => String(cell || "").trim() !== "");
           if (isExplicitChild || isInheritedChild) {
             jobRows.push({ row: nextRow, sheetRow: cjNext + 1, isParent: false });
@@ -8987,7 +9048,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         const hasA = row[0] !== undefined && String(row[0]).trim() !== "";
         const hasB = row[1] !== undefined && String(row[1]).trim() !== "";
         const hasRev = row[32] !== undefined && String(row[32]).trim() !== "";
-        const hasRech = writeTab === "Confirmed" && row[17] !== undefined && String(row[17]).trim() !== "";
+        const hasRech = writeTab === "Confirmed" && hasNonZeroMoney_(row[17]);
         const hasDates = (row[37] !== undefined && String(row[37]).trim() !== "") || (row[38] !== undefined && String(row[38]).trim() !== "");
 
         let hasSlotData = false;
@@ -9016,6 +9077,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         const row = allRows[r] || [];
         const isBlank = blankIndices.every(idx => {
           const v = row[idx];
+          if (idx === 17) return !hasNonZeroMoney_(v);
           return v === undefined || v === null || String(v).trim() === "";
         });
         if (isBlank) {
@@ -9633,7 +9695,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
             }
           );
           if (resolved?.rowNum && resolved?.slotNum) {
-            liveResolvedSlotInfo = { type: "invoice", rowNum: resolved.rowNum, slotNum: resolved.slotNum, allRowNums: resolved.allRowNums || [resolved.rowNum] };
+            liveResolvedSlotInfo = { type: "invoice", rowNum: resolved.rowNum, slotNum: resolved.slotNum, allRowNums: resolved.allRowNums || [resolved.rowNum], group: resolved.group || null };
             if (resolved.rowNum !== origRow || resolved.slotNum !== origSlot) {
               console.log(`  🔄 Live invoice slot remapped from Row ${origRow} Slot ${origSlot} -> Row ${resolved.rowNum} Slot ${resolved.slotNum}`);
               for (const u of cellUpdates) {
@@ -9689,7 +9751,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
             }
           );
           if (resolved?.rowNum && resolved?.slotNum) {
-            liveResolvedSlotInfo = { type: "expense", rowNum: resolved.rowNum, slotNum: resolved.slotNum, allRowNums: resolved.allRowNums || [resolved.rowNum] };
+            liveResolvedSlotInfo = { type: "expense", rowNum: resolved.rowNum, slotNum: resolved.slotNum, allRowNums: resolved.allRowNums || [resolved.rowNum], group: resolved.group || null };
             if (resolved.rowNum !== origRow || resolved.slotNum !== origSlot) {
               console.log(`  🔄 Live expense slot remapped from Row ${origRow} Slot ${origSlot} -> Row ${resolved.rowNum} Slot ${resolved.slotNum}`);
               for (const u of cellUpdates) {
@@ -9852,37 +9914,104 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         return true;
       });
 
-      const batchRequest = {
-        data: safeCellUpdates.map(({ cell, value }) => ({
-          range: `${writeTab}!${cell}`,
-          values: [[forceText(cell, sanitiseValue(value))]],
-        })),
-        valueInputOption: "USER_ENTERED",
-      };
+      const sanitisedMap = new Map();
+      for (const u of safeCellUpdates) {
+        sanitisedMap.set(String(u.cell || "").toUpperCase(), sanitiseValue(u.value));
+      }
+
+      let finalBatchData = safeCellUpdates.map(({ cell, value }) => ({
+        range: `${writeTab}!${cell}`,
+        values: [[forceText(cell, sanitiseValue(value))]],
+      }));
+      let acceptNormGroup = null;
+      let acceptRelocations = [];
 
       const willAdjustPlaceholders = Boolean(
         liveResolvedSlotInfo && (writeTab === "Confirmed" || writeTab === "Pipeline")
       );
-      console.log(`  Writing ${safeCellUpdates.length} cells to ${writeTab} tab of Client Sheet...`);
-      console.log(`  Cell updates: ${safeCellUpdates.map(u => `${u.cell}=${JSON.stringify(u.value)}`).join(", ")}`);
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: alert.clientId,
-        requestBody: batchRequest,
-        _skipFormulaRecompute: willAdjustPlaceholders,
-        _deferBackgroundRecompute: !willAdjustPlaceholders,
-      });
-      console.log(`  ✅ Cells written successfully`);
+      if (willAdjustPlaceholders) {
+        try {
+          acceptNormGroup =
+            liveResolvedSlotInfo.group ||
+            (await resolveFullJobRowGroup_(sheets, alert.clientId, writeTab, liveResolvedSlotInfo.allRowNums).catch(() => null));
+          if (acceptNormGroup?.allRows) {
+            for (const u of safeCellUpdates) {
+              const um = String(u.cell || "").match(/^([A-Z]{1,3})(\d+)$/);
+              if (!um) continue;
+              const rn = parseInt(um[2], 10);
+              const ci0 = um[1].split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+              if (!acceptNormGroup.allRows[rn - 1]) acceptNormGroup.allRows[rn - 1] = [];
+              acceptNormGroup.allRows[rn - 1][ci0] = sanitisedMap.get(String(u.cell || "").toUpperCase()) ?? "";
+            }
+            const normRes = await runAdjustAndNormalizeJobSlots_(
+              sheets,
+              alert.clientId,
+              writeTab,
+              acceptNormGroup,
+              liveResolvedSlotInfo.type,
+              { masterSheetId: alert.masterSheetId }
+            );
+            if (Array.isArray(normRes?.batchData) && normRes.batchData.length > 0) {
+              finalBatchData = mergeSlotBatchWrites_(finalBatchData, normRes.batchData);
+            }
+            if (Array.isArray(normRes?.relocations) && normRes.relocations.length > 0) {
+              acceptRelocations = normRes.relocations;
+            }
+          }
+        } catch (adjErr) {
+          console.warn("handleAcceptOption pre-write placeholder/normalization skipped:", adjErr.message);
+        }
+      }
 
-      // Apply bold + italic formatting to all written cells in background via waitUntil
+      if (finalBatchData.length > 0) {
+        console.log(`  Writing ${finalBatchData.length} ranges to ${writeTab} tab of Client Sheet...`);
+        console.log(`  Cell updates: ${safeCellUpdates.map(u => `${u.cell}=${JSON.stringify(u.value)}`).join(", ")}`);
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: alert.clientId,
+          requestBody: {
+            data: finalBatchData,
+            valueInputOption: "USER_ENTERED",
+          },
+          _deferBackgroundRecompute: true,
+        });
+        console.log(`  ✅ Cells written successfully`);
+      }
+
+      // Apply slot note/formatting relocations + bold + italic formatting in background via waitUntil
       scheduleWaitUntil_(async () => {
         try {
+          if (acceptNormGroup && acceptRelocations.length > 0) {
+            await applySlotNoteAndFormattingRelocations_(
+              sheets,
+              alert.clientId,
+              writeTab,
+              acceptNormGroup,
+              liveResolvedSlotInfo.type,
+              acceptRelocations
+            );
+          }
+
           const writeTabSheetId = await getSheetId(sheets, alert.clientId, writeTab);
+          const slotBases = liveResolvedSlotInfo?.type === "invoice" ? [41, 48, 55] : [75, 82, 89];
+          const slotWidth = liveResolvedSlotInfo?.type === "invoice" ? (writeTab === "Confirmed" ? 7 : 5) : 7;
           const formatReqs = safeCellUpdates.map(({ cell }) => {
             // Parse cell reference e.g. "B23" → row 22, col 1 (0-indexed)
             const colMatch = cell.match(/^([A-Z]+)(\d+)$/);
             if (!colMatch) return null;
-            const colNum = colMatch[1].split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-            const rowNum = parseInt(colMatch[2], 10) - 1;
+            let row1 = parseInt(colMatch[2], 10);
+            let colNum = colMatch[1].split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+            if (willAdjustPlaceholders && acceptRelocations.length > 0) {
+              const sIdx = slotBases.findIndex((b) => colNum >= b && colNum < b + slotWidth);
+              if (sIdx !== -1) {
+                const rel = acceptRelocations.find((r) => !r.isEmpty && r.fromRow === row1 && r.fromSlot === sIdx + 1);
+                if (rel) {
+                  row1 = rel.toRow;
+                  colNum = slotBases[rel.toSlot - 1] + (colNum - slotBases[sIdx]);
+                }
+              }
+            }
+            const rowNum = row1 - 1;
+            if (rowNum < 0 || colNum < 0) return null;
             return {
               repeatCell: {
                 range: { sheetId: writeTabSheetId, startRowIndex: rowNum, endRowIndex: rowNum + 1, startColumnIndex: colNum, endColumnIndex: colNum + 1 },
@@ -9904,44 +10033,6 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
           console.warn("handleAcceptOption formatting warning:", fmtErr.message);
         }
       }, 50);
-
-      // Adjust automatic placeholders (PLACE-INV / PLACE-EXP) on the job after Triage placement
-      if (willAdjustPlaceholders) {
-        let adjWrote = false;
-        try {
-          if (liveResolvedSlotInfo.type === "invoice") {
-            const adjRes = await adjustJobInvoicePlaceholders_(
-              sheets,
-              alert.clientId,
-              writeTab,
-              liveResolvedSlotInfo.allRowNums,
-              undefined,
-              alert.masterSheetId
-            );
-            adjWrote = Boolean(adjRes?.batchData?.length);
-          } else if (liveResolvedSlotInfo.type === "expense") {
-            const adjRes = await adjustJobExpensePlaceholders_(
-              sheets,
-              alert.clientId,
-              writeTab,
-              liveResolvedSlotInfo.allRowNums,
-              undefined,
-              alert.masterSheetId
-            );
-            adjWrote = Boolean(adjRes?.batchData?.length);
-          }
-        } catch (adjErr) {
-          console.warn("handleAcceptOption placeholder adjustment skipped:", adjErr.message);
-        }
-        if (!adjWrote) {
-          await sheets.spreadsheets.batchUpdate({
-            spreadsheetId: alert.clientId,
-            requestBody: { requests: [] },
-            _flushPendingRecompute: true,
-            _deferBackgroundRecompute: true,
-          }).catch(() => { });
-        }
-      }
 
       if (writeTab === "Outgoings" && alert.masterSheetId) {
         handleFireOutgoingsPull({

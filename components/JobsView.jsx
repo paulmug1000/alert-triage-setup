@@ -3402,7 +3402,7 @@ export default function JobsView({
             await loadJobsData(jobsClient, "All");
           }}
           onUpdateInvoiceJobs={(rNum, sNum, newData, resData) => {
-            if (invoicesEditSlot?.createNewRow) {
+            if (invoicesEditSlot?.createNewRow || resData?.placeholderAdjustment?.newChildRowCreated) {
               loadJobsData(jobsClient, "All");
               return;
             }
@@ -3445,6 +3445,9 @@ export default function JobsView({
                 const placeholderSlotUpdates = hasRow && Array.isArray(resData?.placeholderAdjustment?.slotUpdates)
                   ? resData.placeholderAdjustment.slotUpdates
                   : [];
+                const normalizedSlotUpdates = hasRow && Array.isArray(resData?.normalizedSlots)
+                  ? resData.normalizedSlots
+                  : [];
                 const restored = hasRow ? resData?.restoredPlaceholderSlot : null;
                 return {
                   ...updatedJob,
@@ -3452,10 +3455,24 @@ export default function JobsView({
                     const matchesEditedRow = r.rowNum === rNum;
                     const matchesRestoredRow = restored && Number(r.rowNum) === Number(restored.rowNum);
                     const rowPlaceholderUpdates = placeholderSlotUpdates.filter((u) => Number(u.rowNum) === Number(r.rowNum));
-                    if (!matchesEditedRow && !matchesRestoredRow && rowPlaceholderUpdates.length === 0) return r;
+                    const rowNormalizedUpdates = normalizedSlotUpdates.filter((u) => Number(u.rowNum) === Number(r.rowNum));
+                    if (!matchesEditedRow && !matchesRestoredRow && rowPlaceholderUpdates.length === 0 && rowNormalizedUpdates.length === 0) return r;
                     return {
                       ...r,
                       invoiceSlots: r.invoiceSlots.map((sl) => {
+                        const nUpd = rowNormalizedUpdates.find((u) => Number(u.slotNum) === Number(sl.slotNum));
+                        if (nUpd) {
+                          return {
+                            ...sl,
+                            amount: nUpd.amount ?? sl.amount,
+                            ref: nUpd.ref ?? sl.ref,
+                            sentDate: nUpd.sentDate ?? sl.sentDate,
+                            daysToPay: nUpd.daysToPay ?? sl.daysToPay,
+                            status: nUpd.status ?? sl.status,
+                            ofWhichRechgd: nUpd.ofWhichRechgd !== undefined ? nUpd.ofWhichRechgd : sl.ofWhichRechgd,
+                            costMonth: nUpd.costMonth !== undefined ? nUpd.costMonth : sl.costMonth,
+                          };
+                        }
                         if (matchesEditedRow && sl.slotNum === sNum) return { ...sl, ...newData };
                         const pUpd = rowPlaceholderUpdates.find((u) => Number(u.slotNum) === Number(sl.slotNum));
                         if (pUpd) {
@@ -3501,26 +3518,65 @@ export default function JobsView({
           client={jobsClient}
           onClose={() => setDirectCostsEditSlot(null)}
           onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
-          onUpdateJobs={(rNum, sNum, newData) => {
-            if (directCostsEditSlot?.createNewRow) {
+          onUpdateJobs={(rNum, sNum, newData, resData) => {
+            if (directCostsEditSlot?.createNewRow || resData?.placeholderAdjustment?.newChildRowCreated) {
               loadJobsData(jobsClient, "All");
               return;
             }
             setJobsData((prev) =>
               prev &&
-              prev.map((j) => ({
-                ...j,
-                rows: j.rows.map((r) =>
-                  r.rowNum !== rNum
-                    ? r
-                    : {
+              prev.map((j) => {
+                const hasRow = j.rows?.some(r => r.rowNum === rNum);
+                if (!hasRow) return j;
+                const placeholderSlotUpdates = Array.isArray(resData?.placeholderAdjustment?.slotUpdates)
+                  ? resData.placeholderAdjustment.slotUpdates
+                  : [];
+                const normalizedSlotUpdates = Array.isArray(resData?.normalizedSlots)
+                  ? resData.normalizedSlots
+                  : [];
+                return {
+                  ...j,
+                  rows: j.rows.map((r) => {
+                    const matchesEditedRow = r.rowNum === rNum;
+                    const rowPlaceholderUpdates = placeholderSlotUpdates.filter((u) => Number(u.rowNum) === Number(r.rowNum));
+                    const rowNormalizedUpdates = normalizedSlotUpdates.filter((u) => Number(u.rowNum) === Number(r.rowNum));
+                    if (!matchesEditedRow && rowPlaceholderUpdates.length === 0 && rowNormalizedUpdates.length === 0) return r;
+                    return {
                       ...r,
-                      expenseSlots: r.expenseSlots.map((sl) =>
-                        sl.slotNum !== sNum ? sl : { ...sl, ...newData }
-                      )
-                    }
-                )
-              }))
+                      expenseSlots: (r.expenseSlots || []).map((sl) => {
+                        const nUpd = rowNormalizedUpdates.find((u) => Number(u.slotNum) === Number(sl.slotNum));
+                        if (nUpd) {
+                          return {
+                            ...sl,
+                            description: nUpd.description ?? sl.description,
+                            amount: nUpd.amount ?? sl.amount,
+                            vat: nUpd.vat ?? sl.vat,
+                            date: nUpd.date ?? sl.date,
+                            daysToPay: nUpd.daysToPay ?? sl.daysToPay,
+                            status: nUpd.status ?? sl.status,
+                            transactionId: nUpd.transactionId ?? sl.transactionId,
+                          };
+                        }
+                        if (matchesEditedRow && sl.slotNum === sNum) return { ...sl, ...newData };
+                        const pUpd = rowPlaceholderUpdates.find((u) => Number(u.slotNum) === Number(sl.slotNum));
+                        if (pUpd) {
+                          return {
+                            ...sl,
+                            description: pUpd.description ?? sl.description,
+                            amount: pUpd.amount ?? sl.amount,
+                            vat: pUpd.vat ?? sl.vat,
+                            date: pUpd.date ?? sl.date,
+                            daysToPay: pUpd.daysToPay ?? sl.daysToPay,
+                            status: pUpd.status ?? sl.status,
+                            transactionId: pUpd.transactionId ?? sl.transactionId,
+                          };
+                        }
+                        return sl;
+                      })
+                    };
+                  })
+                };
+              })
             );
           }}
         />

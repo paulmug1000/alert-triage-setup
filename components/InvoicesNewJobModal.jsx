@@ -61,14 +61,21 @@ export default function InvoicesNewJobModal({
     };
   }, [inv.sentDate, inv.dueDate]);
 
+  const detectedRechInit = useMemo(() => {
+    const gross = parseFloat(stripCurrency(inv.amount)) || 0;
+    const raw = parseFloat(inv.detectedRechargedAmount ?? inv.rechargedAmount ?? 0) || 0;
+    return raw > 0.005 ? Math.min(Math.round(raw * 100) / 100, gross > 0 ? gross : raw) : 0;
+  }, [inv.amount, inv.detectedRechargedAmount, inv.rechargedAmount]);
+
   const [jobName, setJobName] = useState(inv.job || "");
   const [projectCode, setProjectCode] = useState("");
-  const [revenue, setRevenue] = useState(
-    stripCurrency(inv.amount) ? (parseFloat(stripCurrency(inv.amount)) || 0).toFixed(2) : ""
-  );
+  const [revenue, setRevenue] = useState(() => {
+    const gross = parseFloat(stripCurrency(inv.amount)) || 0;
+    return gross > 0 ? Math.max(0, Math.round((gross - detectedRechInit) * 100) / 100).toFixed(2) : "";
+  });
   const [revenueManuallyEdited, setRevenueManuallyEdited] = useState(false);
-  const [hasRechargedExpenses, setHasRechargedExpenses] = useState(false);
-  const [ofWhichRechgd, setOfWhichRechgd] = useState("");
+  const [hasRechargedExpenses, setHasRechargedExpenses] = useState(() => detectedRechInit > 0.005);
+  const [ofWhichRechgd, setOfWhichRechgd] = useState(() => (detectedRechInit > 0.005 ? detectedRechInit.toFixed(2) : ""));
   const [costMonth, setCostMonth] = useState("");
   const [directCosts, setDirectCosts] = useState("0.00");
   const [vatYesNo, setVatYesNo] = useState(inv.vatAmount > 0 ? "Yes" : "No");

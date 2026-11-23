@@ -103,6 +103,7 @@ export default function AlertSelectionView({
   const [viewingOutgoingsTarget, setViewingOutgoingsTarget] = useState(null);
   const [deleteInvoiceTarget, setDeleteInvoiceTarget] = useState(null);
   const [deleteExpenseTarget, setDeleteExpenseTarget] = useState(null);
+  const [tidyingAlertKey, setTidyingAlertKey] = useState(null);
   const [expandedAutoLogAlerts, setExpandedAutoLogAlerts] = useState({});
   const [autoLogModalAlert, setAutoLogModalAlert] = useState(null);
   const [copiedAutoLog, setCopiedAutoLog] = useState(false);
@@ -299,6 +300,67 @@ export default function AlertSelectionView({
       } catch { }
       return remaining;
     });
+  };
+
+  const handleTidyJobLayout = async (alert, clientInfo, cName) => {
+    if (!alert) return;
+    const alertKey = alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : "");
+    const m = alert.metadata || {};
+    const resolvedClientSheetId = clientInfo?.clientSheetId || alert.clientSheetId || m.clientSheetId;
+    const resolvedMasterSheetId = clientInfo?.masterSheetId || alert.masterSheetId || m.masterSheetId || "";
+    if (!resolvedClientSheetId) {
+      setAcceptError(isAdmin ? "Could not find client spreadsheet ID for this job." : "Could not find client configuration in Pulse.");
+      return;
+    }
+    setTidyingAlertKey(alertKey);
+    setAcceptError("");
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "tidy_job_layout",
+          clientSheetId: resolvedClientSheetId,
+          masterSheetId: resolvedMasterSheetId,
+          clientName: cName || alert.clientName || "",
+          tabName: "Confirmed",
+          confirmedRow: m.confirmedRow || alert.confirmedRow,
+          endClientName: m.endClientName || alert.endClientName || "",
+          jobName: m.jobName || alert.jobName || "",
+          automationCommanderSheetId: automationCommanderSheetId || "",
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || "Failed to tidy job layout.");
+      }
+
+      if (alert.alertKey && automationCommanderSheetId) {
+        await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "resolve_proactive_alert",
+            automationCommanderSheetId,
+            alertKey: alert.alertKey,
+            rowIndex: alert.rowIndex,
+            alertData: alert,
+            clientName: cName || alert.clientName || "",
+            sessionId: sessionId || "",
+            resolution: "Tidied job layout",
+          }),
+        }).catch((resolveErr) => {
+          console.warn("Failed to mark proactive alert as resolved:", resolveErr);
+        });
+      }
+
+      removeResolvedProactiveAlert(alert.alertKey, alert.rowIndex);
+    } catch (err) {
+      console.error("Error tidying job layout:", err);
+      setAcceptError(isAdmin ? (err.message || "Failed to tidy job layout.") : sanitizeSpreadsheetTerms(err.message || "Failed to tidy job layout."));
+    } finally {
+      setTidyingAlertKey(null);
+    }
   };
 
   const handleApplyPLClassification = async (alert) => {
@@ -1396,6 +1458,7 @@ export default function AlertSelectionView({
       const vatIncluded = inv.vatIncluded !== undefined ? inv.vatIncluded : (parseFloat(String(acct[4] || "0")) || 0);
       const vatLabel = vatIncluded && vatIncluded > 0 ? " +VAT" : " (no VAT)";
       const formattedAmt = amt !== null && !isNaN(amt) ? `£${amt.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "";
+      const detectedRech = parseFloat(inv.rechargedAmount ?? alert.detectedRechargedAmount ?? 0) || 0;
 
       const title = clientName && invDesc
         ? `${clientName} - ${invDesc}`
@@ -1417,8 +1480,13 @@ export default function AlertSelectionView({
             </div>
           )}
           {formattedAmt && (
-            <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>
-              Amount: {formattedAmt}{vatLabel}
+            <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word", display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+              <span>Amount: {formattedAmt}{vatLabel}</span>
+              {detectedRech > 0 && (
+                <span style={{ fontSize: "10.5px", fontWeight: "600", background: "#dbeafe", color: "#1d4ed8", padding: "1px 6px", borderRadius: "10px" }}>
+                  Incl. £{detectedRech.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} recharged
+                </span>
+              )}
             </div>
           )}
           {(sentDate || datePaid) && (
@@ -1672,6 +1740,8 @@ export default function AlertSelectionView({
             onViewJob={handleViewJobOrExpense}
             onDeleteInvoice={setDeleteInvoiceTarget}
             onDeleteExpense={setDeleteExpenseTarget}
+            onTidyJobLayout={handleTidyJobLayout}
+            tidyingAlertKey={tidyingAlertKey}
           />
         ) : (
           <>
@@ -3313,6 +3383,17 @@ export default function AlertSelectionView({
                                                   title="Delete this expense entry from Pulse"
                                                 >
                                                   Delete expense from Pulse
+                                                </button>
+                                              )}
+                                              {alert.alertType === "job_structure_error" && (m.canAutoTidy || alert.canAutoTidy || /slot\s+[123]|empty.*slot|after an automatic placeholder/i.test(alert.detail || "")) && (
+                                                <button
+                                                  className="triage-btn"
+                                                  disabled={tidyingAlertKey === (alert.alertKey || `row-${alert.rowIndex}`)}
+                                                  onClick={() => handleTidyJobLayout(alert, clientInfo, cName)}
+                                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0f766e", borderColor: "#99f6e4", whiteSpace: "nowrap" }}
+                                                  title="Reorganise invoice and expense entries on this job"
+                                                >
+                                                  {tidyingAlertKey === (alert.alertKey || `row-${alert.rowIndex}`) ? "Tidying..." : "Tidy job layout"}
                                                 </button>
                                               )}
                                               {isAdmin && (clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (

@@ -12,6 +12,7 @@ import OutgoingsContractorPickerModal from "./OutgoingsContractorPickerModal";
 import JobDetailModal from "./JobDetailModal";
 import OutgoingsDetailModal from "./OutgoingsDetailModal";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
+import PlaceInvoiceModal from "./PlaceInvoiceModal";
 
 export default function TriageAnalysisView({
   styles, setScreen, getFlagName, setActiveNav, handleNavTasks,
@@ -218,6 +219,7 @@ export default function TriageAnalysisView({
       slotNum = jobArg.slotNum;
       slot = jobArg.slot;
       jobRow = {
+        ...jobArg,
         client: jobArg.jobClient || jobArg.client,
         jobName: jobArg.jobName,
         projectCode: jobArg.projectCode,
@@ -284,8 +286,14 @@ export default function TriageAnalysisView({
         }
       }
 
+      const detectedRechargedAmount = parseFloat(String(alert.summary?.rechargedAmount ?? alert.detectedRechargedAmount ?? 0)) || 0;
+      const lineItems = Array.isArray(alert.summary?.lineItems)
+        ? alert.summary.lineItems
+        : (Array.isArray(alert.invoiceLineItems) ? alert.invoiceLineItems : []);
+
       setPlacementPrompt({
         type: "invoice",
+        job: jobRow,
         jobClient: existingJobClient || selectedClient?.clientName,
         existingJobClient,
         invoiceClient,
@@ -304,7 +312,9 @@ export default function TriageAnalysisView({
         amount: amt,
         sentDate,
         status,
-        daysToPay: computedDaysToPay
+        daysToPay: computedDaysToPay,
+        detectedRechargedAmount,
+        lineItems,
       });
     }
   };
@@ -429,15 +439,19 @@ export default function TriageAnalysisView({
     }
   };
 
-  const executeConfirmedPlacement = async () => {
+  const executeConfirmedPlacement = async (modalConfirmData = null) => {
     if (!placementPrompt || !targetClientSheetId) return;
     setIsSavingPlacement(true);
     setAcceptError("");
 
     try {
       if (placementPrompt.type === "invoice") {
-        const shouldSyncClient = Boolean(placementPrompt.updateClientName && placementPrompt.invoiceClient);
+        const confirmObj = modalConfirmData && typeof modalConfirmData === "object" && !modalConfirmData.nativeEvent ? modalConfirmData : {};
+        const shouldSyncClient = confirmObj.updateClientName !== undefined
+          ? Boolean(confirmObj.updateClientName && placementPrompt.invoiceClient)
+          : Boolean(placementPrompt.updateClientName && placementPrompt.invoiceClient);
         const effectiveJobClient = shouldSyncClient ? placementPrompt.invoiceClient : placementPrompt.jobClient;
+        const hasRech = confirmObj.ofWhichRechgd !== undefined && confirmObj.ofWhichRechgd !== "";
         const res = await fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -445,6 +459,7 @@ export default function TriageAnalysisView({
             action: "update_invoice_slot",
             fromTriage: true,
             clientSheetId: targetClientSheetId,
+            masterSheetId: clientInfo?.masterSheetId || selectedClient?.masterSheetId || "",
             clientName: selectedClient?.clientName || "",
             tabName: placementPrompt.tabName || "Confirmed",
             rowNum: placementPrompt.rowNum,
@@ -453,13 +468,18 @@ export default function TriageAnalysisView({
             jobClient: effectiveJobClient,
             jobName: placementPrompt.jobName,
             updateClientName: shouldSyncClient,
-            newClientName: placementPrompt.invoiceClient || "",
+            newClientName: confirmObj.newClientName || placementPrompt.invoiceClient || "",
+            updateJobRevenue: Boolean(confirmObj.updateJobRevenue),
+            newJobRevenue: confirmObj.newJobRevenue,
+            updateJobRecharged: Boolean(confirmObj.updateJobRecharged),
+            newJobRecharged: confirmObj.newJobRecharged,
             invoice: {
               invoiceNo: placementPrompt.invoiceNo,
               amount: parseFloat(placementPrompt.amount) || 0,
               sentDate: placementPrompt.sentDate || "",
               daysToPay: placementPrompt.daysToPay !== undefined && placementPrompt.daysToPay !== null ? parseInt(placementPrompt.daysToPay, 10) : 30,
-              status: placementPrompt.status || "Sent"
+              status: placementPrompt.status || "Sent",
+              ...(hasRech ? { ofWhichRechgd: confirmObj.ofWhichRechgd, costMonth: confirmObj.costMonth || "" } : {}),
             }
           })
         });
@@ -802,6 +822,11 @@ export default function TriageAnalysisView({
                 <>
                   <div><strong>Invoice:</strong> {alert.summary.invoiceNo}</div>
                   <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{alert.summary.vatIncluded && alert.summary.vatIncluded > 0 ? " +VAT" : " (no VAT)"}</div>
+                  {(alert.summary.rechargedAmount > 0 || alert.detectedRechargedAmount > 0) && (
+                    <div>
+                      <strong>Detected recharged expenses:</strong> £{Number(alert.summary.rechargedAmount || alert.detectedRechargedAmount || 0).toFixed(2)}
+                    </div>
+                  )}
                   <div><strong>Client:</strong> {alert.summary.client}</div>
                   {alert.summary.job && <div><strong>Description:</strong> {alert.summary.job}</div>}
                   {alert.summary.sentDate && <div><strong>Sent:</strong> {alert.summary.sentDate}</div>}
@@ -1412,6 +1437,7 @@ export default function TriageAnalysisView({
                           projectCode: j.projectCode || m.projectCode || "",
                           revenue: (j.revenue && j.revenue !== "0") ? j.revenue : (m.revenue || opt?.slotBreakdown?.correctedTotal || alertObj?.summary?.amount || ""),
                           directCosts: (j.directCosts && j.directCosts !== "0") ? j.directCosts : (m.directCosts || "£0"),
+                          rechargedExpenses: j.rechargedExpenses || m.rechargedExpenses || "",
                           projectRetainer: j.projectRetainer || j.type || m.projectRetainer || m.type || "",
                           type: j.projectRetainer || j.type || m.projectRetainer || m.type || "",
                           startDate: j.startDate || m.startDate || "",
@@ -2324,6 +2350,8 @@ export default function TriageAnalysisView({
                 vatAmount: (alert?.summary?.vatAmount && parseFloat(String(alert.summary.vatAmount).replace(/,/g, "")) > 0)
                   ? parseFloat(String(alert.summary.vatAmount).replace(/,/g, ""))
                   : (alert?.data?.accounting?.[8] ? parseFloat(String(alert.data.accounting[8]).replace(/,/g, "")) : 0),
+                detectedRechargedAmount: Number(alert?.summary?.rechargedAmount ?? alert?.detectedRechargedAmount ?? 0) || 0,
+                lineItems: Array.isArray(alert?.summary?.lineItems) ? alert.summary.lineItems : (alert?.invoiceLineItems || []),
               }
             }}
             invoicesClient={{
@@ -2453,7 +2481,38 @@ export default function TriageAnalysisView({
         })()}
 
         {/* Confirm Placement Dialog */}
-        {placementPrompt && (
+        {placementPrompt && placementPrompt.type === "invoice" && (
+          <PlaceInvoiceModal
+            isOpen={true}
+            onClose={() => !isSavingPlacement && setPlacementPrompt(null)}
+            onConfirm={(confirmResult) => executeConfirmedPlacement(confirmResult)}
+            isSaving={isSavingPlacement}
+            error={acceptError}
+            job={placementPrompt.job || {
+              client: placementPrompt.existingJobClient || placementPrompt.jobClient || "",
+              jobName: placementPrompt.jobName || "",
+              rows: [],
+            }}
+            invoice={{
+              invoiceNo: placementPrompt.invoiceNo,
+              amount: placementPrompt.amount,
+              sentDate: placementPrompt.sentDate,
+              status: placementPrompt.status,
+              client: placementPrompt.invoiceClient,
+              detectedRechargedAmount: placementPrompt.detectedRechargedAmount,
+              lineItems: placementPrompt.lineItems,
+            }}
+            targetRowNum={placementPrompt.rowNum}
+            targetSlotNum={placementPrompt.slotNum}
+            slot={placementPrompt.slot}
+            slotLabel={placementPrompt.slotLabel}
+            isRetainer={placementPrompt.isRetainer}
+            createNewRow={placementPrompt.createNewRow}
+            isAdmin={isAdmin}
+            allowJobNameEdit={false}
+          />
+        )}
+        {placementPrompt && placementPrompt.type !== "invoice" && (
           <div
             style={{ ...styles.modalOverlay, zIndex: 1200 }}
             onClick={(e) => {

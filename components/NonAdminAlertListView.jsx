@@ -60,7 +60,9 @@ export default function NonAdminAlertListView({
   totalVisibleAlertsCount,
   onViewJob,
   onDeleteInvoice,
-  onDeleteExpense
+  onDeleteExpense,
+  onTidyJobLayout,
+  tidyingAlertKey
 }) {
   const [selectedClassifications, setSelectedClassifications] = React.useState({});
   const [applyingClassification, setApplyingClassification] = React.useState({});
@@ -232,7 +234,7 @@ export default function NonAdminAlertListView({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
-        }).catch(() => {});
+        }).catch(() => { });
       }
 
       const successLabel = resolutionAction === "zero_out"
@@ -1654,6 +1656,17 @@ export default function NonAdminAlertListView({
                                       title="Delete this expense entry from Pulse"
                                     >
                                       Delete expense from Pulse
+                                    </button>
+                                  )}
+                                  {alert.alertType === "job_structure_error" && onTidyJobLayout && (m.canAutoTidy || alert.canAutoTidy || /slot\s+[123]|empty.*slot|after an automatic placeholder/i.test(alert.detail || "")) && (
+                                    <button
+                                      className="triage-btn"
+                                      disabled={tidyingAlertKey === (alert.alertKey || `row-${alert.rowIndex}`)}
+                                      onClick={() => onTidyJobLayout(alert, clientInfo, cName)}
+                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0f766e", borderColor: "#99f6e4", whiteSpace: "nowrap" }}
+                                      title="Reorganise invoice and expense entries on this job"
+                                    >
+                                      {tidyingAlertKey === (alert.alertKey || `row-${alert.rowIndex}`) ? "Tidying..." : "Tidy job layout"}
                                     </button>
                                   )}
                                   {(alert.alertType === "contractorsDashboardDiscr" || alert.alertType === "expenseDashboardDiscr") && clientInfo && (

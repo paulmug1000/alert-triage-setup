@@ -23,7 +23,8 @@ import {
   buildJobRowClearAndRestorePlan,
   formatLikelihood,
   normalizeLikelihoodInput,
-  postGasWebAppLocked
+  postGasWebAppLocked,
+  sanitizeSpreadsheetTerms,
 } from "../utils/helpers.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, unwrapSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };

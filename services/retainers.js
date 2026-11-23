@@ -3405,6 +3405,7 @@ export async function handleCreateRetainerJob(req, res, sheets) {
       details: { jobName, endClient, clientName: tenantClient, monthlyRevenue, monthlyDirectCosts, startDate, endDate: formatJobEndDateDisplay(formattedEnd), invoiceFrequency, childRowCount: retainerPlan.rowsToCreate }
     }).catch(e => console.error("PMA log failed:", e));
 
+    const sessionUser = getSessionUser(req);
     const isAdminUser = !sessionUser?.isReadOnly && Boolean(sessionUser?.isAdmin || sessionUser?.role === "Admin");
     return res.status(200).json({
       success: true,

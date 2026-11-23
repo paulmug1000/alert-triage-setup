@@ -71,6 +71,19 @@ function formatCronScheduleLabel(schedule) {
   return { adjective: "10-minute", interval: "every 10 mins" };
 }
 
+function formatTimestamp(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts);
+  return d.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 const cardStyle = {
   background: "#ffffff",
   borderRadius: "10px",

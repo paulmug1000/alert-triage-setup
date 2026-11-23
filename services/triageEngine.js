@@ -3214,21 +3214,21 @@ export async function handleRunFlagSweep(req, res, sheets) {
           if (fetchSuccess) {
             const proChecks = [
               checkRetainerInvoices_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
-              checkCRMWipe_(client.clientName, client.masterSheetId, sharedData),
+              hasCRM ? checkCRMWipe_(client.clientName, client.masterSheetId, sharedData) : Promise.resolve([]),
               checkRevenueMismatch_(client.clientName, client.clientSheetId, sharedData),
               checkDirectCostsMismatch_(client.clientName, client.clientSheetId, sharedData),
               checkPipelineConfirmedOverlap_(client.clientName, client.clientSheetId, sharedData),
               checkRetainerShrinkBlocked_(client.clientName, client.masterSheetId, sharedData),
               checkUninvoicedNewJobs_(client.clientName, client.clientSheetId, sharedData),
               checkUninvoicedRevenue_(client.clientName, client.clientSheetId, sharedData),
-              checkDeletedInvoices_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
+              hasInvoice ? checkDeletedInvoices_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets) : Promise.resolve([]),
               checkJobStructureErrors_(client.clientName, client.clientSheetId, sharedData),
-              checkDeletedExpenses_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
+              hasExpense ? checkDeletedExpenses_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets) : Promise.resolve([]),
               checkUnreceivedExpenses_(client.clientName, client.clientSheetId, sharedData),
-              checkStaleUnreconGapExpenses_(client.clientName, client.clientSheetId, sharedData, sheets),
+              hasExpense ? checkStaleUnreconGapExpenses_(client.clientName, client.clientSheetId, sharedData, sheets) : Promise.resolve([]),
               checkRetroactiveOutgoingsChanges_(client.clientName, client.masterSheetId, sharedData),
               checkQuarantinedPLCategories_(client.clientName, client.masterSheetId, sharedData, sheets),
-              checkPartPaidBalances_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
+              hasInvoice ? checkPartPaidBalances_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets) : Promise.resolve([]),
               checkSalaryForecastInActualMonth_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets)
             ];
 

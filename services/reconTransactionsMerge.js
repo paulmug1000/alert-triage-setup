@@ -170,10 +170,16 @@ export const PAYMENT_PROCESSOR_KEYWORDS = [
   "wise"
 ];
 
+const WORD_BOUNDARY_PROCESSOR_KEYWORDS = new Set(["dd", "so", "bacs", "wise", "amex"]);
+
 export function isPaymentProcessorText(str) {
   if (!str) return false;
-  const s = String(str).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const rawLower = String(str).toLowerCase();
+  const s = rawLower.replace(/[^a-z0-9]/g, "");
   return PAYMENT_PROCESSOR_KEYWORDS.some(kw => {
+    if (WORD_BOUNDARY_PROCESSOR_KEYWORDS.has(kw)) {
+      return new RegExp(`(?:^|[^a-z0-9])${kw}(?:[^a-z0-9]|$)`, "i").test(rawLower);
+    }
     const cleanKw = kw.replace(/[^a-z0-9]/g, "");
     return s.includes(cleanKw);
   });
@@ -187,8 +193,9 @@ export function matchAndRemoveFromUnreconPool(tx, unreconPool, options = {}) {
   const isCredit = i > 0;
   const txDate = normalizeDateStr(tx.date);
   const cleanStr = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  const txTxt = cleanStr(`${tx.payee || ""} ${tx.particulars || ""} ${tx.reference || ""}`);
-  const txIsProcessor = isPaymentProcessorText(txTxt);
+  const txRawTxt = `${tx.payee || ""} ${tx.particulars || ""} ${tx.reference || ""}`;
+  const txTxt = cleanStr(txRawTxt);
+  const txIsProcessor = isPaymentProcessorText(txRawTxt);
 
   let bestIdx = -1;
   let bestScore = 0;
@@ -225,8 +232,9 @@ export function matchAndRemoveFromUnreconPool(tx, unreconPool, options = {}) {
       }
     }
 
-    const unTxt = cleanStr(`${un.payee || ""} ${un.particulars || ""} ${un.reference || ""}`);
-    const unIsProcessor = isPaymentProcessorText(unTxt);
+    const unRawTxt = `${un.payee || ""} ${un.particulars || ""} ${un.reference || ""}`;
+    const unTxt = cleanStr(unRawTxt);
+    const unIsProcessor = isPaymentProcessorText(unRawTxt);
     const isProcessorPair = txIsProcessor || unIsProcessor;
 
     if (txTxt && unTxt && (txTxt.includes(unTxt) || unTxt.includes(txTxt))) {
@@ -290,6 +298,240 @@ export function matchAndRemoveFromUnreconPool(tx, unreconPool, options = {}) {
   return null;
 }
 
+const SPLIT_NOISE_TOKENS = new Set([
+  "ltd", "limited", "inc", "plc", "llc", "llp", "gmbh", "co", "uk",
+  "the", "and", "for", "trading", "faster", "payments", "payment", "out",
+  "master", "card", "mastercard", "visa", "direct", "debit", "bacs",
+  "bank", "transfer", "standing", "order", "from", "with"
+]);
+
+function extractReverseSplitTokens_(un) {
+  const rawPayeeTokens = `${un.payee || ""} ${un.particulars || ""}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(t => t.length >= 4 && !SPLIT_NOISE_TOKENS.has(t) && !/^\d+$/.test(t));
+
+  const payeeTokenSet = new Set();
+  for (const t of rawPayeeTokens) {
+    payeeTokenSet.add(t);
+    if (t.length >= 5 && t.endsWith("s") && !/(ss|us|is|ies)$/.test(t)) {
+      const stem = t.slice(0, -1);
+      if (stem.length >= 4 && !SPLIT_NOISE_TOKENS.has(stem)) {
+        payeeTokenSet.add(stem);
+      }
+    }
+  }
+
+  const rawRefParts = `${un.particulars || ""} ${un.reference || ""}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/);
+
+  const refTokens = new Set(
+    rawRefParts.filter(t => t.length >= 3 && !SPLIT_NOISE_TOKENS.has(t))
+  );
+
+  const numericRefTokens = new Set(
+    rawRefParts
+      .filter(t => /^\d{2,}$/.test(t) && !/^20[2-3]\d$/.test(t))
+      .map(t => t.replace(/^0+/, ""))
+      .filter(t => t.length >= 2)
+  );
+
+  return { payeeTokens: [...payeeTokenSet], refTokens, numericRefTokens };
+}
+
+function findBestReverseSplitSubset_(eligible, unTotal, unDate) {
+  const unDateMs = unDate ? new Date(unDate).getTime() : 0;
+  const maxK = Math.min(5, eligible.length);
+
+  for (let k = 2; k <= maxK; k++) {
+    let bestCombo = null;
+    let bestDateCost = Infinity;
+    let bestTextScore = -1;
+
+    const chosen = [];
+    const search = (startIdx, sum, dateCost, textScore, minDateMs, maxDateMs, allHaveIdentity) => {
+      if (chosen.length === k) {
+        if (Math.abs(sum - unTotal) > 0.02) return;
+        if (!allHaveIdentity && minDateMs !== Infinity && maxDateMs !== -Infinity) {
+          const spreadDays = (maxDateMs - minDateMs) / (1000 * 60 * 60 * 24);
+          if (spreadDays > 2) return;
+        }
+        if (
+          dateCost < bestDateCost - 0.001 ||
+          (Math.abs(dateCost - bestDateCost) <= 0.001 && textScore > bestTextScore)
+        ) {
+          bestDateCost = dateCost;
+          bestTextScore = textScore;
+          bestCombo = [...chosen];
+        }
+        return;
+      }
+
+      const remainingNeeded = k - chosen.length;
+      if (sum > unTotal + 0.02) return;
+
+      for (let i = startIdx; i <= eligible.length - remainingNeeded; i++) {
+        const cand = eligible[i];
+        const nextMinMs = cand.dateMs ? Math.min(minDateMs, cand.dateMs) : minDateMs;
+        const nextMaxMs = cand.dateMs ? Math.max(maxDateMs, cand.dateMs) : maxDateMs;
+        const candDateCost = unDateMs && cand.dateMs ? cand.diffDays : 0;
+        chosen.push(cand);
+        search(
+          i + 1,
+          sum + cand.txTotal,
+          dateCost + candDateCost,
+          textScore + cand.textScore,
+          nextMinMs,
+          nextMaxMs,
+          allHaveIdentity && cand.hasIdentityMatch
+        );
+        chosen.pop();
+      }
+    };
+
+    search(0, 0, 0, 0, Infinity, -Infinity, true);
+    if (bestCombo) return bestCombo;
+  }
+
+  return null;
+}
+
+/**
+ * Matches a single lump-sum unreconciled statement item against 2..5 smaller
+ * reconciled transactions (e.g. a batch payment split across multiple bills/invoices),
+ * removing matched items from unreconPool and returning the matched candidate indices.
+ */
+export function matchReverseSplitTransactionsToUnreconPool(candidateTxns = [], unreconPool = [], options = {}) {
+  if (!Array.isArray(candidateTxns) || candidateTxns.length < 2 || !Array.isArray(unreconPool) || unreconPool.length === 0) {
+    return [];
+  }
+
+  const claimed = new Set(options.excludedIndices || []);
+  const cleanStr = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const matches = [];
+
+  let uIdx = 0;
+  while (uIdx < unreconPool.length) {
+    const un = unreconPool[uIdx];
+    const unOut = parseAmount(un.outAmount || un.outAmt || un.amount);
+    const unIn = parseAmount(un.inAmount || un.inAmt);
+    const unTotal = unOut > 0 ? unOut : unIn;
+    const unIsCredit = unIn > 0;
+
+    if (unTotal <= 0) {
+      uIdx++;
+      continue;
+    }
+
+    const unDate = normalizeDateStr(un.date);
+    const unPayeeClean = cleanStr(un.payee || "");
+    const unRawTxt = `${un.payee || ""} ${un.particulars || ""} ${un.reference || ""}`;
+    const unIsProcessor = isPaymentProcessorText(unRawTxt);
+    const { payeeTokens, refTokens, numericRefTokens } = extractReverseSplitTokens_(un);
+
+    const eligible = [];
+    for (let txIdx = 0; txIdx < candidateTxns.length; txIdx++) {
+      if (claimed.has(txIdx)) continue;
+      const tx = candidateTxns[txIdx];
+      const txOut = parseAmount(tx.outAmount || tx.outAmt);
+      const txIn = parseAmount(tx.inAmount || tx.inAmt);
+      const txTotal = txOut > 0 ? txOut : txIn;
+      const txIsCredit = txIn > 0;
+
+      if (txIsCredit !== unIsCredit) continue;
+      if (txTotal <= 0 || txTotal >= unTotal - 0.005) continue;
+
+      const txDate = normalizeDateStr(tx.date);
+      const txDateMs = txDate ? new Date(txDate).getTime() : 0;
+      const diffDays = (txDate && unDate)
+        ? Math.abs(txDateMs - new Date(unDate).getTime()) / (1000 * 60 * 60 * 24)
+        : 0;
+
+      const txPayeeClean = cleanStr(tx.payee || "");
+      const txRawTxt = `${tx.payee || ""} ${tx.particulars || ""} ${tx.reference || ""}`;
+      const txClean = cleanStr(txRawTxt);
+      const hasDirectPayeeMatch = Boolean(
+        txPayeeClean.length >= 4 &&
+        unPayeeClean.length >= 4 &&
+        (txPayeeClean.includes(unPayeeClean) || unPayeeClean.includes(txPayeeClean))
+      );
+      const hasTokenMatch = payeeTokens.some(tok => txClean.includes(tok));
+
+      const txRefRaw = String(tx.reference || tx.invoiceNumber || "").trim().toLowerCase();
+      const txRefSplit = txRefRaw ? txRefRaw.split(/[^a-z0-9]+/) : [];
+      const txRefParts = txRefRaw
+        ? [cleanStr(txRefRaw), ...txRefSplit.filter(t => t.length >= 3)]
+        : [];
+      const hasRefMatch = txRefParts.some(part => part && refTokens.has(part));
+
+      const txNumericParts = txRefSplit
+        .filter(t => /^\d{2,}$/.test(t) && !/^20[2-3]\d$/.test(t))
+        .map(t => t.replace(/^0+/, ""))
+        .filter(t => t.length >= 2);
+      const hasNumericRefMatch = txNumericParts.some(part => numericRefTokens.has(part));
+
+      const hasStrongIdentityMatch = hasDirectPayeeMatch || hasTokenMatch || hasRefMatch;
+      const hasIdentityMatch = hasStrongIdentityMatch || hasNumericRefMatch;
+      const isProcessorPair = unIsProcessor || isPaymentProcessorText(txRawTxt);
+
+      if (txDate && unDate) {
+        if (hasStrongIdentityMatch) {
+          if (diffDays > 5) continue;
+        } else if (hasNumericRefMatch) {
+          const maxNumDays = isProcessorPair ? 3 : 2;
+          if (diffDays > maxNumDays) continue;
+        } else if (isProcessorPair) {
+          if (diffDays > 3) continue;
+        } else {
+          continue;
+        }
+      } else if (!hasIdentityMatch && !isProcessorPair) {
+        continue;
+      }
+
+      const textScore = (hasDirectPayeeMatch ? 30 : 0) + (hasRefMatch ? 25 : 0) + (hasNumericRefMatch ? 20 : 0) + (hasTokenMatch ? 15 : 0) + (isProcessorPair ? 5 : 0);
+      eligible.push({
+        txIdx,
+        tx,
+        txTotal,
+        dateMs: txDateMs,
+        diffDays,
+        hasIdentityMatch,
+        textScore,
+        sortScore: textScore - diffDays
+      });
+    }
+
+    if (eligible.length < 2) {
+      uIdx++;
+      continue;
+    }
+
+    eligible.sort((a, b) => (a.diffDays - b.diffDays) || (b.textScore - a.textScore));
+    const capped = eligible.slice(0, 25);
+
+    const bestCombo = findBestReverseSplitSubset_(capped, unTotal, unDate);
+    if (bestCombo) {
+      unreconPool.splice(uIdx, 1);
+      const matchedIndices = bestCombo.map(c => c.txIdx);
+      matchedIndices.forEach(idx => claimed.add(idx));
+      matches.push({
+        unreconItem: un,
+        matchedIndices,
+        matchedTxns: bestCombo.map(c => c.tx)
+      });
+      continue;
+    }
+
+    uIdx++;
+  }
+
+  return matches;
+}
+
 export function performTransactionsUpdate({
   currentBankTxns = [],
   currentUnreconItems = [],
@@ -309,6 +551,9 @@ export function performTransactionsUpdate({
   const apiToExistingMap = new Map();
   const nextBankTxns = [];
   const fallbackAddedTxns = [];
+  const alreadyUnreconMatchedBankIndices = new Set();
+  const newlyAddedBankIndices = new Set();
+  const alreadyUnreconMatchedNonCashIndices = new Set();
 
   const getAmt = (t) => {
     const o = parseAmount(t.outAmount || t.outAmt);
@@ -366,9 +611,11 @@ export function performTransactionsUpdate({
         }
       }
 
-      const apiTxt = cleanStr(`${apiTx.payee || ""} ${apiTx.particulars || ""} ${apiTx.reference || ""}`);
-      const exTxt = cleanStr(`${ex.payee || ""} ${ex.particulars || ""} ${ex.reference || ""}`);
-      const isProcessor = isPaymentProcessorText(apiTxt) || isPaymentProcessorText(exTxt);
+      const apiRawTxt = `${apiTx.payee || ""} ${apiTx.particulars || ""} ${apiTx.reference || ""}`;
+      const exRawTxt = `${ex.payee || ""} ${ex.particulars || ""} ${ex.reference || ""}`;
+      const apiTxt = cleanStr(apiRawTxt);
+      const exTxt = cleanStr(exRawTxt);
+      const isProcessor = isPaymentProcessorText(apiRawTxt) || isPaymentProcessorText(exRawTxt);
 
       if (apiTxt && exTxt && (apiTxt.includes(exTxt) || exTxt.includes(apiTxt))) {
         score += 30;
@@ -505,6 +752,11 @@ export function performTransactionsUpdate({
       }
     }
 
+    const idxInNext = nextBankTxns.length;
+    if (wasUnreconciled) {
+      alreadyUnreconMatchedBankIndices.add(idxInNext);
+    }
+
     nextBankTxns.push({
       ...(exTx || {}),
       ...apiTx,
@@ -551,6 +803,12 @@ export function performTransactionsUpdate({
       source: apiTx.source || "quickbooks"
     };
 
+    const idxInNext = nextBankTxns.length;
+    newlyAddedBankIndices.add(idxInNext);
+    if (matchedUn) {
+      alreadyUnreconMatchedBankIndices.add(idxInNext);
+    }
+
     nextBankTxns.push(newTx);
     if (matchedUn) {
       fallbackAddedTxns.push({
@@ -563,13 +821,55 @@ export function performTransactionsUpdate({
     }
   });
 
+  // Step 2c: Reverse 1-to-N split match (1 lump-sum unreconciled item reconciled across 2+ bank transactions)
+  if (unreconPool.length > 0 && nextBankTxns.length >= 2) {
+    const reverseSplitMatches = matchReverseSplitTransactionsToUnreconPool(
+      nextBankTxns,
+      unreconPool,
+      { excludedIndices: alreadyUnreconMatchedBankIndices }
+    );
+    for (const match of reverseSplitMatches) {
+      matchedFromUnreconCount++;
+      const matchedUn = match.unreconItem;
+      const unreconValidCat = normalizeValidReconCategory(matchedUn?.category);
+
+      for (const idx of match.matchedIndices) {
+        const tx = nextBankTxns[idx];
+        if (!tx) continue;
+        tx.isNew = true;
+        if (newlyAddedBankIndices.has(idx)) {
+          if (unreconValidCat && unreconValidCat !== "Outgoings") {
+            tx.category = unreconValidCat;
+            tx.suggestedCategory = unreconValidCat;
+          }
+          fallbackAddedTxns.push({
+            ...tx,
+            unreconPayee: matchedUn.payee,
+            unreconDate: matchedUn.date,
+            unreconAmount: matchedUn.amount,
+            unreconCategory: matchedUn.category
+          });
+        }
+      }
+    }
+  }
+
   // Step 2b: Non-Cash API Transactions matched against unreconciled items
-  incomingNonCashTxns.forEach(ncTx => {
+  incomingNonCashTxns.forEach((ncTx, ncIdx) => {
     const matchedUn = matchAndRemoveFromUnreconPool(ncTx, unreconPool);
     if (matchedUn) {
       matchedNonCashCount++;
+      alreadyUnreconMatchedNonCashIndices.add(ncIdx);
     }
   });
+  if (unreconPool.length > 0 && incomingNonCashTxns.length >= 2) {
+    const ncSplitMatches = matchReverseSplitTransactionsToUnreconPool(
+      incomingNonCashTxns,
+      unreconPool,
+      { excludedIndices: alreadyUnreconMatchedNonCashIndices }
+    );
+    matchedNonCashCount += ncSplitMatches.length;
+  }
 
   // Step 3: Existing bank transactions not matched by API feed
   // Unreconciled transactions remain in the list until they are reconciled!

@@ -480,7 +480,9 @@ export default function InitialInvoiceSetupModal({
               >
                 <div>
                   Imported <strong>{analysisData.totalImportedCount}</strong> invoice(s) from{" "}
-                  <strong>{analysisData.accountingTool}</strong> ({analysisData.cutoff12mFormatted} onwards).
+                  <strong>{analysisData.accountingTool}</strong> ({analysisData.cutoff12mFormatted} onwards)
+                  {analysisData.importMode && ` · Mode: ${analysisData.importMode}`}
+                  {analysisData.invFormatRule && ` · Ref format: ${analysisData.invFormatRule}`}.
                   {analysisData.alreadyOnConfirmedCount > 0 && (
                     <span style={{ color: "#64748B" }}>
                       {" "}

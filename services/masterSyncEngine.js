@@ -31,6 +31,10 @@ import {
   evaluateScheduledCrmPreflight,
   captureCrmPreflightBaseline,
 } from "./crmPreflightService.js";
+import {
+  evaluateScheduledAccountingPreflight,
+  captureAccountingPreflightBaseline,
+} from "./accountingPreflightService.js";
 
 /**
  * Returns true if a client is currently in setup/onboarding mode and NOT yet marked live for Pulse/automations.
@@ -758,6 +762,74 @@ export async function syncVirtualMgmtRepGridNative(sheets, clientName, reportMon
 }
 
 /**
+ * Inspects DataChgAlert status/rolling-log cells and recent AutoLog rows for a sequence error.
+ */
+function didSequenceHaveError_(seqCategory, rollingJsonCellVal, statusCellVal, autoLogGrid) {
+  if (String(statusCellVal || "").trim().toLowerCase().startsWith("error")) {
+    return true;
+  }
+  if (rollingJsonCellVal && typeof rollingJsonCellVal === "string") {
+    try {
+      const arr = JSON.parse(rollingJsonCellVal);
+      if (Array.isArray(arr) && arr.length > 0 && arr[arr.length - 1]?.s === false) {
+        return true;
+      }
+    } catch { }
+  }
+  const limit = Math.min(6, (autoLogGrid?.length || 0) - 1);
+  for (let r = 1; r <= limit; r++) {
+    const rowCat = String(autoLogGrid[r]?.[1] || "").trim().toUpperCase();
+    if (rowCat === seqCategory) {
+      return /error/i.test(String(autoLogGrid[r]?.[2] || "")) || /error:/i.test(String(autoLogGrid[r]?.[3] || ""));
+    }
+  }
+  return false;
+}
+
+/**
+ * Inserts a 4-column preflight error entry at Row 2 of Master AutoLog.
+ */
+function appendAutoLogPreflightError_(env, autoLogError) {
+  if (!autoLogError) return;
+  let logSheet = env.masterSS.getSheetByName("AutoLog");
+  if (!logSheet) {
+    logSheet = env.masterSS.insertSheet("AutoLog");
+    logSheet.getRange("A1:D1").setValues([["Timestamp", "Category", "Summary", "Details"]]);
+  }
+  const tz = env.masterSS.getSpreadsheetTimeZone?.() || "Europe/London";
+  const tsStr = formatGasDate(new Date(), tz, "dd-MMM-yy HH:mm");
+  logSheet.insertRowAfter(1);
+  logSheet.getRange(2, 1, 1, 4).setValues([[
+    tsStr,
+    autoLogError.category,
+    autoLogError.summary,
+    autoLogError.details,
+  ]]);
+}
+
+/**
+ * Clears in_flight_since/in_flight_seqs while preserving any concurrent flags written by an earlier phase.
+ */
+async function clearInFlightFlagsSafe_(supabase, clientName, fallbackFlags) {
+  let latestFlags = fallbackFlags && typeof fallbackFlags === "object" ? fallbackFlags : {};
+  try {
+    const { data } = await supabase
+      .from("sync_schedules")
+      .select("flags")
+      .eq("client_name", clientName)
+      .maybeSingle();
+    if (data?.flags && typeof data.flags === "object") {
+      latestFlags = data.flags;
+    }
+  } catch (_) { }
+  await supabase
+    .from("sync_schedules")
+    .update({ flags: { ...latestFlags, in_flight_since: null, in_flight_seqs: null } })
+    .eq("client_name", clientName)
+    .catch(() => { });
+}
+
+/**
  * Runs the 100% verbatim GAS `runAgencyAutomator(runInv, runCrm, runExp)` sequence
  * for a client in `master_mode = 'supabase'`.
  */
@@ -842,22 +914,70 @@ export async function runNativeMasterSync({
     .eq("client_name", ctx.clientName);
 
   // Execute the verbatim GAS `runAgencyAutomator`
+  let capturedInvPreflightState = null;
   let capturedCrmPreflightState = null;
+  let capturedExpPreflightState = null;
   try {
     await gas.runAgencyAutomator(runInv, runCrm, runExp);
 
-    if (runCrm) {
-      const dcaGridPreFlush = env.masterSS.getSheetByName("DataChgAlert")?.valuesGrid || [];
-      const crmStatusPreFlush = String(dcaGridPreFlush[2]?.[28] || "").trim();
-      const topAutoRow = env.masterSS.getSheetByName("AutoLog")?.valuesGrid?.[1] || [];
-      const crmRunHadError =
-        crmStatusPreFlush.toLowerCase().startsWith("error") ||
-        /error:/i.test(String(topAutoRow[2] || "")) ||
-        /error:/i.test(String(topAutoRow[3] || ""));
+    const kiGrid = (runInv || runCrm || runExp) ? (env.masterSS.getSheetByName("KeyInfo")?.valuesGrid || []) : [];
+    const dcaGridPreFlush = (runInv || runCrm || runExp) ? (env.masterSS.getSheetByName("DataChgAlert")?.valuesGrid || []) : [];
+    const autoLogGridPre = (runInv || runCrm || runExp) ? (env.masterSS.getSheetByName("AutoLog")?.valuesGrid || []) : [];
 
+    for (const acctSeq of [
+      { enabled: runInv, sequence: "invoice", cat: "INVOICES", dcaRow: 1, flagKey: "inv_preflight" },
+      { enabled: runExp, sequence: "expense", cat: "EXPENSES", dcaRow: 3, flagKey: "exp_preflight" },
+    ]) {
+      if (!acctSeq.enabled) continue;
+      const prevState = baseFlags?.[acctSeq.flagKey] || null;
+      const hadError = didSequenceHaveError_(
+        acctSeq.cat,
+        dcaGridPreFlush[acctSeq.dcaRow]?.[64],
+        dcaGridPreFlush[acctSeq.dcaRow]?.[28],
+        autoLogGridPre
+      );
+      if (hadError) {
+        if (prevState) {
+          const clearedState = {
+            ...prevState,
+            fingerprint: null,
+            lastOutcome: "sync_had_error",
+            lastCheckedAt: new Date().toISOString(),
+          };
+          if (acctSeq.sequence === "invoice") capturedInvPreflightState = clearedState;
+          else capturedExpPreflightState = clearedState;
+        }
+        continue;
+      }
+      try {
+        const pfCapture = await captureAccountingPreflightBaseline({
+          ctx,
+          sequence: acctSeq.sequence,
+          keyInfoGrid: kiGrid,
+          dcaGrid: dcaGridPreFlush,
+          runStartedIso,
+          completedAtIso: new Date().toISOString(),
+          prevPreflight: prevState,
+        });
+        if (pfCapture?.state) {
+          if (acctSeq.sequence === "invoice") capturedInvPreflightState = pfCapture.state;
+          else capturedExpPreflightState = pfCapture.state;
+        }
+        appendAutoLogPreflightError_(env, pfCapture?.autoLogError);
+      } catch (pfErr) {
+        console.warn(`[${acctSeq.sequence} Preflight] Baseline capture note for ${ctx.clientName}:`, pfErr.message);
+      }
+    }
+
+    if (runCrm) {
+      const crmRunHadError = didSequenceHaveError_(
+        "CRM",
+        dcaGridPreFlush[2]?.[64],
+        dcaGridPreFlush[2]?.[28],
+        autoLogGridPre
+      );
       if (!crmRunHadError) {
         try {
-          const kiGrid = env.masterSS.getSheetByName("KeyInfo")?.valuesGrid || [];
           const crmListGrid = env.masterSS.getSheetByName("CRMList")?.valuesGrid || [];
           const pfCapture = await captureCrmPreflightBaseline({
             ctx,
@@ -871,25 +991,17 @@ export async function runNativeMasterSync({
           if (pfCapture?.state) {
             capturedCrmPreflightState = pfCapture.state;
           }
-          if (pfCapture?.autoLogError) {
-            let logSheet = env.masterSS.getSheetByName("AutoLog");
-            if (!logSheet) {
-              logSheet = env.masterSS.insertSheet("AutoLog");
-              logSheet.getRange("A1:D1").setValues([["Timestamp", "Category", "Summary", "Details"]]);
-            }
-            const tz = env.masterSS.getSpreadsheetTimeZone?.() || "Europe/London";
-            const tsStr = formatGasDate(new Date(), tz, "dd-MMM-yy HH:mm");
-            logSheet.insertRowAfter(1);
-            logSheet.getRange(2, 1, 1, 4).setValues([[
-              tsStr,
-              pfCapture.autoLogError.category,
-              pfCapture.autoLogError.summary,
-              pfCapture.autoLogError.details,
-            ]]);
-          }
+          appendAutoLogPreflightError_(env, pfCapture?.autoLogError);
         } catch (pfErr) {
           console.warn(`[CRM Preflight] Baseline capture note for ${ctx.clientName}:`, pfErr.message);
         }
+      } else if (baseFlags?.crm_preflight) {
+        capturedCrmPreflightState = {
+          ...baseFlags.crm_preflight,
+          fingerprint: null,
+          lastOutcome: "sync_had_error",
+          lastCheckedAt: new Date().toISOString(),
+        };
       }
     }
 
@@ -957,6 +1069,9 @@ export async function runNativeMasterSync({
   if (runInv) {
     schedulePatch.last_inv_run = runStartedIso;
     schedulePatch.inv_status = String(dcaGrid[1]?.[28] || `Synced (${invoicesPulled} invoices)`); // AC2
+    if (capturedInvPreflightState) {
+      schedulePatch.flags.inv_preflight = capturedInvPreflightState;
+    }
   }
   if (runCrm) {
     schedulePatch.last_crm_run = runStartedIso;
@@ -968,6 +1083,9 @@ export async function runNativeMasterSync({
   if (runExp) {
     schedulePatch.last_exp_run = runStartedIso;
     schedulePatch.exp_status = String(dcaGrid[3]?.[28] || `Synced (${directCostsPulled} bills)`); // AC4
+    if (capturedExpPreflightState) {
+      schedulePatch.flags.exp_preflight = capturedExpPreflightState;
+    }
   }
 
   await supabase
@@ -1184,24 +1302,21 @@ export async function dispatchDueNativeMasterSyncs({
     }
 
     const preflightSkips = [];
-    const crmCandidateNames = dueCandidates
-      .filter((item) => item.types.includes("crm"))
-      .map((item) => item.clientName);
+    const candidateNames = dueCandidates.map((item) => item.clientName);
 
-    if (crmCandidateNames.length > 0) {
-      const [{ data: masterMetaRows }, { data: clientJobRows }] = await Promise.all([
+    if (candidateNames.length > 0) {
+      const [{ data: masterMetaRows }, { data: localGridRows }] = await Promise.all([
         supabase
           .from("master_sheet_grids")
           .select("client_name, tab_name, values_grid")
           .eq("sheet_role", "master")
           .in("tab_name", ["KeyInfo", "CRMList"])
-          .in("client_name", crmCandidateNames),
+          .in("client_name", candidateNames),
         supabase
           .from("master_sheet_grids")
-          .select("client_name, tab_name, updated_at")
-          .eq("sheet_role", "client")
-          .in("tab_name", ["Pipeline", "Confirmed"])
-          .in("client_name", crmCandidateNames),
+          .select("client_name, sheet_role, tab_name, updated_at")
+          .in("sheet_role", ["client", "recon"])
+          .in("client_name", candidateNames),
       ]);
 
       const kiByClient = new Map();
@@ -1212,16 +1327,26 @@ export async function dispatchDueNativeMasterSyncs({
       }
 
       const maxClientJobsUpdatedByClient = new Map();
-      for (const r of clientJobRows || []) {
+      const maxExpenseSheetsUpdatedByClient = new Map();
+      const JOB_TABS = new Set(["Pipeline", "Confirmed"]);
+      const EXPENSE_TABS = new Set(["Pipeline", "Confirmed", "Outgoings", "OutgNotes"]);
+      for (const r of localGridRows || []) {
         const ms = r.updated_at ? new Date(r.updated_at).getTime() : 0;
-        if (!Number.isNaN(ms) && ms > (maxClientJobsUpdatedByClient.get(r.client_name) || 0)) {
-          maxClientJobsUpdatedByClient.set(r.client_name, ms);
+        if (Number.isNaN(ms) || ms <= 0) continue;
+        if (r.sheet_role === "client" && JOB_TABS.has(r.tab_name)) {
+          if (ms > (maxClientJobsUpdatedByClient.get(r.client_name) || 0)) {
+            maxClientJobsUpdatedByClient.set(r.client_name, ms);
+          }
+        }
+        if (r.sheet_role === "recon" || (r.sheet_role === "client" && EXPENSE_TABS.has(r.tab_name))) {
+          if (ms > (maxExpenseSheetsUpdatedByClient.get(r.client_name) || 0)) {
+            maxExpenseSheetsUpdatedByClient.set(r.client_name, ms);
+          }
         }
       }
 
-      const crmItems = dueCandidates.filter((item) => item.types.includes("crm"));
-      for (let i = 0; i < crmItems.length; i += 4) {
-        const batch = crmItems.slice(i, i + 4);
+      for (let i = 0; i < dueCandidates.length; i += 4) {
+        const batch = dueCandidates.slice(i, i + 4);
         await Promise.allSettled(
           batch.map(async (item) => {
             const cRow = supabaseClientRowByName.get(item.clientName);
@@ -1232,71 +1357,123 @@ export async function dispatchDueNativeMasterSyncs({
               clientSheetId: cRow.client_sheet_id || "",
               reconSheetId: cRow.recon_sheet_id || "",
             };
-            const pfRes = await evaluateScheduledCrmPreflight({
-              ctx,
-              schedRow: item.sched,
-              keyInfoGrid: kiByClient.get(item.clientName) || [],
-              crmListGrid: crmListByClient.get(item.clientName) || [],
-              dcaGrid: dcaMap.get(item.clientName) || [],
-              maxClientJobsUpdatedMs: maxClientJobsUpdatedByClient.get(item.clientName) || 0,
-            });
+            const keyInfoGrid = kiByClient.get(item.clientName) || [];
+            const crmListGrid = crmListByClient.get(item.clientName) || [];
+            const dcaGrid = dcaMap.get(item.clientName) || [];
+            const nextFlags = { ...(item.flags && typeof item.flags === "object" ? item.flags : {}) };
+            const schedPatch = {};
+            let hasScheduleUpdate = false;
 
-            if (pfRes.decision === "skip_unchanged") {
-              const nowIso = new Date().toISOString();
-              item.types = item.types.filter((t) => t !== "crm");
-              const nextFlags = {
-                ...item.flags,
-                crm_preflight: {
-                  ...(item.flags?.crm_preflight || {}),
+            for (const acctCfg of [
+              {
+                type: "invoice",
+                label: "Invoice",
+                flagKey: "inv_preflight",
+                runCol: "last_inv_run",
+                maxLocalUpdatedMs: maxClientJobsUpdatedByClient.get(item.clientName) || 0,
+              },
+              {
+                type: "expense",
+                label: "Expense",
+                flagKey: "exp_preflight",
+                runCol: "last_exp_run",
+                maxLocalUpdatedMs: maxExpenseSheetsUpdatedByClient.get(item.clientName) || 0,
+              },
+            ]) {
+              if (!item.types.includes(acctCfg.type)) continue;
+              const pfRes = await evaluateScheduledAccountingPreflight({
+                ctx,
+                sequence: acctCfg.type,
+                schedRow: item.sched,
+                keyInfoGrid,
+                dcaGrid,
+                maxLocalUpdatedMs: acctCfg.maxLocalUpdatedMs,
+              });
+              if (pfRes.decision === "skip_unchanged") {
+                const nowIso = new Date().toISOString();
+                item.types = item.types.filter((t) => t !== acctCfg.type);
+                schedPatch[acctCfg.runCol] = nowIso;
+                nextFlags[acctCfg.flagKey] = {
+                  ...(nextFlags[acctCfg.flagKey] || {}),
                   lastCheckedAt: nowIso,
                   lastSkippedAt: nowIso,
                   lastOutcome: "unchanged_skipped",
-                },
-              };
-              item.flags = nextFlags;
-              await supabase
-                .from("sync_schedules")
-                .update({ last_crm_run: nowIso, flags: nextFlags })
-                .eq("client_name", item.clientName)
-                .catch(() => {});
-              console.log(
-                `[CRM Preflight] ${item.clientName} (${pfRes.probe?.tool || "CRM"}): No changes detected — skipped full CRM sync.`
-              );
-              preflightSkips.push({
-                clientName: item.clientName,
-                mode: "supabase_preflight_skip",
-                types: ["crm"],
-                success: true,
-                skippedUnchanged: true,
+                };
+                hasScheduleUpdate = true;
+                console.log(
+                  `[${acctCfg.label} Preflight] ${item.clientName} (${pfRes.probe?.tool || "Accounting"}): No changes detected — skipped full ${acctCfg.type} sync.`
+                );
+                preflightSkips.push({
+                  clientName: item.clientName,
+                  mode: "supabase_preflight_skip",
+                  types: [acctCfg.type],
+                  success: true,
+                  skippedUnchanged: true,
+                });
+              }
+            }
+
+            if (item.types.includes("crm")) {
+              const pfRes = await evaluateScheduledCrmPreflight({
+                ctx,
+                schedRow: item.sched,
+                keyInfoGrid,
+                crmListGrid,
+                dcaGrid,
+                maxClientJobsUpdatedMs: maxClientJobsUpdatedByClient.get(item.clientName) || 0,
               });
-            } else if (pfRes.decision === "defer_quiet_window") {
-              const nowIso = new Date().toISOString();
-              item.types = item.types.filter((t) => t !== "crm");
-              const nextFlags = {
-                ...item.flags,
-                crm_preflight: {
-                  ...(item.flags?.crm_preflight || {}),
+
+              if (pfRes.decision === "skip_unchanged") {
+                const nowIso = new Date().toISOString();
+                item.types = item.types.filter((t) => t !== "crm");
+                schedPatch.last_crm_run = nowIso;
+                nextFlags.crm_preflight = {
+                  ...(nextFlags.crm_preflight || {}),
+                  lastCheckedAt: nowIso,
+                  lastSkippedAt: nowIso,
+                  lastOutcome: "unchanged_skipped",
+                };
+                hasScheduleUpdate = true;
+                console.log(
+                  `[CRM Preflight] ${item.clientName} (${pfRes.probe?.tool || "CRM"}): No changes detected — skipped full CRM sync.`
+                );
+                preflightSkips.push({
+                  clientName: item.clientName,
+                  mode: "supabase_preflight_skip",
+                  types: ["crm"],
+                  success: true,
+                  skippedUnchanged: true,
+                });
+              } else if (pfRes.decision === "defer_quiet_window") {
+                const nowIso = new Date().toISOString();
+                item.types = item.types.filter((t) => t !== "crm");
+                nextFlags.crm_preflight = {
+                  ...(nextFlags.crm_preflight || {}),
                   lastCheckedAt: nowIso,
                   lastOutcome: "deferred_quiet_window",
                   observedModifiedAt: pfRes.probe?.modifiedIso || null,
-                },
-              };
+                };
+                hasScheduleUpdate = true;
+                console.log(
+                  `[CRM Preflight] ${item.clientName} (${pfRes.probe?.tool || "Spreadsheet"}): Edited recently (${pfRes.reason}) — deferring until 60s quiet window settles.`
+                );
+                preflightSkips.push({
+                  clientName: item.clientName,
+                  mode: "supabase_preflight_defer",
+                  types: ["crm"],
+                  success: true,
+                  deferredQuietWindow: true,
+                });
+              }
+            }
+
+            if (hasScheduleUpdate) {
               item.flags = nextFlags;
               await supabase
                 .from("sync_schedules")
-                .update({ flags: nextFlags })
+                .update({ ...schedPatch, flags: nextFlags })
                 .eq("client_name", item.clientName)
                 .catch(() => {});
-              console.log(
-                `[CRM Preflight] ${item.clientName} (${pfRes.probe?.tool || "Spreadsheet"}): Edited recently (${pfRes.reason}) — deferring until 60s quiet window settles.`
-              );
-              preflightSkips.push({
-                clientName: item.clientName,
-                mode: "supabase_preflight_defer",
-                types: ["crm"],
-                success: true,
-                deferredQuietWindow: true,
-              });
             }
           })
         );
@@ -1436,10 +1613,7 @@ export async function dispatchDueNativeMasterSyncs({
         const secondRes = await runChunk(item.clientName, ["expense"], "expense");
         const ok = firstRes.success && secondRes.success;
         if (!ok) {
-          await supabase
-            .from("sync_schedules")
-            .update({ flags: { ...baseFlags, in_flight_since: null, in_flight_seqs: null } })
-            .eq("client_name", item.clientName);
+          await clearInFlightFlagsSafe_(supabase, item.clientName, baseFlags);
         }
         results.push({
           ...item,
@@ -1453,10 +1627,7 @@ export async function dispatchDueNativeMasterSyncs({
 
       const singleRes = await runChunk(item.clientName, item.types, item.syncType);
       if (!singleRes.success) {
-        await supabase
-          .from("sync_schedules")
-          .update({ flags: { ...baseFlags, in_flight_since: null, in_flight_seqs: null } })
-          .eq("client_name", item.clientName);
+        await clearInFlightFlagsSafe_(supabase, item.clientName, baseFlags);
       }
       results.push({
         ...item,

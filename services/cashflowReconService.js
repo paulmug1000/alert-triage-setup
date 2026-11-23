@@ -6,6 +6,7 @@ import { sanitizeFormulaInput } from "./userPermissions.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { matchesClientName } from "./userPermissions.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import { evaluateSafeArithmetic } from "../utils/helpers.js";
 
 
@@ -160,22 +161,67 @@ function isAllowedNonAdminReconFormula_(str) {
 }
 
 /**
+ * Extracts active P&L expense categories from Master Sheet PLComp Column E
+ * (Overheads E89:E596 followed by Costs of Sale E30:E49), matching 7_Cost_Sync.gs.
+ */
+export function extractActivePlCompCategories(overheadsRows = [], cosRows = []) {
+  const seen = new Set();
+  const categories = [];
+
+  for (const rows of [overheadsRows, cosRows]) {
+    for (const row of rows || []) {
+      const rawName = String(Array.isArray(row) ? (row[0] ?? "") : (row ?? "")).trim();
+      const lowerRaw = rawName.toLowerCase();
+      const isInvalid =
+        !rawName ||
+        rawName.startsWith("#") ||
+        lowerRaw.includes("#n/a") ||
+        lowerRaw.includes("#ref!") ||
+        lowerRaw.includes("#value!") ||
+        lowerRaw.startsWith("total") ||
+        lowerRaw.startsWith("less ") ||
+        lowerRaw.startsWith("---") ||
+        lowerRaw.startsWith("===") ||
+        lowerRaw === "depreciation total";
+      if (isInvalid) continue;
+
+      const norm = rawName.replace(/^\d+\s*[-–]\s*/, "").toLowerCase().trim();
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      categories.push(rawName);
+    }
+  }
+
+  return categories;
+}
+
+/**
  * Get Cashflow Recon Data
  * Fetches the 3 months around the target month from Cash tab (Row 1 down to Difference row)
  * and retrieves actuals from Recon sheet U3:X16.
  */
 export async function getCashflowReconData({
   clientSheetId,
+  masterSheetId,
   reconSheetUrl,
   reconSheetId,
   eomMonthKey, // e.g. "2026-10" (Work month in Oct -> target month is Sept 2026)
-  targetMonthKey // e.g. "2026-10" (if provided, directly targets this month)
+  targetMonthKey, // e.g. "2026-10" (if provided, directly targets this month)
+  clientName = ""
 }) {
   if (!clientSheetId) throw new Error("Missing clientSheetId");
 
   const sheets = await getSheetsClient();
   const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
   const cleanReconSheetId = reconSheetId || extractSheetIdFromUrl(reconSheetUrl);
+  let cleanMasterSheetId = masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || String(masterSheetId).trim()) : "";
+  if (!cleanMasterSheetId) {
+    const ctx = await resolveSupabaseSheetContext({
+      spreadsheetId: cleanReconSheetId || cleanClientSheetId,
+      clientName
+    }).catch(() => null);
+    cleanMasterSheetId = ctx?.masterSheetId || "";
+  }
 
   // 1. Calculate Target Month, Month Before, and Month After
   let targetYear, targetMonth; // 0-indexed month
@@ -485,11 +531,27 @@ export async function getCashflowReconData({
           `'${reconTabName}'!CR1:CR2`    // [11] Month ready & checkbox gate
         ];
 
-        const reconBatchRes = await withRetry(() => sheets.spreadsheets.values.batchGet({
-          spreadsheetId: cleanReconSheetId,
-          ranges: rangesToFetch,
-          valueRenderOption: "FORMATTED_VALUE"
-        }));
+        const [reconBatchRes, plCompRes] = await Promise.all([
+          withRetry(() => sheets.spreadsheets.values.batchGet({
+            spreadsheetId: cleanReconSheetId,
+            ranges: rangesToFetch,
+            valueRenderOption: "FORMATTED_VALUE"
+          })),
+          cleanMasterSheetId
+            ? withRetry(() => sheets.spreadsheets.values.batchGet({
+                spreadsheetId: cleanMasterSheetId,
+                ranges: ["PLComp!E89:E596", "PLComp!E30:E49"],
+                valueRenderOption: "FORMATTED_VALUE"
+              })).catch(() => null)
+            : Promise.resolve(null)
+        ]);
+
+        const activePlCompCategories = plCompRes?.data?.valueRanges
+          ? extractActivePlCompCategories(
+              plCompRes.data.valueRanges[0]?.values || [],
+              plCompRes.data.valueRanges[1]?.values || []
+            )
+          : [];
 
         const vRanges = reconBatchRes.data.valueRanges || [];
 
@@ -849,11 +911,37 @@ export async function getCashflowReconData({
         plAdds = rawPlRows.map(r => ({
           accountName: String(r[0] || "").trim(),
           amount: String(r[1] || "").trim()
-        })).filter(p => p.accountName && p.amount && p.amount !== "£0.00" && p.amount !== "0.00");
+        })).filter(p => p.accountName && p.amount && p.amount !== "£0.00" && p.amount !== "0.00" && p.amount !== "0");
 
-        plAccountOptions = rawPlRows
-          .map(r => String(r[0] || "").trim())
-          .filter(Boolean);
+        const existingPlAddNorms = new Set(
+          plAdds.map(p => p.accountName.replace(/^\d+\s*[-–]\s*/, "").toLowerCase().trim())
+        );
+        const czKnownNorms = new Set(
+          rawPlRows.map(r => String(r[0] || "").replace(/^\d+\s*[-–]\s*/, "").toLowerCase().trim()).filter(Boolean)
+        );
+        const extraUnreconSums = new Map();
+        for (const u of unreconciledItems) {
+          const catName = String(u.category || "").trim();
+          const normCat = catName.replace(/^\d+\s*[-–]\s*/, "").toLowerCase().trim();
+          if (!normCat || existingPlAddNorms.has(normCat) || czKnownNorms.has(normCat)) continue;
+          const grossAmt = Math.abs(parseNumeric(u.amount));
+          if (!grossAmt) continue;
+          const netAmt = String(u.vatApplies || "").toLowerCase() === "yes" ? grossAmt / 1.2 : grossAmt;
+          const signedNet = u.isNegative ? netAmt : -netAmt;
+          const cur = extraUnreconSums.get(normCat) || { accountName: catName, total: 0 };
+          cur.total += signedNet;
+          extraUnreconSums.set(normCat, cur);
+        }
+        for (const extra of extraUnreconSums.values()) {
+          const rounded = Math.round(extra.total * 100) / 100;
+          if (Math.abs(rounded) >= 0.01) {
+            plAdds.push({ accountName: extra.accountName, amount: formatGBP(rounded) });
+          }
+        }
+
+        plAccountOptions = activePlCompCategories.length > 0
+          ? activePlCompCategories
+          : rawPlRows.map(r => String(r[0] || "").trim()).filter(Boolean);
 
         if (!trackedBankAccounts || trackedBankAccounts.length === 0) {
           trackedBankAccounts = (vRanges[8]?.values || [])

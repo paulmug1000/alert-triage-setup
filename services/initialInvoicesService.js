@@ -28,6 +28,7 @@ import { sanitizeFormulaInput } from "./userPermissions.js";
 import {
   NO_END_DATE_SHEET_VALUE,
   toSheetDateFormat,
+  formatInvoiceNumber,
   formatInvoiceRefForSheet,
   canonicalizeInvoiceStatus,
   isJobCostingStyle,
@@ -171,6 +172,35 @@ function normalizeClientKey(name) {
     .replace(/\s+/g, " ");
 }
 
+function resolveImportMode(rawMode) {
+  return String(rawMode || "").trim().toLowerCase() === "lines" ? "Lines" : "Whole";
+}
+
+function resolveInvFormatRule(rawRule) {
+  return String(rawRule || "Full").trim() || "Full";
+}
+
+function applyInvFormat(rawInvNo, invFormatRule = "Full") {
+  const raw = String(rawInvNo || "").trim();
+  if (!raw) return "";
+  return formatInvoiceNumber(raw, invFormatRule) || raw;
+}
+
+function resolveXeroInvoiceStatus(inv, isPaid) {
+  if (isPaid) return "Paid";
+  const statusUpper = String(inv?.Status || "").toUpperCase();
+  const sentToContact =
+    inv?.SentToContact === true || String(inv?.SentToContact || "").toUpperCase() === "TRUE";
+  if (
+    (statusUpper === "AUTHORISED" || statusUpper === "AWAITING_PAYMENT" || statusUpper === "OVERDUE") &&
+    sentToContact
+  ) {
+    return "Sent";
+  }
+  if (statusUpper === "AUTHORISED") return "Draft";
+  return "Sent";
+}
+
 /**
  * Extracts latest payment date from a Xero invoice object (1:1 with getXeroInvoices).
  */
@@ -211,9 +241,14 @@ function getLatestXeroPaymentDate(inv) {
 }
 
 /**
- * Fetches ACCREC invoices from Xero on or after cutoff12m (1:1 with getXeroInvoices).
+ * Fetches ACCREC invoices from Xero on or after cutoff12m (1:1 with getXeroInvoices + evaluateInvAppList).
  */
-async function fetchXeroInvoicesForWindow(auth, cutoff12m, defaultDaysToPay = 30) {
+async function fetchXeroInvoicesForWindow(
+  auth,
+  cutoff12m,
+  defaultDaysToPay = 30,
+  { importMode = "Whole", invFormatRule = "Full" } = {}
+) {
   const headers = {
     Authorization: `Bearer ${auth.accessToken}`,
     "xero-tenant-id": auth.tenantId,
@@ -253,12 +288,14 @@ async function fetchXeroInvoicesForWindow(auth, cutoff12m, defaultDaysToPay = 30
     const sendDate = parseYear0Date(inv.DateString || inv.Date);
     if (!sendDate || sendDate < cutoff12m) continue;
 
+    const baseInvNo = String(inv.InvoiceNumber || inv.InvoiceID || "").trim();
+    if (!baseInvNo) continue;
+
     const originalTotal = Number(inv.Total) || 0;
     const credit = Number(inv.AmountCredited) || 0;
     const effectiveTotal = round2(originalTotal - credit);
     const ratio = originalTotal > 0 ? effectiveTotal / originalTotal : 1;
-    const subTotal = round2((Number(inv.SubTotal) || 0) * ratio);
-    const tax = round2((Number(inv.TotalTax) || 0) * ratio);
+    const currencyRate = Number(inv.CurrencyRate) > 0 ? Number(inv.CurrencyRate) : 1;
     const amountPaid = Number(inv.AmountPaid) || 0;
     const paidDate = parseYear0Date(getLatestXeroPaymentDate(inv));
     const dueDate = parseYear0Date(inv.DueDateString || inv.DueDate);
@@ -271,43 +308,172 @@ async function fetchXeroInvoicesForWindow(auth, cutoff12m, defaultDaysToPay = 30
     }
 
     const isPaid = statusUpper === "PAID" || (effectiveTotal > 0 && amountPaid >= effectiveTotal - 0.01);
-    const lineDescs = (inv.LineItems || [])
-      .map((l) => String(l.Description || "").trim())
-      .filter(Boolean);
-    const description =
-      lineDescs.slice(0, 2).join(" - ") ||
-      String(inv.Reference || "").trim() ||
-      `Invoice ${inv.InvoiceNumber || ""}`.trim();
+    const status = resolveXeroInvoiceStatus(inv, isPaid);
+    const sendDateIso = `${sendDate.getFullYear()}-${String(sendDate.getMonth() + 1).padStart(2, "0")}-${String(sendDate.getDate()).padStart(2, "0")}`;
+    const sendDateFormatted = formatDMmmYyyy(sendDate);
+    const client = String(inv.Contact?.Name || "").trim() || "Unknown client";
+    const contactId = String(inv.Contact?.ContactID || "").trim();
+    const clampedDays = Math.min(365, Math.max(0, daysToPay));
 
-    const invoiceNo = String(inv.InvoiceNumber || inv.InvoiceID || "").trim();
-    if (!invoiceNo) continue;
+    if (importMode === "Lines") {
+      if (!Array.isArray(inv.LineItems) || inv.LineItems.length === 0) continue;
+      const lineAmountType = String(inv.LineAmountTypes || "Exclusive").toUpperCase();
+      const parentRef = String(inv.Reference || "").trim();
 
-    normalized.push({
-      id: String(inv.InvoiceID || invoiceNo),
-      invoiceNo,
-      invoiceNoKey: invoiceNo.toLowerCase(),
-      client: String(inv.Contact?.Name || "").trim() || "Unknown client",
-      contactId: String(inv.Contact?.ContactID || "").trim(),
-      description: description.slice(0, 120),
-      reference: String(inv.Reference || "").trim(),
-      sendDateIso: `${sendDate.getFullYear()}-${String(sendDate.getMonth() + 1).padStart(2, "0")}-${String(sendDate.getDate()).padStart(2, "0")}`,
-      sendDateFormatted: formatDMmmYyyy(sendDate),
-      subTotal,
-      tax,
-      total: effectiveTotal,
-      vat: tax > 0.005 ? "Yes" : "No",
-      daysToPay: Math.min(365, Math.max(0, daysToPay)),
-      status: isPaid ? "Paid" : "Sent",
-    });
+      inv.LineItems.forEach((line, index) => {
+        const rawLineAmt = Number(line.LineAmount) || 0;
+        const rawLineTax = Number(line.TaxAmount) || 0;
+        const effectiveLineAmt = rawLineAmt * ratio;
+        const effectiveLineTax = rawLineTax * ratio;
+        const lineSubTotalRaw =
+          lineAmountType === "INCLUSIVE" ? effectiveLineAmt - effectiveLineTax : effectiveLineAmt;
+        const lineTotalRaw =
+          lineAmountType === "INCLUSIVE" ? effectiveLineAmt : effectiveLineAmt + effectiveLineTax;
+
+        const subTotal = round2(lineSubTotalRaw / currencyRate);
+        const tax = round2(effectiveLineTax / currencyRate);
+        const total = round2(lineTotalRaw / currencyRate);
+
+        const rawInvoiceNo = `${baseInvNo}-${index + 1}`;
+        const invoiceNo = applyInvFormat(rawInvoiceNo, invFormatRule);
+        const lineDesc = String(line.Description || "").trim();
+        const combinedRef = [parentRef, lineDesc].filter(Boolean).join(" - ");
+        const description = (lineDesc || parentRef || `Invoice ${invoiceNo}`).slice(0, 120);
+
+        normalized.push({
+          id: `${inv.InvoiceID || baseInvNo}-${index + 1}`,
+          rawInvoiceNo,
+          invoiceNo,
+          invoiceNoKey: invoiceNo.toLowerCase(),
+          isFormatted: true,
+          client,
+          contactId,
+          description,
+          reference: combinedRef,
+          sendDateIso,
+          sendDateFormatted,
+          subTotal,
+          tax,
+          total,
+          vat: tax > 0.005 ? "Yes" : "No",
+          daysToPay: clampedDays,
+          status,
+        });
+      });
+    } else {
+      const subTotal = round2(((Number(inv.SubTotal) || 0) * ratio) / currencyRate);
+      const tax = round2(((Number(inv.TotalTax) || 0) * ratio) / currencyRate);
+      const total = round2(effectiveTotal / currencyRate);
+      const rawInvoiceNo = baseInvNo;
+      const invoiceNo = applyInvFormat(rawInvoiceNo, invFormatRule);
+      const lineDescs = (inv.LineItems || [])
+        .map((l) => String(l.Description || "").trim())
+        .filter(Boolean);
+      const description =
+        lineDescs.slice(0, 2).join(" - ") ||
+        String(inv.Reference || "").trim() ||
+        `Invoice ${invoiceNo}`.trim();
+
+      normalized.push({
+        id: String(inv.InvoiceID || rawInvoiceNo),
+        rawInvoiceNo,
+        invoiceNo,
+        invoiceNoKey: invoiceNo.toLowerCase(),
+        isFormatted: true,
+        client,
+        contactId,
+        description: description.slice(0, 120),
+        reference: String(inv.Reference || "").trim(),
+        sendDateIso,
+        sendDateFormatted,
+        subTotal,
+        tax,
+        total,
+        vat: tax > 0.005 ? "Yes" : "No",
+        daysToPay: clampedDays,
+        status,
+      });
+    }
   }
 
   return normalized;
 }
 
 /**
- * Fetches QuickBooks Invoice entities on or after cutoff12m (1:1 with getQuickbooksInvoices).
+ * Fetches QuickBooks TaxCodes and maps taxCodeId -> decimal rate (1:1 with fetchQBTaxCodeRateMap_).
  */
-async function fetchQuickBooksInvoicesForWindow(auth, cutoff12m, defaultDaysToPay = 30) {
+async function fetchQBTaxCodeRateMap(auth) {
+  const map = {};
+  try {
+    const safeRealmId = assertValidQBRealmId(auth.realmId);
+    const query = encodeURIComponent("SELECT * FROM TaxCode MAXRESULTS 100");
+    const url = `https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(safeRealmId)}/query?query=${query}&minorversion=73`;
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${auth.accessToken}`,
+        Accept: "application/json",
+      },
+      redirect: "manual",
+    });
+    if (!res.ok) return map;
+    const json = await res.json();
+    const taxCodes = json?.QueryResponse?.TaxCode || [];
+    for (const tc of taxCodes) {
+      const id = String(tc.Id || "").trim();
+      const name = String(tc.Name || "").trim().toLowerCase();
+      const desc = String(tc.Description || "").trim().toLowerCase();
+      let rate = null;
+
+      let searchString = `${tc.Name || ""} ${desc}`;
+      if (tc.SalesTaxRateList?.TaxRateDetail) {
+        for (const detail of tc.SalesTaxRateList.TaxRateDetail) {
+          if (detail.TaxRateRef?.name) searchString += ` ${detail.TaxRateRef.name}`;
+        }
+      }
+
+      const pctMatch = searchString.match(/(\d+(?:\.\d+)?)%/);
+      if (pctMatch) {
+        rate = parseFloat(pctMatch[1]) / 100;
+      } else if (
+        tc.Taxable === false ||
+        name === "non" ||
+        name === "no vat" ||
+        name.includes("no vat") ||
+        name.includes("exempt") ||
+        name.includes("zero") ||
+        desc.includes("exempt") ||
+        desc.includes("no vat")
+      ) {
+        rate = 0;
+      } else if (
+        name === "tax" ||
+        name === "standard" ||
+        name === "standard rate" ||
+        name === "standard vat" ||
+        desc.includes("standard")
+      ) {
+        rate = 0.2;
+      }
+
+      if (id && rate !== null) {
+        map[id] = rate;
+      }
+    }
+  } catch (err) {
+    console.warn("Could not pre-fetch QB TaxCodes:", err.message);
+  }
+  return map;
+}
+
+/**
+ * Fetches QuickBooks Invoice entities on or after cutoff12m (1:1 with getQuickbooksInvoices + evaluateInvAppList).
+ */
+async function fetchQuickBooksInvoicesForWindow(
+  auth,
+  cutoff12m,
+  defaultDaysToPay = 30,
+  { importMode = "Whole", invFormatRule = "Full" } = {}
+) {
   const safeRealmId = assertValidQBRealmId(auth.realmId);
   const headers = {
     Authorization: `Bearer ${auth.accessToken}`,
@@ -336,10 +502,15 @@ async function fetchQuickBooksInvoicesForWindow(auth, cutoff12m, defaultDaysToPa
     if (pageInvoices.length < pageSize) break;
   }
 
+  const taxCodeRateMap = importMode === "Lines" ? await fetchQBTaxCodeRateMap(auth) : {};
+
   const normalized = [];
   for (const inv of allInvoices) {
     const sendDate = parseYear0Date(inv.TxnDate);
     if (!sendDate || sendDate < cutoff12m) continue;
+
+    const baseInvNo = String(inv.DocNumber || inv.Id || "").trim();
+    if (!baseInvNo) continue;
 
     const originalTotal = Number(inv.TotalAmt) || 0;
     let totalCredit = 0;
@@ -349,43 +520,130 @@ async function fetchQuickBooksInvoicesForWindow(auth, cutoff12m, defaultDaysToPa
     const effectiveTotal = round2(originalTotal - totalCredit);
     const ratio = originalTotal > 0 ? effectiveTotal / originalTotal : 1;
     const rawTax = Number(inv.TxnTaxDetail?.TotalTax) || 0;
-    const tax = round2(rawTax * ratio);
-    const subTotal = round2(effectiveTotal - tax);
+    const effectiveTax = rawTax * ratio;
+    const currencyRate = Number(inv.ExchangeRate) > 0 ? Number(inv.ExchangeRate) : 1;
 
     const dueDate = parseYear0Date(inv.DueDate);
     let daysToPay = defaultDaysToPay;
     if (dueDate && sendDate) {
       daysToPay = Math.max(0, Math.round((dueDate.getTime() - sendDate.getTime()) / 86400000));
     }
+
     const isPaid = (Number(inv.Balance) || 0) <= 0.01 && effectiveTotal > 0;
-    const lineDescs = (inv.Line || [])
-      .filter((l) => l.DetailType === "SalesItemLineDetail" && l.Description)
-      .map((l) => String(l.Description).trim());
-    const description =
-      lineDescs.slice(0, 2).join(" - ") ||
-      String(inv.PrivateNote || "").trim() ||
-      `Invoice ${inv.DocNumber || inv.Id || ""}`.trim();
+    const emailSent = inv.EmailStatus === "EmailSent";
+    const status = isPaid ? "Paid" : emailSent ? "Sent" : "Draft";
+    const sendDateIso = `${sendDate.getFullYear()}-${String(sendDate.getMonth() + 1).padStart(2, "0")}-${String(sendDate.getDate()).padStart(2, "0")}`;
+    const sendDateFormatted = formatDMmmYyyy(sendDate);
+    const client = String(inv.CustomerRef?.name || "").trim() || "Unknown client";
+    const contactId = String(inv.CustomerRef?.value || "").trim();
+    const clampedDays = Math.min(365, Math.max(0, daysToPay));
 
-    const invoiceNo = String(inv.DocNumber || inv.Id || "").trim();
-    if (!invoiceNo) continue;
+    if (importMode === "Lines") {
+      const validLines = (inv.Line || []).filter((l) => l.DetailType === "SalesItemLineDetail");
+      if (validLines.length === 0) continue;
 
-    normalized.push({
-      id: String(inv.Id || invoiceNo),
-      invoiceNo,
-      invoiceNoKey: invoiceNo.toLowerCase(),
-      client: String(inv.CustomerRef?.name || "").trim() || "Unknown client",
-      contactId: String(inv.CustomerRef?.value || "").trim(),
-      description: description.slice(0, 120),
-      reference: String(inv.CustomerMemo?.value || "").trim(),
-      sendDateIso: `${sendDate.getFullYear()}-${String(sendDate.getMonth() + 1).padStart(2, "0")}-${String(sendDate.getDate()).padStart(2, "0")}`,
-      sendDateFormatted: formatDMmmYyyy(sendDate),
-      subTotal,
-      tax,
-      total: effectiveTotal,
-      vat: tax > 0.005 ? "Yes" : "No",
-      daysToPay: Math.min(365, Math.max(0, daysToPay)),
-      status: isPaid ? "Paid" : "Sent",
-    });
+      const totalLineNet = validLines.reduce((sum, line) => sum + (Number(line.Amount) || 0), 0);
+      let rawLineTaxes = validLines.map((line) => {
+        if (effectiveTax === 0) return 0;
+        const originalLineAmt = Number(line.Amount) || 0;
+        const effectiveLineAmt = originalLineAmt * ratio;
+        const taxCodeId = String(
+          line.SalesItemLineDetail?.TaxCodeRef?.value || line.TaxCodeRef?.value || ""
+        ).trim();
+        if (taxCodeId && taxCodeRateMap[taxCodeId] !== undefined) {
+          return Math.round(effectiveLineAmt * taxCodeRateMap[taxCodeId] * 100) / 100;
+        }
+        return totalLineNet > 0 ? (originalLineAmt / totalLineNet) * effectiveTax : 0;
+      });
+
+      const initialSum = rawLineTaxes.reduce((sum, t) => sum + t, 0);
+      if (effectiveTax > 0 && initialSum === 0 && totalLineNet > 0) {
+        rawLineTaxes = validLines.map((line) => {
+          const originalLineAmt = Number(line.Amount) || 0;
+          return (originalLineAmt / totalLineNet) * effectiveTax;
+        });
+      }
+
+      const sumLineTaxes = rawLineTaxes.reduce((sum, t) => sum + t, 0);
+      const taxDiff = Math.round((effectiveTax - sumLineTaxes) * 100) / 100;
+      if (Math.abs(taxDiff) > 0 && Math.abs(taxDiff) <= 0.05 && validLines.length > 0) {
+        let maxIdx = 0;
+        for (let li = 1; li < rawLineTaxes.length; li++) {
+          if (rawLineTaxes[li] > rawLineTaxes[maxIdx]) maxIdx = li;
+        }
+        if (rawLineTaxes[maxIdx] + taxDiff >= 0) {
+          rawLineTaxes[maxIdx] = Math.round((rawLineTaxes[maxIdx] + taxDiff) * 100) / 100;
+        }
+      }
+
+      const parentRef = String(inv.PrivateNote || "").trim();
+      validLines.forEach((line, index) => {
+        const effectiveLineAmt = (Number(line.Amount) || 0) * ratio;
+        const lineTaxRaw = rawLineTaxes[index] || 0;
+        const subTotal = round2(effectiveLineAmt / currencyRate);
+        const tax = round2(lineTaxRaw / currencyRate);
+        const total = round2((effectiveLineAmt + lineTaxRaw) / currencyRate);
+
+        const rawInvoiceNo = `${baseInvNo}-${index + 1}`;
+        const invoiceNo = applyInvFormat(rawInvoiceNo, invFormatRule);
+        const lineDesc = String(line.Description || "").trim();
+        const combinedRef = [parentRef, lineDesc].filter(Boolean).join(" - ");
+        const description = (lineDesc || parentRef || `Invoice ${invoiceNo}`).slice(0, 120);
+
+        normalized.push({
+          id: `${inv.Id || baseInvNo}-${index + 1}`,
+          rawInvoiceNo,
+          invoiceNo,
+          invoiceNoKey: invoiceNo.toLowerCase(),
+          isFormatted: true,
+          client,
+          contactId,
+          description,
+          reference: combinedRef,
+          sendDateIso,
+          sendDateFormatted,
+          subTotal,
+          tax,
+          total,
+          vat: tax > 0.005 ? "Yes" : "No",
+          daysToPay: clampedDays,
+          status,
+        });
+      });
+    } else {
+      const tax = round2(effectiveTax / currencyRate);
+      const total = round2(effectiveTotal / currencyRate);
+      const subTotal = round2((effectiveTotal - effectiveTax) / currencyRate);
+      const rawInvoiceNo = baseInvNo;
+      const invoiceNo = applyInvFormat(rawInvoiceNo, invFormatRule);
+      const lineDescs = (inv.Line || [])
+        .filter((l) => l.DetailType === "SalesItemLineDetail" && l.Description)
+        .map((l) => String(l.Description).trim());
+      const description =
+        lineDescs.slice(0, 2).join(" - ") ||
+        String(inv.PrivateNote || "").trim() ||
+        `Invoice ${invoiceNo}`.trim();
+
+      normalized.push({
+        id: String(inv.Id || rawInvoiceNo),
+        rawInvoiceNo,
+        invoiceNo,
+        invoiceNoKey: invoiceNo.toLowerCase(),
+        isFormatted: true,
+        client,
+        contactId,
+        description: description.slice(0, 120),
+        reference: String(inv.CustomerMemo?.value || "").trim(),
+        sendDateIso,
+        sendDateFormatted,
+        subTotal,
+        tax,
+        total,
+        vat: tax > 0.005 ? "Yes" : "No",
+        daysToPay: clampedDays,
+        status,
+      });
+    }
   }
 
   return normalized;
@@ -859,7 +1117,7 @@ export function findContiguousRateStartDate(
 /**
  * Targeted historical ACCREC invoice fetch for a single Xero contact (up to 500 invoices).
  */
-async function fetchXeroContactHistory(auth, contactId) {
+async function fetchXeroContactHistory(auth, contactId, { importMode = "Whole" } = {}) {
   if (!contactId) return [];
   const headers = {
     Authorization: `Bearer ${auth.accessToken}`,
@@ -880,14 +1138,32 @@ async function fetchXeroContactHistory(auth, contactId) {
       if (st === "VOIDED" || st === "DELETED" || st === "DRAFT") continue;
       const d = parseYear0Date(inv.DateString || inv.Date);
       if (!d) continue;
+      const sendDateIso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       const originalTotal = Number(inv.Total) || 0;
       const credit = Number(inv.AmountCredited) || 0;
       const ratio = originalTotal > 0 ? round2(originalTotal - credit) / originalTotal : 1;
-      const subTotal = round2((Number(inv.SubTotal) || 0) * ratio);
-      results.push({
-        sendDateIso: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
-        subTotal,
-      });
+      const currencyRate = Number(inv.CurrencyRate) > 0 ? Number(inv.CurrencyRate) : 1;
+
+      if (importMode === "Lines") {
+        if (!Array.isArray(inv.LineItems) || inv.LineItems.length === 0) continue;
+        const lineAmountType = String(inv.LineAmountTypes || "Exclusive").toUpperCase();
+        for (const line of inv.LineItems) {
+          const effectiveLineAmt = (Number(line.LineAmount) || 0) * ratio;
+          const effectiveLineTax = (Number(line.TaxAmount) || 0) * ratio;
+          const lineSubTotalRaw =
+            lineAmountType === "INCLUSIVE" ? effectiveLineAmt - effectiveLineTax : effectiveLineAmt;
+          results.push({
+            sendDateIso,
+            subTotal: round2(lineSubTotalRaw / currencyRate),
+          });
+        }
+      } else {
+        const subTotal = round2(((Number(inv.SubTotal) || 0) * ratio) / currencyRate);
+        results.push({
+          sendDateIso,
+          subTotal,
+        });
+      }
     }
     if (invs.length < 100) break;
   }
@@ -897,7 +1173,7 @@ async function fetchXeroContactHistory(auth, contactId) {
 /**
  * Targeted historical invoice fetch for a single QuickBooks customer.
  */
-async function fetchQuickBooksContactHistory(auth, customerId) {
+async function fetchQuickBooksContactHistory(auth, customerId, { importMode = "Whole" } = {}) {
   if (!customerId || !/^\d+$/.test(String(customerId))) return [];
   const safeRealmId = assertValidQBRealmId(auth.realmId);
   const headers = {
@@ -909,7 +1185,7 @@ async function fetchQuickBooksContactHistory(auth, customerId) {
   const pageSize = 500;
   for (let p = 0; p < 3; p++) {
     const query = encodeURIComponent(
-      `SELECT Id, TxnDate, TotalAmt, TxnTaxDetail, LinkedTxn FROM Invoice WHERE CustomerRef = '${String(customerId)}' ORDERBY TxnDate DESC STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+      `SELECT Id, TxnDate, TotalAmt, TxnTaxDetail, LinkedTxn, ExchangeRate, Line FROM Invoice WHERE CustomerRef = '${String(customerId)}' ORDERBY TxnDate DESC STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
     );
     const url = `https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(safeRealmId)}/query?query=${query}&minorversion=73`;
     const res = await fetch(url, { headers, redirect: "manual" }).catch(() => null);
@@ -919,6 +1195,7 @@ async function fetchQuickBooksContactHistory(auth, customerId) {
     for (const inv of invs) {
       const d = parseYear0Date(inv.TxnDate);
       if (!d) continue;
+      const sendDateIso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       const originalTotal = Number(inv.TotalAmt) || 0;
       let totalCredit = 0;
       for (const txn of inv.LinkedTxn || []) {
@@ -926,12 +1203,25 @@ async function fetchQuickBooksContactHistory(auth, customerId) {
       }
       const effectiveTotal = round2(originalTotal - totalCredit);
       const ratio = originalTotal > 0 ? effectiveTotal / originalTotal : 1;
-      const tax = round2((Number(inv.TxnTaxDetail?.TotalTax) || 0) * ratio);
-      const subTotal = round2(effectiveTotal - tax);
-      results.push({
-        sendDateIso: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
-        subTotal,
-      });
+      const currencyRate = Number(inv.ExchangeRate) > 0 ? Number(inv.ExchangeRate) : 1;
+
+      if (importMode === "Lines") {
+        const validLines = (inv.Line || []).filter((l) => l.DetailType === "SalesItemLineDetail");
+        for (const line of validLines) {
+          const effectiveLineAmt = (Number(line.Amount) || 0) * ratio;
+          results.push({
+            sendDateIso,
+            subTotal: round2(effectiveLineAmt / currencyRate),
+          });
+        }
+      } else {
+        const rawTax = Number(inv.TxnTaxDetail?.TotalTax) || 0;
+        const subTotal = round2((effectiveTotal - rawTax * ratio) / currencyRate);
+        results.push({
+          sendDateIso,
+          subTotal,
+        });
+      }
     }
     if (invs.length < pageSize) break;
     startPosition += invs.length;
@@ -957,7 +1247,7 @@ export async function importAndAnalyseInitialInvoices({ clientName, masterSheetI
     withRetry(() =>
       sheets.spreadsheets.values.batchGet({
         spreadsheetId: cleanMasterId,
-        ranges: ["KeyInfo!B2", "KeyInfo!B17", "KeyInfo!X28"],
+        ranges: ["KeyInfo!B2", "KeyInfo!B17", "KeyInfo!X28", "KeyInfo!F8", "InvAppList!F1"],
         valueRenderOption: "UNFORMATTED_VALUE",
       })
     ),
@@ -975,6 +1265,9 @@ export async function importAndAnalyseInitialInvoices({ clientName, masterSheetI
     throw new Error("Client workspace sheet ID is not configured in settings.");
   }
 
+  const importMode = resolveImportMode(vr[3]?.values?.[0]?.[0]);
+  const invFormatRule = resolveInvFormatRule(vr[4]?.values?.[0]?.[0]);
+
   const cutoff12m = addMonthsSafe(startDate, -12);
   const cutoff3m = addMonthsSafe(startDate, -3);
   const defaultDaysToPay =
@@ -982,8 +1275,8 @@ export async function importAndAnalyseInitialInvoices({ clientName, masterSheetI
 
   const [rawInvoices, confirmedMeta] = await Promise.all([
     auth.tool === "Xero"
-      ? fetchXeroInvoicesForWindow(auth, cutoff12m, defaultDaysToPay)
-      : fetchQuickBooksInvoicesForWindow(auth, cutoff12m, defaultDaysToPay),
+      ? fetchXeroInvoicesForWindow(auth, cutoff12m, defaultDaysToPay, { importMode, invFormatRule })
+      : fetchQuickBooksInvoicesForWindow(auth, cutoff12m, defaultDaysToPay, { importMode, invFormatRule }),
     readConfirmedMetadataAndExistingRefs(sheets, cleanClientId),
   ]);
 
@@ -1043,8 +1336,8 @@ export async function importAndAnalyseInitialInvoices({ clientName, masterSheetI
         slice.map(async (cid) => {
           const hist =
             auth.tool === "Xero"
-              ? await fetchXeroContactHistory(auth, cid)
-              : await fetchQuickBooksContactHistory(auth, cid);
+              ? await fetchXeroContactHistory(auth, cid, { importMode })
+              : await fetchQuickBooksContactHistory(auth, cid, { importMode });
           historyByContact.set(cid, hist);
         })
       );
@@ -1096,6 +1389,8 @@ export async function importAndAnalyseInitialInvoices({ clientName, masterSheetI
   return {
     clientName: clientName || "",
     accountingTool: auth.tool,
+    importMode,
+    invFormatRule,
     currency,
     startDateFormatted: formatDMmmYyyy(startDate),
     cutoff12mFormatted: formatDMmmYyyy(cutoff12m),
@@ -1130,13 +1425,14 @@ export async function createInitialRetainerJobs({
   const keyResp = await withRetry(() =>
     sheets.spreadsheets.values.batchGet({
       spreadsheetId: cleanMasterId,
-      ranges: ["KeyInfo!B2", "KeyInfo!X28"],
+      ranges: ["KeyInfo!B2", "KeyInfo!X28", "InvAppList!F1"],
       valueRenderOption: "UNFORMATTED_VALUE",
     })
   );
   const startDate = parseYear0Date(keyResp.data?.valueRanges?.[0]?.values?.[0]?.[0]);
   const cleanClientId = resolveCleanId(keyResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "");
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
+  const invFormatRule = resolveInvFormatRule(keyResp.data?.valueRanges?.[2]?.values?.[0]?.[0]);
 
   const cutoff3m = startDate ? addMonthsSafe(startDate, -3) : null;
   const meta = await readConfirmedMetadataAndExistingRefs(sheets, cleanClientId);
@@ -1179,9 +1475,15 @@ export async function createInitialRetainerJobs({
       )
     );
 
-    const assignedInvoices = (ret.relevantInvoices || []).filter(
-      (inv) => !meta.existingRefs.has(String(inv.invoiceNo || "").trim().toLowerCase())
-    );
+    const assignedInvoices = (ret.relevantInvoices || [])
+      .map((inv) => {
+        if (!inv) return null;
+        const resolvedRef = inv.isFormatted
+          ? String(inv.invoiceNo || "").trim()
+          : applyInvFormat(inv.rawInvoiceNo || inv.invoiceNo, invFormatRule);
+        return { ...inv, resolvedRef };
+      })
+      .filter((inv) => inv && inv.resolvedRef && !meta.existingRefs.has(inv.resolvedRef.toLowerCase()));
 
     provisionedJobs.push({
       parentRowNum: rowNum,
@@ -1196,7 +1498,7 @@ export async function createInitialRetainerJobs({
       invoiceSendDay: ret.invoiceSendDay || 28,
       initialInvoices: assignedInvoices.map((inv) => ({
         amount: round2(inv.subTotal),
-        ref: inv.invoiceNo,
+        ref: inv.resolvedRef,
         sendDate: inv.sendDateFormatted,
         days: inv.daysToPay || 30,
         status: inv.status || "Sent",
@@ -1274,20 +1576,30 @@ export async function createInitialProjectJobs({
   const keyResp = await withRetry(() =>
     sheets.spreadsheets.values.batchGet({
       spreadsheetId: cleanMasterId,
-      ranges: ["KeyInfo!X28"],
+      ranges: ["KeyInfo!X28", "InvAppList!F1"],
       valueRenderOption: "UNFORMATTED_VALUE",
     })
   );
   const cleanClientId = resolveCleanId(keyResp.data?.valueRanges?.[0]?.values?.[0]?.[0] || "");
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
+  const invFormatRule = resolveInvFormatRule(keyResp.data?.valueRanges?.[1]?.values?.[0]?.[0]);
 
   const meta = await readConfirmedMetadataAndExistingRefs(sheets, cleanClientId);
-  const pending = (invoices || []).filter(
-    (inv) =>
-      inv &&
-      round2(inv.subTotal) > 0.005 &&
-      !meta.existingRefs.has(String(inv.invoiceNo || "").trim().toLowerCase())
-  );
+  const pending = (invoices || [])
+    .map((inv) => {
+      if (!inv) return null;
+      const resolvedRef = inv.isFormatted
+        ? String(inv.invoiceNo || "").trim()
+        : applyInvFormat(inv.rawInvoiceNo || inv.invoiceNo, invFormatRule);
+      return { ...inv, resolvedRef };
+    })
+    .filter(
+      (inv) =>
+        inv &&
+        round2(inv.subTotal) > 0.005 &&
+        inv.resolvedRef &&
+        !meta.existingRefs.has(inv.resolvedRef.toLowerCase())
+    );
 
   if (pending.length === 0) {
     return { createdCount: 0, createdInvoiceRefs: [] };
@@ -1309,7 +1621,7 @@ export async function createInitialProjectJobs({
 
     const jobName =
       String(inv.jobName || inv.description || "").trim() ||
-      `Invoice ${inv.invoiceNo}`;
+      `Invoice ${inv.resolvedRef}`;
 
     batchSlices.push(
       ...buildConfirmedParentWriteSlices(
@@ -1324,7 +1636,7 @@ export async function createInitialProjectJobs({
           endDate: formatDMmmYyyy(jobEndObj),
           inv1: {
             amount: round2(inv.subTotal),
-            ref: inv.invoiceNo,
+            ref: inv.resolvedRef,
             sendDate: formatDMmmYyyy(sendDateObj),
             daysToPay: inv.daysToPay || 30,
             status: inv.status || "Sent",
@@ -1333,7 +1645,7 @@ export async function createInitialProjectJobs({
         meta.isJobCosting
       )
     );
-    createdRefs.push(inv.invoiceNo);
+    createdRefs.push(inv.resolvedRef);
   }
 
   await withRetry(() =>

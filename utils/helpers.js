@@ -3141,24 +3141,24 @@ export const INVOICE_NUMBER_FORMATTING_OPTIONS = [
 ];
 
 export function formatInvoiceNumber(raw, setting) {
-  if (!raw) return "";
+  if (!raw && raw !== 0) return "";
   const str = String(raw).trim();
-  switch (setting) {
-    case "Full":
+  if (!str) return "";
+  const rule = String(setting || "Full").trim().toLowerCase();
+  switch (rule) {
+    case "full":
       return str;
-    case "StripPre":
+    case "strippre":
       return str.replace(/^[^-]+-/, "");
-    case "Right5":
+    case "right5":
       return str.slice(-5);
-    case "Right4": {
-      const match = str.match(/\d+/g);
-      const digits = match ? match.join("") : str;
-      return digits.slice(-4);
+    case "right4": {
+      const m = str.match(/(\d+)/);
+      return m ? m[1].slice(-4) : "";
     }
-    case "Right3": {
-      const match = str.match(/\d+/g);
-      const digits = match ? match.join("") : str;
-      return digits.slice(-3);
+    case "right3": {
+      const m = str.match(/(\d+)/);
+      return m ? m[1].slice(-3) : "";
     }
     default:
       return str;

@@ -849,11 +849,11 @@ export default async function handler(req, res) {
       return await handleSpreadViewRow(req, res, sheets);
     } else if (action === "get_cashflow_recon_data") {
       try {
-        const { clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey, targetMonthKey, clientName } = req.body;
-        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, reconSheetId, reconSheetUrl]))) {
+        const { clientSheetId, masterSheetId, reconSheetUrl, reconSheetId, eomMonthKey, targetMonthKey, clientName } = req.body;
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, masterSheetId, reconSheetId, reconSheetUrl]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
-        const data = await getCashflowReconData({ clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey, targetMonthKey });
+        const data = await getCashflowReconData({ clientSheetId, masterSheetId, reconSheetUrl, reconSheetId, eomMonthKey, targetMonthKey, clientName });
         return res.status(200).json(data);
       } catch (err) {
         console.error("❌ get_cashflow_recon_data error:", err);

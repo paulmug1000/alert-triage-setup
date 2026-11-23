@@ -194,6 +194,9 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
   const [loading, setLoading] = useState(true);
   const [savingBatch, setSavingBatch] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
+  const [renamingRow, setRenamingRow] = useState(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renaming, setRenaming] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -276,6 +279,39 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
   useEffect(() => {
     loadRegistry();
   }, [loadRegistry]);
+
+  const handleConfirmRename = async () => {
+    if (!renamingRow || renaming) return;
+    const trimmed = renameDraft.trim();
+    if (!trimmed || trimmed === String(renamingRow.client_name || "").trim()) return;
+    setRenaming(true);
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch("/api/pma/control-plane", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "rename_client",
+          clientId: renamingRow.id,
+          oldClientName: renamingRow.client_name,
+          newClientName: trimmed,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || "Failed to rename client.");
+      }
+      const prevName = renamingRow.client_name;
+      setRenamingRow(null);
+      await loadRegistry({ silent: true });
+      setNotice(`Renamed client "${prevName}" to "${trimmed}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRenaming(false);
+    }
+  };
 
   const dirtyRows = useMemo(() => {
     return rows.filter(r => !rowsEqual(r, originalMap[getRowKey(r)]));
@@ -466,7 +502,7 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
           readOnly={isExistingClientName}
           title={
             isExistingClientName
-              ? "Client names are locked after creation because downstream data and credentials key by client name"
+              ? "Use the Rename button to safely rename this client across all records and credentials"
               : (val || undefined)
           }
           placeholder={col.placeholder || ""}
@@ -485,6 +521,32 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
             fontWeight: col.key === "client_name" ? "600" : "400",
           }}
         />
+        {isExistingClientName && (
+          <button
+            type="button"
+            onClick={() => {
+              setError("");
+              setNotice("");
+              setRenamingRow(row);
+              setRenameDraft(String(row.client_name || "").trim());
+            }}
+            title="Rename client across all tables, credentials, and views"
+            style={{
+              height: "28px",
+              padding: "0 8px",
+              borderRadius: "6px",
+              border: "1px solid #cbd5e1",
+              background: "#ffffff",
+              color: "#334155",
+              fontSize: "11px",
+              fontWeight: 600,
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            Rename
+          </button>
+        )}
         {externalUrl && (
           <a
             href={externalUrl}
@@ -912,6 +974,127 @@ export default function ClientRegistryCard({ automationCommanderSheetId, onClien
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {renamingRow && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.45)",
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "16px",
+          }}
+          onClick={() => !renaming && setRenamingRow(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: "460px",
+              background: "#ffffff",
+              borderRadius: "12px",
+              border: "1px solid #e2e8f0",
+              boxShadow: "0 20px 25px -5px rgba(15, 23, 42, 0.15)",
+              padding: "20px",
+            }}
+          >
+            <h3 style={{ margin: "0 0 8px 0", fontSize: "16px", fontWeight: 700, color: "#0f172a" }}>
+              Rename client
+            </h3>
+            <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#475569", lineHeight: 1.5 }}>
+              Updates all tenant database records, KeyInfo headers, OAuth vault encryption keys, user assignments, and caches for{" "}
+              <strong style={{ color: "#0f172a" }}>{renamingRow.client_name}</strong>.
+            </p>
+            <div style={{ marginBottom: "16px" }}>
+              <label
+                htmlFor="rename-client-input"
+                style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "6px" }}
+              >
+                New client name
+              </label>
+              <input
+                id="rename-client-input"
+                type="text"
+                value={renameDraft}
+                disabled={renaming}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !renaming) {
+                    e.preventDefault();
+                    handleConfirmRename();
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  height: "36px",
+                  padding: "0 10px",
+                  borderRadius: "8px",
+                  border: "1px solid #cbd5e1",
+                  fontSize: "13px",
+                  color: "#0f172a",
+                  boxSizing: "border-box",
+                }}
+                autoFocus
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+              <button
+                type="button"
+                disabled={renaming}
+                onClick={() => setRenamingRow(null)}
+                style={{
+                  height: "34px",
+                  padding: "0 14px",
+                  borderRadius: "8px",
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  color: "#334155",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor: renaming ? "not-allowed" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  renaming ||
+                  !renameDraft.trim() ||
+                  renameDraft.trim() === String(renamingRow.client_name || "").trim()
+                }
+                onClick={handleConfirmRename}
+                style={{
+                  height: "34px",
+                  padding: "0 14px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background:
+                    renaming ||
+                    !renameDraft.trim() ||
+                    renameDraft.trim() === String(renamingRow.client_name || "").trim()
+                      ? "#94a3b8"
+                      : "#2563eb",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor:
+                    renaming ||
+                    !renameDraft.trim() ||
+                    renameDraft.trim() === String(renamingRow.client_name || "").trim()
+                      ? "not-allowed"
+                      : "pointer",
+                }}
+              >
+                {renaming ? "Renaming..." : "Rename client"}
+              </button>
             </div>
           </div>
         </div>

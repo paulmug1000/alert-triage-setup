@@ -2070,10 +2070,11 @@ export async function createGasEnvironment({
         d.has("PLComp") || d.has("PLFromApp") || d.has("Year0PLFromApp") ||
         d.has("PLAdds") || d.has("KeyInfo") || d.has("Outgoings");
       const needsInv =
-        d.has("InvFromApp") || d.has("InvAppList") || d.has("InvDashList") || d.has("InvComp") || d.has("ConfCalcs");
+        d.has("InvFromApp") || d.has("InvAppList") || d.has("InvDashList") || d.has("InvComp") ||
+        d.has("ConfCalcs") || d.has("KeyInfo");
       const needsDir =
         d.has("JnlsFromApp") || d.has("JnlAppList") || d.has("DirDashList") || d.has("DirComp") ||
-        d.has("ConfCalcs") || d.has("Outgoings") || d.has("OutgNotes");
+        d.has("ConfCalcs") || d.has("Outgoings") || d.has("OutgNotes") || d.has("KeyInfo");
       const needsYear0 = d.has("Year0PLFromApp") || d.has("Year0Data") || d.has("KeyInfo");
       const needsTime = d.has("DataFromTime") || d.has("TimeComp") || d.has("KeyInfo");
 

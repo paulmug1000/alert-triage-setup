@@ -11,6 +11,7 @@ import { memoryCache } from "../../../services/cacheService.js";
 import { flushAllAlertMemoryCaches, searchAlertMemoryEntries, deleteAlertMemoryEntryByHash } from "../../../services/alertMemory.js";
 import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
 import { syncProvisioningTemplateSnapshots, getProvisioningTemplateSnapshotsMeta } from "../../../services/masterEngineService.js";
+import { renameTenantClient } from "../../../services/tenantRenameService.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 const VALID_CLIENT_STATUSES = new Set(["live", "setup", "paused", "suspended", "archived"]);
@@ -155,7 +156,7 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
       String(existingRow.client_name).trim() !== String(payload.client_name).trim()
     ) {
       throw new Error(
-        `Renaming existing client "${existingRow.client_name}" to "${payload.client_name}" is blocked to prevent orphaning tenant data. Create a new client or run a dedicated tenant rename migration.`
+        `Renaming existing client "${existingRow.client_name}" via inline edit is blocked. Use the Rename action next to the client name to migrate all tenant data.`
       );
     }
 
@@ -721,6 +722,31 @@ export default async function handler(req, res) {
         userEmail: sessionUser.email || "Admin",
       }).catch(() => { });
       return res.status(200).json({ success: true, snapshotMeta: snapRes.meta });
+    }
+
+    if (action === "rename_client") {
+      const { clientId, oldClientName, newClientName } = req.body || {};
+      const acId = automationCommanderSheetId || getCanonicalAcSheetId();
+      const sheets = await getSheetsClient().catch(() => null);
+      const result = await renameTenantClient({
+        clientId,
+        oldClientName,
+        newClientName,
+        sheets,
+        acId,
+      });
+      await invalidateClientsCache_(acId);
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        source: "PMA",
+        clientName: result.newClientName,
+        category: "SYSTEM",
+        action: "RENAMED_CLIENT",
+        summary: `Renamed client "${result.oldClientName}" to "${result.newClientName}"`,
+        details: result,
+        userEmail: sessionUser.email || "Admin",
+      }).catch(() => {});
+      return res.status(200).json({ success: true, result });
     }
 
     return res.status(400).json({ success: false, error: `Unknown action: ${action}` });

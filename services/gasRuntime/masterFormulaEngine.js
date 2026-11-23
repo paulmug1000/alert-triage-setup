@@ -1,6 +1,6 @@
 /**
  * Master Sheet Formula Engine (100% Verbatim 1:1 Implementation)
- * Version: 1.05 — Remove hardcoded column and blank-cell shortcuts in evaluateInvAppList and evaluateJnlAppList
+ * Version: 1.06 — Treat blank CRM Revenue / % Likelihood as 0 in Pipeline evaluateCRMComp comparison
  *
  * Evaluates the exact Google Sheets formulas on the Master Sheet tabs:
  *   1. Outgoings (Row 1 dates from KeyInfo!B2 + IMPORTRANGEs A4:AX8, A12:AX114)
@@ -728,6 +728,65 @@ export function evaluateInvDashList(grids) {
   compactGridInPlace(invDashList);
 }
 
+function getTrackerStartSerial_(keyInfo) {
+  const raw = getCell(keyInfo, 1, 1); // KeyInfo!B2
+  return toSerialOrNull(raw);
+}
+
+function matchesExpenseCategoryEntry_(rawAcct, categoryEntry) {
+  const acct = String(rawAcct || "").trim().toLowerCase();
+  const entry = String(categoryEntry || "").trim().toLowerCase();
+  if (!acct || !entry) return false;
+  if (acct === entry) return true;
+  const acctParts = acct.split(" - ");
+  const entryParts = entry.split(" - ");
+  const acctCode = acctParts.length > 1 ? acctParts[0].trim() : "";
+  const acctName = acctParts.length > 1 ? acctParts.slice(1).join(" - ").trim() : acct;
+  const entryCode = entryParts.length > 1 ? entryParts[0].trim() : "";
+  const entryName = entryParts.length > 1 ? entryParts.slice(1).join(" - ").trim() : entry;
+  if (acctCode && entryCode && acctCode === entryCode) return true;
+  if (acctName && entryName && acctName === entryName) return true;
+  return false;
+}
+
+function getExpenseCategoryConfig_(keyInfo) {
+  const revFocus = String(getCell(keyInfo, 14, 1) || "Revenue").trim(); // KeyInfo!B15
+  const rawDcMode = String(getCell(keyInfo, 7, 3) || "Contractors").trim(); // KeyInfo!D8
+  const directCostsMode =
+    revFocus.toLowerCase() === "income"
+      ? "Pass-through"
+      : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
+
+  const readColList = (startR0, endR0) => {
+    const out = [];
+    for (let r = startR0; r <= endR0; r++) {
+      const val = String(getCell(keyInfo, r, 45) ?? "").trim(); // Col AT = 45
+      if (val) out.push(val);
+    }
+    return out;
+  };
+
+  return {
+    directCostsMode,
+    contractorsList: readColList(3, 21), // KeyInfo!AT4:AT22
+    passThroughList: readColList(23, 39), // KeyInfo!AT24:AT40
+  };
+}
+
+function classifyExpenseCategory_(accountName, cfg) {
+  if (!cfg || cfg.directCostsMode !== "Pass-through") return "contractor";
+  if (cfg.passThroughList.some((entry) => matchesExpenseCategoryEntry_(accountName, entry))) {
+    return "passthrough";
+  }
+  if (cfg.contractorsList.some((entry) => matchesExpenseCategoryEntry_(accountName, entry))) {
+    return "contractor";
+  }
+  if (cfg.contractorsList.length === 0 && cfg.passThroughList.length > 0) {
+    return "passthrough";
+  }
+  return "contractor";
+}
+
 export function evaluateInvComp(grids) {
   const invComp = grids.InvComp;
   const invAppList = grids.InvAppList;
@@ -738,7 +797,10 @@ export function evaluateInvComp(grids) {
   const a2Months = getCell(invComp, 1, 0); // A2
   const monthsOffset = gsEq(a2Months, "All") ? -720 : -toNumOrZero(a2Months);
   const d2Start = edateSerial(today, monthsOffset);
-  setCell(invComp, 1, 3, d2Start); // D2
+  const trackerStart = getTrackerStartSerial_(grids.KeyInfo);
+  const preStartFloor = trackerStart !== null ? edateSerial(trackerStart, -3) : null;
+  const effectiveStart = typeof preStartFloor === "number" ? Math.max(d2Start, preStartFloor) : d2Start;
+  setCell(invComp, 1, 3, effectiveStart); // D2
 
   const e2On = getCell(invComp, 1, 4); // E2
   const isOff = e2On === false || gsEq(e2On, "FALSE");
@@ -755,7 +817,7 @@ export function evaluateInvComp(grids) {
     return;
   }
 
-  // Left side A6:K (cols 0..10) from InvAppList!BU4:CF5004 where CA >= D2 (CA is col 78, offset 6 in BU..CF)
+  // Left side A6:K (cols 0..10) from InvAppList!BU4:CF5004 where CA >= effectiveStart (CA is col 78, offset 6 in BU..CF)
   const buHeaders = (invAppList[2] || []).slice(72, 84); // BU3:CF3
   const leftHeaderRow = (invComp[4] || []).slice(0, 11); // A5:K5
   const leftColMap = leftHeaderRow.map((h) => matchInRow0(h, buHeaders));
@@ -765,13 +827,13 @@ export function evaluateInvComp(grids) {
     const row = invAppList[r];
     if (!Array.isArray(row)) continue;
     const caDate = toSerialOrNull(row[78]); // CA
-    if (caDate === null || caDate < d2Start) continue;
+    if (caDate === null || caDate < effectiveStart) continue;
     const mapped = leftColMap.map((idx) => (idx >= 0 ? (row[72 + idx] ?? "") : ""));
     if (mapped.every(isBlankCell)) continue;
     leftBaseRows.push(mapped);
   }
 
-  // Right side AT6:BD (cols 45..55) from InvDashList!BY3:CL3005 where CE >= D2 (CE is col 82, offset 6 in BY..CL)
+  // Right side AT6:BD (cols 45..55) from InvDashList!BY3:CL3005 where CE >= effectiveStart (CE is col 82, offset 6 in BY..CL)
   const byHeaders = (invDashList[1] || []).slice(76, 90); // BY2:CL2
   const rightHeaderRow = (invComp[4] || []).slice(45, 56); // AT5:BD5
   const rightColMap = rightHeaderRow.map((h) => matchInRow0(h, byHeaders));
@@ -781,7 +843,7 @@ export function evaluateInvComp(grids) {
     const row = invDashList[r];
     if (!Array.isArray(row)) continue;
     const ceDate = toSerialOrNull(row[82]); // CE
-    if (ceDate === null || ceDate < d2Start) continue;
+    if (ceDate === null || ceDate < effectiveStart) continue;
     const mapped = rightColMap.map((idx) => (idx >= 0 ? (row[76 + idx] ?? "") : ""));
     if (mapped.every(isBlankCell)) continue;
     rightBaseRows.push(mapped);
@@ -1323,7 +1385,11 @@ export function evaluateDirComp(grids) {
   const a2Months = getCell(dirComp, 1, 0); // A2
   const monthsOffset = gsEq(a2Months, "All") ? -720 : -toNumOrZero(a2Months);
   const d2Start = edateSerial(today, monthsOffset);
-  setCell(dirComp, 1, 3, d2Start); // D2
+  const trackerStart = getTrackerStartSerial_(grids.KeyInfo);
+  const expCfg = getExpenseCategoryConfig_(grids.KeyInfo);
+  const ptFloor = trackerStart !== null ? edateSerial(trackerStart, -3) : null;
+  const contractorCutoff = trackerStart !== null ? Math.max(d2Start, trackerStart) : d2Start;
+  const passThroughCutoff = typeof ptFloor === "number" ? Math.max(d2Start, ptFloor) : d2Start;
 
   const e2On = getCell(dirComp, 1, 4); // E2
   const isOff = e2On === false || gsEq(e2On, "FALSE");
@@ -1339,12 +1405,51 @@ export function evaluateDirComp(grids) {
   clearRect(dirComp, 5, maxR, 165, 172);
 
   if (isOff) {
+    setCell(dirComp, 1, 3, expCfg.directCostsMode === "Pass-through" ? passThroughCutoff : contractorCutoff); // D2
     setCell(dirComp, 1, 1, 0); // B2
     setCell(dirComp, 1, 2, 0); // C2
     return;
   }
 
-  // 1. Left base A6:N (cols 0..13) from JnlAppList!CA4:CN1000 where CA >= D2
+  // 1. Right base DG6:DQ (cols 110..120) from DirDashList!GW3:HJ1009 filtered by pre-start cutoff (B2 for OG-, B2-3m for Slot1/2/3) and GZ <> 0.
+  // Built before left base so pre-start contractor bills already linked to a Confirmed slot (B2-3m..B2) stay paired symmetrically.
+  // GW is col 204, GZ is col 207 (offset 3 = Gross Amount), HC is col 210 (offset 6 = Rec date)
+  const gwHeaders = (dirDashList[1] || []).slice(204, 218); // GW2:HJ2
+  const rightHeaders = (dirComp[4] || []).slice(110, 121); // DG5:DQ5
+  const rightColMap = rightHeaders.map((h) => matchInRow0(h, gwHeaders));
+
+  const rightBaseRows = [];
+  const confirmedSlotAppIds = new Set();
+  let hasPreStartConfirmedSlot = false;
+  for (let r = 2; r < dirDashList.length && r < 1009; r++) {
+    const row = dirDashList[r];
+    if (!Array.isArray(row)) continue;
+    const hcDate = toSerialOrNull(row[210]); // HC
+    const gzGross = toNumOrNull(row[207]);   // GZ
+    if (hcDate === null) continue;
+    if (gzGross === null || gzGross === 0) continue;
+    const mapped = rightColMap.map((idx) => (idx >= 0 ? (row[204 + idx] ?? "") : ""));
+    if (mapped.every(isBlankCell)) continue;
+    const srcStr = String(mapped[10] ?? "").trim().toUpperCase();
+    const isOutgoingsRow = srcStr.startsWith("OG-") || (!srcStr && isBlankCell(mapped[0]) && isBlankCell(mapped[1]));
+    const rowCutoff = isOutgoingsRow ? contractorCutoff : passThroughCutoff;
+    if (hcDate < rowCutoff) continue;
+    rightBaseRows.push(mapped);
+    if (!isOutgoingsRow) {
+      const dpKey = String(mapped[9] ?? "").trim().toLowerCase();
+      if (dpKey) confirmedSlotAppIds.add(dpKey);
+      if (hcDate < contractorCutoff) hasPreStartConfirmedSlot = true;
+    }
+  }
+
+  const d2Effective =
+    expCfg.directCostsMode === "Pass-through" || hasPreStartConfirmedSlot
+      ? passThroughCutoff
+      : contractorCutoff;
+  setCell(dirComp, 1, 3, d2Effective); // D2
+
+  // 2. Left base A6:N (cols 0..13) from JnlAppList!CA4:CN1000 filtered by pre-start cutoff
+  // (B2-3m for pass-through categories or Confirmed-linked slots, B2 for unmatched contractor bills)
   const caHeaders = (jnlAppList[2] || []).slice(78, 92); // CA3:CN3
   const leftHeaders = (dirComp[4] || []).slice(0, 14); // A5:N5
   const leftColMap = leftHeaders.map((h) => matchInRow0(h, caHeaders));
@@ -1354,31 +1459,17 @@ export function evaluateDirComp(grids) {
     const row = jnlAppList[r];
     if (!Array.isArray(row)) continue;
     const caDate = toSerialOrNull(row[78]); // CA
-    if (caDate === null || caDate < d2Start) continue;
+    if (caDate === null) continue;
     const mapped = leftColMap.map((idx) => (idx >= 0 ? (row[78 + idx] ?? "") : ""));
     if (mapped.every(isBlankCell)) continue;
+    const isPassThrough = classifyExpenseCategory_(mapped[4], expCfg) === "passthrough";
+    const txKey = String(mapped[6] ?? "").trim().toLowerCase();
+    const isLinkedConfirmedSlot = Boolean(txKey && confirmedSlotAppIds.has(txKey));
+    const rowCutoff = (isPassThrough || isLinkedConfirmedSlot) ? passThroughCutoff : contractorCutoff;
+    if (caDate < rowCutoff) continue;
     leftBaseRows.push(mapped);
   }
   writeRect(dirComp, 5, 0, leftBaseRows, 14);
-
-  // 2. Right base DG6:DQ (cols 110..120) from DirDashList!GW3:HJ1009 where HC >= D2 and GZ <> 0
-  // GW is col 204, GZ is col 207 (offset 3 = Gross Amount), HC is col 210 (offset 6 = Rec date)
-  const gwHeaders = (dirDashList[1] || []).slice(204, 218); // GW2:HJ2
-  const rightHeaders = (dirComp[4] || []).slice(110, 121); // DG5:DQ5
-  const rightColMap = rightHeaders.map((h) => matchInRow0(h, gwHeaders));
-
-  const rightBaseRows = [];
-  for (let r = 2; r < dirDashList.length && r < 1009; r++) {
-    const row = dirDashList[r];
-    if (!Array.isArray(row)) continue;
-    const hcDate = toSerialOrNull(row[210]); // HC
-    const gzGross = toNumOrNull(row[207]);   // GZ
-    if (hcDate === null || hcDate < d2Start) continue;
-    if (gzGross === null || gzGross === 0) continue;
-    const mapped = rightColMap.map((idx) => (idx >= 0 ? (row[204 + idx] ?? "") : ""));
-    if (mapped.every(isBlankCell)) continue;
-    rightBaseRows.push(mapped);
-  }
   writeRect(dirComp, 5, 110, rightBaseRows, 11);
 
   // B2 = COUNTIFS(DP:DP, "*UNRECON-GAP*", DM:DM, "<=" & TODAY())
@@ -1980,6 +2071,17 @@ export function evaluateCRMComp(grids) {
   const aoHeaders = (crmComp[4] || []).slice(40, 50); // AO5:AX5
   const aoToDmMap = aoHeaders.map((h) => matchInRow0(h, dmHeaders));
 
+  // On Pipeline, treat blank CRM Revenue / % Likelihood as 0 for mismatch equality so that
+  // once automation zeroes a Pulse Pipeline cell (e.g. £6,500 -> £0, 80% -> 0%), 0 matches blank
+  // instead of looping forever. Keep Confirmed mode strict via gsValEq.
+  const pipelineNumEq = (pulseVal, crmVal) => {
+    if (gsValEq(pulseVal, crmVal)) return true;
+    const pNum = isBlankCell(pulseVal) ? 0 : toNumOrNull(pulseVal);
+    const cNum = isBlankCell(crmVal) ? 0 : toNumOrNull(crmVal);
+    if (pNum !== null && cNum !== null) return Math.abs(pNum - cNum) < 1e-9;
+    return false;
+  };
+
   for (let i = 0; i < xRows.length; i++) {
     const r0 = 5 + i;
     const xRow = xRows[i];
@@ -1994,11 +2096,11 @@ export function evaluateCRMComp(grids) {
     const hasAO = !isBlankCell(AO);
     const AZ = hasAO && !gsValEq(AP, X) ? 1 : "";
     const BA = String(AO ?? "").trim() !== "" && !gsEq(String(AQ ?? "").trim(), String(Y ?? "").trim()) ? 1 : "";
-    const BB = hasAO && !gsValEq(AR, AA) ? 1 : "";
+    const BB = hasAO && !(isConfMode ? gsValEq(AR, AA) : pipelineNumEq(AR, AA)) ? 1 : "";
     const BC = hasAO && !gsValEq(AS, AB) ? 1 : "";
     const BD = hasAO && !gsValEq(AT, AC) ? 1 : "";
     const BE = hasAO && !gsValEq(AU, AD) ? 1 : "";
-    const BF = isConfMode ? "" : hasAO && !gsValEq(AV, AE) ? 1 : "";
+    const BF = isConfMode ? "" : hasAO && !pipelineNumEq(AV, AE) ? 1 : "";
 
     writeRect(crmComp, r0, 40, [aoRow], 10);
     writeRect(crmComp, r0, 50, [[AY, AZ, BA, BB, BC, BD, BE, BF]], 8);
@@ -2072,7 +2174,7 @@ export function evaluateCRMComp(grids) {
     const FE = !isBlankCell(EG) && isBlankCell(EU) ? 1 : "";
     const FF = FE === 1 ? "" : !gsValEq(EF, EV) ? 1 : "";
     const FG = FE === 1 ? "" : !gsEq(String(EG ?? "").trim(), String(EW ?? "").trim()) ? 1 : "";
-    const FH = FE === 1 ? "" : !gsValEq(EI, EX) ? 1 : "";
+    const FH = FE === 1 ? "" : !(isConfMode ? gsValEq(EI, EX) : pipelineNumEq(EI, EX)) ? 1 : "";
     const FI = FE === 1 ? "" : !gsValEq(EJ, EY) ? 1 : "";
     const FJ = FE === 1 ? "" : !gsValEq(EK, EZ) ? 1 : "";
     const FK = FE === 1 ? "" : !gsValEq(EL, FA) ? 1 : "";
@@ -2106,7 +2208,7 @@ export function evaluateCRMComp(grids) {
       } else {
         if (FE === 1) FL = "";
         else if (rowIsConf && !gsEq(EN, "Yes")) FL = 1;
-        else if (!rowIsConf && !gsValEq(EM, FB)) FL = 1;
+        else if (!rowIsConf && !pipelineNumEq(EM, FB)) FL = 1;
       }
     }
 

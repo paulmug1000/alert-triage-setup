@@ -1526,7 +1526,8 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     tabsSet.has("InvAppList") ||
     tabsSet.has("InvDashList") ||
     tabsSet.has("InvComp") ||
-    tabsSet.has("ConfCalcs");
+    tabsSet.has("ConfCalcs") ||
+    tabsSet.has("KeyInfo");
   const needsDir =
     tabsSet.has("JnlsFromApp") ||
     tabsSet.has("JnlAppList") ||
@@ -1534,7 +1535,8 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
     tabsSet.has("DirComp") ||
     tabsSet.has("ConfCalcs") ||
     tabsSet.has("Outgoings") ||
-    tabsSet.has("OutgNotes");
+    tabsSet.has("OutgNotes") ||
+    tabsSet.has("KeyInfo");
   const needsYear0 =
     tabsSet.has("Year0PLFromApp") ||
     tabsSet.has("Year0Data") ||

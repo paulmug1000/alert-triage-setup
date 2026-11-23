@@ -1069,7 +1069,7 @@ export default function TriageAnalysisView({
 
               // Helpers for formatting
               const formatCurrency = (val) => {
-                if (val === null || val === undefined || String(val).trim() === "") return "£0";
+                if (val === null || val === undefined || String(val).trim() === "") return "(blank)";
                 const clean = String(val).replace(/[£$€,\s]/g, "");
                 const num = parseFloat(clean);
                 if (isNaN(num)) return String(val);
@@ -1077,7 +1077,7 @@ export default function TriageAnalysisView({
               };
 
               const formatLikelihood = (val) => {
-                if (val === null || val === undefined || String(val).trim() === "") return "-";
+                if (val === null || val === undefined || String(val).trim() === "") return "(blank)";
                 const s = String(val).trim();
                 if (s.endsWith("%")) return s;
                 const num = parseFloat(s);
@@ -1160,6 +1160,12 @@ export default function TriageAnalysisView({
                   : `Missing job - in Pulse ${tabLabel.toLowerCase()} jobs, not in CRM`;
 
               const isMissingInCrm = !isMismatch && !isDash;
+              const summaryRev = isMissingInCrm ? shtRev : crmRev;
+              const summaryCosts = isMissingInCrm ? shtCosts : crmCosts;
+              const summaryType = isMissingInCrm ? shtType : crmType;
+              const summaryStart = isMissingInCrm ? shtStart : crmStart;
+              const summaryEnd = isMissingInCrm ? shtEnd : crmEnd;
+              const summaryLikely = isMissingInCrm ? shtLikely : crmLikely;
 
               return (
                 <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#f5f3ff", borderLeft: "4px solid #7c3aed", borderRadius: "4px" }}>
@@ -1238,28 +1244,28 @@ export default function TriageAnalysisView({
                   }}>
                     <div>
                       <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Revenue (Pulse): " : "Revenue (CRM): "}</span>
-                      <strong style={{ color: "#111827" }}>{formatCurrency(crmRev || displayRev)}</strong>
+                      <strong style={{ color: "#111827" }}>{formatCurrency(summaryRev)}</strong>
                     </div>
                     <div>
                       <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Direct costs (Pulse): " : "Direct costs (CRM): "}</span>
-                      <strong style={{ color: "#111827" }}>{formatCurrency(crmCosts || displayCosts)}</strong>
+                      <strong style={{ color: "#111827" }}>{formatCurrency(summaryCosts)}</strong>
                     </div>
                     <div>
                       <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Retainer / project (Pulse): " : "Retainer / project (CRM): "}</span>
-                      <strong style={{ color: "#111827" }}>{crmType || displayType || "Project"}</strong>
+                      <strong style={{ color: "#111827" }}>{summaryType || "(blank)"}</strong>
                     </div>
                     <div>
                       <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Start date (Pulse): " : "Start date (CRM): "}</span>
-                      <strong style={{ color: "#111827" }}>{crmStart || displayStart || "(blank)"}</strong>
+                      <strong style={{ color: "#111827" }}>{summaryStart || "(blank)"}</strong>
                     </div>
                     <div>
                       <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "End date (Pulse): " : "End date (CRM): "}</span>
-                      <strong style={{ color: "#111827" }}>{crmEnd || displayEnd || "(blank)"}</strong>
+                      <strong style={{ color: "#111827" }}>{summaryEnd || "(blank)"}</strong>
                     </div>
                     {isPipeline && (
                       <div>
                         <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Likelihood (Pulse): " : "Likelihood (CRM): "}</span>
-                        <strong style={{ color: "#111827" }}>{formatLikelihood(crmLikely || displayLikely)}</strong>
+                        <strong style={{ color: "#111827" }}>{formatLikelihood(summaryLikely)}</strong>
                       </div>
                     )}
                   </div>

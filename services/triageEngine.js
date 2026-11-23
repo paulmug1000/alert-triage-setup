@@ -38,6 +38,7 @@ import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemL
 import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan, resolveCanonicalOAuthHost } from "../utils/helpers.js";
 import { getSessionUser, safeCompareSecret } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
+import { toSerialOrNull, edateSerial } from "./gasRuntime/masterFormulaEngine.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId } from "./masterEngineService.js";
 import { runNativeMasterSync, ensureFreshMasterComparisons, isClientRecordInSetupMode } from "./masterSyncEngine.js";
@@ -921,7 +922,7 @@ export async function readRecentAutoLogEntries_(sheets, masterSheetId, limit = 3
   }
 }
 
-export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null, cachedInvFromApp = null, cachedInvFormatRule = "") {
+export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null, cachedInvFromApp = null, cachedInvFormatRule = "", cachedTrackerStart = undefined) {
   try {
     console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
     if (!cachedData) {
@@ -930,6 +931,7 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
     let allRows = [];
     let invFromAppRows = Array.isArray(cachedInvFromApp) ? cachedInvFromApp : null;
     let invFormatRule = String(cachedInvFormatRule || "").trim();
+    let trackerStartRaw = cachedTrackerStart;
     if (cachedData && cachedData.length > 0) {
       allRows = cachedData;
       // If cachedData only had columns A to Y, fetch right-hand columns AT to BD
@@ -950,36 +952,42 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
           console.warn("Could not fetch right columns for InvComp cachedData:", e.message);
         }
       }
-      if (!invFromAppRows) {
+      if (!invFromAppRows || trackerStartRaw === undefined) {
         try {
           const metaResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
             spreadsheetId,
-            ranges: ["InvFromApp!A1:S5000", "InvAppList!F1"],
+            ranges: ["InvFromApp!A1:S5000", "InvAppList!F1", "KeyInfo!B2"],
           }));
-          invFromAppRows = metaResp.data.valueRanges?.[0]?.values || [];
+          if (!invFromAppRows) invFromAppRows = metaResp.data.valueRanges?.[0]?.values || [];
           if (!invFormatRule) invFormatRule = String(metaResp.data.valueRanges?.[1]?.values?.[0]?.[0] || "").trim();
+          if (trackerStartRaw === undefined) trackerStartRaw = metaResp.data.valueRanges?.[2]?.values?.[0]?.[0] ?? "";
         } catch (_) {
-          invFromAppRows = [];
+          if (!invFromAppRows) invFromAppRows = [];
+          if (trackerStartRaw === undefined) trackerStartRaw = "";
         }
       }
     } else {
       try {
         const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
           spreadsheetId,
-          ranges: ["InvComp!A5:BD1000", "InvFromApp!A1:S5000", "InvAppList!F1"],
+          ranges: ["InvComp!A5:BD1000", "InvFromApp!A1:S5000", "InvAppList!F1", "KeyInfo!B2"],
         }));
         const vRanges = batchResp.data.valueRanges || [];
         allRows = vRanges[0]?.values || [];
         invFromAppRows = vRanges[1]?.values || [];
         invFormatRule = String(vRanges[2]?.values?.[0]?.[0] || "").trim();
+        if (trackerStartRaw === undefined) trackerStartRaw = vRanges[3]?.values?.[0]?.[0] ?? "";
       } catch (_) {
         const dataResponse = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId, range: "InvComp!A5:BD1000",
         }));
         allRows = dataResponse.data.values || [];
         invFromAppRows = [];
+        if (trackerStartRaw === undefined) trackerStartRaw = "";
       }
     }
+    const trackerStartSerial = toSerialOrNull(trackerStartRaw);
+    const invPreStartCutoff = trackerStartSerial !== null ? edateSerial(trackerStartSerial, -3) : null;
     const invMetaIndex = buildInvFromAppMetaMap(invFromAppRows || [], invFormatRule);
     const headers = allRows[0] || [];
     const rows = allRows.slice(1);
@@ -1022,6 +1030,10 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
       const row = rows[rowIdx];
       if (!row || row.length === 0) continue;
+      if (typeof invPreStartCutoff === "number") {
+        const sentSerial = toSerialOrNull(row[6]);
+        if (sentSerial !== null && sentSerial < invPreStartCutoff) continue;
+      }
       const hasDiscrepancy = [18, 19, 20, 21, 23, 24].some((idx) => String(row[idx] || "").trim() === "1");
       if (hasDiscrepancy) {
         const alert = {
@@ -1092,12 +1104,25 @@ export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null
     let resolvedCategoryConfig = categoryConfig;
     if (cachedData && resolvedCategoryConfig) {
       allRows = cachedData;
+      if (resolvedCategoryConfig.trackerStartRaw === undefined) {
+        try {
+          const b2Resp = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId, range: "KeyInfo!B2",
+          }));
+          resolvedCategoryConfig = {
+            ...resolvedCategoryConfig,
+            trackerStartRaw: b2Resp.data.values?.[0]?.[0] ?? "",
+          };
+        } catch (_) {
+          resolvedCategoryConfig = { ...resolvedCategoryConfig, trackerStartRaw: "" };
+        }
+      }
     } else if (cachedData && !resolvedCategoryConfig) {
       allRows = cachedData;
       try {
         const cfgResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
           spreadsheetId,
-          ranges: ["KeyInfo!B15", "KeyInfo!D8", "KeyInfo!AT4:AT22", "KeyInfo!AT24:AT40"],
+          ranges: ["KeyInfo!B15", "KeyInfo!D8", "KeyInfo!AT4:AT22", "KeyInfo!AT24:AT40", "KeyInfo!B2"],
         }));
         const cfgRanges = cfgResp.data.valueRanges || [];
         const revFocus = String(cfgRanges[0]?.values?.[0]?.[0] || "Revenue").trim();
@@ -1106,14 +1131,15 @@ export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null
           directCostsMode: revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors"),
           contractorsList: (cfgRanges[2]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
           passThroughList: (cfgRanges[3]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
+          trackerStartRaw: cfgRanges[4]?.values?.[0]?.[0] ?? "",
         };
       } catch (e) {
-        resolvedCategoryConfig = { directCostsMode: "Contractors", contractorsList: [], passThroughList: [] };
+        resolvedCategoryConfig = { directCostsMode: "Contractors", contractorsList: [], passThroughList: [], trackerStartRaw: "" };
       }
     } else {
       const dataResponse = await withRetry(() => sheets.spreadsheets.values.batchGet({
         spreadsheetId,
-        ranges: ["DirComp!A5:AV1000", "KeyInfo!B15", "KeyInfo!D8", "KeyInfo!AT4:AT22", "KeyInfo!AT24:AT40"],
+        ranges: ["DirComp!A5:AV1000", "KeyInfo!B15", "KeyInfo!D8", "KeyInfo!AT4:AT22", "KeyInfo!AT24:AT40", "KeyInfo!B2"],
       }));
       const valueRanges = dataResponse.data.valueRanges || [];
       allRows = valueRanges[0]?.values || [];
@@ -1123,8 +1149,11 @@ export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null
         directCostsMode: revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors"),
         contractorsList: (valueRanges[3]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
         passThroughList: (valueRanges[4]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
+        trackerStartRaw: valueRanges[5]?.values?.[0]?.[0] ?? "",
       };
     }
+    const dirTrackerStartSerial = toSerialOrNull(resolvedCategoryConfig?.trackerStartRaw);
+    const dirPassThroughCutoff = dirTrackerStartSerial !== null ? edateSerial(dirTrackerStartSerial, -3) : null;
     const headers = allRows[0] || [];
     const rows = allRows.slice(1);
     const alerts = [];
@@ -1140,6 +1169,19 @@ export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null
           resolvedCategoryConfig?.passThroughList || [],
           resolvedCategoryConfig?.directCostsMode || "Contractors"
         );
+        if (dirTrackerStartSerial !== null) {
+          const expSerial = toSerialOrNull(accounting[0]);
+          const matchedAppId = String(row[23] || "").trim();
+          const matchedSource = String(row[33] || "").trim().toUpperCase();
+          const isMatchedConfirmedSlot = Boolean(
+            matchedAppId && matchedSource && !matchedSource.startsWith("OG-")
+          );
+          const usePassThroughWindow =
+            (expenseCategoryType === "passthrough" || isMatchedConfirmedSlot) &&
+            typeof dirPassThroughCutoff === "number";
+          const rowCutoff = usePassThroughWindow ? dirPassThroughCutoff : dirTrackerStartSerial;
+          if (expSerial !== null && expSerial < rowCutoff) continue;
+        }
         const alert = {
           type: "expense",
           flagType,
@@ -3007,7 +3049,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               (hasExpense && actionableDue) ? "KeyInfo!AT4:AT22" : "DataChgAlert!A1",
               (hasExpense && actionableDue) ? "KeyInfo!AT24:AT40" : "DataChgAlert!A1",
               (hasInvoice && actionableDue) ? "InvFromApp!A1:S5000" : "DataChgAlert!A1",
-              (hasInvoice && actionableDue) ? "InvAppList!F1" : "DataChgAlert!A1"
+              (hasInvoice && actionableDue) ? "InvAppList!F1" : "DataChgAlert!A1",
+              (actionableDue && (hasInvoice || hasExpense)) ? "KeyInfo!B2" : "DataChgAlert!A1"
             ]
           });
           const ranges = batchResp.data.valueRanges || [];
@@ -3019,10 +3062,14 @@ export async function handleRunFlagSweep(req, res, sheets) {
           batchData.autoLog = ranges[4]?.values || [];
           const revFocus = String(ranges[5]?.values?.[0]?.[0] || "Revenue").trim();
           const rawDcMode = String(ranges[6]?.values?.[0]?.[0] || "Contractors").trim();
+          batchData.trackerStartRaw = (actionableDue && (hasInvoice || hasExpense))
+            ? (ranges[11]?.values?.[0]?.[0] ?? "")
+            : undefined;
           batchData.expenseCategoryConfig = {
             directCostsMode: revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors"),
             contractorsList: (ranges[7]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
             passThroughList: (ranges[8]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
+            trackerStartRaw: batchData.trackerStartRaw,
           };
           batchData.invFromApp = ranges[9]?.values || [];
           batchData.invFormatRule = String(ranges[10]?.values?.[0]?.[0] || "").trim();
@@ -3045,7 +3092,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               client.masterSheetId,
               batchData.invComp,
               batchData.invFromApp,
-              batchData.invFormatRule
+              batchData.invFormatRule,
+              batchData.trackerStartRaw
             );
             invAlerts.forEach(a => {
               a.clientName = client.clientName;

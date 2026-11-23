@@ -829,9 +829,16 @@ export async function getClientManagerClientMap(sheets, _ignoredAcId = DEFAULT_A
   }
 }
 
+export function clearClientMappingCaches() {
+  clientSheetIdToNameCache.clear();
+  clientNameToMasterIdCache.clear();
+  clientNameToClientIdCache.clear();
+}
+
 export async function invalidateUsersCache() {
   _usersMemoryCache = null;
   _usersCachedAt = 0;
+  clearClientMappingCaches();
   try {
     await redisClient.del(REDIS_USERS_KEY);
   } catch (_) { }

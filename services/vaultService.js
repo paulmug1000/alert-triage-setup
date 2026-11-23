@@ -294,6 +294,7 @@ export const INTEGRATIONS_STATUS_CACHE_KEY = "pulse:integrations:status_all";
  * whenever any credential, connection status, or tenant mapping changes.
  */
 export async function invalidateIntegrationsCache() {
+  _vaultL1Cache.clear();
   try {
     if (redisClient?.isOpen) {
       await redisClient.del(INTEGRATIONS_STATUS_CACHE_KEY);

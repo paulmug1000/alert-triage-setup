@@ -28,21 +28,24 @@ export default async function handler(req, res) {
           const normKey = `pulse:setup:${singleClient.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`;
           const rawSetup = redisClient?.isOpen ? await redisClient.get(normKey) : null;
           const parsedSetup = rawSetup ? JSON.parse(rawSetup) : null;
-          if (parsedSetup?.setupMode === true) {
+          if (parsedSetup?.setupMode === true && parsedSetup?.pulseLive !== true) {
             const initialSetupStatus = await getClientSetupStatusForPortal({
               clientName: singleClient,
               masterSheetId: parsedSetup.masterSheetId || ""
             });
-            const maskedStatus = maskResponseSheetIdsForUser(initialSetupStatus, result.user);
-            result.user = {
-              ...result.user,
-              initialSetupClient: {
-                clientName: singleClient,
-                setupMode: true,
-                setupStatus: maskedStatus
-              },
-              initialSetupStatus: maskedStatus
-            };
+            if (initialSetupStatus?.setupMode === true && initialSetupStatus?.pulseLive !== true) {
+              const maskedStatus = maskResponseSheetIdsForUser(initialSetupStatus, result.user);
+              result.user = {
+                ...result.user,
+                initialSetupClient: {
+                  clientName: singleClient,
+                  setupMode: true,
+                  pulseLive: false,
+                  setupStatus: maskedStatus
+                },
+                initialSetupStatus: maskedStatus
+              };
+            }
           }
         }
       } catch (_) {}

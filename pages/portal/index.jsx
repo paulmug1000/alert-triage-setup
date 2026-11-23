@@ -39,6 +39,17 @@ export default function PortalPage({
   const auth = useAuth(initialUser);
   const { isAuthenticated, authChecking, user, logout } = auth;
 
+  const isSeniorRestricted = Boolean(
+    user?.isSenior ||
+    user?.role === "Senior (Restricted)" ||
+    String(user?.role || "").toLowerCase().includes("senior")
+  );
+  const isReadOnly = Boolean(user?.isReadOnly);
+  const isAdminOrManager = Boolean(
+    !isReadOnly && (user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager")
+  );
+  const isClientUser = !isAdminOrManager;
+
   // Read instant client-side handoff from PMA NavShell (never present during SSR HTML hydration)
   const navHandoffRef = useRef(undefined);
   if (navHandoffRef.current === undefined) {
@@ -108,8 +119,10 @@ export default function PortalPage({
   // Monitor URL for ?preview=setup or OAuth return params (?integration=...&status=...)
   useEffect(() => {
     const isPreview = router.query.preview === "setup" || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("preview") === "setup");
-    if (isPreview) {
+    if (isPreview && isAdminOrManager) {
       setIsPreviewSetup(true);
+    } else if (!isAdminOrManager) {
+      setIsPreviewSetup(false);
     }
     const searchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
     const tool = router.query.integration || router.query.tool || searchParams?.get("integration") || searchParams?.get("tool");
@@ -147,7 +160,7 @@ export default function PortalPage({
         });
       }
     }
-  }, [router.query]);
+  }, [router.query, isAdminOrManager]);
 
   // Keep activeClientSheetIdRef in sync with selectedClient
   useEffect(() => {
@@ -1193,17 +1206,6 @@ export default function PortalPage({
     }
   }, [currencySymbol, thousandsSeparator]);
 
-  const isSeniorRestricted = Boolean(
-    user?.isSenior ||
-    user?.role === "Senior (Restricted)" ||
-    String(user?.role || "").toLowerCase().includes("senior")
-  );
-  const isReadOnly = Boolean(user?.isReadOnly);
-  const isAdminOrManager = Boolean(
-    !isReadOnly && (user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager")
-  );
-  const isClientUser = !isAdminOrManager;
-
   // Guard budget views when client does not have budget enabled
   useEffect(() => {
     if (payload && !hasBudget && (activeView === "viewBudget" || activeView === "budgetVariance")) {
@@ -1257,7 +1259,7 @@ export default function PortalPage({
   const isSetupCheckPending = Boolean(
     selectedClient &&
     ((isClientUser && selectedClient.setupMode === true && selectedClient.pulseLive !== true && setupStatus === null) ||
-      (isPreviewSetup && setupStatus === null))
+      (isPreviewSetup && isAdminOrManager && setupStatus === null))
   );
 
   if (isSetupCheckPending) {
@@ -1356,7 +1358,7 @@ export default function PortalPage({
         hasBudget={hasBudget}
         hasCash={hasCash}
         setupStatus={setupStatus}
-        onPreviewSetup={() => setIsPreviewSetup(true)}
+        onPreviewSetup={isAdminOrManager ? () => setIsPreviewSetup(true) : null}
         onRefreshSetupStatus={refreshSetupStatus}
         oauthEvent={oauthEvent}
         masterSheetId={selectedClient?.masterSheetId}
@@ -1658,7 +1660,7 @@ function getViewTitle(key) {
   return titles[key] || "Client portal view";
 }
 
-import { getSsrLiveSessionUser, getSsrInitialPortalData } from "../../services/ssrSession";
+import { getSsrLiveSessionUser, getSsrInitialPortalData, canSsrUserAccessPma } from "../../services/ssrSession";
 import { redisClient, ensureRedisConnected } from "../../services/redisClient";
 import { getClientSetupStatusForPortal } from "../../services/setupService";
 import { isUserAuthorizedForClient, maskResponseSheetIdsForUser } from "../../services/userPermissions";
@@ -1683,7 +1685,7 @@ export async function getServerSideProps(context) {
         queryClient && (sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, queryClient))
           ? queryClient
           : "";
-      const isPreview = context.query?.preview === "setup";
+      const isPreview = context.query?.preview === "setup" && canSsrUserAccessPma(sessionUser);
       const assigned = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       const singleAssigned =
         assigned.length === 1 && assigned[0] && assigned[0] !== "*"
@@ -1711,18 +1713,25 @@ export async function getServerSideProps(context) {
           isPreview
         );
         if (needsSsrHoldingCheck) {
-          initialSetupStatus = await getClientSetupStatusForPortal({
+          const rawSetupStatus = await getClientSetupStatusForPortal({
             clientName: parsedSetup?.clientName || candidateClientName,
             masterSheetId: parsedSetup?.masterSheetId || "",
             clientSheetId: ssrPortalData.initialSelectedClient?.clientSheetId || ""
           });
-          initialSetupClient = {
-            ...(ssrPortalData.initialSelectedClient || {}),
-            clientName: parsedSetup?.clientName || candidateClientName,
-            setupMode: Boolean(initialSetupStatus?.setupMode),
-            pulseLive: Boolean(initialSetupStatus?.pulseLive),
-            setupStatus: initialSetupStatus
-          };
+          const staffCanAccessPma = canSsrUserAccessPma(sessionUser);
+          if (!staffCanAccessPma && rawSetupStatus?.pulseLive === true) {
+            initialSetupStatus = { ...rawSetupStatus, setupMode: false };
+            initialSetupClient = null;
+          } else {
+            initialSetupStatus = rawSetupStatus;
+            initialSetupClient = {
+              ...(ssrPortalData.initialSelectedClient || {}),
+              clientName: parsedSetup?.clientName || candidateClientName,
+              setupMode: Boolean(initialSetupStatus?.setupMode),
+              pulseLive: Boolean(initialSetupStatus?.pulseLive),
+              setupStatus: initialSetupStatus
+            };
+          }
         }
       }
     } catch (_) { }

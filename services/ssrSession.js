@@ -680,6 +680,7 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
       .filter((c) => isClientAllowedForUser(sessionUser, c.clientName))
       .sort((a, b) => String(a.clientName || "").localeCompare(String(b.clientName || "")));
 
+    const staffCanAccessPma = canSsrUserAccessPma(sessionUser);
     const isPulseOnly = Boolean(
       (sessionUser.role === "ClientUser" ||
         sessionUser.role === "Senior (Restricted)" ||
@@ -689,8 +690,9 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
     );
 
     const cleanClients = authorizedClients.map((c) => {
-      const setupMode = Boolean(c.setupMode);
-      const pulseLive = !setupMode || Boolean(c.pulseLive);
+      const rawSetupMode = Boolean(c.setupMode);
+      const pulseLive = !rawSetupMode || Boolean(c.pulseLive);
+      const setupMode = staffCanAccessPma ? rawSetupMode : (rawSetupMode && !pulseLive);
       return isPulseOnly
         ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode, pulseLive }
         : {
@@ -762,12 +764,10 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
             const rawSetup = vals[idx];
             if (rawSetup) {
               selectedSetupConfig = JSON.parse(rawSetup);
-              if (selectedSetupConfig?.setupMode === true) {
-                selectedRaw.setupMode = true;
-                selectedRaw.pulseLive = Boolean(selectedSetupConfig?.pulseLive);
-              } else if (selectedSetupConfig) {
-                selectedRaw.pulseLive = true;
-              }
+              const rawSetupMode = selectedSetupConfig?.setupMode === true;
+              const nextPulseLive = !rawSetupMode || Boolean(selectedSetupConfig?.pulseLive);
+              selectedRaw.pulseLive = nextPulseLive;
+              selectedRaw.setupMode = staffCanAccessPma ? rawSetupMode : (rawSetupMode && !nextPulseLive);
             }
           }
         } catch { }
@@ -783,21 +783,26 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
     );
 
     const isSelectedHoldingGated = Boolean(isPulseOnly && selectedRaw?.setupMode && !selectedRaw?.pulseLive);
+    const allowPreview = staffCanAccessPma && query?.preview === "setup";
     const safePayload =
-      isSelectedHoldingGated || query?.preview === "setup" || !initialPayload
+      isSelectedHoldingGated || allowPreview || !initialPayload
         ? null
         : redactPortalPayloadForUser(initialPayload, sessionUser);
     const safePerfData =
-      isSelectedHoldingGated || query?.preview === "setup" || !initialPerformanceData
+      isSelectedHoldingGated || allowPreview || !initialPerformanceData
         ? null
         : redactPortalPerformanceForUser(initialPerformanceData, sessionUser);
+    const safeSelectedSetupConfig =
+      !staffCanAccessPma && selectedSetupConfig?.pulseLive === true
+        ? { ...selectedSetupConfig, setupMode: false }
+        : selectedSetupConfig;
 
     return {
       initialClients: masked.initialClients || null,
       initialSelectedClient: masked.initialSelectedClient || null,
       initialPayload: safePayload,
       initialPerformanceData: safePerfData,
-      selectedSetupConfig: maskResponseSheetIdsForUser(selectedSetupConfig, sessionUser),
+      selectedSetupConfig: maskResponseSheetIdsForUser(safeSelectedSetupConfig, sessionUser),
     };
   } catch {
     return {

@@ -19,6 +19,9 @@ export default function SetupHoldingGate({
   oauthFeedback = null,
   isLoading = false
 }) {
+  const canAccessPma = Boolean(
+    !user?.isReadOnly && (user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager")
+  );
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [clientDropdownOpen, setClientDropdownOpen] = useState(false);
   const [googleSheetModalOpen, setGoogleSheetModalOpen] = useState(false);
@@ -279,7 +282,7 @@ export default function SetupHoldingGate({
         }}
       >
         {/* Preview Banner for Staff */}
-        {isPreview && (
+        {isPreview && canAccessPma && (
           <div
             style={{
               background: "#1E293B",
@@ -554,7 +557,7 @@ export default function SetupHoldingGate({
 
 
                   {/* If user is Admin or ClientManager, offer direct link back to Management Area (PMA) */}
-                  {(user?.isAdmin || user?.role === "ClientManager") && (
+                  {canAccessPma && (
                     <Link
                       href="/pma"
                       style={{

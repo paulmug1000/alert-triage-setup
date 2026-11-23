@@ -130,17 +130,21 @@ export default function PortalShell({
     user?.role === "Senior (Restricted)" ||
     String(user?.role || "").toLowerCase().includes("senior")
   );
+  const canAccessPma = Boolean(
+    !user?.isReadOnly && (user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager")
+  );
 
   // Prefetch /pma route bundle for staff users so Pulse -> PMA transitions mount rapidly
   useEffect(() => {
-    if (user?.isAdmin || user?.role === "ClientManager") {
+    if (canAccessPma) {
       try {
         router.prefetch("/pma");
       } catch { }
     }
-  }, [router, user?.isAdmin, user?.role]);
+  }, [router, canAccessPma]);
 
   const handleNavigateToPma = (e, targetNav = "home", href = "/pma") => {
+    if (!canAccessPma) return;
     if (e && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
       e.preventDefault();
       setOpenDropdown(null);
@@ -224,7 +228,7 @@ export default function PortalShell({
       }}
     >
       {/* Setup Mode Alert Banner for Internal Staff (Admin/ClientManager) */}
-      {setupStatus?.setupMode && (
+      {canAccessPma && setupStatus?.setupMode && (
         <div
           style={{
             background: "#FFFBEB",
@@ -241,8 +245,11 @@ export default function PortalShell({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "600" }}>
-            <span style={{ fontSize: "16px" }}>🛠️</span>
-            <span>This client is currently in setup mode (financial data within Pulse is NOT visible to the client)</span>
+            <span>
+              {setupStatus?.pulseLive
+                ? "This client is still in setup mode (Pulse is live and visible to client users)"
+                : "This client is currently in setup mode (financial data within Pulse is not visible to the client)"}
+            </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             {onPreviewSetup && (
@@ -260,7 +267,7 @@ export default function PortalShell({
                   cursor: "pointer"
                 }}
               >
-                👁 Preview client setup screen
+                Preview client setup screen
               </button>
             )}
             <Link
@@ -278,7 +285,7 @@ export default function PortalShell({
                 display: "inline-block"
               }}
             >
-              Manage in PMA Setup →
+              Manage in PMA setup →
             </Link>
           </div>
         </div>
@@ -999,7 +1006,7 @@ export default function PortalShell({
                   )}
 
                   {/* If user is Admin or ClientManager, offer direct link back to Management Area (PMA) */}
-                  {(user?.isAdmin || user?.role === "ClientManager") && (
+                  {canAccessPma && (
                     <Link
                       href="/pma"
                       onClick={(e) => handleNavigateToPma(e, "home", "/pma")}

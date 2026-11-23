@@ -1,6 +1,6 @@
 import { resolveLiveSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { getCanonicalAcSheetId, matchesClientName, isPulseOnlyUser, installSheetIdBoundary } from "../../../services/userPermissions.js";
+import { getCanonicalAcSheetId, matchesClientName, isPulseOnlyUser, canAccessPma, installSheetIdBoundary } from "../../../services/userPermissions.js";
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "../../../services/supabaseClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
@@ -203,10 +203,12 @@ export default async function handler(req, res) {
       } catch (_) { }
     }
 
+    const staffCanAccessPma = canAccessPma(sessionUser);
     const hideMasterId = isPulseOnlyUser(sessionUser);
     const safeClients = authorizedClients.map((c, idx) => {
-      const setupMode = Boolean(setupFlags[idx]?.setupMode);
-      const pulseLive = setupFlags[idx] ? Boolean(setupFlags[idx].pulseLive) : !setupMode;
+      const rawSetupMode = Boolean(setupFlags[idx]?.setupMode);
+      const pulseLive = setupFlags[idx] ? Boolean(setupFlags[idx].pulseLive) : !rawSetupMode;
+      const setupMode = staffCanAccessPma ? rawSetupMode : (rawSetupMode && !pulseLive);
       const setupStatus = setupStatuses[idx] || null;
       return hideMasterId
         ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode, pulseLive, ...(setupStatus ? { setupStatus } : {}) }

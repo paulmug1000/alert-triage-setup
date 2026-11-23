@@ -138,32 +138,48 @@ export default function AlertSelectionView({
     return !!match?.hasClientManager;
   }, [selectedClient, allClientsMap]);
 
-  const getClientInfoForAlert = (alertObj) => {
-    const cName = alertObj?.clientName || selectedClient?.clientName;
-    const fromFlags = (clientsWithFlags || []).find(c => c.clientName === cName);
-    if (fromFlags?.clientSheetId || fromFlags?.masterSheetId) return fromFlags;
+  const getClientInfoForAlert = (alertObj, explicitClientName = "") => {
+    const cName = explicitClientName || alertObj?.clientName || selectedClient?.clientName || "";
+    const cNameLower = String(cName).trim().toLowerCase();
 
-    if (allClientsMap && cName) {
-      if (allClientsMap[cName]?.clientSheetId || allClientsMap[cName]?.masterSheetId) {
-        return allClientsMap[cName];
-      }
-      const match = Object.values(allClientsMap).find(cl => cl.clientName && cl.clientName.toLowerCase() === cName.toLowerCase());
-      if (match?.clientSheetId || match?.masterSheetId) return match;
+    const fromFlags = (clientsWithFlags || []).find(c =>
+      c?.clientName && (c.clientName === cName || (cNameLower && c.clientName.toLowerCase() === cNameLower))
+    ) || null;
+
+    const fromMap = (allClientsMap && cName)
+      ? (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl?.clientName && cl.clientName.toLowerCase() === cNameLower) || null)
+      : null;
+
+    const fromAllClients = (allClients || []).find(c =>
+      c?.clientName && (c.clientName === cName || (cNameLower && c.clientName.toLowerCase() === cNameLower))
+    ) || null;
+
+    const fromSelected = (selectedClient && (!cNameLower || selectedClient.clientName?.toLowerCase() === cNameLower))
+      ? selectedClient
+      : null;
+
+    const fromManaged = (managedClient && cNameLower && managedClient.clientName?.toLowerCase() === cNameLower)
+      ? managedClient
+      : null;
+
+    const sources = [fromSelected, fromMap, fromAllClients, fromManaged, fromFlags, alertObj, alertObj?.metadata];
+    const resolvedClientSheetId = sources.find(s => s?.clientSheetId)?.clientSheetId || "";
+    const resolvedMasterSheetId = sources.find(s => s?.masterSheetId)?.masterSheetId || "";
+
+    if (!fromFlags && !fromMap && !fromAllClients && !fromSelected && !fromManaged && !resolvedClientSheetId && !resolvedMasterSheetId && !cName) {
+      return null;
     }
 
-    if (selectedClient && (!cName || selectedClient.clientName?.toLowerCase() === cName.toLowerCase())) {
-      if (selectedClient.clientSheetId || selectedClient.masterSheetId) return selectedClient;
-    }
-
-    if (alertObj?.metadata?.clientSheetId || alertObj?.metadata?.masterSheetId) {
-      return {
-        clientName: cName,
-        clientSheetId: alertObj.metadata.clientSheetId,
-        masterSheetId: alertObj.metadata.masterSheetId,
-      };
-    }
-
-    return selectedClient || null;
+    return {
+      ...(fromMap || {}),
+      ...(fromAllClients || {}),
+      ...(fromFlags || {}),
+      ...(fromManaged || {}),
+      ...(fromSelected || {}),
+      clientName: cName || fromSelected?.clientName || fromMap?.clientName || fromAllClients?.clientName || fromFlags?.clientName || "",
+      ...(resolvedClientSheetId ? { clientSheetId: resolvedClientSheetId } : {}),
+      ...(resolvedMasterSheetId ? { masterSheetId: resolvedMasterSheetId } : {}),
+    };
   };
   const {
     bulkMode, setBulkMode, bulkSelected, setBulkSelected,
@@ -306,9 +322,11 @@ export default function AlertSelectionView({
     if (!alert) return;
     const alertKey = alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : "");
     const m = alert.metadata || {};
-    const resolvedClientSheetId = clientInfo?.clientSheetId || alert.clientSheetId || m.clientSheetId;
-    const resolvedMasterSheetId = clientInfo?.masterSheetId || alert.masterSheetId || m.masterSheetId || "";
-    if (!resolvedClientSheetId) {
+    const mergedClientInfo = getClientInfoForAlert(alert, cName);
+    const resolvedClientName = cName || alert.clientName || mergedClientInfo?.clientName || selectedClient?.clientName || "";
+    const resolvedClientSheetId = clientInfo?.clientSheetId || mergedClientInfo?.clientSheetId || alert.clientSheetId || m.clientSheetId || "";
+    const resolvedMasterSheetId = clientInfo?.masterSheetId || mergedClientInfo?.masterSheetId || alert.masterSheetId || m.masterSheetId || "";
+    if (!resolvedClientSheetId && !resolvedClientName) {
       setAcceptError(isAdmin ? "Could not find client spreadsheet ID for this job." : "Could not find client configuration in Pulse.");
       return;
     }
@@ -322,7 +340,7 @@ export default function AlertSelectionView({
           action: "tidy_job_layout",
           clientSheetId: resolvedClientSheetId,
           masterSheetId: resolvedMasterSheetId,
-          clientName: cName || alert.clientName || "",
+          clientName: resolvedClientName,
           tabName: "Confirmed",
           confirmedRow: m.confirmedRow || alert.confirmedRow,
           endClientName: m.endClientName || alert.endClientName || "",
@@ -368,7 +386,7 @@ export default function AlertSelectionView({
     const classification = selectedClassifications[alertKey] || alert.metadata?.suggestedClassification || alert.suggestedClassification || "delivery_expense";
     const categoryName = getCleanPLCategoryName(alert);
     const clientName = alert.clientName || selectedClient?.clientName;
-    const clientInfo = (clientsWithFlags || []).find(c => c.clientName === clientName) || (allClientsMap && allClientsMap[clientName]);
+    const clientInfo = getClientInfoForAlert(alert, clientName);
     const targetMasterSheetId = alert.metadata?.masterSheetId || clientInfo?.masterSheetId || selectedClient?.masterSheetId;
     const targetClientSheetId = alert.metadata?.clientSheetId || clientInfo?.clientSheetId || selectedClient?.clientSheetId;
     setApplyingClassification(prev => ({ ...prev, [alertKey]: true }));
@@ -442,7 +460,7 @@ export default function AlertSelectionView({
 
     try {
       const clientName = alert.clientName || selectedClient?.clientName;
-      const clientInfo = (clientsWithFlags || []).find(c => c.clientName === clientName) || (allClientsMap && allClientsMap[clientName]);
+      const clientInfo = getClientInfoForAlert(alert, clientName);
       const targetClientSheetId = m.clientSheetId || clientInfo?.clientSheetId || selectedClient?.clientSheetId;
       const targetMasterSheetId = m.masterSheetId || clientInfo?.masterSheetId || selectedClient?.masterSheetId;
 
@@ -594,7 +612,7 @@ export default function AlertSelectionView({
 
   const markPipelineCopied = async (alert) => {
     const md = alert.metadata || {};
-    const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
+    const clientInfo = getClientInfoForAlert(alert);
     if (!md.pipelineRow || !clientInfo?.clientSheetId) {
       console.error("Cannot mark pipeline copied: missing pipelineRow or clientSheetId");
       return;
@@ -1726,6 +1744,8 @@ export default function AlertSelectionView({
             openCreateTaskModal={openCreateTaskModal}
             clientsWithFlags={clientsWithFlags}
             allClientsMap={allClientsMap}
+            allClients={allClients}
+            managedClient={managedClient}
             setRetainerAlertResolution={setRetainerAlertResolution}
             setRetainerSplitInvoice={setRetainerSplitInvoice}
             setRetainerChangeSendDates={setRetainerChangeSendDates}
@@ -1959,7 +1979,7 @@ export default function AlertSelectionView({
                             const analysis = rawAnalysis ? { ...rawAnalysis, results: displayedResults, overallOk } : null;
 
                             const cName = na.clientName || selectedClient?.clientName;
-                            const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
+                            const clientInfo = getClientInfoForAlert(na, cName);
                             const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
                             const primaryResult = displayedResults[0] || null;
                             const displayClient = parsed.client || primaryResult?.clientName || "";
@@ -2516,7 +2536,7 @@ export default function AlertSelectionView({
                                               </button>
                                               {(() => {
                                                 const cName = alert.clientName || selectedClient?.clientName;
-                                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
+                                                const clientInfo = getClientInfoForAlert(alert, cName);
                                                 const jobTarget = getAlertJobTarget(alert, false, clientInfo);
                                                 if (!jobTarget) return null;
                                                 return (
@@ -3313,7 +3333,7 @@ export default function AlertSelectionView({
                                       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                                         {(() => {
                                           const cName = alert.clientName || selectedClient?.clientName;
-                                          const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
+                                          const clientInfo = getClientInfoForAlert(alert, cName);
                                           const jobTarget = getAlertJobTarget(alert, false, clientInfo);
                                           return (
                                             <>

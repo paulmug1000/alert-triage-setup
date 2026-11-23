@@ -2117,6 +2117,27 @@ export async function handleGetPrecomputed(req, res, sheets) {
       );
     }
 
+    if (clientsSource.some(c => !c.clientSheetId || !c.masterSheetId)) {
+      const acId = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId || getCanonicalAcSheetId();
+      const activeSheets = sheets || (await getSheetsClient().catch(() => null));
+      const { clientRows = [] } = await readAutoUpdatesClientRows_(activeSheets, acId).catch(() => ({ clientRows: [] }));
+      const metaByLower = new Map();
+      for (const cr of clientRows) {
+        const k = String(cr.clientName || "").trim().toLowerCase();
+        if (k) metaByLower.set(k, cr);
+      }
+      clientsSource = clientsSource.map(c => {
+        if (c.clientSheetId && c.masterSheetId) return c;
+        const live = metaByLower.get(String(c.clientName || "").trim().toLowerCase());
+        if (!live) return c;
+        return {
+          ...c,
+          clientSheetId: c.clientSheetId || live.clientSheetId || "",
+          masterSheetId: c.masterSheetId || live.masterSheetId || "",
+        };
+      });
+    }
+
     const tCm = 0;
 
     const clientsWithUpdatedCounts = clientsSource.map(c => {
@@ -2262,6 +2283,15 @@ export async function handleStorePrecomputed(req, res, sheets) {
         getExcludedClientNamesSet({ bypassCache: true }),
       ]);
       const clientNameToMeta = new Map(clientRows.map(c => [c.clientName, c]));
+      const clientNameToMetaLower = new Map(
+        clientRows
+          .filter(c => c.clientName)
+          .map(c => [String(c.clientName).trim().toLowerCase(), c])
+      );
+      const getLiveClientMeta = (name) => {
+        if (!name) return null;
+        return clientNameToMeta.get(name) || clientNameToMetaLower.get(String(name).trim().toLowerCase()) || null;
+      };
 
       for (const row of memoryRowsForMerge) {
         if (row.status !== "cached" && row.status !== "pending_automation") continue;
@@ -2324,7 +2354,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
             }
           }
 
-          const liveMeta = clientNameToMeta.get(row.clientName) || {};
+          const liveMeta = getLiveClientMeta(row.clientName) || {};
 
           if (row.fingerprintHash) oldPathFingerprints.add(row.fingerprintHash);
 
@@ -2367,8 +2397,8 @@ export async function handleStorePrecomputed(req, res, sheets) {
 
           if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
             newClientMeta.set(row.clientName, {
-              clientSheetId: alertObj.clientId || alertObj.clientSheetId || "",
-              masterSheetId: alertObj.masterSheetId || "",
+              clientSheetId: liveMeta.clientSheetId || alertObj.clientId || alertObj.clientSheetId || "",
+              masterSheetId: liveMeta.masterSheetId || alertObj.masterSheetId || "",
             });
           }
         } else if (String(row.category).toLowerCase() === "info" || row.category === "proactive") {
@@ -2391,13 +2421,17 @@ export async function handleStorePrecomputed(req, res, sheets) {
                 "errorSnippet", "occurrenceCount", "category", "entityKey", "fieldName", "transition1", "transition2", "conflictType", "suggestion", "rawLogSnippet", "invoiceNo", "rawSnippet"];
               const metadata = { ...(alertObj.metadata || {}) };
               for (const f of metaFields) { if (alertObj[f] !== undefined) metadata[f] = alertObj[f]; }
+              const liveProactiveMeta = getLiveClientMeta(alertObj.clientName || row.clientName) || {};
               newProactiveFromMemory.push({
-                ...alertObj, fingerprintHash: row.fingerprintHash, rowIndex: row.rowIndex, clientName: alertObj.clientName || row.clientName, alertType: alertObj.alertType || row.alertType, metadata, firstSeen: row.firstSeen, lastSeen: row.lastSeen
+                ...alertObj,
+                clientSheetId: alertObj.clientSheetId || liveProactiveMeta.clientSheetId || "",
+                masterSheetId: alertObj.masterSheetId || liveProactiveMeta.masterSheetId || "",
+                fingerprintHash: row.fingerprintHash, rowIndex: row.rowIndex, clientName: alertObj.clientName || row.clientName, alertType: alertObj.alertType || row.alertType, metadata, firstSeen: row.firstSeen, lastSeen: row.lastSeen
               });
               if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
                 newClientMeta.set(row.clientName, {
-                  clientSheetId: alertObj.clientId || alertObj.clientSheetId || "",
-                  masterSheetId: alertObj.masterSheetId || "",
+                  clientSheetId: liveProactiveMeta.clientSheetId || alertObj.clientId || alertObj.clientSheetId || "",
+                  masterSheetId: liveProactiveMeta.masterSheetId || alertObj.masterSheetId || "",
                 });
               }
             }
@@ -2474,7 +2508,15 @@ export async function handleStorePrecomputed(req, res, sheets) {
 
         finalClientsWithFlags = reconciledClients.map(c => {
           const extra = extraFlagsByClient.get(c.clientName);
-          return extra ? { ...c, flags: { ...c.flags, ...extra } } : c;
+          const live = getLiveClientMeta(c.clientName);
+          const patched = (live && (!c.clientSheetId || !c.masterSheetId))
+            ? {
+                ...c,
+                clientSheetId: c.clientSheetId || live.clientSheetId || "",
+                masterSheetId: c.masterSheetId || live.masterSheetId || "",
+              }
+            : c;
+          return extra ? { ...patched, flags: { ...patched.flags, ...extra } } : patched;
         });
         for (const [clientName, meta] of newClientMeta.entries()) {
           finalClientsWithFlags.push({

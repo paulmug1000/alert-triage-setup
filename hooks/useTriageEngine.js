@@ -529,17 +529,21 @@ export function useTriageEngine({
     try {
       console.log(`\n📍 selectClient called: ${client.clientName}`);
       setSelectingClient(client.clientName);
+      const targetName = String(client.clientName || "").trim().toLowerCase();
+      const mapMatch = (allClientsMap && (
+        allClientsMap[client.clientName] ||
+        Object.values(allClientsMap).find(c => c?.clientName && c.clientName.toLowerCase() === targetName)
+      )) || {};
+      const flagsMatch = (clientsWithFlags || []).find(
+        c => c?.clientName && (c.clientName === client.clientName || c.clientName.toLowerCase() === targetName)
+      ) || {};
       const enrichedClient = {
-        ...((allClientsMap && allClientsMap[client.clientName]) || {}),
-        ...((clientsWithFlags || []).find(c => c.clientName === client.clientName) || {}),
+        ...mapMatch,
+        ...flagsMatch,
         ...client,
+        clientSheetId: client.clientSheetId || flagsMatch.clientSheetId || mapMatch.clientSheetId || "",
+        masterSheetId: client.masterSheetId || flagsMatch.masterSheetId || mapMatch.masterSheetId || "",
       };
-      if (!enrichedClient.clientSheetId && allClientsMap && allClientsMap[client.clientName]?.clientSheetId) {
-        enrichedClient.clientSheetId = allClientsMap[client.clientName].clientSheetId;
-      }
-      if (!enrichedClient.masterSheetId && allClientsMap && allClientsMap[client.clientName]?.masterSheetId) {
-        enrichedClient.masterSheetId = allClientsMap[client.clientName].masterSheetId;
-      }
       setSelectedClient(enrichedClient);
       setCurrentClientAlertIndex(0);
       setAcceptError("");

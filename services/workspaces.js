@@ -26,7 +26,7 @@ import {
   postGasWebAppLocked,
   sanitizeSpreadsheetTerms,
 } from "../utils/helpers.js";
-import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, unwrapSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
+import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, resolveClientSheetIdByClientName, resolveMasterSheetIdByClientName, assertSetupClientSheetBinding, unwrapSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
@@ -9816,8 +9816,58 @@ export async function handleTidyJobLayout(req, res, sheets) {
     automationCommanderSheetId,
   } = req.body || {};
 
-  if (!clientSheetId) {
-    return res.status(400).json({ success: false, error: "Missing clientSheetId" });
+  const rawClientSheetId = clientSheetId ? unwrapSheetId(clientSheetId) : "";
+  const rawMasterSheetId = masterSheetId ? unwrapSheetId(masterSheetId) : "";
+  if (
+    rawClientSheetId === "__INVALID_WS_TOKEN__" ||
+    rawClientSheetId === "__RAW_SHEET_ID_FORBIDDEN__" ||
+    rawMasterSheetId === "__INVALID_WS_TOKEN__" ||
+    rawMasterSheetId === "__RAW_SHEET_ID_FORBIDDEN__"
+  ) {
+    return res.status(403).json({ success: false, error: "Forbidden: Invalid or unauthorized workspace reference" });
+  }
+
+  let resolvedClientSheetId = (extractSheetIdFromUrl(rawClientSheetId) || rawClientSheetId || "").trim();
+  let resolvedMasterSheetId = (extractSheetIdFromUrl(rawMasterSheetId) || rawMasterSheetId || "").trim();
+
+  if (!resolvedClientSheetId && clientName) {
+    resolvedClientSheetId = (await resolveClientSheetIdByClientName(sheets, clientName).catch(() => "")) || "";
+    if (!resolvedClientSheetId) {
+      const supaCtx = await resolveSupabaseSheetContext({ clientName }).catch(() => null);
+      resolvedClientSheetId = supaCtx?.clientSheetId || "";
+      if (!resolvedMasterSheetId && supaCtx?.masterSheetId) {
+        resolvedMasterSheetId = supaCtx.masterSheetId;
+      }
+    }
+  }
+  if (!resolvedMasterSheetId && clientName) {
+    resolvedMasterSheetId = (await resolveMasterSheetIdByClientName(sheets, clientName).catch(() => "")) || "";
+    if (!resolvedMasterSheetId) {
+      const supaCtx = await resolveSupabaseSheetContext({ clientName }).catch(() => null);
+      if (supaCtx?.masterSheetId) {
+        resolvedMasterSheetId = supaCtx.masterSheetId;
+      }
+    }
+  }
+
+  if (!resolvedClientSheetId) {
+    return res.status(400).json({ success: false, error: "Could not find client spreadsheet ID for this job." });
+  }
+
+  const sessionUser = req._liveSessionUser || getSessionUser(req);
+  if (!req.isSystemAuthorized) {
+    const binding = await assertSetupClientSheetBinding(sessionUser, {
+      clientName: clientName || "",
+      masterSheetId: resolvedMasterSheetId,
+      clientSheetId: resolvedClientSheetId,
+      sheets,
+    });
+    if (!binding.authorized) {
+      return res.status(binding.status || 403).json({
+        success: false,
+        error: binding.error || "Forbidden",
+      });
+    }
   }
 
   const targetTab = String(tabName || "Confirmed").trim();
@@ -9826,7 +9876,7 @@ export async function handleTidyJobLayout(req, res, sheets) {
   }
 
   try {
-    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const sheetIdClean = resolvedClientSheetId;
     const norm = (s) => String(s || "").trim().toLowerCase();
     const targetClient = norm(endClientName);
     const targetJob = norm(jobName);
@@ -9876,7 +9926,7 @@ export async function handleTidyJobLayout(req, res, sheets) {
       return res.status(404).json({ success: false, error: "Could not locate this job in Pulse." });
     }
 
-    const resolvedMasterId = masterSheetId || (await resolveMasterSheetIdForClient_(sheets, sheetIdClean, clientName).catch(() => ""));
+    const resolvedMasterId = resolvedMasterSheetId || (await resolveMasterSheetIdForClient_(sheets, sheetIdClean, clientName).catch(() => ""));
     const preloadedTolerances = resolvedMasterId
       ? await getToleranceValues(sheets, resolvedMasterId).catch(() => null)
       : null;

@@ -50,6 +50,8 @@ export default function NonAdminAlertListView({
   openCreateTaskModal,
   clientsWithFlags,
   allClientsMap,
+  allClients = [],
+  managedClient = null,
   setRetainerAlertResolution,
   setRetainerSplitInvoice,
   setRetainerChangeSendDates,
@@ -77,32 +79,48 @@ export default function NonAdminAlertListView({
   const [resolvingSalaryForecast, setResolvingSalaryForecast] = React.useState({});
   const [salaryForecastMsg, setSalaryForecastMsg] = React.useState({});
 
-  const getClientInfoForAlert = (alertObj) => {
-    const cName = alertObj?.clientName || selectedClient?.clientName;
-    const fromFlags = (clientsWithFlags || []).find(c => c.clientName === cName);
-    if (fromFlags?.clientSheetId || fromFlags?.masterSheetId) return fromFlags;
+  const getClientInfoForAlert = (alertObj, explicitClientName = "") => {
+    const cName = explicitClientName || alertObj?.clientName || selectedClient?.clientName || "";
+    const cNameLower = String(cName).trim().toLowerCase();
 
-    if (allClientsMap && cName) {
-      if (allClientsMap[cName]?.clientSheetId || allClientsMap[cName]?.masterSheetId) {
-        return allClientsMap[cName];
-      }
-      const match = Object.values(allClientsMap).find(cl => cl.clientName && cl.clientName.toLowerCase() === cName.toLowerCase());
-      if (match?.clientSheetId || match?.masterSheetId) return match;
+    const fromFlags = (clientsWithFlags || []).find(c =>
+      c?.clientName && (c.clientName === cName || (cNameLower && c.clientName.toLowerCase() === cNameLower))
+    ) || null;
+
+    const fromMap = (allClientsMap && cName)
+      ? (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl?.clientName && cl.clientName.toLowerCase() === cNameLower) || null)
+      : null;
+
+    const fromAllClients = (allClients || []).find(c =>
+      c?.clientName && (c.clientName === cName || (cNameLower && c.clientName.toLowerCase() === cNameLower))
+    ) || null;
+
+    const fromSelected = (selectedClient && (!cNameLower || selectedClient.clientName?.toLowerCase() === cNameLower))
+      ? selectedClient
+      : null;
+
+    const fromManaged = (managedClient && cNameLower && managedClient.clientName?.toLowerCase() === cNameLower)
+      ? managedClient
+      : null;
+
+    const sources = [fromSelected, fromMap, fromAllClients, fromManaged, fromFlags, alertObj, alertObj?.metadata];
+    const resolvedClientSheetId = sources.find(s => s?.clientSheetId)?.clientSheetId || "";
+    const resolvedMasterSheetId = sources.find(s => s?.masterSheetId)?.masterSheetId || "";
+
+    if (!fromFlags && !fromMap && !fromAllClients && !fromSelected && !fromManaged && !resolvedClientSheetId && !resolvedMasterSheetId && !cName) {
+      return null;
     }
 
-    if (selectedClient && (!cName || selectedClient.clientName?.toLowerCase() === cName.toLowerCase())) {
-      if (selectedClient.clientSheetId || selectedClient.masterSheetId) return selectedClient;
-    }
-
-    if (alertObj?.metadata?.clientSheetId || alertObj?.metadata?.masterSheetId) {
-      return {
-        clientName: cName,
-        clientSheetId: alertObj.metadata.clientSheetId,
-        masterSheetId: alertObj.metadata.masterSheetId,
-      };
-    }
-
-    return selectedClient || null;
+    return {
+      ...(fromMap || {}),
+      ...(fromAllClients || {}),
+      ...(fromFlags || {}),
+      ...(fromManaged || {}),
+      ...(fromSelected || {}),
+      clientName: cName || fromSelected?.clientName || fromMap?.clientName || fromAllClients?.clientName || fromFlags?.clientName || "",
+      ...(resolvedClientSheetId ? { clientSheetId: resolvedClientSheetId } : {}),
+      ...(resolvedMasterSheetId ? { masterSheetId: resolvedMasterSheetId } : {}),
+    };
   };
 
   const handleApplyPLClassification = async (alert) => {
@@ -161,7 +179,7 @@ export default function NonAdminAlertListView({
 
     try {
       const clientName = alert.clientName || selectedClient?.clientName;
-      const clientInfo = (clientsWithFlags || []).find(c => c.clientName === clientName) || (allClientsMap && allClientsMap[clientName]);
+      const clientInfo = getClientInfoForAlert(alert, clientName);
       const targetClientSheetId = m.clientSheetId || clientInfo?.clientSheetId || selectedClient?.clientSheetId;
       const targetMasterSheetId = m.masterSheetId || clientInfo?.masterSheetId || selectedClient?.masterSheetId;
 
@@ -604,7 +622,7 @@ export default function NonAdminAlertListView({
                             )}
                             {(() => {
                               const cName = na.clientName || selectedClient?.clientName;
-                              const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient || { clientName: cName };
+                              const clientInfo = getClientInfoForAlert(na, cName) || { clientName: cName };
                               const jobTarget = getAlertJobTarget(na, true, clientInfo);
                               if (!jobTarget || !onViewJob) return null;
                               return (
@@ -841,7 +859,7 @@ export default function NonAdminAlertListView({
                                   )}
                                   {(() => {
                                     const cName = alert.clientName || selectedClient?.clientName;
-                                    const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient || { clientName: cName };
+                                    const clientInfo = getClientInfoForAlert(alert, cName) || { clientName: cName };
                                     const jobTarget = getAlertJobTarget(alert, false, clientInfo);
                                     if (!jobTarget || !onViewJob) return null;
                                     return (
@@ -1586,7 +1604,7 @@ export default function NonAdminAlertListView({
                           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                             {(() => {
                               const cName = alert.clientName || selectedClient?.clientName;
-                              const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient || { clientName: cName };
+                              const clientInfo = getClientInfoForAlert(alert, cName) || { clientName: cName };
                               const jobTarget = getAlertJobTarget(alert, false, clientInfo);
                               return (
                                 <>

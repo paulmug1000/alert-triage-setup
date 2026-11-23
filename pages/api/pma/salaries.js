@@ -56,12 +56,22 @@ export default async function handler(req, res) {
 
     if (!sessionUser.isAdmin) {
       const sheets = await getSheetsClient();
-      const targetSheet = clientSheetId || masterSheetId;
-      const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, targetSheet, clientName, sheets);
-      if (!clientAuth.authorized) {
-        return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
+      let boundClient = clientName;
+      if (masterSheetId) {
+        const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, boundClient, sheets);
+        if (!masterAuth.authorized) {
+          return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this client." });
+        }
+        boundClient = masterAuth.clientName || boundClient;
       }
-      clientName = clientAuth.clientName || clientName;
+      if (clientSheetId) {
+        const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, boundClient, sheets);
+        if (!clientAuth.authorized) {
+          return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
+        }
+        boundClient = clientAuth.clientName || boundClient;
+      }
+      clientName = boundClient || clientName;
     }
 
     try {

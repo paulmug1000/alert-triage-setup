@@ -1,6 +1,7 @@
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
+import { assertClientPortalLive } from "../../../services/setupService.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { formatMoney as formatPortalMoney } from "../../../services/deepDiveHelper.js";
 import { getSupabaseAdmin, isSupabaseConfigured } from "../../../services/supabaseClient.js";
@@ -124,6 +125,11 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
 
+  const rl = await checkRateLimit("portal-cash", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
+  }
+
   const rawClientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
@@ -145,6 +151,8 @@ export default async function handler(req, res) {
   if (!auth.authorized) {
     return res.status(auth.status || 403).json({ success: false, error: auth.error });
   }
+  const liveGate = await assertClientPortalLive(sessionUser, auth.clientName || clientName, res);
+  if (!liveGate.allowed) return;
 
   const isSeniorUser = Boolean(
     sessionUser.isSenior ||
@@ -331,7 +339,10 @@ export default async function handler(req, res) {
     });
 
     if (result.data?._notFound) {
-      return res.status(404).json({ success: false, error: "Cash sheet is empty or not found" });
+      return res.status(404).json({
+        success: false,
+        error: sessionUser?.isAdmin ? "Cash sheet is empty or not found" : "Cash flow forecast is unavailable",
+      });
     }
 
     return res.status(200).json({

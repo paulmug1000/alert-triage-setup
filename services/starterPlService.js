@@ -48,6 +48,7 @@ import {
   roundToNearest50,
   getUkTaxYearPrefix,
   parseKeyInfoTaxTable,
+  serializeTaxTableByYear,
   computePayrollFromGross,
   computeVendorForecastSchedule,
 } from "../utils/starterPlCalc.js";
@@ -1364,6 +1365,7 @@ export async function pullAndBuildStarterPlData({ clientName, masterSheetId }) {
     hasExistingOutgoings,
     hasExistingSalaries,
     keyInfoTaxGrid,
+    payrollTaxConfig: serializeTaxTableByYear(keyInfoTaxGrid),
     actualRevenueByKey,
     forecastRevenueByKey,
     trailing12MonthKeys: trailing12Months.map((tm) => tm.monthKey),
@@ -1478,8 +1480,15 @@ export async function pushStarterPlSetup({
   const cleanClientId = resolveCleanId(kiResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "");
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
 
-  // Read Client Outgoings landmarks, existing formulas, Salaries headers, and sheet GIDs
-  const [outgResp, salHdrResp, metaResp] = await Promise.all([
+  // Read Client Outgoings headers (UNFORMATTED_VALUE), landmarks/formulas (FORMULA), Salaries headers, and sheet GIDs
+  const [outgHdrResp, outgResp, salHdrResp, metaResp] = await Promise.all([
+    withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: cleanClientId,
+        range: "Outgoings!A1:AV1",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      })
+    ),
     withRetry(() =>
       sheets.spreadsheets.values.batchGet({
         spreadsheetId: cleanClientId,
@@ -1503,6 +1512,7 @@ export async function pushStarterPlSetup({
     ),
   ]);
 
+  const outgHdr1 = outgHdrResp.data?.values?.[0] || [];
   const colA = (outgResp.data?.valueRanges?.[0]?.values || []).map((r) => r?.[0] ?? "");
   const existingExpFormulas = outgResp.data?.valueRanges?.[1]?.values || [];
   const landmarks = findOutgoingsLandmarks(colA);
@@ -1533,10 +1543,51 @@ export async function pushStarterPlSetup({
     });
   };
 
-  // Helper to check if a month is checked (actual) or future (forecast)
-  const activeMonths = outgoingsMonths.filter(
-    (m) => checkedSet.has(m.monthKey) || Number(m.fyIndex) === 1 || Number(m.fyIndex) === 2
+  // Resolve authoritative Outgoings month columns server-side from Outgoings!A1:AV1 (never trust client col0/colLetter)
+  const VALID_OUTGOINGS_MONTH_COLS = [
+    ...Array.from({ length: 12 }, (_, i) => 6 + i),
+    ...Array.from({ length: 12 }, (_, i) => 21 + i),
+    ...Array.from({ length: 12 }, (_, i) => 36 + i),
+  ];
+  const serverOutgoingsMonths = [];
+  for (const c0 of VALID_OUTGOINGS_MONTH_COLS) {
+    const parsed = parseHeaderMonthMeta_(outgHdr1[c0]);
+    if (!parsed) continue;
+    const dObj = new Date(parsed.year, parsed.monthIdx, 1);
+    serverOutgoingsMonths.push({
+      col0: c0,
+      colLetter: colIndexToLetter(c0 + 1),
+      fyIndex: c0 <= 17 ? 1 : c0 <= 32 ? 2 : 3,
+      monthKey: monthKeyFromDate(dObj),
+      shortLabel: shortMonthLabel(dObj),
+      monthHeader: longMonthLabel(dObj),
+    });
+  }
+  if (serverOutgoingsMonths.length === 0) {
+    for (let i = 0; i < 24; i++) {
+      const dObj = new Date(startDate.getFullYear(), startDate.getMonth() + i, 1);
+      const c0 = i < 12 ? 6 + i : 21 + (i - 12);
+      serverOutgoingsMonths.push({
+        col0: c0,
+        colLetter: colIndexToLetter(c0 + 1),
+        fyIndex: i < 12 ? 1 : 2,
+        monthKey: monthKeyFromDate(dObj),
+        shortLabel: shortMonthLabel(dObj),
+        monthHeader: longMonthLabel(dObj),
+      });
+    }
+  }
+  const callerMonthByKey = new Map(
+    (Array.isArray(outgoingsMonths) ? outgoingsMonths : [])
+      .filter((m) => m?.monthKey)
+      .map((m) => [String(m.monthKey), m])
   );
+  // Helper to check if a month is checked (actual) or future (forecast)
+  const activeMonths = serverOutgoingsMonths.filter((m) => {
+    const callerMatch = callerMonthByKey.get(m.monthKey);
+    const fy = Number(callerMatch?.fyIndex ?? m.fyIndex);
+    return checkedSet.has(m.monthKey) || fy === 1 || fy === 2;
+  });
 
   // --- 1. CONTRACTORS SECTION (Rows 13 .. contractorEndRow) ---
   const conHeight = Math.max(0, landmarks.contractorEndRow - landmarks.contractorStartRow + 1);
@@ -1735,8 +1786,8 @@ export async function pushStarterPlSetup({
       sanitizeFormulaInput(String(emp.role || "").trim()),
       round2(parseYear0Number(emp.fteSalary)),
       Number(emp.fte) > 0 ? Number(emp.fte) : 1,
-      toSheetDateFormat(emp.startDate) || emp.startDate || formatDMmmYy(startDate),
-      emp.endDate ? (toSheetDateFormat(emp.endDate) || String(emp.endDate).trim()) : "",
+      toSheetDateFormat(emp.startDate) || sanitizeFormulaInput(String(emp.startDate || "").trim()) || formatDMmmYy(startDate),
+      emp.endDate ? (toSheetDateFormat(emp.endDate) || sanitizeFormulaInput(String(emp.endDate).trim())) : "",
       Math.max(0, Math.min(100, parseYear0Number(emp.deliveryPct))) / 100,
       emp.studentLoan ? "Yes" : "No",
       emp.pension ? "Yes" : "No",
@@ -1833,7 +1884,7 @@ export async function pushStarterPlSetup({
 
   // Update Master StarterPL row 82 checkboxes for audit parity
   const masterChkVals = Array.from({ length: 12 }, (_, i) => {
-    const fm = outgoingsMonths[i];
+    const fm = serverOutgoingsMonths[i];
     return Boolean(fm && checkedSet.has(fm.monthKey));
   });
   await withRetry(() =>

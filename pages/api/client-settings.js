@@ -9,7 +9,7 @@
  * Strict Admin-only access.
  */
 
-import { resolveLiveSessionUser } from "../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../services/authService.js";
 import {
   canAccessPma,
   isUserAuthorizedForClient,
@@ -51,6 +51,14 @@ export default async function handler(req, res) {
     return res.status(403).json({
       success: false,
       error: "Access denied: PMA configuration requires staff privileges."
+    });
+  }
+
+  const rl = await checkRateLimit("client-settings", sessionUser.email || getTrustedClientIp(req), 60, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({
+      success: false,
+      error: "Too many requests. Please slow down."
     });
   }
 

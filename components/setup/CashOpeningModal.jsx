@@ -142,8 +142,9 @@ export default function CashOpeningModal({
     setFeedback(null);
     try {
       const updates = entries.map((e) => ({
-        targetColLetter: e.targetColLetter,
-        targetRow: e.targetRow,
+        role: e.role,
+        openingMonthKey: e.openingMonthKey,
+        ...(e.targetColLetter ? { targetColLetter: e.targetColLetter, targetRow: e.targetRow } : {}),
         amount: parseNum(e.amount),
       }));
       const res = await fetch("/api/setup/cash-opening", {

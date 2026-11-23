@@ -137,13 +137,12 @@ export default async function handler(req, res) {
     // 2. Fetch company metadata from QuickBooks API
     let companyName = "";
     if (activeRealmId) {
-      try {
-        const companyInfo = await getQBCompanyInfo(tokens.accessToken, activeRealmId);
-        if (companyInfo?.companyName) {
-          companyName = companyInfo.companyName;
-        }
-      } catch (infoErr) {
-        console.warn("⚠️ Error fetching QB company info:", infoErr.message);
+      const companyInfo = await getQBCompanyInfo(tokens.accessToken, activeRealmId);
+      if (companyInfo?.authErrorStatus === 401 || companyInfo?.authErrorStatus === 403) {
+        return res.status(401).send("QuickBooks authorization failed verification (HTTP " + companyInfo.authErrorStatus + "). Please reconnect and authorize access to your company.");
+      }
+      if (companyInfo?.companyName) {
+        companyName = companyInfo.companyName;
       }
     }
 

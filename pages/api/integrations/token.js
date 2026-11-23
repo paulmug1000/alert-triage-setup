@@ -658,7 +658,8 @@ export default async function handler(req, res) {
               "Authorization": `Bearer ${accessToken}`,
               "xero-tenant-id": tenantId,
               "Accept": "application/json"
-            }
+            },
+            redirect: "manual"
           });
           if (!testRes.ok) {
             const errBody = await testRes.text();
@@ -769,18 +770,20 @@ export default async function handler(req, res) {
             headers: {
               "Authorization": `Bearer ${accessToken}`,
               "Accept": "application/json"
-            }
+            },
+            redirect: "manual"
           });
 
           // If token returned 401, attempt emergency refresh
           if (testRes.status === 401 && record.tokens?.refreshToken) {
             console.log(`⚠️ Token Broker verify: Close returned 401 for ${record.clientName}. Attempting emergency refresh...`);
             try {
-              const refreshed = await refreshCloseTokens(record.tokens.refreshToken);
-              await updateRefreshedTokens({
+              const refreshed = await refreshStoredIntegrationToken({
                 clientKey: record.clientKey,
+                masterSheetId: canonicalSpreadsheetId || spreadsheetId,
                 tool: "close",
-                tokens: refreshed
+                forceRefresh: true,
+                refreshFn: (latest) => refreshCloseTokens(latest.tokens.refreshToken)
               });
               accessToken = refreshed.accessToken;
               expiresIn = refreshed.expiresIn;
@@ -788,11 +791,12 @@ export default async function handler(req, res) {
                 headers: {
                   "Authorization": `Bearer ${accessToken}`,
                   "Accept": "application/json"
-                }
+                },
+                redirect: "manual"
               });
             } catch (refErr) {
               console.error(`🚨 Token Broker: Close emergency refresh failed:`, refErr.message);
-              if (refErr.message.includes("invalid_grant") || refErr.message.includes("unauthorized")) {
+              if (isOAuthReconnectError(refErr)) {
                 await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "close", error: refErr.message });
               }
               return res.status(401).json({
@@ -808,14 +812,17 @@ export default async function handler(req, res) {
           if (!testRes.ok) {
             const errBody = await testRes.text();
             await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "close", error: `HTTP ${testRes.status}: ${errBody}` });
-            return res.status(testRes.status === 401 ? 401 : 502).json({
+            const closeErrPayload = {
               success: false,
               verified: false,
               status: testRes.status,
               error: `Close CRM API Error: HTTP ${testRes.status} (${testRes.statusText}). Re-authorization required.`,
-              providerDetails: errBody,
               reconnectRequired: true
-            });
+            };
+            if (!isBrowserSessionCall || sessionUser?.isAdmin) {
+              closeErrPayload.providerDetails = errBody;
+            }
+            return res.status(testRes.status === 401 ? 401 : 502).json(closeErrPayload);
           }
 
           const accData = await testRes.json();
@@ -846,7 +853,8 @@ export default async function handler(req, res) {
             headers: {
               "Authorization": cleanToken,
               "Accept": "application/json"
-            }
+            },
+            redirect: "manual"
           });
 
           if (!testRes.ok) {
@@ -854,14 +862,17 @@ export default async function handler(req, res) {
             if (testRes.status === 401 || testRes.status === 403) {
               await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "clickup", error: `HTTP ${testRes.status}: ${errBody}` });
             }
-            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json({
+            const clickupErrPayload = {
               success: false,
               verified: false,
               status: testRes.status,
               error: `ClickUp API Error: HTTP ${testRes.status} (${testRes.statusText}). Token invalid or revoked. Re-authorization required.`,
-              providerDetails: errBody,
               reconnectRequired: testRes.status === 401 || testRes.status === 403
-            });
+            };
+            if (!isBrowserSessionCall || sessionUser?.isAdmin) {
+              clickupErrPayload.providerDetails = errBody;
+            }
+            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json(clickupErrPayload);
           }
 
           const teamData = await testRes.json();
@@ -893,18 +904,20 @@ export default async function handler(req, res) {
             headers: {
               "Authorization": cleanToken,
               "Accept": "application/json"
-            }
+            },
+            redirect: "manual"
           });
 
           // If token returned 401, attempt emergency refresh
           if (testRes.status === 401 && record.tokens?.refreshToken) {
             console.log(`⚠️ Token Broker verify: Capsule returned 401 for ${record.clientName}. Attempting emergency refresh...`);
             try {
-              const refreshed = await refreshCapsuleTokens(record.tokens.refreshToken);
-              await updateRefreshedTokens({
+              const refreshed = await refreshStoredIntegrationToken({
                 clientKey: record.clientKey,
+                masterSheetId: canonicalSpreadsheetId || spreadsheetId,
                 tool: "capsule",
-                tokens: refreshed
+                forceRefresh: true,
+                refreshFn: (latest) => refreshCapsuleTokens(latest.tokens.refreshToken)
               });
               accessToken = refreshed.accessToken;
               expiresIn = refreshed.expiresIn;
@@ -912,11 +925,14 @@ export default async function handler(req, res) {
                 headers: {
                   "Authorization": `Bearer ${accessToken}`,
                   "Accept": "application/json"
-                }
+                },
+                redirect: "manual"
               });
             } catch (refErr) {
               console.error(`🚨 Token Broker: Capsule emergency refresh failed:`, refErr.message);
-              await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "capsule", error: refErr.message });
+              if (isOAuthReconnectError(refErr)) {
+                await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "capsule", error: refErr.message });
+              }
               return res.status(401).json({
                 success: false,
                 verified: false,
@@ -932,14 +948,17 @@ export default async function handler(req, res) {
             if (testRes.status === 401 || testRes.status === 403) {
               await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "capsule", error: `HTTP ${testRes.status}: ${errBody}` });
             }
-            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json({
+            const capsuleErrPayload = {
               success: false,
               verified: false,
               status: testRes.status,
               error: `Capsule CRM API Error: HTTP ${testRes.status} (${testRes.statusText}). Re-authorization required.`,
-              providerDetails: errBody,
               reconnectRequired: testRes.status === 401 || testRes.status === 403
-            });
+            };
+            if (!isBrowserSessionCall || sessionUser?.isAdmin) {
+              capsuleErrPayload.providerDetails = errBody;
+            }
+            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json(capsuleErrPayload);
           }
 
           const siteData = await testRes.json();
@@ -972,18 +991,20 @@ export default async function handler(req, res) {
             headers: {
               "Authorization": cleanToken,
               "Accept": "application/json"
-            }
+            },
+            redirect: "manual"
           });
 
           // If token returned 401, attempt emergency refresh
           if (testRes.status === 401 && record.tokens?.refreshToken) {
             console.log(`⚠️ Token Broker verify: Pipedrive returned 401 for ${record.clientName}. Attempting emergency refresh...`);
             try {
-              const refreshed = await refreshPipedriveTokens(record.tokens.refreshToken);
-              await updateRefreshedTokens({
+              const refreshed = await refreshStoredIntegrationToken({
                 clientKey: record.clientKey,
+                masterSheetId: canonicalSpreadsheetId || spreadsheetId,
                 tool: "pipedrive",
-                tokens: refreshed
+                forceRefresh: true,
+                refreshFn: (latest) => refreshPipedriveTokens(latest.tokens.refreshToken)
               });
               accessToken = refreshed.accessToken;
               expiresIn = refreshed.expiresIn;
@@ -991,11 +1012,14 @@ export default async function handler(req, res) {
                 headers: {
                   "Authorization": `Bearer ${accessToken}`,
                   "Accept": "application/json"
-                }
+                },
+                redirect: "manual"
               });
             } catch (refErr) {
               console.error(`🚨 Token Broker: Pipedrive emergency refresh failed:`, refErr.message);
-              await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "pipedrive", error: refErr.message });
+              if (isOAuthReconnectError(refErr)) {
+                await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "pipedrive", error: refErr.message });
+              }
               return res.status(401).json({
                 success: false,
                 verified: false,
@@ -1011,14 +1035,17 @@ export default async function handler(req, res) {
             if (testRes.status === 401 || testRes.status === 403) {
               await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "pipedrive", error: `HTTP ${testRes.status}: ${errBody}` });
             }
-            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json({
+            const pipeErrPayload = {
               success: false,
               verified: false,
               status: testRes.status,
               error: `Pipedrive API Error: HTTP ${testRes.status} (${testRes.statusText}). Re-authorization required.`,
-              providerDetails: errBody,
               reconnectRequired: testRes.status === 401 || testRes.status === 403
-            });
+            };
+            if (!isBrowserSessionCall || sessionUser?.isAdmin) {
+              pipeErrPayload.providerDetails = errBody;
+            }
+            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json(pipeErrPayload);
           }
 
           const pipeData = await testRes.json();
@@ -1054,18 +1081,20 @@ export default async function handler(req, res) {
               "Content-Type": "application/json",
               "API-Version": "2024-04"
             },
-            body: JSON.stringify({ query })
+            body: JSON.stringify({ query }),
+            redirect: "manual"
           });
 
           // If token returned 401, attempt emergency refresh
           if (testRes.status === 401 && record.tokens?.refreshToken) {
             console.log(`⚠️ Token Broker verify: Monday returned 401 for ${record.clientName}. Attempting emergency refresh...`);
             try {
-              const refreshed = await refreshMondayTokens(record.tokens.refreshToken);
-              await updateRefreshedTokens({
+              const refreshed = await refreshStoredIntegrationToken({
                 clientKey: record.clientKey,
+                masterSheetId: canonicalSpreadsheetId || spreadsheetId,
                 tool: "monday",
-                tokens: refreshed
+                forceRefresh: true,
+                refreshFn: (latest) => refreshMondayTokens(latest.tokens.refreshToken)
               });
               accessToken = refreshed.accessToken;
               expiresIn = refreshed.expiresIn;
@@ -1076,11 +1105,14 @@ export default async function handler(req, res) {
                   "Content-Type": "application/json",
                   "API-Version": "2024-04"
                 },
-                body: JSON.stringify({ query })
+                body: JSON.stringify({ query }),
+                redirect: "manual"
               });
             } catch (refErr) {
               console.error(`🚨 Token Broker: Monday emergency refresh failed:`, refErr.message);
-              await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "monday", error: refErr.message });
+              if (isOAuthReconnectError(refErr)) {
+                await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "monday", error: refErr.message });
+              }
               return res.status(401).json({
                 success: false,
                 verified: false,
@@ -1137,18 +1169,20 @@ export default async function handler(req, res) {
             headers: {
               "Authorization": cleanToken,
               "Accept": "application/json"
-            }
+            },
+            redirect: "manual"
           });
 
           // If token returned 401, attempt emergency refresh
           if (testRes.status === 401 && record.tokens?.refreshToken) {
             console.log(`⚠️ Token Broker verify: HubSpot returned 401 for ${record.clientName}. Attempting emergency refresh...`);
             try {
-              const refreshed = await refreshHubSpotTokens(record.tokens.refreshToken);
-              await updateRefreshedTokens({
+              const refreshed = await refreshStoredIntegrationToken({
                 clientKey: record.clientKey,
+                masterSheetId: canonicalSpreadsheetId || spreadsheetId,
                 tool: "hubspot",
-                tokens: refreshed
+                forceRefresh: true,
+                refreshFn: (latest) => refreshHubSpotTokens(latest.tokens.refreshToken)
               });
               accessToken = refreshed.accessToken;
               expiresIn = refreshed.expiresIn;
@@ -1156,11 +1190,14 @@ export default async function handler(req, res) {
                 headers: {
                   "Authorization": `Bearer ${accessToken}`,
                   "Accept": "application/json"
-                }
+                },
+                redirect: "manual"
               });
             } catch (refErr) {
               console.error(`🚨 Token Broker: HubSpot emergency refresh failed:`, refErr.message);
-              await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "hubspot", error: refErr.message });
+              if (isOAuthReconnectError(refErr)) {
+                await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "hubspot", error: refErr.message });
+              }
               return res.status(401).json({
                 success: false,
                 verified: false,
@@ -1176,14 +1213,17 @@ export default async function handler(req, res) {
             if (testRes.status === 401 || testRes.status === 403) {
               await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "hubspot", error: `HTTP ${testRes.status}: ${errBody}` });
             }
-            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json({
+            const hubErrPayload = {
               success: false,
               verified: false,
               status: testRes.status,
               error: `HubSpot API Error: HTTP ${testRes.status} (${testRes.statusText}). Re-authorization required.`,
-              providerDetails: errBody,
               reconnectRequired: testRes.status === 401 || testRes.status === 403
-            });
+            };
+            if (!isBrowserSessionCall || sessionUser?.isAdmin) {
+              hubErrPayload.providerDetails = errBody;
+            }
+            return res.status(testRes.status === 401 || testRes.status === 403 ? 401 : 502).json(hubErrPayload);
           }
 
           const hubData = await testRes.json();
@@ -1223,7 +1263,8 @@ export default async function handler(req, res) {
             });
           }
           let testRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-            headers: { "Authorization": `Bearer ${accessToken}` }
+            headers: { "Authorization": `Bearer ${accessToken}` },
+            redirect: "manual"
           });
 
           if (testRes.status === 401 && record.tokens?.refreshToken) {
@@ -1239,7 +1280,8 @@ export default async function handler(req, res) {
               accessToken = refreshed.accessToken;
               expiresIn = refreshed.expiresIn;
               testRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-                headers: { "Authorization": `Bearer ${accessToken}` }
+                headers: { "Authorization": `Bearer ${accessToken}` },
+                redirect: "manual"
               });
             } catch (refErr) {
               console.error(`🚨 Token Broker: Google Sheet emergency refresh failed:`, refErr.message);
@@ -1304,7 +1346,8 @@ export default async function handler(req, res) {
             });
           }
           let testRes = await fetch("https://graph.microsoft.com/v1.0/me", {
-            headers: { "Authorization": `Bearer ${accessToken}` }
+            headers: { "Authorization": `Bearer ${accessToken}` },
+            redirect: "manual"
           });
 
           if (testRes.status === 401 && record.tokens?.refreshToken) {
@@ -1324,7 +1367,8 @@ export default async function handler(req, res) {
               accessToken = refreshed.accessToken;
               expiresIn = refreshed.expiresIn;
               testRes = await fetch("https://graph.microsoft.com/v1.0/me", {
-                headers: { "Authorization": `Bearer ${accessToken}` }
+                headers: { "Authorization": `Bearer ${accessToken}` },
+                redirect: "manual"
               });
             } catch (refErr) {
               console.error(`🚨 Token Broker: Excel emergency refresh failed:`, refErr.message);

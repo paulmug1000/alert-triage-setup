@@ -2383,7 +2383,7 @@ export default function AlertSelectionView({
                                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                           {endClientName && <div><strong>End client:</strong> {endClientName}</div>}
                                           {jobName && <div><strong>Job:</strong> {jobName}</div>}
-                                          {confirmedRow && <div><strong>Confirmed tab row:</strong> {confirmedRow}</div>}
+                                          {isAdmin && confirmedRow && <div><strong>Confirmed tab row:</strong> {confirmedRow}</div>}
                                           {revenue && <div><strong>Monthly revenue:</strong> {revenue}</div>}
                                           {startDate && <div><strong>Contract period:</strong> {startDate} → {formatJobEndDateDisplay(endDate, endDate)}</div>}
                                           {frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(frequencyDays)} (every ~{frequencyDays} days)</div>}
@@ -2543,7 +2543,7 @@ export default function AlertSelectionView({
                                         {(m.jobType || alert.jobType || m.isRetainer !== undefined) && (
                                           <div><strong>Job type:</strong> {m.jobType || alert.jobType || (String(m.isRetainer).toLowerCase() === "true" || String(m.isRetainer).toLowerCase() === "yes" ? "Retainer" : "Project")}</div>
                                         )}
-                                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                                        {isAdmin && m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
                                         {m.startDate && <div><strong>Job started:</strong> {m.startDate}</div>}
                                         {(() => {
                                           const displayEndDate = m.endDate || alert.endDate || alert.detail?.match(/ends\s+([0-9a-zA-Z-]+)/i)?.[1];
@@ -2572,7 +2572,7 @@ export default function AlertSelectionView({
                                       <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                         {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                                         {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
-                                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                                        {isAdmin && m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
                                         {m.endDate && <div><strong>Job ended:</strong> {formatJobEndDateDisplay(m.endDate, m.endDate)}</div>}
                                         {(() => {
                                           const feeRevNum = parseFloat(m.feeRevenue ?? alert.feeRevenue ?? 0);
@@ -2966,14 +2966,14 @@ export default function AlertSelectionView({
                                       const md = alert.metadata || {};
                                       return (
                                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                                          <div style={{ marginBottom: "2px" }}><strong>Confirmed tab</strong></div>
-                                          {md.confirmedRow && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
+                                          <div style={{ marginBottom: "2px" }}><strong>{isAdmin ? "Confirmed tab" : "Confirmed jobs"}</strong></div>
+                                          {isAdmin && md.confirmedRow && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
                                           {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
                                           {md.jobName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
                                           {md.projectCode && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
                                           {md.jobType && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
-                                          <div style={{ marginBottom: "2px", marginTop: "4px" }}><strong>Pipeline tab</strong></div>
-                                          {md.pipelineRow && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.pipelineRow}</div>}
+                                          <div style={{ marginBottom: "2px", marginTop: "4px" }}><strong>{isAdmin ? "Pipeline tab" : "Pipeline jobs"}</strong></div>
+                                          {isAdmin && md.pipelineRow && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.pipelineRow}</div>}
                                           <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
                                           <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>&quot;Copied to confirmed?&quot;: <strong>{md.copiedToConf || "(blank)"}</strong></div>
                                           <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>Expected fix: set Pipeline likelihood to 0% or mark &quot;Copied to confirmed?&quot; as Yes.</div>
@@ -3071,7 +3071,7 @@ export default function AlertSelectionView({
                                       <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
-                                        {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
+                                        {isAdmin && (m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
                                         {(m.stableJobKey || alert.stableJobKey || m.invoiceRef || alert.invoiceRef) && <div><strong>Invoice ref:</strong> {m.stableJobKey || alert.stableJobKey || m.invoiceRef || alert.invoiceRef}</div>}
                                         {(m.amount || alert.amount) && <div><strong>Amount:</strong> £{parseFloat(String(m.amount || alert.amount).replace(/[£,\s]/g, "")).toFixed(2)}</div>}
                                         {(m.sentDate || alert.sentDate) && <div><strong>Sent date:</strong> {m.sentDate || alert.sentDate}</div>}
@@ -3086,7 +3086,7 @@ export default function AlertSelectionView({
                                       <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}</div>}
-                                        {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
+                                        {isAdmin && (m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
                                         {(m.expRef || m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.expRef || m.stableJobKey || alert.stableJobKey}</div>}
                                         {(m.description || alert.description) && <div><strong>Description:</strong> {m.description || alert.description}</div>}
                                         {(m.amount || alert.amount) && <div><strong>Amount:</strong> £{parseFloat(String(m.amount || alert.amount).replace(/[£,\s]/g, "")).toFixed(2)}</div>}
@@ -3101,10 +3101,10 @@ export default function AlertSelectionView({
                                       <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
-                                        {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
+                                        {isAdmin && (m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
                                         {alert.detail && (
                                           <div style={{ marginTop: "4px", color: "#c62828" }}>
-                                            {isAdmin ? alert.detail : stripRowInfo(alert.detail)}
+                                            {isAdmin ? alert.detail : sanitizeSpreadsheetTerms(alert.detail)}
                                           </div>
                                         )}
                                       </div>
@@ -3295,10 +3295,10 @@ export default function AlertSelectionView({
                                       <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
-                                        {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
+                                        {isAdmin && (m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
                                         {alert.detail && (
                                           <div style={{ marginTop: "4px", color: "#444" }}>
-                                            {isAdmin ? alert.detail : stripRowInfo(alert.detail)}
+                                            {isAdmin ? alert.detail : sanitizeSpreadsheetTerms(alert.detail)}
                                           </div>
                                         )}
                                       </div>

@@ -1,4 +1,4 @@
-//Version 1.11 - Retire AppData intermediate tab from Client Sheet formula recalculation pass
+//Version 1.12 - Use Object.create(null) tab maps, linear-time wildcard glob matcher, and bounded RE2 quantifier validation
 // Evaluates Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -1184,9 +1184,9 @@ export function recalculateClientGrids(grids, options = {}) {
   //    - For non-formula cells, empty strings "" are normalized to `null` (BLANK) so Google Sheets
   //      blank-cell vs zero-length-string relational comparisons (`AP2 > 0` vs `FT2 <= F1`) work identically.
   //    - Identify all spill-origin formulas (e.g. `={...}`, `=ARRAYFORMULA(...)`, `=FILTER(...)`, `=TRANSPOSE(...)`, `=LET(...)` in spill cells).
-  const cellState = {}; // tab -> Uint8Array (0=unvisited, 1=visiting, 2=done)
-  const tabDims = {};
-  const rangeCacheByTab = {}; // tab -> Map<string, Array<Array<any>>>
+  const cellState = Object.create(null); // tab -> Uint8Array (0=unvisited, 1=visiting, 2=done)
+  const tabDims = Object.create(null);
+  const rangeCacheByTab = Object.create(null); // tab -> Map<string, Array<Array<any>>>
   const blockedSpillOrigins = new Map(); // `${tab}!${r},${c}` -> original "#REF! (Array result was not expanded...)" string
 
   // Determine which tabs are affected when options.changedTabs is supplied
@@ -1291,6 +1291,7 @@ export function recalculateClientGrids(grids, options = {}) {
   }
 
   for (const [tab, t] of Object.entries(grids)) {
+    if (tab === "__proto__" || tab === "constructor" || tab === "prototype") continue;
     if (!t || typeof t !== "object") continue;
     if (!Array.isArray(t.values)) t.values = [];
     if (!Array.isArray(t.formulas)) t.formulas = [];
@@ -3256,29 +3257,9 @@ export function recalculateClientGrids(grids, options = {}) {
           if (rawNeedle.length > 500) {
             throw new SheetError("#VALUE!", "SEARCH pattern exceeds 500 character limit");
           }
-          let rx = "";
-          let lastWasStar = false;
-          for (let i = 0; i < rawNeedle.length; i++) {
-            const ch = rawNeedle[i];
-            if (ch === "~" && i + 1 < rawNeedle.length) {
-              rx += rawNeedle[++i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              lastWasStar = false;
-            } else if (ch === "*") {
-              if (!lastWasStar) {
-                rx += ".*";
-                lastWasStar = true;
-              }
-            } else if (ch === "?") {
-              rx += ".";
-              lastWasStar = false;
-            } else {
-              rx += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              lastWasStar = false;
-            }
-          }
-          const m = hay.slice(0, 25000).match(new RegExp(rx, "i"));
-          if (!m || m.index === undefined) throw new SheetError("#VALUE!", "SEARCH did not find pattern");
-          return m.index + startPos;
+          const idx = findSearchGlobIndex_(hay, rawNeedle);
+          if (idx === -1) throw new SheetError("#VALUE!", "SEARCH did not find pattern");
+          return idx + startPos;
         });
       }
 
@@ -3287,7 +3268,7 @@ export function recalculateClientGrids(grids, options = {}) {
         const patVal = evalAST(args[1], ctx);
         if (!Array.isArray(textVal) && !Array.isArray(patVal)) {
           const s = toStringVal(textVal);
-          if (s.length > 25000) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
+          if (s.length > 8192) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
           const { pattern, flags } = parseRe2Pattern(toStringVal(patVal), false);
           const re = new RegExp(pattern, flags);
           const m = s.match(re);
@@ -3297,7 +3278,7 @@ export function recalculateClientGrids(grids, options = {}) {
         }
         return broadcastBinaryOp("REGEXEXTRACT", textVal, patVal, (t, p) => {
           const s = toStringVal(t);
-          if (s.length > 25000) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
+          if (s.length > 8192) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
           const { pattern, flags } = parseRe2Pattern(toStringVal(p), false);
           const re = new RegExp(pattern, flags);
           const m = s.match(re);
@@ -3314,7 +3295,7 @@ export function recalculateClientGrids(grids, options = {}) {
             throw new SheetError("#VALUE!", "REGEXMATCH requires text");
           }
           const s = toStringVal(t);
-          if (s.length > 25000) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
+          if (s.length > 8192) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
           const { pattern, flags } = parseRe2Pattern(toStringVal(p), false);
           const re = new RegExp(pattern, flags);
           return re.test(s);
@@ -3329,7 +3310,7 @@ export function recalculateClientGrids(grids, options = {}) {
         const re = new RegExp(pattern, flags);
         return mapArrayScalar(textVal, (t) => {
           const s = toStringVal(t);
-          if (s.length > 25000) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
+          if (s.length > 8192) throw new SheetError("#VALUE!", "Input exceeds regex length limit");
           return s.replace(re, replStr);
         });
       }
@@ -3413,15 +3394,7 @@ export function recalculateClientGrids(grids, options = {}) {
     }
 
     if (s.includes("*") || s.includes("?")) {
-      const collapsed = s.replace(/\*+/g, "*");
-      const regexStr =
-        "^" +
-        collapsed
-          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-          .replace(/[*?]/g, (ch) => (ch === "*" ? ".*" : ".")) +
-        "$";
-      const re = new RegExp(regexStr, "i");
-      return (v) => !isBlankVal(v) && re.test(String(v));
+      return (v) => !isBlankVal(v) && globMatchFull_(String(v), s);
     }
 
     const numVal = Number(s);
@@ -3433,6 +3406,123 @@ export function recalculateClientGrids(grids, options = {}) {
 
     const lowerS = s.toLowerCase();
     return (v) => !isBlankVal(v) && String(v).toLowerCase() === lowerS;
+  }
+
+  function globMatchFull_(str, pat) {
+    const s = String(str).toLowerCase();
+    const p = String(pat).toLowerCase();
+    let si = 0;
+    let pi = 0;
+    let starIdx = -1;
+    let matchIdx = 0;
+    while (si < s.length) {
+      if (pi < p.length && (p[pi] === "?" || p[pi] === s[si])) {
+        si++;
+        pi++;
+      } else if (pi < p.length && p[pi] === "*") {
+        starIdx = pi;
+        matchIdx = si;
+        pi++;
+      } else if (starIdx !== -1) {
+        pi = starIdx + 1;
+        matchIdx++;
+        si = matchIdx;
+      } else {
+        return false;
+      }
+    }
+    while (pi < p.length && p[pi] === "*") pi++;
+    return pi === p.length;
+  }
+
+  function tokenizeSearchGlob_(rawNeedle) {
+    const tokens = [];
+    let lastWasStar = false;
+    for (let i = 0; i < rawNeedle.length; i++) {
+      const ch = rawNeedle[i];
+      if (ch === "~" && i + 1 < rawNeedle.length) {
+        tokens.push({ kind: "lit", ch: rawNeedle[++i].toLowerCase() });
+        lastWasStar = false;
+      } else if (ch === "*") {
+        if (!lastWasStar) {
+          tokens.push({ kind: "star" });
+          lastWasStar = true;
+        }
+      } else if (ch === "?") {
+        tokens.push({ kind: "any" });
+        lastWasStar = false;
+      } else {
+        tokens.push({ kind: "lit", ch: ch.toLowerCase() });
+        lastWasStar = false;
+      }
+    }
+    return tokens;
+  }
+
+  function findSearchGlobIndex_(hayRaw, rawNeedle) {
+    const tokens = tokenizeSearchGlob_(rawNeedle);
+    if (tokens.length === 0) return 0;
+    while (tokens.length > 1 && tokens[tokens.length - 1].kind === "star") {
+      tokens.pop();
+    }
+    if (tokens.length === 1 && tokens[0].kind === "star") return 0;
+    const hay = String(hayRaw).slice(0, 8192).toLowerCase();
+    const maxStart = tokens[0].kind === "star" ? 0 : hay.length;
+    for (let start = 0; start <= maxStart; start++) {
+      let si = start;
+      let ti = 0;
+      let starIdx = -1;
+      let matchIdx = start;
+      while (ti < tokens.length) {
+        const tok = tokens[ti];
+        if (tok.kind === "star") {
+          starIdx = ti;
+          matchIdx = si;
+          ti++;
+        } else if (si < hay.length && (tok.kind === "any" || hay[si] === tok.ch)) {
+          si++;
+          ti++;
+        } else if (starIdx !== -1 && matchIdx < hay.length) {
+          ti = starIdx + 1;
+          matchIdx++;
+          si = matchIdx;
+        } else {
+          break;
+        }
+      }
+      if (ti === tokens.length) return start;
+    }
+    return -1;
+  }
+
+  function countUnboundedQuantifiers_(patternStr) {
+    let count = 0;
+    let inCharClass = false;
+    for (let i = 0; i < patternStr.length; i++) {
+      const ch = patternStr[i];
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
+      if (inCharClass) {
+        if (ch === "]") inCharClass = false;
+        continue;
+      }
+      if (ch === "[") {
+        inCharClass = true;
+        continue;
+      }
+      if (ch === "*" || ch === "+") {
+        count++;
+      } else if (ch === "{") {
+        const tailMatch = patternStr.slice(i).match(/^\{\d+,\}/);
+        if (tailMatch) {
+          count++;
+          i += tailMatch[0].length - 1;
+        }
+      }
+    }
+    return count;
   }
 
   function hasNestedQuantifier_(patternStr) {
@@ -3494,10 +3584,10 @@ export function recalculateClientGrids(grids, options = {}) {
       flags += "i";
       p = p.slice(4);
     }
-    if (p.length > 500) {
+    if (p.length > 500 || p.length > 8192) {
       throw new SheetError("#VALUE!", "Regex pattern exceeds 500 character limit");
     }
-    if (hasNestedQuantifier_(p) || /(\.\*|\.\+){3,}/.test(p)) {
+    if (hasNestedQuantifier_(p) || /(\.\*|\.\+){3,}/.test(p) || countUnboundedQuantifiers_(p) > 4) {
       throw new SheetError("#VALUE!", "Unsafe regular expression pattern");
     }
     return { pattern: p, flags };

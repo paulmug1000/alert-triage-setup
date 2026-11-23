@@ -4,6 +4,7 @@
  */
 
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { unwrapSheetId } from "./sheetTokenService.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
 import { updateClientChecklistTask } from "./setupService.js";
@@ -174,9 +175,10 @@ function formatPreviewRow(deal) {
 
 export async function scanBlankCodePipelineMatches({ clientName, masterSheetId }) {
   const sheets = await getSheetsClient();
-  const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+  const rawMasterId = unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId);
+  const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: rawMasterId });
   const cleanClientName = supaCtx?.clientName || clientName;
-  let cleanMasterId = supaCtx?.masterSheetId || extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+  let cleanMasterId = supaCtx?.masterSheetId || (rawMasterId && rawMasterId !== "__INVALID_WS_TOKEN__" ? rawMasterId : "");
   if (!cleanMasterId) {
     cleanMasterId = await resolveMasterSheetIdByClientName(sheets, cleanClientName);
   }
@@ -270,9 +272,10 @@ export async function applyBlankCodePipelineMatches({
   }
 
   const sheets = await getSheetsClient();
-  const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+  const rawMasterId = unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId);
+  const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: rawMasterId });
   const cleanClientName = supaCtx?.clientName || clientName;
-  let cleanMasterId = supaCtx?.masterSheetId || extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+  let cleanMasterId = supaCtx?.masterSheetId || (rawMasterId && rawMasterId !== "__INVALID_WS_TOKEN__" ? rawMasterId : "");
   if (!cleanMasterId) {
     cleanMasterId = await resolveMasterSheetIdByClientName(sheets, cleanClientName);
   }

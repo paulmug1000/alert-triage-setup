@@ -1,6 +1,7 @@
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, getSheetTitles } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/userPermissions.js";
+import { assertClientPortalLive } from "../../../services/setupService.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
 import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense, isJobCostingStyle, formatLikelihood, assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
@@ -47,6 +48,11 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
 
+  const rl = await checkRateLimit("portal-key-data", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
+  }
+
   const rawClientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const type = String(req.query.type || req.body?.type || "all").toLowerCase().trim();
@@ -69,6 +75,8 @@ export default async function handler(req, res) {
   if (!auth.authorized) {
     return res.status(auth.status || 403).json({ success: false, error: auth.error });
   }
+  const liveGate = await assertClientPortalLive(sessionUser, auth.clientName || clientName, res);
+  if (!liveGate.allowed) return;
 
   const isSeniorUser = Boolean(
     sessionUser.isSenior ||

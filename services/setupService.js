@@ -14,14 +14,14 @@
  *     KeyInfo!Q9: CRM Drives ('NA', 'Pipeline', 'PipeAndConf')
  */
 
-import { redisClient, scanRedisKeys } from "./redisClient.js";
+import { redisClient, scanRedisKeys, ensureRedisConnected } from "./redisClient.js";
 import { invalidateAllClientsRedisKeys } from "./cacheService.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive, shouldDualWriteLegacyControlPlaneSheets } from "./supabaseClient.js";
 import { isValidGoogleScriptUrl } from "../utils/helpers.js";
 import { getIntegrationStatus, INTEGRATIONS_STATUS_CACHE_KEY } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput, getServiceAccountPoolEmails } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
-import { isUserAuthorizedForClient, resolveMasterSheetIdByClientName, resolveClientSheetIdByClientName, unwrapSheetId } from "./userPermissions.js";
+import { isUserAuthorizedForClient, isPulseOnlyUser, resolveMasterSheetIdByClientName, resolveClientSheetIdByClientName, unwrapSheetId } from "./userPermissions.js";
 import { clearAllClientsMemoryCache } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 import {
@@ -409,6 +409,61 @@ export async function getClientSetupConfig({ clientName, masterSheetId, clientSh
   return fullConfig;
 }
 
+const PORTAL_LIVE_GATE_TTL_MS = 3000;
+const _portalLiveGateCache = new Map();
+
+/**
+ * Blocks Pulse-only users from accessing tenant portal APIs while the client is
+ * in Setup Holding Gate (setupMode === true && pulseLive !== true).
+ */
+export async function assertClientPortalLive(sessionUser, clientName, res = null) {
+  if (!clientName || !isPulseOnlyUser(sessionUser)) {
+    return { allowed: true };
+  }
+  const norm = normalizeKey(clientName);
+  const cached = _portalLiveGateCache.get(norm);
+  let gated = false;
+  if (cached && cached.expiresAt > Date.now()) {
+    gated = cached.gated;
+  } else {
+    let cfg = null;
+    try {
+      await ensureRedisConnected(300).catch(() => {});
+      const raw = await redisClient.get(getSetupRedisKey(clientName));
+      if (raw) cfg = JSON.parse(raw);
+    } catch { }
+    if (!cfg && isSupabaseConfigured()) {
+      try {
+        const sb = getSupabaseAdmin();
+        const { data: dbClient } = await sb
+          .from("clients")
+          .select("metadata")
+          .eq("normalized_key", norm)
+          .maybeSingle();
+        if (dbClient?.metadata && typeof dbClient.metadata === "object") {
+          cfg = {
+            setupMode: dbClient.metadata.setupMode === true,
+            pulseLive: dbClient.metadata.pulseLive === true || dbClient.metadata.setupMode !== true,
+          };
+        }
+      } catch { }
+    }
+    gated = Boolean(cfg && cfg.setupMode === true && !cfg.pulseLive);
+    _portalLiveGateCache.set(norm, { gated, expiresAt: Date.now() + PORTAL_LIVE_GATE_TTL_MS });
+  }
+  if (gated) {
+    if (res && !res.headersSent) {
+      res.status(403).json({
+        success: false,
+        setupHolding: true,
+        error: "Your Pulse workspace is currently being configured and will be available shortly.",
+      });
+    }
+    return { allowed: false };
+  }
+  return { allowed: true };
+}
+
 /**
  * Saves client setup configuration to Redis and persists tool choices to Master Sheet KeyInfo.
  */
@@ -426,6 +481,7 @@ export async function saveClientSetupConfig({
   if (!clientName) throw new Error("Missing clientName parameter.");
 
   const redisKey = getSetupRedisKey(clientName);
+  _portalLiveGateCache.delete(normalizeKey(clientName));
   const now = new Date().toISOString();
 
   // Read existing cached data so we preserve any integration objects (e.g. googleSheet, excel)

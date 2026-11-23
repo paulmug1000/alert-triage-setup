@@ -6,11 +6,11 @@
  * POST: action = "load_initial_tax" | "save_initial_tax"
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import {
   isUserAuthorizedForClient,
-  verifyUserAuthorizedForSheet,
+  assertSetupClientSheetBinding,
   canAccessPma,
   isReadOnlySession,
 } from "../../../services/userPermissions.js";
@@ -50,6 +50,11 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Read-only session cannot modify initial tax estimates." });
   }
 
+  const rl = await checkRateLimit("setup-initial-tax", sessionUser.email || getTrustedClientIp(req), 20, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
+  }
+
   const isAdmin = Boolean(!sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin"));
   const { clientName, masterSheetId, action, corpTaxAmount, vatSlots } = req.body || {};
 
@@ -70,12 +75,14 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "No Master workspace configured for this client." });
   }
 
-  if (!isAdmin) {
-    const sheets = await getSheetsClient();
-    const auth = await verifyUserAuthorizedForSheet(sessionUser, resolvedMasterId, clientName, sheets);
-    if (!auth.authorized) {
-      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-    }
+  const sheets = await getSheetsClient();
+  const binding = await assertSetupClientSheetBinding(sessionUser, {
+    clientName,
+    masterSheetId: resolvedMasterId,
+    sheets,
+  });
+  if (!binding.authorized) {
+    return res.status(binding.status || 403).json({ success: false, error: binding.error || "Access denied to this client." });
   }
 
   try {
@@ -84,7 +91,17 @@ export default async function handler(req, res) {
         clientName,
         masterSheetId: resolvedMasterId,
       });
-      return res.status(200).json({ success: true, ...data });
+      let safeData = data;
+      if (!isAdmin && data && typeof data === "object") {
+        const { f6, ...rest } = data;
+        safeData = {
+          ...rest,
+          vatSlots: Array.isArray(data.vatSlots)
+            ? data.vatSlots.map(({ cashCol, vatCol, f6Num, ...slot }) => slot)
+            : data.vatSlots,
+        };
+      }
+      return res.status(200).json({ success: true, ...safeData });
     }
 
     if (action === "save_initial_tax") {

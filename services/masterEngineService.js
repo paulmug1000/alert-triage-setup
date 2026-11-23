@@ -1961,12 +1961,14 @@ function doesClientRangeNeedFormulaFlush_(parsed, clientName = "") {
 }
 
 function remapNotesGridRows_(notesGrid, mapRowFn) {
-  if (!notesGrid || typeof notesGrid !== "object") return {};
-  const next = {};
+  if (!notesGrid || typeof notesGrid !== "object") return Object.create(null);
+  const next = Object.create(null);
   for (const [k, v] of Object.entries(notesGrid)) {
+    if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
     if (k === "__bg_colors" && v && typeof v === "object") {
-      const remappedColors = {};
+      const remappedColors = Object.create(null);
       for (const [ck, cv] of Object.entries(v)) {
+        if (ck === "__proto__" || ck === "constructor" || ck === "prototype") continue;
         const cColon = ck.indexOf(":");
         if (cColon < 0) continue;
         const oldR0 = Number(ck.slice(0, cColon));

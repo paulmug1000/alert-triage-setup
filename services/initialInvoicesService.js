@@ -950,7 +950,7 @@ async function readConfirmedMetadataAndExistingRefs(sheets, cleanClientId) {
 
   const rows = valResp.data?.values || [];
   const headers = rows[0] || [];
-  const isJobCosting = isJobCostingStyle(headers);
+  const isJobCosting = isJobCostingStyle({ headers });
 
   // Locate invoice ref columns verbatim with StarterPushInvToConfirmed
   const refColIndices = [];
@@ -1014,11 +1014,13 @@ async function ensureConfirmedRowCapacity(sheets, cleanClientId, sheetMeta, targ
  */
 function buildConfirmedParentWriteSlices(rowNum, job, isJobCosting) {
   const rowArray = new Array(96).fill("");
+  const endRaw = String(job.endDate || "").trim();
+  const startRaw = String(job.startDate || "").trim();
   const endDateVal =
     String(job.projectRetainer || "").toLowerCase() === "retainer"
       ? NO_END_DATE_SHEET_VALUE
-      : toSheetDateFormat(job.endDate) || job.endDate || "";
-  const startDateVal = toSheetDateFormat(job.startDate) || job.startDate || "";
+      : (endRaw ? (toSheetDateFormat(endRaw) || sanitizeFormulaInput(endRaw)) : "");
+  const startDateVal = startRaw ? (toSheetDateFormat(startRaw) || sanitizeFormulaInput(startRaw)) : "";
 
   rowArray[0] = sanitizeFormulaInput(String(job.client || "").trim());
   rowArray[1] = sanitizeFormulaInput(String(job.jobName || "").trim());
@@ -1051,7 +1053,7 @@ function buildConfirmedParentWriteSlices(rowNum, job, isJobCosting) {
   if (job.inv1 && String(job.projectRetainer || "").toLowerCase() !== "retainer") {
     rowArray[41] = round2(job.inv1.amount);
     rowArray[42] = formatInvoiceRefForSheet(job.inv1.ref);
-    rowArray[43] = toSheetDateFormat(job.inv1.sendDate) || job.inv1.sendDate || "";
+    rowArray[43] = toSheetDateFormat(job.inv1.sendDate) || sanitizeFormulaInput(String(job.inv1.sendDate || "").trim());
     rowArray[44] = Number(job.inv1.daysToPay) || 30;
     rowArray[45] = canonicalizeInvoiceStatus(job.inv1.status || "Sent") || "Sent";
   }

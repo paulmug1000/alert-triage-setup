@@ -371,12 +371,52 @@ export async function saveCashOpeningBalances({ clientName, masterSheetId, updat
   const cleanClientId = resolveCleanId(kiResp.data?.values?.[0]?.[0] || "");
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
 
+  // Resolve valid monthly column letters strictly server-side from Client!Cash row 1 headers
+  const cashHdrResp = await withRetry(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId: cleanClientId,
+      range: "Cash!A1:AK1",
+      valueRenderOption: "UNFORMATTED_VALUE",
+    })
+  );
+  const cashHdrRow = cashHdrResp.data?.values?.[0] || [];
+  const cashColsByOpenKey = new Map();
+  const cashColsByCloseKey = new Map();
+  for (let c = 1; c < cashHdrRow.length && c <= 36; c++) {
+    const parsed = parseHeaderMonthMeta_(cashHdrRow[c]);
+    if (!parsed) continue;
+    const dObj = new Date(parsed.year, parsed.monthIdx, 1);
+    const colLetter = colIndexToLetter(c + 1);
+    cashColsByOpenKey.set(monthKeyFromDate(dObj), { col0: c, colLetter, rowNum: c === 1 ? 4 : 36 });
+    const nextD = new Date(dObj.getFullYear(), dObj.getMonth() + 1, 1);
+    cashColsByCloseKey.set(monthKeyFromDate(nextD), { col0: c, colLetter, rowNum: 36 });
+  }
+
   const batchData = [];
   for (const item of updates || []) {
-    const colLet = String(item.targetColLetter || "").trim().toUpperCase();
-    const rowNum = Number(item.targetRow) === 4 ? 4 : 36;
-    if (!colLet || !/^[A-Z]{1,2}$/.test(colLet)) continue;
-    if (item.amount === "" || item.amount === null || item.amount === undefined) continue;
+    if (!item || item.amount === "" || item.amount === null || item.amount === undefined) continue;
+    let colLet = "";
+    let rowNum = 36;
+
+    const openKey = String(item.openingMonthKey || "").trim();
+    if (/^\d{4}-\d{2}$/.test(openKey) && cashColsByCloseKey.has(openKey)) {
+      const resolved = cashColsByCloseKey.get(openKey);
+      colLet = resolved.colLetter;
+      rowNum = 36;
+    } else if (/^\d{4}-\d{2}$/.test(openKey) && cashColsByOpenKey.has(openKey)) {
+      const resolved = cashColsByOpenKey.get(openKey);
+      colLet = resolved.colLetter;
+      rowNum = resolved.rowNum;
+    } else {
+      colLet = String(item.targetColLetter || "").trim().toUpperCase();
+      rowNum = Number(item.targetRow) === 4 ? 4 : 36;
+      if (rowNum === 4) {
+        if (colLet !== "B") continue;
+      } else if (!/^([B-Z]|A[A-K])$/.test(colLet)) {
+        continue;
+      }
+    }
+
     const val = round2(parseYear0Number(item.amount));
     batchData.push({
       range: `Cash!${colLet}${rowNum}`,

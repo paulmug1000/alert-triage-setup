@@ -481,7 +481,7 @@ export default function CreateBudgetModal({
               Create budget — {clientName}
             </h2>
             <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748B" }}>
-              Pre-populated from Confirmed + Pipeline + NB to find revenue, Staff salaries (actuals for historical months, formula for future), Dividends, Contractors, and Other expenses. Edit any cell before saving.
+              Pre-populated from Confirmed + Pipeline + NB to find revenue, Staff salaries (actuals for historical months, projected for future), Dividends, Contractors, and Other expenses. Edit any cell before saving.
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
@@ -690,7 +690,7 @@ export default function CreateBudgetModal({
                     <tr style={{ backgroundColor: "#E2E8F0", color: "#0F172A", fontWeight: 700, fontSize: "12px" }}>
                       <td colSpan={5} style={{ padding: "6px 10px", position: "sticky", left: 0, backgroundColor: "#E2E8F0", zIndex: 2 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <span>Salaries ({salaryRows.length}) — actuals for historical, formula for future</span>
+                          <span>Salaries ({salaryRows.length}) — actuals for historical, projected for future</span>
                           <button
                             type="button"
                             onClick={() =>

@@ -289,106 +289,244 @@ export const getStatusPill = (status) => {
   return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
 };
 
-const JOB_BASE_SEARCH_TEXT_CACHE = new WeakMap();
+const JOB_SEARCH_SCOPES = [
+  { id: "all", label: "All fields", placeholder: "Search jobs by client, job name, project code, invoice, or direct cost..." },
+  { id: "core", label: "Client & job", placeholder: "Search by client name, job name, project code, product line, or note..." },
+  { id: "invoices", label: "Invoices", placeholder: "Search by invoice number, status, amount, date, or note..." },
+  { id: "expenses", label: "Direct costs", placeholder: "Search by direct cost description, ID, status, amount, date, or note..." },
+];
 
-const getJobBaseSearchText = (job) => {
-  if (!job || typeof job !== "object") return "";
-  const cached = JOB_BASE_SEARCH_TEXT_CACHE.get(job);
+const DRAFT_CORE_SEARCH_FIELDS = [
+  "client",
+  "jobName",
+  "projectCode",
+  "prodLine",
+  "leadSrc",
+  "projectRetainer",
+  "startDate",
+  "endDate",
+  "revenue",
+  "directCosts",
+  "rechargedExpenses",
+  "likelihood",
+  "note",
+];
+
+const JOB_SEARCH_INDEX_CACHE = new WeakMap();
+
+const getJobSearchIndex = (job) => {
+  if (!job || typeof job !== "object") {
+    return {
+      primaryClient: "",
+      primaryJobName: "",
+      primaryProjectCode: "",
+      client: "",
+      jobName: "",
+      projectCode: "",
+      meta: "",
+      invoices: "",
+      expenses: "",
+      core: "",
+      all: "",
+      invoiceRefs: [],
+      expenseTitles: [],
+    };
+  }
+  const cached = JOB_SEARCH_INDEX_CACHE.get(job);
   if (cached !== undefined) return cached;
 
-  const parts = [];
-  const add = (val) => {
+  const clientParts = [];
+  const jobNameParts = [];
+  const projectCodeParts = [];
+  const metaParts = [];
+  const invoiceParts = [];
+  const expenseParts = [];
+  const invoiceRefs = [];
+  const expenseTitles = [];
+
+  const addTo = (arr, val) => {
     if (val !== null && val !== undefined) {
       const s = String(val).trim();
-      if (s) parts.push(s.toLowerCase());
+      if (s) arr.push(s.toLowerCase());
     }
   };
 
-  // Top-level job properties
-  add(job.client);
-  add(job.jobName);
-  add(job.projectCode);
-  add(job.status);
-  add(job.tabName);
-  add(job.note);
-  add(job.id);
+  addTo(clientParts, job.client);
+  addTo(jobNameParts, job.jobName);
+  addTo(projectCodeParts, job.projectCode);
+  addTo(metaParts, job.note);
 
-  // Iterate over all rows and nested invoice/expense slots
   if (Array.isArray(job.rows)) {
     job.rows.forEach((r) => {
       if (!r) return;
-      Object.entries(r).forEach(([key, val]) => {
-        if (key === "invoiceSlots" || key === "expenseSlots") return;
-        if (key === "endDate" && isNoEndDateSentinel(val)) {
-          add("no end date");
-          return;
-        }
-        add(val);
-      });
+      addTo(clientParts, r.client);
+      addTo(jobNameParts, r.jobName);
+      addTo(projectCodeParts, r.projectCode);
+      addTo(metaParts, r.note);
+      addTo(metaParts, r.prodLine);
+      addTo(metaParts, r.leadSrc);
+      addTo(metaParts, r.projectRetainer);
+      addTo(metaParts, r.startDate);
+      if (isNoEndDateSentinel(r.endDate)) {
+        addTo(metaParts, "no end date");
+      } else {
+        addTo(metaParts, r.endDate);
+      }
+      addTo(metaParts, r.revenue);
+      addTo(metaParts, r.directCosts);
+      addTo(metaParts, r.rechargedExpenses);
+      addTo(metaParts, r.likelihood);
 
-      // Invoice slots: refs / numbers, amounts, status, sentDate, daysToPay, note
       if (Array.isArray(r.invoiceSlots)) {
         r.invoiceSlots.forEach((inv) => {
           if (!inv) return;
-          Object.values(inv).forEach(add);
+          addTo(invoiceParts, inv.ref);
+          if (inv.ref && String(inv.ref).trim()) {
+            invoiceRefs.push(String(inv.ref).trim().toLowerCase());
+          }
+          addTo(invoiceParts, inv.amount);
+          addTo(invoiceParts, inv.status);
+          addTo(invoiceParts, inv.sentDate);
+          if (inv.sentDate) {
+            addTo(invoiceParts, toSheetDateFormat(inv.sentDate));
+          }
+          addTo(invoiceParts, inv.note);
         });
       }
 
-      // Expense slots: description, transactionId, amount, vat, date, status, daysToPay, note
       if (Array.isArray(r.expenseSlots)) {
         r.expenseSlots.forEach((exp) => {
           if (!exp) return;
-          Object.values(exp).forEach(add);
+          addTo(expenseParts, exp.description);
+          addTo(expenseParts, exp.transactionId);
+          if (exp.description && String(exp.description).trim()) {
+            expenseTitles.push(String(exp.description).trim().toLowerCase());
+          }
+          if (exp.transactionId && String(exp.transactionId).trim()) {
+            expenseTitles.push(String(exp.transactionId).trim().toLowerCase());
+          }
+          addTo(expenseParts, exp.amount);
+          addTo(expenseParts, exp.status);
+          addTo(expenseParts, exp.date);
+          if (exp.date) {
+            addTo(expenseParts, toSheetDateFormat(exp.date));
+          }
+          addTo(expenseParts, exp.note);
         });
       }
     });
   }
 
-  const combined = parts.join(" ");
-  JOB_BASE_SEARCH_TEXT_CACHE.set(job, combined);
-  return combined;
+  const client = clientParts.join(" ");
+  const jobName = jobNameParts.join(" ");
+  const projectCode = projectCodeParts.join(" ");
+  const meta = metaParts.join(" ");
+  const invoices = invoiceParts.join(" ");
+  const expenses = expenseParts.join(" ");
+  const core = [client, jobName, projectCode, meta].filter(Boolean).join(" ");
+  const all = [core, invoices, expenses].filter(Boolean).join(" ");
+
+  const firstRow = job.rows?.[0] || {};
+  const index = {
+    primaryClient: String(job.client || firstRow.client || "").trim().toLowerCase(),
+    primaryJobName: String(job.jobName || firstRow.jobName || "").trim().toLowerCase(),
+    primaryProjectCode: String(job.projectCode || firstRow.projectCode || "").trim().toLowerCase(),
+    client,
+    jobName,
+    projectCode,
+    meta,
+    invoices,
+    expenses,
+    core,
+    all,
+    invoiceRefs,
+    expenseTitles,
+  };
+  JOB_SEARCH_INDEX_CACHE.set(job, index);
+  return index;
 };
 
 /**
- * Searches across ALL parts of a job, including:
- * - Client name, job name, project code, product line, lead source, type, dates, likelihood
- * - Revenues, direct costs, VAT, left to invoice, costs outstanding, row numbers, notes
- * - All invoice slots (references / invoice numbers, amounts, dates, days to pay, status, notes)
- * - All expense slots (descriptions, transaction IDs / expense IDs, amounts, dates, VAT, status, notes)
- * - In-flight draft edits (unsaved values)
+ * Searches across user-facing job fields, optionally scoped to "all", "core", "invoices", or "expenses".
  */
-export const isJobMatchSearch = (job, query, draftEdits = {}) => {
+export const isJobMatchSearch = (job, query, draftEdits = {}, scope = "all") => {
   if (!query || !query.trim()) return true;
   if (!job) return false;
 
   const q = query.toLowerCase().trim();
   const searchTokens = q.split(/\s+/).filter(Boolean);
-  let combinedText = getJobBaseSearchText(job);
+  const index = getJobSearchIndex(job);
 
-  // In-memory draft edits for this job if any
-  if (draftEdits) {
+  let haystack = index.all;
+  if (scope === "core") haystack = index.core;
+  else if (scope === "invoices") haystack = index.invoices;
+  else if (scope === "expenses") haystack = index.expenses;
+
+  if (draftEdits && (scope === "all" || scope === "core")) {
     const jobKey = job.id || (job.rows?.[0] ? `${(job.tabName || job.rows[0].tabName || "").toLowerCase()}_${job.rows[0].rowNum}` : null);
     if (jobKey && draftEdits[jobKey]) {
       const draftParts = [];
-      Object.values(draftEdits[jobKey]).forEach((val) => {
+      DRAFT_CORE_SEARCH_FIELDS.forEach((field) => {
+        const val = draftEdits[jobKey][field];
         if (val !== null && val !== undefined) {
           const s = String(val).trim();
           if (s) draftParts.push(s.toLowerCase());
         }
       });
       if (draftParts.length > 0) {
-        combinedText = combinedText ? `${combinedText} ${draftParts.join(" ")}` : draftParts.join(" ");
+        haystack = haystack ? `${haystack} ${draftParts.join(" ")}` : draftParts.join(" ");
       }
     }
   }
 
-  // Direct substring match or all search tokens present
-  if (combinedText.includes(q)) return true;
-  if (searchTokens.length > 1 && searchTokens.every((tok) => combinedText.includes(tok))) {
+  if (!haystack) return false;
+  if (haystack.includes(q)) return true;
+  if (searchTokens.length > 1 && searchTokens.every((tok) => haystack.includes(tok))) {
     return true;
   }
 
   return false;
+};
+
+/**
+ * Scores a matched job by search relevance using persisted index fields.
+ */
+export const getJobSearchScore = (job, query, scope = "all") => {
+  if (!job || !query || !query.trim()) return 0;
+  const q = query.toLowerCase().trim();
+  const searchTokens = q.split(/\s+/).filter(Boolean);
+  const index = getJobSearchIndex(job);
+
+  if (scope === "invoices") {
+    if (index.invoiceRefs.some((ref) => ref === q)) return 1000;
+    if (index.invoiceRefs.some((ref) => ref.startsWith(q))) return 800;
+    if (index.invoices.includes(q)) return 600;
+    if (searchTokens.length > 1 && searchTokens.every((tok) => index.invoices.includes(tok))) return 300;
+    return 100;
+  }
+
+  if (scope === "expenses") {
+    if (index.expenseTitles.some((t) => t === q)) return 1000;
+    if (index.expenseTitles.some((t) => t.startsWith(q))) return 800;
+    if (index.expenses.includes(q)) return 600;
+    if (searchTokens.length > 1 && searchTokens.every((tok) => index.expenses.includes(tok))) return 300;
+    return 100;
+  }
+
+  if (index.primaryClient === q || index.primaryJobName === q || index.primaryProjectCode === q) return 1000;
+  if (index.primaryClient.startsWith(q)) return 850;
+  if (index.primaryJobName.startsWith(q) || index.primaryProjectCode.startsWith(q)) return 800;
+  if (index.client.includes(q)) return 700;
+  if (index.jobName.includes(q)) return 650;
+  if (index.projectCode.includes(q)) return 600;
+
+  const clientAndJob = `${index.client} ${index.jobName}`.trim();
+  if (searchTokens.length > 1 && searchTokens.every((tok) => clientAndJob.includes(tok))) return 500;
+  if (index.meta.includes(q)) return 350;
+  if (searchTokens.length > 1 && searchTokens.every((tok) => index.core.includes(tok))) return 300;
+  if (scope === "all" && index.invoices.includes(q)) return 250;
+  if (scope === "all" && index.expenses.includes(q)) return 200;
+  return 100;
 };
 
 export const jobHasActualInvoicesOrExpenses = (job) => {
@@ -411,12 +549,14 @@ export const jobHasActualInvoicesOrExpenses = (job) => {
   return hasActualInvoices || hasActualExpenses;
 };
 
-export const textMatchesQuery = (text, query) => {
+export const textMatchesQuery = (text, query, { matchAll = false } = {}) => {
   if (!text || !query || !query.trim()) return false;
   const q = query.toLowerCase().trim();
   const s = String(text).toLowerCase();
+  if (s.includes(q)) return true;
   const tokens = q.split(/\s+/).filter(Boolean);
-  return s.includes(q) || tokens.some((t) => s.includes(t));
+  if (tokens.length === 0) return false;
+  return matchAll ? tokens.every((t) => s.includes(t)) : tokens.some((t) => s.includes(t));
 };
 
 const HIGHLIGHT_REGEX_CACHE = new Map();
@@ -426,7 +566,7 @@ const getHighlightMatchers = (query) => {
   if (!q) return null;
   let cached = HIGHLIGHT_REGEX_CACHE.get(q);
   if (!cached) {
-    const rawTokens = q.split(/\s+/).filter(Boolean);
+    const rawTokens = [...q.split(/\s+/).filter(Boolean)].sort((a, b) => b.length - a.length);
     if (rawTokens.length === 0) return null;
     const escapedTokens = rawTokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     const lowerTokenSet = new Set(rawTokens.map((t) => t.toLowerCase()));
@@ -478,76 +618,176 @@ export const HighlightText = ({ text, query }) => {
   );
 };
 
-export const getJobNestedMatches = (job, query, maxItems = 4) => {
-  if (!job || !query || !query.trim()) return [];
-  const matches = [];
-  const seen = new Set();
+export const buildMatchSnippet = (text, query, maxLen = 76) => {
+  const str = text !== null && text !== undefined ? String(text).trim() : "";
+  if (!str || str.length <= maxLen) return str;
 
-  const addMatch = (label, matchText, title) => {
+  const lower = str.toLowerCase();
+  const q = String(query || "").toLowerCase().trim();
+  const tokens = q.split(/\s+/).filter(Boolean);
+
+  let matchIdx = q ? lower.indexOf(q) : -1;
+  if (matchIdx === -1 && tokens.length > 0) {
+    for (let i = 0; i < tokens.length; i++) {
+      const idx = lower.indexOf(tokens[i]);
+      if (idx !== -1 && (matchIdx === -1 || idx < matchIdx)) {
+        matchIdx = idx;
+      }
+    }
+  }
+
+  if (matchIdx === -1) {
+    return `${str.slice(0, maxLen - 1).trimEnd()}…`;
+  }
+
+  let start = matchIdx > 20 ? matchIdx - 20 : 0;
+  if (start > 0) {
+    const prevSpace = str.lastIndexOf(" ", start + 6);
+    if (prevSpace > 0 && start - prevSpace <= 12) {
+      start = prevSpace + 1;
+    }
+  }
+
+  let end = start + maxLen;
+  if (end >= str.length) {
+    end = str.length;
+    start = Math.max(0, end - maxLen);
+  } else {
+    const nextSpace = str.indexOf(" ", end - 8);
+    if (nextSpace !== -1 && nextSpace - end <= 10) {
+      end = nextSpace;
+    }
+  }
+
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < str.length ? "…" : "";
+  return `${prefix}${str.slice(start, end).trim()}${suffix}`;
+};
+
+export const getJobNestedMatchSummary = (
+  job,
+  query,
+  { maxItems = 2, scope = "all", clientText = "", jobNameText = "" } = {}
+) => {
+  const empty = {
+    items: [],
+    totalCount: 0,
+    countsBySection: { details: 0, invoices: 0, expenses: 0 },
+    collapseToSummary: false,
+  };
+  if (!job || !query || !query.trim()) return empty;
+
+  const firstRow = job.rows?.[0] || {};
+  const resolvedClient = clientText !== undefined && clientText !== "" ? String(clientText) : String(job.client || firstRow.client || "");
+  const resolvedJobName = jobNameText !== undefined && jobNameText !== "" ? String(jobNameText) : String(job.jobName || firstRow.jobName || "");
+  const combinedVisible = `${resolvedClient} ${resolvedJobName}`.trim();
+
+  const visibleMatchedAll =
+    textMatchesQuery(resolvedClient, query, { matchAll: true }) ||
+    textMatchesQuery(resolvedJobName, query, { matchAll: true }) ||
+    textMatchesQuery(combinedVisible, query, { matchAll: true });
+
+  const qTokens = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const combinedVisibleLower = combinedVisible.toLowerCase();
+  const unmatchedTokens = qTokens.filter((t) => !combinedVisibleLower.includes(t));
+  const unmatchedQuery = unmatchedTokens.join(" ");
+
+  const candidates = [];
+  const seen = new Set();
+  const addCandidate = (label, matchText, title, section) => {
     if (!matchText) return;
-    const key = `${label}:${String(matchText).toLowerCase()}`;
+    const strVal = String(matchText).trim();
+    if (!strVal) return;
+    const key = `${section}:${label}:${strVal.toLowerCase()}`;
     if (seen.has(key)) return;
     seen.add(key);
-    matches.push({ label, matchText: String(matchText), title });
+    candidates.push({ label, matchText: strVal, title, section });
   };
 
-  const pCode = job.projectCode || job.rows?.[0]?.projectCode;
-  if (textMatchesQuery(pCode, query)) {
-    addMatch("Code", pCode, `Matched project code: ${pCode}`);
+  const includeDetails = scope === "all" || scope === "core";
+  const includeInvoices = scope === "all" || scope === "invoices";
+  const includeExpenses = scope === "all" || scope === "expenses";
+
+  if (includeDetails) {
+    const pCode = job.projectCode || firstRow.projectCode;
+    if (pCode) addCandidate("Code", pCode, `Matched project code: ${pCode}`, "details");
   }
 
   if (Array.isArray(job.rows)) {
     job.rows.forEach((r) => {
       if (!r) return;
-      if (textMatchesQuery(r.projectCode, query)) {
-        addMatch("Code", r.projectCode, `Matched project code: ${r.projectCode}`);
-      }
-      if (textMatchesQuery(r.note, query)) {
-        addMatch("Note", r.note, `Matched note: ${r.note}`);
-      }
-      if (textMatchesQuery(r.prodLine, query)) {
-        addMatch("Prod. line", r.prodLine, `Matched product line: ${r.prodLine}`);
-      }
-      if (textMatchesQuery(r.leadSrc, query)) {
-        addMatch("Lead src", r.leadSrc, `Matched lead source: ${r.leadSrc}`);
+      if (includeDetails) {
+        if (r.projectCode) addCandidate("Code", r.projectCode, `Matched project code: ${r.projectCode}`, "details");
+        if (r.note) addCandidate("Note", r.note, `Matched note: ${r.note}`, "details");
+        if (r.prodLine) addCandidate("Product line", r.prodLine, `Matched product line: ${r.prodLine}`, "details");
+        if (r.leadSrc) addCandidate("Lead source", r.leadSrc, `Matched lead source: ${r.leadSrc}`, "details");
       }
 
-      if (Array.isArray(r.invoiceSlots)) {
+      if (includeInvoices && Array.isArray(r.invoiceSlots)) {
         r.invoiceSlots.forEach((inv) => {
           if (!inv) return;
-          if (textMatchesQuery(inv.ref, query)) {
+          if (inv.ref) {
             const extra = inv.amount ? ` (${formatCurrency(inv.amount)})` : "";
-            addMatch("Invoice", `${inv.ref}${extra}`, `Matched invoice ${inv.ref}`);
+            addCandidate("Invoice", `${inv.ref}${extra}`, `Matched invoice ${inv.ref}`, "invoices");
           }
-          if (textMatchesQuery(inv.note, query)) {
-            addMatch("Invoice note", inv.note, `Matched invoice note`);
+          if (inv.note) {
+            addCandidate("Invoice note", inv.note, `Matched invoice note: ${inv.note}`, "invoices");
           }
         });
       }
 
-      if (Array.isArray(r.expenseSlots)) {
+      if (includeExpenses && Array.isArray(r.expenseSlots)) {
         r.expenseSlots.forEach((exp) => {
           if (!exp) return;
-          if (textMatchesQuery(exp.transactionId, query)) {
-            addMatch("Expense ID", exp.transactionId, `Matched expense ID: ${exp.transactionId}`);
+          if (exp.transactionId) {
+            addCandidate("Direct cost ID", exp.transactionId, `Matched direct cost ID: ${exp.transactionId}`, "expenses");
           }
-          if (textMatchesQuery(exp.description, query)) {
+          if (exp.description) {
             const extra = exp.amount ? ` (${formatCurrency(exp.amount)})` : "";
-            addMatch("Expense", `${exp.description}${extra}`, `Matched expense description: ${exp.description}`);
+            addCandidate("Direct cost", `${exp.description}${extra}`, `Matched direct cost: ${exp.description}`, "expenses");
           }
-          if (textMatchesQuery(exp.note, query)) {
-            addMatch("Expense note", exp.note, `Matched expense note`);
+          if (exp.note) {
+            addCandidate("Direct cost note", exp.note, `Matched direct cost note: ${exp.note}`, "expenses");
           }
         });
       }
     });
   }
 
-  if (textMatchesQuery(job.note, query)) {
-    addMatch("Note", job.note, `Matched note: ${job.note}`);
+  if (includeDetails && job.note) {
+    addCandidate("Note", job.note, `Matched note: ${job.note}`, "details");
   }
 
-  return matches.slice(0, maxItems);
+  let matched = candidates.filter((c) => {
+    if (textMatchesQuery(c.matchText, query, { matchAll: true })) return true;
+    if (unmatchedQuery && textMatchesQuery(c.matchText, unmatchedQuery, { matchAll: true })) return true;
+    return false;
+  });
+
+  if (matched.length === 0 && !visibleMatchedAll) {
+    matched = candidates.filter((c) => textMatchesQuery(c.matchText, query, { matchAll: false }));
+  }
+
+  const effectiveSnippetQuery = unmatchedQuery || query;
+  const countsBySection = { details: 0, invoices: 0, expenses: 0 };
+  const items = matched.map((c) => {
+    countsBySection[c.section] = (countsBySection[c.section] || 0) + 1;
+    return {
+      ...c,
+      snippet: buildMatchSnippet(c.matchText, effectiveSnippetQuery, 76),
+    };
+  });
+
+  return {
+    items: items.slice(0, maxItems),
+    totalCount: items.length,
+    countsBySection,
+    collapseToSummary: scope === "all" && visibleMatchedAll,
+  };
+};
+
+export const getJobNestedMatches = (job, query, maxItems = 4) => {
+  return getJobNestedMatchSummary(job, query, { maxItems, scope: "all" }).items;
 };
 
 const JOB_METRICS_CACHE = new WeakMap();
@@ -1051,6 +1291,7 @@ function AutoResizeTextarea({
   onKeyDown,
   placeholder,
   isDirty,
+  isSearchMatch = false,
   style = {},
   ...props
 }) {
@@ -1069,6 +1310,10 @@ function AutoResizeTextarea({
       pendingTextareaResizes.delete(el);
     };
   }, [value]);
+
+  const restBg = isSearchMatch ? "#fefce8" : "transparent";
+  const restBorder = isDirty ? "1px solid #f59e0b" : isSearchMatch ? "1px solid #fde047" : "1px solid transparent";
+  const restBorderColor = isDirty ? "#f59e0b" : isSearchMatch ? "#fde047" : "transparent";
 
   return (
     <textarea
@@ -1092,8 +1337,8 @@ function AutoResizeTextarea({
         width: "100%",
         padding: "4px 6px",
         borderRadius: "5px",
-        border: isDirty ? "1px solid #f59e0b" : "1px solid transparent",
-        background: "transparent",
+        border: restBorder,
+        background: restBg,
         fontSize: "13px",
         outline: "none",
         boxSizing: "border-box",
@@ -1114,8 +1359,8 @@ function AutoResizeTextarea({
         e.target.style.borderColor = "#3b82f6";
       }}
       onBlur={(e) => {
-        e.target.style.background = "transparent";
-        e.target.style.borderColor = isDirty ? "#f59e0b" : "transparent";
+        e.target.style.background = restBg;
+        e.target.style.borderColor = restBorderColor;
       }}
       {...props}
     />
@@ -1159,9 +1404,23 @@ export default function JobsView({
   const [showPullFromSheetConfirm, setShowPullFromSheetConfirm] = useState(false);
   const [pullingFromSheet, setPullingFromSheet] = useState(false);
 
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchScope, setSearchScope] = useState("all");
+  const [sortByRelevance, setSortByRelevance] = useState(true);
+  const hasActiveSearch = Boolean(searchQuery.trim());
+
+  useEffect(() => {
+    if (!hasActiveSearch) {
+      setSortByRelevance(true);
+    }
+  }, [hasActiveSearch]);
+
   const toggleJobsSort = (colBase, defaultDir = "asc") => {
     const ascKey = colBase === "clientName" ? "clientName" : colBase === "rowNumber" ? "rowNumber" : `${colBase}Asc`;
     const descKey = colBase === "clientName" ? "clientDesc" : colBase === "rowNumber" ? "rowNumberDesc" : `${colBase}Desc`;
+    if (searchQuery.trim()) {
+      setSortByRelevance(false);
+    }
     setJobsSortBy((prev) => (prev === ascKey ? descKey : prev === descKey ? ascKey : (defaultDir === "desc" ? descKey : ascKey)));
   };
 
@@ -1170,7 +1429,8 @@ export default function JobsView({
     const descKey = colBase === "clientName" ? "clientDesc" : colBase === "rowNumber" ? "rowNumberDesc" : `${colBase}Desc`;
     const isAsc = jobsSortBy === ascKey || (colBase === "clientName" && jobsSortBy === "clientAsc");
     const isDesc = jobsSortBy === descKey;
-    const isActive = isAsc || isDesc;
+    const isRelevanceOverride = Boolean(searchQuery.trim() && sortByRelevance);
+    const isActive = (isAsc || isDesc) && !isRelevanceOverride;
     const arrow = isAsc ? "▲" : isDesc ? "▼" : "⇅";
     return (
       <th
@@ -1181,12 +1441,12 @@ export default function JobsView({
           cursor: "pointer",
           userSelect: "none",
           whiteSpace: "nowrap",
-          color: isActive ? "#1d4ed8" : style.color,
+          color: isActive ? "#1d4ed8" : isRelevanceOverride ? "#64748b" : style.color,
           ...style,
         }}
       >
         <span>{label}</span>
-        <span style={{ fontSize: "10px", marginLeft: "4px", color: isActive ? "#1d4ed8" : "#94a3b8" }}>{arrow}</span>
+        <span style={{ fontSize: "10px", marginLeft: "4px", color: isActive ? "#1d4ed8" : isRelevanceOverride ? "#cbd5e1" : "#94a3b8" }}>{arrow}</span>
       </th>
     );
   };
@@ -1254,7 +1514,6 @@ export default function JobsView({
 
   // Modern view filter: 'all' | 'confirmed' | 'pipeline'
   const [filterType, setFilterType] = useState("all");
-  const [searchQuery, setSearchQuery] = useState("");
   const [showZeroPercentJobs, setShowZeroPercentJobs] = useState(false);
   const [visibleJobsCount, setVisibleJobsCount] = useState(80);
   const loadMoreJobsSentinelRef = useRef(null);
@@ -1578,6 +1837,24 @@ export default function JobsView({
       else next.add(jobKey);
       return next;
     });
+  };
+
+  // Expand a job row (without collapsing if already open) and scroll to a specific card section
+  const expandAndFocusJobSection = (jobKey, section) => {
+    setExpandedJobIds((prev) => {
+      if (prev.has(jobKey)) return prev;
+      const next = new Set(prev);
+      next.add(jobKey);
+      return next;
+    });
+    if (section && typeof document !== "undefined") {
+      setTimeout(() => {
+        const el = document.getElementById(`pma-job-card-${jobKey}-${section}`);
+        if (el && typeof el.scrollIntoView === "function") {
+          el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+      }, 60);
+    }
   };
 
   // Helper to extract a job key
@@ -2653,8 +2930,8 @@ export default function JobsView({
       // Exclude 0% likelihood pipeline jobs unless showZeroPercentJobs is true
       if (isPipe && !showZeroPercentJobs && isJobZeroPercent(j)) continue;
 
-      // Filter by search query across ALL parts of the job (using cached base search string)
-      if (hasSearch && !isJobMatchSearch(j, searchQuery, draftEdits)) continue;
+      // Filter by search query across selected scope (using cached structured search index)
+      if (hasSearch && !isJobMatchSearch(j, searchQuery, draftEdits, searchScope)) continue;
 
       matched.push(j);
       if (isPipe) pipe++;
@@ -2665,7 +2942,7 @@ export default function JobsView({
       baseMatchedJobs: matched,
       counts: { all: conf + pipe, confirmed: conf, pipeline: pipe }
     };
-  }, [jobsData, showZeroPercentJobs, draftEdits, searchQuery, isJobCopiedToConfirmed, isJobZeroPercent, isPipelineJob]);
+  }, [jobsData, showZeroPercentJobs, draftEdits, searchQuery, searchScope, isJobCopiedToConfirmed, isJobZeroPercent, isPipelineJob]);
 
   // Filtered and sorted jobs list
   const processedJobs = useMemo(() => {
@@ -2709,7 +2986,20 @@ export default function JobsView({
     };
     const parseMoneyVal = (v) => parseFloat(String(v || "0").replace(/[£$€,\s]/g, "")) || 0;
 
+    const useRelevanceSort = Boolean(searchQuery.trim() && sortByRelevance);
+    const relevanceScores = useRelevanceSort ? new Map() : null;
+    if (relevanceScores) {
+      for (let i = 0; i < list.length; i++) {
+        relevanceScores.set(list[i], getJobSearchScore(list[i], searchQuery, searchScope));
+      }
+    }
+
     return list.sort((a, b) => {
+      if (relevanceScores) {
+        const scoreDiff = (relevanceScores.get(b) || 0) - (relevanceScores.get(a) || 0);
+        if (scoreDiff !== 0) return scoreDiff;
+      }
+
       const rowA = a.rows?.[0] || {};
       const rowB = b.rows?.[0] || {};
       const tieRow = () => (rowA.rowNum || 0) - (rowB.rowNum || 0);
@@ -2831,12 +3121,12 @@ export default function JobsView({
         }
       }
     });
-  }, [baseMatchedJobs, effectiveViewMode, filterType, jobsTab, jobsSortBy, getJobDateConfTs]);
+  }, [baseMatchedJobs, effectiveViewMode, filterType, jobsTab, jobsSortBy, getJobDateConfTs, searchQuery, searchScope, sortByRelevance]);
 
   // Reset progressive render window when filter, tab, client, or search changes
   useEffect(() => {
     setVisibleJobsCount(80);
-  }, [searchQuery, filterType, jobsTab, effectiveViewMode, jobsClientSheetId]);
+  }, [searchQuery, searchScope, sortByRelevance, filterType, jobsTab, effectiveViewMode, jobsClientSheetId]);
 
   const visibleJobs = useMemo(() => {
     if (processedJobs.length <= visibleJobsCount) return processedJobs;
@@ -4135,107 +4425,176 @@ export default function JobsView({
                     </div>
                   </div>
 
-                  {/* Second row: Search bar on its own line below the selector */}
-                  <div style={{ position: "relative", width: "100%" }}>
-                    <span
-                      style={{
-                        position: "absolute",
-                        left: "12px",
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                        color: "#94a3b8",
-                        display: "flex",
-                        alignItems: "center",
-                        pointerEvents: "none"
-                      }}
-                    >
-                      <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="8.5" cy="8.5" r="5.5" />
-                        <line x1="13" y1="13" x2="18" y2="18" />
-                      </svg>
-                    </span>
-                    <DeferredSearchInput
-                      bare
-                      type="text"
-                      placeholder="Search jobs by client, job name, project code, invoice number, expense ID, or description..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      style={{
-                        width: "100%",
-                        boxSizing: "border-box",
-                        padding: "8px 120px 8px 36px",
-                        borderRadius: "7px",
-                        border: "1px solid #cbd5e1",
-                        fontSize: "13px",
-                        outline: "none",
-                        color: "#1e293b",
-                        background: "#f8fafc",
-                        transition: "all 0.15s ease"
-                      }}
-                      onFocus={(e) => {
-                        e.target.style.background = "#ffffff";
-                        e.target.style.borderColor = "#3b82f6";
-                        e.target.style.boxShadow = "0 0 0 3px rgba(59, 130, 246, 0.12)";
-                      }}
-                      onBlur={(e) => {
-                        e.target.style.background = "#f8fafc";
-                        e.target.style.borderColor = "#cbd5e1";
-                        e.target.style.boxShadow = "none";
-                      }}
-                      renderRight={({ localValue, isFiltering, clear }) => {
-                        if (!localValue && !isFiltering) return null;
-                        return (
-                          <div
+                  {/* Second row: Search bar, scope filter, and relevance toggle */}
+                  {(() => {
+                    const activeScopeMeta = JOB_SEARCH_SCOPES.find((s) => s.id === searchScope) || JOB_SEARCH_SCOPES[0];
+                    return (
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", width: "100%" }}>
+                        <div style={{ flex: "1 1 320px", minWidth: "240px", position: "relative" }}>
+                          <span
                             style={{
                               position: "absolute",
-                              right: "10px",
+                              left: "12px",
                               top: "50%",
                               transform: "translateY(-50%)",
+                              color: "#94a3b8",
                               display: "flex",
                               alignItems: "center",
-                              gap: "8px"
+                              pointerEvents: "none"
                             }}
                           >
-                            {isFiltering && (
-                              <Spinner size={13} color="#3b82f6" style={{ marginRight: 0 }} />
-                            )}
-                            {searchQuery ? (
-                              <span
-                                style={{
-                                  fontSize: "11px",
-                                  color: "#64748b",
-                                  background: "#e2e8f0",
-                                  padding: "1px 7px",
-                                  borderRadius: "10px",
-                                  fontWeight: "500"
-                                }}
-                              >
-                                {processedJobs.length} {processedJobs.length === 1 ? "match" : "matches"}
-                              </span>
-                            ) : null}
-                            {localValue ? (
-                              <button
-                                type="button"
-                                onClick={clear}
-                                style={{
-                                  background: "none",
-                                  border: "none",
-                                  color: "#94a3b8",
-                                  cursor: "pointer",
-                                  fontSize: "14px",
-                                  lineHeight: 1,
-                                  padding: 0
-                                }}
-                                title="Clear search"
-                              >
-                                ✕
-                              </button>
-                            ) : null}
+                            <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="8.5" cy="8.5" r="5.5" />
+                              <line x1="13" y1="13" x2="18" y2="18" />
+                            </svg>
+                          </span>
+                          <DeferredSearchInput
+                            bare
+                            type="text"
+                            placeholder={activeScopeMeta.placeholder}
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            style={{
+                              width: "100%",
+                              boxSizing: "border-box",
+                              padding: "8px 120px 8px 36px",
+                              borderRadius: "7px",
+                              border: "1px solid #cbd5e1",
+                              fontSize: "13px",
+                              outline: "none",
+                              color: "#1e293b",
+                              background: "#f8fafc",
+                              transition: "all 0.15s ease"
+                            }}
+                            onFocus={(e) => {
+                              e.target.style.background = "#ffffff";
+                              e.target.style.borderColor = "#3b82f6";
+                              e.target.style.boxShadow = "0 0 0 3px rgba(59, 130, 246, 0.12)";
+                            }}
+                            onBlur={(e) => {
+                              e.target.style.background = "#f8fafc";
+                              e.target.style.borderColor = "#cbd5e1";
+                              e.target.style.boxShadow = "none";
+                            }}
+                            renderRight={({ localValue, isFiltering, clear }) => {
+                              if (!localValue && !isFiltering) return null;
+                              return (
+                                <div
+                                  style={{
+                                    position: "absolute",
+                                    right: "10px",
+                                    top: "50%",
+                                    transform: "translateY(-50%)",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "8px"
+                                  }}
+                                >
+                                  {isFiltering && (
+                                    <Spinner size={13} color="#3b82f6" style={{ marginRight: 0 }} />
+                                  )}
+                                  {searchQuery ? (
+                                    <span
+                                      style={{
+                                        fontSize: "11px",
+                                        color: "#64748b",
+                                        background: "#e2e8f0",
+                                        padding: "1px 7px",
+                                        borderRadius: "10px",
+                                        fontWeight: "500"
+                                      }}
+                                    >
+                                      {processedJobs.length} {processedJobs.length === 1 ? "match" : "matches"}
+                                    </span>
+                                  ) : null}
+                                  {localValue ? (
+                                    <button
+                                      type="button"
+                                      onClick={clear}
+                                      style={{
+                                        background: "none",
+                                        border: "none",
+                                        color: "#94a3b8",
+                                        cursor: "pointer",
+                                        fontSize: "14px",
+                                        lineHeight: 1,
+                                        padding: 0
+                                      }}
+                                      title="Clear search"
+                                    >
+                                      ✕
+                                    </button>
+                                  ) : null}
+                                </div>
+                              );
+                            }}
+                          />
+                        </div>
+
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "wrap", flexShrink: 0 }}>
+                          <div
+                            role="group"
+                            aria-label="Search scope"
+                            style={{
+                              display: "inline-flex",
+                              background: "#f1f5f9",
+                              padding: "3px",
+                              borderRadius: "7px",
+                              border: "1px solid #e2e8f0"
+                            }}
+                          >
+                            {JOB_SEARCH_SCOPES.map((scopeItem) => {
+                              const isActive = searchScope === scopeItem.id;
+                              return (
+                                <button
+                                  key={scopeItem.id}
+                                  type="button"
+                                  onClick={() => setSearchScope(scopeItem.id)}
+                                  style={{
+                                    padding: "5px 10px",
+                                    border: "none",
+                                    borderRadius: "5px",
+                                    background: isActive ? "#ffffff" : "transparent",
+                                    color: isActive ? "#1d4ed8" : "#64748b",
+                                    fontWeight: isActive ? "600" : "500",
+                                    fontSize: "12px",
+                                    cursor: "pointer",
+                                    whiteSpace: "nowrap",
+                                    boxShadow: isActive ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                                    transition: "all 0.15s ease"
+                                  }}
+                                >
+                                  {scopeItem.label}
+                                </button>
+                              );
+                            })}
                           </div>
-                        );
-                      }}
-                    />
-                  </div>
+
+                          {searchQuery.trim() ? (
+                            <button
+                              type="button"
+                              onClick={() => setSortByRelevance((prev) => !prev)}
+                              title={sortByRelevance ? "Sorted by best search match first; click to use column sort" : "Click to sort best search matches first"}
+                              style={{
+                                padding: "6px 10px",
+                                borderRadius: "7px",
+                                border: `1px solid ${sortByRelevance ? "#93c5fd" : "#cbd5e1"}`,
+                                background: sortByRelevance ? "#eff6ff" : "#ffffff",
+                                color: sortByRelevance ? "#1d4ed8" : "#475569",
+                                fontSize: "12px",
+                                fontWeight: "600",
+                                cursor: "pointer",
+                                whiteSpace: "nowrap",
+                                transition: "all 0.15s ease"
+                              }}
+                            >
+                              {sortByRelevance ? "Sorted by relevance" : "Sort by relevance"}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Action Error Banner */}
@@ -4300,8 +4659,36 @@ export default function JobsView({
                 ) : processedJobs.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "48px 0", background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", color: "#64748b" }}>
                     <div style={{ fontSize: "18px", fontWeight: "600", color: "#334155", marginBottom: "4px" }}>No jobs found</div>
-                    <div style={{ fontSize: "13px" }}>
-                      {searchQuery ? `No jobs matched query "${searchQuery}".` : `No ${filterType === "all" ? "" : filterType} jobs found for this client.`}
+                    <div style={{ fontSize: "13px", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", flexWrap: "wrap" }}>
+                      {searchQuery ? (
+                        searchScope !== "all" ? (
+                          <>
+                            <span>
+                              No jobs matched &ldquo;{searchQuery}&rdquo; in {(JOB_SEARCH_SCOPES.find((s) => s.id === searchScope)?.label || "this scope").toLowerCase()}.
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setSearchScope("all")}
+                              style={{
+                                padding: "4px 10px",
+                                borderRadius: "6px",
+                                border: "1px solid #93c5fd",
+                                background: "#eff6ff",
+                                color: "#1d4ed8",
+                                fontSize: "12px",
+                                fontWeight: "600",
+                                cursor: "pointer"
+                              }}
+                            >
+                              Search all fields
+                            </button>
+                          </>
+                        ) : (
+                          `No jobs matched query "${searchQuery}".`
+                        )
+                      ) : (
+                        `No ${filterType === "all" ? "" : filterType} jobs found for this client.`
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -4395,7 +4782,18 @@ export default function JobsView({
                           // Distinct product line and lead source options (computed only when row is expanded)
                           const plOptions = isExpanded ? Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort() : [];
                           const lsOptions = isExpanded ? Array.from(new Set([...(leadSources || []), leadSrcVal].filter(Boolean))).sort() : [];
-                          const nestedMatches = searchQuery.trim() ? getJobNestedMatches(job, searchQuery) : [];
+                          const hasSearch = Boolean(searchQuery.trim());
+                          const showCoreHighlights = hasSearch && (searchScope === "all" || searchScope === "core");
+                          const clientMatched = showCoreHighlights && textMatchesQuery(clientVal, searchQuery);
+                          const jobNameMatched = showCoreHighlights && textMatchesQuery(jobNameVal, searchQuery);
+                          const nestedMatchSummary = hasSearch
+                            ? getJobNestedMatchSummary(job, searchQuery, {
+                              maxItems: 2,
+                              scope: searchScope,
+                              clientText: clientVal,
+                              jobNameText: jobNameVal
+                            })
+                            : null;
 
                           return (
                             <React.Fragment key={jobKey}>
@@ -4479,16 +4877,12 @@ export default function JobsView({
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "client")}
                                     placeholder="Client name"
                                     isDirty={isDirty && draftEdits[jobKey]?.client !== undefined}
+                                    isSearchMatch={clientMatched}
                                     style={{
                                       fontWeight: "600",
                                       color: "#0f172a"
                                     }}
                                   />
-                                  {searchQuery.trim() && textMatchesQuery(clientVal, searchQuery) && (
-                                    <div style={{ fontSize: "11px", marginTop: "2px", color: "#64748b", paddingLeft: "6px" }}>
-                                      <HighlightText text={clientVal} query={searchQuery} />
-                                    </div>
-                                  )}
                                 </td>
 
                                 {/* Job Name (Inline Editable) */}
@@ -4499,40 +4893,146 @@ export default function JobsView({
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "jobName")}
                                     placeholder="Job name"
                                     isDirty={isDirty && draftEdits[jobKey]?.jobName !== undefined}
+                                    isSearchMatch={jobNameMatched}
                                     style={{
                                       fontWeight: "500",
                                       color: "#334155"
                                     }}
                                   />
-                                  {searchQuery.trim() && textMatchesQuery(jobNameVal, searchQuery) && (
-                                    <div style={{ fontSize: "11px", marginTop: "2px", color: "#64748b", paddingLeft: "6px" }}>
-                                      <HighlightText text={jobNameVal} query={searchQuery} />
-                                    </div>
-                                  )}
-                                  {nestedMatches.length > 0 && (
-                                    <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "3px", paddingLeft: "4px" }}>
-                                      {nestedMatches.map((m, i) => (
-                                        <span
-                                          key={i}
-                                          style={{
-                                            fontSize: "11px",
-                                            lineHeight: "1.3",
-                                            background: "#fefce8",
-                                            border: "1px solid #fef08a",
-                                            color: "#713f12",
-                                            padding: "1px 6px",
-                                            borderRadius: "4px",
-                                            display: "inline-flex",
-                                            alignItems: "center",
-                                            gap: "3px"
-                                          }}
-                                          title={m.title}
-                                        >
-                                          <span style={{ fontSize: "10px", color: "#a16207", fontWeight: "600" }}>{m.label}:</span>
-                                          <HighlightText text={m.matchText} query={searchQuery} />
-                                        </span>
-                                      ))}
-                                    </div>
+                                  {nestedMatchSummary && nestedMatchSummary.totalCount > 0 && (
+                                    nestedMatchSummary.collapseToSummary ? (
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "4px", paddingLeft: "4px" }}>
+                                        {nestedMatchSummary.countsBySection.expenses > 0 && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              expandAndFocusJobSection(jobKey, "expenses");
+                                            }}
+                                            title="Click to expand and view matching direct costs"
+                                            style={{
+                                              fontSize: "11px",
+                                              fontWeight: "600",
+                                              color: "#854d0e",
+                                              background: "#fefce8",
+                                              border: "1px solid #fde68a",
+                                              padding: "1px 7px",
+                                              borderRadius: "999px",
+                                              cursor: "pointer",
+                                              whiteSpace: "nowrap"
+                                            }}
+                                          >
+                                            {nestedMatchSummary.countsBySection.expenses} matching direct {nestedMatchSummary.countsBySection.expenses === 1 ? "cost" : "costs"}
+                                          </button>
+                                        )}
+                                        {nestedMatchSummary.countsBySection.invoices > 0 && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              expandAndFocusJobSection(jobKey, "invoices");
+                                            }}
+                                            title="Click to expand and view matching invoices"
+                                            style={{
+                                              fontSize: "11px",
+                                              fontWeight: "600",
+                                              color: "#854d0e",
+                                              background: "#fefce8",
+                                              border: "1px solid #fde68a",
+                                              padding: "1px 7px",
+                                              borderRadius: "999px",
+                                              cursor: "pointer",
+                                              whiteSpace: "nowrap"
+                                            }}
+                                          >
+                                            {nestedMatchSummary.countsBySection.invoices} matching {nestedMatchSummary.countsBySection.invoices === 1 ? "invoice" : "invoices"}
+                                          </button>
+                                        )}
+                                        {nestedMatchSummary.countsBySection.details > 0 && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              expandAndFocusJobSection(jobKey, "details");
+                                            }}
+                                            title="Click to expand and view matching job details"
+                                            style={{
+                                              fontSize: "11px",
+                                              fontWeight: "600",
+                                              color: "#854d0e",
+                                              background: "#fefce8",
+                                              border: "1px solid #fde68a",
+                                              padding: "1px 7px",
+                                              borderRadius: "999px",
+                                              cursor: "pointer",
+                                              whiteSpace: "nowrap"
+                                            }}
+                                          >
+                                            {nestedMatchSummary.countsBySection.details} matching {nestedMatchSummary.countsBySection.details === 1 ? "detail" : "details"}
+                                          </button>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "4px", marginTop: "4px", paddingLeft: "4px", maxWidth: "100%" }}>
+                                        {nestedMatchSummary.items.map((m, i) => (
+                                          <button
+                                            key={i}
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              expandAndFocusJobSection(jobKey, m.section);
+                                            }}
+                                            title={m.title}
+                                            style={{
+                                              display: "-webkit-box",
+                                              WebkitLineClamp: 2,
+                                              WebkitBoxOrient: "vertical",
+                                              overflow: "hidden",
+                                              maxWidth: "100%",
+                                              textAlign: "left",
+                                              fontSize: "11px",
+                                              lineHeight: "1.35",
+                                              background: "#fefce8",
+                                              border: "1px solid #fde68a",
+                                              color: "#713f12",
+                                              padding: "2px 7px",
+                                              borderRadius: "5px",
+                                              cursor: "pointer",
+                                              wordBreak: "break-word"
+                                            }}
+                                          >
+                                            <span style={{ fontSize: "10px", color: "#a16207", fontWeight: "700", marginRight: "4px" }}>{m.label}:</span>
+                                            <HighlightText text={m.snippet} query={searchQuery} />
+                                          </button>
+                                        ))}
+                                        {nestedMatchSummary.totalCount > nestedMatchSummary.items.length && (() => {
+                                          const remaining = nestedMatchSummary.totalCount - nestedMatchSummary.items.length;
+                                          const firstSection = nestedMatchSummary.items[0]?.section || "details";
+                                          return (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                expandAndFocusJobSection(jobKey, firstSection);
+                                              }}
+                                              style={{
+                                                fontSize: "11px",
+                                                fontWeight: "600",
+                                                color: "#854d0e",
+                                                background: "#fef9c3",
+                                                border: "1px solid #fde68a",
+                                                padding: "1px 7px",
+                                                borderRadius: "999px",
+                                                cursor: "pointer",
+                                                whiteSpace: "nowrap"
+                                              }}
+                                            >
+                                              +{remaining} more {remaining === 1 ? "match" : "matches"}
+                                            </button>
+                                          );
+                                        })()}
+                                      </div>
+                                    )
                                   )}
                                 </td>
 
@@ -4989,6 +5489,7 @@ export default function JobsView({
                                       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.4fr 1.4fr", gap: "16px", marginBottom: "16px" }}>
                                         {/* Card 1: Additional Job Details */}
                                         <div
+                                          id={`pma-job-card-${jobKey}-details`}
                                           style={{
                                             background: "#ffffff",
                                             borderRadius: "8px",
@@ -5160,7 +5661,7 @@ export default function JobsView({
                                                   cursor: isJobFromCrm ? "not-allowed" : "text"
                                                 }}
                                               />
-                                              {searchQuery.trim() && textMatchesQuery(projectCodeVal, searchQuery) && (
+                                              {searchQuery.trim() && (searchScope === "all" || searchScope === "core") && textMatchesQuery(projectCodeVal, searchQuery) && (
                                                 <div style={{ fontSize: "11px", color: "#a16207", marginTop: "2px" }}>
                                                   Match: <HighlightText text={projectCodeVal} query={searchQuery} />
                                                 </div>
@@ -5279,6 +5780,7 @@ export default function JobsView({
                                           const invoiceItems = groupSlotItemsForDisplay(getJobInvoiceItems(effectiveJobForDisplay, isRetainer), "invoice");
                                           return (
                                             <div
+                                              id={`pma-job-card-${jobKey}-invoices`}
                                               style={{
                                                 background: "#ffffff",
                                                 borderRadius: "8px",
@@ -5468,7 +5970,7 @@ export default function JobsView({
                                                     const isPlaceholder = isPlaceholderInvoice(slot.ref, slot.status);
                                                     const pillStyle = getStatusPill(slot.status);
                                                     const isPaid = String(slot.status || "").trim().toLowerCase() === "paid";
-                                                    const isInvoiceMatched = searchQuery.trim() && (textMatchesQuery(slot.ref, searchQuery) || textMatchesQuery(slot.note, searchQuery) || textMatchesQuery(slot.status, searchQuery));
+                                                    const isInvoiceMatched = Boolean(searchQuery.trim() && (searchScope === "all" || searchScope === "invoices") && (textMatchesQuery(slot.ref, searchQuery) || textMatchesQuery(slot.note, searchQuery) || textMatchesQuery(slot.status, searchQuery)));
                                                     return (
                                                       <div
                                                         key={item.id}
@@ -5656,6 +6158,7 @@ export default function JobsView({
                                           const expenseItems = groupSlotItemsForDisplay(getJobExpenseItems(job, isRetainer), "expense");
                                           return (
                                             <div
+                                              id={`pma-job-card-${jobKey}-expenses`}
                                               style={{
                                                 background: "#ffffff",
                                                 borderRadius: "8px",
@@ -5832,7 +6335,7 @@ export default function JobsView({
                                                     const isPlaceholder = isPlaceholderExpense(slot);
                                                     const pillStyle = getStatusPill(slot.status);
                                                     const isPaid = String(slot.status || "").trim().toLowerCase() === "paid";
-                                                    const isExpenseMatched = searchQuery.trim() && (textMatchesQuery(slot.description, searchQuery) || textMatchesQuery(slot.transactionId, searchQuery) || textMatchesQuery(slot.note, searchQuery) || textMatchesQuery(slot.status, searchQuery));
+                                                    const isExpenseMatched = Boolean(searchQuery.trim() && (searchScope === "all" || searchScope === "expenses") && (textMatchesQuery(slot.description, searchQuery) || textMatchesQuery(slot.transactionId, searchQuery) || textMatchesQuery(slot.note, searchQuery) || textMatchesQuery(slot.status, searchQuery)));
                                                     return (
                                                       <div
                                                         key={item.id}

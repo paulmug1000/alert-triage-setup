@@ -1055,14 +1055,22 @@ export async function saveInitialTaxSetupData({
 
   const sheets = await getSheetsClient();
   const kiResp = await withRetry(() =>
-    sheets.spreadsheets.values.get({
+    sheets.spreadsheets.values.batchGet({
       spreadsheetId: cleanMasterId,
-      range: "KeyInfo!X28",
+      ranges: ["KeyInfo!B2", "KeyInfo!B6", "KeyInfo!F6", "KeyInfo!X28"],
       valueRenderOption: "UNFORMATTED_VALUE",
     })
   );
-  const cleanClientId = resolveCleanId(kiResp.data?.values?.[0]?.[0] || "");
+  const svr = kiResp.data?.valueRanges || [];
+  const startDate = parseYear0Date(svr[0]?.values?.[0]?.[0]);
+  const vatQuarters = String(svr[1]?.values?.[0]?.[0] || "Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec").trim();
+  const rawF6 = parseInt(svr[2]?.values?.[0]?.[0], 10);
+  const f6 = [1, 2, 3].includes(rawF6) ? rawF6 : (startDate ? computeVatCycleIndexF6(startDate, vatQuarters) : 1);
+  const cleanClientId = resolveCleanId(svr[3]?.values?.[0]?.[0] || "");
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
+
+  const authoritativeSpecs = startDate ? buildInitialVatSlotSpecs(f6, startDate) : null;
+  const specByKey = new Map((authoritativeSpecs || []).map((s) => [s.slotKey, s]));
 
   const ctSigned = round2(-parseYear0Number(corpTaxAmount));
   const dataWrites = [
@@ -1098,16 +1106,19 @@ export async function saveInitialTaxSetupData({
   const validCols = new Set(["G", "H", "I", "J"]);
   const savedVatSummary = [];
   for (const slot of vatSlots || []) {
-    const vatCol = String(slot?.vatCol || "").trim().toUpperCase();
-    const f6Num = Number(slot?.f6Num);
+    const slotKey = String(slot?.slotKey || "").trim().toLowerCase();
+    const authSpec = slotKey ? specByKey.get(slotKey) : null;
+    const vatCol = authSpec ? authSpec.vatCol : String(slot?.vatCol || "").trim().toUpperCase();
+    const f6Num = authSpec ? authSpec.f6Num : Number(slot?.f6Num);
     if (!validCols.has(vatCol) || ![1, 2, 3].includes(f6Num)) continue;
+    if (authoritativeSpecs && !authoritativeSpecs.some((s) => s.vatCol === vatCol && s.f6Num === f6Num)) continue;
     const vatSigned = round2(-parseYear0Number(slot.amount));
     const formula = `=if(KeyInfo!$F$6=${f6Num},${vatSigned},0)`;
     dataWrites.push({
       range: `VAT!${vatCol}32:${vatCol}35`,
       values: [[formula], [formula], [formula], [formula]],
     });
-    savedVatSummary.push(`${slot.paymentMonthShort || vatCol}: ${round2(parseYear0Number(slot.amount))}`);
+    savedVatSummary.push(`${authSpec?.paymentMonthShort || slot.paymentMonthShort || vatCol}: ${round2(parseYear0Number(slot.amount))}`);
   }
 
   await withRetry(() =>

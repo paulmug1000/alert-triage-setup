@@ -131,7 +131,7 @@ export async function trackRedisKeyForClient(cacheKey) {
 export async function invalidateAllClientsRedisKeys(extraAcIds = []) {
   try {
     if (!redisClient?.isOpen) return;
-    const defaultAc = process.env.AUTOMATION_COMMANDER_SHEET_ID || "1k9a5r9M9X-bP5G2pL6kY7X3g-r2Q1dC4fW8tV9oP0xE";
+    const defaultAc = process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
     const acIds = new Set([defaultAc, process.env.AUTOMATION_COMMANDER_SHEET_ID, ...extraAcIds].filter(Boolean));
     const keys = [];
     for (const id of acIds) {

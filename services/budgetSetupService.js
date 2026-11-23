@@ -384,12 +384,18 @@ export async function saveBudgetSetupData({
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
 
   const histSet = new Set(historicalMonthKeys || []);
-  const mCols = fy1Months.length === 12
-    ? fy1Months
-    : Array.from({ length: 12 }, (_, i) => ({
-        colLetter: colIndexToLetter(7 + i),
-        monthKey: `m-${i}`,
-      }));
+  const mCols = Array.from({ length: 12 }, (_, i) => {
+    const rawKey = String(fy1Months?.[i]?.monthKey || "").trim();
+    const safeKey = /^\d{4}-\d{2}$/.test(rawKey) ? rawKey : `m-${i}`;
+    const colLetter = colIndexToLetter(7 + i);
+    if (!/^[G-R]$/.test(colLetter)) {
+      throw new Error("Invalid Budget month column offset.");
+    }
+    return {
+      colLetter,
+      monthKey: safeKey,
+    };
+  });
 
   // 1. Revenue (R5..7) & Direct Costs (R13..15)
   const build12Row = (obj) => mCols.map((m) => round2(parseYear0Number(obj?.[m.monthKey])));
@@ -419,8 +425,10 @@ export async function saveBudgetSetupData({
   const salMetaRows = Array.from({ length: salCount }, (_, idx) => {
     const s = finalSal[idx];
     if (!s) return ["", 0, "", "", 1];
-    const startFormatted = s.startDate ? toSheetDateFormat(s.startDate) || s.startDate : "";
-    const endFormatted = s.endDate ? toSheetDateFormat(s.endDate) || s.endDate : "";
+    const startRaw = String(s.startDate || "").trim();
+    const endRaw = String(s.endDate || "").trim();
+    const startFormatted = startRaw ? (toSheetDateFormat(startRaw) || sanitizeFormulaInput(startRaw)) : "";
+    const endFormatted = endRaw ? (toSheetDateFormat(endRaw) || sanitizeFormulaInput(endRaw)) : "";
     return [
       sanitizeFormulaInput(String(s.name || "").trim()),
       round2(parseYear0Number(s.equivSalary)),

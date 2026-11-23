@@ -456,6 +456,7 @@ export async function importLocalSnapshotToCloud({
 
   const MAX_SNAPSHOT_ROWS = 50000;
   const MAX_SNAPSHOT_COLS = 600;
+  const DISALLOWED_TAB_KEYS = new Set(["__proto__", "constructor", "prototype"]);
   const tabsByRole = { master: [], recon: [], client: [] };
   for (const t of payload.tabs) {
     if (!t || typeof t !== "object") {
@@ -466,6 +467,7 @@ export async function importLocalSnapshotToCloud({
       typeof tabName !== "string" ||
       tabName.length < 1 ||
       tabName.length > 100 ||
+      DISALLOWED_TAB_KEYS.has(tabName) ||
       /[\x00-\x1f\x7f]/.test(tabName)
     ) {
       throw new Error("Invalid snapshot file: invalid tab_name.");

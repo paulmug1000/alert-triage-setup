@@ -258,7 +258,8 @@ function isAccessDeniedGraphResponse(res, data) {
 
 async function fetchGraphJson(url, token) {
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` }
+    headers: { Authorization: `Bearer ${token}` },
+    redirect: "manual",
   });
   const data = await res.json().catch(() => ({}));
   return { res, data };
@@ -529,7 +530,8 @@ export async function inspectExcelWorkbook({
   // 1. List worksheets in the workbook
   const sheetsUrl = `https://graph.microsoft.com/v1.0/drives/${safeDriveId}/items/${safeFileId}/workbook/worksheets`;
   const sheetsRes = await fetch(sheetsUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` }
+    headers: { Authorization: `Bearer ${accessToken}` },
+    redirect: "manual",
   });
   const sheetsData = await sheetsRes.json();
 
@@ -560,7 +562,8 @@ export async function inspectExcelWorkbook({
   try {
     const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${safeDriveId}/items/${safeFileId}/workbook/worksheets/${encodeURIComponent(targetWorksheet)}/usedRange?$select=address,values`;
     const rangeRes = await fetch(rangeUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` }
+      headers: { Authorization: `Bearer ${accessToken}` },
+      redirect: "manual",
     });
     const rangeData = await rangeRes.json();
 

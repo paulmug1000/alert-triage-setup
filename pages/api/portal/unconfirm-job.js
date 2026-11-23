@@ -1,6 +1,7 @@
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, sanitizeJobSlice, isReadOnlySession } from "../../../services/userPermissions.js";
+import { assertClientPortalLive } from "../../../services/setupService.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -46,6 +47,11 @@ export default async function handler(req, res) {
     });
   }
 
+  const rl = await checkRateLimit("portal-unconfirm-job", sessionUser.email || getTrustedClientIp(req), 40, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
+  }
+
   const { clientSheetId, clientName, confirmedRow } = req.body || {};
 
   const cRow = parseInt(confirmedRow, 10);
@@ -62,6 +68,8 @@ export default async function handler(req, res) {
       return res.status(auth.status || 403).json({ success: false, error: auth.error });
     }
     const verifiedClientName = auth.clientName;
+    const liveGate = await assertClientPortalLive(sessionUser, verifiedClientName, res);
+    if (!liveGate.allowed) return;
 
     // 1. Get sheet metadata
     const metaResp = await withRetry(() =>

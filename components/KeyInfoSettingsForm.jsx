@@ -344,7 +344,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
             style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", boxSizing: "border-box" }}
           >
             <option value="Notes metadata">Metadata notes (Default)</option>
-            <option value="Cell value">Cell values</option>
+            <option value="Cell value">{isAdmin ? "Cell values" : "Fixed values"}</option>
           </select>
         </div>
 

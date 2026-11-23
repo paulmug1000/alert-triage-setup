@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * PULSE GAS RUNTIME ENVIRONMENT (services/gasRuntime/gasEnvironment.js)
- * Version: 1.07 — Add DNS-pinned HTTP(S) transport, expanded IPv6 SSRF ranges, sheets.googleapis.com internal-sheet guard, and query-redacted fetch errors in UrlFetchApp
+ * Version: 1.08 — Guard VirtualSheet notesGrid/tab maps against prototype pollution, normalize sheets.googleapis.com paths, and bind ScriptApp OAuth tokens strictly to authorized spreadsheet targets
  * ============================================================================
  * Provides a 100% faithful Google Apps Script execution environment for the
  * verbatim compiled Master GAS scripts (`compiledMasterGas.js`), backed by:
@@ -1127,7 +1127,12 @@ class VirtualSheet {
     this.name = name;
     this.valuesGrid = cloneGrid2D(valuesGrid);
     this.formulasGrid = formulasGrid && formulasGrid.length > 0 ? cloneGrid2D(formulasGrid) : cloneGrid2D(valuesGrid);
-    this.notesGrid = { ...(notesGrid || {}) };
+    const notesInit = Object.create(null);
+    for (const [nk, nv] of Object.entries(notesGrid || {})) {
+      if (nk === "__proto__" || nk === "constructor" || nk === "prototype") continue;
+      notesInit[nk] = nv;
+    }
+    this.notesGrid = notesInit;
     this.sheetId = sheetId;
     this.maxRows = Math.max(maxRows, this.valuesGrid.length, 500);
     this.maxCols = Math.max(maxCols, getGridLastCol(this.valuesGrid), 30);
@@ -1302,8 +1307,9 @@ class VirtualSheet {
 
   _remapNotesRows(mapRowFn) {
     if (!this.notesGrid || typeof this.notesGrid !== "object") return;
-    const next = {};
+    const next = Object.create(null);
     for (const [k, v] of Object.entries(this.notesGrid)) {
+      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
       if (k.startsWith("__")) {
         next[k] = v;
         continue;
@@ -1589,6 +1595,9 @@ class VirtualSpreadsheet {
 
   insertSheet(name) {
     const clean = String(name || `Sheet${this.sheetsByName.size + 1}`).trim();
+    if (!clean || clean === "__proto__" || clean === "constructor" || clean === "prototype") {
+      throw new Error(`Invalid sheet name: ${clean}`);
+    }
     if (this.sheetsByName.has(clean)) return this.sheetsByName.get(clean);
     const s = new VirtualSheet(this, clean, [], [], {}, this.sheetsByName.size + 100);
     s.dirty = true;
@@ -2776,13 +2785,15 @@ export async function createGasEnvironment({
     }
 
     if (cleanHost === "sheets.googleapis.com") {
-      const ssMatch = String(targetUrlObj.pathname || "").match(/\/v4\/spreadsheets\/([^/?#:]+)/);
-      if (ssMatch) {
-        let decodedId = ssMatch[1];
-        try { decodedId = decodeURIComponent(ssMatch[1]); } catch { }
-        if (decodedId && decodedId !== ctx.clientSheetId) {
-          await assertExternalCrmSpreadsheet(sheets, decodedId);
-        }
+      const normPath = String(targetUrlObj.pathname || "").replace(/\/+/g, "/");
+      const ssMatch = normPath.match(/^\/v4\/spreadsheets\/([^/?#:]+)/);
+      if (!ssMatch) {
+        throw new Error("Blocked unsupported sheets.googleapis.com path in UrlFetchApp.fetch");
+      }
+      let decodedId = ssMatch[1];
+      try { decodedId = decodeURIComponent(ssMatch[1]); } catch { }
+      if (decodedId && decodedId !== ctx.clientSheetId) {
+        await assertExternalCrmSpreadsheet(sheets, decodedId);
       }
     }
 
@@ -3044,6 +3055,16 @@ export async function createGasEnvironment({
 
       let resp = null;
       for (let hop = 0; hop <= MAX_SSRF_REDIRECT_HOPS; hop++) {
+        const authHdrKey = Object.keys(currentHeaders).find((k) => k.toLowerCase() === "authorization");
+        if (authHdrKey) {
+          const bearerVal = String(currentHeaders[authHdrKey] || "").replace(/^Bearer\s+/i, "").trim();
+          if (bearerVal && issuedServiceOAuthTokens.has(bearerVal)) {
+            const normPath = String(currentUrlObj.pathname || "").replace(/\/+/g, "/");
+            if (targetPin.cleanHost !== "sheets.googleapis.com" || !/^\/v4\/spreadsheets\/[^/?#:]+/.test(normPath)) {
+              throw new Error(`Blocked internal service OAuth token egress to unauthorized target: ${targetPin.cleanHost}`);
+            }
+          }
+        }
         resp = await executePinnedHttpRequest_(currentUrlObj, {
           method: currentMethod,
           headers: currentHeaders,
@@ -3119,6 +3140,8 @@ export async function createGasEnvironment({
         )
       ),
   };
+
+  const issuedServiceOAuthTokens = new Set();
 
   const PropertiesService = {
     getScriptProperties: () => ({
@@ -3307,7 +3330,9 @@ export async function createGasEnvironment({
         const authClient = sheets?.context?._options?.auth;
         if (authClient && typeof authClient.getAccessToken === "function") {
           const tokenRes = await authClient.getAccessToken();
-          return tokenRes?.token || "";
+          const tok = tokenRes?.token || "";
+          if (tok) issuedServiceOAuthTokens.add(tok);
+          return tok;
         }
       } catch { }
       return "";

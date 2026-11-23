@@ -731,26 +731,37 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
       initialPayload = memoryCache.get(payloadKey) || null;
       initialPerformanceData = memoryCache.get(perfKey) || null;
 
-      if (!initialPayload || !initialPerformanceData) {
-        await ensureRedisConnected(400);
-      }
-      if ((!initialPayload || !initialPerformanceData) && redisClient?.isOpen) {
+      await ensureRedisConnected(400);
+      if (redisClient?.isOpen) {
         try {
-          const cachedTriple = await Promise.race([
-            redisClient.mGet([payloadKey, perfKey, setupKey]),
+          const keysToFetch = [
+            !initialPayload ? payloadKey : null,
+            !initialPerformanceData ? perfKey : null,
+            setupKey,
+          ].filter(Boolean);
+          const vals = await Promise.race([
+            redisClient.mGet(keysToFetch),
             new Promise((resolve) => setTimeout(() => resolve(null), 600)),
           ]);
-          if (Array.isArray(cachedTriple)) {
-            if (!initialPayload && cachedTriple[0]) {
-              initialPayload = JSON.parse(cachedTriple[0]);
-              memoryCache.set(payloadKey, initialPayload, 60);
+          if (Array.isArray(vals)) {
+            let idx = 0;
+            if (!initialPayload) {
+              const rawP = vals[idx++];
+              if (rawP) {
+                initialPayload = JSON.parse(rawP);
+                memoryCache.set(payloadKey, initialPayload, 60);
+              }
             }
-            if (!initialPerformanceData && cachedTriple[1]) {
-              initialPerformanceData = JSON.parse(cachedTriple[1]);
-              memoryCache.set(perfKey, initialPerformanceData, 60);
+            if (!initialPerformanceData) {
+              const rawPerf = vals[idx++];
+              if (rawPerf) {
+                initialPerformanceData = JSON.parse(rawPerf);
+                memoryCache.set(perfKey, initialPerformanceData, 60);
+              }
             }
-            if (cachedTriple[2]) {
-              selectedSetupConfig = JSON.parse(cachedTriple[2]);
+            const rawSetup = vals[idx];
+            if (rawSetup) {
+              selectedSetupConfig = JSON.parse(rawSetup);
               if (selectedSetupConfig?.setupMode === true) {
                 selectedRaw.setupMode = true;
                 selectedRaw.pulseLive = Boolean(selectedSetupConfig?.pulseLive);
@@ -771,7 +782,7 @@ export async function getSsrInitialPortalData(req, sessionUser, query = {}) {
       sessionUser
     );
 
-    const isSelectedHoldingGated = Boolean(selectedRaw?.setupMode && !selectedRaw?.pulseLive);
+    const isSelectedHoldingGated = Boolean(isPulseOnly && selectedRaw?.setupMode && !selectedRaw?.pulseLive);
     const safePayload =
       isSelectedHoldingGated || query?.preview === "setup" || !initialPayload
         ? null

@@ -123,9 +123,7 @@ export default function InitialTaxPaymentsModal({
     try {
       const vatSlotsPayload = (data.vatSlots || []).map((slot) => ({
         slotKey: slot.slotKey,
-        cashCol: slot.cashCol,
-        vatCol: slot.vatCol,
-        f6Num: slot.f6Num,
+        ...(slot.cashCol ? { cashCol: slot.cashCol, vatCol: slot.vatCol, f6Num: slot.f6Num } : {}),
         paymentMonthShort: slot.paymentMonthShort,
         amount: parseNum(vatAmountsByKey[slot.slotKey]),
       }));

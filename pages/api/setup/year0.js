@@ -7,11 +7,11 @@
  * POST: action = "pull_year0_pl" | "save_year0_adjustments"
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import {
   isUserAuthorizedForClient,
-  verifyUserAuthorizedForSheet,
+  assertSetupClientSheetBinding,
   canAccessPma,
   isReadOnlySession,
 } from "../../../services/userPermissions.js";
@@ -29,6 +29,26 @@ export const config = {
   maxDuration: 120,
 };
 
+function redactYear0ForRole(payload, isAdmin) {
+  if (isAdmin || !payload || typeof payload !== "object") return payload;
+  const redactLine = (line, idx) => {
+    if (!line || typeof line !== "object") return line;
+    const { rowNum, ...rest } = line;
+    return {
+      ...rest,
+      lineId: rest.lineId ?? (rowNum != null ? `line-${rowNum}` : `line-${idx}`),
+    };
+  };
+  if (!payload.breakdown || typeof payload.breakdown !== "object") return payload;
+  const nextBreakdown = { ...payload.breakdown };
+  for (const k of ["revenue", "cosStaff", "otherCos", "nonCosStaff", "overheads"]) {
+    if (Array.isArray(nextBreakdown[k])) {
+      nextBreakdown[k] = nextBreakdown[k].map(redactLine);
+    }
+  }
+  return { ...payload, breakdown: nextBreakdown };
+}
+
 export default async function handler(req, res) {
   const sessionUser = await resolveLiveSessionUser(req, res);
   if (!sessionUser) {
@@ -39,6 +59,11 @@ export default async function handler(req, res) {
 
   if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied: PMA configuration requires staff privileges." });
+  }
+
+  const rl = await checkRateLimit("setup-year0", sessionUser.email || getTrustedClientIp(req), 20, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
   }
 
   const isAdmin = Boolean(!sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin"));
@@ -61,17 +86,20 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "No Master workspace configured for this client." });
     }
 
-    if (!isAdmin) {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, resolvedMasterId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
+    const sheets = await getSheetsClient();
+    const binding = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      masterSheetId: resolvedMasterId,
+      clientSheetId,
+      sheets,
+    });
+    if (!binding.authorized) {
+      return res.status(binding.status || 403).json({ success: false, error: binding.error || "Access denied to this client." });
     }
 
     try {
       const data = await getYear0SetupData({ clientName, masterSheetId: resolvedMasterId });
-      return res.status(200).json({ success: true, ...data });
+      return res.status(200).json({ success: true, ...redactYear0ForRole(data, isAdmin) });
     } catch (err) {
       console.error("GET /api/setup/year0 error:", err);
       const msg = isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to load Year 0 data.");
@@ -104,18 +132,21 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "No Master workspace configured for this client." });
     }
 
-    if (!isAdmin) {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, resolvedMasterId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
+    const sheets = await getSheetsClient();
+    const binding = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      masterSheetId: resolvedMasterId,
+      clientSheetId,
+      sheets,
+    });
+    if (!binding.authorized) {
+      return res.status(binding.status || 403).json({ success: false, error: binding.error || "Access denied to this client." });
     }
 
     try {
       if (action === "pull_year0_pl") {
         const data = await pullYear0PL({ clientName, masterSheetId: resolvedMasterId });
-        return res.status(200).json({ success: true, ...data });
+        return res.status(200).json({ success: true, ...redactYear0ForRole(data, isAdmin) });
       }
       if (action === "detect_dividends") {
         const detected = await detectYear0Dividends({ clientName, masterSheetId: resolvedMasterId });

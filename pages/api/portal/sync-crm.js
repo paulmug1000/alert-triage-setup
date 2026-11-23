@@ -14,6 +14,7 @@ import { runNativeMasterSync } from "../../../services/masterSyncEngine.js";
 import { getSupabaseAdmin } from "../../../services/supabaseClient.js";
 import { getClientWebAppUrl } from "../../../services/workspaces.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
+import { assertClientPortalLive, getClientSetupConfig } from "../../../services/setupService.js";
 import {
   assertTrustedOrigin,
   getCrmDisplayName,
@@ -149,14 +150,24 @@ export default async function handler(req, res) {
   }
 
   const verifiedClientName = auth.clientName;
+  const liveGate = await assertClientPortalLive(sessionUser, verifiedClientName, res);
+  if (!liveGate.allowed) return;
   const isSysAdmin = Boolean(!sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin"));
-  const displayCrm = getCrmDisplayName(crmTool);
+  const setupCfg = await getClientSetupConfig({ clientName: verifiedClientName }).catch(() => null);
+  let displayCrm = getCrmDisplayName(setupCfg?.crmTool);
 
   await ensureRedisConnected(500).catch(() => {});
 
   const activeKey = `active_agent_run:${verifiedClientName}`;
 
   if (action === "status") {
+    const rlStatus = await checkRateLimit("portal-sync-crm-status", sessionUser.email || getTrustedClientIp(req), 120, 60);
+    if (!rlStatus.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: "Too many status requests. Please wait a moment and try again.",
+      });
+    }
     try {
       const cleanReqRunId = String(requestedRunId || "").trim();
 
@@ -368,6 +379,16 @@ export default async function handler(req, res) {
         clientName: verifiedClientName,
         spreadsheetId: unwrapped,
       });
+
+      const effectiveCrm = String(setupCfg?.crmTool || supaCtx?.crmTool || "None").trim();
+      const effectiveDrives = String(setupCfg?.crmDrives || supaCtx?.crmDrives || "NA").trim();
+      if (!effectiveCrm || effectiveCrm.toLowerCase() === "none" || effectiveDrives.toUpperCase() === "NA") {
+        return res.status(400).json({
+          success: false,
+          error: "No active CRM integration is configured for this workspace.",
+        });
+      }
+      displayCrm = getCrmDisplayName(effectiveCrm);
 
       const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const startedAt = Date.now();

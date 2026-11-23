@@ -1507,6 +1507,7 @@ function writeToAutoLog(category, summary, details) {
 /**
  * PART 2: INTERNAL SHEET MANIPULATION FUNCTIONS
  *
+ * v3.15 (Preserve untouched formulas and sanitize string cells in pushOutgoingsWithPLAddsToClientSheet, updateOverdueInvoicesInConfirmed, and depreciation writes; fix invoiceData.client reference in findRecentJobs)
  * v3.14 (Guard fillFutureSlots against overwriting occupied invoice slots or existing manual placeholders)
  * v3.13 (Preserve untouched formulas via getFormulas() in pushOutgoingsToClientSheet and sanitize external/overdue cell strings before setValues)
  * v3.12 (Preserve untouched formulas and prevent RAW-to-USER_ENTERED promotion in updateStaleUnsentInvoices, enforce numeric QuickBooks realmId, and disable HTTP redirects on API fetches)
@@ -1922,11 +1923,17 @@ async function pushOutgoingsToClientSheet(isHeadless = false) {
       }
 
       // 4. Update Depreciation Total (Original Logic)
-      if (depreciationTotalIndex !== -1) {
+      if (depreciationTotalIndex !== -1 && depreciationTargetRow > 0 && depreciationTargetRow !== 225 && depreciationTargetRow !== 226) {
           const depreciationSourceRow = depreciationTotalIndex + 1;
-          const depreciationValue = sourceSheet.getRange(depreciationSourceRow, columnToProcess).getValue();
-          targetSheet.getRange(depreciationTargetRow, targetColumn).setValue(depreciationValue || 0).setBackground(null);
-      } else {
+          const depTargetCell = targetSheet.getRange(depreciationTargetRow, targetColumn);
+          if (!depTargetCell.getFormula()) {
+            const depreciationValue = sourceSheet.getRange(depreciationSourceRow, columnToProcess).getValue();
+            const safeDep = (typeof depreciationValue === 'string' && typeof sanitizeSheetCell_ === 'function')
+              ? sanitizeSheetCell_(depreciationValue)
+              : (depreciationValue || 0);
+            depTargetCell.setValue(safeDep).setBackground(null);
+          }
+      } else if (depreciationTotalIndex === -1) {
           warnings.push('Warning: "Depreciation total" not found in PLComp.');
       }
     });
@@ -2164,6 +2171,8 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
             targetMonthData[idx][0] = targetMonthFormulas[idx][0];
          } else if (cat && cat !== depreciationCategoryName && !cat.toLowerCase().startsWith("recharged expenses") && !plCompData.has(cat)) {
             targetMonthData[idx][0] = 0;
+         } else if (typeof targetMonthData[idx][0] === 'string' && typeof sanitizeSheetCell_ === 'function') {
+            targetMonthData[idx][0] = sanitizeSheetCell_(targetMonthData[idx][0]);
          }
       });
       targetMonthRange.setValues(targetMonthData);
@@ -2197,14 +2206,15 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
 
         dataMap.forEach((val, cat) => {
           if (!isValidExpenseCategory_(cat)) return;
+          const safeVal = (typeof val === 'string' && typeof sanitizeSheetCell_ === 'function') ? sanitizeSheetCell_(val) : val;
           const idx = targetCatsList.indexOf(cat);
           if (idx !== -1) {
-            targetSectionData[idx][0] = val;
+            targetSectionData[idx][0] = safeVal;
           } else {
             const blankIdx = targetCatsList.indexOf('');
             if (blankIdx !== -1) {
               targetCatsList[blankIdx] = cat;
-              targetSectionData[blankIdx][0] = val;
+              targetSectionData[blankIdx][0] = safeVal;
               rowsToInit.push({
                 row: targetRangeDef.start + blankIdx,
                 name: cat,
@@ -2221,6 +2231,8 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
             targetSectionData[idx][0] = targetSectionFormulas[idx][0];
           } else if (cat && !dataMap.has(cat)) {
             targetSectionData[idx][0] = 0;
+          } else if (typeof targetSectionData[idx][0] === 'string' && typeof sanitizeSheetCell_ === 'function') {
+            targetSectionData[idx][0] = sanitizeSheetCell_(targetSectionData[idx][0]);
           }
         });
 
@@ -2249,11 +2261,17 @@ async function pushOutgoingsWithPLAddsToClientSheet(isHeadless = false) {
       // 3. Update Depreciation Total
       const sourceDataE = sourceSheet.getRange("E:E").getValues().flat();
       const depreciationTotalIndex = sourceDataE.indexOf("Depreciation total");
-      if (depreciationTotalIndex !== -1) {
+      if (depreciationTotalIndex !== -1 && depreciationTargetRow > 0 && depreciationTargetRow !== 225 && depreciationTargetRow !== 226) {
          const depreciationSourceRow = depreciationTotalIndex + 1;
-         const depreciationValue = sourceSheet.getRange(depreciationSourceRow, columnToProcess).getValue();
-         targetSheet.getRange(depreciationTargetRow, targetColumn).setValue(depreciationValue || 0).setBackground(null);
-      } else {
+         const depTargetCell = targetSheet.getRange(depreciationTargetRow, targetColumn);
+         if (!depTargetCell.getFormula()) {
+           const depreciationValue = sourceSheet.getRange(depreciationSourceRow, columnToProcess).getValue();
+           const safeDep = (typeof depreciationValue === 'string' && typeof sanitizeSheetCell_ === 'function')
+             ? sanitizeSheetCell_(depreciationValue)
+             : (depreciationValue || 0);
+           depTargetCell.setValue(safeDep).setBackground(null);
+         }
+      } else if (depreciationTotalIndex === -1) {
          warnings.push('Warning: "Depreciation total" not found in PLComp.');
       }
     });
@@ -3523,7 +3541,7 @@ async function processNextInvoice() {
   }
 
   const months = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("InvComp").getRange('A2').getValue();
-  const recentJobs = findRecentJobs(client, months, confirmedData, confirmedHeaderMap);
+  const recentJobs = findRecentJobs(invoiceData.client, months, confirmedData, confirmedHeaderMap);
   if (recentJobs.length > 0) {
     showJobSelectionDialog(invoiceData, recentJobs);
     return;
@@ -4291,6 +4309,8 @@ async function updateOverdueInvoicesInConfirmed(ss, alertSheet) {
         for (let c = 0; c < values[r].length; c++) {
           if (formulas[r][c]) {
             values[r][c] = formulas[r][c];
+          } else if (typeof values[r][c] === 'string' && typeof sanitizeSheetCell_ === 'function') {
+            values[r][c] = sanitizeSheetCell_(values[r][c]);
           }
         }
       }
@@ -7868,6 +7888,7 @@ async function logMyQuickBooksTaxCodesWithIDs() {
  * ==      CRM TASKS (CRMComp) LOGIC      ==
  * =========================================
  *
+ * v3.20 (Sanitize auto-linked blank project codes via sanitizeSheetCell_ and protect JobCosting formula columns from CRM discrepancy & Confirmed copy overwrites)
  * v3.19 (Include [projectCode] in Confirmed copy log lines and flatten multi-line client/job names in AutoLog output)
  * v3.18 (Add clear-match blank Project code linking on Pipeline in updateCheckedRows and processInstantConfirmedJobs_ to prevent duplicates for pre-existing/manual Pipeline jobs)
  * v3.17 (Fix blank Status incl rule in Or mode inside processInstantConfirmedJobs_ so unconfirmed jobs are never auto-promoted to Confirmed)
@@ -8673,7 +8694,8 @@ async function updateCheckedRows(isHeadless, expectedStageName) {
             }, pendingCrmDeals);
             if (matchedCand) {
               matchedCand.claimed = true;
-              sourceSheet.getRange(matchedCand.rowNum, actualSourceIdCol).setNumberFormat("@").setValue(uniqueIdToFind).setFontStyle('italic');
+              const safeAutoCode = (typeof sanitizeSheetCell_ === 'function') ? sanitizeSheetCell_(uniqueIdToFind) : uniqueIdToFind;
+              sourceSheet.getRange(matchedCand.rowNum, actualSourceIdCol).setNumberFormat("@").setValue(safeAutoCode).setFontStyle('italic');
               sourceIds[matchedCand.rowNum - 2] = searchId;
               targetRowIndex = matchedCand.rowNum - 2;
               autoLinkedNote = `Auto-linked blank-code Row ${matchedCand.rowNum} -> ${uniqueIdToFind}`;
@@ -8753,6 +8775,7 @@ async function updateCheckedRows(isHeadless, expectedStageName) {
                 // NEW LOGIC (OPTION A): Update the cell UNLESS it's ignored OR completely blank
                 if (valuesAreDifferent(existingValues[j], dataToCopy[j]) && incomingVal !== "IGNORE" && incomingVal !== "<IGNORE>" && incomingVal !== "") {
                     const colToUpdate = sourceDataStartCol + j;
+                    if (isJobCostingSheet_(sourceHeaders) && [11, 13, 14, 15, 21, 33, 34, 38, 39, 41].includes(colToUpdate)) continue;
                 sourceSheet.getRange(targetRow, colToUpdate).setValue(sanitizeSheetCell_(dataToCopy[j])).setFontStyle('italic');
                 wasUpdated = true;
                 
@@ -9223,6 +9246,7 @@ async function updateCheckedRowsRight(isHeadless, expectedStageName) {
               // NEW LOGIC (OPTION A): Update the cell UNLESS it's ignored OR completely blank
               if (valuesAreDifferent(existingValues[j], dataToCopy[j]) && incomingVal !== "IGNORE" && incomingVal !== "<IGNORE>" && incomingVal !== "") {
              const colToUpdate = sourceDataStartCol + j;
+             if (isJobCostingSheet_(sourceHeaders) && [11, 13, 14, 15, 21, 33, 34, 38, 39, 41].includes(colToUpdate)) continue;
 
                 sourceSheet.getRange(targetRow, colToUpdate).setValue(sanitizeSheetCell_(dataToCopy[j])).setFontStyle('italic');
                 wasUpdated = true;
@@ -9695,9 +9719,18 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
                hNorm === 'direct costs' ||
                hNorm === 'direct costs (proj total / ongoing pm) - excl vat' ||
                hNorm === 'start date' ||
-               hNorm === 'end date'
+               hNorm === 'end date' ||
+               hNorm === 'gross profit' ||
+               hNorm === 'gross profit (excl. direct costs)' ||
+               hNorm === '% margin' ||
+               hNorm === 'billable total' ||
+               hNorm === 'variance'
              ) {
-                 continue; // Protect JobCosting formula columns (AG, AH, AL, AM)
+                 continue; // Protect JobCosting formula columns (K, M, N, O, U, AG, AH, AL, AM, AO)
+             }
+             const mappedCol = map[hNorm];
+             if (mappedCol && [11, 13, 14, 15, 21, 33, 34, 38, 39, 41].includes(mappedCol)) {
+                 continue;
              }
          }
          setVal(newRow, header, details.dynamicPayload[header]);
@@ -10161,7 +10194,8 @@ async function processInstantConfirmedJobs_(ss) {
                 }, null);
                 if (matchedPipeCand) {
                     matchedPipeCand.claimed = true;
-                    pipelineSheet.getRange(matchedPipeCand.rowNum, instantCodeColIdx + 1).setNumberFormat("@").setValue(codeStr).setFontStyle('italic');
+                    const safeInstantCode = (typeof sanitizeSheetCell_ === 'function') ? sanitizeSheetCell_(codeStr) : codeStr;
+                    pipelineSheet.getRange(matchedPipeCand.rowNum, instantCodeColIdx + 1).setNumberFormat("@").setValue(safeInstantCode).setFontStyle('italic');
                     pipeCodes.push(codeStr);
                     inPipe = true;
                     instantLogs.push(`[CRM Pipeline] Auto-linked existing Row ${matchedPipeCand.rowNum} (${client} | ${job}) -> ${codeStr}`);
@@ -15279,6 +15313,7 @@ async function getBrokerExcelAccessToken_() {
 /**
  * ----------------------------------------------------------------
  * 7_COST_SYNC
+ * v3.56 (Preserve untouched formulas and guard rows 225-226 / string formula promotion in syncExpenseTransactionBreakdownToClientSheet_)
  * v3.55 (Batch compactExpenseJobGroup_ reads/writes with getNotes() and contiguous-run setValues() to minimize Google Sheets recalculations)
  * v3.54 (Compact expense slot holes, enforce [Real -> Manual -> Auto -> Empty] slot ordering and earliest-physical placeholder placement in runSheetAudit, and fix parentOccupied < 3 array bounds crash)
  * v3.53 (Sanitize Outgoings gapBlock note fields with sanitizeOutgoingsNoteField_)
@@ -20461,9 +20496,22 @@ async function syncExpenseTransactionBreakdownToClientSheet_(isHeadless = false,
       if (categoryRangeStartRow !== -1 && categoryRangeHeight > 0) {
         const targetMonthRange = outgoingsSheet.getRange(categoryRangeStartRow, colIdx, categoryRangeHeight, 1);
         if (categoriesDirty) {
+          const existingFormulas = targetMonthRange.getFormulas();
           const colSlice = [];
           for (let r = categoryRangeStartRow - 1; r < categoryRangeEndRow; r++) {
-            colSlice.push([outgoingsData[r][c]]);
+            const idx = r - (categoryRangeStartRow - 1);
+            const row1 = r + 1;
+            const existingF = existingFormulas[idx] && existingFormulas[idx][0];
+            if (existingF || row1 === 225 || row1 === 226) {
+              colSlice.push([existingF || outgoingsData[r][c]]);
+            } else {
+              const rawVal = outgoingsData[r][c];
+              colSlice.push([
+                typeof rawVal === 'string' && typeof sanitizeSheetCell_ === 'function'
+                  ? sanitizeSheetCell_(rawVal)
+                  : rawVal
+              ]);
+            }
           }
           targetMonthRange.setValues(colSlice);
         }

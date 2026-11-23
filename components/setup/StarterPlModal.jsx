@@ -224,7 +224,7 @@ export default function StarterPlModal({
       }
     } catch (err) {
       if (err?.name === "AbortError" || reqId !== loadRequestIdRef.current) return;
-      setFeedback({ type: "error", message: err?.message || "Failed to load StarterPL data." });
+      setFeedback({ type: "error", message: err?.message || (isAdmin ? "Failed to load StarterPL data." : "Failed to load opening P&L data.") });
     } finally {
       if (reqId === loadRequestIdRef.current) {
         setLoading(false);
@@ -576,7 +576,7 @@ export default function StarterPlModal({
 
   // --- Full-Year P&L Preview Calculator (Step 5) ---
   const parsedTaxTable = useMemo(
-    () => parseKeyInfoTaxTable(data?.keyInfoTaxGrid || []),
+    () => parseKeyInfoTaxTable(data?.payrollTaxConfig || data?.keyInfoTaxGrid || []),
     [data]
   );
 
@@ -787,16 +787,16 @@ export default function StarterPlModal({
       });
       const json = await res.json();
       if (!json.success) {
-        setFeedback({ type: "error", message: json.error || "Failed to save StarterPL setup." });
+        setFeedback({ type: "error", message: json.error || (isAdmin ? "Failed to save StarterPL setup." : "Failed to save opening P&L setup.") });
       } else {
-        setFeedback({ type: "success", message: json.message || "StarterPL setup saved." });
+        setFeedback({ type: "success", message: json.message || (isAdmin ? "StarterPL setup saved." : "Opening P&L setup saved.") });
         if (typeof onCompleted === "function") {
           onCompleted(json);
         }
         onClose();
       }
     } catch (err) {
-      setFeedback({ type: "error", message: err?.message || "Failed to save StarterPL setup." });
+      setFeedback({ type: "error", message: err?.message || (isAdmin ? "Failed to save StarterPL setup." : "Failed to save opening P&L setup.") });
     } finally {
       setSaving(false);
     }
@@ -1111,7 +1111,7 @@ export default function StarterPlModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Run StarterPL setup"
+      aria-label={isAdmin ? "Run StarterPL setup" : "Run opening P&L setup"}
       style={{
         position: "fixed",
         inset: 0,
@@ -1150,7 +1150,7 @@ export default function StarterPlModal({
         >
           <div>
             <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "#0F172A" }}>
-              Run StarterPL setup — {clientName}
+              {isAdmin ? "Run StarterPL setup" : "Run opening P&L setup"} — {clientName}
             </h2>
             <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748B" }}>
               Step {currentStep} of {WIZARD_STEPS.length}: complete each section in order, then review the full-year P&amp;L before saving.
@@ -2661,7 +2661,9 @@ export default function StarterPlModal({
                   cursor: canSave ? "pointer" : "not-allowed",
                 }}
               >
-                {saving ? "Saving StarterPL setup..." : "Save StarterPL setup"}
+                {saving
+                  ? (isAdmin ? "Saving StarterPL setup..." : "Saving opening P&L setup...")
+                  : (isAdmin ? "Save StarterPL setup" : "Save opening P&L setup")}
               </button>
             )}
           </div>

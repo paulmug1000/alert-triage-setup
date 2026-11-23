@@ -12,7 +12,7 @@
  * 6. Seeds Redis setup config and logs activity.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { provisionNewClientSystem } from "../../../services/setupService.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
@@ -34,6 +34,11 @@ export default async function handler(req, res) {
   // Provisioning is an admin-level operation (never allowed in read-only mode)
   if (sessionUser.isReadOnly || (!sessionUser.isAdmin && sessionUser.role !== "Admin")) {
     return res.status(403).json({ success: false, error: "Only administrators can provision new client systems." });
+  }
+
+  const rl = await checkRateLimit("setup-provision", sessionUser.email || getTrustedClientIp(req), 10, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many provisioning requests. Please wait a moment." });
   }
 
   const {

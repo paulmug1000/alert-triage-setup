@@ -6,11 +6,11 @@
  * POST: action = "pull_and_analyse" | "push_to_outgoings" | "assign_category_mapping"
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import {
   isUserAuthorizedForClient,
-  verifyUserAuthorizedForSheet,
+  assertSetupClientSheetBinding,
   canAccessPma,
   isReadOnlySession,
 } from "../../../services/userPermissions.js";
@@ -56,6 +56,11 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Read-only session cannot modify StarterPL setup." });
   }
 
+  const rl = await checkRateLimit("setup-starter-pl", sessionUser.email || getTrustedClientIp(req), 20, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
+  }
+
   const isAdmin = Boolean(!sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin"));
   const {
     clientName,
@@ -92,12 +97,14 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "No Master workspace configured for this client." });
   }
 
-  if (!isAdmin) {
-    const sheets = await getSheetsClient();
-    const auth = await verifyUserAuthorizedForSheet(sessionUser, resolvedMasterId, clientName, sheets);
-    if (!auth.authorized) {
-      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-    }
+  const sheets = await getSheetsClient();
+  const binding = await assertSetupClientSheetBinding(sessionUser, {
+    clientName,
+    masterSheetId: resolvedMasterId,
+    sheets,
+  });
+  if (!binding.authorized) {
+    return res.status(binding.status || 403).json({ success: false, error: binding.error || "Access denied to this client." });
   }
 
   try {
@@ -106,7 +113,17 @@ export default async function handler(req, res) {
         clientName,
         masterSheetId: resolvedMasterId,
       });
-      return res.status(200).json({ success: true, ...data });
+      let safeData = data;
+      if (!isAdmin && data && typeof data === "object") {
+        const { keyInfoTaxGrid, ...rest } = data;
+        safeData = {
+          ...rest,
+          outgoingsMonths: Array.isArray(data.outgoingsMonths)
+            ? data.outgoingsMonths.map(({ col0, colLetter, ...m }) => m)
+            : data.outgoingsMonths,
+        };
+      }
+      return res.status(200).json({ success: true, ...safeData });
     }
 
     if (action === "push_to_outgoings") {

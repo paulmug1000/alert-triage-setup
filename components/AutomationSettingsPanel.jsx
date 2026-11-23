@@ -230,7 +230,7 @@ export default function AutomationSettingsPanel({
                       <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569" }}>Discrepancy rule</th>
                       <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "140px" }}>
                         <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                          <span>GAS automation</span>
+                          <span>{isAdmin ? "GAS automation" : "Scheduled automation"}</span>
                           {renderAdminNote("automation.crm.col.gasAutomation")}
                         </div>
                       </th>

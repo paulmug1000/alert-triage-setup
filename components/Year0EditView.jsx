@@ -1533,8 +1533,8 @@ export default function Year0EditView({
                     totalVal: computed.totals.baseRev,
                   })}
                   {expandedSections.revenue &&
-                    (year0Data?.breakdown?.revenue || []).map((line) =>
-                      renderBreakdownSubRow(`rev-${line.rowNum}`, line.label, line.monthly, line.total)
+                    (year0Data?.breakdown?.revenue || []).map((line, idx) =>
+                      renderBreakdownSubRow(`rev-${line.lineId ?? line.rowNum ?? idx}`, line.label, line.monthly, line.total)
                     )}
                   {renderEditableInputRow({
                     label: `${revLabel} adjustment (+/-)`,
@@ -1568,8 +1568,8 @@ export default function Year0EditView({
                           {[
                             ...(year0Data?.breakdown?.cosStaff || []),
                             ...(year0Data?.breakdown?.otherCos || []),
-                          ].map((line) =>
-                            renderBreakdownSubRow(`cos-${line.rowNum}`, line.label, line.monthly, line.total)
+                          ].map((line, idx) =>
+                            renderBreakdownSubRow(`cos-${line.lineId ?? line.rowNum ?? idx}`, line.label, line.monthly, line.total)
                           )}
                           {computed.totals.cosDiv > 0 &&
                             renderBreakdownSubRow(
@@ -1660,8 +1660,8 @@ export default function Year0EditView({
                       {[
                         ...(year0Data?.breakdown?.nonCosStaff || []),
                         ...(year0Data?.breakdown?.overheads || []),
-                      ].map((line) =>
-                        renderBreakdownSubRow(`oh-${line.rowNum}`, line.label, line.monthly, line.total)
+                      ].map((line, idx) =>
+                        renderBreakdownSubRow(`oh-${line.lineId ?? line.rowNum ?? idx}`, line.label, line.monthly, line.total)
                       )}
                       {computed.totals.nonCosDiv > 0 &&
                         renderBreakdownSubRow(

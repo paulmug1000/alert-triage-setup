@@ -17,8 +17,19 @@
 import crypto from "crypto";
 import { redisClient } from "./redisClient.js";
 import { getSheetsClient } from "./sheetsClient.js";
+import { unwrapSheetId } from "./sheetTokenService.js";
 import { resolveClientNameBySheetId } from "./userPermissions.js";
 import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
+
+function normalizeVaultMasterSheetId_(rawId) {
+  const s = String(rawId || "").trim();
+  if (!s) return "";
+  const u = unwrapSheetId(s);
+  if (!u || u === "__INVALID_WS_TOKEN__" || u === "__RAW_SHEET_ID_FORBIDDEN__") {
+    return "";
+  }
+  return u;
+}
 
 const MAX_VAULT_L1 = 200;
 const VAULT_L1_TTL_MS = 15000;
@@ -530,6 +541,7 @@ export async function linkClientToSharedXero({
   availableTenants = []
 }) {
   const cleanClient = normalizeKey(clientKey);
+  const cleanMasterId = normalizeVaultMasterSheetId_(masterSheetId);
   const redisKey = getVaultRedisKey(cleanClient, "xero");
 
   const now = Date.now();
@@ -537,7 +549,7 @@ export async function linkClientToSharedXero({
     tool: "xero",
     clientKey: cleanClient,
     clientName: clientName || cleanClient,
-    masterSheetId: masterSheetId || "",
+    masterSheetId: cleanMasterId,
     tenantId: tenantId || "",
     tenantName: tenantName || "",
     status: "connected",
@@ -559,8 +571,8 @@ export async function linkClientToSharedXero({
   setVaultL1_(redisKey, JSON.stringify(record));
   await syncVaultRecordToSupabase(cleanClient, "xero", record);
 
-  if (masterSheetId) {
-    const sheetKey = getSheetIndexRedisKey(masterSheetId, "xero");
+  if (cleanMasterId) {
+    const sheetKey = getSheetIndexRedisKey(cleanMasterId, "xero");
     await redisClient.set(sheetKey, redisKey);
     setVaultL1_(sheetKey, redisKey);
   }
@@ -596,6 +608,7 @@ export async function saveIntegrationTokens({
 
   const cleanClient = normalizeKey(clientKey);
   const cleanTool = normalizeKey(tool);
+  const cleanMasterId = normalizeVaultMasterSheetId_(masterSheetId);
   const aad = `${cleanClient}:${cleanTool}`;
 
   // If this is a client link to a shared grant, tokens can be null
@@ -630,7 +643,7 @@ export async function saveIntegrationTokens({
     tool: cleanTool,
     clientKey: cleanClient,
     clientName: clientName || cleanClient,
-    masterSheetId: masterSheetId || "",
+    masterSheetId: cleanMasterId,
     tenantId,
     tenantName,
     realmId,
@@ -654,8 +667,8 @@ export async function saveIntegrationTokens({
   await syncVaultRecordToSupabase(cleanClient, cleanTool, record);
 
   // If masterSheetId is provided, maintain secondary lookup index for GAS Token Broker
-  if (masterSheetId) {
-    const sheetKey = getSheetIndexRedisKey(masterSheetId, cleanTool);
+  if (cleanMasterId) {
+    const sheetKey = getSheetIndexRedisKey(cleanMasterId, cleanTool);
     await redisClient.set(sheetKey, redisKey);
     setVaultL1_(sheetKey, redisKey);
   }
@@ -696,13 +709,13 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
 
   if (typeof arg1 === "object" && arg1 !== null) {
     clientKey = arg1.clientKey;
-    masterSheetId = arg1.masterSheetId;
+    masterSheetId = normalizeVaultMasterSheetId_(arg1.masterSheetId);
     tool = arg1.tool;
     bypassL1 = Boolean(arg1.bypassL1);
   } else {
     clientKey = arg1;
     tool = arg2;
-    masterSheetId = arg3;
+    masterSheetId = normalizeVaultMasterSheetId_(arg3);
   }
 
   const cleanTool = normalizeKey(tool);
@@ -952,26 +965,27 @@ export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenant
  */
 export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
   const cleanTool = normalizeKey(tool);
+  const cleanMasterId = normalizeVaultMasterSheetId_(masterSheetId);
   let redisKey = null;
 
   if (clientKey) {
     redisKey = getVaultRedisKey(clientKey, cleanTool);
-  } else if (masterSheetId) {
-    const sheetIndexKey = getSheetIndexRedisKey(masterSheetId, cleanTool);
+  } else if (cleanMasterId) {
+    const sheetIndexKey = getSheetIndexRedisKey(cleanMasterId, cleanTool);
     redisKey = await redisClient.get(sheetIndexKey);
 
     // Fallback: If sheet index is missing in Redis, resolve clientName from AutoUpdates
     if (!redisKey) {
       try {
         const sheets = await getSheetsClient();
-        const resolvedName = await resolveClientNameBySheetId(sheets, masterSheetId);
+        const resolvedName = await resolveClientNameBySheetId(sheets, cleanMasterId);
         if (resolvedName) {
           const fallbackKey = getVaultRedisKey(resolvedName, cleanTool);
           const rawCheck = await redisClient.get(fallbackKey);
           if (rawCheck) {
             redisKey = fallbackKey;
             await redisClient.set(sheetIndexKey, fallbackKey);
-            console.log(`🔗 Vault: Auto-healed status index for "${resolvedName}" [${cleanTool}] -> ${masterSheetId}`);
+            console.log(`🔗 Vault: Auto-healed status index for "${resolvedName}" [${cleanTool}] -> ${cleanMasterId}`);
           }
         }
       } catch (fallbackErr) {
@@ -990,7 +1004,7 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
     }
   }
   if (!record) {
-    record = await loadVaultRecordFromSupabase_({ clientKey, masterSheetId, tool: cleanTool });
+    record = await loadVaultRecordFromSupabase_({ clientKey, masterSheetId: cleanMasterId, tool: cleanTool });
   }
 
   // 1. For Xero: Handle dedicated client grants vs Central Shared Advisor Grant
@@ -1152,12 +1166,13 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
  */
 export async function markIntegrationReconnectRequired({ clientKey, masterSheetId, tool, error = "", isSharedGrant = false }) {
   const cleanTool = normalizeKey(tool);
+  const cleanMasterId = normalizeVaultMasterSheetId_(masterSheetId);
 
   let redisKey = null;
   if (clientKey) {
     redisKey = getVaultRedisKey(clientKey, cleanTool);
-  } else if (masterSheetId) {
-    const sheetIndexKey = getSheetIndexRedisKey(masterSheetId, cleanTool);
+  } else if (cleanMasterId) {
+    const sheetIndexKey = getSheetIndexRedisKey(cleanMasterId, cleanTool);
     redisKey = await redisClient.get(sheetIndexKey);
   }
 
@@ -1213,12 +1228,12 @@ export async function deleteIntegrationTokens(arg1, arg2, arg3) {
 
   if (typeof arg1 === "object" && arg1 !== null) {
     clientKey = arg1.clientKey;
-    masterSheetId = arg1.masterSheetId;
+    masterSheetId = normalizeVaultMasterSheetId_(arg1.masterSheetId);
     tool = arg1.tool;
   } else {
     clientKey = arg1;
     tool = arg2;
-    masterSheetId = arg3;
+    masterSheetId = normalizeVaultMasterSheetId_(arg3);
   }
 
   const cleanTool = normalizeKey(tool);
@@ -1406,18 +1421,20 @@ export async function refreshStoredIntegrationToken({
   markOnAuthFailure = true
 }) {
   const cleanTool = normalizeKey(tool);
-  const initialRecord = await getIntegrationTokens({ clientKey, masterSheetId, tool: cleanTool });
+  const cleanMasterId = normalizeVaultMasterSheetId_(masterSheetId);
+  const initialRecord = await getIntegrationTokens({ clientKey, masterSheetId: cleanMasterId, tool: cleanTool });
   if (!initialRecord?.tokens?.accessToken) {
     throw new Error(`No active ${cleanTool} connection found for this client.`);
   }
 
   const resolvedClientKey = initialRecord.clientKey || normalizeKey(clientKey);
-  const lockKey = `${cleanTool}:${resolvedClientKey}`;
+  const isSharedXero = Boolean(initialRecord.isSharedGrant && cleanTool === "xero");
+  const lockKey = isSharedXero ? "xero:shared" : `${cleanTool}:${resolvedClientKey}`;
 
   const getLatest = async (bypassL1 = false) => {
     const latest = await getIntegrationTokens({
       clientKey: resolvedClientKey,
-      masterSheetId: masterSheetId || initialRecord.masterSheetId,
+      masterSheetId: cleanMasterId || initialRecord.masterSheetId,
       tool: cleanTool,
       bypassL1
     });
@@ -1448,11 +1465,15 @@ export async function refreshStoredIntegrationToken({
           throw new Error(`No refresh token available for ${cleanTool} connection. Please re-authorise in Pulse.`);
         }
         const refreshed = await refreshFn(latest);
-        await updateRefreshedTokens({
-          clientKey: resolvedClientKey,
-          tool: cleanTool,
-          tokens: refreshed
-        });
+        if (isSharedXero || latest.isSharedGrant) {
+          await updateSharedXeroGrantTokens(refreshed);
+        } else {
+          await updateRefreshedTokens({
+            clientKey: resolvedClientKey,
+            tool: cleanTool,
+            tokens: refreshed
+          });
+        }
         return {
           accessToken: refreshed.accessToken,
           expiresIn: refreshed.expiresIn || 3600
@@ -1468,9 +1489,10 @@ export async function refreshStoredIntegrationToken({
       try {
         await markIntegrationReconnectRequired({
           clientKey: resolvedClientKey,
-          masterSheetId: masterSheetId || initialRecord.masterSheetId,
+          masterSheetId: cleanMasterId || initialRecord.masterSheetId,
           tool: cleanTool,
-          error: err.message
+          error: err.message,
+          isSharedGrant: isSharedXero
         });
       } catch (_) { }
     }

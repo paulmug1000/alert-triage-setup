@@ -33,8 +33,9 @@ export const XERO_SCOPES = [
  */
 async function fetchXeroWithRetry_(url, init = {}, label = "Xero API", maxRetries = 4) {
   let lastRes = null;
+  const reqInit = { redirect: "manual", ...init };
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    lastRes = await fetch(url, init);
+    lastRes = await fetch(url, reqInit);
     const status = lastRes.status;
     if (status !== 429 && status !== 502 && status !== 503 && status !== 504) {
       return lastRes;
@@ -155,7 +156,8 @@ export async function getXeroConnections(accessToken) {
     headers: {
       "Authorization": `Bearer ${accessToken}`,
       "Content-Type": "application/json"
-    }
+    },
+    redirect: "manual",
   });
 
   if (!res.ok) {
@@ -344,6 +346,13 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
   if (!accessToken || !tenantId || !accountId) {
     throw new Error("Missing accessToken, tenantId, or accountId for fetchXeroAccountTransactions");
   }
+  const cleanAccountId = String(accountId).trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanAccountId)) {
+    throw new Error("Invalid Xero accountId format.");
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startDate || "")) || !/^\d{4}-\d{2}-\d{2}$/.test(String(endDate || ""))) {
+    throw new Error("Invalid startDate or endDate format (expected YYYY-MM-DD).");
+  }
 
   const [startY, startM, startD] = startDate.split("-").map(Number);
   const [endY, endM, endD] = endDate.split("-").map(Number);
@@ -359,7 +368,7 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
 
   // 1. Fetch direct Spend/Receive Bank Transactions
   try {
-    const btUrl = `https://api.xero.com/api.xro/2.0/BankTransactions?where=BankAccount.AccountID%3D%3Dguid(%22${accountId}%22)%20AND%20${encodeURIComponent(dateClause)}`;
+    const btUrl = `https://api.xero.com/api.xro/2.0/BankTransactions?where=BankAccount.AccountID%3D%3Dguid(%22${cleanAccountId}%22)%20AND%20${encodeURIComponent(dateClause)}`;
     const btRes = await fetchXeroWithRetry_(btUrl, { method: "GET", headers }, "Xero BankTransactions");
     if (btRes.ok) {
       const btData = await btRes.json();

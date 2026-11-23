@@ -195,7 +195,8 @@ export default async function handler(req, res) {
       // CENTRAL ADVISOR SHARED CONNECTION FLOW
       // =========================================================================
       // The advisor connected via PMA. Store tokens in the Central Shared Grant
-      // and link the initiating client and other matching ecosystem clients.
+      // and link only the initiating client; other clients must be explicitly confirmed
+      // via PMA > Integrations (never auto-linked on fuzzy name match).
       await saveSharedXeroGrant({
         tokens,
         availableTenants: tenants,
@@ -212,91 +213,6 @@ export default async function handler(req, res) {
           tenantName,
           availableTenants: tenants
         });
-      }
-
-      // Auto-link ALL other ecosystem clients matching the authorized Xero organisations
-      try {
-        const sheets = await getSheetsClient();
-        const supaControlPlane = isSupabaseConfigured() && (await isSupabaseControlPlaneActive());
-        const ecosystemClients = [];
-
-        if (supaControlPlane) {
-          const sb = getSupabaseAdmin();
-          const { data: dbClients, error: dbErr } = await sb
-            .from("clients")
-            .select("client_name, master_sheet_id, master_sheet_url, status, metadata");
-          if (dbErr) throw dbErr;
-          for (const c of (dbClients || [])) {
-            const cName = String(c.client_name || "").trim();
-            if (!cName) continue;
-            const effStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
-            if (["inactive", "archived", "suspended"].includes(effStatus)) continue;
-            const mSheetId = String(c.master_sheet_id || "").trim() || extractSheetIdFromUrl(c.master_sheet_url || "") || "";
-            if (!mSheetId) continue;
-            ecosystemClients.push({ cName, mSheetId });
-          }
-        } else {
-          const acRes = await withRetry(() =>
-            sheets.spreadsheets.values.get({
-              spreadsheetId: DEFAULT_AC_SHEET_ID,
-              range: "AutoUpdates!A2:N100"
-            })
-          );
-          const rows = acRes.data.values || [];
-          for (const r of rows) {
-            const cName = String(r[0] || "").trim();
-            const mUrl = String(r[12] || "").trim();
-            if (!cName || cName.toLowerCase() === "client" || cName.toLowerCase() === "client name" || !mUrl) continue;
-            const match = mUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
-            const mSheetId = match ? match[1] : "";
-            ecosystemClients.push({ cName, mSheetId });
-          }
-        }
-
-        for (const { cName, mSheetId } of ecosystemClients) {
-          // Check if this ecosystem client matches one of the authorized tenants
-          const clientTenant = matchTenantToClient(cName, tenants);
-          if (clientTenant) {
-            // Preserve dedicated client grants and existing manual/explicit tenant bindings
-            const existingGrant = await getIntegrationTokens({
-              clientKey: cName,
-              masterSheetId: mSheetId,
-              tool: "xero"
-            }).catch(() => null);
-            if (existingGrant && (!existingGrant.isSharedGrant || existingGrant.tenantId)) {
-              console.log(`⏭️ Skipping auto-link for "${cName}" — existing dedicated or explicitly bound tenant preserved.`);
-              continue;
-            }
-            console.log(`🔗 Auto-linking client "${cName}" to Xero Org "${clientTenant.tenantName}" (${clientTenant.tenantId})...`);
-            await linkClientToSharedXero({
-              clientKey: cName,
-              clientName: cName,
-              masterSheetId: mSheetId,
-              tenantId: clientTenant.tenantId,
-              tenantName: clientTenant.tenantName,
-              availableTenants: tenants
-            });
-
-            // Ensure KeyInfo!X2 is set to this tenant ID in the Master Sheet
-            if (mSheetId) {
-              try {
-                await withRetry(() =>
-                  sheets.spreadsheets.values.update({
-                    spreadsheetId: mSheetId,
-                    range: "KeyInfo!X2",
-                    valueInputOption: "RAW",
-                    requestBody: { values: [[clientTenant.tenantId]] }
-                  })
-                );
-                console.log(`✅ Updated KeyInfo!X2 for "${cName}" to ${clientTenant.tenantId}.`);
-              } catch (errX2) {
-                console.warn(`Note updating KeyInfo!X2 for ${cName}:`, errX2.message);
-              }
-            }
-          }
-        }
-      } catch (autoLinkErr) {
-        console.warn("⚠️ Auto-linking ecosystem clients notice:", autoLinkErr.message);
       }
     }
 

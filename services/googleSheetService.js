@@ -407,7 +407,8 @@ export async function inspectGoogleSpreadsheet({
     // 1. Fetch metadata via user's OAuth access token
     const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${targetId}?fields=properties.title,sheets.properties`;
     const metaRes = await fetch(metaUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` }
+      headers: { Authorization: `Bearer ${accessToken}` },
+      redirect: "manual",
     });
     const metaJson = await metaRes.json();
     if (!metaRes.ok || metaJson.error) {
@@ -454,7 +455,10 @@ export async function inspectGoogleSpreadsheet({
       const escapedTab = targetTab.replace(/'/g, "''");
       const rangeParam = encodeURIComponent(`'${escapedTab}'!1:10`);
       const sampleUrl = `https://sheets.googleapis.com/v4/spreadsheets/${targetId}/values/${rangeParam}`;
-      const sRes = await fetch(sampleUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const sRes = await fetch(sampleUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        redirect: "manual",
+      });
       const sJson = await sRes.json();
       sampleData = sJson.values || [];
     } else {

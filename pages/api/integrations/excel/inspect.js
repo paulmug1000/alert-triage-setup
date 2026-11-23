@@ -11,7 +11,7 @@ import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../.
 import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
 import { inspectExcelWorkbook, refreshExcelTokens } from "../../../../services/excelIntegrationService.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken, isOAuthReconnectError } from "../../../../services/vaultService.js";
-import { assertTrustedOrigin } from "../../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
 export const config = {
   maxDuration: 120,
@@ -149,7 +149,7 @@ export default async function handler(req, res) {
     console.error("Error inspecting Excel workbook:", err);
     return res.status(200).json({
       success: false,
-      error: err.message || "Failed to inspect Excel workbook"
+      error: sessionUser?.isAdmin ? (err.message || "Failed to inspect Excel workbook") : sanitizeSpreadsheetTerms(err.message || "Failed to inspect Excel workbook")
     });
   }
 }

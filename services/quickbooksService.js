@@ -153,9 +153,13 @@ export async function getQBCompanyInfo(accessToken, realmId) {
       headers: {
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json"
-      }
+      },
+      redirect: "manual",
     });
 
+    if (res.status === 401 || res.status === 403) {
+      return { authErrorStatus: res.status };
+    }
     if (!res.ok) {
       console.warn(`⚠️ getQBCompanyInfo returned HTTP ${res.status}`);
       return null;
@@ -222,7 +226,8 @@ export async function fetchQuickBooksBankAccounts(accessToken, realmId) {
     headers: {
       "Authorization": `Bearer ${accessToken}`,
       "Accept": "application/json"
-    }
+    },
+    redirect: "manual",
   });
 
   if (!res.ok) {
@@ -291,6 +296,13 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   if (!accessToken || !realmId || !accountId) {
     throw new Error("Missing accessToken, realmId, or accountId for fetchQuickBooksAccountTransactions");
   }
+  const cleanAccountId = String(accountId).trim();
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(cleanAccountId)) {
+    throw new Error("Invalid QuickBooks accountId format.");
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startDate || "")) || !/^\d{4}-\d{2}-\d{2}$/.test(String(endDate || ""))) {
+    throw new Error("Invalid startDate or endDate format (expected YYYY-MM-DD).");
+  }
   const safeRealmId = assertValidQBRealmId(realmId);
 
   const headers = {
@@ -304,7 +316,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   try {
     const payQuery = `select * from Payment where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
     const payUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(payQuery)}&minorversion=73`;
-    const payRes = await fetch(payUrl, { method: "GET", headers });
+    const payRes = await fetch(payUrl, { method: "GET", headers, redirect: "manual" });
     if (payRes.ok) {
       const payData = await payRes.json();
       (payData?.QueryResponse?.Payment || []).forEach(p => {
@@ -337,7 +349,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   try {
     const srQuery = `select * from SalesReceipt where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
     const srUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(srQuery)}&minorversion=73`;
-    const srRes = await fetch(srUrl, { method: "GET", headers });
+    const srRes = await fetch(srUrl, { method: "GET", headers, redirect: "manual" });
     if (srRes.ok) {
       const srData = await srRes.json();
       (srData?.QueryResponse?.SalesReceipt || []).forEach(sr => {
@@ -370,7 +382,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   try {
     const depQuery = `select * from Deposit where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
     const depUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(depQuery)}&minorversion=73`;
-    const depRes = await fetch(depUrl, { method: "GET", headers });
+    const depRes = await fetch(depUrl, { method: "GET", headers, redirect: "manual" });
     if (depRes.ok) {
       const depData = await depRes.json();
       (depData?.QueryResponse?.Deposit || []).forEach(dep => {
@@ -403,7 +415,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   try {
     const trQuery = `select * from Transfer where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
     const trUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(trQuery)}&minorversion=73`;
-    const trRes = await fetch(trUrl, { method: "GET", headers });
+    const trRes = await fetch(trUrl, { method: "GET", headers, redirect: "manual" });
     if (trRes.ok) {
       const trData = await trRes.json();
       (trData?.QueryResponse?.Transfer || []).forEach(tr => {
@@ -474,7 +486,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   try {
     const purQuery = `select * from Purchase where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
     const purUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(purQuery)}&minorversion=73`;
-    const purRes = await fetch(purUrl, { method: "GET", headers });
+    const purRes = await fetch(purUrl, { method: "GET", headers, redirect: "manual" });
     if (purRes.ok) {
       const purData = await purRes.json();
       (purData?.QueryResponse?.Purchase || []).forEach(pur => {
@@ -505,7 +517,7 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
   try {
     const bpQuery = `select * from BillPayment where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
     const bpUrl = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(bpQuery)}&minorversion=73`;
-    const bpRes = await fetch(bpUrl, { method: "GET", headers });
+    const bpRes = await fetch(bpUrl, { method: "GET", headers, redirect: "manual" });
     if (bpRes.ok) {
       const bpData = await bpRes.json();
       (bpData?.QueryResponse?.BillPayment || []).forEach(bp => {

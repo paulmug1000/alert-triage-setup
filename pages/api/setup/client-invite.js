@@ -11,7 +11,7 @@
  */
 
 import nodemailer from "nodemailer";
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import {
   getAllUsers,
@@ -20,6 +20,7 @@ import {
   getCanonicalAcSheetId,
   canAccessPma,
   isUserAuthorizedForClient,
+  assertSetupClientSheetBinding,
 } from "../../../services/userPermissions.js";
 import {
   updateClientChecklistTask,
@@ -27,7 +28,20 @@ import {
   saveClientSetupConfig,
 } from "../../../services/setupService.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
-import { assertTrustedOrigin } from "../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
+
+const SINGLE_EMAIL_REGEX = /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]+$/;
+
+function isAllowedPulseUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || "").trim());
+    if (parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === "pulsedashboard.co.uk" || host.endsWith(".pulsedashboard.co.uk");
+  } catch {
+    return false;
+  }
+}
 
 function escapeHtml(str) {
   if (!str) return "";
@@ -46,10 +60,10 @@ function formatPlainTextToHtml(text) {
       const escaped = escapeHtml(para.trim());
       if (!escaped) return "";
       const withLinks = escaped
-        .replace(
-          /(https?:\/\/[^\s<]+)/g,
-          '<a href="$1" style="color: #023f98; font-weight: 600; text-decoration: underline;">$1</a>'
-        )
+        .replace(/(https?:\/\/[^\s<]+)/g, (url) => {
+          if (!isAllowedPulseUrl(url)) return url;
+          return `<a href="${url}" style="color: #023f98; font-weight: 600; text-decoration: underline;">${url}</a>`;
+        })
         .replace(/\r?\n/g, "<br>");
       return `<p style="margin: 0 0 14px 0; font-size: 14px; line-height: 1.6; color: #1e293b;">${withLinks}</p>`;
     })
@@ -76,6 +90,14 @@ export default async function handler(req, res) {
 
   if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied: Staff privileges required." });
+  }
+
+  const isSysAdmin = Boolean(!sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin"));
+  const rlBucket = req.method === "GET" ? "setup-client-invite-get" : "setup-client-invite";
+  const rlMax = req.method === "GET" ? 60 : 20;
+  const rl = await checkRateLimit(rlBucket, sessionUser.email || getTrustedClientIp(req), rlMax, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
   }
 
   if (req.method === "GET") {
@@ -107,7 +129,10 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, contacts });
     } catch (err) {
       console.error("GET /api/setup/client-invite error:", err);
-      return res.status(500).json({ success: false, error: err.message || "Failed to load client contacts." });
+      return res.status(500).json({
+        success: false,
+        error: isSysAdmin ? (err.message || "Failed to load client contacts.") : sanitizeSpreadsheetTerms(err.message || "Failed to load client contacts."),
+      });
     }
   }
 
@@ -135,8 +160,8 @@ export default async function handler(req, res) {
       if (!contactName) {
         return res.status(400).json({ success: false, error: "Client contact name is required." });
       }
-      if (!contactEmail || !contactEmail.includes("@")) {
-        return res.status(400).json({ success: false, error: "Please enter a valid client email address." });
+      if (!contactEmail || !SINGLE_EMAIL_REGEX.test(contactEmail)) {
+        return res.status(400).json({ success: false, error: "Please enter a valid single client email address." });
       }
 
       const acId = getCanonicalAcSheetId();
@@ -186,11 +211,42 @@ export default async function handler(req, res) {
       const subject = String(req.body?.subject || "").trim();
       const body = String(req.body?.body || "").trim();
 
-      if (clientName && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+      if (!clientName) {
+        return res.status(400).json({ success: false, error: "Client name is required." });
+      }
+      if (!isSysAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
         return res.status(403).json({ success: false, error: "Access denied to this client." });
       }
-      if (!toEmail || !toEmail.includes("@")) {
-        return res.status(400).json({ success: false, error: "Please enter a valid recipient email address." });
+      if (masterSheetId) {
+        const binding = await assertSetupClientSheetBinding(sessionUser, {
+          clientName,
+          masterSheetId,
+          sheets,
+        });
+        if (!binding.authorized) {
+          return res.status(binding.status || 403).json({ success: false, error: binding.error || "Access denied to this client." });
+        }
+      }
+      if (!toEmail || !SINGLE_EMAIL_REGEX.test(toEmail)) {
+        return res.status(400).json({ success: false, error: "Please enter a valid single recipient email address." });
+      }
+      if (!isSysAdmin) {
+        const acId = getCanonicalAcSheetId();
+        const allUsers = await getAllUsers(sheets, acId, true).catch(() => []);
+        const isAssignedContact = (allUsers || []).some((u) => {
+          if (String(u.email || "").toLowerCase().trim() !== toEmail) return false;
+          const role = String(u.role || "");
+          if (["Admin", "ClientManager"].includes(role)) return false;
+          if (String(u.status || "Active").toLowerCase() === "suspended") return false;
+          const assigned = Array.isArray(u.assignedClients) ? u.assignedClients : [];
+          return assigned.some((c) => matchesClientName(c, clientName));
+        });
+        if (!isAssignedContact) {
+          return res.status(403).json({
+            success: false,
+            error: "Non-administrators may only send onboarding connection emails to assigned contacts for this client.",
+          });
+        }
       }
       if (!subject) {
         return res.status(400).json({ success: false, error: "Email subject is required." });
@@ -199,13 +255,23 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, error: "Email message body is required." });
       }
 
+      const urlsInBody = body.match(/https?:\/\/[^\s<>"')]+/gi) || [];
+      if (urlsInBody.some((u) => !isAllowedPulseUrl(u))) {
+        return res.status(400).json({
+          success: false,
+          error: "Email links must point to an HTTPS pulsedashboard.co.uk address.",
+        });
+      }
+
       const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
       const emailPass = process.env.PMA_EMAIL_APP_PASSWORD;
 
       if (!emailPass) {
         return res.status(500).json({
           success: false,
-          error: "Email sending is not configured on this environment (missing PMA_EMAIL_APP_PASSWORD).",
+          error: isSysAdmin
+            ? "Email sending is not configured on this environment (missing PMA_EMAIL_APP_PASSWORD)."
+            : "Email sending is currently unavailable. Please contact an administrator.",
         });
       }
 
@@ -267,6 +333,9 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: `Unknown action: ${action}` });
   } catch (err) {
     console.error("POST /api/setup/client-invite error:", err);
-    return res.status(500).json({ success: false, error: err.message || "Internal server error." });
+    return res.status(500).json({
+      success: false,
+      error: isSysAdmin ? (err.message || "Internal server error.") : sanitizeSpreadsheetTerms(err.message || "Request failed."),
+    });
   }
 }

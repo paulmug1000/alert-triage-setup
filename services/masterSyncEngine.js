@@ -645,7 +645,10 @@ export async function syncBeyondTheBlueprintConversations_({ masterSS = null, ct
       }
     }
 
-    const clientSheetId = ctx?.clientSheetId || "1MNsDQzTSuVylNCL2MUTqLjmQfd1NtkLhWsmrebyyqhE";
+    const clientSheetId = ctx?.clientSheetId;
+    if (!clientSheetId) {
+      return { skipped: true, reason: "missing_client_sheet_id", count };
+    }
     const sheetsClient = sheets || (await (await import("./sheetsClient.js")).getSheetsClient());
 
     await sheetsClient.spreadsheets.values.update({

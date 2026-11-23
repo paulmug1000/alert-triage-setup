@@ -552,8 +552,8 @@ export default function Year0SetupModal({
                   </tr>
 
                   {expandedSections.revenue &&
-                    (data?.breakdown?.revenue || []).map((line) => (
-                      <tr key={`rev-${line.rowNum}`} style={{ backgroundColor: "#F8FAFC", borderBottom: "1px solid #F1F5F9", color: "#64748B" }}>
+                    (data?.breakdown?.revenue || []).map((line, idx) => (
+                      <tr key={`rev-${line.lineId ?? line.rowNum ?? idx}`} style={{ backgroundColor: "#F8FAFC", borderBottom: "1px solid #F1F5F9", color: "#64748B" }}>
                         <td style={{ position: "sticky", left: 0, zIndex: 2, backgroundColor: "#F8FAFC", padding: "5px 12px 5px 28px", borderRight: "1px solid #E2E8F0", fontSize: "11px" }}>
                           {line.label}
                         </td>
@@ -621,8 +621,8 @@ export default function Year0SetupModal({
 
                       {expandedSections.cos && (
                         <>
-                          {[...(data?.breakdown?.cosStaff || []), ...(data?.breakdown?.otherCos || [])].map((line) => (
-                            <tr key={`cos-${line.rowNum}`} style={{ backgroundColor: "#F8FAFC", borderBottom: "1px solid #F1F5F9", color: "#64748B" }}>
+                          {[...(data?.breakdown?.cosStaff || []), ...(data?.breakdown?.otherCos || [])].map((line, idx) => (
+                            <tr key={`cos-${line.lineId ?? line.rowNum ?? idx}`} style={{ backgroundColor: "#F8FAFC", borderBottom: "1px solid #F1F5F9", color: "#64748B" }}>
                               <td style={{ position: "sticky", left: 0, zIndex: 2, backgroundColor: "#F8FAFC", padding: "5px 12px 5px 28px", borderRight: "1px solid #E2E8F0", fontSize: "11px" }}>
                                 {line.label}
                               </td>
@@ -725,8 +725,8 @@ export default function Year0SetupModal({
 
                   {expandedSections.overheads && (
                     <>
-                      {[...(data?.breakdown?.nonCosStaff || []), ...(data?.breakdown?.overheads || [])].map((line) => (
-                        <tr key={`oh-${line.rowNum}`} style={{ backgroundColor: "#F8FAFC", borderBottom: "1px solid #F1F5F9", color: "#64748B" }}>
+                      {[...(data?.breakdown?.nonCosStaff || []), ...(data?.breakdown?.overheads || [])].map((line, idx) => (
+                        <tr key={`oh-${line.lineId ?? line.rowNum ?? idx}`} style={{ backgroundColor: "#F8FAFC", borderBottom: "1px solid #F1F5F9", color: "#64748B" }}>
                           <td style={{ position: "sticky", left: 0, zIndex: 2, backgroundColor: "#F8FAFC", padding: "5px 12px 5px 28px", borderRight: "1px solid #E2E8F0", fontSize: "11px" }}>
                             {line.label}
                           </td>

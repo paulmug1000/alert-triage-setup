@@ -67,8 +67,12 @@ export function getJwtSecret() {
   return _devEphemeralSecret;
 }
 
+function getOAuthStateEncryptionKey() {
+  return crypto.createHash("sha256").update(`oauth_state_enc:${getJwtSecret()}`).digest();
+}
+
 /**
- * Create an HMAC-SHA256 signed OAuth state token (CRIT-02 remediation)
+ * Create an AES-256-GCM authenticated & encrypted OAuth state token (V4-HIGH-05 remediation)
  */
 export function createSignedOAuthState(payload) {
   const cleanPayload = payload && typeof payload === "object" ? { ...payload } : {};
@@ -77,37 +81,34 @@ export function createSignedOAuthState(payload) {
     ...cleanPayload,
     ts: cleanPayload?.ts || Date.now(),
   };
-  const data = Buffer.from(JSON.stringify(enriched)).toString("base64url");
-  const sig = crypto
-    .createHmac("sha256", getJwtSecret())
-    .update(`oauth_state:${data}`)
-    .digest("base64url");
-  return `${data}.${sig}`;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", getOAuthStateEncryptionKey(), iv);
+  const enc = Buffer.concat([cipher.update(JSON.stringify(enriched), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `st2.${iv.toString("base64url")}.${tag.toString("base64url")}.${enc.toString("base64url")}`;
 }
 
 /**
- * Verify an HMAC-SHA256 signed OAuth state token (CRIT-02 remediation)
+ * Verify and decrypt an AES-256-GCM OAuth state token (V4-HIGH-05 remediation)
  */
 export function verifySignedOAuthState(stateToken, maxAgeMs = 15 * 60 * 1000) {
-  if (!stateToken || typeof stateToken !== "string" || !stateToken.includes(".")) {
+  if (!stateToken || typeof stateToken !== "string" || !stateToken.startsWith("st2.")) {
     return null;
   }
-  const dotIdx = stateToken.lastIndexOf(".");
-  const data = stateToken.slice(0, dotIdx);
-  const sig = stateToken.slice(dotIdx + 1);
-  if (!data || !sig) return null;
+  const parts = stateToken.split(".");
+  if (parts.length !== 4) return null;
+  const [, ivB64, tagB64, encB64] = parts;
+  if (!ivB64 || !tagB64 || !encB64) return null;
 
   try {
-    const expectedSig = crypto
-      .createHmac("sha256", getJwtSecret())
-      .update(`oauth_state:${data}`)
-      .digest("base64url");
-    const sigBuf = Buffer.from(sig);
-    const expBuf = Buffer.from(expectedSig);
-    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-      return null;
-    }
-    const parsed = JSON.parse(Buffer.from(data, "base64url").toString("utf8"));
+    const iv = Buffer.from(ivB64, "base64url");
+    const tag = Buffer.from(tagB64, "base64url");
+    const enc = Buffer.from(encB64, "base64url");
+    if (iv.length !== 12 || tag.length !== 16) return null;
+    const decipher = crypto.createDecipheriv("aes-256-gcm", getOAuthStateEncryptionKey(), iv);
+    decipher.setAuthTag(tag);
+    const raw = Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
+    const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
     if (maxAgeMs > 0 && (!parsed.ts || Date.now() - Number(parsed.ts) > maxAgeMs)) {
       return null;
@@ -1017,6 +1018,9 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
     }
 
     if (req) req._liveSessionUser = refreshed;
+    if (activeRes && typeof activeRes.setHeader === "function" && !activeRes.headersSent) {
+      activeRes.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
+    }
     installSheetIdBoundary(req, activeRes, refreshed);
     return refreshed;
   } catch (err) {

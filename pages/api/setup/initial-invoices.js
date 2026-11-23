@@ -11,11 +11,11 @@
  * - "create_remaining_jobs": Creates one Project job per remaining invoice dated >= B2 - 3m.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import {
   isUserAuthorizedForClient,
-  verifyUserAuthorizedForSheet,
+  assertSetupClientSheetBinding,
   canAccessPma,
   isReadOnlySession,
 } from "../../../services/userPermissions.js";
@@ -56,7 +56,12 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Read-only session cannot perform initial invoice setup." });
   }
 
-  const isAdmin = Boolean(sessionUser.isAdmin || sessionUser.role === "Admin");
+  const rl = await checkRateLimit("setup-initial-invoices", sessionUser.email || getTrustedClientIp(req), 20, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
+  }
+
+  const isAdmin = Boolean(!isReadOnlySession(sessionUser) && (sessionUser.isAdmin || sessionUser.role === "Admin"));
   const { clientName, masterSheetId, action, retainers, invoices } = req.body || {};
 
   if (!clientName) {
@@ -69,19 +74,21 @@ export default async function handler(req, res) {
 
   let resolvedMasterId = masterSheetId;
   if (!resolvedMasterId) {
-    const cfg = await getClientSetupConfig(clientName).catch(() => null);
+    const cfg = await getClientSetupConfig({ clientName }).catch(() => null);
     resolvedMasterId = cfg?.masterSheetId || "";
   }
   if (!resolvedMasterId) {
     return res.status(400).json({ success: false, error: "No Master workspace configured for this client." });
   }
 
-  if (!isAdmin) {
-    const sheets = await getSheetsClient();
-    const auth = await verifyUserAuthorizedForSheet(sessionUser, resolvedMasterId, clientName, sheets);
-    if (!auth.authorized) {
-      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-    }
+  const sheets = await getSheetsClient();
+  const binding = await assertSetupClientSheetBinding(sessionUser, {
+    clientName,
+    masterSheetId: resolvedMasterId,
+    sheets,
+  });
+  if (!binding.authorized) {
+    return res.status(binding.status || 403).json({ success: false, error: binding.error || "Access denied to this client." });
   }
 
   try {
@@ -94,6 +101,9 @@ export default async function handler(req, res) {
     }
 
     if (action === "create_retainers") {
+      if (Array.isArray(retainers) && retainers.length > 200) {
+        return res.status(400).json({ success: false, error: "Too many retainers in a single request (max 200)." });
+      }
       const result = await createInitialRetainerJobs({
         clientName,
         masterSheetId: resolvedMasterId,
@@ -103,6 +113,9 @@ export default async function handler(req, res) {
     }
 
     if (action === "create_remaining_jobs") {
+      if (Array.isArray(invoices) && invoices.length > 1000) {
+        return res.status(400).json({ success: false, error: "Too many invoices in a single request (max 1000)." });
+      }
       const result = await createInitialProjectJobs({
         clientName,
         masterSheetId: resolvedMasterId,

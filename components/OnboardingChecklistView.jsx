@@ -1319,7 +1319,7 @@ export default function OnboardingChecklistView({
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
               <div>
                 <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
-                  StarterPL setup &amp; cost forecasting
+                  {isUserAdmin ? "StarterPL setup & cost forecasting" : "Opening P&L setup & cost forecasting"}
                 </span>
                 <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
                   Pulls historical P&amp;L categories, allocates contractor bills across months, estimates employee salaries, sets dividends in lieu of salary, and builds your FY1 and FY2 forecast.
@@ -2166,7 +2166,7 @@ export default function OnboardingChecklistView({
         onClose={() => setShowStarterPlModal(false)}
         onCompleted={() => {
           handleAutoCompleteTask("p3_starter_pl");
-          setFeedback({ type: "success", message: "StarterPL setup completed." });
+          setFeedback({ type: "success", message: isUserAdmin ? "StarterPL setup completed." : "Opening P&L setup completed." });
           onClientsChanged?.();
         }}
       />

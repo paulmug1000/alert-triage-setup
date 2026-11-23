@@ -204,7 +204,29 @@ export function getUkTaxYearPrefix(date) {
 /**
  * Parses KeyInfo!A77:T105 grid into lookup helper matching MATCH(key, A77:T77, 0) & INDEX(A77:T105, row1, col).
  */
-export function parseKeyInfoTaxTable(grid = []) {
+export function parseKeyInfoTaxTable(gridOrConfig = []) {
+  if (
+    gridOrConfig &&
+    !Array.isArray(gridOrConfig) &&
+    typeof gridOrConfig === "object" &&
+    gridOrConfig.paramsByPrefix
+  ) {
+    const paramsMap = gridOrConfig.paramsByPrefix || {};
+    const availablePrefixes = Array.isArray(gridOrConfig.availablePrefixes)
+      ? [...gridOrConfig.availablePrefixes].sort()
+      : Object.keys(paramsMap).sort();
+    const getParamsForDate = (date) => {
+      let prefix = getUkTaxYearPrefix(date);
+      if (!paramsMap[prefix] && availablePrefixes.length > 0) {
+        const older = availablePrefixes.filter((p) => p <= prefix);
+        prefix = older.length > 0 ? older[older.length - 1] : availablePrefixes[availablePrefixes.length - 1];
+      }
+      return paramsMap[prefix] || {};
+    };
+    return { getParamsForDate };
+  }
+
+  const grid = Array.isArray(gridOrConfig) ? gridOrConfig : [];
   const headerRow = grid[0] || [];
   const colIndexByKey = new Map();
   for (let c = 0; c < headerRow.length; c++) {
@@ -264,6 +286,27 @@ export function parseKeyInfoTaxTable(grid = []) {
   };
 
   return { getParamsForDate };
+}
+
+/**
+ * Serializes KeyInfo UK tax table parameters by tax-year prefix without exposing raw sheet grids.
+ */
+export function serializeTaxTableByYear(grid = []) {
+  const safeGrid = Array.isArray(grid) ? grid : [];
+  const headerRow = safeGrid[0] || [];
+  const detected = new Set(["24", "25", "26", "27", "28", "29"]);
+  for (let c = 0; c < headerRow.length; c++) {
+    const m = /^(\d{2})a$/i.exec(String(headerRow[c] ?? "").trim());
+    if (m) detected.add(m[1]);
+  }
+  const availablePrefixes = [...detected].sort();
+  const table = parseKeyInfoTaxTable(safeGrid);
+  const paramsByPrefix = {};
+  for (const prefix of availablePrefixes) {
+    const yr = 2000 + Number(prefix);
+    paramsByPrefix[prefix] = table.getParamsForDate(new Date(yr, 0, 15));
+  }
+  return { availablePrefixes, paramsByPrefix };
 }
 
 /**

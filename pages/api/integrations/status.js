@@ -14,7 +14,8 @@ import { getIntegrationStatus, getSharedXeroGrant, INTEGRATIONS_STATUS_CACHE_KEY
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, canAccessPma, installSheetIdBoundary } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
+import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "../../../services/supabaseClient.js";
 import { redisClient } from "../../../services/redisClient.js";
 
@@ -49,6 +50,11 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Active session required." });
   }
   installSheetIdBoundary(req, res, sessionUser);
+
+  const rl = await checkRateLimit("integrations-status", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: "Too many requests. Please wait a moment and try again." });
+  }
 
   const { all, clientKey, clientName, masterSheetId, refresh, force } = req.query;
   const forceRefresh = (refresh === "true" || force === "true") && Boolean(sessionUser.isAdmin);
@@ -449,7 +455,7 @@ export default async function handler(req, res) {
                 crm: c.crmAuto,
                 accounting: c.accAuto
               },
-              error: cfgErr.message
+              error: sessionUser.isAdmin ? cfgErr.message : sanitizeSpreadsheetTerms(cfgErr.message || "Failed to load configuration.")
             };
           }
         })
@@ -505,6 +511,9 @@ export default async function handler(req, res) {
           const copy = { ...c };
           delete copy.autoUpdatesRow;
           delete copy.rowNumber;
+          if (typeof copy.error === "string") {
+            copy.error = sanitizeSpreadsheetTerms(copy.error);
+          }
           if (copy.integrations?.xero) {
             copy.integrations = {
               ...copy.integrations,
@@ -537,7 +546,9 @@ export default async function handler(req, res) {
       });
     } catch (err) {
       console.error("Multi-client integrations status error:", err);
-      return res.status(500).json({ error: err.message || "Failed to load multi-client integration statuses." });
+      return res.status(500).json({
+        error: sessionUser?.isAdmin ? (err.message || "Failed to load multi-client integration statuses.") : sanitizeSpreadsheetTerms(err.message || "Failed to load integration statuses.")
+      });
     }
   }
 

@@ -14,7 +14,7 @@ import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import {
   canAccessPma,
   isUserAuthorizedForClient,
-  verifyUserAuthorizedForSheet
+  assertSetupClientSheetBinding
 } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
@@ -62,22 +62,20 @@ export default async function handler(req, res) {
   }
 
   // 3. Multi-tenant client authorization check
-  if (!sessionUser.isAdmin) {
-    if (!isUserAuthorizedForClient(sessionUser, clientName)) {
-      return res.status(403).json({
+  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+    return res.status(403).json({
+      success: false,
+      error: "Forbidden: Access denied to this client."
+    });
+  }
+  if (masterSheetId) {
+    const sheets = await getSheetsClient();
+    const binding = await assertSetupClientSheetBinding(sessionUser, { clientName, masterSheetId, sheets });
+    if (!binding.authorized) {
+      return res.status(binding.status || 403).json({
         success: false,
-        error: "Forbidden: Access denied to this client."
+        error: binding.error || "Forbidden: Access denied for this client."
       });
-    }
-    if (masterSheetId) {
-      const sheets = await getSheetsClient();
-      const sheetAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
-      if (!sheetAuth.authorized) {
-        return res.status(sheetAuth.status || 403).json({
-          success: false,
-          error: sheetAuth.error || "Forbidden: Spreadsheet access denied for this client."
-        });
-      }
     }
   }
 
@@ -176,9 +174,10 @@ export default async function handler(req, res) {
     }
 
     if (accounts === null) {
+      const rawErr = failureReason || `No active Xero or QuickBooks integration connection found for "${clientName}". Please ensure the accounting tool is connected in PMA > Integrations.`;
       return res.status(404).json({
         success: false,
-        error: failureReason || `No active Xero or QuickBooks integration connection found for "${clientName}". Please ensure the accounting tool is connected in PMA > Integrations.`
+        error: sessionUser.isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr)
       });
     }
 

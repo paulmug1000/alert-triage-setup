@@ -599,6 +599,58 @@ export async function verifyUserAuthorizedForSheet(arg1, arg2, arg3, arg4, _igno
 }
 
 /**
+ * Verifies workspace sheet binding for Setup endpoints across BOTH non-admins and admins,
+ * ensuring supplied `masterSheetId` / `clientSheetId` genuinely belong to `clientName`.
+ */
+export async function assertSetupClientSheetBinding(
+  sessionUser,
+  { clientName = "", masterSheetId = "", clientSheetId = "", sheets = null } = {}
+) {
+  if (!sessionUser) {
+    return { authorized: false, status: 401, error: "Unauthorized: Active session required" };
+  }
+  const activeSheets = sheets || (await getSheetsClient());
+  const isSysAdmin = Boolean(
+    !isReadOnlySession(sessionUser) &&
+    sessionUser.authProvider !== "EmailOTP" &&
+    (sessionUser.isAdmin || sessionUser.role === "Admin")
+  );
+
+  if (!isSysAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+    return { authorized: false, status: 403, error: "Access denied to this client." };
+  }
+
+  let boundClient = clientName || "";
+  for (const rawId of [masterSheetId, clientSheetId]) {
+    if (!rawId) continue;
+    const cleanId = unwrapSheetId(rawId);
+    if (!cleanId || cleanId === "__INVALID_WS_TOKEN__" || cleanId === "__RAW_SHEET_ID_FORBIDDEN__") {
+      return { authorized: false, status: 403, error: "Forbidden: Invalid or unauthorized workspace reference" };
+    }
+    if (!isSysAdmin) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, cleanId, boundClient, activeSheets);
+      if (!auth.authorized) {
+        return auth;
+      }
+      if (auth.clientName && auth.clientName !== "Admin") {
+        boundClient = auth.clientName;
+      }
+    } else {
+      const resolvedClient = await resolveClientNameBySheetId(activeSheets, cleanId);
+      if (!resolvedClient) {
+        return { authorized: false, status: 403, error: "Forbidden: Unrecognized or unmapped client spreadsheet" };
+      }
+      if (boundClient && !matchesClientName(boundClient, resolvedClient)) {
+        return { authorized: false, status: 403, error: "Forbidden: Client identifier mismatch for workspace" };
+      }
+      boundClient = resolvedClient;
+    }
+  }
+
+  return { authorized: true, clientName: boundClient };
+}
+
+/**
  * Check if a session is read-only (e.g. EmailOTP session)
  */
 export function isReadOnlySession(user) {
@@ -992,18 +1044,6 @@ export async function deleteUserByEmail(sheets, { email, actorEmail }) {
     } else {
       await mirrorDeleteToSheet();
     }
-  }
-
-  const prevClients = Array.isArray(existingUser?.assignedClients) ? [...existingUser.assignedClients].sort().join(",") : String(existingUser?.assignedClients || "");
-  const nextClients = normalizedRole === "Admin" ? "*" : [...clientList].sort().join(",");
-  const shouldBumpRevokedAt =
-    normalizedStatus === "Suspended" ||
-    (existingUser && (existingUser.role !== normalizedRole || prevClients !== nextClients));
-
-  if (shouldBumpRevokedAt && redisClient?.isOpen) {
-    await redisClient
-      .set(`${USER_REVOKED_AT_PREFIX}${normalizedEmail}`, String(Math.floor(Date.now() / 1000)), { EX: 7 * 86400 })
-      .catch(() => { });
   }
 
   if (redisClient?.isOpen) {

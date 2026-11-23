@@ -14,7 +14,7 @@
  */
 
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
-import { getIntegrationTokens, updateRefreshedTokens, getSharedXeroGrant, updateSharedXeroGrantTokens } from "./vaultService.js";
+import { getIntegrationTokens, updateRefreshedTokens, getSharedXeroGrant, updateSharedXeroGrantTokens, refreshStoredIntegrationToken } from "./vaultService.js";
 import { fetchXeroBankAccounts, fetchXeroAccountTransactions, refreshXeroTokens, fetchXeroBankSummaryReport, parseXeroBankSummaryReport } from "./xeroService.js";
 import { fetchQuickBooksBankAccounts, fetchQuickBooksAccountTransactions, refreshQBTokens } from "./quickbooksService.js";
 import { syncReconBankTransactions, syncReconUnreconciledItems } from "./cashflowReconService.js";
@@ -195,18 +195,17 @@ export async function fetchClientReconciledBankTransactions({
     let tenantId = activeTokens.tenantId;
     const isShared = Boolean(activeTokens.isSharedGrant);
 
-    const doRefreshXero = async () => {
-      const refreshToken = activeTokens.tokens?.refreshToken;
-      if (!refreshToken) throw new Error("No refresh token available to refresh Xero connection.");
+    const doRefreshXero = async (forceRefresh = true) => {
       console.log(`🔄 Bank Recon: Refreshing Xero access token for ${resolvedClient}...`);
-      const refreshed = await refreshXeroTokens(refreshToken);
+      const refreshed = await refreshStoredIntegrationToken({
+        clientKey: activeTokens.clientKey || resolvedClient,
+        masterSheetId: cleanMasterId,
+        tool: "xero",
+        bufferSeconds: 300,
+        forceRefresh,
+        refreshFn: (latest) => refreshXeroTokens(latest.tokens.refreshToken),
+      });
       accessToken = refreshed.accessToken;
-      activeTokens.tokens = refreshed;
-      if (isShared) {
-        await updateSharedXeroGrantTokens(refreshed);
-      } else {
-        await updateRefreshedTokens({ clientKey: resolvedClient, masterSheetId: cleanMasterId, tool: "xero", tokens: refreshed });
-      }
       return refreshed.accessToken;
     };
 
@@ -220,7 +219,7 @@ export async function fetchClientReconciledBankTransactions({
 
     if (isExpiringSoon && activeTokens.tokens?.refreshToken) {
       try {
-        await doRefreshXero();
+        await doRefreshXero(false);
       } catch (refErr) {
         console.warn("⚠️ Xero proactive refresh warning:", refErr.message);
       }
@@ -318,14 +317,17 @@ export async function fetchClientReconciledBankTransactions({
     let accessToken = activeTokens.tokens?.accessToken;
     const realmId = activeTokens.realmId;
 
-    const doRefreshQB = async () => {
-      const refreshToken = activeTokens.tokens?.refreshToken;
-      if (!refreshToken) throw new Error("No refresh token available to refresh QuickBooks connection.");
+    const doRefreshQB = async (forceRefresh = true) => {
       console.log(`🔄 Bank Recon: Refreshing QuickBooks access token for ${resolvedClient}...`);
-      const refreshed = await refreshQBTokens(refreshToken);
+      const refreshed = await refreshStoredIntegrationToken({
+        clientKey: activeTokens.clientKey || resolvedClient,
+        masterSheetId: cleanMasterId,
+        tool: "quickbooks",
+        bufferSeconds: 300,
+        forceRefresh,
+        refreshFn: (latest) => refreshQBTokens(latest.tokens.refreshToken),
+      });
       accessToken = refreshed.accessToken;
-      activeTokens.tokens = refreshed;
-      await updateRefreshedTokens({ clientKey: resolvedClient, masterSheetId: cleanMasterId, tool: "quickbooks", tokens: refreshed });
       return refreshed.accessToken;
     };
 
@@ -338,7 +340,7 @@ export async function fetchClientReconciledBankTransactions({
 
     if (isExpiringSoon && activeTokens.tokens?.refreshToken) {
       try {
-        await doRefreshQB();
+        await doRefreshQB(false);
       } catch (refErr) {
         console.warn("⚠️ QuickBooks proactive refresh warning:", refErr.message);
       }

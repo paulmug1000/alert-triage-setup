@@ -13,7 +13,7 @@ import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySess
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { getIntegrationTokens, refreshStoredIntegrationToken } from "../../../../services/vaultService.js";
 import { refreshGoogleSheetTokens } from "../../../../services/googleSheetService.js";
-import { assertTrustedOrigin } from "../../../../utils/helpers.js";
+import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -157,7 +157,7 @@ export default async function handler(req, res) {
     console.error("Error fetching Google Picker token:", err);
     return res.status(500).json({
       success: false,
-      error: err.message || "Failed to initialize Google Picker token"
+      error: sessionUser?.isAdmin ? (err.message || "Failed to initialize Google Picker token") : sanitizeSpreadsheetTerms(err.message || "Failed to initialize Google Picker token")
     });
   }
 }

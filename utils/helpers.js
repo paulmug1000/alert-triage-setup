@@ -532,9 +532,12 @@ export function getCrmDisplayName(crmTool) {
   if (s.includes("close")) return "Close";
   if (s.includes("capsule")) return "Capsule";
   if (s.includes("clickup")) return "ClickUp";
+  if (s.includes("harvest")) return "Harvest";
+  if (s.includes("clockify")) return "Clockify";
+  if (s.includes("workamajig")) return "Workamajig";
   if (s.includes("sheet")) return "Google Sheet";
   if (s.includes("excel")) return "Excel";
-  return String(crmTool).trim();
+  return "CRM";
 }
 
 
@@ -749,13 +752,16 @@ export function cleanUserFacingText(text) {
 export function sanitizeSpreadsheetTerms(text) {
   if (!text || typeof text !== "string") return text || "";
   return stripRowInfo(text)
+    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.iam\.gserviceaccount\.com/gi, "system service")
     .replace(/\bMaster\s+Sheet\s+bridge\b/gi, "Pulse data sync")
-    .replace(/\b(?:Master|Client|Recon|Backup)\s+(?:spreadsheet|sheet|workbook)s?\b/gi, "Pulse")
-    .replace(/\b(?:Confirmed|Pipeline|Outgoings|Salaries|Performance|Dashboard|Budget|Cash)\s+(?:tab|sheet)s?\b/gi, (m) =>
+    .replace(/\b(?:Master|Client|Recon|Backup)\s+(?:spreadsheet|sheet|workbook|tab)s?\b/gi, "Pulse")
+    .replace(/\b(?:Confirmed|Pipeline|Outgoings|Salaries|Performance|Dashboard|Budget|Cash|Delivered|Monthly|Calcs|ErrorCheck)\s+(?:tab|sheet)s?\b/gi, (m) =>
       m.replace(/\s+(?:tab|sheet)s?$/i, "")
     )
     .replace(/\bNBtoFind(?:\s+(?:tab|sheet))?\b/gi, "NB to Find")
-    .replace(/\b(?:KeyInfo|PLComp|InvComp|DirComp|CRMComp|TimeComp|DataFromCRM|CRMList|DataChgAlert|AutoUpdates)(?:![A-Za-z]{1,3}\d+(?::[A-Za-z]{1,3}\d*)?)?\b/g, "Pulse configuration")
+    .replace(/\bStarterPL(?:\s+(?:tab|sheet))?\b/gi, "Opening P&L")
+    .replace(/\b(?:KeyInfo|PLComp|InvComp|DirComp|CRMComp|TimeComp|DataFromCRM|CRMList|DataChgAlert|AutoUpdates|OutgNotes|ConfCalcs|PipeCalcs|AppData|PLAdds|Year0Data|GPbyPL|RevenueConf|RevenuePipe|InvoicesSent|CashIncomingConf|CashIncomingPipe|ContrPayments)(?:!\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d*)?)?\b/g, "Pulse configuration")
+    .replace(/!\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d*)?/g, "")
     .replace(/\bIMPORTRANGE\b/gi, "data link")
     .replace(/\b(?:spreadsheet|workbook)s?\b/gi, "Pulse")
     .replace(/\s{2,}/g, " ")

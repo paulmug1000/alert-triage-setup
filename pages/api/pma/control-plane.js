@@ -1,4 +1,4 @@
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { getSupabaseAdmin, isSupabaseConfigured, setControlPlaneSource } from "../../../services/supabaseClient.js";
 import { redisClient } from "../../../services/redisClient.js";
@@ -358,6 +358,14 @@ export default async function handler(req, res) {
     return res.status(403).json({
       success: false,
       error: "Forbidden: System administrator access is required.",
+    });
+  }
+
+  const rl = await checkRateLimit("pma-control-plane", sessionUser.email || getTrustedClientIp(req), 60, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({
+      success: false,
+      error: "Too many control-plane requests. Please wait a moment.",
     });
   }
 

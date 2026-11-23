@@ -29,7 +29,7 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
 import { sanitizeSpreadsheetTerms } from "../utils/helpers.js";
-import { getIntegrationTokens, updateRefreshedTokens, getSharedXeroGrant, updateSharedXeroGrantTokens } from "./vaultService.js";
+import { getIntegrationTokens, updateRefreshedTokens, getSharedXeroGrant, updateSharedXeroGrantTokens, refreshStoredIntegrationToken } from "./vaultService.js";
 import { refreshXeroTokens } from "./xeroService.js";
 import { refreshQBTokens, assertValidQBRealmId } from "./quickbooksService.js";
 import { saveClientSettings } from "./clientSettingsService.js";
@@ -114,25 +114,21 @@ export async function resolveAccountingToolAuth(clientName, masterSheetId) {
       const isExpiringSoon = (expiresAt - now) < 300000;
       let accessToken = record.tokens.accessToken;
 
-      if (tool === "xero" && isExpiringSoon && record.tokens.refreshToken) {
+      if ((tool === "xero" || tool === "quickbooks") && isExpiringSoon && record.tokens.refreshToken) {
         try {
-          const refreshed = await refreshXeroTokens(record.tokens.refreshToken);
+          const refreshed = await refreshStoredIntegrationToken({
+            clientKey: record.clientKey,
+            masterSheetId: record.masterSheetId,
+            tool,
+            bufferSeconds: 300,
+            refreshFn: (latest) =>
+              tool === "xero"
+                ? refreshXeroTokens(latest.tokens.refreshToken)
+                : refreshQBTokens(latest.tokens.refreshToken),
+          });
           accessToken = refreshed.accessToken;
-          if (record.isSharedGrant) {
-            await updateSharedXeroGrantTokens(refreshed);
-          } else {
-            await updateRefreshedTokens({ clientKey: record.clientKey, tool: "xero", tokens: refreshed });
-          }
         } catch (err) {
-          console.warn("⚠️ SuggestionService: Failed to refresh Xero token:", err.message);
-        }
-      } else if (tool === "quickbooks" && isExpiringSoon && record.tokens.refreshToken) {
-        try {
-          const refreshed = await refreshQBTokens(record.tokens.refreshToken);
-          accessToken = refreshed.accessToken;
-          await updateRefreshedTokens({ clientKey: record.clientKey, tool: "quickbooks", tokens: refreshed });
-        } catch (err) {
-          console.warn("⚠️ SuggestionService: Failed to refresh QuickBooks token:", err.message);
+          console.warn(`⚠️ SuggestionService: Failed to refresh ${tool === "xero" ? "Xero" : "QuickBooks"} token:`, err.message);
         }
       }
 

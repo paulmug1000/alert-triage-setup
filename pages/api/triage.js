@@ -323,6 +323,9 @@ export default async function handler(req, res) {
         if (typeof data.error === "string") {
           data.error = scrubNonAdminText(data.error);
         }
+        if (typeof data.reconError === "string") {
+          data.reconError = scrubNonAdminText(data.reconError);
+        }
         if (typeof data.details === "string") {
           data.details = scrubNonAdminText(data.details);
         }
@@ -1351,15 +1354,30 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, started: true });
       } catch (err) {
         console.error("❌ Error triggering background refresh:", err);
-        return res.status(500).json({ success: false, error: err.message });
+        const msg = req.isSystemAuthorized || sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to start refresh.");
+        return res.status(500).json({ success: false, error: msg });
       }
 
     } else if (action === "get_refresh_status") {
       try {
-        const status = await getTriageRefreshStatus();
+        const rawStatus = await getTriageRefreshStatus();
+        const isPriv = Boolean(req.isSystemAuthorized || sessionUser?.isAdmin);
+        const status =
+          isPriv || !rawStatus || typeof rawStatus !== "object"
+            ? rawStatus
+            : {
+                status: rawStatus.status || "idle",
+                startedAt: rawStatus.startedAt || null,
+                updatedAt: rawStatus.updatedAt || null,
+                finishedAt: rawStatus.finishedAt || null,
+                completed: typeof rawStatus.completed === "number" ? rawStatus.completed : undefined,
+                total: typeof rawStatus.total === "number" ? rawStatus.total : undefined,
+                error: typeof rawStatus.error === "string" ? sanitizeSpreadsheetTerms(rawStatus.error) : undefined,
+              };
         return res.status(200).json({ success: true, status });
       } catch (err) {
-        return res.status(500).json({ success: false, error: err.message });
+        const msg = req.isSystemAuthorized || sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to read refresh status.");
+        return res.status(500).json({ success: false, error: msg });
       }
 
     } else if (action === "get_supabase_mode_clients") {

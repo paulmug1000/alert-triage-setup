@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import Spinner from "../Spinner";
 import { MonthViewSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney, formatCurrencyString } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney, formatCurrencyString, isNBToFindLabel, hasNBToFindInPerformance } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
 function escapeHtml(str) {
@@ -176,11 +176,24 @@ export default function MonthView({
   };
 
 
+  const validPerformanceData =
+    performanceData?.clientSheetId && clientSheetId
+      ? (performanceData.clientSheetId === clientSheetId ? performanceData : null)
+      : performanceData;
+
+  const showNBToFind = (() => {
+    if (typeof payload?.hasNBToFind === "boolean") return payload.hasNBToFind;
+    if (typeof payload?.clientInfo?.hasNBToFind === "boolean") return payload.clientInfo.hasNBToFind;
+    const perfCheck = hasNBToFindInPerformance(validPerformanceData);
+    if (typeof perfCheck === "boolean") return perfCheck;
+    return true;
+  })();
+
   // Helper for CSV export matching original
   const handleExportCsv = () => {
     if (!currMonth?.tableRows) return;
     const cleanRows = currMonth.tableRows
-      .filter((r) => r.label && r.label.toLowerCase() !== "hide")
+      .filter((r) => r.label && r.label.toLowerCase() !== "hide" && (showNBToFind || !isNBToFindLabel(r.label)))
       .map((r) => [r.label, formatCurrencyString(r.value, null, currencySymbol, thousandsSeparator)]);
     const header = [`Line Item`, `Amount (${monthPeriod})`];
     downloadCsv(`Pulse_${monthPeriod.replace(/\s+/g, "_")}.csv`, [header, ...cleanRows]);
@@ -258,11 +271,6 @@ export default function MonthView({
   const primaryLabel = isRevMode ? "Revenue" : "Income";
 
   // Build timeline and compute At A Glance metrics + sparklines
-  const validPerformanceData =
-    performanceData?.clientSheetId && clientSheetId
-      ? (performanceData.clientSheetId === clientSheetId ? performanceData : null)
-      : performanceData;
-
   const glanceMetrics = computeGlanceMetrics({
     glanceTimeline: payload?.glanceTimeline,
     performanceData: validPerformanceData,
@@ -524,7 +532,7 @@ export default function MonthView({
                       label = isPassThroughMode ? "Pass-through costs" : "Hide";
                     }
                     const value = String(row.value || "").trim();
-                    const isHide = label.toLowerCase() === "hide";
+                    const isHide = label.toLowerCase() === "hide" || (!showNBToFind && isNBToFindLabel(label));
 
                     // Spacers
                     const spacers = [6, 7, 9, 14, 16, 18, 20, 24, 26, 28, 30, 32];

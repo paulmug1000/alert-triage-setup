@@ -764,6 +764,35 @@ function ChipInput({ values = [], onChange, placeholder = "Type and press Enter 
   );
 }
 
+export function stripReadOnlySettingsForSnapshot(settingsObj) {
+  if (!settingsObj || typeof settingsObj !== "object") return settingsObj;
+  const next = { ...settingsObj };
+  delete next.fromCache;
+  delete next.lastSyncedAt;
+
+  if (next.crm && typeof next.crm === "object") {
+    const nextCrm = { ...next.crm };
+    delete nextCrm.rawCrmRows;
+    delete nextCrm.availableCrmHeaders;
+    delete nextCrm.previewMappedJobs;
+    delete nextCrm.previewConfirmedJobs;
+    delete nextCrm.previewPipelineJobs;
+    delete nextCrm.crmPreviewLoaded;
+    next.crm = nextCrm;
+  }
+
+  if (next.accounting && typeof next.accounting === "object") {
+    const nextAcc = { ...next.accounting };
+    delete nextAcc.chartOfAccounts;
+    delete nextAcc.plCategories;
+    delete nextAcc.sheetRemainingCategories;
+    delete nextAcc.sampleInvoiceNumbers;
+    next.accounting = nextAcc;
+  }
+
+  return next;
+}
+
 export default function ClientSettingsView({
   allClients = [],
   managedClient = null,
@@ -853,6 +882,8 @@ export default function ClientSettingsView({
   const [newManualNonCashAccountName, setNewManualNonCashAccountName] = useState("");
 
   // CRM mappings testing & preview states
+  const [crmPreviewLoading, setCrmPreviewLoading] = useState(false);
+  const [crmPreviewError, setCrmPreviewError] = useState("");
   const [pullingCrm, setPullingCrm] = useState(false);
   const [testingCrm, setTestingCrm] = useState(false);
   const [crmTestSuccessMsg, setCrmTestSuccessMsg] = useState("");
@@ -882,8 +913,12 @@ export default function ClientSettingsView({
   const [plMsg, setPlMsg] = useState("");
   const [plError, setPlError] = useState("");
 
-  // Live dynamic CRM transformation engine - instantly updates in 0ms on any dropdown change
+  // Live dynamic CRM transformation engine - only runs when CRM or Jobs tab is active
   const dynamicCrmData = useMemo(() => {
+    if (activeSection !== "crm" && activeSection !== "jobs") {
+      return { mappedJobs: [], confirmedJobs: [], pipelineJobs: [] };
+    }
+
     const rawRows = settings?.crm?.rawCrmRows;
     const headers = settings?.crm?.availableCrmHeaders || [];
     const mappings = settings?.crm?.fieldMappings || CRM_PULSE_FIELDS.map(f => ({ key: f.key, label: f.label, crmField: "", formatRule: f.defaultFormat }));
@@ -910,6 +945,7 @@ export default function ClientSettingsView({
       productLineMappings: prodMappings
     });
   }, [
+    activeSection,
     settings?.crm?.rawCrmRows,
     settings?.crm?.availableCrmHeaders,
     settings?.crm?.fieldMappings,
@@ -952,6 +988,8 @@ export default function ClientSettingsView({
         setPlError("");
         setLastSyncedAt(null);
         loadedClientRef.current = null;
+        crmPreviewLoadedClientRef.current = null;
+        setCrmPreviewError("");
         setSelectedClientName(nextClient);
         onSelectClient?.(nextClient);
       });
@@ -976,6 +1014,8 @@ export default function ClientSettingsView({
     setPlError("");
     setLastSyncedAt(null);
     loadedClientRef.current = null;
+    crmPreviewLoadedClientRef.current = null;
+    setCrmPreviewError("");
     setSelectedClientName(nextClient);
     onSelectClient?.(nextClient);
   }, [isDirty, selectedClientName, onSelectClient]);
@@ -990,6 +1030,8 @@ export default function ClientSettingsView({
       setErrorMsg("");
       setLastSyncedAt(null);
       loadedClientRef.current = null;
+      crmPreviewLoadedClientRef.current = null;
+      setCrmPreviewError("");
       setSelectedClientName(managedClient.clientName);
     } else if (initialClientName !== prevInitialClientNameRef.current) {
       prevInitialClientNameRef.current = initialClientName;
@@ -1000,6 +1042,8 @@ export default function ClientSettingsView({
         setErrorMsg("");
         setLastSyncedAt(null);
         loadedClientRef.current = null;
+        crmPreviewLoadedClientRef.current = null;
+        setCrmPreviewError("");
         setSelectedClientName(initialClientName);
       }
     }
@@ -1133,7 +1177,68 @@ export default function ClientSettingsView({
     activeClientObjRef.current = activeClientObj;
   }, [activeClientObj]);
 
+  const activeSectionRef = useRef(activeSection);
+  useEffect(() => {
+    activeSectionRef.current = activeSection;
+  }, [activeSection]);
+
   const loadedClientRef = useRef(null);
+  const crmPreviewLoadedClientRef = useRef(null);
+
+  // Lazily fetch heavy CRM raw rows & preview job tables when opening CRM or Jobs sections
+  const fetchCrmPreview = useCallback(async (bypassCache = false) => {
+    const client = activeClientObjRef.current;
+    if (!client?.clientName || !client?.masterSheetId) return;
+
+    const targetClientName = client.clientName;
+    setCrmPreviewLoading(true);
+    setCrmPreviewError("");
+
+    try {
+      const q = new URLSearchParams({
+        clientName: targetClientName,
+        masterSheetId: client.masterSheetId,
+        mode: "crm_preview",
+        bypassCache: bypassCache ? "true" : "false"
+      });
+
+      const res = await fetch(`/api/client-settings?${q.toString()}`);
+      const data = await res.json();
+
+      if (activeClientObjRef.current?.clientName !== targetClientName) return;
+
+      if (data.success && data.crmPreview) {
+        const p = data.crmPreview;
+        setSettings(prev => {
+          if (!prev || prev.clientName !== targetClientName) return prev;
+          return {
+            ...prev,
+            crm: {
+              ...prev.crm,
+              availableCrmHeaders: Array.isArray(p.availableCrmHeaders) && p.availableCrmHeaders.length > 0
+                ? p.availableCrmHeaders
+                : (prev.crm?.availableCrmHeaders || []),
+              rawCrmRows: Array.isArray(p.rawCrmRows) ? p.rawCrmRows : [],
+              previewMappedJobs: Array.isArray(p.previewMappedJobs) ? p.previewMappedJobs : [],
+              previewConfirmedJobs: Array.isArray(p.previewConfirmedJobs) ? p.previewConfirmedJobs : [],
+              previewPipelineJobs: Array.isArray(p.previewPipelineJobs) ? p.previewPipelineJobs : [],
+              crmPreviewLoaded: true
+            }
+          };
+        });
+      } else {
+        setCrmPreviewError(data.error || "Failed to load CRM preview data.");
+      }
+    } catch (err) {
+      if (activeClientObjRef.current?.clientName === targetClientName) {
+        setCrmPreviewError("Error loading CRM preview: " + err.message);
+      }
+    } finally {
+      if (activeClientObjRef.current?.clientName === targetClientName) {
+        setCrmPreviewLoading(false);
+      }
+    }
+  }, []);
 
   // Fetch settings from API
   const fetchSettings = useCallback(async (bypassCache = false) => {
@@ -1143,9 +1248,16 @@ export default function ClientSettingsView({
       return;
     }
 
+    const targetClientName = client.clientName;
+
+    if (bypassCache) {
+      crmPreviewLoadedClientRef.current = null;
+      setCrmPreviewError("");
+    }
+
     setSettings(prev => {
       // Clear settings immediately if switching to a different client
-      if (prev && prev.clientName !== client.clientName) {
+      if (prev && prev.clientName !== targetClientName) {
         return null;
       }
       return prev;
@@ -1157,7 +1269,7 @@ export default function ClientSettingsView({
 
     try {
       const q = new URLSearchParams({
-        clientName: client.clientName,
+        clientName: targetClientName,
         masterSheetId: client.masterSheetId,
         clientSheetId: client.clientSheetId || "",
         bypassCache: bypassCache ? "true" : "false"
@@ -1166,12 +1278,20 @@ export default function ClientSettingsView({
       const res = await fetch(`/api/client-settings?${q.toString()}`);
       const data = await res.json();
 
+      if (activeClientObjRef.current?.clientName !== targetClientName) return;
+
       if (data.success && data.settings) {
         setSettings(data.settings);
-        setInitialSettingsSnapshot(JSON.stringify(data.settings));
+        setInitialSettingsSnapshot(JSON.stringify(stripReadOnlySettingsForSnapshot(data.settings)));
         setIsDirty(false);
         setFromCache(Boolean(data.settings.fromCache));
         setLastSyncedAt(data.settings.lastSyncedAt || new Date().toISOString());
+
+        const curSection = activeSectionRef.current;
+        if (bypassCache && (curSection === "crm" || curSection === "jobs")) {
+          crmPreviewLoadedClientRef.current = targetClientName;
+          fetchCrmPreview(true);
+        }
       } else {
         setErrorMsg(data.error || "Failed to load client settings.");
       }
@@ -1180,12 +1300,14 @@ export default function ClientSettingsView({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchCrmPreview]);
 
   // Initial load on client change - only load when client is actively selected and not yet loaded
   useEffect(() => {
     if (!selectedClientName) {
       loadedClientRef.current = null;
+      crmPreviewLoadedClientRef.current = null;
+      setCrmPreviewError("");
       setSettings(null);
       setLoading(false);
       return;
@@ -1202,12 +1324,26 @@ export default function ClientSettingsView({
     }
   }, [selectedClientName, activeClientObj?.masterSheetId, fetchSettings]);
 
+  // Trigger on-demand CRM preview fetch when navigating to CRM or Jobs section
+  useEffect(() => {
+    if (!settings || !selectedClientName || settings.clientName !== selectedClientName) return;
+    if (activeSection !== "crm" && activeSection !== "jobs") return;
+    if (settings.crm?.crmPreviewLoaded) {
+      crmPreviewLoadedClientRef.current = selectedClientName;
+      return;
+    }
+    if (crmPreviewLoadedClientRef.current !== selectedClientName) {
+      crmPreviewLoadedClientRef.current = selectedClientName;
+      fetchCrmPreview(false);
+    }
+  }, [settings, selectedClientName, activeSection, fetchCrmPreview]);
+
   // Dirty check
   const updateSettingsField = useCallback((updaterFn) => {
     setSettings(prev => {
       if (!prev) return prev;
       const next = typeof updaterFn === "function" ? updaterFn(prev) : { ...prev, ...updaterFn };
-      setIsDirty(JSON.stringify(next) !== initialSettingsSnapshot);
+      setIsDirty(JSON.stringify(stripReadOnlySettingsForSnapshot(next)) !== initialSettingsSnapshot);
       return next;
     });
   }, [initialSettingsSnapshot]);
@@ -1221,11 +1357,12 @@ export default function ClientSettingsView({
     setSaveSuccessMsg("");
 
     try {
+      const cleanSettings = stripReadOnlySettingsForSnapshot(settings);
       const payload = {
         clientName: activeClientObj.clientName,
         masterSheetId: activeClientObj.masterSheetId,
         clientSheetId: activeClientObj.clientSheetId || "",
-        settings,
+        settings: cleanSettings,
         resetKpiToParent: Boolean(options.resetKpiToParent)
       };
 
@@ -1239,7 +1376,7 @@ export default function ClientSettingsView({
       if (data.success) {
         setSaveSuccessMsg(effectiveIsAdmin ? "✓ All settings saved successfully to sheets and cache" : "All settings saved successfully");
         setIsDirty(false);
-        setInitialSettingsSnapshot(JSON.stringify(settings));
+        setInitialSettingsSnapshot(JSON.stringify(cleanSettings));
         setLastSyncedAt(data.savedAt || new Date().toISOString());
         setTimeout(() => setSaveSuccessMsg(""), 4000);
         return true;
@@ -1297,7 +1434,27 @@ export default function ClientSettingsView({
     if (!initialSettingsSnapshot) return;
     try {
       const original = JSON.parse(initialSettingsSnapshot);
-      setSettings(original);
+      setSettings(prev => ({
+        ...original,
+        fromCache: prev?.fromCache,
+        lastSyncedAt: prev?.lastSyncedAt,
+        crm: original.crm ? {
+          ...original.crm,
+          availableCrmHeaders: prev?.crm?.availableCrmHeaders || [],
+          rawCrmRows: prev?.crm?.rawCrmRows || [],
+          previewMappedJobs: prev?.crm?.previewMappedJobs || [],
+          previewConfirmedJobs: prev?.crm?.previewConfirmedJobs || [],
+          previewPipelineJobs: prev?.crm?.previewPipelineJobs || [],
+          crmPreviewLoaded: Boolean(prev?.crm?.crmPreviewLoaded)
+        } : original.crm,
+        accounting: original.accounting ? {
+          ...original.accounting,
+          chartOfAccounts: prev?.accounting?.chartOfAccounts || [],
+          plCategories: prev?.accounting?.plCategories || [],
+          sheetRemainingCategories: prev?.accounting?.sheetRemainingCategories || [],
+          sampleInvoiceNumbers: prev?.accounting?.sampleInvoiceNumbers || []
+        } : original.accounting
+      }));
       setIsDirty(false);
       setErrorMsg("");
       setSaveSuccessMsg("");
@@ -1682,9 +1839,12 @@ export default function ClientSettingsView({
         rawCrmRows: Array.isArray(data.rawCrmRows) ? data.rawCrmRows : [],
         previewMappedJobs: Array.isArray(data.previewMappedJobs) ? data.previewMappedJobs : [],
         previewConfirmedJobs: Array.isArray(data.previewConfirmedJobs) ? data.previewConfirmedJobs : [],
-        previewPipelineJobs: Array.isArray(data.previewPipelineJobs) ? data.previewPipelineJobs : []
+        previewPipelineJobs: Array.isArray(data.previewPipelineJobs) ? data.previewPipelineJobs : [],
+        crmPreviewLoaded: true
       };
 
+      crmPreviewLoadedClientRef.current = selectedClientName;
+      setCrmPreviewError("");
       setSettings(prev => {
         if (!prev) return prev;
         return {
@@ -1694,19 +1854,6 @@ export default function ClientSettingsView({
             ...crmPatch
           }
         };
-      });
-      setInitialSettingsSnapshot(prevSnap => {
-        if (!prevSnap) return prevSnap;
-        try {
-          const parsed = JSON.parse(prevSnap);
-          parsed.crm = {
-            ...parsed.crm,
-            ...crmPatch
-          };
-          return JSON.stringify(parsed);
-        } catch {
-          return prevSnap;
-        }
       });
 
       setCrmTestSuccessMsg(data.message || `Pulled ${data.dealsPulled ?? 0} rows from CRM and refreshed field options.`);
@@ -1726,6 +1873,7 @@ export default function ClientSettingsView({
     setCrmTestErrorMsg("");
 
     try {
+      const cleanSettings = stripReadOnlySettingsForSnapshot(settings);
       const res = await fetch("/api/client-settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1734,7 +1882,7 @@ export default function ClientSettingsView({
           clientName: selectedClientName,
           masterSheetId: activeClientObj.masterSheetId,
           clientSheetId: activeClientObj.clientSheetId || "",
-          settings
+          settings: cleanSettings
         })
       });
 
@@ -1743,15 +1891,20 @@ export default function ClientSettingsView({
         throw new Error(data.error || "Failed to test CRM mappings");
       }
 
-      updateSettingsField(prev => ({
-        ...prev,
-        crm: {
-          ...prev.crm,
-          previewMappedJobs: data.previewMappedJobs || [],
-          previewConfirmedJobs: data.previewConfirmedJobs || [],
-          previewPipelineJobs: data.previewPipelineJobs || []
-        }
-      }));
+      setSettings(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          crm: {
+            ...prev.crm,
+            previewMappedJobs: data.previewMappedJobs || [],
+            previewConfirmedJobs: data.previewConfirmedJobs || [],
+            previewPipelineJobs: data.previewPipelineJobs || []
+          }
+        };
+      });
+      setInitialSettingsSnapshot(JSON.stringify(cleanSettings));
+      setIsDirty(false);
 
       setCrmTestSuccessMsg(effectiveIsAdmin ? "✓ Settings applied and preview refreshed from Google Sheets!" : "Settings applied and preview refreshed");
       setTimeout(() => setCrmTestSuccessMsg(""), 6000);
@@ -1804,7 +1957,7 @@ export default function ClientSettingsView({
               action: "fetch_crm_statuses",
               clientName: selectedClientName,
               masterSheetId: activeClientObj.masterSheetId,
-              settings
+              settings: stripReadOnlySettingsForSnapshot(settings)
             })
           });
           const data = await res.json();
@@ -1993,7 +2146,7 @@ export default function ClientSettingsView({
               action: "fetch_crm_product_lines",
               clientName: selectedClientName,
               masterSheetId: activeClientObj.masterSheetId,
-              settings
+              settings: stripReadOnlySettingsForSnapshot(settings)
             })
           });
           const data = await res.json();
@@ -2088,7 +2241,7 @@ export default function ClientSettingsView({
               action: "fetch_crm_lead_sources",
               clientName: selectedClientName,
               masterSheetId: activeClientObj.masterSheetId,
-              settings
+              settings: stripReadOnlySettingsForSnapshot(settings)
             })
           });
           const data = await res.json();
@@ -2166,7 +2319,7 @@ export default function ClientSettingsView({
           action: "refresh_chart_of_accounts",
           clientName: selectedClientName,
           masterSheetId: activeClientObj.masterSheetId,
-          settings
+          settings: stripReadOnlySettingsForSnapshot(settings)
         })
       });
       const data = await res.json();
@@ -2175,13 +2328,16 @@ export default function ClientSettingsView({
       }
 
       const updatedAccounts = Array.isArray(data.chartOfAccounts) ? data.chartOfAccounts : [];
-      updateSettingsField(prev => ({
-        ...prev,
-        accounting: {
-          ...prev.accounting,
-          chartOfAccounts: updatedAccounts
-        }
-      }));
+      setSettings(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          accounting: {
+            ...prev.accounting,
+            chartOfAccounts: updatedAccounts
+          }
+        };
+      });
 
       setCoaMsg(`✓ Refreshed ${updatedAccounts.length} accounts from Chart of Accounts.`);
       setTimeout(() => setCoaMsg(""), 6000);
@@ -2208,7 +2364,7 @@ export default function ClientSettingsView({
           action: "pull_fresh_pl",
           clientName: selectedClientName,
           masterSheetId: activeClientObj.masterSheetId,
-          settings
+          settings: stripReadOnlySettingsForSnapshot(settings)
         })
       });
       const data = await res.json();
@@ -2217,14 +2373,17 @@ export default function ClientSettingsView({
       }
 
       const updatedCategories = Array.isArray(data.plCategories) ? data.plCategories : [];
-      updateSettingsField(prev => ({
-        ...prev,
-        accounting: {
-          ...prev.accounting,
-          plCategories: updatedCategories,
-          sheetRemainingCategories: Array.isArray(data.sheetRemainingCategories) ? data.sheetRemainingCategories : prev.accounting?.sheetRemainingCategories
-        }
-      }));
+      setSettings(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          accounting: {
+            ...prev.accounting,
+            plCategories: updatedCategories,
+            sheetRemainingCategories: Array.isArray(data.sheetRemainingCategories) ? data.sheetRemainingCategories : prev.accounting?.sheetRemainingCategories
+          }
+        };
+      });
 
       setPlMsg(`✓ Successfully pulled ${updatedCategories.length} categories from P&L.`);
       setTimeout(() => setPlMsg(""), 6000);
@@ -4743,6 +4902,12 @@ export default function ClientSettingsView({
                       <button type="button" onClick={() => setCrmTestErrorMsg("")} style={{ background: "none", border: "none", color: "#B91C1C", cursor: "pointer", fontWeight: "bold" }}>✕</button>
                     </div>
                   )}
+                  {crmPreviewError && (
+                    <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: "6px", padding: "10px 14px", fontSize: "13px", color: "#B91C1C", marginBottom: "18px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span>{crmPreviewError}</span>
+                      <button type="button" onClick={() => setCrmPreviewError("")} style={{ background: "none", border: "none", color: "#B91C1C", cursor: "pointer", fontWeight: "bold" }}>✕</button>
+                    </div>
+                  )}
 
                   {/* ── Top action bar: Pull CRM data ── */}
                   {(() => {
@@ -4766,7 +4931,11 @@ export default function ClientSettingsView({
                                 No CRM connected
                               </span>
                             )}
-                            {loadedRowCount > 0 && (
+                            {crmPreviewLoading ? (
+                              <span style={{ fontSize: "11px", fontWeight: "600", color: "#0066CC", background: "#EFF6FF", border: "1px solid #BFDBFE", padding: "2px 8px", borderRadius: "12px", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                <Spinner size={10} color="#0066CC" /> Loading CRM preview data...
+                              </span>
+                            ) : loadedRowCount > 0 && (
                               <span style={{ fontSize: "11px", fontWeight: "600", color: "#475569", background: "#FFFFFF", border: "1px solid #CBD5E1", padding: "2px 8px", borderRadius: "12px" }}>
                                 {loadedRowCount} {loadedRowCount === 1 ? "row" : "rows"} · {headerCount} {headerCount === 1 ? "field" : "fields"} loaded
                               </span>
@@ -4822,8 +4991,15 @@ export default function ClientSettingsView({
                           <h4 style={{ margin: "0", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
                             CRM field mapping &amp; live preview
                           </h4>
-                          <span style={{ fontSize: "11px", fontWeight: "700", color: "#0066CC", background: "#EFF6FF", border: "1px solid #BFDBFE", padding: "2px 8px", borderRadius: "12px" }}>
-                            {displayedMappedJobs.length} deals mapped
+                          <span style={{ fontSize: "11px", fontWeight: "700", color: "#0066CC", background: "#EFF6FF", border: "1px solid #BFDBFE", padding: "2px 8px", borderRadius: "12px", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                            {crmPreviewLoading && displayedMappedJobs.length === 0 ? (
+                              <>
+                                <Spinner size={10} color="#0066CC" />
+                                <span>Loading deals...</span>
+                              </>
+                            ) : (
+                              `${displayedMappedJobs.length} deals mapped`
+                            )}
                           </span>
                         </div>
                         <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748B" }}>
@@ -5017,8 +5193,14 @@ export default function ClientSettingsView({
                         <tbody>
                           {displayedMappedJobs.length === 0 ? (
                             <tr>
-                              <td colSpan={13} style={{ padding: "36px", textAlign: "center", color: "#94A3B8", fontStyle: "italic" }}>
-                                {effectiveIsAdmin ? "No deals mapped yet or no raw rows found in DataFromCRM." : "No deals mapped yet or no raw CRM rows found."}
+                              <td colSpan={13} style={{ padding: "36px", textAlign: "center", color: crmPreviewLoading ? "#0066CC" : "#94A3B8", fontStyle: crmPreviewLoading ? "normal" : "italic" }}>
+                                {crmPreviewLoading ? (
+                                  <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontWeight: "600" }}>
+                                    <Spinner size={14} color="#0066CC" /> Loading CRM preview data...
+                                  </span>
+                                ) : (
+                                  effectiveIsAdmin ? "No deals mapped yet or no raw rows found in DataFromCRM." : "No deals mapped yet or no raw CRM rows found."
+                                )}
                               </td>
                             </tr>
                           ) : (
@@ -5292,7 +5474,7 @@ export default function ClientSettingsView({
                                 boxShadow: previewJobTab === "confirmed" ? "0 1px 2px rgba(0,0,0,0.05)" : "none"
                               }}
                             >
-                              Confirmed Deals ({displayedConfirmedJobs.length})
+                              Confirmed Deals ({crmPreviewLoading && displayedConfirmedJobs.length === 0 ? "..." : displayedConfirmedJobs.length})
                             </button>
                             <button
                               type="button"
@@ -5309,7 +5491,7 @@ export default function ClientSettingsView({
                                 boxShadow: previewJobTab === "pipeline" ? "0 1px 2px rgba(0,0,0,0.05)" : "none"
                               }}
                             >
-                              Pipeline Deals ({displayedPipelineJobs.length})
+                              Pipeline Deals ({crmPreviewLoading && displayedPipelineJobs.length === 0 ? "..." : displayedPipelineJobs.length})
                             </button>
                           </div>
                         </div>
@@ -5346,8 +5528,14 @@ export default function ClientSettingsView({
                               if (list.length === 0) {
                                 return (
                                   <tr>
-                                    <td colSpan={10} style={{ padding: "20px", textAlign: "center", color: "#94A3B8", fontStyle: "italic" }}>
-                                      No deals currently classified as {previewJobTab === "confirmed" ? "Confirmed" : "Pipeline"}.
+                                    <td colSpan={10} style={{ padding: "20px", textAlign: "center", color: crmPreviewLoading ? "#0066CC" : "#94A3B8", fontStyle: crmPreviewLoading ? "normal" : "italic" }}>
+                                      {crmPreviewLoading ? (
+                                        <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontWeight: "600" }}>
+                                          <Spinner size={14} color="#0066CC" /> Loading CRM preview data...
+                                        </span>
+                                      ) : (
+                                        `No deals currently classified as ${previewJobTab === "confirmed" ? "Confirmed" : "Pipeline"}.`
+                                      )}
                                     </td>
                                   </tr>
                                 );

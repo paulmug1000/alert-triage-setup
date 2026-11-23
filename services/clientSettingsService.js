@@ -14,17 +14,19 @@
  * - Formula preservation & safe 2D array expansion for KPI Colouring rules
  */
 
+import { waitUntil } from "@vercel/functions";
 import { getSheetsClient, withRetry } from "./sheetsClient.js";
-import { redisClient } from "./redisClient.js";
+import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
 import { postGasWebAppLocked } from "../utils/helpers.js";
 import { assertExternalCrmSpreadsheet } from "./googleSheetService.js";
 import { clearAllClientsMemoryCache, getClientWebAppUrl } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
-import { del2TierCache, invalidatePmaClientCache, invalidateAllClientsRedisKeys } from "./cacheService.js";
+import { memoryCache, del2TierCache, invalidatePmaClientCache, invalidateAllClientsRedisKeys } from "./cacheService.js";
 import { getSupabaseAdmin } from "./supabaseClient.js";
 import { clearPortalFeatureFlagsMemoryCache } from "./portalDataService.js";
+import { formatCellForDisplay } from "./gasRuntime/sheetValueUtils.js";
 import {
   refreshNativeChartOfAccounts,
   pullLivePLToSupabaseNative,
@@ -33,7 +35,9 @@ import {
 } from "./masterSyncEngine.js";
 
 const REDIS_SETTINGS_PREFIX = "pulse:client_settings:";
+const REDIS_CRM_PREVIEW_PREFIX = "pulse:client_settings_crm:";
 const REDIS_SETTINGS_TTL = 1800; // 30 minutes cache
+const L1_SETTINGS_TTL = 60; // 60 seconds in-memory L1 cache
 
 /**
  * Pulse required CRM fields mapping configuration
@@ -104,6 +108,227 @@ export function getSettingsRedisKey(clientName) {
   return `${REDIS_SETTINGS_PREFIX}${clean}`;
 }
 
+export function getCrmPreviewRedisKey(clientName) {
+  const clean = String(clientName || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "_");
+  return `${REDIS_CRM_PREVIEW_PREFIX}${clean}`;
+}
+
+function runBackgroundTask_(promise) {
+  if (!promise || typeof promise.catch !== "function") return;
+  const safePromise = promise.catch((err) => {
+    console.warn("⚠️ Background clientSettings task error:", err?.message || err);
+  });
+  try {
+    waitUntil(safePromise);
+  } catch {
+    // Outside Vercel runtime, allow promise to settle in background
+  }
+}
+
+function clearClientSettingsMemoryCache_(clientName, { includeCrmPreview = true } = {}) {
+  if (!clientName) return;
+  memoryCache.del(getSettingsRedisKey(clientName));
+  if (includeCrmPreview) {
+    memoryCache.del(getCrmPreviewRedisKey(clientName));
+  }
+}
+
+function sanitizeCachedSettings_(parsed) {
+  if (!parsed || typeof parsed !== "object") return parsed;
+  const clone = { ...parsed };
+  if (clone.crm && typeof clone.crm === "object") {
+    clone.crm = {
+      ...clone.crm,
+      googleSheetUrl: sanitizeCrmGoogleSheetUrl_(clone.crm.googleSheetUrl),
+      ...(clone.crm.excel && typeof clone.crm.excel === "object"
+        ? {
+            excel: {
+              ...clone.crm.excel,
+              ...(clone.crm.excel.azureClientSecret ? { azureClientSecret: "••••••••" } : {}),
+            },
+          }
+        : {}),
+    };
+  }
+  if (clone.customisation && typeof clone.customisation === "object") {
+    const rf = String(clone.customisation.revenueFocus || "Revenue").trim();
+    const dcm = String(clone.customisation.directCostsMode || "Contractors").trim();
+    clone.customisation = {
+      ...clone.customisation,
+      directCostsMode: rf === "Income" ? "Pass-through" : (dcm === "Pass-through" ? "Pass-through" : "Contractors"),
+    };
+  }
+  return clone;
+}
+
+/**
+ * Reads sparse scalar/single-row cells from large Supabase virtual tabs
+ * (InvAppList, JnlAppList, CRMList row 2, DataFromCRM row 1, Outgoings!A112)
+ * using PostgREST JSONB path selection so megabyte grids are not transferred.
+ */
+async function readSparseTabsFromSupabase_({ clientName, masterSheetId, clientSheetId }) {
+  const result = {
+    invAppList: null,
+    jnlAppList: null,
+    crmListRow2: null,
+    dataFromCrmRow1: null,
+    outgoingsA112: null,
+  };
+
+  const sb = getSupabaseAdmin();
+  if (!sb) return result;
+
+  const [supaCtx, clientSupaCtx] = await Promise.all([
+    resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId }).catch(() => null),
+    clientSheetId
+      ? resolveSupabaseSheetContext({ clientName, spreadsheetId: clientSheetId }).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+
+  const tasks = [];
+
+  if (supaCtx?.masterMode === "supabase") {
+    const dbClientName = supaCtx.clientName || clientName;
+
+    // InvAppList: F1 (row 0, col 5) and N4:N20 (rows 3..19, col 13)
+    const invCols = ["tab_name", "f1:values_grid->0->5"];
+    for (let r = 3; r <= 19; r++) {
+      invCols.push(`r${r}:values_grid->${r}->13`);
+    }
+    tasks.push(
+      sb
+        .from("master_sheet_grids")
+        .select(invCols.join(", "))
+        .eq("client_name", dbClientName)
+        .eq("sheet_role", "master")
+        .eq("tab_name", "InvAppList")
+        .maybeSingle()
+        .then(({ data, error }) => {
+          if (!error && data?.tab_name) {
+            const invF1 = String(formatCellForDisplay("master", "InvAppList", 0, 5, data.f1) || "StripPre").trim();
+            const rawInvRows = [];
+            for (let r = 3; r <= 19; r++) {
+              const v = formatCellForDisplay("master", "InvAppList", r, 13, data[`r${r}`]);
+              rawInvRows.push([v]);
+            }
+            result.invAppList = { invF1, rawInvRows };
+          }
+        })
+        .catch(() => { })
+    );
+
+    // JnlAppList: F2 (row 1, col 5)
+    tasks.push(
+      sb
+        .from("master_sheet_grids")
+        .select("tab_name, f2:values_grid->1->5")
+        .eq("client_name", dbClientName)
+        .eq("sheet_role", "master")
+        .eq("tab_name", "JnlAppList")
+        .maybeSingle()
+        .then(({ data, error }) => {
+          if (!error && data?.tab_name) {
+            result.jnlAppList = String(formatCellForDisplay("master", "JnlAppList", 1, 5, data.f2) || "Actual").trim() || "Actual";
+          }
+        })
+        .catch(() => { })
+    );
+
+    // CRMList: row 2 (index 1) -> A2:M2 (0..12), AB2:AN2 (27..39), DD2 (107), DF2 (109), DH2 (111), EE2 (134)
+    tasks.push(
+      sb
+        .from("master_sheet_grids")
+        .select("tab_name, row2:values_grid->1")
+        .eq("client_name", dbClientName)
+        .eq("sheet_role", "master")
+        .eq("tab_name", "CRMList")
+        .maybeSingle()
+        .then(({ data, error }) => {
+          if (!error && data?.tab_name && Array.isArray(data.row2)) {
+            const row2 = data.row2;
+            const crmFormatRules = [];
+            for (let c = 0; c <= 12; c++) {
+              crmFormatRules.push(String(formatCellForDisplay("master", "CRMList", 1, c, row2[c]) || "").trim());
+            }
+            const crmMappedCols = [];
+            for (let c = 27; c <= 39; c++) {
+              crmMappedCols.push(String(formatCellForDisplay("master", "CRMList", 1, c, row2[c]) || "").trim());
+            }
+            result.crmListRow2 = {
+              crmFormatRules,
+              crmMappedCols,
+              confirmedLikelihood: String(formatCellForDisplay("master", "CRMList", 1, 107, row2[107]) || "").trim(),
+              confirmedStatus: String(formatCellForDisplay("master", "CRMList", 1, 109, row2[109]) || "").trim(),
+              confirmedOperator: String(formatCellForDisplay("master", "CRMList", 1, 111, row2[111]) || "Or").trim(),
+              pipelineExcludedStatuses: String(formatCellForDisplay("master", "CRMList", 1, 134, row2[134]) || "").trim(),
+            };
+          }
+        })
+        .catch(() => { })
+    );
+
+    // DataFromCRM: row 1 headers only (index 0)
+    tasks.push(
+      sb
+        .from("master_sheet_grids")
+        .select("tab_name, row1:values_grid->0")
+        .eq("client_name", dbClientName)
+        .eq("sheet_role", "master")
+        .eq("tab_name", "DataFromCRM")
+        .maybeSingle()
+        .then(({ data, error }) => {
+          if (!error && data?.tab_name && Array.isArray(data.row1)) {
+            result.dataFromCrmRow1 = data.row1.map((h) => String(h ?? "").trim()).filter(Boolean);
+          }
+        })
+        .catch(() => { })
+    );
+  }
+
+  if (clientSheetId && clientSupaCtx?.clientMode === "supabase") {
+    const dbClientName = clientSupaCtx.clientName || clientName;
+    tasks.push(
+      (async () => {
+        try {
+          let { data, error } = await sb
+            .from("master_sheet_grids")
+            .select("tab_name, a112:values_grid->111->0")
+            .eq("client_name", dbClientName)
+            .eq("sheet_role", "client")
+            .eq("tab_name", "Outgoings")
+            .maybeSingle();
+
+          if (!error && !data) {
+            const legacyRes = await sb
+              .from("master_sheet_grids")
+              .select("tab_name, a112:values_grid->111->0")
+              .eq("client_name", dbClientName)
+              .eq("sheet_role", "master")
+              .eq("tab_name", "Client::Outgoings")
+              .maybeSingle();
+            data = legacyRes.data;
+            error = legacyRes.error;
+          }
+
+          if (!error && data?.tab_name) {
+            const formatted = formatCellForDisplay("client", "Outgoings", 111, 0, data.a112);
+            result.outgoingsA112 = String(formatted ?? "0%").trim() || "0%";
+          }
+        } catch { }
+      })()
+    );
+  }
+
+  if (tasks.length > 0) {
+    await Promise.all(tasks);
+  }
+
+  return result;
+}
+
 function sanitizeCrmGoogleSheetUrl_(val) {
   const trimmed = String(val || "").trim();
   if (!trimmed || /^\d{1,4}$/.test(trimmed)) return "";
@@ -160,86 +385,78 @@ function mergeCrmSpreadsheetIntoSetup(existingSetup, settings, clientName, maste
   return { nextSetup, revFocus, dcMode };
 }
 
-export async function getClientSettings({ clientName, masterSheetId, clientSheetId, bypassCache = false }) {
+export async function getClientSettings({
+  clientName,
+  masterSheetId,
+  clientSheetId,
+  bypassCache = false,
+  includeCrmPreview = false
+}) {
   if (!clientName || !masterSheetId) {
     throw new Error("Missing required clientName or masterSheetId parameter.");
   }
 
   const redisKey = getSettingsRedisKey(clientName);
 
-  // 1. Try Redis cache if not bypassing
-  if (!bypassCache && redisClient?.isOpen) {
+  // 1. Try 2-tier cache (L1 Memory -> L2 Redis) if not bypassing and not requesting full inline CRM preview
+  if (!bypassCache && !includeCrmPreview) {
+    const memCached = memoryCache.get(redisKey);
+    if (memCached && typeof memCached === "object") {
+      return { ...sanitizeCachedSettings_(memCached), fromCache: true };
+    }
+
     try {
-      const cached = await redisClient.get(redisKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (parsed?.crm) {
-          parsed.crm.googleSheetUrl = sanitizeCrmGoogleSheetUrl_(parsed.crm.googleSheetUrl);
-          if (parsed.crm.excel?.azureClientSecret) {
-            parsed.crm.excel.azureClientSecret = "••••••••";
-          }
+      if (!redisClient?.isOpen) {
+        await ensureRedisConnected(500);
+      }
+      if (redisClient?.isOpen) {
+        const cached = await redisClient.get(redisKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          memoryCache.set(redisKey, parsed, L1_SETTINGS_TTL);
+          return { ...sanitizeCachedSettings_(parsed), fromCache: true };
         }
-        if (parsed?.customisation) {
-          const rf = String(parsed.customisation.revenueFocus || "Revenue").trim();
-          const dcm = String(parsed.customisation.directCostsMode || "Contractors").trim();
-          parsed.customisation.directCostsMode = rf === "Income" ? "Pass-through" : (dcm === "Pass-through" ? "Pass-through" : "Contractors");
-        }
-        return { ...parsed, fromCache: true };
       }
     } catch (err) {
       console.warn("⚠️ Redis read error in getClientSettings:", err.message);
     }
   }
 
-  // 2. Fetch from Google Sheets in parallel
+  // 2. Fetch core config tabs in parallel with sparse Supabase reads for large tabs
   const sheets = await getSheetsClient();
 
-  const masterRanges = [
-    "KeyInfo!A1:F21",      // [0] Main, Customisation, Date Adjust, Recharged expenses delivery % (C21:D21)
-    "KeyInfo!Q1:Q10",      // [1] Q4 tool, Q8 CRM, Q9 drives
-    "KeyInfo!X11:X41",     // [2] CRM connection parameters
-    "KeyInfo!A120:B148",   // [3] KPI Colouring rules (120..140) & Pulse portal settings (142..148)
-    "KeyInfo!AT4:AT22",    // [4] Contractors manual track
-    "KeyInfo!AT24:AT40",   // [5] Other pass-through manual track
-    "KeyInfo!BA2:BA180",   // [6] Accounting category mappings
-    "KeyInfo!L32:N75",     // [7] CRM status mappings (Status, %, Date rule)
-    "KeyInfo!B23:B37",     // [8] Product lines 1-15
-    "KeyInfo!E23:F62",     // [9] Product line mappings (CRM -> PL)
-    "KeyInfo!G63:G72",     // [10] Client-specific lead sources
-    "KeyInfo!I32:J75",     // [11] Lead sources mappings (CRM -> Mapped)
-    "KeyInfo!E1",          // [12] Template Sheet Reference URL
-    "DataChgAlert!Y1:Y5",  // [13] Frequencies (Y2: Invoices, Y3: CRM, Y4: Expenses)
-    "DataChgAlert!A31:J53",// [14] Invoice settings & tolerances
-    "DataChgAlert!A58:F80",// [15] CRM discrepancy rules (Pipeline & Confirmed)
+  // Indices 0..23 correspond to KeyInfo and DataChgAlert ranges only (fast & lightweight)
+  const coreMasterRanges = [
+    "KeyInfo!A1:F21",         // [0] Main, Customisation, Date Adjust, Recharged expenses delivery % (C21:D21)
+    "KeyInfo!Q1:Q10",         // [1] Q4 tool, Q8 CRM, Q9 drives
+    "KeyInfo!X11:X41",        // [2] CRM connection parameters
+    "KeyInfo!A120:B148",      // [3] KPI Colouring rules (120..140) & Pulse portal settings (142..148)
+    "KeyInfo!AT4:AT22",       // [4] Contractors manual track
+    "KeyInfo!AT24:AT40",      // [5] Other pass-through manual track
+    "KeyInfo!BA2:BA180",      // [6] Accounting category mappings
+    "KeyInfo!L32:N75",        // [7] CRM status mappings (Status, %, Date rule)
+    "KeyInfo!B23:B37",        // [8] Product lines 1-15
+    "KeyInfo!E23:F62",        // [9] Product line mappings (CRM -> PL)
+    "KeyInfo!G63:G72",        // [10] Client-specific lead sources
+    "KeyInfo!I32:J75",        // [11] Lead sources mappings (CRM -> Mapped)
+    "KeyInfo!E1",             // [12] Template Sheet Reference URL
+    "DataChgAlert!Y1:Y5",     // [13] Frequencies (Y2: Invoices, Y3: CRM, Y4: Expenses)
+    "DataChgAlert!A31:J53",   // [14] Invoice settings & tolerances
+    "DataChgAlert!A58:F80",   // [15] CRM discrepancy rules (Pipeline & Confirmed)
     "DataChgAlert!A100:J120", // [16] Expense settings & tolerances
-    "DataChgAlert!B82",    // [17] Pipeline mode - add jobs to Conf?
-    "KeyInfo!H12:I21",     // [18] Bank accounts (H: Names, I: Tool IDs, max 10, rows 12-21)
-    "KeyInfo!H23:I28",     // [19] Non-cash bank accounts (H: Names, I: Tool IDs, max 6, rows 23-28)
-    "InvAppList!F1",        // [20] Invoice number formatting
-    "InvAppList!N4:N20",    // [21] Raw invoice numbers for sample preview
-    "CRMList!AB2:AN2",      // [22] CRM field mappings
-    "CRMList!A2:M2",        // [23] CRM field formatting rules
-    "CRMList!DD2:DH2",      // [24] Confirmed job definition (DD2: Likelihood, DF2: Status, DH2: Operator)
-    "CRMList!EE2",          // [25] Pipeline excluded statuses
-    "DataFromCRM!A1:ZZ",     // [26] Available CRM column headers + raw data rows
-    "CRMList!A4:M",          // [27] All Mapped CRM output jobs
-    "CRMList!CZ4:DL",        // [28] All Confirmed jobs
-    "CRMList!DU4:EG",        // [29] All Pipeline jobs
-    "KeyInfo!AW2:AW",        // [30] Chart of Accounts from accounting tool
-    "KeyInfo!BE2:BE",        // [31] Full list of P&L categories
-    "KeyInfo!G32:G60",       // [32] Standard lead sources
-    "KeyInfo!BG2:BG",        // [33] Remaining unmapped P&L categories
-    "JnlAppList!F2"          // [34] Expense status mapping
+    "DataChgAlert!B82",       // [17] Pipeline mode - add jobs to Conf?
+    "KeyInfo!H12:I21",        // [18] Bank accounts (H: Names, I: Tool IDs, max 10, rows 12-21)
+    "KeyInfo!H23:I28",        // [19] Non-cash bank accounts (H: Names, I: Tool IDs, max 6, rows 23-28)
+    "KeyInfo!AW2:AW",         // [20] Chart of Accounts from accounting tool
+    "KeyInfo!BE2:BE",         // [21] Full list of P&L categories
+    "KeyInfo!G32:G60",        // [22] Standard lead sources
+    "KeyInfo!BG2:BG"          // [23] Remaining unmapped P&L categories
   ];
 
-  const clientRanges = [
-    "Outgoings!A112"       // [0] Making up Cost of Sale %
-  ];
-
-  const [masterResp, masterFormulaResp, clientResp] = await Promise.all([
+  const [masterResp, masterFormulaResp, sparse] = await Promise.all([
     withRetry(() => sheets.spreadsheets.values.batchGet({
       spreadsheetId: masterSheetId,
-      ranges: masterRanges,
+      ranges: coreMasterRanges,
       valueRenderOption: "FORMATTED_VALUE"
     })),
     withRetry(() => sheets.spreadsheets.values.get({
@@ -247,15 +464,61 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
       range: "KeyInfo!A120",
       valueRenderOption: "FORMULA"
     })).catch(() => ({ data: { values: [[""]] } })),
-    clientSheetId ? withRetry(() => sheets.spreadsheets.values.batchGet({
-      spreadsheetId: clientSheetId,
-      ranges: clientRanges,
-      valueRenderOption: "FORMATTED_VALUE"
-    })).catch(() => ({ data: { valueRanges: [] } })) : Promise.resolve({ data: { valueRanges: [] } })
+    readSparseTabsFromSupabase_({ clientName, masterSheetId, clientSheetId })
+  ]);
+
+  // Build fallback batchGet only for any sparse tabs not satisfied by Supabase JSONB path reads
+  const fallbackMasterRanges = [];
+  const fallbackIndexMap = {};
+  const addFallbackMaster = (key, range) => {
+    fallbackIndexMap[key] = fallbackMasterRanges.length;
+    fallbackMasterRanges.push(range);
+  };
+
+  if (!sparse.invAppList) {
+    addFallbackMaster("invF1", "InvAppList!F1");
+    addFallbackMaster("invSample", "InvAppList!N4:N20");
+  }
+  if (sparse.jnlAppList === null) {
+    addFallbackMaster("expStatus", "JnlAppList!F2");
+  }
+  if (!sparse.crmListRow2) {
+    addFallbackMaster("crmFields", "CRMList!AB2:AN2");
+    addFallbackMaster("crmFormats", "CRMList!A2:M2");
+    addFallbackMaster("crmConfDef", "CRMList!DD2:DH2");
+    addFallbackMaster("crmPipeExcl", "CRMList!EE2");
+  }
+  if (includeCrmPreview) {
+    addFallbackMaster("crmDataAll", "DataFromCRM!A1:ZZ");
+    addFallbackMaster("crmPreviewMapped", "CRMList!A4:M");
+    addFallbackMaster("crmPreviewConf", "CRMList!CZ4:DL");
+    addFallbackMaster("crmPreviewPipe", "CRMList!DU4:EG");
+  } else if (!sparse.dataFromCrmRow1) {
+    addFallbackMaster("crmHeadersOnly", "DataFromCRM!A1:ZZ1");
+  }
+
+  const needClientFallback = Boolean(clientSheetId && sparse.outgoingsA112 === null);
+  const [fallbackMasterResp, fallbackClientResp] = await Promise.all([
+    fallbackMasterRanges.length > 0
+      ? withRetry(() => sheets.spreadsheets.values.batchGet({
+          spreadsheetId: masterSheetId,
+          ranges: fallbackMasterRanges,
+          valueRenderOption: "FORMATTED_VALUE"
+        }))
+      : Promise.resolve({ data: { valueRanges: [] } }),
+    needClientFallback
+      ? withRetry(() => sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientSheetId,
+          ranges: ["Outgoings!A112"],
+          valueRenderOption: "FORMATTED_VALUE"
+        })).catch(() => ({ data: { valueRanges: [] } }))
+      : Promise.resolve({ data: { valueRanges: [] } })
   ]);
 
   const mVals = masterResp.data.valueRanges || [];
-  const cVals = clientResp.data?.valueRanges || [];
+  const fmVals = fallbackMasterResp.data?.valueRanges || [];
+  const cVals = fallbackClientResp.data?.valueRanges || [];
+  const getFb = (key) => (fallbackIndexMap[key] !== undefined ? fmVals[fallbackIndexMap[key]]?.values : undefined);
 
   const keyA1F20 = mVals[0]?.values || [];
   const keyQ1Q10 = mVals[1]?.values || [];
@@ -279,16 +542,26 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const keyH12I21 = mVals[18]?.values || [];
   const keyH23I28 = mVals[19]?.values || [];
 
-  const invF1 = String(mVals[20]?.values?.[0]?.[0] || "StripPre").trim();
-  const rawInvRows = mVals[21]?.values || [];
+  const invF1 = sparse.invAppList
+    ? sparse.invAppList.invF1
+    : String(getFb("invF1")?.[0]?.[0] || "StripPre").trim();
+  const rawInvRows = sparse.invAppList
+    ? sparse.invAppList.rawInvRows
+    : (getFb("invSample") || []);
   const sampleInvoiceNumbers = Array.from(new Set(
     rawInvRows.map(r => String(r[0] || "").trim()).filter(v => v && !v.startsWith("#"))
   )).slice(0, 5);
 
-  const expStatusMapping = String(mVals[34]?.values?.[0]?.[0] || "Actual").trim() || "Actual";
+  const expStatusMapping = sparse.jnlAppList !== null
+    ? sparse.jnlAppList
+    : (String(getFb("expStatus")?.[0]?.[0] || "Actual").trim() || "Actual");
 
-  const crmMappedCols = (mVals[22]?.values?.[0] || []).map(c => String(c || "").trim());
-  const crmFormatRules = (mVals[23]?.values?.[0] || []).map(c => String(c || "").trim());
+  const crmMappedCols = sparse.crmListRow2
+    ? sparse.crmListRow2.crmMappedCols
+    : (getFb("crmFields")?.[0] || []).map(c => String(c || "").trim());
+  const crmFormatRules = sparse.crmListRow2
+    ? sparse.crmListRow2.crmFormatRules
+    : (getFb("crmFormats")?.[0] || []).map(c => String(c || "").trim());
 
   const fieldMappings = CRM_PULSE_FIELDS.map((f, idx) => ({
     key: f.key,
@@ -297,26 +570,49 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     formatRule: crmFormatRules[idx] !== undefined && crmFormatRules[idx] !== "" ? crmFormatRules[idx] : f.defaultFormat
   }));
 
-  const dd2dh2 = mVals[24]?.values?.[0] || [];
-  const confirmedLikelihood = String(dd2dh2[0] || "").trim(); // DD2
-  const confirmedStatus = String(dd2dh2[2] || "").trim();     // DF2
-  const confirmedOperator = String(dd2dh2[4] || "Or").trim(); // DH2
-  const pipelineExcludedStatuses = String(mVals[25]?.values?.[0]?.[0] || "").trim(); // EE2
+  const dd2dh2 = getFb("crmConfDef")?.[0] || [];
+  const confirmedLikelihood = sparse.crmListRow2
+    ? sparse.crmListRow2.confirmedLikelihood
+    : String(dd2dh2[0] || "").trim(); // DD2
+  const confirmedStatus = sparse.crmListRow2
+    ? sparse.crmListRow2.confirmedStatus
+    : String(dd2dh2[2] || "").trim(); // DF2
+  const confirmedOperator = sparse.crmListRow2
+    ? sparse.crmListRow2.confirmedOperator
+    : String(dd2dh2[4] || "Or").trim(); // DH2
+  const pipelineExcludedStatuses = sparse.crmListRow2
+    ? sparse.crmListRow2.pipelineExcludedStatuses
+    : String(getFb("crmPipeExcl")?.[0]?.[0] || "").trim(); // EE2
 
-  const rawCrmData = mVals[26]?.values || [];
-  const availableCrmHeaders = (rawCrmData[0] || []).map(h => String(h || "").trim()).filter(Boolean);
-  const rawCrmRows = rawCrmData.slice(1);
+  let availableCrmHeaders = [];
+  let rawCrmRows = [];
+  let previewMappedJobs = [];
+  let previewConfirmedJobs = [];
+  let previewPipelineJobs = [];
+  let crmPreviewLoaded = false;
 
-  const previewMappedJobs = (mVals[27]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
-  const previewConfirmedJobs = (mVals[28]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
-  const previewPipelineJobs = (mVals[29]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+  if (includeCrmPreview) {
+    const rawCrmData = getFb("crmDataAll") || [];
+    availableCrmHeaders = (rawCrmData[0] || []).map(h => String(h || "").trim()).filter(Boolean);
+    rawCrmRows = rawCrmData.slice(1);
+    previewMappedJobs = (getFb("crmPreviewMapped") || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+    previewConfirmedJobs = (getFb("crmPreviewConf") || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+    previewPipelineJobs = (getFb("crmPreviewPipe") || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+    crmPreviewLoaded = true;
+  } else {
+    availableCrmHeaders = sparse.dataFromCrmRow1
+      ? sparse.dataFromCrmRow1
+      : ((getFb("crmHeadersOnly")?.[0] || []).map(h => String(h || "").trim()).filter(Boolean));
+  }
 
   // Check if A120 is an IMPORTRANGE formula
   const formulaA120 = String(masterFormulaResp.data?.values?.[0]?.[0] || "");
   const isKpiParentFormula = formulaA120.toLowerCase().includes("importrange");
 
   // Client Outgoings range
-  const outgoingsA112 = String(cVals[0]?.values?.[0]?.[0] ?? "0%").trim() || "0%";
+  const outgoingsA112 = sparse.outgoingsA112 !== null
+    ? sparse.outgoingsA112
+    : (String(cVals[0]?.values?.[0]?.[0] ?? "0%").trim() || "0%");
 
   // Pulse portal settings from KeyInfo!B143:B148 (rows 23..28 of KeyInfo!A120:B148) with Supabase fallback
   let pulseDbFlags = null;
@@ -360,19 +656,19 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     ignore: getSliceValues(128, 180)
   };
 
-  const chartOfAccounts = (mVals[30]?.values || [])
+  const chartOfAccounts = (mVals[20]?.values || [])
     .map(r => String(r[0] || "").trim())
     .filter(Boolean);
 
-  const plCategories = (mVals[31]?.values || [])
+  const plCategories = (mVals[21]?.values || [])
     .map(r => String(r[0] || "").trim())
     .filter(Boolean);
 
-  const standardLeadSources = (mVals[32]?.values || [])
+  const standardLeadSources = (mVals[22]?.values || [])
     .map(r => String(r[0] || "").trim())
     .filter(Boolean);
 
-  const sheetRemainingCategories = (mVals[33]?.values || [])
+  const sheetRemainingCategories = (mVals[23]?.values || [])
     .map(r => String(r[0] || "").trim())
     .filter(Boolean);
 
@@ -582,7 +878,8 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
         },
         previewMappedJobs,
         previewConfirmedJobs,
-        previewPipelineJobs
+        previewPipelineJobs,
+        crmPreviewLoaded
       };
     })(),
 
@@ -675,43 +972,133 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     }
   };
 
-  // 3. Save to Redis
-  if (redisClient?.isOpen) {
-    try {
-      await redisClient.set(redisKey, JSON.stringify(settings), { EX: REDIS_SETTINGS_TTL });
-      if (settings.customisation) {
-        const cleanKey = String(clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-        const setupKey = `pulse:setup:${cleanKey}`;
-        let existingSetup = {};
-        try {
-          const rawSetup = await redisClient.get(setupKey);
-          if (rawSetup) existingSetup = JSON.parse(rawSetup);
-        } catch { }
-        const { nextSetup, revFocus, dcMode } = mergeCrmSpreadsheetIntoSetup(
-          existingSetup,
-          settings,
-          clientName,
-          masterSheetId,
-          new Date().toISOString()
-        );
-        const excelChanged =
-          String(existingSetup.excel?.driveId || "") !== String(nextSetup.excel?.driveId || "") ||
-          String(existingSetup.excel?.fileId || "") !== String(nextSetup.excel?.fileId || "");
-        const gsheetChanged =
-          String(existingSetup.googleSheetUrl || "") !== String(nextSetup.googleSheetUrl || "");
-        if (existingSetup.revenueFocus !== revFocus || existingSetup.directCostsMode !== dcMode || excelChanged || gsheetChanged) {
-          await redisClient.set(setupKey, JSON.stringify(nextSetup));
-          await invalidateAllClientsRedisKeys();
-          clearAllClientsMemoryCache();
-          clearSsrClientsMemoryCache();
+  // 3. Save to L1 Memory immediately & defer L2 Redis + setup reconciliation in background
+  if (!includeCrmPreview) {
+    memoryCache.set(redisKey, settings, L1_SETTINGS_TTL);
+
+    runBackgroundTask_((async () => {
+      try {
+        if (!redisClient?.isOpen) {
+          await ensureRedisConnected(500);
         }
+        if (!redisClient?.isOpen) return;
+
+        await redisClient.set(redisKey, JSON.stringify(settings), { EX: REDIS_SETTINGS_TTL });
+        if (settings.customisation) {
+          const cleanKey = String(clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+          const setupKey = `pulse:setup:${cleanKey}`;
+          let existingSetup = {};
+          try {
+            const rawSetup = await redisClient.get(setupKey);
+            if (rawSetup) existingSetup = JSON.parse(rawSetup);
+          } catch { }
+          const { nextSetup, revFocus, dcMode } = mergeCrmSpreadsheetIntoSetup(
+            existingSetup,
+            settings,
+            clientName,
+            masterSheetId,
+            new Date().toISOString()
+          );
+          const excelChanged =
+            String(existingSetup.excel?.driveId || "") !== String(nextSetup.excel?.driveId || "") ||
+            String(existingSetup.excel?.fileId || "") !== String(nextSetup.excel?.fileId || "");
+          const gsheetChanged =
+            String(existingSetup.googleSheetUrl || "") !== String(nextSetup.googleSheetUrl || "");
+          if (existingSetup.revenueFocus !== revFocus || existingSetup.directCostsMode !== dcMode || excelChanged || gsheetChanged) {
+            await redisClient.set(setupKey, JSON.stringify(nextSetup));
+            await invalidateAllClientsRedisKeys();
+            clearAllClientsMemoryCache();
+            clearSsrClientsMemoryCache();
+          }
+        }
+      } catch (err) {
+        console.warn("⚠️ Failed to store client settings in Redis:", err.message);
       }
-    } catch (err) {
-      console.warn("⚠️ Failed to store client settings in Redis:", err.message);
-    }
+    })());
   }
 
   return { ...settings, fromCache: false };
+}
+
+/**
+ * Lazily loads heavy CRM raw rows and preview job tables (DataFromCRM + CRMList)
+ * on demand when the user navigates to the CRM or Jobs settings sections.
+ */
+export async function getClientCrmPreview({ clientName, masterSheetId, bypassCache = false }) {
+  if (!clientName || !masterSheetId) {
+    throw new Error("Missing required clientName or masterSheetId parameter.");
+  }
+
+  const crmPreviewKey = getCrmPreviewRedisKey(clientName);
+
+  if (!bypassCache) {
+    const memCached = memoryCache.get(crmPreviewKey);
+    if (memCached && typeof memCached === "object") {
+      return { ...memCached, fromCache: true };
+    }
+
+    try {
+      if (!redisClient?.isOpen) {
+        await ensureRedisConnected(500);
+      }
+      if (redisClient?.isOpen) {
+        const cached = await redisClient.get(crmPreviewKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          memoryCache.set(crmPreviewKey, parsed, L1_SETTINGS_TTL);
+          return { ...parsed, fromCache: true };
+        }
+      }
+    } catch (err) {
+      console.warn("⚠️ Redis read error in getClientCrmPreview:", err.message);
+    }
+  }
+
+  const sheets = await getSheetsClient();
+  const crmResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+    spreadsheetId: masterSheetId,
+    ranges: [
+      "DataFromCRM!A1:ZZ",
+      "CRMList!A4:M",
+      "CRMList!CZ4:DL",
+      "CRMList!DU4:EG"
+    ],
+    valueRenderOption: "FORMATTED_VALUE"
+  }));
+
+  const cVals = crmResp.data.valueRanges || [];
+  const rawCrmData = cVals[0]?.values || [];
+  const availableCrmHeaders = (rawCrmData[0] || []).map(h => String(h || "").trim()).filter(Boolean);
+  const rawCrmRows = rawCrmData.slice(1);
+  const previewMappedJobs = (cVals[1]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+  const previewConfirmedJobs = (cVals[2]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+  const previewPipelineJobs = (cVals[3]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+
+  const payload = {
+    availableCrmHeaders,
+    rawCrmRows,
+    previewMappedJobs,
+    previewConfirmedJobs,
+    previewPipelineJobs,
+    loadedAt: new Date().toISOString()
+  };
+
+  memoryCache.set(crmPreviewKey, payload, L1_SETTINGS_TTL);
+
+  runBackgroundTask_((async () => {
+    try {
+      if (!redisClient?.isOpen) {
+        await ensureRedisConnected(500);
+      }
+      if (redisClient?.isOpen) {
+        await redisClient.set(crmPreviewKey, JSON.stringify(payload), { EX: REDIS_SETTINGS_TTL });
+      }
+    } catch (err) {
+      console.warn("⚠️ Failed to store CRM preview in Redis:", err.message);
+    }
+  })());
+
+  return { ...payload, fromCache: false };
 }
 
 /**
@@ -1302,13 +1689,20 @@ export async function saveClientSettings({
     }));
   }
 
-  // Invalidate Redis cache so next GET loads complete merged settings from Sheets
+  // Invalidate L1 & L2 caches so next GET loads fresh settings
   const savedAt = new Date().toISOString();
   const redisKey = getSettingsRedisKey(clientName);
+  const crmPreviewKey = getCrmPreviewRedisKey(clientName);
+  const shouldInvalidateCrmPreview = Boolean(settings.crm || settings.crmStatusMapping || settings.jobs);
+  clearClientSettingsMemoryCache_(clientName, { includeCrmPreview: shouldInvalidateCrmPreview });
+
   const cleanClientId = clientSheetId ? unwrapSheetId(clientSheetId) : "";
   const invalidationOps = [];
   if (redisClient?.isOpen) {
     const keysToDelete = [redisKey];
+    if (shouldInvalidateCrmPreview) {
+      keysToDelete.push(crmPreviewKey);
+    }
     if (clientSheetId) {
       keysToDelete.push(
         `pulse:portal:payload:${clientSheetId}`,
@@ -1583,6 +1977,7 @@ export async function refreshChartOfAccountsService({ clientName, masterSheetId 
     throw refreshError;
   }
 
+  clearClientSettingsMemoryCache_(clientName, { includeCrmPreview: false });
   if (redisClient?.isOpen && clientName) {
     try {
       await redisClient.del(getSettingsRedisKey(clientName));
@@ -1632,6 +2027,7 @@ export async function pullFreshPlCategoriesService({ clientName, masterSheetId }
   const plCategories = (plResp.data.valueRanges?.[0]?.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
   const sheetRemainingCategories = (plResp.data.valueRanges?.[1]?.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
 
+  clearClientSettingsMemoryCache_(clientName, { includeCrmPreview: false });
   if (redisClient?.isOpen && clientName) {
     try {
       await redisClient.del(getSettingsRedisKey(clientName));
@@ -1707,9 +2103,10 @@ export async function pullCrmDataService({ clientName, masterSheetId, userEmail 
   const previewConfirmedJobs = (cVals[2]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
   const previewPipelineJobs = (cVals[3]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
 
+  clearClientSettingsMemoryCache_(clientName, { includeCrmPreview: true });
   if (redisClient?.isOpen && clientName) {
     try {
-      await redisClient.del(getSettingsRedisKey(clientName));
+      await redisClient.del([getSettingsRedisKey(clientName), getCrmPreviewRedisKey(clientName)]);
     } catch (e) { }
   }
 

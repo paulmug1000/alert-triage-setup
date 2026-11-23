@@ -3,6 +3,7 @@ import { getSheetsClient, withRetry, getSheetTitles, extractSheetIdFromUrl } fro
 import { verifyUserAuthorizedForSheet, unwrapSheetId, canViewSalariesAndDividends } from "../../../services/userPermissions.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
+import { hasNBToFindInBudget } from "../../../services/deepDiveHelper.js";
 
 const BUDGET_CACHE_TTL_SECS = 60; // 60s L1 fresh window
 const BUDGET_REDIS_TTL_SECS = 86400; // 24h Redis SWR retention
@@ -209,9 +210,12 @@ export default async function handler(req, res) {
           currentYearIdx = fallbackIdx;
         }
 
+        const hasNBToFind = Boolean(hasNBToFindInBudget({ rawVals: budgetDisp, mathVals: budgetMath, mode }));
+
         const budgetPayload = {
           _cachedAt: new Date().toISOString(),
           hasBudget: true,
+          hasNBToFind,
           mode,
           directCostsMode,
           currentYearIdx,

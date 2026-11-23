@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import Spinner from "../Spinner";
 import { PerformanceSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString, isNBToFindLabel, hasNBToFindInPerformance } from "../../services/deepDiveHelper";
 import PerformanceTrajectoryChartRow from "./PerformanceTrajectoryChartRow";
 import { downloadCsv } from "../../utils/helpers";
 
@@ -276,6 +276,7 @@ export default function PerformanceYTDView({
   // Active month range: index 0 to endMonthIdx - 1
   const displayedMonths = activeYear.headerMonths ? activeYear.headerMonths.slice(0, endMonthIdx) : [];
   const cutoffLabel = displayedMonths[displayedMonths.length - 1] || "Current";
+  const showNBToFind = hasNBToFindInPerformance(data) !== false;
 
   // Calculate YTD row totals
   const ytdRows = (activeYear.rows || []).map((row) => {
@@ -419,11 +420,19 @@ export default function PerformanceYTDView({
     const dateStr = new Date().toISOString().split("T")[0];
 
     const header = ["Line Item", ...(displayedMonths || []), "YTD Total"];
-    const rowsData = ytdRows.map((r) => [
-      r.label || "",
-      ...r.monthVals.map((v) => (v === "—" ? "" : v || "")),
-      r.isPct ? formatPct(r.ytdTotalVal) : formatMoney(r.ytdTotalVal),
-    ]);
+    const rowsData = ytdRows
+      .filter((r, idx) => {
+        if (idx < 2) return false;
+        const lbl = String(r.label || "").trim();
+        if (lbl.toLowerCase() === "hide") return false;
+        if (!showNBToFind && isNBToFindLabel(lbl)) return false;
+        return true;
+      })
+      .map((r) => [
+        r.label || "",
+        ...r.monthVals.map((v) => (v === "—" ? "" : v || "")),
+        r.isPct ? formatPct(r.ytdTotalVal) : formatMoney(r.ytdTotalVal),
+      ]);
 
     downloadCsv(`Pulse_Performance_YTD_${fyName}_${dateStr}.csv`, [header, ...rowsData]);
   };
@@ -756,7 +765,11 @@ export default function PerformanceYTDView({
                 (prevLbl.includes("operating profit %") || prevLbl.includes("operating profit margin")) &&
                 (nextLbl.includes("staff costs to") || nextLbl.includes("staff ratio"));
 
-              if (label.toLowerCase() === "hide" || (!label && !row.totalVal)) {
+              if (label.toLowerCase() === "hide" || (!showNBToFind && isNBToFindLabel(label))) {
+                return null;
+              }
+
+              if (!label && !row.totalVal) {
                 const spacerHeight = isOpToStaffGap ? 18 : 6;
                 return (
                   <tr key={rIdx} style={{ height: `${spacerHeight}px`, lineHeight: 0 }}>

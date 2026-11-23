@@ -16,6 +16,8 @@ import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/use
 import { verifySignedOAuthState, safeCompareSecret, verifyCallbackSessionInitiator, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
+import { resolveSupabaseSheetContext } from "../../../../services/masterEngineService.js";
+import { isSupabaseControlPlaneActive } from "../../../../services/supabaseClient.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -106,19 +108,26 @@ export default async function handler(req, res) {
     const clientName = statePayload.clientName || clientKey;
     let masterSheetId = statePayload.masterSheetId;
 
-    // Fallback: If masterSheetId wasn't passed in statePayload, resolve it from AutoUpdates
+    // Fallback: If masterSheetId wasn't passed in statePayload, resolve it from Supabase or legacy AutoUpdates
     if (!masterSheetId && clientName) {
       try {
-        const sheets = await getSheetsClient();
-        const resp = await sheets.spreadsheets.values.get({
-          spreadsheetId: DEFAULT_AC_SHEET_ID,
-          range: "AutoUpdates!A2:N500"
-        });
-        const rows = resp.data.values || [];
-        const match = rows.find(r => matchesClientName(r[0], clientName));
-        if (match && match[12]) {
-          masterSheetId = extractSheetIdFromUrl(match[12]) || String(match[12]).trim();
+        const supaCtx = await resolveSupabaseSheetContext({ clientName }).catch(() => null);
+        if (supaCtx?.masterSheetId) {
+          masterSheetId = supaCtx.masterSheetId;
           console.log(`🔗 QB Callback: Auto-resolved masterSheetId for "${clientName}" -> ${masterSheetId}`);
+        }
+        if (!masterSheetId && !(await isSupabaseControlPlaneActive())) {
+          const sheets = await getSheetsClient();
+          const resp = await sheets.spreadsheets.values.get({
+            spreadsheetId: DEFAULT_AC_SHEET_ID,
+            range: "AutoUpdates!A2:N500"
+          });
+          const rows = resp.data.values || [];
+          const match = rows.find(r => matchesClientName(r[0], clientName));
+          if (match && match[12]) {
+            masterSheetId = extractSheetIdFromUrl(match[12]) || String(match[12]).trim();
+            console.log(`🔗 QB Callback: Auto-resolved masterSheetId for "${clientName}" -> ${masterSheetId}`);
+          }
         }
       } catch (lookupErr) {
         console.warn("⚠️ QB Callback: Note resolving masterSheetId:", lookupErr.message);

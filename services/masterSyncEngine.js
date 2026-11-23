@@ -23,10 +23,14 @@ import { getIntegrationTokens } from "./vaultService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { invalidateClientActivityCache } from "./activityService.js";
 import { autoReconcileClientBankTransactions } from "./bankTransactionsService.js";
-import { createGasEnvironment } from "./gasRuntime/gasEnvironment.js";
+import { createGasEnvironment, formatGasDate } from "./gasRuntime/gasEnvironment.js";
 import { createMasterGasInstance } from "./gasRuntime/compiledMasterGas.js";
 import { toNumber } from "./gasRuntime/sheetValueUtils.js";
 import { computeNativeMgmtRepForClient } from "./mgmtRepEngine.js";
+import {
+  evaluateScheduledCrmPreflight,
+  captureCrmPreflightBaseline,
+} from "./crmPreflightService.js";
 
 /**
  * Returns true if a client is currently in setup/onboarding mode and NOT yet marked live for Pulse/automations.
@@ -798,7 +802,7 @@ export async function runNativeMasterSync({
     userEmail === "System" ||
     userEmail === "system@cron" ||
     String(userEmail).startsWith("System (");
-  const triggerLabel = isAutomated ? "Scheduled (10m clock)" : `Manual (${userEmail})`;
+  const triggerLabel = isAutomated ? "Scheduled (cron)" : `Manual (${userEmail})`;
 
   const env = await createGasEnvironment({
     ctx,
@@ -838,8 +842,56 @@ export async function runNativeMasterSync({
     .eq("client_name", ctx.clientName);
 
   // Execute the verbatim GAS `runAgencyAutomator`
+  let capturedCrmPreflightState = null;
   try {
     await gas.runAgencyAutomator(runInv, runCrm, runExp);
+
+    if (runCrm) {
+      const dcaGridPreFlush = env.masterSS.getSheetByName("DataChgAlert")?.valuesGrid || [];
+      const crmStatusPreFlush = String(dcaGridPreFlush[2]?.[28] || "").trim();
+      const topAutoRow = env.masterSS.getSheetByName("AutoLog")?.valuesGrid?.[1] || [];
+      const crmRunHadError =
+        crmStatusPreFlush.toLowerCase().startsWith("error") ||
+        /error:/i.test(String(topAutoRow[2] || "")) ||
+        /error:/i.test(String(topAutoRow[3] || ""));
+
+      if (!crmRunHadError) {
+        try {
+          const kiGrid = env.masterSS.getSheetByName("KeyInfo")?.valuesGrid || [];
+          const crmListGrid = env.masterSS.getSheetByName("CRMList")?.valuesGrid || [];
+          const pfCapture = await captureCrmPreflightBaseline({
+            ctx,
+            keyInfoGrid: kiGrid,
+            crmListGrid,
+            dcaGrid: dcaGridPreFlush,
+            runStartedIso,
+            completedAtIso: new Date().toISOString(),
+            prevPreflight: baseFlags?.crm_preflight || null,
+          });
+          if (pfCapture?.state) {
+            capturedCrmPreflightState = pfCapture.state;
+          }
+          if (pfCapture?.autoLogError) {
+            let logSheet = env.masterSS.getSheetByName("AutoLog");
+            if (!logSheet) {
+              logSheet = env.masterSS.insertSheet("AutoLog");
+              logSheet.getRange("A1:D1").setValues([["Timestamp", "Category", "Summary", "Details"]]);
+            }
+            const tz = env.masterSS.getSpreadsheetTimeZone?.() || "Europe/London";
+            const tsStr = formatGasDate(new Date(), tz, "dd-MMM-yy HH:mm");
+            logSheet.insertRowAfter(1);
+            logSheet.getRange(2, 1, 1, 4).setValues([[
+              tsStr,
+              pfCapture.autoLogError.category,
+              pfCapture.autoLogError.summary,
+              pfCapture.autoLogError.details,
+            ]]);
+          }
+        } catch (pfErr) {
+          console.warn(`[CRM Preflight] Baseline capture note for ${ctx.clientName}:`, pfErr.message);
+        }
+      }
+    }
 
     // Extract latest AutoLog summary written by runAgencyAutomator for the execution header
     const autoLogGrid = env.masterSS.getSheetByName("AutoLog")?.valuesGrid || [];
@@ -909,6 +961,9 @@ export async function runNativeMasterSync({
   if (runCrm) {
     schedulePatch.last_crm_run = runStartedIso;
     schedulePatch.crm_status = String(dcaGrid[2]?.[28] || `Synced (${crmDealsPulled} deals)`); // AC3
+    if (capturedCrmPreflightState) {
+      schedulePatch.flags.crm_preflight = capturedCrmPreflightState;
+    }
   }
   if (runExp) {
     schedulePatch.last_exp_run = runStartedIso;
@@ -979,7 +1034,9 @@ export async function dispatchDueNativeMasterSyncs({
   try {
     const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }, { data: setupStateRows }] = await Promise.all([
       supabase.from("sync_schedules").select("*"),
-      supabase.from("clients").select("client_name, status, metadata, master_mode, master_sheet_id"),
+      supabase
+        .from("clients")
+        .select("client_name, status, metadata, master_mode, master_sheet_id, client_sheet_id, recon_sheet_id"),
       supabase
         .from("master_sheet_grids")
         .select("client_name, values_grid")
@@ -995,6 +1052,7 @@ export async function dispatchDueNativeMasterSyncs({
     }
 
     const supabaseClients = new Set();
+    const supabaseClientRowByName = new Map();
     const sheetClientByName = new Map();
     for (const c of clientRows || []) {
       const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
@@ -1003,6 +1061,7 @@ export async function dispatchDueNativeMasterSyncs({
       if (isClientRecordInSetupMode(c, setupStateByClient.get(cNameLower))) continue;
       if (c.master_mode === "supabase") {
         supabaseClients.add(c.client_name);
+        supabaseClientRowByName.set(c.client_name, c);
       } else if (c.master_sheet_id && !isVirtualSupabaseSheetId(c.master_sheet_id)) {
         sheetClientByName.set(c.client_name, c);
       }
@@ -1062,10 +1121,12 @@ export async function dispatchDueNativeMasterSyncs({
       let reqMs = 0;
       if (freq.includes("hr")) reqMs = (parseFloat(freq) || 0) * 3600 * 1000;
       else if (freq.includes("min")) reqMs = (parseFloat(freq) || 0) * 60 * 1000;
-      return diff >= reqMs;
+      if (reqMs <= 0) return false;
+      const jitterToleranceMs = reqMs <= 60_000 ? 10_000 : 15_000;
+      return diff >= Math.max(0, reqMs - jitterToleranceMs);
     };
 
-    const queue = [];
+    const dueCandidates = [];
     const sheetSignals = [];
     for (const sched of schedRows) {
       const clientName = sched.client_name;
@@ -1106,11 +1167,11 @@ export async function dispatchDueNativeMasterSyncs({
 
       if (dueTypes.length > 0) {
         if (isSupa) {
-          queue.push({
+          dueCandidates.push({
             clientName,
+            sched,
             types: dueTypes,
             flags,
-            syncType: dueTypes.length === 3 ? "all" : dueTypes.length === 1 ? dueTypes[0] : "all",
           });
         } else if (sheetClient) {
           sheetSignals.push({
@@ -1120,6 +1181,137 @@ export async function dispatchDueNativeMasterSyncs({
           });
         }
       }
+    }
+
+    const preflightSkips = [];
+    const crmCandidateNames = dueCandidates
+      .filter((item) => item.types.includes("crm"))
+      .map((item) => item.clientName);
+
+    if (crmCandidateNames.length > 0) {
+      const [{ data: masterMetaRows }, { data: clientJobRows }] = await Promise.all([
+        supabase
+          .from("master_sheet_grids")
+          .select("client_name, tab_name, values_grid")
+          .eq("sheet_role", "master")
+          .in("tab_name", ["KeyInfo", "CRMList"])
+          .in("client_name", crmCandidateNames),
+        supabase
+          .from("master_sheet_grids")
+          .select("client_name, tab_name, updated_at")
+          .eq("sheet_role", "client")
+          .in("tab_name", ["Pipeline", "Confirmed"])
+          .in("client_name", crmCandidateNames),
+      ]);
+
+      const kiByClient = new Map();
+      const crmListByClient = new Map();
+      for (const r of masterMetaRows || []) {
+        if (r.tab_name === "KeyInfo") kiByClient.set(r.client_name, r.values_grid || []);
+        else if (r.tab_name === "CRMList") crmListByClient.set(r.client_name, r.values_grid || []);
+      }
+
+      const maxClientJobsUpdatedByClient = new Map();
+      for (const r of clientJobRows || []) {
+        const ms = r.updated_at ? new Date(r.updated_at).getTime() : 0;
+        if (!Number.isNaN(ms) && ms > (maxClientJobsUpdatedByClient.get(r.client_name) || 0)) {
+          maxClientJobsUpdatedByClient.set(r.client_name, ms);
+        }
+      }
+
+      const crmItems = dueCandidates.filter((item) => item.types.includes("crm"));
+      for (let i = 0; i < crmItems.length; i += 4) {
+        const batch = crmItems.slice(i, i + 4);
+        await Promise.allSettled(
+          batch.map(async (item) => {
+            const cRow = supabaseClientRowByName.get(item.clientName);
+            if (!cRow) return;
+            const ctx = {
+              clientName: item.clientName,
+              masterSheetId: cRow.master_sheet_id || "",
+              clientSheetId: cRow.client_sheet_id || "",
+              reconSheetId: cRow.recon_sheet_id || "",
+            };
+            const pfRes = await evaluateScheduledCrmPreflight({
+              ctx,
+              schedRow: item.sched,
+              keyInfoGrid: kiByClient.get(item.clientName) || [],
+              crmListGrid: crmListByClient.get(item.clientName) || [],
+              dcaGrid: dcaMap.get(item.clientName) || [],
+              maxClientJobsUpdatedMs: maxClientJobsUpdatedByClient.get(item.clientName) || 0,
+            });
+
+            if (pfRes.decision === "skip_unchanged") {
+              const nowIso = new Date().toISOString();
+              item.types = item.types.filter((t) => t !== "crm");
+              const nextFlags = {
+                ...item.flags,
+                crm_preflight: {
+                  ...(item.flags?.crm_preflight || {}),
+                  lastCheckedAt: nowIso,
+                  lastSkippedAt: nowIso,
+                  lastOutcome: "unchanged_skipped",
+                },
+              };
+              item.flags = nextFlags;
+              await supabase
+                .from("sync_schedules")
+                .update({ last_crm_run: nowIso, flags: nextFlags })
+                .eq("client_name", item.clientName)
+                .catch(() => {});
+              console.log(
+                `[CRM Preflight] ${item.clientName} (${pfRes.probe?.tool || "CRM"}): No changes detected — skipped full CRM sync.`
+              );
+              preflightSkips.push({
+                clientName: item.clientName,
+                mode: "supabase_preflight_skip",
+                types: ["crm"],
+                success: true,
+                skippedUnchanged: true,
+              });
+            } else if (pfRes.decision === "defer_quiet_window") {
+              const nowIso = new Date().toISOString();
+              item.types = item.types.filter((t) => t !== "crm");
+              const nextFlags = {
+                ...item.flags,
+                crm_preflight: {
+                  ...(item.flags?.crm_preflight || {}),
+                  lastCheckedAt: nowIso,
+                  lastOutcome: "deferred_quiet_window",
+                  observedModifiedAt: pfRes.probe?.modifiedIso || null,
+                },
+              };
+              item.flags = nextFlags;
+              await supabase
+                .from("sync_schedules")
+                .update({ flags: nextFlags })
+                .eq("client_name", item.clientName)
+                .catch(() => {});
+              console.log(
+                `[CRM Preflight] ${item.clientName} (${pfRes.probe?.tool || "Spreadsheet"}): Edited recently (${pfRes.reason}) — deferring until 60s quiet window settles.`
+              );
+              preflightSkips.push({
+                clientName: item.clientName,
+                mode: "supabase_preflight_defer",
+                types: ["crm"],
+                success: true,
+                deferredQuietWindow: true,
+              });
+            }
+          })
+        );
+      }
+    }
+
+    const queue = [];
+    for (const item of dueCandidates) {
+      if (!item.types || item.types.length === 0) continue;
+      queue.push({
+        clientName: item.clientName,
+        types: item.types,
+        flags: item.flags,
+        syncType: item.types.length === 3 ? "all" : item.types.length === 1 ? item.types[0] : "all",
+      });
     }
 
     const results = [];
@@ -1165,10 +1357,14 @@ export async function dispatchDueNativeMasterSyncs({
     }
 
     if (queue.length === 0) {
-      if (results.length === 0) {
+      if (results.length === 0 && preflightSkips.length === 0) {
         console.log("dispatchDueNativeMasterSyncs: No syncs currently due.");
       }
-      return { dispatched: results.length, syncs: results };
+      return {
+        dispatched: results.length,
+        skippedUnchanged: preflightSkips.length,
+        syncs: [...results, ...preflightSkips],
+      };
     }
 
     console.log(
@@ -1275,7 +1471,11 @@ export async function dispatchDueNativeMasterSyncs({
       await Promise.allSettled(chunk.map(executeItem));
     }
 
-    return { dispatched: queue.length + sheetSignals.length, syncs: results };
+    return {
+      dispatched: queue.length + sheetSignals.length,
+      skippedUnchanged: preflightSkips.length,
+      syncs: [...results, ...preflightSkips],
+    };
   } finally {
     if (lockAcquired && redisClient?.isOpen) {
       await redisClient.del(lockKey).catch(() => { });

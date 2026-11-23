@@ -19,6 +19,7 @@ import {
   updateVirtualTabCellsFromInspector,
   getSupabaseClockStatusAndSyncConfig,
   setSupabaseClockEnabled,
+  setSupabaseClockSchedule,
   triggerSupabaseClockNow,
   backfillNormalizedMirrorTablesFromVirtualGrids,
   clearPausedNormalizedMirrorTables,
@@ -491,6 +492,25 @@ export default async function handler(req, res) {
     if (action === "set_clock_enabled") {
       const enabled = Boolean(req.body?.enabled);
       await setSupabaseClockEnabled(enabled, sessionUser?.email || "Admin");
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, status });
+    }
+
+    if (action === "set_clock_schedule") {
+      const rawSchedule = String(req.body?.schedule || "").trim();
+      const normalizedSchedule = rawSchedule === "*/1 * * * *" ? "* * * * *" : rawSchedule;
+      const ALLOWED_CLOCK_SCHEDULES = new Set([
+        "* * * * *",
+        "*/2 * * * *",
+        "*/5 * * * *",
+        "*/10 * * * *",
+        "*/15 * * * *",
+        "*/30 * * * *",
+      ]);
+      if (!ALLOWED_CLOCK_SCHEDULES.has(normalizedSchedule)) {
+        return res.status(400).json({ success: false, error: "Invalid cron schedule selection." });
+      }
+      await setSupabaseClockSchedule(normalizedSchedule, sessionUser?.email || "Admin");
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, status });
     }

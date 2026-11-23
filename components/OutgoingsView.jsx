@@ -1689,6 +1689,11 @@ export default function OutgoingsView({
         } else if (moveEvent.clientX < rect.left + 40) {
           scroller.scrollLeft -= 18;
         }
+        if (moveEvent.clientY > rect.bottom - 40) {
+          scroller.scrollTop += 18;
+        } else if (moveEvent.clientY < rect.top + 56) {
+          scroller.scrollTop -= 18;
+        }
       }
 
       const targetElem = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
@@ -2982,19 +2987,31 @@ export default function OutgoingsView({
               </div>
             )}
 
-            <div ref={contractorTableScrollRef} style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
-              <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${190 + OUTGOINGS_WINDOW * 160}px`, userSelect: contractorDragRange ? "none" : undefined }}>
+            <div
+              ref={contractorTableScrollRef}
+              style={{
+                overflowX: "auto",
+                overflowY: "auto",
+                maxHeight: isModalOverlay ? "max(280px, calc(92vh - 200px))" : "max(360px, calc(100vh - 140px))",
+                borderRadius: "8px",
+                border: "1px solid #e0e0e0",
+                position: "relative",
+                isolation: "isolate",
+                background: "#ffffff",
+              }}
+            >
+              <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%", tableLayout: "fixed", minWidth: `${190 + OUTGOINGS_WINDOW * 160}px`, userSelect: contractorDragRange ? "none" : undefined }}>
                 <colgroup>
                   <col style={{ width: "190px" }} />
                   {visibleMonths.map(m => <col key={m.colLetter} style={{ width: "160px" }} />)}
                 </colgroup>
-                <thead style={{ position: "sticky", top: 0, zIndex: 10 }}>
+                <thead style={{ position: "sticky", top: 0, zIndex: 20 }}>
                   <tr>
-                    <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", left: 0, zIndex: 11 }}>Contractor</th>
-                    {visibleMonths.map(m => {
+                    <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", top: 0, left: 0, zIndex: 30 }}>Contractor</th>
+                    {visibleMonths.map((m, monthIdx) => {
                       const isCurr = isCurrentMonth(m.isoMonth || m.label);
                       return (
-                        <th key={m.colLetter} style={{ padding: "9px 10px", background: isCurr ? "#e8f0fe" : "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "center", color: isCurr ? "#1a56db" : "#444" }}>
+                        <th key={m.colLetter} style={{ padding: "9px 10px", background: isCurr ? "#e8f0fe" : "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: monthIdx === visibleMonths.length - 1 ? "none" : "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "center", color: isCurr ? "#1a56db" : "#444", position: "sticky", top: 0, zIndex: 20 }}>
                           {fmtMonthLabel(m.isoMonth || m.label)}
                         </th>
                       );
@@ -3029,7 +3046,7 @@ export default function OutgoingsView({
                     </tr>
                   ) : filteredContractors.map((contractor, rowIdx) => (
                     <tr key={contractor.sheetRow} style={{ background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
-                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", fontSize: "12px", background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd", position: "sticky", left: 0, zIndex: 1, verticalAlign: "top" }}>
+                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", fontSize: "12px", background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd", position: "sticky", left: 0, zIndex: 10, verticalAlign: "top" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "6px" }}>
                           <div
                             onClick={() => setEditingContractor(contractor)}
@@ -3177,7 +3194,7 @@ export default function OutgoingsView({
                               });
                             }}
                             style={{
-                              padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top",
+                              padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: monthIdx === visibleMonths.length - 1 ? "none" : "1px solid #e0e0e0", verticalAlign: "top",
                               cursor: isTarget ? "pointer" : "cell", minHeight: "52px", position: "relative",
                               background: baseBg,
                               boxShadow: cellBoxShadow,
@@ -3245,7 +3262,7 @@ export default function OutgoingsView({
                                   alignItems: "center",
                                   justifyContent: "center",
                                   cursor: "crosshair",
-                                  zIndex: 25,
+                                  zIndex: 5,
                                 }}
                                 title="Drag along row or column to copy amount as placeholder entries"
                               >
@@ -3270,12 +3287,11 @@ export default function OutgoingsView({
                     <tr style={{ background: "#ffffff" }}>
                       <td style={{
                         padding: "10px 12px",
-                        borderTop: "1px solid #e0e0e0",
                         borderRight: "1px solid #e0e0e0",
                         background: "#ffffff",
                         position: "sticky",
                         left: 0,
-                        zIndex: 2,
+                        zIndex: 10,
                       }}>
                         <button
                           type="button"
@@ -3300,8 +3316,8 @@ export default function OutgoingsView({
                           <span style={{ fontSize: "14px", lineHeight: "1" }}>+</span> Add new vendor
                         </button>
                       </td>
-                      {visibleMonths.map(m => (
-                        <td key={m.colLetter} style={{ borderTop: "1px solid #e0e0e0", borderRight: "1px solid #e0e0e0", background: "#ffffff" }} />
+                      {visibleMonths.map((m, monthIdx) => (
+                        <td key={m.colLetter} style={{ borderRight: monthIdx === visibleMonths.length - 1 ? "none" : "1px solid #e0e0e0", background: "#ffffff" }} />
                       ))}
                     </tr>
                   )}
@@ -3316,12 +3332,12 @@ export default function OutgoingsView({
                         <td style={{
                           padding: "10px 12px",
                           borderTop: "2px solid #cbd5e1",
-                          borderBottom: "1px solid #e2e8f0",
+                          borderBottom: "none",
                           borderRight: "1px solid #e0e0e0",
                           background: "#f8fafc",
                           position: "sticky",
                           left: 0,
-                          zIndex: 2,
+                          zIndex: 10,
                         }}>
                           <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                             <div style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b", display: "flex", alignItems: "center", gap: "6px" }}>
@@ -3421,7 +3437,7 @@ export default function OutgoingsView({
                             </div>
                           </div>
                         </td>
-                        {visibleMonths.map(m => {
+                        {visibleMonths.map((m, monthIdx) => {
                           const cosCell = outgoingsData.makingUpCos?.cells?.[m.colLetter] || { amount: 0, formatted: "£0", isZero: false };
                           const isZero = !!cosCell.isZero;
                           const isSaving = savingCosMonth === m.colLetter;
@@ -3434,8 +3450,8 @@ export default function OutgoingsView({
                               style={{
                                 padding: "8px 10px",
                                 borderTop: "2px solid #cbd5e1",
-                                borderBottom: "1px solid #e2e8f0",
-                                borderRight: "1px solid #e0e0e0",
+                                borderBottom: "none",
+                                borderRight: monthIdx === visibleMonths.length - 1 ? "none" : "1px solid #e0e0e0",
                                 background: isCosZeroTarget ? "#f8fafc" : (isCurr ? "#f1f5f9" : "#f8fafc"),
                                 verticalAlign: "middle",
                                 opacity: isCosZeroTarget ? 0.6 : 1,

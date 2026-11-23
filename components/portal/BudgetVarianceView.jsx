@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { BudgetSkeleton } from "../Skeleton";
-import { formatMoney as universalFormatMoney, parseMoney as universalParseMoney } from "../../services/deepDiveHelper";
+import { formatMoney as universalFormatMoney, parseMoney as universalParseMoney, hasNBToFindInPerformance, hasNBToFindInBudget } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
 export default function BudgetVarianceView({
@@ -83,6 +83,52 @@ export default function BudgetVarianceView({
   }, [months]);
 
   const selectedMonthIdx = userMonthIdx !== null ? userMonthIdx : defaultMonthIdx;
+
+  const formatShortMonth = (mLabel) => {
+    const s = String(mLabel || "").trim();
+    const match = s.match(/^([a-zA-Z]{3})[a-zA-Z]*[\s\-]+(\d{2,4})$/);
+    if (match) {
+      const mon = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
+      const yr = match[2].slice(-2);
+      return `${mon} ${yr}`;
+    }
+    return s;
+  };
+
+  const maxYearIdx = years.length > 1 ? Math.min(2, years.length - 2) : 2;
+  const canGoLeft = viewMode === "month" ? (selectedMonthIdx > 0 || selectedYearIdx > 0) : selectedYearIdx > 0;
+  const canGoRight = viewMode === "month" ? (selectedMonthIdx < months.length - 1 || selectedYearIdx < maxYearIdx) : selectedYearIdx < maxYearIdx;
+
+  const handleNavLeft = () => {
+    if (viewMode === "month") {
+      if (selectedMonthIdx > 0) {
+        setUserMonthIdx(selectedMonthIdx - 1);
+      } else if (selectedYearIdx > 0) {
+        const prevYearIdx = selectedYearIdx - 1;
+        const prevActiveYearIdx = Math.min(Math.max(0, prevYearIdx + 1), Math.max(0, years.length - 1));
+        const prevMonthsLen = years[prevActiveYearIdx]?.headerMonths?.length || 12;
+        setUserYearIdx(prevYearIdx);
+        setUserMonthIdx(Math.max(0, prevMonthsLen - 1));
+      }
+    } else {
+      setUserYearIdx(Math.max(0, selectedYearIdx - 1));
+      setUserMonthIdx(null);
+    }
+  };
+
+  const handleNavRight = () => {
+    if (viewMode === "month") {
+      if (selectedMonthIdx < months.length - 1) {
+        setUserMonthIdx(selectedMonthIdx + 1);
+      } else if (selectedYearIdx < maxYearIdx) {
+        setUserYearIdx(selectedYearIdx + 1);
+        setUserMonthIdx(0);
+      }
+    } else {
+      setUserYearIdx(Math.min(maxYearIdx, selectedYearIdx + 1));
+      setUserMonthIdx(null);
+    }
+  };
 
   const isRevMode = useMemo(() => {
     if (keyData?.outgoingsMeta?.mode) {
@@ -436,11 +482,17 @@ export default function BudgetVarianceView({
     });
   };
 
+  const perfHasNB = hasNBToFindInPerformance(allFYData);
+  const budHasNB = hasNBToFindInBudget(data, isRevMode);
+  const showNBToFind = budHasNB === true || perfHasNB === true || (budHasNB === null && perfHasNB === null);
+
   addSpacer(15);
   addSectionHeader(isRevMode ? "Revenue" : "Income");
   addDataRow(isRevMode ? "Confirmed revenue" : "Confirmed income", "conf", true, false, false, false, false, true);
   addDataRow(isRevMode ? "Pipeline revenue" : "Pipeline income", "pipe", true, false, false, false, false, true);
-  addDataRow(isRevMode ? "New business to find revenue" : "New business to find income", "nb", true, false, false, false, false, true);
+  if (showNBToFind) {
+    addDataRow(isRevMode ? "New business to find revenue" : "New business to find income", "nb", true, false, false, false, false, true);
+  }
   addSpacer(6);
   addDataRow(isRevMode ? "Total revenue" : "Total income", "totalRev", true, true, false, false);
   addSpacer(20);
@@ -643,38 +695,35 @@ export default function BudgetVarianceView({
 
       {/* Main Budget Variance Table with Navigation Arrows */}
       <div style={{ position: "relative", width: viewMode === "fy" ? "100%" : "fit-content", maxWidth: "100%", display: "flex", alignItems: "center" }}>
-        {selectedYearIdx > 0 && (
-          <button
-            type="button"
-            className="fy-nav-arrow-left"
-            onClick={() => {
-              setUserYearIdx(Math.max(0, selectedYearIdx - 1));
-              setUserMonthIdx(null);
-            }}
-            title="Previous Year"
-            style={{
-              position: "absolute",
-              left: "-42px",
-              top: "50%",
-              transform: "translateY(-50%)",
-              background: "transparent",
-              color: "#a2c4c9",
-              border: "none",
-              fontSize: "2.8rem",
-              fontWeight: "bold",
-              cursor: "pointer",
-              padding: "0",
-              zIndex: 10,
-              lineHeight: 1,
-              userSelect: "none",
-              transition: "color 0.2s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
-          >
-            ‹
-          </button>
-        )}
+          { canGoLeft && (
+            <button
+              type="button"
+              className="fy-nav-arrow-left"
+              onClick={handleNavLeft}
+              title={viewMode === "month" ? "Previous month" : "Previous year"}
+              style={{
+                position: "absolute",
+                left: "-42px",
+                top: "50%",
+                transform: "translateY(-50%)",
+                background: "transparent",
+                color: "#a2c4c9",
+                border: "none",
+                fontSize: "2.8rem",
+                fontWeight: "bold",
+                cursor: "pointer",
+                padding: "0",
+                zIndex: 10,
+                lineHeight: 1,
+                userSelect: "none",
+                transition: "color 0.2s",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+              onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+            >
+              ‹
+            </button>
+          )}
 
         <div
           className="fy-table-scroll-wrapper"
@@ -715,9 +764,10 @@ export default function BudgetVarianceView({
                       background: "#0047AB",
                       zIndex: 3,
                       fontSize: viewMode === "fy" ? "12px" : "13px",
+                      whiteSpace: "nowrap",
                     }}
                   >
-                    {/* Empty top-left */}
+                    {viewMode === "month" ? formatShortMonth(months[selectedMonthIdx]) : ""}
                   </th>
 
                   {viewMode === "month" ? (
@@ -757,11 +807,11 @@ export default function BudgetVarianceView({
                       ))}
                       <th style={{ width: colPercents.gap, background: "#0047AB", padding: 0 }} />
                       <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", width: colPercents.act, background: "#0047AB", whiteSpace: "nowrap" }}>
-                        {viewMode === "ytd" ? "YTD Actual" : "FY Actual"}
+                        {viewMode === "ytd" ? "YTD actual" : "FY actual"}
                       </th>
                       <th style={{ width: colPercents.gap, background: "#0047AB", padding: 0 }} />
                       <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.bud, background: "#0047AB", whiteSpace: "nowrap" }}>
-                        {viewMode === "ytd" ? "YTD Budget" : "FY Budget"}
+                        {viewMode === "ytd" ? "YTD budget" : "FY budget"}
                       </th>
                       <th style={{ width: colPercents.gap, background: "#0047AB", padding: 0 }} />
                       <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.varAmt, background: "#0047AB", whiteSpace: "nowrap" }}>
@@ -1383,38 +1433,35 @@ export default function BudgetVarianceView({
           </div>
         </div>
 
-        {selectedYearIdx < 2 && (
-          <button
-            type="button"
-            className="fy-nav-arrow-right"
-            onClick={() => {
-              setUserYearIdx(Math.min(2, selectedYearIdx + 1));
-              setUserMonthIdx(null);
-            }}
-            title="Next Year"
-            style={{
-              position: "absolute",
-              right: "-42px",
-              top: "50%",
-              transform: "translateY(-50%)",
-              background: "transparent",
-              color: "#a2c4c9",
-              border: "none",
-              fontSize: "2.8rem",
-              fontWeight: "bold",
-              cursor: "pointer",
-              padding: "0",
-              zIndex: 10,
-              lineHeight: 1,
-              userSelect: "none",
-              transition: "color 0.2s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
-          >
-            ›
-          </button>
-        )}
+          { canGoRight && (
+            <button
+              type="button"
+              className="fy-nav-arrow-right"
+              onClick={handleNavRight}
+              title={viewMode === "month" ? "Next month" : "Next year"}
+              style={{
+                position: "absolute",
+                right: "-42px",
+                top: "50%",
+                transform: "translateY(-50%)",
+                background: "transparent",
+                color: "#a2c4c9",
+                border: "none",
+                fontSize: "2.8rem",
+                fontWeight: "bold",
+                cursor: "pointer",
+                padding: "0",
+                zIndex: 10,
+                lineHeight: 1,
+                userSelect: "none",
+                transition: "color 0.2s",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+              onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+            >
+              ›
+            </button>
+          )}
       </div>
 
       <style jsx>{`

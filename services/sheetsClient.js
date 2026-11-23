@@ -33,7 +33,8 @@ async function sendRetiredSheetAlertEmail_({ spreadsheetId, matchedRange, caller
     if (!emailPass) return;
 
     const tabName = String(matchedRange || "").split("!")[0] || "Unknown";
-    const callerHash = hashSpreadsheetId_(callerLines || tabName).toString(36);
+    const normalizedCaller = String(callerLines || tabName).replace(/:\d+(?::\d+)?(?=\)?(?:\s*\||$))/g, "");
+    const callerHash = hashSpreadsheetId_(normalizedCaller).toString(36);
     const dedupeKey = `pulse:retired_sheet_alert:${spreadsheetId}:${tabName}:${callerHash}`;
     const now = Date.now();
     if (now - (_retiredSheetEmailCache.get(dedupeKey) || 0) < RETIRED_SHEET_EMAIL_TTL_MS) return;

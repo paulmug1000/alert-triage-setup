@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
 import Skeleton, { PerformanceSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
-import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString } from "../../services/deepDiveHelper";
+import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString, isNBToFindLabel, hasNBToFindInPerformance } from "../../services/deepDiveHelper";
 import { isNoEndDateSentinel } from "../../utils/helpers";
 
 export default function ScenariosView({
@@ -350,6 +350,7 @@ export default function ScenariosView({
   }, [activeYear, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, performanceData?.mode, directCostsMode, keyData?.outgoingsMeta, keyData?.nbtofind, activeYearIdx, currencySymbol, thousandsSeparator]);
 
   const mutatedRows = mutatedYearData?.rows || activeYear?.rows || [];
+  const showNBToFind = hasNBToFindInPerformance(performanceData) !== false;
 
   const scenariosConfig = useMemo(() => ({
     confirmedJobs: confirmedJobIds,
@@ -849,7 +850,7 @@ export default function ScenariosView({
                     (prevLbl.includes("operating profit %") || prevLbl.includes("operating profit margin")) &&
                     (nextLbl.includes("staff costs to") || nextLbl.includes("staff ratio"));
 
-                  if (label && label.toLowerCase() === "hide") {
+                  if ((label && label.toLowerCase() === "hide") || (!showNBToFind && isNBToFindLabel(label))) {
                     return null;
                   }
 
@@ -1194,43 +1195,45 @@ export default function ScenariosView({
                 </tr>
 
                 {/* Include NB to Find Checkboxes */}
-                <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td className="scenario-col-first" style={{ padding: "6px 10px", fontWeight: 600, color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <input
-                        type="checkbox"
-                        checked={adjs.nbChecked.every(Boolean)}
-                        ref={(el) => {
-                          if (el) {
-                            const checkedCount = adjs.nbChecked.filter(Boolean).length;
-                            el.indeterminate = checkedCount > 0 && checkedCount < 12;
-                          }
-                        }}
-                        onChange={handleToggleMasterNB}
-                        style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
-                        title="Toggle all months"
-                      />
-                      <span>Include NB to find?</span>
-                    </div>
-                  </td>
-                  {headerMonths.map((_, mIdx) => {
-                    const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
-                    const isAct = st === "actual";
-                    return (
-                      <td key={mIdx} style={{ padding: "4px 4px", textAlign: "center", background: isAct ? "#f4f7fa" : "#ffffff" }}>
+                {showNBToFind && (
+                  <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
+                    <td className="scenario-col-first" style={{ padding: "6px 10px", fontWeight: 600, color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                         <input
                           type="checkbox"
-                          checked={adjs.nbChecked[mIdx]}
-                          onChange={() => handleToggleNBMonth(mIdx)}
+                          checked={adjs.nbChecked.every(Boolean)}
+                          ref={(el) => {
+                            if (el) {
+                              const checkedCount = adjs.nbChecked.filter(Boolean).length;
+                              el.indeterminate = checkedCount > 0 && checkedCount < 12;
+                            }
+                          }}
+                          onChange={handleToggleMasterNB}
                           style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
+                          title="Toggle all months"
                         />
-                      </td>
-                    );
-                  })}
-                  <td style={{ padding: "6px 10px", textAlign: "right", fontSize: "11px", color: "#64748b", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
-                    {adjs.nbChecked.filter(Boolean).length}/12 Months
-                  </td>
-                </tr>
+                        <span>Include NB to find?</span>
+                      </div>
+                    </td>
+                    {headerMonths.map((_, mIdx) => {
+                      const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
+                      const isAct = st === "actual";
+                      return (
+                        <td key={mIdx} style={{ padding: "4px 4px", textAlign: "center", background: isAct ? "#f4f7fa" : "#ffffff" }}>
+                          <input
+                            type="checkbox"
+                            checked={adjs.nbChecked[mIdx]}
+                            onChange={() => handleToggleNBMonth(mIdx)}
+                            style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
+                          />
+                        </td>
+                      );
+                    })}
+                    <td style={{ padding: "6px 10px", textAlign: "right", fontSize: "11px", color: "#64748b", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
+                      {adjs.nbChecked.filter(Boolean).length}/12 Months
+                    </td>
+                  </tr>
+                )}
 
                 {/* Additional Revenue Inputs */}
                 <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>

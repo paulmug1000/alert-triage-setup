@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
 import { BudgetSkeleton } from "../Skeleton";
-import { formatMoney as universalFormatMoney, parseMoney } from "../../services/deepDiveHelper";
+import { formatMoney as universalFormatMoney, parseMoney, hasNBToFindInPerformance, hasNBToFindInBudget } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
 export default function BudgetView({
@@ -268,11 +268,17 @@ export default function BudgetView({
     });
   };
 
+  const perfHasNB = hasNBToFindInPerformance(allFYData);
+  const budHasNB = hasNBToFindInBudget(data, isRevMode);
+  const showNBToFind = budHasNB === true || perfHasNB === true || (budHasNB === null && perfHasNB === null);
+
   addSpacer(15);
   addSectionHeader(isRevMode ? "Revenue" : "Income");
   addDataRow(isRevMode ? "Confirmed revenue" : "Confirmed income", conf, true, false, false, "#ffffff", "#0047AB");
   addDataRow(isRevMode ? "Pipeline revenue" : "Pipeline income", pipe, true, false, false, "#ffffff", "#0047AB");
-  addDataRow(isRevMode ? "New business to find revenue" : "New business to find income", nb, true, false, false, "#ffffff", "#0047AB");
+  if (showNBToFind) {
+    addDataRow(isRevMode ? "New business to find revenue" : "New business to find income", nb, true, false, false, "#ffffff", "#0047AB");
+  }
   addSpacer(6);
   addDataRow(isRevMode ? "Total revenue" : "Total income", totalRev, true, true, false, "#9900ff", "#ffffff");
   addSpacer(20);

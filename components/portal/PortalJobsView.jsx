@@ -11,6 +11,7 @@ import {
   isPlaceholderInvoice,
   isPlaceholderExpense,
   hasActiveAccountingIntegration,
+  hasActiveCrmIntegration,
   isCrmDeal,
   getCrmDisplayName,
   INVOICE_STATUS_OPTIONS,
@@ -129,6 +130,7 @@ export default function PortalJobsView({
   isLoading,
   error,
   onRefresh,
+  onAfterCrmSync,
   isReadOnly = false,
 }) {
   const [filterType, setFilterType] = useState("all"); // 'all' | 'confirmed' | 'pipeline' | 'project' | 'retainer'
@@ -169,6 +171,192 @@ export default function PortalJobsView({
   const crmTool = data?.crmTool || "None";
   const crmDrives = data?.crmDrives || "NA";
   const crmDisplayName = useMemo(() => getCrmDisplayName(crmTool), [crmTool]);
+  const canShowCrmSync = useMemo(() => {
+    if (!hasActiveCrmIntegration(crmTool)) return false;
+    const drives = String(crmDrives || "").trim().toLowerCase();
+    return drives !== "" && drives !== "na" && drives !== "none";
+  }, [crmTool, crmDrives]);
+
+  const [crmSyncState, setCrmSyncState] = useState({
+    running: false,
+    runId: null,
+    startedAt: null,
+    stageMessage: "",
+    feedback: null,
+  });
+  const [crmElapsedSec, setCrmElapsedSec] = useState(0);
+  const onAfterCrmSyncRef = useRef(onAfterCrmSync || onRefresh);
+  onAfterCrmSyncRef.current = onAfterCrmSync || onRefresh;
+
+  // Check if a CRM sync is already running on mount or client switch
+  useEffect(() => {
+    setCrmSyncState({ running: false, runId: null, startedAt: null, stageMessage: "", feedback: null });
+    setCrmElapsedSec(0);
+    if (!canShowCrmSync || !clientSheetId) return;
+
+    let cancelled = false;
+    fetch("/api/portal/sync-crm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "status",
+        clientSheetId,
+        clientName,
+        crmTool,
+      }),
+    })
+      .then((r) => r.json())
+      .then((resData) => {
+        if (cancelled || !resData?.success) return;
+        if (resData.running) {
+          setCrmSyncState({
+            running: true,
+            runId: resData.runId || null,
+            startedAt: resData.startedAt || Date.now(),
+            stageMessage: resData.stageMessage || `Syncing with ${crmDisplayName}…`,
+            feedback: null,
+          });
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canShowCrmSync, clientSheetId, clientName, crmTool, crmDisplayName]);
+
+  // Elapsed seconds counter while CRM sync is running
+  useEffect(() => {
+    if (!crmSyncState.running || !crmSyncState.startedAt) {
+      setCrmElapsedSec(0);
+      return;
+    }
+    const updateElapsed = () => {
+      setCrmElapsedSec(Math.max(0, Math.floor((Date.now() - crmSyncState.startedAt) / 1000)));
+    };
+    updateElapsed();
+    const id = setInterval(updateElapsed, 1000);
+    return () => clearInterval(id);
+  }, [crmSyncState.running, crmSyncState.startedAt]);
+
+  // Poll live progress while CRM sync is active
+  useEffect(() => {
+    if (!crmSyncState.running || !clientSheetId) return;
+    let cancelled = false;
+
+    const pollStatus = async () => {
+      try {
+        const res = await fetch("/api/portal/sync-crm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "status",
+            clientSheetId,
+            clientName,
+            runId: crmSyncState.runId,
+            crmTool,
+          }),
+        });
+        const resData = await res.json().catch(() => null);
+        if (cancelled || !resData?.success) return;
+
+        if (resData.running) {
+          setCrmSyncState((prev) => ({
+            ...prev,
+            runId: resData.runId || prev.runId,
+            startedAt: resData.startedAt || prev.startedAt,
+            stageMessage: resData.stageMessage || prev.stageMessage || `Syncing with ${crmDisplayName}…`,
+          }));
+        } else {
+          const isErr = resData.status === "error" || Boolean(resData.error);
+          setCrmSyncState({
+            running: false,
+            runId: null,
+            startedAt: null,
+            stageMessage: "",
+            feedback: isErr
+              ? { type: "error", text: resData.error || `Could not complete ${crmDisplayName} sync.` }
+              : { type: "success", text: resData.summaryMessage || `Synced with ${crmDisplayName}` },
+          });
+          if (!isErr && onAfterCrmSyncRef.current) {
+            onAfterCrmSyncRef.current();
+          }
+        }
+      } catch {
+        // Keep polling on transient network blip
+      }
+    };
+
+    const intervalId = setInterval(pollStatus, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [crmSyncState.running, crmSyncState.runId, clientSheetId, clientName, crmTool, crmDisplayName]);
+
+  // Auto-clear non-error sync feedback after 4 seconds
+  useEffect(() => {
+    if (!crmSyncState.feedback || crmSyncState.feedback.type === "error") return;
+    const t = setTimeout(() => {
+      setCrmSyncState((prev) => (prev.feedback?.type === "error" ? prev : { ...prev, feedback: null }));
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [crmSyncState.feedback]);
+
+  const handleStartCrmSync = async () => {
+    if (isReadOnly || !canShowCrmSync || crmSyncState.running || !clientSheetId) return;
+    setCrmSyncState({
+      running: true,
+      runId: null,
+      startedAt: Date.now(),
+      stageMessage: `Connecting to ${crmDisplayName}…`,
+      feedback: null,
+    });
+    try {
+      const res = await fetch("/api/portal/sync-crm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "start",
+          clientSheetId,
+          clientName,
+          crmTool,
+        }),
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok || !resData.success) {
+        throw new Error(resData.error || `Could not start ${crmDisplayName} sync.`);
+      }
+      if (resData.onCooldown) {
+        setCrmSyncState({
+          running: false,
+          runId: null,
+          startedAt: null,
+          stageMessage: "",
+          feedback: { type: "info", text: resData.message || `Synced with ${crmDisplayName} moments ago.` },
+        });
+        if (onAfterCrmSyncRef.current) onAfterCrmSyncRef.current();
+        return;
+      }
+      if (resData.running) {
+        setCrmSyncState({
+          running: true,
+          runId: resData.runId || null,
+          startedAt: resData.startedAt || Date.now(),
+          stageMessage: resData.stageMessage || `Syncing with ${crmDisplayName}…`,
+          feedback: null,
+        });
+      }
+    } catch (err) {
+      setCrmSyncState({
+        running: false,
+        runId: null,
+        startedAt: null,
+        stageMessage: "",
+        feedback: { type: "error", text: err.message || `Could not start ${crmDisplayName} sync.` },
+      });
+    }
+  };
   const isEditingCrmDeal = useMemo(() => isCrmDeal(editingJob, crmTool, crmDrives), [editingJob, crmTool, crmDrives]);
   const isEditingCrmPipelineDeal = useMemo(() => {
     return isEditingCrmDeal && String(editingJob?.type || editingJob?.tabName || "").toLowerCase() === "pipeline";
@@ -1427,6 +1615,85 @@ export default function PortalJobsView({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          {canShowCrmSync && crmSyncState.running && (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                background: "#eff6ff",
+                border: "1px solid #bfdbfe",
+                color: "#1e40af",
+                borderRadius: "6px",
+                padding: "6px 12px",
+                fontSize: "12px",
+                fontWeight: 600,
+              }}
+            >
+              <Spinner size={13} color="#0047AB" style={{ marginRight: 0 }} />
+              <span>{crmSyncState.stageMessage || `Syncing with ${crmDisplayName}…`}</span>
+              {crmElapsedSec >= 4 && (
+                <span style={{ color: "#3b82f6", fontWeight: 700 }}>{crmElapsedSec}s</span>
+              )}
+            </div>
+          )}
+
+          {canShowCrmSync && !crmSyncState.running && !isReadOnly && (() => {
+            const showCrmSyncSuccess = Boolean(crmSyncState.feedback && crmSyncState.feedback.type !== "error");
+            return (
+              <button
+                type="button"
+                disabled={showCrmSyncSuccess}
+                onClick={showCrmSyncSuccess ? undefined : handleStartCrmSync}
+                title={
+                  showCrmSyncSuccess
+                    ? (crmSyncState.feedback.text || `Synced with ${crmDisplayName}`)
+                    : `Fetch the latest pipeline updates from ${crmDisplayName}`
+                }
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: showCrmSyncSuccess ? "#f0fdf4" : "#ffffff",
+                  color: showCrmSyncSuccess ? "#166534" : "#0047AB",
+                  border: showCrmSyncSuccess ? "1px solid #86efac" : "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  padding: "6px 12px",
+                  fontSize: "12.5px",
+                  fontWeight: 700,
+                  cursor: showCrmSyncSuccess ? "default" : "pointer",
+                  transition: "background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease",
+                }}
+              >
+                {showCrmSyncSuccess ? (
+                  <>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#166534"
+                      strokeWidth="2.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    <span>Success</span>
+                  </>
+                ) : (
+                  <>
+                    <CrmSyncIcon size={14} color="#0047AB" />
+                    <span>Sync with {crmDisplayName}</span>
+                  </>
+                )}
+              </button>
+            );
+          })()}
+
           {!isReadOnly && (
             <button
               type="button"
@@ -1511,6 +1778,44 @@ export default function PortalJobsView({
           </button>
         </div>
       </div>
+
+      {crmSyncState.feedback?.type === "error" && !crmSyncState.running && (
+        <div
+          role="alert"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            padding: "8px 12px",
+            borderRadius: "6px",
+            fontSize: "12.5px",
+            fontWeight: 600,
+            background: "#fef2f2",
+            border: "1px solid #fecaca",
+            color: "#991b1b",
+          }}
+        >
+          <span>{crmSyncState.feedback.text}</span>
+          <button
+            type="button"
+            onClick={() => setCrmSyncState((prev) => ({ ...prev, feedback: null }))}
+            aria-label="Dismiss message"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "inherit",
+              cursor: "pointer",
+              fontSize: "15px",
+              lineHeight: 1,
+              padding: "0 4px",
+              opacity: 0.75,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Filter and Search Bar */}
       <div

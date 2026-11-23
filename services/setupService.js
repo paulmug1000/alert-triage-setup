@@ -1551,10 +1551,8 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
   }
 
   const supaControlPlane = await isSupabaseControlPlaneActive().catch(() => false);
-  if (overviewMap.size === 0 && sheets && acId) {
-    if (!supaControlPlane) {
-      await ensureClientSetupTabs(sheets);
-    }
+  if (!supaControlPlane && overviewMap.size === 0 && sheets && acId) {
+    await ensureClientSetupTabs(sheets);
     try {
       const [overviewRes, tasksRes] = await Promise.all([
         withRetry(() =>
@@ -1841,11 +1839,9 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
     } catch (_) { }
   }
 
-  // If still not found in Redis or Supabase, read ClientSetupTasks tab on AC once and backfill Supabase
-  if (!foundInRedisOrSupabase && sheets && acId) {
-    if (!supaControlPlane) {
-      await ensureClientSetupTabs(sheets);
-    }
+  // If still not found in Redis or Supabase (and legacy AC control plane is active), read ClientSetupTasks tab on AC once and backfill Supabase
+  if (!supaControlPlane && !foundInRedisOrSupabase && sheets && acId) {
+    await ensureClientSetupTabs(sheets);
     try {
       const res = await withRetry(() =>
         sheets.spreadsheets.values.get({

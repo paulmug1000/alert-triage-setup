@@ -3110,6 +3110,11 @@ export function redactPortalPerformanceForUser(perfData, user) {
 }
 
 export const AUTOMATION_FREQUENCY_OPTIONS = [
+  "1 min",
+  "2 mins",
+  "5 mins",
+  "10 mins",
+  "15 mins",
   "30 mins",
   "1 hr",
   "2 hrs",

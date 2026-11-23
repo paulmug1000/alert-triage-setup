@@ -22,6 +22,7 @@ import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../utils/helpe
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../services/masterEngineService.js";
 import {
   getClientSettings,
+  getClientCrmPreview,
   saveClientSettings,
   testCrmMappingsAndGetPreview,
   fetchCrmStatusesFromSheet,
@@ -64,27 +65,48 @@ export default async function handler(req, res) {
         error: "Forbidden: Access denied to this client."
       });
     }
-    const sheets = await getSheetsClient();
-    for (const sId of [reqMasterSheetId, reqClientSheetId].filter(Boolean)) {
-      const sheetAuth = await verifyUserAuthorizedForSheet(sessionUser, sId, targetClient, sheets);
-      if (!sheetAuth.authorized) {
-        return res.status(sheetAuth.status || 403).json({
+    const sheetIds = [reqMasterSheetId, reqClientSheetId].filter(Boolean);
+    if (sheetIds.length > 0) {
+      const sheets = await getSheetsClient();
+      const authChecks = await Promise.all(
+        sheetIds.map((sId) => verifyUserAuthorizedForSheet(sessionUser, sId, targetClient, sheets))
+      );
+      const denied = authChecks.find((check) => !check.authorized);
+      if (denied) {
+        return res.status(denied.status || 403).json({
           success: false,
-          error: sheetAuth.error || "Forbidden: Spreadsheet access denied for this client."
+          error: denied.error || "Forbidden: Spreadsheet access denied for this client."
         });
       }
     }
   }
 
-  // 3. GET: Fetch settings
+  // 3. GET: Fetch settings or lazy CRM preview
   if (req.method === "GET") {
-    const { clientName, masterSheetId, clientSheetId, bypassCache } = req.query;
+    const { clientName, masterSheetId, clientSheetId, bypassCache, mode } = req.query;
 
     if (!clientName || !masterSheetId) {
       return res.status(400).json({
         success: false,
         error: "Missing required clientName or masterSheetId parameter."
       });
+    }
+
+    if (mode === "crm_preview") {
+      try {
+        const crmPreview = await getClientCrmPreview({
+          clientName,
+          masterSheetId,
+          bypassCache: bypassCache === "true" || bypassCache === true
+        });
+        return res.status(200).json({ success: true, crmPreview });
+      } catch (err) {
+        console.error("GET /api/client-settings (crm_preview) error:", err);
+        return res.status(500).json({
+          success: false,
+          error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to load CRM preview.")
+        });
+      }
     }
 
     try {

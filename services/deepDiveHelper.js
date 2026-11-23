@@ -3292,3 +3292,104 @@ export function getKPIColor(valStr, t1, t2, higherBetter = true) {
   }
   return bg;
 }
+
+/**
+ * Returns true when a performance/budget row label represents "New business to find".
+ */
+export function isNBToFindLabel(label) {
+  const norm = String(label || "").trim().toLowerCase();
+  if (!norm) return false;
+  return (
+    norm.startsWith("new business to find") ||
+    norm.startsWith("nb to find") ||
+    norm === "new business" ||
+    norm === "new business revenue" ||
+    norm === "new business income"
+  );
+}
+
+/**
+ * Checks whether a client uses "New business to find" anywhere in their performance data
+ * (Year 0 + FY1–FY3). Returns boolean when determinable, or null when data is unavailable.
+ */
+export function hasNBToFindInPerformance(performanceData) {
+  if (!performanceData) return null;
+  if (typeof performanceData.hasNBToFind === "boolean") {
+    return performanceData.hasNBToFind;
+  }
+
+  const years = performanceData.years;
+  if (!Array.isArray(years) || years.length === 0) return null;
+
+  const thousandsSeparator = performanceData.thousandsSeparator || ",";
+  const isNonZeroValue = (raw) => {
+    if (typeof raw === "number") return Number.isFinite(raw) && Math.abs(raw) >= 0.005;
+    if (raw === undefined || raw === null) return false;
+    const str = String(raw).trim();
+    if (!str) return false;
+    return Math.abs(parseMoney(str, thousandsSeparator)) >= 0.005;
+  };
+
+  for (const yr of years) {
+    const rows = yr?.rows;
+    if (!Array.isArray(rows) || rows.length === 0) continue;
+    const nbRow = isNBToFindLabel(rows[5]?.label)
+      ? rows[5]
+      : rows.find((r) => isNBToFindLabel(r?.label));
+    if (!nbRow) continue;
+
+    if (Array.isArray(nbRow.monthlyMath) && nbRow.monthlyMath.some(isNonZeroValue)) return true;
+    if (Array.isArray(nbRow.monthlyValues) && nbRow.monthlyValues.some(isNonZeroValue)) return true;
+    if (isNonZeroValue(nbRow.totalMath) || isNonZeroValue(nbRow.totalVal)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Checks whether a client has any non-zero "New business to find" values across all 3 budget years.
+ * Returns boolean when determinable, or null when budget data is unavailable.
+ */
+export function hasNBToFindInBudget(budgetData, isRevMode = null) {
+  if (!budgetData) return null;
+  if (typeof budgetData.hasNBToFind === "boolean") {
+    return budgetData.hasNBToFind;
+  }
+
+  const rawVals = budgetData.rawVals;
+  if (!Array.isArray(rawVals) || rawVals.length === 0) return null;
+  const mathVals = Array.isArray(budgetData.mathVals) ? budgetData.mathVals : rawVals;
+
+  const effectiveRevMode =
+    typeof isRevMode === "boolean"
+      ? isRevMode
+      : String(budgetData.mode || "Revenue").toLowerCase() !== "income";
+
+  let rowIdx = effectiveRevMode ? 6 : 22;
+  if (!rawVals[rowIdx] || !isNBToFindLabel(rawVals[rowIdx]?.[0])) {
+    rowIdx = rawVals.findIndex((r) => isNBToFindLabel(r?.[0]));
+  }
+  if (rowIdx < 0) return false;
+
+  const yearStarts = [6, 21, 36];
+  for (const startCol of yearStarts) {
+    for (let offset = 0; offset < 12; offset++) {
+      const col = startCol + offset;
+      const mVal = mathVals?.[rowIdx]?.[col];
+      if (typeof mVal === "number" && Number.isFinite(mVal) && Math.abs(mVal) >= 0.005) return true;
+      const rVal = rawVals?.[rowIdx]?.[col];
+      if (rVal !== undefined && rVal !== null && String(rVal).trim() !== "" && Math.abs(parseMoney(rVal)) >= 0.005) {
+        return true;
+      }
+    }
+    const totalCol = startCol + 13;
+    const tmVal = mathVals?.[rowIdx]?.[totalCol];
+    if (typeof tmVal === "number" && Number.isFinite(tmVal) && Math.abs(tmVal) >= 0.005) return true;
+    const trVal = rawVals?.[rowIdx]?.[totalCol];
+    if (trVal !== undefined && trVal !== null && String(trVal).trim() !== "" && Math.abs(parseMoney(trVal)) >= 0.005) {
+      return true;
+    }
+  }
+
+  return false;
+}

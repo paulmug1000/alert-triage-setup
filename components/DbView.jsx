@@ -41,8 +41,20 @@ const AMD_BUTTONS = [
   { amdAction: "pull_outgoings_notes", label: "Pull outgoings notes" },
 ];
 
+const CLOCK_SCHEDULE_OPTIONS = [
+  { value: "* * * * *", label: "Every 1 min" },
+  { value: "*/2 * * * *", label: "Every 2 mins" },
+  { value: "*/5 * * * *", label: "Every 5 mins" },
+  { value: "*/10 * * * *", label: "Every 10 mins" },
+  { value: "*/15 * * * *", label: "Every 15 mins" },
+  { value: "*/30 * * * *", label: "Every 30 mins" },
+];
+
 function formatCronScheduleLabel(schedule) {
   const s = String(schedule || "").trim();
+  if (s === "* * * * *" || s === "*/1 * * * *") {
+    return { adjective: "1-minute", interval: "every 1 min" };
+  }
   const everyMins = s.match(/^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$/);
   if (everyMins) {
     const n = Number(everyMins[1]);
@@ -531,6 +543,31 @@ export default function DbView({
         };
       }
     );
+  };
+
+  const handleSetClockSchedule = (newSchedule) => {
+    const cleanSched = String(newSchedule || "").trim();
+    if (!cleanSched) return;
+    const schedLabel = formatCronScheduleLabel(cleanSched).adjective;
+    runTrackedOperation("clock_schedule", `Updating Supabase cron scheduler to ${schedLabel}...`, async () => {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_clock_schedule",
+          schedule: cleanSched,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Could not update cron schedule.");
+      if (data.status) setStage2Data(data.status);
+      const updatedLabel = formatCronScheduleLabel(data?.status?.clockStatus?.schedule || cleanSched).interval;
+      return {
+        type: "success",
+        text: `Supabase cron scheduler updated to ${updatedLabel}.`,
+      };
+    });
   };
 
   const handleTriggerClockNow = () => {
@@ -2343,6 +2380,39 @@ export default function DbView({
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                {(() => {
+                  const rawSched = String(cs?.schedule || "*/10 * * * *").trim();
+                  const normSched = rawSched === "*/1 * * * *" ? "* * * * *" : rawSched;
+                  const hasKnownOption = CLOCK_SCHEDULE_OPTIONS.some((o) => o.value === normSched);
+                  return (
+                    <select
+                      aria-label="Wake-clock interval"
+                      disabled={!rpcReady || isBusy}
+                      value={normSched}
+                      onChange={(e) => handleSetClockSchedule(e.target.value)}
+                      style={{
+                        padding: "6px 10px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        background: "#ffffff",
+                        color: !rpcReady ? "#9ca3af" : "#1e293b",
+                        cursor: !rpcReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                      }}
+                    >
+                      {!hasKnownOption && normSched && (
+                        <option value={normSched}>{normSched}</option>
+                      )}
+                      {CLOCK_SCHEDULE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  );
+                })()}
+
                 <button
                   type="button"
                   disabled={!rpcReady || isBusy}

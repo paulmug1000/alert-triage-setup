@@ -2,7 +2,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClien
 import { unwrapSheetId } from "./sheetTokenService.js";
 import { memoryCache, trackRedisKeyForClient } from "./cacheService.js";
 import { redisClient, ensureRedisConnected } from "./redisClient.js";
-import { formatCurrencyString, parseMoney } from "./deepDiveHelper.js";
+import { formatCurrencyString, parseMoney, isNBToFindLabel } from "./deepDiveHelper.js";
 import { getAllClients } from "./workspaces.js";
 import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
 import { formatGridForDisplay } from "./gasRuntime/sheetValueUtils.js";
@@ -256,6 +256,46 @@ function formatMonthCellForPortal(i, rawDisp, rawMath, currencySymbol, thousands
   return "";
 }
 
+function detectHasNBToFindFromGrids({
+  dashDisp = [],
+  dashMath = [],
+  year0Disp = [],
+  year0Math = [],
+  thousandsSeparator = ",",
+}) {
+  let nbRowIdx = 5;
+  if (!isNBToFindLabel(dashDisp[5]?.[0])) {
+    const foundIdx = dashDisp.findIndex((r) => isNBToFindLabel(r?.[0]));
+    nbRowIdx = foundIdx >= 0 ? foundIdx : 5;
+  }
+
+  const cellHasNonZero = (mathGrid, dispGrid, rIdx, cIdx) => {
+    const rawM = mathGrid?.[rIdx]?.[cIdx];
+    if (typeof rawM === "number" && Number.isFinite(rawM) && Math.abs(rawM) >= 0.005) {
+      return true;
+    }
+    const rawD = dispGrid?.[rIdx]?.[cIdx];
+    if (rawD !== undefined && rawD !== null && String(rawD).trim() !== "") {
+      return Math.abs(parseMoney(rawD, thousandsSeparator)) >= 0.005;
+    }
+    return false;
+  };
+
+  for (let c = 0; c <= 11; c++) {
+    if (cellHasNonZero(year0Math, year0Disp, nbRowIdx, c)) return true;
+  }
+  if (cellHasNonZero(year0Math, year0Disp, nbRowIdx, 13)) return true;
+
+  for (const [startC, endC] of DASHBOARD_MONTH_COL_RANGES) {
+    for (let c = startC; c <= endC; c++) {
+      if (cellHasNonZero(dashMath, dashDisp, nbRowIdx, c)) return true;
+    }
+    if (cellHasNonZero(dashMath, dashDisp, nbRowIdx, endC + 2)) return true;
+  }
+
+  return false;
+}
+
 /**
  * Builds the exact Portal Home payload directly from KeyInfo, Dashboard, and Year0Data grids.
  */
@@ -311,6 +351,13 @@ export function buildPortalPayloadFromGrids({
     normalizeYesNoFlag(featureFlags?.showCashMenu, "Yes").toLowerCase() === "yes";
   const hasBudget =
     normalizeYesNoFlag(featureFlags?.showBudget, "Yes").toLowerCase() === "yes";
+  const hasNBToFind = detectHasNBToFindFromGrids({
+    dashDisp,
+    dashMath,
+    year0Disp,
+    year0Math,
+    thousandsSeparator,
+  });
   const numRows = showExtraRows ? 34 : 32;
 
   const zeroCcy = `${currencySymbol}0`;
@@ -511,6 +558,7 @@ export function buildPortalPayloadFromGrids({
     _cachedAt: new Date().toISOString(),
     hasBudget,
     hasCash,
+    hasNBToFind,
     mode,
     directCostsMode,
     isJobCosting,
@@ -527,6 +575,7 @@ export function buildPortalPayloadFromGrids({
       vatRate,
       hasBudget,
       hasCash,
+      hasNBToFind,
       mode,
       directCostsMode,
       isJobCosting,
@@ -609,6 +658,13 @@ export function buildPortalPerformanceFromGrids({
   const version = featureFlags?.version || keyInfoData[0]?.[0] || "";
   const showExtraRows =
     normalizeYesNoFlag(featureFlags?.showStaffCostsRatio, "Yes") === "Yes";
+  const hasNBToFind = detectHasNBToFindFromGrids({
+    dashDisp,
+    dashMath,
+    year0Disp,
+    year0Math,
+    thousandsSeparator,
+  });
   const numRows = showExtraRows ? 34 : 32;
 
   const thresholds = thresholdsRaw.slice(0, 18).map((v) => {
@@ -770,6 +826,7 @@ export function buildPortalPerformanceFromGrids({
     directCostsMode,
     version,
     showExtraRows,
+    hasNBToFind,
     numRows,
     currentYearIdx,
     thresholds,

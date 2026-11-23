@@ -657,6 +657,42 @@ export async function linkExcelToClient({
     { range: "KeyInfo!Q8", values: [["Excel"]] }
   ];
 
+  // Ensure CRMList!AD2 (Project code) defaults to "System ID (Do Not Edit)" unless mapped to a valid column
+  let shouldDefaultAd2 = false;
+  try {
+    const ad2Res = await withRetry(() =>
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: masterSheetId,
+        ranges: ["CRMList!AD2", "DataFromCRM!1:1"],
+        valueRenderOption: "FORMATTED_VALUE"
+      })
+    );
+    const curAd2 = String(ad2Res.data.valueRanges?.[0]?.values?.[0]?.[0] ?? "").trim();
+    const dfcHeaders = (ad2Res.data.valueRanges?.[1]?.values?.[0] || [])
+      .map((h) => String(h ?? "").trim())
+      .filter(Boolean);
+    const keyHdrList = cleanKeyHeaders
+      .split(/[,;\n\r]+/)
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (!curAd2) {
+      shouldDefaultAd2 = true;
+    } else if (curAd2.toLowerCase() !== "system id (do not edit)") {
+      const existsInDfc = dfcHeaders.length > 0 && dfcHeaders.some((h) => h.toLowerCase() === curAd2.toLowerCase());
+      if (dfcHeaders.length > 0 && !existsInDfc) {
+        shouldDefaultAd2 = true;
+      } else if (dfcHeaders.length === 0 && curAd2.toLowerCase() === "project code" && !keyHdrList.includes("project code")) {
+        shouldDefaultAd2 = true;
+      }
+    }
+  } catch (e) {
+    console.warn("Failed inspecting CRMList!AD2 during Excel link:", e.message);
+  }
+  if (shouldDefaultAd2) {
+    updates.push({ range: "CRMList!AD2", values: [["System ID (Do Not Edit)"]] });
+  }
+
   if (tenantId || clientId || clientSecret) {
     updates.push(
       { range: "KeyInfo!X33", values: [[safeCell(tenantId)]] },
@@ -699,6 +735,9 @@ export async function linkExcelToClient({
         updatedAt: new Date().toISOString()
       };
       await redisClient.set(redisKey, JSON.stringify(updated));
+      if (shouldDefaultAd2) {
+        await redisClient.del(`pulse:client_settings:${cleanClient}`).catch(() => {});
+      }
     } catch (e) {
       console.warn("Failed updating Redis setup cache for Excel link:", e);
     }

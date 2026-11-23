@@ -8,7 +8,17 @@ import UserManagementCard from "./UserManagementCard";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
 
-const ClientSettingsView = dynamic(() => import("./ClientSettingsView"), { ssr: false });
+const ClientSettingsView = dynamic(() => import("./ClientSettingsView"), {
+  ssr: false,
+  loading: () => (
+    <div style={{ padding: "48px 24px", textAlign: "center", background: "#FFFFFF", borderRadius: "10px", border: "1px solid #E2E8F0" }}>
+      <Spinner size={24} color="#0066CC" />
+      <div style={{ marginTop: "10px", fontSize: "13px", color: "#64748B" }}>
+        Loading client settings...
+      </div>
+    </div>
+  ),
+});
 
 import { SYSTEM_VERSION, getSystemCopyright } from "../config/version";
 
@@ -143,8 +153,17 @@ export default function SettingsView({
     return { bg: "#f3f4f6", color: "#374151", border: "#e5e7eb", label: action || "Event" };
   };
 
-  // Initialize user preferences on mount (all users)
+  const prefLoadedRef = useRef(false);
+  const systemAdminInitRef = useRef("");
+
+  // Initialize user preferences when viewing system or notifications settings (not client settings)
   useEffect(() => {
+    if (settingsMode === "client" || prefLoadedRef.current) {
+      if (settingsMode === "client") setPrefLoading(false);
+      return;
+    }
+    prefLoadedRef.current = true;
+    setPrefLoading(true);
     let isMounted = true;
     fetch("/api/triage", {
       method: "POST",
@@ -163,7 +182,7 @@ export default function SettingsView({
       });
 
     return () => { isMounted = false; };
-  }, [automationCommanderSheetId]);
+  }, [automationCommanderSheetId, settingsMode]);
 
   // Handle immediate save of daily digest email preference
   const handleDailyAlertsEmailChange = async (e) => {
@@ -195,12 +214,17 @@ export default function SettingsView({
     }
   };
 
-  // Initialize admin data on mount (Admin only)
+  // Initialize admin data only when viewing PMA system settings (Admin only)
   useEffect(() => {
-    if (!automationCommanderSheetId || !effectiveIsAdmin) {
+    if (settingsMode !== "system" || !automationCommanderSheetId || !effectiveIsAdmin) {
       setSettingsLoading(false);
       return;
     }
+
+    if (systemAdminInitRef.current === automationCommanderSheetId) {
+      return;
+    }
+    systemAdminInitRef.current = automationCommanderSheetId;
 
     setSettingsLoading(true);
     if (!sweepScheduleLoaded) loadSweepSchedule();
@@ -224,11 +248,12 @@ export default function SettingsView({
       .catch(e => console.error("get_claude_settings error:", e))
       .finally(() => setSettingsLoading(false));
   }, [
-    automationCommanderSheetId, buildOptionsLogLoaded, flagSweepLogLoaded,
+    settingsMode, automationCommanderSheetId, effectiveIsAdmin,
+    buildOptionsLogLoaded, flagSweepLogLoaded,
     loadBuildOptionsLog, loadFlagSweepLog, loadPrecomputeLog,
     loadSweepSchedule, precomputeLogLoaded, setSettingsData,
     setSettingsEditAnomaly, setSettingsEditDaily, setSettingsEditHourly,
-    setSettingsLoading, sweepScheduleLoaded, effectiveIsAdmin,
+    setSettingsLoading, sweepScheduleLoaded,
     loadSecurityLogs, securityLogsLoaded
   ]);
 

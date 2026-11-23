@@ -390,7 +390,7 @@ async function withSheetsRetry_(fn, label = "Sheets API", maxRetries = 4) {
 /**
  * Resolves a fresh OAuth access token in-process for `/api/integrations/token` requests
  */
-async function resolveBrokerTokenInProcess(ctx, toolRaw) {
+export async function resolveBrokerTokenInProcess(ctx, toolRaw) {
   const tool = String(toolRaw || "xero").trim().toLowerCase();
   const normalizedTool = tool === "qb" ? "quickbooks" : tool === "google_sheet" ? "googlesheet" : tool;
 

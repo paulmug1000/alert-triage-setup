@@ -520,20 +520,58 @@ export async function linkGoogleSheetToClient({
   const cleanKeyHeaders = String(keyHeaders || "").trim();
   const cleanTitle = String(spreadsheetTitle || "").trim();
 
+  // Ensure CRMList!AD2 (Project code) defaults to "System ID (Do Not Edit)" unless mapped to a valid column
+  let shouldDefaultAd2 = false;
+  try {
+    const ad2Res = await withRetry(() =>
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: masterSheetId,
+        ranges: ["CRMList!AD2", "DataFromCRM!1:1"],
+        valueRenderOption: "FORMATTED_VALUE"
+      })
+    );
+    const curAd2 = String(ad2Res.data.valueRanges?.[0]?.values?.[0]?.[0] ?? "").trim();
+    const dfcHeaders = (ad2Res.data.valueRanges?.[1]?.values?.[0] || [])
+      .map((h) => String(h ?? "").trim())
+      .filter(Boolean);
+    const keyHdrList = cleanKeyHeaders
+      .split(/[,;\n\r]+/)
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (!curAd2) {
+      shouldDefaultAd2 = true;
+    } else if (curAd2.toLowerCase() !== "system id (do not edit)") {
+      const existsInDfc = dfcHeaders.length > 0 && dfcHeaders.some((h) => h.toLowerCase() === curAd2.toLowerCase());
+      if (dfcHeaders.length > 0 && !existsInDfc) {
+        shouldDefaultAd2 = true;
+      } else if (dfcHeaders.length === 0 && curAd2.toLowerCase() === "project code" && !keyHdrList.includes("project code")) {
+        shouldDefaultAd2 = true;
+      }
+    }
+  } catch (e) {
+    console.warn("Failed inspecting CRMList!AD2 during Google Sheet link:", e.message);
+  }
+
   // Write to KeyInfo!X11:X14, clear legacy X15, and set Q8 to Google Sheet
+  const batchData = [
+    { range: "KeyInfo!X11", values: [[url.trim()]] },
+    { range: "KeyInfo!X12", values: [[cleanTab]] },
+    { range: "KeyInfo!X13", values: [[cleanKeyHeaders]] },
+    { range: "KeyInfo!X14", values: [[rowNumStr]] },
+    { range: "KeyInfo!X15", values: [[""]] },
+    { range: "KeyInfo!Q8", values: [["Google Sheet"]] }
+  ];
+  if (shouldDefaultAd2) {
+    batchData.push({ range: "CRMList!AD2", values: [["System ID (Do Not Edit)"]] });
+  }
+
   await withRetry(() =>
     sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: masterSheetId,
       requestBody: {
         valueInputOption: "RAW",
-        data: [
-          { range: "KeyInfo!X11", values: [[url.trim()]] },
-          { range: "KeyInfo!X12", values: [[cleanTab]] },
-          { range: "KeyInfo!X13", values: [[cleanKeyHeaders]] },
-          { range: "KeyInfo!X14", values: [[rowNumStr]] },
-          { range: "KeyInfo!X15", values: [[""]] },
-          { range: "KeyInfo!Q8", values: [["Google Sheet"]] }
-        ]
+        data: batchData
       }
     })
   );
@@ -558,6 +596,9 @@ export async function linkGoogleSheetToClient({
         updatedAt: new Date().toISOString()
       };
       await redisClient.set(redisKey, JSON.stringify(updated));
+      if (shouldDefaultAd2) {
+        await redisClient.del(`pulse:client_settings:${cleanClient}`).catch(() => {});
+      }
     } catch (e) {
       console.warn("Failed updating Redis setup cache for Google Sheet link:", e);
     }

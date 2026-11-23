@@ -22,6 +22,8 @@ import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/use
 import { verifySignedOAuthState, safeCompareSecret, verifyCallbackSessionInitiator, getTrustedClientIp, checkRateLimit } from "../../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 import { sanitizeRedirectUrl, resolveCanonicalOAuthHost, sanitizeSpreadsheetTerms } from "../../../../utils/helpers.js";
+import { resolveSupabaseSheetContext } from "../../../../services/masterEngineService.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "../../../../services/supabaseClient.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -125,19 +127,26 @@ export default async function handler(req, res) {
     const isAdvisorConnection = (isAdvisorKey || isAdvisorName) && statePayload?.mode === "advisor";
     const isDedicated = !isAdvisorConnection;
 
-    // Fallback: If masterSheetId wasn't passed in statePayload, resolve it from AutoUpdates
+    // Fallback: If masterSheetId wasn't passed in statePayload, resolve it from Supabase or legacy AutoUpdates
     if (!masterSheetId && clientName && !isAdvisorConnection) {
       try {
-        const sheets = await getSheetsClient();
-        const resp = await sheets.spreadsheets.values.get({
-          spreadsheetId: DEFAULT_AC_SHEET_ID,
-          range: "AutoUpdates!A2:N500"
-        });
-        const rows = resp.data.values || [];
-        const match = rows.find(r => matchesClientName(r[0], clientName));
-        if (match && match[12]) {
-          masterSheetId = extractSheetIdFromUrl(match[12]) || String(match[12]).trim();
+        const supaCtx = await resolveSupabaseSheetContext({ clientName }).catch(() => null);
+        if (supaCtx?.masterSheetId) {
+          masterSheetId = supaCtx.masterSheetId;
           console.log(`🔗 Xero Callback: Auto-resolved masterSheetId for "${clientName}" -> ${masterSheetId}`);
+        }
+        if (!masterSheetId && !(await isSupabaseControlPlaneActive())) {
+          const sheets = await getSheetsClient();
+          const resp = await sheets.spreadsheets.values.get({
+            spreadsheetId: DEFAULT_AC_SHEET_ID,
+            range: "AutoUpdates!A2:N500"
+          });
+          const rows = resp.data.values || [];
+          const match = rows.find(r => matchesClientName(r[0], clientName));
+          if (match && match[12]) {
+            masterSheetId = extractSheetIdFromUrl(match[12]) || String(match[12]).trim();
+            console.log(`🔗 Xero Callback: Auto-resolved masterSheetId for "${clientName}" -> ${masterSheetId}`);
+          }
         }
       } catch (lookupErr) {
         console.warn("⚠️ Xero Callback: Note resolving masterSheetId:", lookupErr.message);
@@ -208,20 +217,43 @@ export default async function handler(req, res) {
       // Auto-link ALL other ecosystem clients matching the authorized Xero organisations
       try {
         const sheets = await getSheetsClient();
-        const acRes = await withRetry(() =>
-          sheets.spreadsheets.values.get({
-            spreadsheetId: DEFAULT_AC_SHEET_ID,
-            range: "AutoUpdates!A2:N100"
-          })
-        );
-        const rows = acRes.data.values || [];
-        for (const r of rows) {
-          const cName = String(r[0] || "").trim();
-          const mUrl = String(r[12] || "").trim();
-          if (!cName || cName.toLowerCase() === "client" || cName.toLowerCase() === "client name" || !mUrl) continue;
-          const match = mUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
-          const mSheetId = match ? match[1] : "";
+        const supaControlPlane = isSupabaseConfigured() && (await isSupabaseControlPlaneActive());
+        const ecosystemClients = [];
 
+        if (supaControlPlane) {
+          const sb = getSupabaseAdmin();
+          const { data: dbClients, error: dbErr } = await sb
+            .from("clients")
+            .select("client_name, master_sheet_id, master_sheet_url, status, metadata");
+          if (dbErr) throw dbErr;
+          for (const c of (dbClients || [])) {
+            const cName = String(c.client_name || "").trim();
+            if (!cName) continue;
+            const effStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+            if (["inactive", "archived", "suspended"].includes(effStatus)) continue;
+            const mSheetId = String(c.master_sheet_id || "").trim() || extractSheetIdFromUrl(c.master_sheet_url || "") || "";
+            if (!mSheetId) continue;
+            ecosystemClients.push({ cName, mSheetId });
+          }
+        } else {
+          const acRes = await withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: DEFAULT_AC_SHEET_ID,
+              range: "AutoUpdates!A2:N100"
+            })
+          );
+          const rows = acRes.data.values || [];
+          for (const r of rows) {
+            const cName = String(r[0] || "").trim();
+            const mUrl = String(r[12] || "").trim();
+            if (!cName || cName.toLowerCase() === "client" || cName.toLowerCase() === "client name" || !mUrl) continue;
+            const match = mUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+            const mSheetId = match ? match[1] : "";
+            ecosystemClients.push({ cName, mSheetId });
+          }
+        }
+
+        for (const { cName, mSheetId } of ecosystemClients) {
           // Check if this ecosystem client matches one of the authorized tenants
           const clientTenant = matchTenantToClient(cName, tenants);
           if (clientTenant) {

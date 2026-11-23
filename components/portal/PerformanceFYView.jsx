@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { PerformanceSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, parseMoney, formatMoney as universalFormatMoney, formatCurrencyString } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, parseMoney, formatMoney as universalFormatMoney, formatCurrencyString, isNBToFindLabel, hasNBToFindInPerformance } from "../../services/deepDiveHelper";
 import PerformanceTrajectoryChartRow from "./PerformanceTrajectoryChartRow";
 import { downloadCsv } from "../../utils/helpers";
 
@@ -23,6 +23,26 @@ export default function PerformanceFYView({
   useEffect(() => {
     if (activePopover?.isOpen && activePopover._clickParams && keyData) {
       const p = activePopover._clickParams;
+      if (p.isSummaryPeriod) {
+        const ddData = buildSummaryPeriodDeepDive({
+          summaryKey: p.summaryKey,
+          rowLabel: p.rowLabel,
+          periodLabel: p.periodLabel,
+          startIdx: p.startIdx,
+          spanCount: p.spanCount,
+          cellVal: p.cellVal,
+        });
+        setActivePopover((prev) => prev ? {
+          ...prev,
+          title: ddData.title,
+          period: ddData.period,
+          total: ddData.total,
+          items: ddData.items || [],
+          sections: ddData.sections || null,
+          isLoading: false,
+        } : null);
+        return;
+      }
       const ddData = buildDeepDiveData({
         ddType: p.ddType,
         periodLabel: p.periodLabel,
@@ -51,6 +71,7 @@ export default function PerformanceFYView({
   const defaultYearIdx = data?.currentYearIdx !== undefined ? data.currentYearIdx : (years.length > 1 ? 1 : 0);
   const activeYearIdx = selectedYearIdx !== null ? Math.min(Math.max(0, selectedYearIdx), Math.max(0, years.length - 1)) : defaultYearIdx;
   const activeYear = years[activeYearIdx];
+  const showNBToFind = hasNBToFindInPerformance(data) !== false;
 
   const isYear0 = Boolean(
     activeYear?.id === "hist" ||
@@ -69,23 +90,19 @@ export default function PerformanceFYView({
 
   const tableScrollRef = useRef(null);
   const chartScrollRef = useRef(null);
+  const quartersScrollRef = useRef(null);
+  const halvesScrollRef = useRef(null);
   const isSyncingScrollRef = useRef(false);
 
-  const handleTableScroll = () => {
-    if (isSyncingScrollRef.current) return;
+  const syncHorizontalScroll = (sourceRef) => {
+    if (isSyncingScrollRef.current || !sourceRef?.current) return;
     isSyncingScrollRef.current = true;
-    if (chartScrollRef.current && tableScrollRef.current) {
-      chartScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
-    }
-    isSyncingScrollRef.current = false;
-  };
-
-  const handleChartScroll = () => {
-    if (isSyncingScrollRef.current) return;
-    isSyncingScrollRef.current = true;
-    if (tableScrollRef.current && chartScrollRef.current) {
-      tableScrollRef.current.scrollLeft = chartScrollRef.current.scrollLeft;
-    }
+    const nextLeft = sourceRef.current.scrollLeft;
+    [tableScrollRef, chartScrollRef, quartersScrollRef, halvesScrollRef].forEach((ref) => {
+      if (ref !== sourceRef && ref.current) {
+        ref.current.scrollLeft = nextLeft;
+      }
+    });
     isSyncingScrollRef.current = false;
   };
 
@@ -204,6 +221,11 @@ export default function PerformanceFYView({
     }) ||
     findRow(["total income", "total revenue", "total turnover", "income", "revenue"]);
 
+  const totalCosRow =
+    activeYear.rows?.find((r) => {
+      const l = String(r.label || "").toLowerCase().trim();
+      return l === "total costs of sale" || l === "total cost of sales";
+    }) || findRow(["total costs of sale", "total cost of sales"]);
   const grossProfitRow = activeYear.rows?.find((r) => {
     const l = String(r.label || "").toLowerCase().trim();
     return l === "gross profit";
@@ -216,6 +238,18 @@ export default function PerformanceFYView({
     return l === "operating profit";
   });
   const opMarginRow = findRow(["operating profit %"]);
+  const staffRatioRow = activeYear.rows?.find((r) => {
+    const l = String(r.label || "").toLowerCase().trim();
+    return l.includes("staff costs to") || l.includes("staff ratio");
+  });
+  const staffDelRow = activeYear.rows?.find((r) => {
+    const l = String(r.label || "").toLowerCase().trim();
+    return l.includes("staff costs - delivery") || l.includes("delivery staff");
+  });
+  const staffNonDelRow = activeYear.rows?.find((r) => {
+    const l = String(r.label || "").toLowerCase().trim();
+    return l.includes("staff costs - non-delivery") || l.includes("non-delivery staff");
+  });
 
   // Trajectory chart values
   const chartRevVals =
@@ -375,6 +409,405 @@ export default function PerformanceFYView({
   };
 
 
+  const getMonthMathVal = (row, mIdx) => {
+    if (!row) return 0;
+    const rawMath = row.monthlyMath?.[mIdx];
+    if (typeof rawMath === "number" && Number.isFinite(rawMath)) return rawMath;
+    return parseNum(row.monthlyValues?.[mIdx]);
+  };
+
+  const sumPeriod = (row, startIdx, endIdx) => {
+    if (!row) return 0;
+    let total = 0;
+    for (let i = startIdx; i <= endIdx; i++) {
+      total += getMonthMathVal(row, i);
+    }
+    return total;
+  };
+
+  const formatMonthRange = (startStr, endStr) => {
+    const s = String(startStr || "").trim();
+    const e = String(endStr || "").trim();
+    if (!s || !e) return s || e || "";
+    const m1 = s.match(/^([A-Za-z]{3})[\s\-]+(\d{2,4})$/);
+    const m2 = e.match(/^([A-Za-z]{3})[\s\-]+(\d{2,4})$/);
+    if (m1 && m2 && m1[2] === m2[2]) {
+      return `${m1[1]}–${m2[1]} ${m1[2]}`;
+    }
+    return `${s}–${e}`;
+  };
+
+  const getPeriodStatus = (statuses, startIdx, endIdx) => {
+    const total = endIdx - startIdx + 1;
+    let actualCount = 0;
+    for (let i = startIdx; i <= endIdx; i++) {
+      if (String(statuses[i] || "").trim().toLowerCase() === "actual") {
+        actualCount++;
+      }
+    }
+    if (actualCount === total) {
+      return {
+        label: "Actual",
+        type: "actual",
+        colBg: "#f4f7fa",
+        color: "#0047AB",
+        fontWeight: 600,
+        fontStyle: "normal",
+        tooltip: "All months actual",
+      };
+    }
+    return {
+      label: "Forecast",
+      type: "forecast",
+      colBg: "#ffffff",
+      color: "#64748b",
+      fontWeight: 400,
+      fontStyle: "italic",
+      tooltip: actualCount === 0 ? "All months forecast" : `${actualCount} actual, ${total - actualCount} forecast`,
+    };
+  };
+
+  const headerMonths = activeYear.headerMonths || [];
+  const monthStatuses = activeYear.statusValues || activeYear.monthStatuses || [];
+  const hasFull12Months = Array.isArray(headerMonths) && headerMonths.length === 12;
+
+  const buildPeriodDefs = (defs) =>
+    defs.map((d) => {
+      const rangeLabel = formatMonthRange(headerMonths[d.startIdx], headerMonths[d.endIdx]);
+      return {
+        ...d,
+        rangeLabel,
+        fullLabel: rangeLabel ? `${d.label} (${rangeLabel})` : d.label,
+        status: getPeriodStatus(monthStatuses, d.startIdx, d.endIdx),
+      };
+    });
+
+  const quarters = hasFull12Months
+    ? buildPeriodDefs([
+        { key: "q1", label: "Q1", startIdx: 0, endIdx: 2, span: 3 },
+        { key: "q2", label: "Q2", startIdx: 3, endIdx: 5, span: 3 },
+        { key: "q3", label: "Q3", startIdx: 6, endIdx: 8, span: 3 },
+        { key: "q4", label: "Q4", startIdx: 9, endIdx: 11, span: 3 },
+      ])
+    : [];
+
+  const halves = hasFull12Months
+    ? buildPeriodDefs([
+        { key: "h1", label: "H1", startIdx: 0, endIdx: 5, span: 6 },
+        { key: "h2", label: "H2", startIdx: 6, endIdx: 11, span: 6 },
+      ])
+    : [];
+
+  const coreSummaryRowDefs = [
+    totalRevRow ? { key: "totalRev", row: totalRevRow, kind: "currency", isMajor: true } : null,
+    totalCosRow ? { key: "totalCos", row: totalCosRow, kind: "currency", isMajor: false } : null,
+    grossProfitRow ? { key: "gpGap", kind: "spacer", height: 10 } : null,
+    grossProfitRow ? { key: "grossProfit", row: grossProfitRow, kind: "currency", isMajor: true } : null,
+    gpMarginRow && grossProfitRow ? { key: "gpMargin", row: gpMarginRow, kind: "percent", numeratorRow: grossProfitRow } : null,
+    overheadsRow ? { key: "ovhGap", kind: "spacer", height: 10 } : null,
+    overheadsRow ? { key: "totalOverheads", row: overheadsRow, kind: "currency", isMajor: true } : null,
+    overheadsPctRow && overheadsRow ? { key: "overheadsPct", row: overheadsPctRow, kind: "percent", numeratorRow: overheadsRow } : null,
+    opProfitRow ? { key: "opGap", kind: "spacer", height: 10 } : null,
+    opProfitRow ? { key: "opProfit", row: opProfitRow, kind: "currency", isMajor: true } : null,
+    opMarginRow && opProfitRow ? { key: "opMargin", row: opMarginRow, kind: "percent", numeratorRow: opProfitRow } : null,
+    ...(staffRatioRow
+      ? [
+          { key: "staffGap", kind: "spacer", height: 14 },
+          { key: "staffRatio", row: staffRatioRow, kind: "staffPercent" },
+        ]
+      : []),
+  ].filter(Boolean);
+
+  const summaryRowDefs =
+    coreSummaryRowDefs.length > 0
+      ? [
+          { key: "topGap", kind: "spacer", height: 8 },
+          ...coreSummaryRowDefs,
+          { key: "bottomGap", kind: "spacer", height: 6 },
+        ]
+      : [];
+
+  const isStaffRowRedacted = (row, startIdx, endIdx) => {
+    if (isSenior) return true;
+    if (row?.totalVal === "—" || staffDelRow?.totalVal === "—" || staffNonDelRow?.totalVal === "—") {
+      return true;
+    }
+    for (let i = startIdx; i <= endIdx; i++) {
+      if (
+        row?.monthlyValues?.[i] === "—" ||
+        staffDelRow?.monthlyValues?.[i] === "—" ||
+        staffNonDelRow?.monthlyValues?.[i] === "—"
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const computeSummaryCell = (def, startIdx, endIdx) => {
+    if (def.kind === "currency") {
+      const numericVal = sumPeriod(def.row, startIdx, endIdx);
+      const displayVal = universalFormatMoney(numericVal, 0, currencySymbol, thousandsSeparator);
+      return {
+        displayVal,
+        numericVal,
+        badge: null,
+        isClickable: def.key !== "opProfit" && Math.abs(numericVal) >= 0.001,
+      };
+    }
+
+    if (def.kind === "staffPercent") {
+      if (isStaffRowRedacted(def.row, startIdx, endIdx)) {
+        return { displayVal: "", numericVal: null, badge: null, isClickable: false };
+      }
+      const rev = sumPeriod(totalRevRow, startIdx, endIdx);
+      if (Math.abs(rev) < 0.001) {
+        return { displayVal: "", numericVal: null, badge: null, isClickable: false };
+      }
+      const staffSum = sumPeriod(staffDelRow, startIdx, endIdx) + sumPeriod(staffNonDelRow, startIdx, endIdx);
+      const displayVal = `${Math.round((staffSum / rev) * 100)}%`;
+      return {
+        displayVal,
+        numericVal: staffSum / rev,
+        badge: getMarginBadgeStyle(def.row.label, displayVal),
+        isClickable: false,
+      };
+    }
+
+    // Percentage row (GP margin %, Overheads %, Operating profit %)
+    const rev = sumPeriod(totalRevRow, startIdx, endIdx);
+    if (Math.abs(rev) < 0.001) {
+      return { displayVal: "", numericVal: null, badge: null, isClickable: false };
+    }
+    const num = sumPeriod(def.numeratorRow, startIdx, endIdx);
+    const displayVal = `${Math.round((num / rev) * 100)}%`;
+    return {
+      displayVal,
+      numericVal: num / rev,
+      badge: getMarginBadgeStyle(def.row.label, displayVal),
+      isClickable: false,
+    };
+  };
+
+  const getSectionSubRows = (startHeaderLabels, stopRow) => {
+    const rows = activeYear.rows || [];
+    const headerSet = new Set(startHeaderLabels.map((h) => h.toLowerCase().trim()));
+    let inSection = false;
+    const subRows = [];
+    for (const r of rows) {
+      const lbl = String(r?.label || "").trim();
+      const lower = lbl.toLowerCase();
+      if (!inSection) {
+        if (headerSet.has(lower)) {
+          inSection = true;
+        }
+        continue;
+      }
+      if (stopRow && (r === stopRow || lower === String(stopRow.label || "").toLowerCase().trim())) {
+        break;
+      }
+      if (!lbl || lower === "hide") continue;
+      const rs = getRowStyle(lbl);
+      if (rs.isHeader || rs.isMajor || rs.isMarginRow) continue;
+      subRows.push(r);
+    }
+    return subRows;
+  };
+
+  const buildSummaryPeriodDeepDive = ({ summaryKey, rowLabel, periodLabel, startIdx, spanCount, cellVal }) => {
+    const firstMonthStr = headerMonths[0] || "Apr 25";
+    const fyStartDate = DeepDiveEngine.parseHeaderDate(firstMonthStr) || new Date(2025, 3, 1);
+    const startMonthStr = headerMonths[startIdx];
+    let targetDate = startMonthStr ? DeepDiveEngine.parseHeaderDate(startMonthStr) : null;
+    if (!targetDate) {
+      targetDate = new Date(fyStartDate.getFullYear(), fyStartDate.getMonth() + startIdx, 1);
+    }
+
+    const summaryRowMap = {
+      totalRev: totalRevRow,
+      totalCos: totalCosRow,
+      grossProfit: grossProfitRow,
+      totalOverheads: overheadsRow,
+      opProfit: opProfitRow,
+    };
+    const summaryRowObj = summaryRowMap[summaryKey];
+
+    const monthlyBreakdownItems = [];
+    for (let m = startIdx; m < startIdx + spanCount; m++) {
+      const val = getMonthMathVal(summaryRowObj, m);
+      const stRaw = String(monthStatuses[m] || "").trim().toLowerCase();
+      let detail = stRaw === "actual" ? "Actual" : "Forecast";
+      if (summaryKey === "grossProfit" || summaryKey === "opProfit") {
+        const revM = getMonthMathVal(totalRevRow, m);
+        if (Math.abs(revM) >= 0.001) {
+          detail += ` • ${Math.round((val / revM) * 100)}% margin`;
+        }
+      }
+      monthlyBreakdownItems.push({
+        name: headerMonths[m] || `Month ${m + 1}`,
+        detail,
+        amount: val,
+      });
+    }
+
+    const monthlySection = {
+      key: "monthly_breakdown",
+      title: "Monthly breakdown",
+      amount: sumPeriod(summaryRowObj, startIdx, startIdx + spanCount - 1),
+      isAccordion: true,
+      items: monthlyBreakdownItems,
+    };
+
+    const buildConstituentSection = (subRow) => {
+      const subVal = sumPeriod(subRow, startIdx, startIdx + spanCount - 1);
+      if (Math.abs(subVal) < 0.005) return null;
+
+      if (!isYear0 && keyData) {
+        const ddType = getDeepDiveType(subRow.label);
+        if (ddType) {
+          const dd = buildDeepDiveData({
+            ddType,
+            periodLabel,
+            monthIndex: startIdx,
+            cellValue: subVal,
+            yearIndex: activeYearIdx,
+            targetDate,
+            aggregateCount: spanCount,
+            keyData,
+            isIncomeMode,
+            isRestricted: isSenior,
+          });
+          let items = Array.isArray(dd.items) ? dd.items : [];
+          if (items.length === 0 && Array.isArray(dd.sections) && dd.sections.length > 0) {
+            const flattened = [];
+            dd.sections.forEach((sec) => {
+              if (Array.isArray(sec.items) && sec.items.length > 0) {
+                sec.items.forEach((it) => {
+                  flattened.push({
+                    ...it,
+                    detail: it.detail ? `${sec.title} • ${it.detail}` : sec.title,
+                  });
+                });
+              } else if (sec.title) {
+                flattened.push({
+                  name: sec.title,
+                  amount: sec.amount || 0,
+                });
+              }
+            });
+            items = flattened;
+          }
+          return {
+            key: subRow.label,
+            title: subRow.label,
+            amount: subVal,
+            isAccordion: true,
+            items,
+          };
+        }
+      }
+
+      return {
+        key: subRow.label,
+        title: subRow.label,
+        amount: subVal,
+        isAccordion: false,
+      };
+    };
+
+    let sections = null;
+    let items = [];
+
+    if (summaryKey === "totalRev") {
+      const subSections = getSectionSubRows(["income", "revenue", "turnover"], totalRevRow)
+        .map(buildConstituentSection)
+        .filter(Boolean);
+      sections = [...subSections, monthlySection];
+    } else if (summaryKey === "totalCos") {
+      if (isSenior) {
+        sections = null;
+        items = monthlyBreakdownItems;
+      } else {
+        const subSections = getSectionSubRows(["costs of sale", "cost of sales"], totalCosRow)
+          .map(buildConstituentSection)
+          .filter(Boolean);
+        sections = [...subSections, monthlySection];
+      }
+    } else if (summaryKey === "grossProfit") {
+      const revSum = sumPeriod(totalRevRow, startIdx, startIdx + spanCount - 1);
+      const cosSum = sumPeriod(totalCosRow, startIdx, startIdx + spanCount - 1);
+      sections = [
+        {
+          key: "gp_rev",
+          title: totalRevRow?.label || `Total ${revenueLabel.toLowerCase()}`,
+          amount: revSum,
+          isAccordion: false,
+        },
+        {
+          key: "gp_cos",
+          title: `Less: ${totalCosRow?.label || "Total costs of sale"}`,
+          amount: -cosSum,
+          isAccordion: false,
+        },
+        monthlySection,
+      ];
+    } else if (summaryKey === "totalOverheads") {
+      if (isSenior) {
+        sections = null;
+        items = monthlyBreakdownItems;
+      } else {
+        const subSections = getSectionSubRows(["overheads"], overheadsRow)
+          .map(buildConstituentSection)
+          .filter(Boolean);
+        sections = [...subSections, monthlySection];
+      }
+    }
+
+    return {
+      title: `${rowLabel} (${periodLabel})`,
+      period: periodLabel,
+      total: cellVal,
+      items,
+      sections,
+    };
+  };
+
+  const handleSummaryCellClick = (e, summaryKey, rowLabel, cellVal, startIdx, spanCount, periodLabel) => {
+    if (summaryKey === "opProfit") return;
+    if (cellVal === null || cellVal === undefined || cellVal === "" || cellVal === "—" || Math.abs(parseMoney(cellVal)) < 0.001) {
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ddData = buildSummaryPeriodDeepDive({
+      summaryKey,
+      rowLabel,
+      periodLabel,
+      startIdx,
+      spanCount,
+      cellVal,
+    });
+    const isDataLoading = !isYear0 && (!keyData || isLoading);
+    setActivePopover({
+      isOpen: true,
+      targetRect: rect,
+      title: ddData.title,
+      period: ddData.period,
+      total: ddData.total,
+      items: ddData.items || [],
+      sections: ddData.sections || null,
+      isLoading: isDataLoading,
+      _clickParams: {
+        isSummaryPeriod: true,
+        summaryKey,
+        rowLabel,
+        periodLabel,
+        startIdx,
+        spanCount,
+        cellVal,
+      },
+    });
+  };
+
   const handleDownloadCSV = () => {
     const dateStr = new Date().toISOString().split("T")[0];
     const fyName = (activeYear?.fyLabel || activeYear?.displayTitle || "FY").replace(/\s+/g, "_");
@@ -384,7 +817,7 @@ export default function PerformanceFYView({
     exportRows.push(["Metric", ...(activeYear?.headerMonths || []), "", "Total"]);
     (activeYear?.rows || []).forEach((r) => {
       const lbl = String(r.label || "").trim();
-      if (!lbl || lbl.toLowerCase() === "hide") return;
+      if (!lbl || lbl.toLowerCase() === "hide" || (!showNBToFind && isNBToFindLabel(lbl))) return;
       const rowStyle = getRowStyle(lbl);
       if (rowStyle.isHeader) {
         exportRows.push([lbl]);
@@ -393,7 +826,334 @@ export default function PerformanceFYView({
       }
     });
 
+    if (hasFull12Months && summaryRowDefs.length > 0) {
+      const appendSummaryCsvSection = (sectionTitle, periods) => {
+        exportRows.push([]);
+        exportRows.push([sectionTitle]);
+        exportRows.push(["Metric", ...periods.map((p) => p.fullLabel)]);
+        exportRows.push(["Status", ...periods.map((p) => p.status.label)]);
+        summaryRowDefs.forEach((def) => {
+          if (def.kind === "spacer") return;
+          const vals = periods.map((p) => computeSummaryCell(def, p.startIdx, p.endIdx).displayVal);
+          exportRows.push([def.row.label, ...vals]);
+        });
+      };
+      appendSummaryCsvSection("Quarters", quarters);
+      appendSummaryCsvSection("Halves", halves);
+    }
+
     downloadCsv(`Pulse_Performance_${fyName}_${dateStr}.csv`, exportRows);
+  };
+
+  const renderPeriodSummaryTable = ({ title, periods, scrollRef, wrapperClassName }) => {
+    if (!hasFull12Months || !periods || periods.length === 0 || summaryRowDefs.length === 0) {
+      return null;
+    }
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", width: "100%" }}>
+        <h3 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 700, color: "#0047AB" }}>
+          {title}
+        </h3>
+        <div
+          className={wrapperClassName}
+          ref={scrollRef}
+          onScroll={() => syncHorizontalScroll(scrollRef)}
+          style={{
+            background: "transparent",
+            overflowX: "auto",
+            width: "100%",
+          }}
+        >
+          <div style={{ width: "100%", minWidth: "980px" }}>
+            <div
+              style={{
+                width: "92.2%",
+                background: "#ffffff",
+                borderRadius: "8px",
+                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+                border: "1px solid #e2e8f0",
+                overflow: "hidden",
+              }}
+            >
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "separate",
+                  borderSpacing: 0,
+                  tableLayout: "fixed",
+                  fontSize: "12px",
+                  fontFamily: "'Kumbh Sans', sans-serif",
+                  background: "#ffffff",
+                }}
+              >
+                <colgroup>
+                  <col style={{ width: "20.6074%", minWidth: "20.6074%" }} />
+                  {headerMonths.map((_, idx) => (
+                    <col key={idx} style={{ width: "6.61605%", minWidth: "6.61605%" }} />
+                  ))}
+                </colgroup>
+                <thead>
+                  <tr style={{ background: "#0047AB", color: "#ffffff" }}>
+                    <th
+                      style={{
+                        padding: "8px 10px",
+                        textAlign: "left",
+                        fontWeight: 700,
+                        fontSize: "12px",
+                        position: "sticky",
+                        left: 0,
+                        background: "#0047AB",
+                        zIndex: 3,
+                        width: "20.6074%",
+                      }}
+                    />
+                    {periods.map((p) => (
+                      <th
+                        key={p.key}
+                        colSpan={p.span}
+                        style={{
+                          padding: "8px 10px",
+                          textAlign: "center",
+                          fontWeight: 700,
+                          fontSize: "11.5px",
+                          borderLeft: "1px solid rgba(255, 255, 255, 0.18)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        <span>{p.label}</span>
+                        {p.rangeLabel && (
+                          <span
+                            style={{
+                              marginLeft: "5px",
+                              fontSize: "10.5px",
+                              fontWeight: 500,
+                              color: "rgba(255, 255, 255, 0.82)",
+                            }}
+                          >
+                            {p.rangeLabel}
+                          </span>
+                        )}
+                      </th>
+                    ))}
+                  </tr>
+
+                  <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0", fontSize: "10.5px" }}>
+                    <td
+                      style={{
+                        padding: "5px 10px",
+                        position: "sticky",
+                        left: 0,
+                        background: "#ffffff",
+                        zIndex: 3,
+                        borderBottom: "1px solid #e2e8f0",
+                      }}
+                    />
+                    {periods.map((p) => (
+                      <td
+                        key={p.key}
+                        colSpan={p.span}
+                        title={p.status.tooltip}
+                        style={{
+                          padding: "5px 10px",
+                          textAlign: "center",
+                          color: p.status.color,
+                          fontWeight: p.status.fontWeight,
+                          fontStyle: p.status.fontStyle,
+                          background: p.status.colBg,
+                          borderLeft: "1px solid #e2e8f0",
+                          borderBottom: "1px solid #e2e8f0",
+                        }}
+                      >
+                        {p.status.label}
+                      </td>
+                    ))}
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {summaryRowDefs.map((def) => {
+                    if (def.kind === "spacer") {
+                      return (
+                        <tr key={def.key} style={{ height: `${def.height || 10}px`, lineHeight: 0 }}>
+                          <td
+                            style={{
+                              padding: 0,
+                              background: "#ffffff",
+                              position: "sticky",
+                              left: 0,
+                              zIndex: 2,
+                              border: "none",
+                            }}
+                          />
+                          {periods.map((p) => (
+                            <td
+                              key={p.key}
+                              colSpan={p.span}
+                              style={{
+                                padding: 0,
+                                background: "#ffffff",
+                                border: "none",
+                                borderLeft: "1px solid #f1f5f9",
+                              }}
+                            />
+                          ))}
+                        </tr>
+                      );
+                    }
+
+                    const label = def.row.label;
+                    const rowStyle = getRowStyle(label);
+                    const isPctRow = def.kind === "percent" || def.kind === "staffPercent";
+                    const isMarginRow = Boolean(rowStyle.isMarginRow);
+                    const isMajor = Boolean(def.isMajor && rowStyle.isMajor);
+                    const rowHeight = isMajor ? "34px" : isMarginRow ? "28px" : "30px";
+
+                    return (
+                      <tr
+                        key={def.key}
+                        style={{
+                          height: rowHeight,
+                          borderBottom: isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
+                          background: isMajor ? rowStyle.bg : "#ffffff",
+                          fontWeight: isMajor || !isPctRow ? 700 : 400,
+                        }}
+                      >
+                        <td
+                          style={{
+                            padding: isMarginRow ? "4px 10px" : "6px 10px",
+                            color: isMajor ? "#ffffff" : rowStyle.color,
+                            fontSize: isMajor ? "13px" : isMarginRow ? "11px" : "12px",
+                            fontWeight: isMajor ? 700 : isMarginRow ? 400 : 600,
+                            paddingLeft: isMarginRow ? "20px" : "10px",
+                            fontStyle: isPctRow ? "italic" : "normal",
+                            position: "sticky",
+                            left: 0,
+                            background: isMajor ? rowStyle.bg : "#ffffff",
+                            borderLeft: isMarginRow && rowStyle.accentBar ? `4px solid ${rowStyle.accentBar}` : "none",
+                            zIndex: 2,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            boxShadow: "2px 0 3px rgba(0,0,0,0.02)",
+                          }}
+                          title={label}
+                        >
+                          {label}
+                        </td>
+
+                        {periods.map((p) => {
+                          const cell = computeSummaryCell(def, p.startIdx, p.endIdx);
+                          const colBg = p.status.colBg;
+
+                          if (isMajor) {
+                            return (
+                              <td
+                                key={p.key}
+                                colSpan={p.span}
+                                onClick={(e) =>
+                                  cell.isClickable &&
+                                  handleSummaryCellClick(e, def.key, label, cell.numericVal, p.startIdx, p.span, p.fullLabel)
+                                }
+                                style={{
+                                  padding: "6px 10px",
+                                  textAlign: "center",
+                                  color: "#ffffff",
+                                  fontSize: "13px",
+                                  fontWeight: 700,
+                                  background: "transparent",
+                                  borderLeft: "1px solid rgba(255, 255, 255, 0.2)",
+                                  cursor: cell.isClickable ? "pointer" : "default",
+                                  textDecoration: cell.isClickable ? "underline dashed rgba(255,255,255,0.6) 1px" : "none",
+                                  textUnderlineOffset: "2px",
+                                  whiteSpace: "nowrap",
+                                  fontVariantNumeric: "tabular-nums",
+                                }}
+                              >
+                                {cell.displayVal}
+                              </td>
+                            );
+                          }
+
+                          if (isMarginRow) {
+                            return (
+                              <td
+                                key={p.key}
+                                colSpan={p.span}
+                                style={{
+                                  padding: "4px 10px",
+                                  background: colBg,
+                                  borderLeft: "1px solid #e2e8f0",
+                                  textAlign: "center",
+                                  height: "28px",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    display: "inline-block",
+                                    minWidth: "54px",
+                                    padding: "2px 12px",
+                                    borderRadius: "4px",
+                                    background: cell.badge ? cell.badge.bg : "transparent",
+                                    color: cell.badge ? cell.badge.color : "#0047AB",
+                                    fontStyle: "italic",
+                                    fontSize: "11px",
+                                    fontWeight: cell.badge ? 700 : 400,
+                                    fontVariantNumeric: "tabular-nums",
+                                    boxSizing: "border-box",
+                                    textAlign: "center",
+                                  }}
+                                >
+                                  {cell.displayVal}
+                                </div>
+                              </td>
+                            );
+                          }
+
+                          return (
+                            <td
+                              key={p.key}
+                              colSpan={p.span}
+                              onClick={(e) =>
+                                cell.isClickable &&
+                                handleSummaryCellClick(e, def.key, label, cell.numericVal, p.startIdx, p.span, p.fullLabel)
+                              }
+                              style={{
+                                padding: "6px 10px",
+                                textAlign: "center",
+                                color: rowStyle.color,
+                                fontSize: "11.5px",
+                                fontWeight: 600,
+                                background: colBg,
+                                borderLeft: "1px solid #e2e8f0",
+                                cursor: cell.isClickable ? "pointer" : "default",
+                                textDecoration: cell.isClickable ? "underline dashed #94a3b8 1px" : "none",
+                                textUnderlineOffset: "2px",
+                                whiteSpace: "nowrap",
+                                fontVariantNumeric: "tabular-nums",
+                                transition: "background-color 0.15s ease",
+                              }}
+                              onMouseEnter={(e) => {
+                                if (cell.isClickable) e.currentTarget.style.filter = "brightness(0.92)";
+                              }}
+                              onMouseLeave={(e) => {
+                                if (cell.isClickable) e.currentTarget.style.filter = "none";
+                              }}
+                            >
+                              {cell.displayVal}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -550,7 +1310,7 @@ export default function PerformanceFYView({
         <div
           className="fy-table-scroll-wrapper"
           ref={tableScrollRef}
-          onScroll={handleTableScroll}
+          onScroll={() => syncHorizontalScroll(tableScrollRef)}
           style={{
             background: "#ffffff",
             borderRadius: "8px",
@@ -701,7 +1461,7 @@ export default function PerformanceFYView({
                   (prevLbl.includes("operating profit %") || prevLbl.includes("operating profit margin")) &&
                   (nextLbl.includes("staff costs to") || nextLbl.includes("staff ratio"));
 
-                if (label && label.toLowerCase() === "hide") {
+                if ((label && label.toLowerCase() === "hide") || (!showNBToFind && isNBToFindLabel(label))) {
                   return null;
                 }
 
@@ -1052,12 +1812,31 @@ export default function PerformanceFYView({
         thousandsSeparator={thousandsSeparator}
         layout="fy"
         scrollRef={chartScrollRef}
-        onScroll={handleChartScroll}
+        onScroll={() => syncHorizontalScroll(chartScrollRef)}
       />
+
+      {hasFull12Months && summaryRowDefs.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.75rem", marginTop: "0.75rem" }}>
+          {renderPeriodSummaryTable({
+            title: "Quarters",
+            periods: quarters,
+            scrollRef: quartersScrollRef,
+            wrapperClassName: "fy-quarters-scroll-wrapper",
+          })}
+          {renderPeriodSummaryTable({
+            title: "Halves",
+            periods: halves,
+            scrollRef: halvesScrollRef,
+            wrapperClassName: "fy-halves-scroll-wrapper",
+          })}
+        </div>
+      )}
 
       <style jsx>{`
         @media (orientation: landscape) and (max-width: 1024px) {
           .fy-table-scroll-wrapper,
+          .fy-quarters-scroll-wrapper,
+          .fy-halves-scroll-wrapper,
           :global(.fy-chart-scroll-wrapper) {
             margin: 0 !important;
             width: 100% !important;
@@ -1081,6 +1860,8 @@ export default function PerformanceFYView({
             font-size: 2.2rem !important;
           }
           .fy-table-scroll-wrapper,
+          .fy-quarters-scroll-wrapper,
+          .fy-halves-scroll-wrapper,
           :global(.fy-chart-scroll-wrapper) {
             margin: 0 24px !important;
             width: calc(100% - 48px) !important;

@@ -25,6 +25,7 @@ export const config = {
 };
 
 const ACTIVITY_CRON_LAST_KEY = "pulse:activity_feed:last_cron_refresh";
+const TEN_MIN_HOUSEKEEPING_KEY = "pulse:cron:ten_min_housekeeping_last";
 
 export default async function handler(req, res) {
   if (req.method !== "POST" && req.method !== "GET") {
@@ -121,20 +122,45 @@ export default async function handler(req, res) {
         console.warn("⚠️ CRON: Error in dispatchDueNativeMasterSyncs:", syncErr.message);
       }
 
-      const currentStatus = await getTriageRefreshStatus().catch(() => null);
-      const triageAlreadyRunning = Boolean(currentStatus && currentStatus.status === "running");
-      if (triageAlreadyRunning) {
-        console.log("⏭️ CRON: Triage refresh is already running; native sync sweep completed, skipping overlapping triage run.");
+      let shouldRunTenMinHousekeeping = Boolean(
+        forceProactive || forceAll || triggerSource === "supabase_manual_test"
+      );
+      if (!shouldRunTenMinHousekeeping) {
+        try {
+          if (!redisClient?.isOpen) await redisClient.connect().catch(() => { });
+          if (redisClient?.isOpen) {
+            const setRes = await redisClient.set(
+              TEN_MIN_HOUSEKEEPING_KEY,
+              new Date().toISOString(),
+              { NX: true, EX: 555 }
+            );
+            shouldRunTenMinHousekeeping = setRes === "OK";
+          } else {
+            shouldRunTenMinHousekeeping = true;
+          }
+        } catch (_) {
+          shouldRunTenMinHousekeeping = true;
+        }
+      }
+
+      if (shouldRunTenMinHousekeeping) {
+        const currentStatus = await getTriageRefreshStatus().catch(() => null);
+        const triageAlreadyRunning = Boolean(currentStatus && currentStatus.status === "running");
+        if (triageAlreadyRunning) {
+          console.log("⏭️ CRON: Triage refresh is already running; native sync sweep completed, skipping overlapping triage run.");
+        } else {
+          await runBackgroundTriageRefresh({
+            baseUrl,
+            cronSecret,
+            automationCommanderSheetId: acId,
+            forceProactive,
+            forceAll,
+            bypassToken,
+            chain: true,
+          });
+        }
       } else {
-        await runBackgroundTriageRefresh({
-          baseUrl,
-          cronSecret,
-          automationCommanderSheetId: acId,
-          forceProactive,
-          forceAll,
-          bypassToken,
-          chain: true,
-        });
+        console.log("⏭️ CRON: Skipping 10-minute triage housekeeping (within cooldown window).");
       }
 
       const cronHeaders = {
@@ -207,34 +233,36 @@ export default async function handler(req, res) {
       // Lazy-load Google Sheets client once for any remaining sheet-mode checks below
       const sheets = await getSheetsClient().catch(() => null);
 
-      // Pre-warm Pulse Home Page (payload + performance) caches across active clients in Redis
-      try {
-        const bgSheets = await getSheetsClient({ pool: "background" }).catch(() => sheets);
-        const warmRes = await warmAllClientsPortalHomeCache({
-          sheets: bgSheets,
-          maxClientsPerRun: 25,
-          minStaleAgeMs: 20 * 60 * 1000,
-        });
-        if (warmRes?.warmed > 0) {
-          console.log(`CRON: Pre-warmed Pulse home cache for ${warmRes.warmed} client(s) (${warmRes.skipped} already fresh).`);
+      if (shouldRunTenMinHousekeeping) {
+        // Pre-warm Pulse Home Page (payload + performance) caches across active clients in Redis
+        try {
+          const bgSheets = await getSheetsClient({ pool: "background" }).catch(() => sheets);
+          const warmRes = await warmAllClientsPortalHomeCache({
+            sheets: bgSheets,
+            maxClientsPerRun: 25,
+            minStaleAgeMs: 20 * 60 * 1000,
+          });
+          if (warmRes?.warmed > 0) {
+            console.log(`CRON: Pre-warmed Pulse home cache for ${warmRes.warmed} client(s) (${warmRes.skipped} already fresh).`);
+          }
+        } catch (warmErr) {
+          console.warn("⚠️ CRON: Non-fatal error pre-warming Pulse home cache:", warmErr.message);
         }
-      } catch (warmErr) {
-        console.warn("⚠️ CRON: Non-fatal error pre-warming Pulse home cache:", warmErr.message);
-      }
 
-      // Check Confirmed/Pipeline (ErrorCheck!B3:B4) across active clients and notify once per incident window
-      try {
-        const tabErrRes = await checkAndNotifyTabErrors({
-          sheets,
-          automationCommanderSheetId: acId,
-        });
-        if (tabErrRes?.emailed) {
-          console.log(
-            `📧 CRON: Sent tab error notification email for ${tabErrRes.errorDetails?.length || 0} client(s) across ${tabErrRes.checked} checked.`
-          );
+        // Check Confirmed/Pipeline (ErrorCheck!B3:B4) across active clients and notify once per incident window
+        try {
+          const tabErrRes = await checkAndNotifyTabErrors({
+            sheets,
+            automationCommanderSheetId: acId,
+          });
+          if (tabErrRes?.emailed) {
+            console.log(
+              `📧 CRON: Sent tab error notification email for ${tabErrRes.errorDetails?.length || 0} client(s) across ${tabErrRes.checked} checked.`
+            );
+          }
+        } catch (tabErrCheckErr) {
+          console.warn("⚠️ CRON: Non-fatal error in checkAndNotifyTabErrors:", tabErrCheckErr.message);
         }
-      } catch (tabErrCheckErr) {
-        console.warn("⚠️ CRON: Non-fatal error in checkAndNotifyTabErrors:", tabErrCheckErr.message);
       }
 
       // Send 5:00 AM UK daily alerts email digest once per UK calendar day

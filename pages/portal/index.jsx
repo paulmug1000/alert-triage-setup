@@ -512,6 +512,15 @@ export default function PortalPage({
     }
   };
 
+  const handleAfterCrmSync = () => {
+    if (!selectedClient) return;
+    fetchKeyData(selectedClient, true, true);
+    fetchPayload(selectedClient, true, true);
+    if (performanceData) fetchPerformance(selectedClient, true, true);
+    if (cashflowData) fetchCashflow(selectedClient, true, true);
+    if (budgetData) fetchBudget(selectedClient, true, true);
+  };
+
   const fetchBudget = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
     if (client.clientSheetId !== activeClientSheetIdRef.current) return;
@@ -1459,6 +1468,7 @@ export default function PortalPage({
                   isLoading={loadingKeyData}
                   error={keyDataError}
                   onRefresh={handleRefreshKeyData}
+                  onAfterCrmSync={handleAfterCrmSync}
                   isReadOnly={isReadOnly}
                 />
               )}

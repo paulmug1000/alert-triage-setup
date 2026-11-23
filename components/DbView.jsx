@@ -2627,7 +2627,7 @@ export default function DbView({
                       <button
                         type="button"
                         disabled={isBusy}
-                        onClick={() => handleSheetBridgeSync("inbound", true, activeClientName)}
+                        onClick={() => handleSheetBridgeSync("inbound", false, activeClientName)}
                         style={{
                           padding: "6px 10px",
                           fontSize: "11.5px",
@@ -2643,7 +2643,9 @@ export default function DbView({
                         }}
                       >
                         {activeOp?.key === "bridge_inbound" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
-                        <span>Pull from sheet now</span>
+                        <span>
+                          {activeSheetBridgeMode === "dry_run" ? "Preview inbound diff" : "Pull from sheet now"}
+                        </span>
                       </button>
                       <button
                         type="button"
@@ -2710,7 +2712,21 @@ export default function DbView({
                             {formatTimestamp(log.timestamp)}
                           </span>
                         </div>
-                        {Array.isArray(log.sampleDiffs) && log.sampleDiffs.length > 0 && (
+                        {Array.isArray(log.readableRows) && log.readableRows.length > 0 ? (
+                          <div style={{ marginTop: "4px", display: "flex", flexDirection: "column", gap: "3px", fontSize: "11px", color: "#334155" }}>
+                            {log.readableRows.slice(0, 8).map((rowItem, rIdx) => (
+                              <div key={rIdx} style={{ lineHeight: 1.4 }}>
+                                <strong style={{ color: "#0f172a" }}>
+                                  {rowItem.directionLabel} · {rowItem.tab} · {rowItem.rowLabel}:
+                                </strong>{" "}
+                                <span>{rowItem.changesText}</span>
+                                {rowItem.moreCount > 0 && (
+                                  <span style={{ color: "#64748b" }}> (+{rowItem.moreCount} more)</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : Array.isArray(log.sampleDiffs) && log.sampleDiffs.length > 0 ? (
                           <div style={{ marginTop: "3px", fontFamily: "monospace", fontSize: "10px", color: "#475569" }}>
                             {log.sampleDiffs.slice(0, 5).map((d, dIdx) => (
                               <span key={dIdx} style={{ marginRight: "10px" }}>
@@ -2719,7 +2735,7 @@ export default function DbView({
                             ))}
                             {log.sampleDiffs.length > 5 && <span>+{log.sampleDiffs.length - 5} more</span>}
                           </div>
-                        )}
+                        ) : null}
                       </div>
                     ))}
                   </div>

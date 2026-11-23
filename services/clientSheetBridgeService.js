@@ -584,6 +584,196 @@ export function computeThreeWayTabMerge({
   };
 }
 
+const DATE_COL_INDICES_CONF_PIPE = new Set([3, 37, 38, 43, 50, 57, 76, 83, 90]);
+const MONEY_COL_INDICES_CONF_PIPE = new Set([17, 32, 33, 41, 48, 55, 75, 82, 89]);
+const SHORT_HEADER_MAP = [
+  [/^revenue\b/i, "Revenue"],
+  [/^direct costs\b/i, "Direct costs"],
+  [/start date/i, "Start date"],
+  [/end date/i, "End date"],
+  [/likelihood/i, "Likelihood"],
+  [/date added/i, "Date added"],
+  [/crm id|deal id/i, "CRM ID"],
+];
+
+function getColumnFieldLabel_(tabName, col0, supaValues = [], sheetValues = [], isNote = false) {
+  let hdr = "";
+  const candidateRows =
+    tabName === "Outgoings"
+      ? [11, 0]
+      : tabName === "Cash"
+        ? [2, 0]
+        : [0];
+  for (const rIdx of candidateRows) {
+    const raw = supaValues?.[rIdx]?.[col0] ?? sheetValues?.[rIdx]?.[col0] ?? "";
+    if (raw !== "" && raw !== null && raw !== undefined) {
+      hdr = raw;
+      break;
+    }
+  }
+
+  let label = "";
+  if (typeof hdr === "number" && hdr >= 30000 && hdr <= 75000) {
+    const d = toSheetDateFormat(hdr);
+    const m = String(d || "").match(/^\d{1,2}-([A-Za-z]{3}-\d{2})$/);
+    label = m ? m[1] : String(d || `Col ${colIdx0ToLetter(col0)}`);
+  } else {
+    const clean = String(hdr || "").replace(/\s+/g, " ").trim();
+    if (clean) {
+      const matched = SHORT_HEADER_MAP.find(([rx]) => rx.test(clean));
+      label = matched ? matched[1] : clean.length > 26 ? `${clean.slice(0, 24).trimEnd()}…` : clean;
+    } else {
+      label = `Col ${colIdx0ToLetter(col0)}`;
+    }
+  }
+  return isNote ? `${label} (note)` : label;
+}
+
+function getRowContextLabel_(tabName, row0, supaValues = [], sheetValues = []) {
+  const sRow = Array.isArray(supaValues?.[row0]) ? supaValues[row0] : [];
+  const gRow = Array.isArray(sheetValues?.[row0]) ? sheetValues[row0] : [];
+  if (tabName === "Confirmed" || tabName === "Pipeline") {
+    const client = String(sRow[0] || gRow[0] || "").trim();
+    const job = String(sRow[1] || gRow[1] || "").trim();
+    if (client && job) return `Row ${row0 + 1} (${client} — ${job})`;
+    if (client || job) return `Row ${row0 + 1} (${client || job})`;
+    return `Row ${row0 + 1}`;
+  }
+  if (
+    tabName === "Outgoings" ||
+    tabName === "Salaries" ||
+    tabName === "Budget" ||
+    tabName === "NBtoFind"
+  ) {
+    for (let c = 0; c <= 4; c++) {
+      const v = String(sRow[c] || gRow[c] || "").trim();
+      if (v && Number.isNaN(Number(v))) {
+        return `Row ${row0 + 1} (${v.length > 34 ? `${v.slice(0, 32)}…` : v})`;
+      }
+    }
+    return `Row ${row0 + 1}`;
+  }
+  if (tabName === "Cash") {
+    const lbl = String(sRow[1] || gRow[1] || sRow[0] || gRow[0] || "").trim();
+    return lbl ? `Row ${row0 + 1} (${lbl})` : `Row ${row0 + 1}`;
+  }
+  if (tabName === "KeyInfo") {
+    const lbl = String(sRow[0] || gRow[0] || "").trim();
+    return lbl ? `Row ${row0 + 1} (${lbl})` : `Row ${row0 + 1}`;
+  }
+  return `Row ${row0 + 1}`;
+}
+
+function formatHumanDiffVal_(val, { tabName, col0, fieldLabel = "", isNote = false } = {}) {
+  if (val === "" || val === null || val === undefined) return "blank";
+
+  const isConfPipe = tabName === "Confirmed" || tabName === "Pipeline";
+  if ((isConfPipe && col0 === 39) || /likelihood/i.test(fieldLabel)) {
+    const num = typeof val === "number" ? val : Number(val);
+    if (Number.isFinite(num) && num >= 0 && num <= 1) {
+      return `${Math.round(num * 100)}%`;
+    }
+  }
+
+  if ((isConfPipe && DATE_COL_INDICES_CONF_PIPE.has(col0)) || /date/i.test(fieldLabel)) {
+    if (typeof val === "number" && val >= 25000 && val <= 80000) {
+      return toSheetDateFormat(val);
+    }
+  }
+
+  const isMoneyCol =
+    (isConfPipe && MONEY_COL_INDICES_CONF_PIPE.has(col0)) ||
+    ((tabName === "Outgoings" ||
+      tabName === "Budget" ||
+      tabName === "Salaries" ||
+      tabName === "NBtoFind") &&
+      col0 >= 6) ||
+    (tabName === "Cash" && col0 >= 2);
+  if (!isNote && isMoneyCol && typeof val === "number" && Number.isFinite(val)) {
+    const sign = val < 0 ? "-" : "";
+    const abs = Math.abs(val);
+    return `${sign}£${abs.toLocaleString("en-GB", {
+      minimumFractionDigits: Number.isInteger(abs) ? 0 : 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+
+  const s = String(val).replace(/\s+/g, " ").trim();
+  if (!s) return "blank";
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(s)) {
+    return `${s.slice(0, 8)}…`;
+  }
+  if (s.length > 36) {
+    return `${s.slice(0, 34).trimEnd()}…`;
+  }
+  return s;
+}
+
+/**
+ * Formats raw cell/note bridge diffs into grouped, human-readable per-row
+ * summaries (translating column letters, Excel serial dates, likelihoods, and GBP amounts).
+ */
+export function buildHumanReadableBridgeRows(diffs = [], tabGridsMap = {}, directionLabel = "Supabase → Sheet", maxRows = 10) {
+  if (!Array.isArray(diffs) || diffs.length === 0) {
+    return { totalRowsChanged: 0, items: [] };
+  }
+
+  const rowGroups = new Map();
+  for (const d of diffs) {
+    if (!d || !d.tabName || !Number.isInteger(d.row0) || !Number.isInteger(d.col0)) continue;
+    const gKey = `${d.tabName}::${d.row0}`;
+    if (!rowGroups.has(gKey)) {
+      rowGroups.set(gKey, { tabName: d.tabName, row0: d.row0, diffs: [] });
+    }
+    rowGroups.get(gKey).diffs.push(d);
+  }
+
+  const items = [];
+  for (const group of rowGroups.values()) {
+    if (items.length >= maxRows) break;
+    const grids = tabGridsMap?.[group.tabName] || {};
+    const supaValues = grids.supaValues || [];
+    const sheetValues = grids.sheetValues || [];
+    const rowLabel = getRowContextLabel_(group.tabName, group.row0, supaValues, sheetValues);
+
+    const enriched = group.diffs.map((d) => {
+      const isNote = d.isNote !== undefined ? Boolean(d.isNote) : d.from === undefined && d.to === undefined ? false : false;
+      const fieldLabel = getColumnFieldLabel_(group.tabName, d.col0, supaValues, sheetValues, isNote);
+      const isCrmId = (group.tabName === "Confirmed" || group.tabName === "Pipeline") && d.col0 === 2;
+      return {
+        d,
+        fieldLabel,
+        isNote,
+        isCrmId,
+      };
+    });
+
+    enriched.sort((a, b) => {
+      if (a.isCrmId !== b.isCrmId) return a.isCrmId ? 1 : -1;
+      return a.d.col0 - b.d.col0;
+    });
+
+    const shown = enriched.slice(0, 5).map(({ d, fieldLabel, isNote }) => {
+      const fromStr = formatHumanDiffVal_(d.from, { tabName: group.tabName, col0: d.col0, fieldLabel, isNote });
+      const toStr = formatHumanDiffVal_(d.to, { tabName: group.tabName, col0: d.col0, fieldLabel, isNote });
+      return `${fieldLabel}: ${fromStr} → ${toStr}`;
+    });
+
+    items.push({
+      directionLabel,
+      tab: group.tabName,
+      rowLabel,
+      changesText: shown.join(", "),
+      moreCount: Math.max(0, enriched.length - 5),
+    });
+  }
+
+  return {
+    totalRowsChanged: rowGroups.size,
+    items,
+  };
+}
+
 /**
  * Mirrors Outgoings outbound note updates into OutgNotes!A1:AV111 with the exact
  * formula escaping used in client-GAS-scripts/Code.gs (line 575), leaving parser
@@ -1165,6 +1355,7 @@ export async function checkAndSyncClientSheetBridge(
       }
 
       const mergeResults = [];
+      const tabGridsMap = createSafeMap_();
       const inboundAppliedTabs = [];
       const allInboundDiffs = [];
       const allOutboundDiffs = [];
@@ -1189,6 +1380,11 @@ export async function checkAndSyncClientSheetBridge(
         }).catch(() => null);
         if (!supaRec) continue;
 
+        tabGridsMap[tabName] = {
+          supaValues: supaRec.values_grid || [],
+          sheetValues: sheetTab.values || [],
+        };
+
         const baseTab = baseline.tabs?.[tabName] || { values: [], notes: createSafeMap_() };
         const merge = computeThreeWayTabMerge({
           tabName,
@@ -1205,11 +1401,17 @@ export async function checkAndSyncClientSheetBridge(
         mergeResults.push({ tabName, merge, supaRec, sheetTab });
 
         if (merge.inboundCellChanges.length > 0 || merge.inboundNoteChanges.length > 0) {
-          allInboundDiffs.push(...merge.inboundCellChanges, ...merge.inboundNoteChanges);
+          allInboundDiffs.push(
+            ...merge.inboundCellChanges,
+            ...merge.inboundNoteChanges.map((n) => ({ ...n, isNote: true }))
+          );
           inboundAppliedTabs.push(tabName);
         }
         if (merge.outboundCellChanges.length > 0 || merge.outboundNoteChanges.length > 0) {
-          allOutboundDiffs.push(...merge.outboundCellChanges, ...merge.outboundNoteChanges);
+          allOutboundDiffs.push(
+            ...merge.outboundCellChanges,
+            ...merge.outboundNoteChanges.map((n) => ({ ...n, isNote: true }))
+          );
         }
         if (merge.conflicts.length > 0) {
           allConflicts.push(...merge.conflicts);
@@ -1390,27 +1592,29 @@ export async function checkAndSyncClientSheetBridge(
         ...allOutboundDiffs.slice(0, 15).map((d) => ({ direction: "out", tab: d.tabName, cell: d.cellA1, from: d.from, to: d.to })),
       ].slice(0, 20);
 
+      const inReadable = buildHumanReadableBridgeRows(allInboundDiffs, tabGridsMap, "Sheet → Supabase", 10);
+      const outReadable = buildHumanReadableBridgeRows(allOutboundDiffs, tabGridsMap, "Supabase → Sheet", 10);
+      const outboundTabsChanged = [...new Set(allOutboundDiffs.map((d) => d.tabName).filter(Boolean))];
+      const readableRows = [...inReadable.items, ...outReadable.items].slice(0, 12);
+
       const summaryParts = [];
       if (allInboundDiffs.length > 0) {
         summaryParts.push(
-          `${shouldApplyInboundNow ? "Pulled" : "Would pull"} ${allInboundDiffs.length} sheet change(s) (${inboundAppliedTabs.join(", ")})`
+          `${shouldApplyInboundNow ? "Pulled" : "Would pull"} ${allInboundDiffs.length} field(s) across ${inReadable.totalRowsChanged} row(s) (${inboundAppliedTabs.join(", ")})`
         );
       }
       if (allOutboundDiffs.length > 0 || queuedStructOps.length > 0) {
         summaryParts.push(
-          `${effectiveMode === "live" && wantsOutbound ? "Pushed" : "Would push"} ${allOutboundDiffs.length} cell(s) in ${outboundValueRanges.length} range(s)${
-            queuedStructOps.length > 0 ? ` + ${queuedStructOps.length} row op(s)` : ""
-          }`
+          `${effectiveMode === "live" && wantsOutbound ? "Pushed" : "Would push"} ${allOutboundDiffs.length} field(s) across ${outReadable.totalRowsChanged} row(s)${
+            outboundTabsChanged.length > 0 ? ` (${outboundTabsChanged.join(", ")})` : ""
+          }${queuedStructOps.length > 0 ? ` + ${queuedStructOps.length} row layout change(s)` : ""}`
         );
       }
       if (allConflicts.length > 0) {
         summaryParts.push(`${allConflicts.length} same-cell conflict(s) (Sheet kept)`);
       }
-      if (totalFormulaProtected > 0) {
-        summaryParts.push(`${totalFormulaProtected} formula cell(s) protected`);
-      }
       if (summaryParts.length === 0) {
-        summaryParts.push(`In sync (Drive v${finalDriveVersion || "?"})`);
+        summaryParts.push(`In sync — no differences found (Drive v${finalDriveVersion || "?"})`);
       }
 
       const nowIso = new Date().toISOString();
@@ -1435,6 +1639,7 @@ export async function checkAndSyncClientSheetBridge(
             conflictCount: allConflicts.length,
             formulaProtectedCount: totalFormulaProtected,
             summary: summaryText,
+            readableRows,
             sampleDiffs,
           }
         : null;
@@ -1466,6 +1671,7 @@ export async function checkAndSyncClientSheetBridge(
         conflictCount: allConflicts.length,
         formulaCellsProtectedCount: totalFormulaProtected,
         summary: summaryText,
+        readableRows,
         sampleDiffs,
       };
     } catch (err) {
@@ -1690,6 +1896,7 @@ export async function pushSupabaseClientToSheet(clientName) {
     ]);
 
     const allOutboundDiffs = [];
+    const tabGridsMap = createSafeMap_();
     const outboundValueRanges = [];
     const outboundNoteRequests = [];
     const maxTargetRowByTab = createSafeMap_();
@@ -1712,6 +1919,10 @@ export async function pushSupabaseClientToSheet(clientName) {
       }
 
       tabsSyncedCount++;
+      tabGridsMap[tabName] = {
+        supaValues: supaRec.values_grid || [],
+        sheetValues: sheetTab.values || [],
+      };
 
       // Baseline = live Sheet so computeThreeWayTabMerge emits every allowed Supabase -> Sheet diff (including clears)
       const merge = computeThreeWayTabMerge({
@@ -1737,7 +1948,7 @@ export async function pushSupabaseClientToSheet(clientName) {
         outboundValueRanges.push(...coalesceRowChangesToBatchRanges(tabName, merge.outboundCellChanges));
       }
       if (merge.outboundNoteChanges.length > 0) {
-        allOutboundDiffs.push(...merge.outboundNoteChanges);
+        allOutboundDiffs.push(...merge.outboundNoteChanges.map((n) => ({ ...n, isNote: true })));
         for (const n of merge.outboundNoteChanges) {
           const curMax = maxTargetRowByTab[tabName] || 0;
           if (n.row0 + 1 > curMax) maxTargetRowByTab[tabName] = n.row0 + 1;
@@ -1837,9 +2048,12 @@ export async function pushSupabaseClientToSheet(clientName) {
     });
 
     const nowIso = new Date().toISOString();
+    const outReadable = buildHumanReadableBridgeRows(allOutboundDiffs, tabGridsMap, "Supabase → Sheet", 10);
+    const readableRows = outReadable.items.slice(0, 12);
+    const outboundTabsChanged = [...new Set(allOutboundDiffs.map((d) => d.tabName).filter(Boolean))];
     const summaryText =
       outboundValueRanges.length > 0 || outboundNoteRequests.length > 0
-        ? `Pushed Supabase data to Google Sheet: ${allOutboundDiffs.length} cell(s)/note(s) in ${outboundValueRanges.length} range(s) across ${tabsSyncedCount} tab(s) (Drive v${finalDriveMeta.version || "?"})`
+        ? `Pushed Supabase data to Google Sheet: ${allOutboundDiffs.length} field(s) across ${outReadable.totalRowsChanged} row(s) (${outboundTabsChanged.join(", ")}) (Drive v${finalDriveMeta.version || "?"})`
         : `Google Sheet already matches Supabase across ${tabsSyncedCount} tab(s) (Drive v${finalDriveMeta.version || "?"})`;
 
     const sampleDiffs = allOutboundDiffs.slice(0, 20).map((d) => ({
@@ -1873,6 +2087,7 @@ export async function pushSupabaseClientToSheet(clientName) {
         conflictCount: 0,
         formulaProtectedCount: totalFormulaProtected,
         summary: summaryText,
+        readableRows,
         sampleDiffs,
       }
     );
@@ -1889,6 +2104,7 @@ export async function pushSupabaseClientToSheet(clientName) {
       formulaCellsProtectedCount: totalFormulaProtected,
       driveVersion: finalDriveMeta.version,
       summary: summaryText,
+      readableRows,
     };
   } catch (err) {
     await updateClientBridgeState_(

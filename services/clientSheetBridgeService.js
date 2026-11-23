@@ -27,6 +27,7 @@ import {
   saveVirtualTabGrid_,
   getOrLoadVirtualTabGrid_,
   recomputeClientFormulasForBridge,
+  flushPendingClientRecomputes,
   isVirtualSupabaseSheetId,
   colIdx0ToLetter,
 } from "./masterEngineService.js";
@@ -1528,7 +1529,7 @@ export async function setClientSheetBridgeMode(sheets, clientName, targetMode) {
       .eq("client_name", clientRow.client_name)
       .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)");
     if (!clientTabCount) {
-      throw new Error(`Seed "${clientName}" Client Sheet into Supabase (Step 4) before enabling the Google Sheet bridge.`);
+      throw new Error(`Run "Push sheet data to Supabase" (Step 4) for "${clientName}" before enabling the Google Sheet bridge.`);
     }
 
     const ctx = {
@@ -1646,4 +1647,264 @@ export async function runScheduledSheetBridgeSweep() {
     synced,
     errors,
   };
+}
+
+/**
+ * Overwrites editable cells & notes on the live Google Client Sheet to match
+ * Supabase virtual client grids while preserving 100% of Google Sheet formulas,
+ * and re-anchors `SheetBridgeBaseline` at the resulting Drive version.
+ */
+export async function pushSupabaseClientToSheet(clientName) {
+  if (!isSupabaseConfigured()) throw new Error("Supabase is not configured.");
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx) throw new Error(`Client "${clientName}" not found.`);
+  if (!ctx.clientSheetId || isVirtualSupabaseSheetId(ctx.clientSheetId)) {
+    throw new Error(`Client "${ctx.clientName}" has no Google Client Sheet linked.`);
+  }
+
+  await flushPendingClientRecomputes(null, ctx.clientName).catch(() => {});
+
+  const key = normalizeKey_(ctx.clientName);
+  const supabase = getSupabaseAdmin();
+  const lockOk = await acquireRedisBridgeLock_(key, 60);
+  if (!lockOk) {
+    throw new Error(`Another sheet bridge operation is currently running for "${ctx.clientName}". Please retry in a moment.`);
+  }
+
+  try {
+    const { rawDrive, rawSheets } = getPrimaryRawGoogleClients();
+    if (!rawDrive || !rawSheets) {
+      throw new Error("Primary Google Service Account Drive/Sheets clients unavailable.");
+    }
+
+    const confirmedRec = await getOrLoadVirtualTabGrid_(ctx, "client", "Confirmed", rawSheets, {
+      includeNotes: true,
+    }).catch(() => null);
+    if (!confirmedRec || !Array.isArray(confirmedRec.values_grid) || confirmedRec.values_grid.length === 0) {
+      throw new Error(`"${ctx.clientName}" has no Client Sheet data in Supabase yet. Run "Push sheet data to Supabase" first.`);
+    }
+
+    const sheetBundle = await fetchRealSheetTabsAndNotes_(rawSheets, ctx.clientSheetId, [
+      ...BRIDGE_ALL_SYNCED_TABS,
+      "OutgNotes",
+    ]);
+
+    const allOutboundDiffs = [];
+    const outboundValueRanges = [];
+    const outboundNoteRequests = [];
+    const maxTargetRowByTab = createSafeMap_();
+    const nextBaselineTabs = createSafeMap_();
+    let totalFormulaProtected = 0;
+    let tabsSyncedCount = 0;
+
+    for (const tabName of BRIDGE_ALL_SYNCED_TABS) {
+      const sheetTab = sheetBundle?.resultByTab?.[tabName];
+      if (!sheetTab) continue;
+
+      const supaRec =
+        tabName === "Confirmed"
+          ? confirmedRec
+          : await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheets, {
+              includeNotes: BRIDGE_NOTE_TABS.has(tabName),
+            }).catch(() => null);
+      if (!supaRec || !Array.isArray(supaRec.values_grid) || supaRec.values_grid.length === 0) {
+        continue;
+      }
+
+      tabsSyncedCount++;
+
+      // Baseline = live Sheet so computeThreeWayTabMerge emits every allowed Supabase -> Sheet diff (including clears)
+      const merge = computeThreeWayTabMerge({
+        tabName,
+        baselineValues: sheetTab.values,
+        baselineNotes: sheetTab.notes,
+        sheetValues: sheetTab.values,
+        sheetFormulas: sheetTab.formulas,
+        sheetNotes: sheetTab.notes,
+        supaValues: supaRec.values_grid || [],
+        supaFormulas: supaRec.formulas_grid || supaRec.values_grid || [],
+        supaNotes: supaRec.notes_grid || {},
+        applyOutboundToBaseline: true,
+      });
+
+      totalFormulaProtected += merge.formulaCellsProtectedCount;
+      if (merge.outboundCellChanges.length > 0) {
+        allOutboundDiffs.push(...merge.outboundCellChanges);
+        for (const ch of merge.outboundCellChanges) {
+          const curMax = maxTargetRowByTab[tabName] || 0;
+          if (ch.row0 + 1 > curMax) maxTargetRowByTab[tabName] = ch.row0 + 1;
+        }
+        outboundValueRanges.push(...coalesceRowChangesToBatchRanges(tabName, merge.outboundCellChanges));
+      }
+      if (merge.outboundNoteChanges.length > 0) {
+        allOutboundDiffs.push(...merge.outboundNoteChanges);
+        for (const n of merge.outboundNoteChanges) {
+          const curMax = maxTargetRowByTab[tabName] || 0;
+          if (n.row0 + 1 > curMax) maxTargetRowByTab[tabName] = n.row0 + 1;
+        }
+        outboundNoteRequests.push(...buildUpdateCellsNoteRequests_(sheetTab.sheetId, merge.outboundNoteChanges));
+      }
+
+      if (tabName === "Outgoings" && sheetBundle?.resultByTab?.OutgNotes) {
+        const supaOutNotes = cloneSafeNotes_(supaRec.notes_grid);
+        const fullOutgMirrorChanges = [];
+        for (let r0 = 12; r0 <= 110; r0++) {
+          for (let c0 = 6; c0 <= 47; c0++) {
+            fullOutgMirrorChanges.push({
+              row0: r0,
+              col0: c0,
+              to: supaOutNotes[`${r0}:${c0}`] || "",
+            });
+          }
+        }
+        const outgNotesRanges = buildOutgNotesMirrorUpdates(
+          fullOutgMirrorChanges,
+          sheetBundle.resultByTab.OutgNotes.values || []
+        );
+        outboundValueRanges.push(...outgNotesRanges);
+      }
+
+      nextBaselineTabs[tabName] = {
+        values: merge.nextBaselineValues,
+        notes: merge.nextBaselineNotes,
+      };
+    }
+
+    _pendingStructuralOpsByClient.delete(key);
+    if (redisClient?.isOpen) {
+      redisClient.del(`pulse:sheet_bridge_dirty:${key}`).catch(() => {});
+    }
+
+    // Expand grid rows where Supabase grew beyond the Google Sheet grid height
+    const structuralBatch = [];
+    for (const [tName, reqMaxRow] of Object.entries(maxTargetRowByTab)) {
+      if (PROTOTYPE_KEYS.has(tName)) continue;
+      const props = sheetBundle?.sheetPropsByTitle?.[tName];
+      if (props && reqMaxRow > props.rowCount) {
+        structuralBatch.push({
+          insertDimension: {
+            range: {
+              sheetId: props.sheetId,
+              dimension: "ROWS",
+              startIndex: props.rowCount,
+              endIndex: reqMaxRow + 15,
+            },
+            inheritFromBefore: true,
+          },
+        });
+      }
+    }
+    if (structuralBatch.length > 0) {
+      await withRetry(() =>
+        rawSheets.spreadsheets.batchUpdate({
+          spreadsheetId: ctx.clientSheetId,
+          requestBody: { requests: structuralBatch },
+        })
+      );
+    }
+
+    for (let i = 0; i < outboundValueRanges.length; i += 250) {
+      const chunk = outboundValueRanges.slice(i, i + 250);
+      await withRetry(() =>
+        rawSheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: ctx.clientSheetId,
+          requestBody: {
+            valueInputOption: "USER_ENTERED",
+            data: chunk,
+          },
+        })
+      );
+    }
+
+    for (let i = 0; i < outboundNoteRequests.length; i += 400) {
+      const chunk = outboundNoteRequests.slice(i, i + 400);
+      await withRetry(() =>
+        rawSheets.spreadsheets.batchUpdate({
+          spreadsheetId: ctx.clientSheetId,
+          requestBody: { requests: chunk },
+        })
+      );
+    }
+
+    const finalDriveMeta = await fetchDriveVersionMeta_(rawDrive, ctx.clientSheetId).catch(() => ({
+      version: "",
+      modifiedTime: "",
+    }));
+
+    await saveBaselineRecord_(supabase, ctx, {
+      driveVersion: finalDriveMeta.version,
+      tabs: nextBaselineTabs,
+    });
+
+    const nowIso = new Date().toISOString();
+    const summaryText =
+      outboundValueRanges.length > 0 || outboundNoteRequests.length > 0
+        ? `Pushed Supabase data to Google Sheet: ${allOutboundDiffs.length} cell(s)/note(s) in ${outboundValueRanges.length} range(s) across ${tabsSyncedCount} tab(s) (Drive v${finalDriveMeta.version || "?"})`
+        : `Google Sheet already matches Supabase across ${tabsSyncedCount} tab(s) (Drive v${finalDriveMeta.version || "?"})`;
+
+    const sampleDiffs = allOutboundDiffs.slice(0, 20).map((d) => ({
+      direction: "out",
+      tab: d.tabName,
+      cell: d.cellA1,
+      from: d.from,
+      to: d.to,
+    }));
+
+    await updateClientBridgeState_(
+      supabase,
+      ctx.clientName,
+      {
+        lastSyncedDriveVersion: finalDriveMeta.version,
+        lastSyncedModifiedTime: finalDriveMeta.modifiedTime,
+        lastPulseWrittenVersion: finalDriveMeta.version,
+        lastOutboundAt: nowIso,
+        lastError: "",
+        lastSummary: summaryText,
+      },
+      {
+        timestamp: nowIso,
+        mode: ctx.sheetBridgeMode || "off",
+        direction: "full_push_to_sheet",
+        driveVersion: finalDriveMeta.version,
+        inboundCount: 0,
+        outboundCount: allOutboundDiffs.length,
+        rangeCount: outboundValueRanges.length,
+        structuralCount: structuralBatch.length,
+        conflictCount: 0,
+        formulaProtectedCount: totalFormulaProtected,
+        summary: summaryText,
+        sampleDiffs,
+      }
+    );
+
+    return {
+      success: true,
+      clientName: ctx.clientName,
+      clientSheetId: ctx.clientSheetId,
+      masterSheetId: ctx.masterSheetId,
+      tabsSyncedCount,
+      updatedCellsCount: allOutboundDiffs.length,
+      updatedRangesCount: outboundValueRanges.length,
+      updatedNotesCount: outboundNoteRequests.length,
+      formulaCellsProtectedCount: totalFormulaProtected,
+      driveVersion: finalDriveMeta.version,
+      summary: summaryText,
+    };
+  } catch (err) {
+    await updateClientBridgeState_(
+      supabase,
+      ctx.clientName,
+      { lastError: err.message },
+      {
+        timestamp: new Date().toISOString(),
+        mode: ctx.sheetBridgeMode || "off",
+        direction: "full_push_to_sheet",
+        summary: `Full push error: ${err.message}`,
+        error: true,
+      }
+    ).catch(() => {});
+    throw err;
+  } finally {
+    if (lockOk) await releaseRedisBridgeLock_(key);
+  }
 }

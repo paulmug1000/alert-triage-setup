@@ -5432,28 +5432,45 @@ export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") 
   const existingTitles = new Set((metaResp.data.sheets || []).map((s) => s.properties.title));
   const tabsToFetch = CORE_CLIENT_TABS.filter((t) => existingTitles.has(t));
 
-  // Fetch Outgoings notes (G13:AV111)
-  const outNotesMap = {};
-  if (existingTitles.has("Outgoings")) {
+  // Fetch cell notes across note-bearing tabs (Outgoings, Confirmed, Pipeline, Cash)
+  const noteRangeSpecs = {
+    Outgoings: { range: "Outgoings!G13:AV112", startRow0: 12, startCol0: 6 },
+    Confirmed: { range: "Confirmed!AP2:CR500", startRow0: 1, startCol0: 41 },
+    Pipeline: { range: "Pipeline!AP2:CR300", startRow0: 1, startCol0: 41 },
+    Cash: { range: "Cash!B1:AK76", startRow0: 0, startCol0: 1 },
+  };
+  const notesByTab = Object.create(null);
+  const noteTabsPresent = Object.keys(noteRangeSpecs).filter((t) => existingTitles.has(t));
+  if (noteTabsPresent.length > 0) {
     try {
       const notesResp = await sheets.spreadsheets.get({
         spreadsheetId: ctx.clientSheetId,
-        ranges: ["Outgoings!G13:AV111"],
-        fields: "sheets.data.rowData.values.note",
+        ranges: noteTabsPresent.map((t) => noteRangeSpecs[t].range),
+        fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
         _bypassSupabaseVirtualSheet: true,
       });
-      const rowData = notesResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
-      rowData.forEach((rObj, rOff) => {
-        (rObj.values || []).forEach((vObj, cOff) => {
-          if (vObj?.note) {
-            outNotesMap[`${12 + rOff}:${6 + cOff}`] = String(vObj.note);
-          }
+      for (const sheetObj of notesResp?.data?.sheets || []) {
+        const tName = sheetObj?.properties?.title;
+        const cfg = noteRangeSpecs[tName];
+        if (!tName || !cfg) continue;
+        const gridData = sheetObj?.data?.[0];
+        const sR = Number(gridData?.startRow ?? cfg.startRow0);
+        const sC = Number(gridData?.startColumn ?? cfg.startCol0);
+        const tabNotes = Object.create(null);
+        (gridData?.rowData || []).forEach((rObj, rOff) => {
+          (rObj?.values || []).forEach((vObj, cOff) => {
+            if (vObj?.note) {
+              tabNotes[`${sR + rOff}:${sC + cOff}`] = String(vObj.note);
+            }
+          });
         });
-      });
+        notesByTab[tName] = tabNotes;
+      }
     } catch (e) {
-      console.warn(`[masterEngineService] Outgoings notes fetch warning (${clientName}):`, e.message);
+      console.warn(`[masterEngineService] Client Sheet notes fetch warning (${clientName}):`, e.message);
     }
   }
+  const outNotesMap = notesByTab.Outgoings || {};
 
   const grids = Object.create(null);
   const chunkSize = 8;
@@ -5479,7 +5496,7 @@ export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") 
       const tabName = batch[j];
       const valuesGrid = valResp.data.valueRanges?.[j]?.values || [];
       const formulasGrid = formResp.data.valueRanges?.[j]?.values || valuesGrid;
-      const notesGrid = tabName === "Outgoings" ? outNotesMap : {};
+      const notesGrid = notesByTab[tabName] || {};
       grids[tabName] = {
         values: valuesGrid,
         formulas: formulasGrid,

@@ -373,9 +373,18 @@ export default function DbView({
     });
   };
 
-  const handleSeedClientSheet = (clientOverride) => {
+  const handleSeedClientSheet = (clientOverride, confirmOverwrite = false) => {
     const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
-    runTrackedOperation("seed_client", `Seeding ${targetClient} Client Sheet into Supabase...`, async () => {
+    if (
+      confirmOverwrite &&
+      typeof window !== "undefined" &&
+      !window.confirm(
+        `Push Google Sheet data to Supabase for ${targetClient}?\n\nThis will overwrite ${targetClient}'s Client data in Supabase with what is currently in the Google Sheet.`
+      )
+    ) {
+      return;
+    }
+    runTrackedOperation("seed_client", `Pushing ${targetClient} Google Sheet data to Supabase...`, async () => {
       const res = await fetch("/api/pma/master-engine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -386,12 +395,43 @@ export default function DbView({
         }),
       });
       const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Client Sheet seeding failed.");
+      if (!data.success) throw new Error(data.error || "Push from Google Sheet to Supabase failed.");
       if (data.status) setStage2Data(data.status);
       const s = data.summary || {};
       return {
         type: "success",
-        text: `Seeded ${targetClient} Client Sheet into Supabase (${s.clientTabsSynced || 0} client tabs, ${s.outgoingsNotesCount || 0} outgoings cell notes).`,
+        text: `Pushed ${targetClient} Google Sheet data to Supabase (${s.clientTabsSynced || 0} client tabs, ${s.outgoingsNotesCount || 0} outgoings cell notes).`,
+      };
+    });
+  };
+
+  const handlePushSupabaseToSheet = (clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        `Push Supabase data to Google Sheet for ${targetClient}?\n\nThis will overwrite editable cells and notes on ${targetClient}'s Google Client Sheet to match Supabase (all Google Sheet formulas remain protected).`
+      )
+    ) {
+      return;
+    }
+    runTrackedOperation("push_supabase_to_sheet", `Pushing ${targetClient} Supabase data to Google Sheet...`, async () => {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "push_supabase_to_client_sheet",
+          clientName: targetClient,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Push from Supabase to Google Sheet failed.");
+      if (data.status) setStage2Data(data.status);
+      const s = data.summary || {};
+      return {
+        type: "success",
+        text: s.summary || `Pushed ${targetClient} Supabase data to Google Sheet (${s.updatedCellsCount || 0} cell(s)).`,
       };
     });
   };
@@ -2278,14 +2318,14 @@ export default function DbView({
               >
                 <div style={{ flex: "1 1 200px" }}>
                   <div style={{ fontSize: "12.5px", fontWeight: 700, color: "#1e293b" }}>
-                    4. {activeClientName} Client Sheet virtual workbook ({activeClientObj?.clientTabCount || 0} tabs)
+                    4. {activeClientName} Client Sheet & Supabase data sync ({activeClientObj?.clientTabCount || 0} tabs)
                   </div>
                   <div style={{ fontSize: "11.5px", color: "#64748b", marginTop: "2px" }}>
                     {!hasRealClientSheet
                       ? `Provisioned directly in Supabase (${activeClientObj?.clientTabCount || 31} virtual Client tabs seeded — no Google Client Sheet exists).`
                       : hasClientVirtualTabs
-                        ? `Seeded: ${activeClientObj?.clientTabCount || 31} Client Sheet tabs & Outgoings cell notes stored in Supabase.`
-                        : `Seeds all 31 Client Sheet tabs (values, formulas & cell notes) for ${activeClientName} into Supabase.`}
+                        ? `Seeded: ${activeClientObj?.clientTabCount || 31} Client Sheet tabs & cell notes stored in Supabase.`
+                        : `Copy ${activeClientName} Client Sheet tabs (values, formulas & cell notes) between Google Sheets and Supabase.`}
                   </div>
                 </div>
 
@@ -2314,7 +2354,7 @@ export default function DbView({
                   <button
                     type="button"
                     disabled={!s2Ready || !hasRealClientSheet || isBusy}
-                    onClick={() => handleSeedClientSheet(activeClientName)}
+                    onClick={() => handleSeedClientSheet(activeClientName, hasClientVirtualTabs)}
                     style={{
                       padding: "6px 11px",
                       fontSize: "11.5px",
@@ -2332,10 +2372,47 @@ export default function DbView({
                     {activeOp?.key === "seed_client" && <Spinner size={11} color="#166534" style={{ marginRight: 0 }} />}
                     <span>
                       {activeOp?.key === "seed_client"
-                        ? "Seeding..."
-                        : hasClientVirtualTabs
-                          ? "Re-seed Client Sheet"
-                          : "4. Seed Client Sheet to Supabase"}
+                        ? "Pushing to Supabase..."
+                        : "Push sheet data to Supabase"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!s2Ready || !hasRealClientSheet || !hasClientVirtualTabs || isBusy}
+                    title={
+                      !hasRealClientSheet
+                        ? "No Google Client Sheet is linked for this client."
+                        : !hasClientVirtualTabs
+                          ? "Run Push sheet data to Supabase first so Supabase has Client data to push."
+                          : "Overwrite editable cells and notes on the Google Client Sheet to match Supabase (formulas stay intact)."
+                    }
+                    onClick={() => handlePushSupabaseToSheet(activeClientName)}
+                    style={{
+                      padding: "6px 11px",
+                      fontSize: "11.5px",
+                      fontWeight: 600,
+                      borderRadius: "6px",
+                      border: "1px solid #93c5fd",
+                      background: !s2Ready || !hasRealClientSheet || !hasClientVirtualTabs ? "#f1f5f9" : "#ffffff",
+                      color: !s2Ready || !hasRealClientSheet || !hasClientVirtualTabs ? "#94a3b8" : "#1e40af",
+                      cursor:
+                        !s2Ready || !hasRealClientSheet || !hasClientVirtualTabs
+                          ? "not-allowed"
+                          : isBusy
+                            ? "wait"
+                            : "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "5px",
+                    }}
+                  >
+                    {activeOp?.key === "push_supabase_to_sheet" && (
+                      <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />
+                    )}
+                    <span>
+                      {activeOp?.key === "push_supabase_to_sheet"
+                        ? "Pushing to sheet..."
+                        : "Push Supabase data to sheet"}
                     </span>
                   </button>
                 </div>
@@ -2473,7 +2550,7 @@ export default function DbView({
                     {!hasRealClientSheet
                       ? "No Google Client Sheet is linked for this tenant."
                       : activeClientPortalMode !== "supabase" || !hasClientVirtualTabs
-                        ? "Requires Step 4 (Seed Client Sheet) and Step 5 (Supabase engine) to be active before enabling."
+                        ? "Requires Step 4 (Push sheet data to Supabase) and Step 5 (Supabase engine) to be active before enabling."
                         : activeSheetBridgeMode === "live"
                           ? `Supabase-primary with automatic 3-way cell sync to and from ${activeClientName}'s editable Google Client Sheet (Drive v${activeSheetBridgeState?.lastSyncedDriveVersion || "?"}).`
                           : activeSheetBridgeMode === "dry_run"
@@ -2518,7 +2595,7 @@ export default function DbView({
                           disabled={disabledOpt}
                           title={
                             opt.id !== "off" && !canEnable
-                              ? "Requires Step 4 (Seed Client Sheet), Step 5 (Supabase engine), and a linked Google Client Sheet."
+                              ? "Requires Step 4 (Push sheet data to Supabase), Step 5 (Supabase engine), and a linked Google Client Sheet."
                               : undefined
                           }
                           onClick={() => handleSetSheetBridgeMode(opt.id, activeClientName)}

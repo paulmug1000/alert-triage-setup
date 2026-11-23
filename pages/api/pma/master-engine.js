@@ -43,6 +43,7 @@ import {
 import {
   setClientSheetBridgeMode,
   checkAndSyncClientSheetBridge,
+  pushSupabaseClientToSheet,
 } from "../../../services/clientSheetBridgeService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
@@ -206,7 +207,23 @@ export default async function handler(req, res) {
         clientName: cleanClient,
         category: "SYSTEM",
         action: "CLIENT_SHEET_SEEDED_TO_SUPABASE",
-        summary: `Seeded Client Sheet for ${cleanClient} into Supabase (${summary.clientTabsSynced} client tabs, ${summary.outgoingsNotesCount} outgoings notes)`,
+        summary: `Pushed Google Sheet data to Supabase for ${cleanClient} (${summary.clientTabsSynced} client tabs, ${summary.outgoingsNotesCount} outgoings notes)`,
+        details: summary,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, summary, status });
+    }
+
+    if (action === "push_supabase_to_client_sheet") {
+      const sheets = await getSheetsClient();
+      const summary = await pushSupabaseClientToSheet(cleanClient);
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_SUPABASE_PUSHED_TO_SHEET",
+        summary: summary.summary || `Pushed Supabase data to Google Sheet for ${cleanClient}`,
         details: summary,
         userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });
@@ -486,21 +503,21 @@ export default async function handler(req, res) {
       const updateRes =
         action === "update_cells"
           ? await updateVirtualTabCellsFromInspector({
-              sheets,
-              clientName: cleanClient,
-              sheetRole,
-              tabName,
-              updates: updatesList,
-            })
+            sheets,
+            clientName: cleanClient,
+            sheetRole,
+            tabName,
+            updates: updatesList,
+          })
           : await updateVirtualTabCellFromInspector({
-              sheets,
-              clientName: cleanClient,
-              sheetRole,
-              tabName,
-              rowIndex0: Number(rowIndex0),
-              colIndex0: Number(colIndex0),
-              value: value ?? "",
-            });
+            sheets,
+            clientName: cleanClient,
+            sheetRole,
+            tabName,
+            rowIndex0: Number(rowIndex0),
+            colIndex0: Number(colIndex0),
+            value: value ?? "",
+          });
       if (sheetRole === "client" && updateRes?.clientSheetId) {
         scheduleBackgroundWork_(
           invalidatePmaClientCache(updateRes.clientSheetId, updateRes.masterSheetId, [

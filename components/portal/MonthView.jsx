@@ -35,6 +35,54 @@ export default function MonthView({
   const [activePopover, setActivePopover] = useState(null);
   const [activePeriod, setActivePeriod] = useState("curr"); // 'curr' | 'prev' | 'next'
   const prevClientSheetIdRef = useRef(clientSheetId);
+  const touchStartRef = useRef(null);
+
+  const canGoPrev = activePeriod === "curr" || activePeriod === "next";
+  const canGoNext = activePeriod === "curr" || activePeriod === "prev";
+
+  const goPrevMonth = () => {
+    if (!canGoPrev) return;
+    setActivePopover(null);
+    setActivePeriod((p) => (p === "next" ? "curr" : "prev"));
+  };
+
+  const goNextMonth = () => {
+    if (!canGoNext) return;
+    setActivePopover(null);
+    setActivePeriod((p) => (p === "prev" ? "curr" : "next"));
+  };
+
+  const handleTableTouchStart = (e) => {
+    if (!e.touches || e.touches.length !== 1 || activePopover?.isOpen) return;
+    touchStartRef.current = {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY,
+      time: Date.now(),
+    };
+  };
+
+  const handleTableTouchEnd = (e) => {
+    const start = touchStartRef.current;
+    touchStartRef.current = null;
+    if (!start || !e.changedTouches || e.changedTouches.length === 0) return;
+
+    const touch = e.changedTouches[0];
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    const dt = Date.now() - start.time;
+
+    if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.5 && dt <= 700) {
+      if (dx < 0) {
+        goNextMonth();
+      } else {
+        goPrevMonth();
+      }
+    }
+  };
+
+  const handleTableTouchCancel = () => {
+    touchStartRef.current = null;
+  };
 
   useEffect(() => {
     if (prevClientSheetIdRef.current !== clientSheetId) {
@@ -477,13 +525,19 @@ export default function MonthView({
               width: "410px",
             }}
           >
-            <div className="month-table-wrapper" style={{ position: "relative", display: "inline-block", width: "410px" }}>
+            <div
+              className="month-table-wrapper"
+              onTouchStart={handleTableTouchStart}
+              onTouchEnd={handleTableTouchEnd}
+              onTouchCancel={handleTableTouchCancel}
+              style={{ position: "relative", display: "inline-block", width: "410px" }}
+            >
               {/* Left Arrow (Visible for curr and next) */}
-              {(activePeriod === "curr" || activePeriod === "next") && (
+              {canGoPrev && (
                 <button
                   type="button"
                   className="month-nav-arrow-left"
-                  onClick={() => setActivePeriod((p) => (p === "next" ? "curr" : "prev"))}
+                  onClick={goPrevMonth}
                   style={{
                     position: "absolute",
                     left: "-42px",
@@ -502,7 +556,8 @@ export default function MonthView({
                   }}
                   onMouseEnter={(e) => { e.currentTarget.style.color = "#0047AB"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.color = "#a2c4c9"; }}
-                  title="Previous Month"
+                  title="Previous month"
+                  aria-label="Previous month"
                 >
                   ‹
                 </button>
@@ -666,9 +721,10 @@ export default function MonthView({
                       displayVal = formatCurrencyString(value, null, currencySymbol, thousandsSeparator);
                     }
 
-                    return (
+                    const rowEl = (
                       <tr
-                        key={i}
+                        key={i === 0 ? undefined : i}
+                        className={i === 0 ? "month-header-row-desktop" : undefined}
                         style={{
                           height: `${rowHeight}px`,
                           background: (isMajor || i === 0) ? bgColor : "#ffffff",
@@ -703,6 +759,7 @@ export default function MonthView({
 
                         {/* Column B: Amount (Shaded like Total column with continuous dividing line) */}
                         <td
+                          className="month-val-cell"
                           onClick={(e) => isClickable && handleCellClick(e, label, value)}
                           style={{
                             padding: i === 0 ? "6px 16px" : isPercentage ? "1px 6px" : "4px 16px",
@@ -749,16 +806,110 @@ export default function MonthView({
                         </td>
                       </tr>
                     );
+
+                    if (i === 0) {
+                      return (
+                        <React.Fragment key={i}>
+                          {rowEl}
+                          <tr
+                            className="month-header-row-mobile"
+                            style={{
+                              height: "40px",
+                              background: "#0047AB",
+                              borderBottom: "none",
+                            }}
+                          >
+                            <td
+                              colSpan={2}
+                              style={{
+                                padding: "4px 6px",
+                                background: "#0047AB",
+                                color: "#ffffff",
+                                borderBottom: "none",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  gap: "8px",
+                                }}
+                              >
+                                <button
+                                  type="button"
+                                  className="month-header-nav-btn"
+                                  onClick={goPrevMonth}
+                                  disabled={!canGoPrev}
+                                  aria-label="Previous month"
+                                  title="Previous month"
+                                >
+                                  <svg
+                                    width="18"
+                                    height="18"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2.4"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  >
+                                    <polyline points="15 18 9 12 15 6" />
+                                  </svg>
+                                </button>
+                                <span
+                                  style={{
+                                    fontWeight: 700,
+                                    fontSize: "13.5px",
+                                    color: "#ffffff",
+                                    textAlign: "center",
+                                    flex: 1,
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                >
+                                  {displayVal || label || monthPeriod}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="month-header-nav-btn"
+                                  onClick={goNextMonth}
+                                  disabled={!canGoNext}
+                                  aria-label="Next month"
+                                  title="Next month"
+                                >
+                                  <svg
+                                    width="18"
+                                    height="18"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2.4"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  >
+                                    <polyline points="9 18 15 12 9 6" />
+                                  </svg>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        </React.Fragment>
+                      );
+                    }
+
+                    return rowEl;
                   })}
                 </tbody>
               </table>
 
               {/* Right Arrow (Visible for curr and prev) */}
-              {(activePeriod === "curr" || activePeriod === "prev") && (
+              {canGoNext && (
                 <button
                   type="button"
                   className="month-nav-arrow-right"
-                  onClick={() => setActivePeriod((p) => (p === "prev" ? "curr" : "next"))}
+                  onClick={goNextMonth}
                   style={{
                     position: "absolute",
                     right: "-42px",
@@ -777,7 +928,8 @@ export default function MonthView({
                   }}
                   onMouseEnter={(e) => { e.currentTarget.style.color = "#0047AB"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.color = "#a2c4c9"; }}
-                  title="Next Month"
+                  title="Next month"
+                  aria-label="Next month"
                 >
                   ›
                 </button>
@@ -1058,6 +1210,36 @@ export default function MonthView({
     :global(.home-chart-legend) {
       font-size: 11.5px;
     }
+    .month-header-row-mobile {
+      display: none;
+    }
+    .month-header-nav-btn {
+      width: 36px;
+      height: 32px;
+      border: none;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.14);
+      color: #ffffff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      flex-shrink: 0;
+      transition: background 0.15s ease, opacity 0.15s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .month-header-nav-btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.24);
+    }
+    .month-header-nav-btn:active:not(:disabled) {
+      background: rgba(255, 255, 255, 0.32);
+    }
+    .month-header-nav-btn:disabled {
+      background: transparent;
+      opacity: 0.28;
+      cursor: default;
+    }
 
     @media (max-width: 1080px) {
       :global(.home-view-container) {
@@ -1102,10 +1284,31 @@ export default function MonthView({
         min-height: 240px !important;
       }
       .month-table-wrapper {
+        width: 100% !important;
+        display: block !important;
+        margin: 0 !important;
+        touch-action: pan-y;
+      }
+      .month-blueprint-table {
+        width: 100% !important;
+        table-layout: fixed;
+      }
+      .month-col-label {
         width: auto !important;
-        margin: 0 auto !important;
-        display: flex !important;
-        justify-content: center !important;
+      }
+      .month-col-val,
+      .month-val-cell {
+        width: 120px !important;
+      }
+      .month-nav-arrow-left,
+      .month-nav-arrow-right {
+        display: none !important;
+      }
+      .month-header-row-desktop {
+        display: none !important;
+      }
+      .month-header-row-mobile {
+        display: table-row !important;
       }
     }
 
@@ -1137,34 +1340,18 @@ export default function MonthView({
         padding-bottom: 12px;
         border-bottom: 1px solid #f1f5f9;
       }
-      .home-table-container {
-        justify-content: center !important;
-      }
-      .month-table-wrapper {
-        width: auto !important;
-        margin: 0 auto !important;
-      }
     }
 
     @media (max-width: 500px) {
       .month-blueprint-table {
-        width: 312px !important;
+        width: 100% !important;
       }
       .month-col-label {
-        width: 216px !important;
+        width: auto !important;
       }
-      .month-col-val {
-        width: 96px !important;
-      }
-      .month-nav-arrow-left {
-        left: -28px !important;
-        font-size: 2.5rem !important;
-        padding: 8px 2px !important;
-      }
-      .month-nav-arrow-right {
-        right: -28px !important;
-        font-size: 2.5rem !important;
-        padding: 8px 2px !important;
+      .month-col-val,
+      .month-val-cell {
+        width: 112px !important;
       }
     }
   `}</style>

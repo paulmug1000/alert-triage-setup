@@ -139,6 +139,8 @@ export default function DbView({
   const [stage2Data, setStage2Data] = useState(null);
   const [stage2Loading, setStage2Loading] = useState(true);
   const [parityReport, setParityReport] = useState(null);
+  const [relationalParityReport, setRelationalParityReport] = useState(null);
+  const [copied0012Sql, setCopied0012Sql] = useState(false);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -549,6 +551,96 @@ export default function DbView({
         return {
           type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
           text: `Checked ${r.clientsChecked || 0} bridged client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} with variance(s)${r.errorClientsCount ? `, ${r.errorClientsCount} error(s)` : ""}.`,
+        };
+      }
+    );
+  };
+
+  const handleBackfillRelationalJobs = (allClients = false, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    runTrackedOperation(
+      allClients ? "rel_jobs_backfill_all" : "rel_jobs_backfill_one",
+      allClients
+        ? "Backfilling relational jobs, invoices & retainers across all clients..."
+        : `Backfilling relational jobs for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "backfill_relational_jobs",
+            allClients,
+            clientName: targetClient,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Relational backfill failed.");
+        if (data.status) setStage2Data(data.status);
+        const s = data.summary || {};
+        if (allClients) {
+          return {
+            type: s.errorCount > 0 ? "info" : "success",
+            text: `Backfilled ${s.succeededCount || 0} of ${s.totalClients || 0} client(s) into relational jobs tables${s.errorCount ? ` (${s.errorCount} error(s))` : ""}.`,
+          };
+        }
+        return {
+          type: "success",
+          text: `Backfilled ${targetClient}: ${s.confirmedJobsCount || 0} confirmed, ${s.pipelineJobsCount || 0} pipeline jobs (${s.invoicesCount || 0} invoices, ${s.expensesCount || 0} expenses).`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyRelationalParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_jobs_parity",
+      "Verifying relational jobs round-trip & DB parity across clients...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_jobs_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Relational parity check failed.");
+        const r = data.parityReport || {};
+        setRelationalParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Checked ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientJobsMode = (nextMode, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    runTrackedOperation(
+      `set_jobs_mode_${nextMode}`,
+      `Switching ${targetClient} jobs engine to ${nextMode === "relational" ? "relational SQL" : "virtual grid"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_jobs_mode",
+            clientName: targetClient,
+            jobsMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update client jobs mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} jobs engine mode to ${nextMode}.`,
         };
       }
     );
@@ -2303,6 +2395,25 @@ export default function DbView({
                                 }
                                 return null;
                               })()}
+                              {c.jobsMode === "relational" && (
+                                <span
+                                  title={
+                                    c.relationalJobsState?.lastBackfilledAt
+                                      ? `Backfilled ${c.relationalJobsState.confirmedJobsCount || 0} confirmed / ${c.relationalJobsState.pipelineJobsCount || 0} pipeline jobs`
+                                      : "Phase 2 relational jobs enabled"
+                                  }
+                                  style={{
+                                    padding: "2px 7px",
+                                    borderRadius: "999px",
+                                    fontWeight: 600,
+                                    fontSize: "10px",
+                                    background: "#e0e7ff",
+                                    color: "#3730a3",
+                                  }}
+                                >
+                                  Jobs: relational
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td style={{ padding: "8px 10px", color: hasTabs ? "#1e293b" : "#94a3b8" }}>
@@ -3220,6 +3331,264 @@ export default function DbView({
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* SECTION 4.5: Phase 2 Relational Jobs Engine */}
+          <div style={cardStyle}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "12px",
+                flexWrap: "wrap",
+                marginBottom: "10px",
+              }}
+            >
+              <div>
+                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                  Relational jobs engine (Phase 2)
+                </h2>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  UUID-backed storage for jobs, retainer series, unlimited invoices, and direct expenses with lossless projection back into virtual grids.
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: stage2Data?.phase2Jobs?.schemaReady ? "#dcfce7" : "#fef3c7",
+                    color: stage2Data?.phase2Jobs?.schemaReady ? "#166534" : "#92400e",
+                  }}
+                >
+                  {stage2Data?.phase2Jobs?.schemaReady ? "Schema ready (0012)" : "Migration 0012 required"}
+                </span>
+                {stage2Data?.phase2Jobs?.schemaReady && (
+                  <span
+                    style={{
+                      padding: "3px 9px",
+                      borderRadius: "999px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      background: "#eff6ff",
+                      color: "#1e40af",
+                    }}
+                  >
+                    {`${stage2Data.phase2Jobs.relationalModeClientsCount || 0} relational · ${stage2Data.phase2Jobs.backfilledClientsCount || 0}/${allClients.length} backfilled`}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {!stage2Data?.phase2Jobs?.schemaReady && stage2Data?.phase2Jobs?.migrationSql && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                  fontSize: "12px",
+                  color: "#92400e",
+                }}
+              >
+                <span>
+                  Run migration 0012 in the Supabase SQL editor to create pulse_retainer_series, pulse_jobs, pulse_job_invoices, and pulse_job_expenses.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.clipboard) {
+                      navigator.clipboard.writeText(stage2Data.phase2Jobs.migrationSql);
+                      setCopied0012Sql(true);
+                      setTimeout(() => setCopied0012Sql(false), 2500);
+                    }
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #f59e0b",
+                    background: "#ffffff",
+                    color: "#92400e",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copied0012Sql ? "Copied migration 0012 SQL" : "Copy migration 0012 SQL"}
+                </button>
+              </div>
+            )}
+
+            {stage2Data?.phase2Jobs?.schemaReady && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                  gap: "8px",
+                  marginBottom: "12px",
+                }}
+              >
+                {[
+                  { label: "Relational jobs", value: stage2Data.phase2Jobs.totalJobs || 0 },
+                  { label: "Retainer series", value: stage2Data.phase2Jobs.totalSeries || 0 },
+                  { label: "Job invoices", value: stage2Data.phase2Jobs.totalInvoices || 0 },
+                  { label: "Direct expenses", value: stage2Data.phase2Jobs.totalExpenses || 0 },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                    }}
+                  >
+                    <div style={{ fontSize: "11px", color: "#64748b" }}>{stat.label}</div>
+                    <div style={{ fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                      {Number(stat.value).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                disabled={!stage2Data?.phase2Jobs?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalJobs(false, activeClientName)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase2Jobs?.schemaReady ? "#f3f4f6" : "#ffffff",
+                  color: !stage2Data?.phase2Jobs?.schemaReady ? "#9ca3af" : "#1e293b",
+                  cursor: !stage2Data?.phase2Jobs?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_jobs_backfill_one" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
+                <span>{`Backfill ${activeClientName}`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase2Jobs?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalJobs(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase2Jobs?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase2Jobs?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase2Jobs?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase2Jobs?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_jobs_backfill_all" && <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />}
+                <span>{`Backfill all clients (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyRelationalParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_jobs_parity" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
+                <span>{`Verify relational parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase2Jobs?.schemaReady || isBusy}
+                onClick={() =>
+                  handleSetClientJobsMode(
+                    activeClientObj?.jobsMode === "relational" ? "grid" : "relational",
+                    activeClientName
+                  )
+                }
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase2Jobs?.schemaReady
+                    ? "#f3f4f6"
+                    : activeClientObj?.jobsMode === "relational"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+                  borderColor: !stage2Data?.phase2Jobs?.schemaReady
+                    ? "#cbd5e1"
+                    : activeClientObj?.jobsMode === "relational"
+                      ? "#fecaca"
+                      : "#86efac",
+                  color: !stage2Data?.phase2Jobs?.schemaReady
+                    ? "#9ca3af"
+                    : activeClientObj?.jobsMode === "relational"
+                      ? "#b91c1c"
+                      : "#166534",
+                  cursor: !stage2Data?.phase2Jobs?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.jobsMode === "relational"
+                    ? `Revert ${activeClientName} to grid jobs`
+                    : `Switch ${activeClientName} to relational jobs`}
+                </span>
+              </button>
+            </div>
+
+            {relationalParityReport && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${relationalParityReport.mismatchClientsCount > 0 || relationalParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Relational jobs parity (${formatTimestamp(relationalParityReport.checkedAt)}) — ${relationalParityReport.matchedClientsCount || 0} of ${relationalParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setRelationalParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(relationalParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || `Confirmed: ${r.confirmedJobsCount}, Pipeline: ${r.pipelineJobsCount} (${r.source})`}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `${r.confirmedJobsCount || 0}c/${r.pipelineJobsCount || 0}p (${r.source})` : r.error || `${r.totalMismatchCount} diffs`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* SECTION 5: Client workbook backups & granular restore (permanently visible) */}

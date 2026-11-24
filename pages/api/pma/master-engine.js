@@ -46,6 +46,12 @@ import {
   pushSupabaseClientToSheet,
   verifyBridgedClientsParity,
 } from "../../../services/clientSheetBridgeService.js";
+import {
+  backfillClientRelationalJobs,
+  backfillAllClientsRelationalJobs,
+  verifyRelationalJobsParity,
+  setClientJobsMode,
+} from "../../../services/relationalJobsService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -298,6 +304,45 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, parityReport });
     }
 
+    if (action === "backfill_relational_jobs") {
+      const allClients = Boolean(req.body?.allClients);
+      const summary = allClients
+        ? await backfillAllClientsRelationalJobs()
+        : await backfillClientRelationalJobs(cleanClient);
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, summary, status });
+    }
+
+    if (action === "verify_relational_jobs_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = String(req.body?.source || "auto").trim();
+      const parityReport = await verifyRelationalJobsParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_jobs_mode") {
+      const jobsMode = String(req.body?.jobsMode || "").trim().toLowerCase();
+      if (jobsMode !== "grid" && jobsMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid jobsMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientJobsMode(cleanClient, jobsMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_JOBS_MODE_CHANGED",
+        summary: `Switched ${cleanClient} jobs engine mode to "${jobsMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
     if (action === "sync_sheet_bridge_outbound") {
       const sheets = await getSheetsClient();
       const syncSummary = await checkAndSyncClientSheetBridge(cleanClient, {
@@ -315,12 +360,6 @@ export default async function handler(req, res) {
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, syncSummary, status });
-    }
-
-    if (action === "verify_sheet_bridge_parity") {
-      const targetClientFilter = req.body?.allBridged ? null : cleanClient;
-      const parityReport = await verifyBridgedClientsParity({ clientName: targetClientFilter });
-      return res.status(200).json({ success: true, parityReport });
     }
 
     if (action === "materialize_client_sheet") {

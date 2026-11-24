@@ -5862,6 +5862,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     allIntsResp,
     targetGridsResp,
     clockStatus,
+    phase2JobsStats,
   ] = await Promise.all([
     Promise.all(
       STAGE2_TABLES.map(async (t) => {
@@ -5929,6 +5930,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
       .then((r) => r)
       .catch(() => ({ data: [] })),
     getSupabaseClockStatusAndSyncConfig().catch(() => null),
+    import("./relationalJobsService.js")
+      .then(({ getPhase2RelationalOverviewStats }) =>
+        getPhase2RelationalOverviewStats([])
+      )
+      .catch(() => null),
   ]);
 
   const schemaReady = _verifiedStage2SchemaReady || tableResults.every((t) => t.exists);
@@ -6027,6 +6033,8 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         hasRealReconSheet: Boolean(c.recon_sheet_id && !isVirtualSupabaseSheetId(c.recon_sheet_id)),
         sheetBridgeMode: String(c.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
         sheetBridgeState: c.metadata?.sheet_bridge_state || null,
+        jobsMode: String(c.metadata?.jobs_mode || "grid").trim().toLowerCase(),
+        relationalJobsState: c.metadata?.relational_jobs_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,
@@ -6048,6 +6056,13 @@ export async function getStage2Status(targetClientName = "APPTEST") {
 
   const { migrationSql, clockMigrationSql } = readCachedMigrationSqlFiles_();
 
+  let backfilledClientsCount = 0;
+  let relationalModeClientsCount = 0;
+  for (const c of clientsData || []) {
+    if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
+    if (String(c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
+  }
+
   return {
     configured: true,
     schemaReady,
@@ -6059,6 +6074,22 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     migrationSql,
     clockMigrationSql,
     clockStatus,
+    phase2Jobs: phase2JobsStats
+      ? {
+          ...phase2JobsStats,
+          backfilledClientsCount,
+          relationalModeClientsCount,
+        }
+      : {
+          schemaReady: false,
+          migrationSql: "",
+          totalJobs: 0,
+          totalSeries: 0,
+          totalInvoices: 0,
+          totalExpenses: 0,
+          backfilledClientsCount,
+          relationalModeClientsCount,
+        },
   };
 }
 

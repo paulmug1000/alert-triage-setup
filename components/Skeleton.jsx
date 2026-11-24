@@ -338,6 +338,7 @@ export function MonthViewSkeleton() {
 
           {/* Macro Table Container (Clean structural silhouette) */}
           <div
+            className="month-skeleton-table"
             style={{
               width: "410px",
               maxWidth: "410px",
@@ -502,6 +503,23 @@ export function MonthViewSkeleton() {
       </div>
 
       <style jsx>{`
+        @media (max-width: 1080px) {
+          .home-workspace-grid {
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 20px !important;
+          }
+          .home-col-left,
+          .home-col-right {
+            width: 100% !important;
+            max-width: 100% !important;
+          }
+          .home-executive-summary-box,
+          .month-skeleton-table {
+            width: 100% !important;
+            max-width: 100% !important;
+          }
+        }
         @media (max-width: 768px) {
           .home-action-bar {
             margin-top: -4px !important;

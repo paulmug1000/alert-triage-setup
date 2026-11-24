@@ -2505,7 +2505,7 @@ export async function handleUpdateJobField(req, res, sheets) {
           if (isJobCostingColJLikelihoodFormula(anResp.data?.values?.[0]?.[0])) {
             writeCellRef = `J${targetRow}`;
           }
-        } catch (_) {}
+        } catch (_) { }
       }
       let wroteVatGroup = false;
       if (targetCol === "AI" && targetRow) {
@@ -2601,29 +2601,30 @@ export async function handleUpdateJobField(req, res, sheets) {
     const valStr = displayLogVal !== "" && displayLogVal !== null && displayLogVal !== undefined ? ` to "${displayLogVal}"` : " (cleared)";
     const summary = `Updated ${resolvedFieldName} for ${jobIdentifier}${valStr}`;
 
+    await Promise.all([
+      flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedClient).catch(e =>
+        console.warn("Immediate client recompute failed in update_job_field:", e.message)
+      ),
+      invalidatePmaClientCache(sheetIdClean, req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(() => { }),
+    ]);
+
     waitUntil(
-      Promise.all([
-        flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedClient).catch(e =>
-          console.warn("Deferred client formula recompute failed in update_job_field:", e.message)
-        ),
-        invalidatePmaClientCache(sheetIdClean, req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(() => { }),
-        logPmaActivity(sheets, {
-          automationCommanderSheetId: req.body.automationCommanderSheetId,
-          clientName: resolvedClient,
-          category: "JOB",
-          action: `Job ${resolvedFieldName} Updated`,
-          summary,
-          details: {
-            tabName,
-            cellRef,
-            field: resolvedFieldName,
-            endClient: resolvedEndClient,
-            jobName: resolvedJobName,
-            newValue: value,
-            clientName: resolvedClient
-          }
-        }).catch(e => console.error("PMA log failed:", e))
-      ])
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: resolvedClient,
+        category: "JOB",
+        action: `Job ${resolvedFieldName} Updated`,
+        summary,
+        details: {
+          tabName,
+          cellRef,
+          field: resolvedFieldName,
+          endClient: resolvedEndClient,
+          jobName: resolvedJobName,
+          newValue: value,
+          clientName: resolvedClient
+        }
+      }).catch(e => console.error("PMA log failed:", e))
     );
 
     return res.status(200).json({ success: true, backgroundProvisioning, invoiceSlotUpdates, expenseSlotUpdates });
@@ -2797,7 +2798,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
               anRedirectRows.add(r);
             }
           });
-        } catch (_) {}
+        } catch (_) { }
       }
     }
 
@@ -3183,16 +3184,16 @@ export async function handleUpdateJobFields(req, res, sheets) {
         })()
       );
     } else {
+      await Promise.all([
+        flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedClient).catch(e =>
+          console.warn("Immediate client recompute failed in update_job_fields:", e.message)
+        ),
+        invalidatePmaClientCache(sheetIdClean, resolvedMasterSheetId || req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(e =>
+          console.warn("Cache invalidate failed in update_job_fields:", e.message)
+        ),
+      ]);
       waitUntil(
-        Promise.all([
-          flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedClient).catch(e =>
-            console.warn("Deferred client formula recompute failed in update_job_fields:", e.message)
-          ),
-          invalidatePmaClientCache(sheetIdClean, resolvedMasterSheetId || req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(e =>
-            console.warn("Cache invalidate failed in update_job_fields:", e.message)
-          ),
-          logPmaActivity(sheets, activityLogPayload).catch(e => console.error("PMA log failed:", e))
-        ])
+        logPmaActivity(sheets, activityLogPayload).catch(e => console.error("PMA log failed:", e))
       );
     }
 
@@ -6900,17 +6901,17 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
       const [srcNorm, tgtNorm] = await Promise.all([
         sourceGroup
           ? runAdjustAndNormalizeJobSlots_(sheets, sheetIdClean, targetTab, sourceGroup, "invoice", { preloadedTolerances })
-              .catch(sErr => {
-                console.warn("Source job placeholder/normalization check failed:", sErr.message);
-                return { placeholderAdjustment: null, batchData: [], relocations: [], normalizedSlots: [] };
-              })
+            .catch(sErr => {
+              console.warn("Source job placeholder/normalization check failed:", sErr.message);
+              return { placeholderAdjustment: null, batchData: [], relocations: [], normalizedSlots: [] };
+            })
           : Promise.resolve({ placeholderAdjustment: null, batchData: [], relocations: [], normalizedSlots: [] }),
         targetGroup
           ? runAdjustAndNormalizeJobSlots_(sheets, sheetIdClean, targetTab, targetGroup, "invoice", { jobBudgetOrRevenue: effectiveTargetRevenue, masterSheetId, preloadedTolerances })
-              .catch(tErr => {
-                console.warn("Target job placeholder/normalization check failed:", tErr.message);
-                return { placeholderAdjustment: null, batchData: [], relocations: [], normalizedSlots: [] };
-              })
+            .catch(tErr => {
+              console.warn("Target job placeholder/normalization check failed:", tErr.message);
+              return { placeholderAdjustment: null, batchData: [], relocations: [], normalizedSlots: [] };
+            })
           : Promise.resolve({ placeholderAdjustment: null, batchData: [], relocations: [], normalizedSlots: [] }),
       ]);
       sourcePlaceholderAdjustment = srcNorm.placeholderAdjustment;
@@ -7719,12 +7720,12 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
     try {
       let groupForNorm = liveGroup && cachedAllRows
         ? {
-            parentRowNum: resolvedParentRowNum || liveGroup.parentRowNum,
-            lastRowNum: Math.max(...resolvedInvoiceJobRows),
-            allRowNums: [...resolvedInvoiceJobRows].sort((a, b) => a - b),
-            parentRow: cachedAllRows[(resolvedParentRowNum || liveGroup.parentRowNum) - 1] || liveGroup.parentRow || [],
-            allRows: cachedAllRows,
-          }
+          parentRowNum: resolvedParentRowNum || liveGroup.parentRowNum,
+          lastRowNum: Math.max(...resolvedInvoiceJobRows),
+          allRowNums: [...resolvedInvoiceJobRows].sort((a, b) => a - b),
+          parentRow: cachedAllRows[(resolvedParentRowNum || liveGroup.parentRowNum) - 1] || liveGroup.parentRow || [],
+          allRows: cachedAllRows,
+        }
         : null;
       if (!groupForNorm) {
         groupForNorm = await resolveFullJobRowGroup_(sheets, sheetIdClean, targetTab, resolvedInvoiceJobRows).catch(() => null);
@@ -9847,12 +9848,12 @@ export async function handleDeleteDirectJob(req, res, sheets) {
   try {
     const anchor = jobUuid
       ? await resolveAuthoritativeJobAnchor({
-          spreadsheetId: sheetIdClean,
-          clientName: clientName || "",
-          jobUuid,
-          expectedTabName: targetTab,
-          fallbackRowNum: Array.isArray(rowNums) ? rowNums[0] : null,
-        })
+        spreadsheetId: sheetIdClean,
+        clientName: clientName || "",
+        jobUuid,
+        expectedTabName: targetTab,
+        fallbackRowNum: Array.isArray(rowNums) ? rowNums[0] : null,
+      })
       : null;
     const effectiveRowNums =
       anchor?.resolved && Array.isArray(anchor.rowNums) && anchor.rowNums.length > 0
@@ -10062,12 +10063,12 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
   try {
     const anchor = jobUuid
       ? await resolveAuthoritativeJobAnchor({
-          spreadsheetId: sheetIdClean,
-          clientName: clientName || "",
-          jobUuid,
-          expectedTabName: "Pipeline",
-          fallbackRowNum: !isNaN(parsedPRow) && parsedPRow >= 2 ? parsedPRow : null,
-        })
+        spreadsheetId: sheetIdClean,
+        clientName: clientName || "",
+        jobUuid,
+        expectedTabName: "Pipeline",
+        fallbackRowNum: !isNaN(parsedPRow) && parsedPRow >= 2 ? parsedPRow : null,
+      })
       : null;
     const pRow = anchor?.resolved && anchor.rowNum ? anchor.rowNum : parsedPRow;
     if (isNaN(pRow) || pRow < 2) {

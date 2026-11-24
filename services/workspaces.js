@@ -39,6 +39,7 @@ import { getSettingsRedisKey } from "./clientSettingsService.js";
 import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId, flushPendingClientRecomputes, flushImmediateAndScheduleBackgroundClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
+import { getClientRelationalJobsLookup, resolveAuthoritativeJobAnchor } from "./relationalJobsService.js";
 import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
 import { memoryCache, get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
@@ -1921,11 +1922,14 @@ export async function handleGetAllClientJobs(req, res, sheets) {
         }
 
         // Run values batchGet and cell notes fetch IN PARALLEL so there is no sequential round-trip waterfall
-        const [shared] = await Promise.all([
+        const [shared, relLookup] = await Promise.all([
           getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
             includePipeline: tabName !== "Confirmed",
             bypassCache: Boolean(bypassCache),
           }),
+          sbCtx?.jobsMode === "relational"
+            ? getClientRelationalJobsLookup(sbCtx).catch(() => null)
+            : Promise.resolve(null),
           initialNotesRanges.length > 0
             ? sheets.spreadsheets
               .get({
@@ -2127,8 +2131,36 @@ export async function handleGetAllClientJobs(req, res, sheets) {
 
             const vrMeta = parseVariableRetainerTag(colVal(row, 30));
             const isVarRet = String(colVal(row, 35) || "").toLowerCase().includes("retainer") && Boolean(vrMeta);
+            const relJob = relLookup?.jobsByTabAndRow?.get(`${currentTab.toLowerCase()}:${parentRowNum}`) || null;
+            if (relJob) {
+              jobRows.forEach((r) => {
+                const rowOffset = Number(r.rowNum) - parentRowNum;
+                if (r.isParent) {
+                  r.jobUuid = relJob.id;
+                  r.retainerSeriesId = relJob.retainer_series_id || null;
+                }
+                if (Array.isArray(r.invoiceSlots)) {
+                  r.invoiceSlots = r.invoiceSlots.map((slot) => {
+                    const relInv = relLookup.invoicesByJobRowSlot?.get(`${relJob.id}:${rowOffset}:${Number(slot.slotNum) - 1}`);
+                    return relInv
+                      ? { ...slot, invoiceUuid: relInv.id, accountingInvoiceId: relInv.accounting_invoice_id || null }
+                      : slot;
+                  });
+                }
+                if (Array.isArray(r.expenseSlots)) {
+                  r.expenseSlots = r.expenseSlots.map((slot) => {
+                    const relExp = relLookup.expensesByJobRowSlot?.get(`${relJob.id}:${rowOffset}:${Number(slot.slotNum) - 1}`);
+                    return relExp
+                      ? { ...slot, expenseUuid: relExp.id, accountingDirectCostId: relExp.accounting_direct_cost_id || null }
+                      : slot;
+                  });
+                }
+              });
+            }
             tabJobs.push({
               id: `${currentTab.toLowerCase()}_${parentRowNum}`,
+              jobUuid: relJob?.id || null,
+              retainerSeriesId: relJob?.retainer_series_id || null,
               tabName: currentTab,
               status: currentTab,
               client,
@@ -2200,6 +2232,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           crmTool,
           crmDrives,
           clientMode: sbCtx?.clientMode || "sheet",
+          jobsMode: sbCtx?.jobsMode || "grid",
           fetchedAt: new Date().toISOString(),
           hasAccountingIntegration,
           noEndDateRetainerMonths,
@@ -2220,6 +2253,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       ...result.data,
       ...(overlaidJobs !== undefined ? { jobs: overlaidJobs } : {}),
       clientMode: sbCtx?.clientMode || result.data?.clientMode || "sheet",
+      jobsMode: sbCtx?.jobsMode || result.data?.jobsMode || "grid",
     });
   } catch (err) {
     console.error("❌ get_all_client_jobs error:", err);
@@ -2293,7 +2327,7 @@ function resolveValidatedJobEditCoord_(tabName, { cellRef, colLetter, rowNum, fa
 }
 
 export async function handleUpdateJobField(req, res, sheets) {
-  const { clientSheetId, tabName, cellRef, value, colLetter, rowNum, fieldName, endClientName, jobName } = req.body;
+  const { clientSheetId, tabName, cellRef, value, colLetter, rowNum, fieldName, endClientName, jobName, jobUuid, rowOffset = 0 } = req.body;
   if (!clientSheetId || !tabName || (!cellRef && !colLetter)) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
@@ -2308,8 +2342,22 @@ export async function handleUpdateJobField(req, res, sheets) {
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const targetCol = coord.colLetters;
-    const targetRow = coord.rowNum;
-    const validatedCellRef = coord.cellRef;
+    let targetRow = coord.rowNum;
+    let validatedCellRef = coord.cellRef;
+    if (jobUuid) {
+      const anchor = await resolveAuthoritativeJobAnchor({
+        spreadsheetId: sheetIdClean,
+        clientName: req.body.clientName || "",
+        jobUuid,
+        expectedTabName: tabName,
+        fallbackRowNum: coord.rowNum,
+      });
+      if (anchor?.resolved && anchor.rowNum) {
+        const off = Math.max(0, parseInt(rowOffset, 10) || 0);
+        targetRow = anchor.rowNum + off;
+        validatedCellRef = `${targetCol}${targetRow}`;
+      }
+    }
     const normalizedVal = ((targetCol === "AM" || targetCol === "G") && isNoEndDateSentinel(value))
       ? NO_END_DATE_SHEET_VALUE
       : (targetCol === "AN" ? normalizeLikelihoodInput(value) : value);
@@ -2581,12 +2629,12 @@ export async function handleUpdateJobField(req, res, sheets) {
     return res.status(200).json({ success: true, backgroundProvisioning, invoiceSlotUpdates, expenseSlotUpdates });
   } catch (err) {
     console.error("❌ update_job_field error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(err?.statusCode || 500).json({ success: false, error: err.message });
   }
 }
 
 export async function handleUpdateJobFields(req, res, sheets) {
-  const { clientSheetId, tabName, rowNum, updates = [], endClientName, jobName, invoices } = req.body;
+  const { clientSheetId, tabName, rowNum, updates = [], endClientName, jobName, invoices, jobUuid } = req.body;
   const hasInvoices = Array.isArray(invoices);
   const safeUpdates = Array.isArray(updates) ? updates : [];
   if (!clientSheetId || !tabName || (!hasInvoices && safeUpdates.length === 0)) {
@@ -2620,6 +2668,35 @@ export async function handleUpdateJobFields(req, res, sheets) {
 
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    if (jobUuid) {
+      const anchor = await resolveAuthoritativeJobAnchor({
+        spreadsheetId: sheetIdClean,
+        clientName: req.body.clientName || "",
+        jobUuid,
+        expectedTabName: tabName,
+        fallbackRowNum: targetRowNum,
+      });
+      if (anchor?.resolved && anchor.rowNum) {
+        const rowDelta = targetRowNum ? anchor.rowNum - targetRowNum : 0;
+        targetRowNum = anchor.rowNum;
+        if (rowDelta !== 0) {
+          for (const u of normalizedUpdates) {
+            const shiftedRow = u._coord.rowNum + rowDelta;
+            u._coord.rowNum = shiftedRow;
+            u._coord.cellRef = `${u._coord.colLetters}${shiftedRow}`;
+            u.rowNum = shiftedRow;
+            u.cellRef = u._coord.cellRef;
+          }
+          if (hasInvoices) {
+            for (const inv of invoices) {
+              if (inv && Number.isInteger(Number(inv.rowNum))) {
+                inv.rowNum = Number(inv.rowNum) + rowDelta;
+              }
+            }
+          }
+        }
+      }
+    }
 
     const findUpdateByCol = (cols) => normalizedUpdates.find(u => cols.includes(u._coord.colLetters));
     const typeUpdate = findUpdateByCol(["AJ"]);
@@ -3133,7 +3210,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
     });
   } catch (err) {
     console.error("❌ update_job_fields error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(err?.statusCode || 500).json({ success: false, error: err.message });
   }
 }
 
@@ -9755,8 +9832,8 @@ export async function handleMarkPipelineCopied(req, res, sheets) {
 }
 
 export async function handleDeleteDirectJob(req, res, sheets) {
-  const { clientSheetId, tabName, rowNums, clientName, jobName, endClientName } = req.body;
-  if (!clientSheetId || !rowNums || !Array.isArray(rowNums) || rowNums.length === 0) {
+  const { clientSheetId, tabName, rowNums, clientName, jobName, endClientName, jobUuid } = req.body;
+  if (!clientSheetId || (!jobUuid && (!rowNums || !Array.isArray(rowNums) || rowNums.length === 0))) {
     return res.status(400).json({ success: false, error: "Missing clientSheetId or rowNums" });
   }
 
@@ -9768,8 +9845,24 @@ export async function handleDeleteDirectJob(req, res, sheets) {
   const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
   try {
+    const anchor = jobUuid
+      ? await resolveAuthoritativeJobAnchor({
+          spreadsheetId: sheetIdClean,
+          clientName: clientName || "",
+          jobUuid,
+          expectedTabName: targetTab,
+          fallbackRowNum: Array.isArray(rowNums) ? rowNums[0] : null,
+        })
+      : null;
+    const effectiveRowNums =
+      anchor?.resolved && Array.isArray(anchor.rowNums) && anchor.rowNums.length > 0
+        ? anchor.rowNums
+        : (Array.isArray(rowNums) ? rowNums : []);
+    if (effectiveRowNums.length === 0) {
+      return res.status(400).json({ success: false, error: "Missing clientSheetId or rowNums" });
+    }
     const unassignedInvoices = [];
-    const validScanRows = rowNums.map(Number).filter(n => n >= minJobRow);
+    const validScanRows = effectiveRowNums.map(Number).filter(n => n >= minJobRow);
     const minR = validScanRows.length > 0 ? Math.min(...validScanRows) : minJobRow;
     const maxR = validScanRows.length > 0 ? Math.max(...validScanRows) : minJobRow;
 
@@ -9924,48 +10017,63 @@ export async function handleDeleteDirectJob(req, res, sheets) {
     const prevDel = memoryCache.get(delCacheKey) || [];
     const delClientLower = String(endClientName || "").trim().toLowerCase();
     const delJobLower = String(jobName || "").trim().toLowerCase();
-    const newSigs = rowNums.map(r => `${Number(r)}:${delClientLower}:${delJobLower}`);
+    const newSigs = validScanRows.map(r => `${Number(r)}:${delClientLower}:${delJobLower}`);
     const updatedDel = Array.from(new Set([...prevDel, ...newSigs]));
     memoryCache.set(delCacheKey, updatedDel, 15); // 15s TTL
 
+    const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
     await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]);
 
     // Log activity
-    const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));
     logPmaActivity(sheets, {
       automationCommanderSheetId: req.body.automationCommanderSheetId,
       clientName: tenantClient,
       category: "JOBS",
       action: "JOB_DELETED",
-      summary: `Deleted job "${endClientName ? `${endClientName} - ` : ""}${jobName || "Job"}" from ${targetTab} (cleared ${rowNums.length} row${rowNums.length === 1 ? "" : "s"}: ${rowNums.join(", ")})`,
+      summary: `Deleted job "${endClientName ? `${endClientName} - ` : ""}${jobName || "Job"}" from ${targetTab} (cleared ${validScanRows.length} row${validScanRows.length === 1 ? "" : "s"}: ${validScanRows.join(", ")})`,
       details: {
         jobName,
         endClientName,
         tabName: targetTab,
-        clearedRows: rowNums,
+        clearedRows: validScanRows,
       }
     }).catch(e => console.error("PMA log failed:", e));
 
     return res.status(200).json({ success: true, unassignedInvoices });
   } catch (err) {
     console.error("❌ handleDeleteDirectJob error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(err?.statusCode || 500).json({ success: false, error: err.message });
   }
 }
 
 export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
-  const { clientSheetId, rowNum, clientName, jobName, endClientName, updates } = req.body;
-  if (!clientSheetId || !rowNum) {
+  const { clientSheetId, rowNum, clientName, jobName, endClientName, updates, jobUuid } = req.body;
+  if (!clientSheetId || (!rowNum && !jobUuid)) {
     return res.status(400).json({ success: false, error: "Missing clientSheetId or rowNum" });
   }
 
   const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-  const pRow = parseInt(rowNum, 10);
-  if (isNaN(pRow) || pRow < 2) {
+  const parsedPRow = rowNum ? parseInt(rowNum, 10) : NaN;
+  if (!jobUuid && (isNaN(parsedPRow) || parsedPRow < 2)) {
     return res.status(400).json({ success: false, error: "Invalid rowNum" });
   }
 
   try {
+    const anchor = jobUuid
+      ? await resolveAuthoritativeJobAnchor({
+          spreadsheetId: sheetIdClean,
+          clientName: clientName || "",
+          jobUuid,
+          expectedTabName: "Pipeline",
+          fallbackRowNum: !isNaN(parsedPRow) && parsedPRow >= 2 ? parsedPRow : null,
+        })
+      : null;
+    const pRow = anchor?.resolved && anchor.rowNum ? anchor.rowNum : parsedPRow;
+    if (isNaN(pRow) || pRow < 2) {
+      return res.status(400).json({ success: false, error: "Invalid rowNum" });
+    }
+    const rowDelta = !isNaN(parsedPRow) && parsedPRow >= 2 ? pRow - parsedPRow : 0;
     // Guard: Prevent manual promotion of CRM-originated pipeline deals
     try {
       const codeResp = await withRetry(() =>
@@ -10058,7 +10166,8 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
       const ALLOWED_UPDATE_COLS = new Set(["A", "B", "C", "D", "E", "F", "G", "H", "I", "K", "Q", "R", "T", "V", "AB", "AE", "AG", "AH", "AI", "AJ", "AK", "AL", "AM", "AN", "DD"]);
       for (const u of updates) {
         const match = String(u?.cellRef || "").trim().toUpperCase().match(/^([A-Z]{1,2})(\d{1,4})$/);
-        if (match && ALLOWED_UPDATE_COLS.has(match[1]) && parseInt(match[2], 10) === pRow && u.value !== undefined) {
+        const shiftedMatchRow = match ? parseInt(match[2], 10) + rowDelta : NaN;
+        if (match && ALLOWED_UPDATE_COLS.has(match[1]) && shiftedMatchRow === pRow && u.value !== undefined) {
           let targetCol = match[1];
           if (isJobCosting) {
             if (targetCol === "AL") targetCol = "F";
@@ -10103,10 +10212,11 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ handleMarkPipelineAlreadyConfirmed error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(err?.statusCode || 500).json({ success: false, error: err.message });
   }
 }
 

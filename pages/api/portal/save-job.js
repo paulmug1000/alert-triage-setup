@@ -13,6 +13,7 @@ import {
   handleSaveVariableRetainerSeries_,
 } from "../../../services/retainers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
 import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
 import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
 import {
@@ -567,18 +568,18 @@ export default async function handler(req, res) {
       sessionUser?.isAdmin
         ? res
         : {
-            ...res,
-            status(code) {
-              res.status(code);
-              return this;
-            },
-            json(payload) {
-              if (payload && typeof payload === "object" && typeof payload.error === "string") {
-                return res.json({ ...payload, error: sanitizeSpreadsheetTerms(payload.error) });
-              }
-              return res.json(payload);
-            },
-          };
+          ...res,
+          status(code) {
+            res.status(code);
+            return this;
+          },
+          json(payload) {
+            if (payload && typeof payload === "object" && typeof payload.error === "string") {
+              return res.json({ ...payload, error: sanitizeSpreadsheetTerms(payload.error) });
+            }
+            return res.json(payload);
+          },
+        };
 
     if (isVarRetainerAction) {
       const delegatedReq = {
@@ -759,10 +760,28 @@ export default async function handler(req, res) {
     };
 
     // 3. Determine if moving between sheets or if new job
-    const origId = String(job.id || "");
+    let origId = String(job.id || "");
     const wasPipeline = origId.startsWith("pipeline");
     const wasConfirmed = origId.startsWith("confirmed");
     const isSheetChange = (wasPipeline && isTargetConfirmed) || (wasConfirmed && !isTargetConfirmed);
+
+    let relationalAnchor = null;
+    if (job.jobUuid && origId !== "new") {
+      const expectedSourceTab = isSheetChange ? (wasPipeline ? "Pipeline" : "Confirmed") : sheetName;
+      relationalAnchor = await resolveAuthoritativeJobAnchor({
+        spreadsheetId: clientSheetId,
+        clientName: verifiedClientName,
+        jobUuid: job.jobUuid,
+        expectedTabName: expectedSourceTab,
+        fallbackRowNum: job.rowNumber,
+      });
+      if (relationalAnchor?.resolved && relationalAnchor.rowNum) {
+        job.rowNumber = relationalAnchor.rowNum;
+        job.childRowNumbers = relationalAnchor.rowNums?.slice(1) || job.childRowNumbers;
+        origId = `${expectedSourceTab.toLowerCase()}-${relationalAnchor.rowNum}`;
+      }
+    }
+
     const isNewJob = origId === "new" || !job.rowNumber || isSheetChange;
 
     if (wasPipeline && isTargetConfirmed) {
@@ -929,7 +948,7 @@ export default async function handler(req, res) {
           const isChildEmptyRevDc =
             isJobCosting && rRev.startsWith("=")
               ? String(r[cols.jobRevenue] ?? "").trim() === "" &&
-                String(r[cols.jobStartDate] ?? "").trim() === ""
+              String(r[cols.jobStartDate] ?? "").trim() === ""
               : rRev === "" && rDc === "";
           if ((isExplicitChild || isAutoMatchedChild) && isChildEmptyRevDc) {
             verifiedChildren.push(parentRow + 1 + i);
@@ -1009,7 +1028,7 @@ export default async function handler(req, res) {
           );
         }
       }
-      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => {});
+      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({
         success: true,
         rowNumber: varRes.firstRowNum,
@@ -1570,11 +1589,11 @@ export default async function handler(req, res) {
     // 10. Relink any existing Pulse notes if job name/code changed or manual invoice/expense slots shifted
     const oldJobKey = !isNewJob && existingParentRow.length > 0
       ? buildJobNoteKey({
-          client: existingParentRow[cols.client] || job.client,
-          jobName: existingParentRow[cols.jobName] || job.jobName,
-          projectCode: existingParentRow[cols.projectCode] || "",
-          rowNumber: parentRow,
-        })
+        client: existingParentRow[cols.client] || job.client,
+        jobName: existingParentRow[cols.jobName] || job.jobName,
+        projectCode: existingParentRow[cols.projectCode] || "",
+        rowNumber: parentRow,
+      })
       : "";
     const newJobKey = buildJobNoteKey({
       client: job.client,
@@ -1589,19 +1608,32 @@ export default async function handler(req, res) {
       newJobLabel: buildJobNoteLabel(job),
       invoices: validInvoices,
       directExpenses: validExpenses,
-    }).catch(() => {});
+    }).catch(() => { });
+
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+
+    let savedJobUuid = relationalAnchor?.resolved && !isSheetChange ? relationalAnchor.jobUuid : null;
+    if (relationalAnchor?.isRelational) {
+      try {
+        const relLookup = await getClientRelationalJobsLookup(verifiedClientName || clientName || "");
+        const matched = relLookup?.jobsByTabAndRow?.get(`${sheetName.toLowerCase()}:${parentRow}`);
+        if (matched?.id) savedJobUuid = matched.id;
+      } catch (_) { }
+    }
 
     return res.status(200).json({
       success: true,
       rowNumber: parentRow,
+      ...(savedJobUuid ? { jobUuid: savedJobUuid } : {}),
       sheetName,
       childRowNumbers: actualChildRows,
       backgroundProvisioning: false,
     });
   } catch (err) {
     console.error("❌ /api/portal/save-job error:", err);
-    return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
+    const status = err?.statusCode || 500;
+    return res.status(status).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   } finally {
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
   }
 }

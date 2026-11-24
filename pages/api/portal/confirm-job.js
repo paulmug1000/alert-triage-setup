@@ -23,6 +23,7 @@ import { buildRetainerChildRowsWritePlan, createVariableRetainerSeries_ } from "
 import { getToleranceValues } from "../../../services/sharedHelpers.js";
 import { resolveMasterSheetIdForClient_ } from "../../../services/workspaces.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
 import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
 import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
 
@@ -60,10 +61,10 @@ export default async function handler(req, res) {
     return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
   }
 
-  const { clientSheetId, clientName, pipelineRow } = req.body || {};
+  const { clientSheetId, clientName, pipelineRow, jobUuid } = req.body || {};
 
-  const pRow = parseInt(pipelineRow, 10);
-  if (!clientSheetId || isNaN(pRow) || pRow < 2) {
+  const parsedPRow = parseInt(pipelineRow, 10);
+  if (!clientSheetId || (!jobUuid && (isNaN(parsedPRow) || parsedPRow < 2))) {
     return res.status(400).json({ success: false, error: "Valid clientSheetId and pipelineRow (>= 2) are required" });
   }
 
@@ -78,6 +79,18 @@ export default async function handler(req, res) {
     const verifiedClientName = auth.clientName;
     const liveGate = await assertClientPortalLive(sessionUser, verifiedClientName, res);
     if (!liveGate.allowed) return;
+
+    const relationalAnchor = await resolveAuthoritativeJobAnchor({
+      spreadsheetId: clientSheetId,
+      clientName: verifiedClientName,
+      jobUuid,
+      expectedTabName: "Pipeline",
+      fallbackRowNum: !isNaN(parsedPRow) && parsedPRow >= 2 ? parsedPRow : null,
+    });
+    const pRow = relationalAnchor?.rowNum;
+    if (isNaN(pRow) || pRow < 2) {
+      return res.status(400).json({ success: false, error: "Valid clientSheetId and pipelineRow (>= 2) are required" });
+    }
 
     // 1. Get sheet metadata
     const metaResp = await withRetry(() =>
@@ -680,16 +693,28 @@ export default async function handler(req, res) {
       newJobLabel: buildJobNoteLabel({ client: parentClient, jobName: parentJobName }),
     }).catch(() => {});
 
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+
+    let confirmedJobUuid = null;
+    if (relationalAnchor?.isRelational) {
+      try {
+        const relLookup = await getClientRelationalJobsLookup(verifiedClientName || clientName || parentClient || "");
+        confirmedJobUuid = relLookup?.jobsByTabAndRow?.get(`confirmed:${targetParentRow}`)?.id || null;
+      } catch (_) { }
+    }
+
     return res.status(200).json({
       success: true,
       confirmedRow: targetParentRow,
+      ...(confirmedJobUuid ? { confirmedJobUuid } : {}),
       childRows: confirmedChildRows,
       backgroundProvisioning: false,
       message: "Successfully confirmed job",
     });
   } catch (err) {
     console.error("❌ /api/portal/confirm-job error:", err);
-    return res.status(500).json({
+    const status = err?.statusCode || 500;
+    return res.status(status).json({
       success: false,
       error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.")
     });

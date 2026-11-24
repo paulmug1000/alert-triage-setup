@@ -19,7 +19,10 @@ import {
   normalizeNoteSegment,
   normalizeAmountFingerprint,
   normalizeDateFingerprint,
+  buildJobNoteKey,
 } from "../utils/pulseNotesKeys.js";
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const MAX_NOTE_BODY_LEN = 4000;
 const MAX_REPLY_BODY_LEN = 2500;
@@ -108,6 +111,7 @@ function mapNoteRow(r, replies = []) {
   return {
     id: r.id,
     clientId: r.client_id || null,
+    jobId: r.job_id || null,
     clientName: r.client_name || "",
     scopeType: r.scope_type || "entity",
     entityType: r.entity_type || "job",
@@ -862,13 +866,58 @@ export async function createPulseNote({
 
   const nowIso = new Date().toISOString();
   const cleanLabel = sanitizeSpreadsheetTerms(String(entityLabel || "").trim()).slice(0, MAX_LABEL_LEN);
+  const cleanParentKey = String(parentEntityKey || "").trim().slice(0, 300);
+
+  let resolvedJobId = null;
+  if (clientRow?.id && (cleanType === "job" || cleanParentKey.startsWith("job:"))) {
+    try {
+      const candidateUuid = String(contextMeta?.jobUuid || "").trim();
+      if (UUID_REGEX.test(candidateUuid)) {
+        const { data: verifiedJob } = await sb
+          .from("pulse_jobs")
+          .select("id")
+          .eq("client_id", clientRow.id)
+          .eq("id", candidateUuid)
+          .maybeSingle();
+        if (verifiedJob?.id) resolvedJobId = verifiedJob.id;
+      }
+      if (!resolvedJobId) {
+        const targetJobKey = cleanType === "job" ? cleanKey : cleanParentKey;
+        const { data: jobCandidates } = await sb
+          .from("pulse_jobs")
+          .select("id, tab_type, sheet_row_num, customer_name, job_name, project_code")
+          .eq("client_id", clientRow.id)
+          .limit(2000);
+        const ordered = [...(jobCandidates || [])].sort((a, b) =>
+          a.tab_type === b.tab_type ? (a.sheet_row_num || 0) - (b.sheet_row_num || 0) : a.tab_type === "confirmed" ? -1 : 1
+        );
+        for (const jc of ordered) {
+          const k1 = buildJobNoteKey({
+            client: jc.customer_name,
+            jobName: jc.job_name,
+            projectCode: jc.project_code,
+            rowNumber: jc.sheet_row_num,
+          });
+          const k2 = !jc.project_code && jc.customer_name && jc.job_name
+            ? buildJobNoteKey({ client: jc.customer_name, jobName: jc.job_name })
+            : "";
+          if (k1 === targetJobKey || (k2 && k2 === targetJobKey)) {
+            resolvedJobId = jc.id;
+            break;
+          }
+        }
+      }
+    } catch (_) { }
+  }
+
   const insertRow = {
     client_id: clientRow?.id || null,
     client_name: canonicalClientName,
+    ...(resolvedJobId ? { job_id: resolvedJobId } : {}),
     scope_type: resolvedScopeType,
     entity_type: cleanType,
     entity_key: cleanKey,
-    parent_entity_key: String(parentEntityKey || "").trim().slice(0, 300),
+    parent_entity_key: cleanParentKey,
     entity_label: cleanLabel || getEntityTypeDisplayLabel(cleanType),
     context_meta: sanitizeContextMeta(contextMeta),
     visibility_scope: visibilityScope,
@@ -883,11 +932,15 @@ export async function createPulseNote({
     client_unread_reply: false,
   };
 
-  const { data: created, error } = await sb
+  let { data: created, error } = await sb
     .from("pulse_notes")
     .insert(insertRow)
     .select("*")
     .single();
+  if (error && resolvedJobId && String(error.message || "").includes("job_id")) {
+    delete insertRow.job_id;
+    ({ data: created, error } = await sb.from("pulse_notes").insert(insertRow).select("*").single());
+  }
 
   if (error) {
     if (isMissingTableError(error)) {

@@ -1534,6 +1534,7 @@ export default function PortalJobsView({
           clientSheetId,
           clientName,
           pipelineRow: editingJob.rowNumber,
+          ...(editingJob.jobUuid ? { jobUuid: editingJob.jobUuid } : {}),
         }),
       });
       const resData = await res.json();
@@ -1583,6 +1584,7 @@ export default function PortalJobsView({
           clientSheetId,
           clientName,
           confirmedRow: editingJob.rowNumber,
+          ...(editingJob.jobUuid ? { jobUuid: editingJob.jobUuid } : {}),
         }),
       });
       const resData = await res.json();
@@ -1805,6 +1807,7 @@ export default function PortalJobsView({
       savedJob.revNum = isNaN(parsedRev) ? 0 : parsedRev;
       savedJob.dcNum = isNaN(parsedDc) ? 0 : parsedDc;
       if (resData.rowNumber) savedJob.rowNumber = resData.rowNumber;
+      if (resData.jobUuid) savedJob.jobUuid = resData.jobUuid;
       if (resData.childRowNumbers) savedJob.childRowNumbers = resData.childRowNumbers;
 
       if (!jobToSave.isVariableRetainerSeries) {
@@ -5945,6 +5948,7 @@ export default function PortalJobsView({
               client: editingJob.client || "",
               jobName: editingJob.jobName || "",
               projectCode: editingJob.projectCode || "",
+              ...(editingJob.jobUuid ? { jobUuid: editingJob.jobUuid } : {}),
               isRetainer: Boolean(String(editingJob.projectRetainer || "").toLowerCase().includes("retainer") && !editingJob.isVariableRetainerSeries),
               startDate: editingJob.startDate || "",
               endDate: editingJob.endDate || "",

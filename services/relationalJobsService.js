@@ -18,8 +18,12 @@ import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
 import {
   getOrLoadVirtualTabGrid_,
   resolveSupabaseSheetContext,
+  invalidateSheetContextCache,
   isVirtualSupabaseSheetId,
 } from "./masterEngineService.js";
+import { invalidatePmaClientCache } from "./cacheService.js";
+import { redisClient } from "./redisClient.js";
+import { buildJobNoteKey } from "../utils/pulseNotesKeys.js";
 import {
   isJobCostingStyle,
   isNoEndDateSentinel,
@@ -253,19 +257,19 @@ function isActiveJobOrChildRow_(r0, vRow, fRow, rowNotes, { tabName, isJobCostin
 
   const hasNonZeroRevOrDc = isJobCosting
     ? (isNonEmptyCell_(vRow[8]) && parseNumericOrDefault_(vRow[8], 0) !== 0) ||
-      isNonEmptyCell_(vRow[5]) ||
-      isNonEmptyCell_(vRow[6]) ||
-      (isNonEmptyCell_(vRow[17]) && parseNumericOrDefault_(vRow[17], 0) !== 0) ||
-      isFormulaStr_(fRow[8]) ||
-      isFormulaStr_(fRow[5]) ||
-      isFormulaStr_(fRow[6]) ||
-      isFormulaStr_(fRow[17])
+    isNonEmptyCell_(vRow[5]) ||
+    isNonEmptyCell_(vRow[6]) ||
+    (isNonEmptyCell_(vRow[17]) && parseNumericOrDefault_(vRow[17], 0) !== 0) ||
+    isFormulaStr_(fRow[8]) ||
+    isFormulaStr_(fRow[5]) ||
+    isFormulaStr_(fRow[6]) ||
+    isFormulaStr_(fRow[17])
     : isNonEmptyCell_(vRow[32]) ||
-      isNonEmptyCell_(vRow[33]) ||
-      (isNonEmptyCell_(vRow[17]) && parseNumericOrDefault_(vRow[17], 0) !== 0) ||
-      isFormulaStr_(fRow[32]) ||
-      isFormulaStr_(fRow[33]) ||
-      isFormulaStr_(fRow[17]);
+    isNonEmptyCell_(vRow[33]) ||
+    (isNonEmptyCell_(vRow[17]) && parseNumericOrDefault_(vRow[17], 0) !== 0) ||
+    isFormulaStr_(fRow[32]) ||
+    isFormulaStr_(fRow[33]) ||
+    isFormulaStr_(fRow[17]);
 
   if (hasNonZeroRevOrDc) {
     if (r0 === 1 && !isJobCosting) return true;
@@ -700,23 +704,23 @@ function applySlotToProjectedGrid_(valuesGrid, formulasGrid, notesGrid, r0, slot
   if (rawCells.length === 0) {
     fallbackArr = slotDef.startCol >= 75
       ? [
-          slotRec.description || "",
-          slotRec.amount ?? "",
-          slotRec.vat_applicable || "",
-          slotRec.received_date || "",
-          slotRec.days_to_pay ?? "",
-          slotRec.status || "",
-          slotRec.external_app_id || "",
-        ]
+        slotRec.description || "",
+        slotRec.amount ?? "",
+        slotRec.vat_applicable || "",
+        slotRec.received_date || "",
+        slotRec.days_to_pay ?? "",
+        slotRec.status || "",
+        slotRec.external_app_id || "",
+      ]
       : [
-          slotRec.amount ?? "",
-          slotRec.invoice_ref || "",
-          slotRec.send_date || "",
-          slotRec.days_to_pay ?? "",
-          slotRec.status || "",
-          slotRec.of_which_recharged ?? "",
-          slotRec.cost_month || "",
-        ];
+        slotRec.amount ?? "",
+        slotRec.invoice_ref || "",
+        slotRec.send_date || "",
+        slotRec.days_to_pay ?? "",
+        slotRec.status || "",
+        slotRec.of_which_recharged ?? "",
+        slotRec.cost_month || "",
+      ];
   }
 
   for (let rel = 0; rel < slotDef.colCount; rel++) {
@@ -1072,14 +1076,60 @@ function makeJobIdentityKey_(job) {
   return `row:${job.sheet_row_num}|${normalizeTextKey_(job.customer_name)}|${normalizeTextKey_(job.job_name)}`;
 }
 
-async function fetchAllRowsForClient_(supabase, tableName, clientId) {
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const _inFlightReconcileByClient = new Map();
+const _pendingReconcileTabsByClient = new Map();
+
+function numbersEqualLoose_(a, b) {
+  if (a === b) return true;
+  if (a === null || a === undefined || a === "") return b === null || b === undefined || b === "";
+  if (b === null || b === undefined || b === "") return false;
+  const na = Number(a);
+  const nb = Number(b);
+  if (!Number.isFinite(na) || !Number.isFinite(nb)) return String(a) === String(b);
+  return Math.abs(na - nb) < 0.0001;
+}
+
+function stableJson_(val) {
+  if (val === null || val === undefined) return "null";
+  if (Array.isArray(val)) return `[${val.map(stableJson_).join(",")}]`;
+  if (typeof val === "object") {
+    const keys = Object.keys(val).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableJson_(val[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(val);
+}
+
+function hasRecordChanged_(existing, desired, numericCols = [], jsonCols = []) {
+  if (!existing) return true;
+  const numSet = new Set(numericCols);
+  const jsonSet = new Set(jsonCols);
+  for (const [k, v] of Object.entries(desired)) {
+    if (k === "id" || k === "client_id") continue;
+    const prev = existing[k];
+    if (numSet.has(k)) {
+      if (!numbersEqualLoose_(prev, v)) return true;
+    } else if (jsonSet.has(k)) {
+      if (stableJson_(prev ?? null) !== stableJson_(v ?? null)) return true;
+    } else if (typeof v === "boolean") {
+      if (Boolean(prev) !== v) return true;
+    } else {
+      if (String(prev ?? "") !== String(v ?? "")) return true;
+    }
+  }
+  return false;
+}
+
+async function fetchAllRowsForClient_(supabase, tableName, clientId, { tabType = null, selectCols = "*" } = {}) {
   const out = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase
+    let q = supabase
       .from(tableName)
-      .select("*")
+      .select(selectCols)
       .eq("client_id", clientId)
       .range(from, from + 999);
+    if (tabType) q = q.eq("tab_type", tabType);
+    const { data, error } = await q;
     if (error) throw new Error(`${tableName} read failed: ${error.message}`);
     if (!Array.isArray(data) || data.length === 0) break;
     out.push(...data);
@@ -1088,78 +1138,232 @@ async function fetchAllRowsForClient_(supabase, tableName, clientId) {
   return out;
 }
 
-/**
- * Idempotently backfills/reconciles a client's `Confirmed` & `Pipeline` tabs from `master_sheet_grids`
- * into `pulse_retainer_series`, `pulse_jobs`, `pulse_job_invoices`, and `pulse_job_expenses`
- * while preserving existing UUIDs wherever jobs/series/slots match.
- */
-export async function backfillClientRelationalJobs(clientName) {
-  const schema = await checkPhase2RelationalSchemaStatus();
-  if (!schema.schemaReady) {
-    throw new Error("Migration 0012 must be applied in Supabase SQL Editor before backfilling relational jobs.");
+async function fetchChildRowsForJobIds_(supabase, tableName, clientId, jobIds, selectCols = "*") {
+  if (!Array.isArray(jobIds) || jobIds.length === 0) return [];
+  const out = [];
+  for (let i = 0; i < jobIds.length; i += 200) {
+    const chunk = jobIds.slice(i, i + 200);
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase
+        .from(tableName)
+        .select(selectCols)
+        .eq("client_id", clientId)
+        .in("job_id", chunk)
+        .range(from, from + 999);
+      if (error) throw new Error(`${tableName} read failed: ${error.message}`);
+      if (!Array.isArray(data) || data.length === 0) break;
+      out.push(...data);
+      if (data.length < 1000) break;
+    }
+  }
+  return out;
+}
+
+function findMatchingExistingJob_(sourceJob, existingPool, indexes, usedExistingJobIds) {
+  const { byProjectCode, byExactRowIdentity, byName, byRowNum } = indexes;
+
+  const pcK = normalizeTextKey_(sourceJob.project_code);
+  if (pcK) {
+    const candidates = byProjectCode.get(pcK) || [];
+    const hit = candidates.find((ej) => !usedExistingJobIds.has(ej.id));
+    if (hit) return hit;
   }
 
+  const exactK = `${sourceJob.sheet_row_num}|${normalizeTextKey_(sourceJob.customer_name)}|${normalizeTextKey_(sourceJob.job_name)}`;
+  const exactHit = (byExactRowIdentity.get(exactK) || []).find((ej) => !usedExistingJobIds.has(ej.id));
+  if (exactHit) return exactHit;
+
+  const nameK = `${normalizeTextKey_(sourceJob.customer_name)}|${normalizeTextKey_(sourceJob.job_name)}`;
+  if (nameK !== "|") {
+    const nameCandidates = (byName.get(nameK) || []).filter((ej) => !usedExistingJobIds.has(ej.id));
+    if (nameCandidates.length > 0) {
+      const ymMatch = sourceJob.retainer_period_ym
+        ? nameCandidates.find((ej) => ej.retainer_period_ym === sourceJob.retainer_period_ym)
+        : null;
+      if (ymMatch) return ymMatch;
+
+      const sdMatch = sourceJob.start_date
+        ? nameCandidates.find((ej) => ej.start_date === sourceJob.start_date)
+        : null;
+      if (sdMatch) return sdMatch;
+
+      nameCandidates.sort(
+        (a, b) => Math.abs((a.sheet_row_num || 0) - sourceJob.sheet_row_num) - Math.abs((b.sheet_row_num || 0) - sourceJob.sheet_row_num)
+      );
+      return nameCandidates[0];
+    }
+  }
+
+  const rowHit = byRowNum.get(sourceJob.sheet_row_num);
+  if (rowHit && !usedExistingJobIds.has(rowHit.id)) return rowHit;
+
+  return null;
+}
+
+async function syncPulseNotesJobIdsForClient_(supabase, clientId) {
+  const [{ data: notes }, { data: jobs }] = await Promise.all([
+    supabase
+      .from("pulse_notes")
+      .select("id, entity_type, entity_key, parent_entity_key, job_id")
+      .eq("client_id", clientId)
+      .is("deleted_at", null)
+      .in("entity_type", ["job", "invoice", "job_expense"])
+      .limit(1000),
+    supabase
+      .from("pulse_jobs")
+      .select("id, tab_type, sheet_row_num, customer_name, job_name, project_code")
+      .eq("client_id", clientId)
+      .limit(2000),
+  ]);
+  if (!Array.isArray(notes) || notes.length === 0 || !Array.isArray(jobs) || jobs.length === 0) return;
+
+  const jobIdByNoteKey = new Map();
+  // Sort so pipeline writes first and confirmed overrides on matching keys
+  const orderedJobs = [...jobs].sort((a, b) => {
+    if (a.tab_type === b.tab_type) return (a.sheet_row_num || 0) - (b.sheet_row_num || 0);
+    return a.tab_type === "pipeline" ? -1 : 1;
+  });
+  for (const j of orderedJobs) {
+    const key = buildJobNoteKey({
+      client: j.customer_name,
+      jobName: j.job_name,
+      projectCode: j.project_code,
+      rowNumber: j.sheet_row_num,
+    });
+    if (key) jobIdByNoteKey.set(key, j.id);
+    if (!j.project_code && j.customer_name && j.job_name) {
+      const altKey = buildJobNoteKey({ client: j.customer_name, jobName: j.job_name });
+      if (altKey) jobIdByNoteKey.set(altKey, j.id);
+    }
+  }
+
+  const updates = [];
+  for (const n of notes) {
+    const lookupKey = n.entity_type === "job" ? n.entity_key : n.parent_entity_key;
+    if (!lookupKey) continue;
+    const matchedJobId = jobIdByNoteKey.get(lookupKey) || null;
+    if (matchedJobId && n.job_id !== matchedJobId) {
+      updates.push(supabase.from("pulse_notes").update({ job_id: matchedJobId }).eq("id", n.id));
+    }
+  }
+  if (updates.length > 0) {
+    await Promise.all(updates.map((p) => p.catch(() => { })));
+  }
+}
+
+async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
   const supabase = getSupabaseAdmin();
-  const ctx = await resolveSupabaseSheetContext({ clientName });
-  if (!ctx?.clientId) {
-    throw new Error(`Client "${clientName}" was not found in Supabase.`);
+  if (!supabase || !ctx?.clientId) return null;
+
+  const isBothTabs = targetTabs.includes("Confirmed") && targetTabs.includes("Pipeline");
+  const singleTabType = !isBothTabs ? (targetTabs[0] === "Pipeline" ? "pipeline" : "confirmed") : null;
+  const forceFullUpsert = Boolean(options.forceFullUpsert);
+
+  const preloaded = options.preloadedGrids || {};
+  const gridPromises = targetTabs.map((tabName) =>
+    preloaded[tabName]
+      ? Promise.resolve({
+        values_grid: preloaded[tabName].values || preloaded[tabName].values_grid || [],
+        formulas_grid: preloaded[tabName].formulas || preloaded[tabName].formulas_grid || [],
+        notes_grid: preloaded[tabName].notes || preloaded[tabName].notes_grid || {},
+      })
+      : getOrLoadVirtualTabGrid_(ctx, "client", tabName, null, { includeNotes: true })
+  );
+
+  const [gridsList, existingSeries, existingJobs, clMetaResp] = await Promise.all([
+    Promise.all(gridPromises),
+    fetchAllRowsForClient_(supabase, "pulse_retainer_series", ctx.clientId, { tabType: singleTabType }),
+    fetchAllRowsForClient_(supabase, "pulse_jobs", ctx.clientId, { tabType: singleTabType }),
+    supabase.from("clients").select("metadata").eq("id", ctx.clientId).maybeSingle(),
+  ]);
+
+  const existingJobIds = existingJobs.map((j) => j.id);
+  const [existingInvs, existingExps] = await Promise.all([
+    isBothTabs
+      ? fetchAllRowsForClient_(supabase, "pulse_job_invoices", ctx.clientId)
+      : fetchChildRowsForJobIds_(supabase, "pulse_job_invoices", ctx.clientId, existingJobIds),
+    isBothTabs
+      ? fetchAllRowsForClient_(supabase, "pulse_job_expenses", ctx.clientId)
+      : fetchChildRowsForJobIds_(supabase, "pulse_job_expenses", ctx.clientId, existingJobIds),
+  ]);
+
+  const models = targetTabs.map((tabName, idx) =>
+    parseTabGridToRelationalModel({
+      clientId: ctx.clientId,
+      clientName: ctx.clientName,
+      tabName,
+      valuesGrid: gridsList[idx]?.values_grid || [],
+      formulasGrid: gridsList[idx]?.formulas_grid || [],
+      notesGrid: gridsList[idx]?.notes_grid || {},
+    })
+  );
+
+  // Determine whether accounting FK lookup is actually needed
+  const neededInvRefs = new Set();
+  const neededExpAppIds = new Set();
+  const existingInvById = new Map(existingInvs.map((r) => [r.id, r]));
+  const existingExpById = new Map(existingExps.map((r) => [r.id, r]));
+  const accInvFkByRef = new Map();
+  const accCostFkByExtId = new Map();
+
+  for (const mod of models) {
+    for (const j of mod.jobs) {
+      for (const inv of j.invoices) {
+        const rk = normalizeTextKey_(inv.invoice_ref);
+        if (rk && !inv.is_placeholder) neededInvRefs.add(rk);
+      }
+      for (const exp of j.expenses) {
+        const ek = normalizeTextKey_(exp.external_app_id);
+        if (ek && !exp.is_placeholder) neededExpAppIds.add(ek);
+      }
+    }
   }
 
-  const [confGrid, pipeGrid, existingSeries, existingJobs, existingInvs, existingExps, accInvsResp, accDirectResp] =
-    await Promise.all([
-      getOrLoadVirtualTabGrid_(ctx, "client", "Confirmed", null, { includeNotes: true }),
-      getOrLoadVirtualTabGrid_(ctx, "client", "Pipeline", null, { includeNotes: true }),
-      fetchAllRowsForClient_(supabase, "pulse_retainer_series", ctx.clientId),
-      fetchAllRowsForClient_(supabase, "pulse_jobs", ctx.clientId),
-      fetchAllRowsForClient_(supabase, "pulse_job_invoices", ctx.clientId),
-      fetchAllRowsForClient_(supabase, "pulse_job_expenses", ctx.clientId),
-      supabase.from("accounting_invoices").select("id, invoice_number, external_id").eq("client_id", ctx.clientId),
-      supabase.from("accounting_direct_costs").select("id, external_id").eq("client_id", ctx.clientId),
+  for (const r of existingInvs) {
+    const rk = normalizeTextKey_(r.invoice_ref);
+    if (rk && r.accounting_invoice_id) accInvFkByRef.set(rk, r.accounting_invoice_id);
+  }
+  for (const r of existingExps) {
+    const ek = normalizeTextKey_(r.external_app_id);
+    if (ek && r.accounting_direct_cost_id) accCostFkByExtId.set(ek, r.accounting_direct_cost_id);
+  }
+
+  const missingInvLookup = forceFullUpsert || [...neededInvRefs].some((rk) => !accInvFkByRef.has(rk));
+  const missingExpLookup = forceFullUpsert || [...neededExpAppIds].some((ek) => !accCostFkByExtId.has(ek));
+  if (missingInvLookup || missingExpLookup) {
+    const [accInvsResp, accDirectResp] = await Promise.all([
+      missingInvLookup && neededInvRefs.size > 0
+        ? supabase.from("accounting_invoices").select("id, invoice_number").eq("client_id", ctx.clientId)
+        : Promise.resolve({ data: [] }),
+      missingExpLookup && neededExpAppIds.size > 0
+        ? supabase.from("accounting_direct_costs").select("id, external_id").eq("client_id", ctx.clientId)
+        : Promise.resolve({ data: [] }),
     ]);
-
-  const accInvByRef = new Map();
-  for (const r of accInvsResp.data || []) {
-    const refK = normalizeTextKey_(r.invoice_number);
-    if (refK && !accInvByRef.has(refK)) accInvByRef.set(refK, r.id);
-  }
-  const accCostByExtId = new Map();
-  for (const r of accDirectResp.data || []) {
-    const extK = normalizeTextKey_(r.external_id);
-    if (extK && !accCostByExtId.has(extK)) accCostByExtId.set(extK, r.id);
+    for (const r of accInvsResp.data || []) {
+      const refK = normalizeTextKey_(r.invoice_number);
+      if (refK) accInvFkByRef.set(refK, r.id);
+    }
+    for (const r of accDirectResp.data || []) {
+      const extK = normalizeTextKey_(r.external_id);
+      if (extK) accCostFkByExtId.set(extK, r.id);
+    }
   }
 
-  const models = [
-    parseTabGridToRelationalModel({
-      clientId: ctx.clientId,
-      clientName: ctx.clientName,
-      tabName: "Confirmed",
-      valuesGrid: confGrid?.values_grid || [],
-      formulasGrid: confGrid?.formulas_grid || [],
-      notesGrid: confGrid?.notes_grid || {},
-    }),
-    parseTabGridToRelationalModel({
-      clientId: ctx.clientId,
-      clientName: ctx.clientName,
-      tabName: "Pipeline",
-      valuesGrid: pipeGrid?.values_grid || [],
-      formulasGrid: pipeGrid?.formulas_grid || [],
-      notesGrid: pipeGrid?.notes_grid || {},
-    }),
-  ];
-
-  // Reconcile Retainer Series (preserving existing UUIDs by tab_type + series_key)
+  // 1. Reconcile Retainer Series
   const existingSeriesMap = new Map(existingSeries.map((s) => [`${s.tab_type}::${s.series_key}`, s]));
   const desiredSeriesKeys = new Set();
   const seriesIdByTabAndKey = new Map();
-  const seriesUpserts = [];
+  const seriesToUpsert = [];
+  let totalSeriesDesired = 0;
 
   for (const mod of models) {
     for (const s of mod.retainerSeries) {
+      totalSeriesDesired++;
       const k = `${s.tab_type}::${s.series_key}`;
       desiredSeriesKeys.add(k);
       const prev = existingSeriesMap.get(k);
       if (prev) seriesIdByTabAndKey.set(k, prev.id);
-      seriesUpserts.push({
+      const payload = {
         ...(prev?.id ? { id: prev.id } : {}),
         client_id: ctx.clientId,
         client_name: ctx.clientName,
@@ -1180,14 +1384,21 @@ export async function backfillClientRelationalJobs(clientName) {
         end_date: s.end_date,
         no_end_date: s.no_end_date,
         metadata: s.metadata,
-      });
+      };
+      if (
+        forceFullUpsert ||
+        !prev ||
+        hasRecordChanged_(prev, payload, ["base_revenue", "base_direct_costs", "billing_interval_months", "invoice_send_day"], ["metadata"])
+      ) {
+        seriesToUpsert.push(payload);
+      }
     }
   }
 
-  if (seriesUpserts.length > 0) {
+  if (seriesToUpsert.length > 0) {
     const { data: upsertedSeries, error: serErr } = await supabase
       .from("pulse_retainer_series")
-      .upsert(seriesUpserts, { onConflict: "client_id,tab_type,series_key" })
+      .upsert(seriesToUpsert, { onConflict: "client_id,tab_type,series_key" })
       .select("id, tab_type, series_key");
     if (serErr) throw new Error(`Failed upserting pulse_retainer_series: ${serErr.message}`);
     for (const r of upsertedSeries || []) {
@@ -1202,45 +1413,44 @@ export async function backfillClientRelationalJobs(clientName) {
     await supabase.from("pulse_retainer_series").delete().in("id", obsoleteSeriesIds);
   }
 
-  // Reconcile Jobs (matching by project_code first, then exact row+customer+job, then row_num)
+  // 2. Reconcile Jobs (multi-tier UUID preservation)
   const existingJobsByTab = {
     confirmed: existingJobs.filter((j) => j.tab_type === "confirmed"),
     pipeline: existingJobs.filter((j) => j.tab_type === "pipeline"),
   };
   const usedExistingJobIds = new Set();
-  const jobPayloads = [];
+  const updateJobPayloads = [];
+  const insertJobPayloads = [];
   const plannedJobsMeta = [];
+  const jobIdByTabAndRow = new Map();
 
   for (const mod of models) {
     const pool = existingJobsByTab[mod.tabType] || [];
     const byProjectCode = new Map();
-    const byIdentityKey = new Map();
+    const byExactRowIdentity = new Map();
+    const byName = new Map();
     const byRowNum = new Map();
     for (const ej of pool) {
-      if (ej.project_code && !byProjectCode.has(normalizeTextKey_(ej.project_code))) {
-        byProjectCode.set(normalizeTextKey_(ej.project_code), ej);
+      const pcK = normalizeTextKey_(ej.project_code);
+      if (pcK) {
+        if (!byProjectCode.has(pcK)) byProjectCode.set(pcK, []);
+        byProjectCode.get(pcK).push(ej);
       }
-      const ik = makeJobIdentityKey_(ej);
-      if (!byIdentityKey.has(ik)) byIdentityKey.set(ik, ej);
+      const exactK = `${ej.sheet_row_num}|${normalizeTextKey_(ej.customer_name)}|${normalizeTextKey_(ej.job_name)}`;
+      if (!byExactRowIdentity.has(exactK)) byExactRowIdentity.set(exactK, []);
+      byExactRowIdentity.get(exactK).push(ej);
+
+      const nameK = `${normalizeTextKey_(ej.customer_name)}|${normalizeTextKey_(ej.job_name)}`;
+      if (!byName.has(nameK)) byName.set(nameK, []);
+      byName.get(nameK).push(ej);
+
       if (!byRowNum.has(ej.sheet_row_num)) byRowNum.set(ej.sheet_row_num, ej);
     }
 
-    for (const j of mod.jobs) {
-      let matched = null;
-      const pcK = normalizeTextKey_(j.project_code);
-      if (pcK && byProjectCode.has(pcK) && !usedExistingJobIds.has(byProjectCode.get(pcK).id)) {
-        matched = byProjectCode.get(pcK);
-      }
-      if (!matched) {
-        const ik = makeJobIdentityKey_(j);
-        if (byIdentityKey.has(ik) && !usedExistingJobIds.has(byIdentityKey.get(ik).id)) {
-          matched = byIdentityKey.get(ik);
-        }
-      }
-      if (!matched && byRowNum.has(j.sheet_row_num) && !usedExistingJobIds.has(byRowNum.get(j.sheet_row_num).id)) {
-        matched = byRowNum.get(j.sheet_row_num);
-      }
+    const indexes = { byProjectCode, byExactRowIdentity, byName, byRowNum };
 
+    for (const j of mod.jobs) {
+      const matched = findMatchingExistingJob_(j, pool, indexes, usedExistingJobIds);
       if (matched) usedExistingJobIds.add(matched.id);
 
       const resolvedSeriesId = j.series_key
@@ -1291,7 +1501,36 @@ export async function backfillClientRelationalJobs(clientName) {
         extra_fields: j.extra_fields,
         cell_notes: j.cell_notes,
       };
-      jobPayloads.push(rowPayload);
+
+      if (matched?.id) {
+        jobIdByTabAndRow.set(`${j.tab_type}:${j.sheet_row_num}`, matched.id);
+        if (
+          forceFullUpsert ||
+          hasRecordChanged_(
+            matched,
+            rowPayload,
+            [
+              "sort_order",
+              "sheet_row_num",
+              "sheet_child_row_count",
+              "revenue",
+              "direct_costs",
+              "recharged_expenses",
+              "likelihood_pct",
+              "jc_job_revenue",
+              "jc_likelihood_input",
+              "jc_contractor_costs",
+              "jc_external_costs",
+              "jc_prop_succ_fee_pct",
+            ],
+            ["raw_scalars", "custom_formulas", "extra_fields", "cell_notes"]
+          )
+        ) {
+          updateJobPayloads.push(rowPayload);
+        }
+      } else {
+        insertJobPayloads.push(rowPayload);
+      }
       plannedJobsMeta.push({ sourceJob: j, matchedId: matched?.id || null });
     }
   }
@@ -1301,59 +1540,77 @@ export async function backfillClientRelationalJobs(clientName) {
     await supabase.from("pulse_jobs").delete().in("id", obsoleteJobIds.slice(i, i + 200));
   }
 
-  const updateJobPayloads = jobPayloads.filter((p) => p.id);
-  const insertJobPayloads = jobPayloads.filter((p) => !p.id);
-
   for (let i = 0; i < updateJobPayloads.length; i += 200) {
-    const chunk = updateJobPayloads.slice(i, i + 200);
-    const { error: upErr } = await supabase.from("pulse_jobs").upsert(chunk, { onConflict: "id" });
+    const { error: upErr } = await supabase
+      .from("pulse_jobs")
+      .upsert(updateJobPayloads.slice(i, i + 200), { onConflict: "id" });
     if (upErr) throw new Error(`Failed updating pulse_jobs: ${upErr.message}`);
   }
 
-  let insertedJobs = [];
   for (let i = 0; i < insertJobPayloads.length; i += 200) {
-    const chunk = insertJobPayloads.slice(i, i + 200);
     const { data: insData, error: insErr } = await supabase
       .from("pulse_jobs")
-      .insert(chunk)
+      .insert(insertJobPayloads.slice(i, i + 200))
       .select("id, tab_type, sheet_row_num");
     if (insErr) throw new Error(`Failed inserting pulse_jobs: ${insErr.message}`);
-    insertedJobs = insertedJobs.concat(insData || []);
+    for (const r of insData || []) {
+      jobIdByTabAndRow.set(`${r.tab_type}:${r.sheet_row_num}`, r.id);
+    }
   }
 
-  const jobIdByTabAndRow = new Map();
-  for (const p of updateJobPayloads) jobIdByTabAndRow.set(`${p.tab_type}:${p.sheet_row_num}`, p.id);
-  for (const p of insertedJobs) jobIdByTabAndRow.set(`${p.tab_type}:${p.sheet_row_num}`, p.id);
+  // 3. Reconcile Invoices & Expenses for affected tabs (preserving UUIDs by real ref/appId first, then slot)
+  const existingInvsByJobId = new Map();
+  for (const inv of existingInvs) {
+    if (!existingInvsByJobId.has(inv.job_id)) existingInvsByJobId.set(inv.job_id, []);
+    existingInvsByJobId.get(inv.job_id).push(inv);
+  }
+  const existingExpsByJobId = new Map();
+  for (const exp of existingExps) {
+    if (!existingExpsByJobId.has(exp.job_id)) existingExpsByJobId.set(exp.job_id, []);
+    existingExpsByJobId.get(exp.job_id).push(exp);
+  }
 
-  // Reconcile Invoices & Expenses for all jobs (preserving IDs per job + row_offset + slot_index)
-  const existingInvByJobSlot = new Map(
-    existingInvs.map((inv) => [`${inv.job_id}:${inv.row_offset}:${inv.slot_index}`, inv.id])
-  );
-  const existingExpByJobSlot = new Map(
-    existingExps.map((exp) => [`${exp.job_id}:${exp.row_offset}:${exp.slot_index}`, exp.id])
-  );
-
-  const desiredInvIds = new Set();
+  const usedInvIds = new Set();
   const invUpserts = [];
   const invInserts = [];
-  const desiredExpIds = new Set();
+  const usedExpIds = new Set();
   const expUpserts = [];
   const expInserts = [];
+  let totalInvsDesired = 0;
+  let totalExpsDesired = 0;
 
   for (const { sourceJob } of plannedJobsMeta) {
     const jobId = jobIdByTabAndRow.get(`${sourceJob.tab_type}:${sourceJob.sheet_row_num}`);
     if (!jobId) continue;
 
+    const jobExistingInvs = existingInvsByJobId.get(jobId) || [];
     for (const inv of sourceJob.invoices) {
-      const existingId = existingInvByJobSlot.get(`${jobId}:${inv.row_offset}:${inv.slot_index}`) || null;
-      if (existingId) desiredInvIds.add(existingId);
+      totalInvsDesired++;
       const refK = normalizeTextKey_(inv.invoice_ref);
+      let existingRec = null;
+      if (refK && !inv.is_placeholder) {
+        existingRec =
+          jobExistingInvs.find(
+            (e) => !usedInvIds.has(e.id) && normalizeTextKey_(e.invoice_ref) === refK
+          ) || null;
+      }
+      if (!existingRec) {
+        existingRec =
+          jobExistingInvs.find(
+            (e) =>
+              !usedInvIds.has(e.id) &&
+              e.row_offset === inv.row_offset &&
+              e.slot_index === inv.slot_index
+          ) || null;
+      }
+      if (existingRec) usedInvIds.add(existingRec.id);
+
       const rec = {
-        ...(existingId ? { id: existingId } : {}),
+        ...(existingRec ? { id: existingRec.id } : {}),
         client_id: ctx.clientId,
         client_name: ctx.clientName,
         job_id: jobId,
-        accounting_invoice_id: refK ? accInvByRef.get(refK) || null : null,
+        accounting_invoice_id: refK ? accInvFkByRef.get(refK) || null : null,
         slot_order: inv.slot_order,
         row_offset: inv.row_offset,
         slot_index: inv.slot_index,
@@ -1370,20 +1627,51 @@ export async function backfillClientRelationalJobs(clientName) {
         custom_formulas: inv.custom_formulas,
         cell_notes: inv.cell_notes,
       };
-      if (existingId) invUpserts.push(rec);
-      else invInserts.push(rec);
+      if (existingRec) {
+        if (
+          forceFullUpsert ||
+          hasRecordChanged_(
+            existingRec,
+            rec,
+            ["slot_order", "row_offset", "slot_index", "amount", "days_to_pay", "of_which_recharged"],
+            ["raw_cells", "custom_formulas", "cell_notes"]
+          )
+        ) {
+          invUpserts.push(rec);
+        }
+      } else {
+        invInserts.push(rec);
+      }
     }
 
+    const jobExistingExps = existingExpsByJobId.get(jobId) || [];
     for (const exp of sourceJob.expenses) {
-      const existingId = existingExpByJobSlot.get(`${jobId}:${exp.row_offset}:${exp.slot_index}`) || null;
-      if (existingId) desiredExpIds.add(existingId);
+      totalExpsDesired++;
       const extK = normalizeTextKey_(exp.external_app_id);
+      let existingRec = null;
+      if (extK && !exp.is_placeholder) {
+        existingRec =
+          jobExistingExps.find(
+            (e) => !usedExpIds.has(e.id) && normalizeTextKey_(e.external_app_id) === extK
+          ) || null;
+      }
+      if (!existingRec) {
+        existingRec =
+          jobExistingExps.find(
+            (e) =>
+              !usedExpIds.has(e.id) &&
+              e.row_offset === exp.row_offset &&
+              e.slot_index === exp.slot_index
+          ) || null;
+      }
+      if (existingRec) usedExpIds.add(existingRec.id);
+
       const rec = {
-        ...(existingId ? { id: existingId } : {}),
+        ...(existingRec ? { id: existingRec.id } : {}),
         client_id: ctx.clientId,
         client_name: ctx.clientName,
         job_id: jobId,
-        accounting_direct_cost_id: extK ? accCostByExtId.get(extK) || null : null,
+        accounting_direct_cost_id: extK ? accCostFkByExtId.get(extK) || null : null,
         slot_order: exp.slot_order,
         row_offset: exp.row_offset,
         slot_index: exp.slot_index,
@@ -1399,12 +1687,25 @@ export async function backfillClientRelationalJobs(clientName) {
         custom_formulas: exp.custom_formulas,
         cell_notes: exp.cell_notes,
       };
-      if (existingId) expUpserts.push(rec);
-      else expInserts.push(rec);
+      if (existingRec) {
+        if (
+          forceFullUpsert ||
+          hasRecordChanged_(
+            existingRec,
+            rec,
+            ["slot_order", "row_offset", "slot_index", "amount", "days_to_pay"],
+            ["raw_cells", "custom_formulas", "cell_notes"]
+          )
+        ) {
+          expUpserts.push(rec);
+        }
+      } else {
+        expInserts.push(rec);
+      }
     }
   }
 
-  const obsoleteInvIds = existingInvs.filter((r) => !desiredInvIds.has(r.id)).map((r) => r.id);
+  const obsoleteInvIds = existingInvs.filter((r) => !usedInvIds.has(r.id)).map((r) => r.id);
   for (let i = 0; i < obsoleteInvIds.length; i += 200) {
     await supabase.from("pulse_job_invoices").delete().in("id", obsoleteInvIds.slice(i, i + 200));
   }
@@ -1417,7 +1718,7 @@ export async function backfillClientRelationalJobs(clientName) {
     if (e) throw new Error(`Failed inserting pulse_job_invoices: ${e.message}`);
   }
 
-  const obsoleteExpIds = existingExps.filter((r) => !desiredExpIds.has(r.id)).map((r) => r.id);
+  const obsoleteExpIds = existingExps.filter((r) => !usedExpIds.has(r.id)).map((r) => r.id);
   for (let i = 0; i < obsoleteExpIds.length; i += 200) {
     await supabase.from("pulse_job_expenses").delete().in("id", obsoleteExpIds.slice(i, i + 200));
   }
@@ -1430,24 +1731,269 @@ export async function backfillClientRelationalJobs(clientName) {
     if (e) throw new Error(`Failed inserting pulse_job_expenses: ${e.message}`);
   }
 
+  // Keep pulse_notes.job_id synchronized with live pulse_jobs UUIDs
+  await syncPulseNotesJobIdsForClient_(supabase, ctx.clientId).catch(() => { });
+
+  const prevMeta = clMetaResp?.data?.metadata && typeof clMetaResp.data.metadata === "object" ? clMetaResp.data.metadata : {};
+  const prevState = prevMeta.relational_jobs_state && typeof prevMeta.relational_jobs_state === "object" ? prevMeta.relational_jobs_state : {};
+  const confMod = models.find((m) => m.tabName === "Confirmed");
+  const pipeMod = models.find((m) => m.tabName === "Pipeline");
+  const nowIso = new Date().toISOString();
+
   const summary = {
     clientName: ctx.clientName,
-    lastBackfilledAt: new Date().toISOString(),
-    confirmedJobsCount: models[0].jobs.length,
-    pipelineJobsCount: models[1].jobs.length,
-    retainerSeriesCount: seriesUpserts.length,
-    invoicesCount: invUpserts.length + invInserts.length,
-    expensesCount: expUpserts.length + expInserts.length,
+    lastBackfilledAt: options.updateBackfillTimestamp ? nowIso : prevState.lastBackfilledAt || nowIso,
+    lastReconciledAt: nowIso,
+    confirmedJobsCount: confMod ? confMod.jobs.length : Number(prevState.confirmedJobsCount || 0),
+    pipelineJobsCount: pipeMod ? pipeMod.jobs.length : Number(prevState.pipelineJobsCount || 0),
+    retainerSeriesCount: isBothTabs ? totalSeriesDesired : Number(prevState.retainerSeriesCount || totalSeriesDesired),
+    invoicesCount: isBothTabs ? totalInvsDesired : Number(prevState.invoicesCount || totalInvsDesired),
+    expensesCount: isBothTabs ? totalExpsDesired : Number(prevState.expensesCount || totalExpsDesired),
+    deltaStats: {
+      jobsUpdated: updateJobPayloads.length,
+      jobsInserted: insertJobPayloads.length,
+      jobsDeleted: obsoleteJobIds.length,
+      invoicesMutated: invUpserts.length + invInserts.length + obsoleteInvIds.length,
+      expensesMutated: expUpserts.length + expInserts.length + obsoleteExpIds.length,
+    },
   };
 
-  const { data: clRow } = await supabase.from("clients").select("metadata").eq("id", ctx.clientId).maybeSingle();
-  const nextMeta = {
-    ...(clRow?.metadata && typeof clRow.metadata === "object" ? clRow.metadata : {}),
-    relational_jobs_state: summary,
-  };
-  await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+  await supabase
+    .from("clients")
+    .update({
+      metadata: {
+        ...prevMeta,
+        relational_jobs_state: summary,
+      },
+    })
+    .eq("id", ctx.clientId);
 
   return summary;
+}
+
+/**
+ * Serialized, incremental two-way reconciliation from `Confirmed` and/or `Pipeline` grids
+ * into `pulse_retainer_series`, `pulse_jobs`, `pulse_job_invoices`, `pulse_job_expenses`,
+ * and `pulse_notes.job_id`, applying delta-only DB writes and preserving UUIDs.
+ */
+export async function reconcileClientRelationalJobsFromGrids(
+  ctxOrClientName,
+  tabNames = ["Confirmed", "Pipeline"],
+  options = {}
+) {
+  const ctx =
+    ctxOrClientName && typeof ctxOrClientName === "object" && ctxOrClientName.clientId
+      ? ctxOrClientName
+      : await resolveSupabaseSheetContext({ clientName: String(ctxOrClientName || "") });
+  if (!ctx?.clientId) return null;
+
+  const targetTabs = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => t === "Confirmed" || t === "Pipeline"))];
+  if (targetTabs.length === 0) return null;
+
+  const key = String(ctx.clientName || ctx.clientId).trim().toLowerCase();
+  const pendingEntry = _pendingReconcileTabsByClient.get(key) || { tabs: new Set(), opts: {} };
+  for (const t of targetTabs) pendingEntry.tabs.add(t);
+  pendingEntry.opts = { ...pendingEntry.opts, ...options };
+  _pendingReconcileTabsByClient.set(key, pendingEntry);
+
+  if (_inFlightReconcileByClient.has(key)) {
+    return _inFlightReconcileByClient.get(key);
+  }
+
+  const runner = (async () => {
+    let lastSummary = null;
+    while (_pendingReconcileTabsByClient.has(key)) {
+      const next = _pendingReconcileTabsByClient.get(key);
+      _pendingReconcileTabsByClient.delete(key);
+      const tabsToRun = [...next.tabs];
+      if (tabsToRun.length === 0) break;
+      lastSummary = await runSingleReconcilePass_(ctx, tabsToRun, next.opts);
+    }
+    return lastSummary;
+  })();
+
+  _inFlightReconcileByClient.set(key, runner);
+  try {
+    return await runner;
+  } finally {
+    if (_inFlightReconcileByClient.get(key) === runner) {
+      _inFlightReconcileByClient.delete(key);
+    }
+  }
+}
+
+/**
+ * Fast relational identity lookup map for hydrating PMA & Portal job payloads with canonical UUIDs.
+ */
+export async function getClientRelationalJobsLookup(ctxOrClientName) {
+  if (!isSupabaseConfigured()) return null;
+  const ctx =
+    ctxOrClientName && typeof ctxOrClientName === "object" && ctxOrClientName.clientId
+      ? ctxOrClientName
+      : await resolveSupabaseSheetContext({ clientName: String(ctxOrClientName || "") });
+  if (!ctx?.clientId) return null;
+
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+
+  const [jobs, invoices, expenses, series] = await Promise.all([
+    fetchAllRowsForClient_(supabase, "pulse_jobs", ctx.clientId, {
+      selectCols: "id, tab_type, sheet_row_num, sheet_child_row_count, retainer_series_id, retainer_period_ym, customer_name, job_name, project_code",
+    }),
+    fetchAllRowsForClient_(supabase, "pulse_job_invoices", ctx.clientId, {
+      selectCols: "id, job_id, row_offset, slot_index, slot_order, accounting_invoice_id",
+    }),
+    fetchAllRowsForClient_(supabase, "pulse_job_expenses", ctx.clientId, {
+      selectCols: "id, job_id, row_offset, slot_index, slot_order, accounting_direct_cost_id",
+    }),
+    fetchAllRowsForClient_(supabase, "pulse_retainer_series", ctx.clientId, {
+      selectCols: "id, tab_type, series_type, series_key, series_name",
+    }),
+  ]);
+
+  const jobsByTabAndRow = new Map();
+  const jobsByUuid = new Map();
+  for (const j of jobs) {
+    jobsByTabAndRow.set(`${j.tab_type}:${j.sheet_row_num}`, j);
+    jobsByUuid.set(j.id, j);
+  }
+
+  const invoicesByJobRowSlot = new Map();
+  for (const inv of invoices) {
+    invoicesByJobRowSlot.set(`${inv.job_id}:${inv.row_offset}:${inv.slot_index}`, inv);
+  }
+
+  const expensesByJobRowSlot = new Map();
+  for (const exp of expenses) {
+    expensesByJobRowSlot.set(`${exp.job_id}:${exp.row_offset}:${exp.slot_index}`, exp);
+  }
+
+  const seriesById = new Map();
+  for (const s of series) seriesById.set(s.id, s);
+
+  return {
+    clientId: ctx.clientId,
+    jobsByTabAndRow,
+    jobsByUuid,
+    invoicesByJobRowSlot,
+    expensesByJobRowSlot,
+    seriesById,
+  };
+}
+
+/**
+ * Resolves a caller-supplied `jobUuid` against `pulse_jobs` (strictly scoped to `client_id`),
+ * automatically healing stale row numbers when rows have shifted, or raising a clean 409 if
+ * the job was deleted or moved to another status tab.
+ */
+export async function resolveAuthoritativeJobAnchor({
+  spreadsheetId = "",
+  clientName = "",
+  jobUuid = "",
+  expectedTabName = "",
+  fallbackRowNum = null,
+} = {}) {
+  const ctx = await resolveSupabaseSheetContext({ spreadsheetId, clientName });
+  const isRelational = ctx?.jobsMode === "relational";
+  const cleanUuid = String(jobUuid || "").trim();
+
+  if (!isRelational || !cleanUuid) {
+    return {
+      isRelational,
+      resolved: false,
+      jobUuid: cleanUuid || null,
+      retainerSeriesId: null,
+      rowNum: fallbackRowNum !== null && fallbackRowNum !== undefined ? Number(fallbackRowNum) : null,
+      rowNums: null,
+      tabName: expectedTabName || "",
+      jobRecord: null,
+    };
+  }
+
+  if (!UUID_REGEX.test(cleanUuid)) {
+    const err = new Error("Invalid job identifier.");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !ctx?.clientId) {
+    return {
+      isRelational,
+      resolved: false,
+      jobUuid: cleanUuid,
+      retainerSeriesId: null,
+      rowNum: fallbackRowNum !== null && fallbackRowNum !== undefined ? Number(fallbackRowNum) : null,
+      rowNums: null,
+      tabName: expectedTabName || "",
+      jobRecord: null,
+    };
+  }
+
+  // Strictly scoped to this tenant's client_id to enforce multi-tenant isolation
+  const { data: dbJob, error } = await supabase
+    .from("pulse_jobs")
+    .select("id, client_id, tab_type, sheet_row_num, sheet_child_row_count, retainer_series_id, customer_name, job_name, project_code")
+    .eq("client_id", ctx.clientId)
+    .eq("id", cleanUuid)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed verifying job identity: ${error.message}`);
+  }
+  if (!dbJob) {
+    const err = new Error("This job was modified or removed in another session. Please refresh and try again.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const actualTabName = dbJob.tab_type === "pipeline" ? "Pipeline" : "Confirmed";
+  if (expectedTabName && actualTabName !== expectedTabName) {
+    const targetLabel = actualTabName === "Confirmed" ? "confirmed" : "pipeline";
+    const err = new Error(`This job has already been moved to ${targetLabel}. Please refresh and try again.`);
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const childCount = Math.max(0, Number(dbJob.sheet_child_row_count) || 0);
+  const rowNums = [];
+  for (let off = 0; off <= childCount; off++) {
+    rowNums.push(dbJob.sheet_row_num + off);
+  }
+
+  return {
+    isRelational: true,
+    resolved: true,
+    jobUuid: dbJob.id,
+    retainerSeriesId: dbJob.retainer_series_id || null,
+    rowNum: dbJob.sheet_row_num,
+    childRowCount: childCount,
+    rowNums,
+    tabName: actualTabName,
+    jobRecord: dbJob,
+  };
+}
+
+/**
+ * Idempotently backfills/reconciles a client's `Confirmed` & `Pipeline` tabs from `master_sheet_grids`
+ * into `pulse_retainer_series`, `pulse_jobs`, `pulse_job_invoices`, and `pulse_job_expenses`
+ * while preserving existing UUIDs wherever jobs/series/slots match.
+ */
+export async function backfillClientRelationalJobs(clientName) {
+  const schema = await checkPhase2RelationalSchemaStatus();
+  if (!schema.schemaReady) {
+    throw new Error("Migration 0012 must be applied in Supabase SQL Editor before backfilling relational jobs.");
+  }
+
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx?.clientId) {
+    throw new Error(`Client "${clientName}" was not found in Supabase.`);
+  }
+
+  return reconcileClientRelationalJobsFromGrids(ctx, ["Confirmed", "Pipeline"], {
+    forceFullUpsert: true,
+    updateBackfillTimestamp: true,
+  });
 }
 
 /**
@@ -1673,6 +2219,20 @@ export async function setClientJobsMode(clientName, jobsMode) {
     .update({ jobs_mode: jobsMode, metadata: nextMeta })
     .eq("id", cl.id);
   if (updErr) throw new Error(`Failed updating jobs_mode: ${updErr.message}`);
+
+  invalidateSheetContextCache();
+  if (cl.client_sheet_id) {
+    await invalidatePmaClientCache(cl.client_sheet_id, null, ["jobs", "retainers", "views"]).catch(() => { });
+    if (redisClient?.isOpen) {
+      await redisClient
+        .del([
+          `pulse:portal:payload:${cl.client_sheet_id}`,
+          `pulse:portal:keydata:${cl.client_sheet_id}:all`,
+          `pulse:portal:keydata:${cl.client_sheet_id}:jobs`,
+        ])
+        .catch(() => { });
+    }
+  }
 
   return {
     success: true,

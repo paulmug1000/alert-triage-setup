@@ -112,6 +112,7 @@ export default function AssignAccountingItemsModal({
       client: targetJob.client || "",
       jobName: targetJob.jobName || "",
       projectCode: targetJob.projectCode || "",
+      ...(targetJob.jobUuid ? { jobUuid: targetJob.jobUuid } : {}),
       isRetainer: Boolean(targetJob.isRetainer),
       startDate: targetJob.startDate || "",
       endDate: targetJob.endDate || "",

@@ -11,7 +11,8 @@ import {
   lookupInvFromAppMeta,
 } from "./sharedHelpers.js";
 import { unwrapSheetId, sanitizeFormulaInput } from "./userPermissions.js";
-import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
+import { resolveAuthoritativeJobAnchor } from "./relationalJobsService.js";
 import { runNativeMasterAmdAction } from "./masterSyncEngine.js";
 import {
   probeExternalAccountingFingerprint,
@@ -865,7 +866,20 @@ export async function getAccountingCatalog({
   }
 
   const { jobs, invoiceSlotMap, expenseSlotMap } = parseConfirmedJobsAndSlots_(confRows);
-  const matchedCurrentJob = matchJobRecord_(jobs, targetJob);
+  let resolvedTargetJob = targetJob;
+  if (targetJob?.jobUuid) {
+    const anchor = await resolveAuthoritativeJobAnchor({
+      spreadsheetId: cleanClientSheetId,
+      clientName: resolvedClientName,
+      jobUuid: targetJob.jobUuid,
+      expectedTabName: "Confirmed",
+      fallbackRowNum: targetJob.rowNum || targetJob.rowNumber,
+    }).catch(() => null);
+    if (anchor?.resolved && anchor.rowNum) {
+      resolvedTargetJob = { ...targetJob, rowNum: anchor.rowNum, rowNumber: anchor.rowNum };
+    }
+  }
+  const matchedCurrentJob = matchJobRecord_(jobs, resolvedTargetJob);
 
   const cutoffDate = new Date();
   cutoffDate.setHours(0, 0, 0, 0);
@@ -1661,6 +1675,19 @@ export async function batchAssignOrUnassignJobItems({
     throw new Error("Missing workspace configuration for accounting assignment.");
   }
 
+  if (targetJob?.jobUuid) {
+    const anchor = await resolveAuthoritativeJobAnchor({
+      spreadsheetId: cleanClientSheetId,
+      clientName: resolvedClientName,
+      jobUuid: targetJob.jobUuid,
+      expectedTabName: "Confirmed",
+      fallbackRowNum: targetJob.rowNum || targetJob.rowNumber,
+    });
+    if (anchor?.resolved && anchor.rowNum) {
+      targetJob = { ...targetJob, rowNum: anchor.rowNum, rowNumber: anchor.rowNum };
+    }
+  }
+
   const [confResp, tolerances] = await Promise.all([
     withRetry(() =>
       sheets.spreadsheets.values.get({
@@ -1975,6 +2002,19 @@ export async function moveAccountingItemToJob({
 
   if (!cleanClientSheetId || !cleanMasterSheetId) {
     throw new Error("Missing workspace configuration for move.");
+  }
+
+  if (targetJob?.jobUuid) {
+    const anchor = await resolveAuthoritativeJobAnchor({
+      spreadsheetId: cleanClientSheetId,
+      clientName: resolvedClientName,
+      jobUuid: targetJob.jobUuid,
+      expectedTabName: "Confirmed",
+      fallbackRowNum: targetJob.rowNum || targetJob.rowNumber,
+    });
+    if (anchor?.resolved && anchor.rowNum) {
+      targetJob = { ...targetJob, rowNum: anchor.rowNum, rowNumber: anchor.rowNum };
+    }
   }
 
   const [confResp, tolerances] = await Promise.all([

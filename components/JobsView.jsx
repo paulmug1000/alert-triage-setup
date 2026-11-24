@@ -2058,6 +2058,7 @@ export default function JobsView({
           clientName: jobsClient?.clientName || jobsClient?.name || "",
           tabName,
           rowNum: parentRowNum,
+          ...(job.jobUuid ? { jobUuid: job.jobUuid } : {}),
           endClientName: currentDraft.client || parentRow.client || job.client,
           jobName: currentDraft.jobName || parentRow.jobName || job.jobName,
           updates
@@ -2100,7 +2101,8 @@ export default function JobsView({
         body: JSON.stringify({
           clientSheetId: jobsClient.clientSheetId,
           clientName: jobsClient.clientName || jobsClient.name || "",
-          pipelineRow: pipelineRowNum
+          pipelineRow: pipelineRowNum,
+          ...(job.jobUuid ? { jobUuid: job.jobUuid } : {}),
         })
       });
 
@@ -2190,7 +2192,8 @@ export default function JobsView({
       const payload = {
         clientSheetId: jobsClient.clientSheetId,
         clientName: jobsClient.clientName || jobsClient.name || "",
-        confirmedRow: confirmedRowNum
+        confirmedRow: confirmedRowNum,
+        ...(job.jobUuid ? { jobUuid: job.jobUuid } : {}),
       };
       if (targetLikelihood) {
         payload.likelihood = targetLikelihood;
@@ -2312,6 +2315,7 @@ export default function JobsView({
           jobName: currentDraft.jobName || parentRow.jobName || job.jobName,
           endClientName: currentDraft.client || parentRow.client || job.client,
           rowNum: pipelineRowNum,
+          ...(job.jobUuid ? { jobUuid: job.jobUuid } : {}),
           updates,
         }),
       });
@@ -2390,6 +2394,7 @@ export default function JobsView({
           clientName: jobsClient.clientName || jobsClient.name || "",
           tabName,
           rowNums,
+          ...(job.jobUuid ? { jobUuid: job.jobUuid } : {}),
           jobName: parentRow?.jobName || job.jobName || "",
           endClientName: parentRow?.client || job.client || "",
         }),
@@ -2794,6 +2799,7 @@ export default function JobsView({
           clientName: jobsClient.clientName || jobsClient.name || "",
           tabName,
           rowNum: parentRowNum,
+          ...(job.jobUuid ? { jobUuid: job.jobUuid } : {}),
           isRetainer: isRetainerJob,
           endClientName: currentDraft.client || parentRow.client || job.client,
           jobName: currentDraft.jobName || parentRow.jobName || job.jobName,
@@ -3323,12 +3329,16 @@ export default function JobsView({
     const effectiveValue = colLetter === "AN" ? normalizeLikelihoodInput(newValue) : newValue;
     let targetEndClient = "";
     let targetJobName = "";
+    let targetJobUuid = null;
+    let targetRowOffset = 0;
     if (jobsData) {
       for (const job of jobsData) {
         const matchRow = (job.rows || []).find((r) => r.rowNum === rowNum);
         if (matchRow) {
           targetEndClient = matchRow.client || job.client || "";
           targetJobName = matchRow.jobName || job.jobName || "";
+          targetJobUuid = job.jobUuid || job.rows?.[0]?.jobUuid || null;
+          targetRowOffset = Math.max(0, Number(rowNum) - Number(job.rows?.[0]?.rowNum || rowNum));
           break;
         }
       }
@@ -3387,6 +3397,7 @@ export default function JobsView({
           cellRef: `${colLetter}${rowNum}`,
           colLetter,
           rowNum,
+          ...(targetJobUuid ? { jobUuid: targetJobUuid, rowOffset: targetRowOffset } : {}),
           fieldName,
           endClientName: targetEndClient,
           jobName: targetJobName,
@@ -7721,6 +7732,7 @@ export default function JobsView({
               client: pRow.client || j?.client || "",
               jobName: pRow.jobName || j?.jobName || "",
               projectCode: pRow.projectCode || j?.projectCode || "",
+              ...((pRow.jobUuid || j?.jobUuid) ? { jobUuid: pRow.jobUuid || j?.jobUuid } : {}),
               isRetainer: Boolean(assignModalConfig.isRetainer),
               startDate: pRow.startDate || "",
               endDate: pRow.endDate || "",

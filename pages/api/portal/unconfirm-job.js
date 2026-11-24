@@ -18,6 +18,7 @@ import {
   sanitizeSpreadsheetTerms
 } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
 import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
 import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
 
@@ -55,10 +56,10 @@ export default async function handler(req, res) {
     return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
   }
 
-  const { clientSheetId, clientName, confirmedRow } = req.body || {};
+  const { clientSheetId, clientName, confirmedRow, jobUuid } = req.body || {};
 
-  const cRow = parseInt(confirmedRow, 10);
-  if (!clientSheetId || isNaN(cRow) || cRow < 2) {
+  const parsedCRow = parseInt(confirmedRow, 10);
+  if (!clientSheetId || (!jobUuid && (isNaN(parsedCRow) || parsedCRow < 2))) {
     return res.status(400).json({ success: false, error: "Valid clientSheetId and confirmedRow (>= 2) are required" });
   }
 
@@ -73,6 +74,18 @@ export default async function handler(req, res) {
     const verifiedClientName = auth.clientName;
     const liveGate = await assertClientPortalLive(sessionUser, verifiedClientName, res);
     if (!liveGate.allowed) return;
+
+    const relationalAnchor = await resolveAuthoritativeJobAnchor({
+      spreadsheetId: clientSheetId,
+      clientName: verifiedClientName,
+      jobUuid,
+      expectedTabName: "Confirmed",
+      fallbackRowNum: !isNaN(parsedCRow) && parsedCRow >= 2 ? parsedCRow : null,
+    });
+    const cRow = relationalAnchor?.rowNum;
+    if (isNaN(cRow) || cRow < 2) {
+      return res.status(400).json({ success: false, error: "Valid clientSheetId and confirmedRow (>= 2) are required" });
+    }
 
     // 1. Get sheet metadata
     const metaResp = await withRetry(() =>
@@ -610,15 +623,27 @@ export default async function handler(req, res) {
       newJobLabel: buildJobNoteLabel({ client: parentClient, jobName: parentJobName }),
     }).catch(() => { });
 
+    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+
+    let pipelineJobUuid = null;
+    if (relationalAnchor?.isRelational) {
+      try {
+        const relLookup = await getClientRelationalJobsLookup(verifiedClientName || clientName || parentClient || "");
+        pipelineJobUuid = relLookup?.jobsByTabAndRow?.get(`pipeline:${pipelineRow}`)?.id || null;
+      } catch (_) { }
+    }
+
     return res.status(200).json({
       success: true,
       pipelineRow,
+      ...(pipelineJobUuid ? { pipelineJobUuid } : {}),
       childRows: pipelineChildRows,
       message: "Successfully moved job to pipeline",
     });
   } catch (err) {
     console.error("❌ /api/portal/unconfirm-job error:", err);
-    return res.status(500).json({
+    const status = err?.statusCode || 500;
+    return res.status(status).json({
       success: false,
       error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.")
     });

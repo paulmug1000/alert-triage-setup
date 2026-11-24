@@ -6,6 +6,8 @@ import { resolvePortalCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
 import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense, isJobCostingStyle, formatLikelihood, assertTrustedOrigin, sanitizeSpreadsheetTerms, parseVariableRetainerTag, isFixedScheduleRetainer } from "../../../utils/helpers.js";
 import { getClients } from "../../../services/workspaces.js";
+import { resolveSupabaseSheetContext } from "../../../services/masterEngineService.js";
+import { getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s L1 fresh window
 const KEYDATA_REDIS_TTL_SECS = 86400; // 24h Redis SWR retention
@@ -299,7 +301,7 @@ export default async function handler(req, res) {
         batchRanges.push("KeyInfo!Q8:Q9");   // CRM tool (Q8) & CRM mode (Q9)
         batchRanges.push("KeyInfo!D11:D13"); // Job table style (D11), standard charge-out rate (D12), contractor day rate (D13)
 
-        const [batchResp, outgoingsRawResp] = await Promise.all([
+        const [batchResp, outgoingsRawResp, sbCtx] = await Promise.all([
           withRetry(() =>
             sheets.spreadsheets.values.batchGet({
               spreadsheetId: clientSheetId,
@@ -316,7 +318,14 @@ export default async function handler(req, res) {
               })
             ).catch(() => null)
             : Promise.resolve(null),
+          resolveSupabaseSheetContext({
+            spreadsheetId: clientSheetId,
+            clientName: auth.clientName || clientName,
+          }).catch(() => null),
         ]);
+        const relLookup = sbCtx?.jobsMode === "relational"
+          ? await getClientRelationalJobsLookup(sbCtx).catch(() => null)
+          : null;
 
         const valueRanges = batchResp.data.valueRanges || [];
         const outgoingsRawRows = outgoingsRawResp?.data?.values || [];
@@ -646,12 +655,20 @@ export default async function handler(req, res) {
                 return null;
               };
 
+              const relJob = relLookup?.jobsByTabAndRow?.get(`${jobType.toLowerCase()}:${rowNum}`) || null;
+
               // Parent invoices
               let parentHasInvoice = false;
               for (let s = 1; s <= 3; s++) {
                 const inv = extractInv(row, s);
                 if (inv) {
-                  invoices.push({ ...inv, isChild: false, isParent: true });
+                  const relInv = relJob ? relLookup.invoicesByJobRowSlot?.get(`${relJob.id}:0:${s - 1}`) : null;
+                  invoices.push({
+                    ...inv,
+                    isChild: false,
+                    isParent: true,
+                    ...(relInv ? { invoiceUuid: relInv.id, accountingInvoiceId: relInv.accounting_invoice_id || null } : {}),
+                  });
                   parentHasInvoice = true;
                 }
               }
@@ -659,13 +676,20 @@ export default async function handler(req, res) {
               // Child invoices & Retainer child recognition periods
               const childRetainers = [];
               childRows.forEach((cr) => {
+                const childOffset = cr.rowNum - rowNum;
                 if (isFixedRetainer) {
                   let childInvSum = 0;
                   let childRechgdSum = 0;
                   for (let s = 1; s <= 3; s++) {
                     const inv = extractInv(cr.row, s);
                     if (inv) {
-                      invoices.push({ ...inv, isChild: true, childRowNum: cr.rowNum });
+                      const relInv = relJob ? relLookup.invoicesByJobRowSlot?.get(`${relJob.id}:${childOffset}:${s - 1}`) : null;
+                      invoices.push({
+                        ...inv,
+                        isChild: true,
+                        childRowNum: cr.rowNum,
+                        ...(relInv ? { invoiceUuid: relInv.id, accountingInvoiceId: relInv.accounting_invoice_id || null } : {}),
+                      });
                       childInvSum += parseMoney(inv.amount);
                       childRechgdSum += parseMoney(inv.ofWhichRechgd);
                     }
@@ -702,7 +726,15 @@ export default async function handler(req, res) {
                 } else {
                   for (let s = 1; s <= 3; s++) {
                     const inv = extractInv(cr.row, s);
-                    if (inv) invoices.push({ ...inv, isChild: true, childRowNum: cr.rowNum });
+                    if (inv) {
+                      const relInv = relJob ? relLookup.invoicesByJobRowSlot?.get(`${relJob.id}:${childOffset}:${s - 1}`) : null;
+                      invoices.push({
+                        ...inv,
+                        isChild: true,
+                        childRowNum: cr.rowNum,
+                        ...(relInv ? { invoiceUuid: relInv.id, accountingInvoiceId: relInv.accounting_invoice_id || null } : {}),
+                      });
+                    }
                   }
                 }
               });
@@ -745,12 +777,29 @@ export default async function handler(req, res) {
 
               for (let s = 1; s <= 3; s++) {
                 const exp = extractExp(row, s);
-                if (exp) directExpenses.push({ ...exp, isChild: false, isParent: true });
+                if (exp) {
+                  const relExp = relJob ? relLookup.expensesByJobRowSlot?.get(`${relJob.id}:0:${s - 1}`) : null;
+                  directExpenses.push({
+                    ...exp,
+                    isChild: false,
+                    isParent: true,
+                    ...(relExp ? { expenseUuid: relExp.id, accountingDirectCostId: relExp.accounting_direct_cost_id || null } : {}),
+                  });
+                }
               }
               childRows.forEach((cr) => {
+                const childOffset = cr.rowNum - rowNum;
                 for (let s = 1; s <= 3; s++) {
                   const exp = extractExp(cr.row, s);
-                  if (exp) directExpenses.push({ ...exp, isChild: true, childRowNum: cr.rowNum });
+                  if (exp) {
+                    const relExp = relJob ? relLookup.expensesByJobRowSlot?.get(`${relJob.id}:${childOffset}:${s - 1}`) : null;
+                    directExpenses.push({
+                      ...exp,
+                      isChild: true,
+                      childRowNum: cr.rowNum,
+                      ...(relExp ? { expenseUuid: relExp.id, accountingDirectCostId: relExp.accounting_direct_cost_id || null } : {}),
+                    });
+                  }
                 }
               });
 
@@ -776,6 +825,8 @@ export default async function handler(req, res) {
 
               const jobObj = {
                 id: `${jobType.toLowerCase()}-${rowNum}`,
+                jobUuid: relJob?.id || null,
+                retainerSeriesId: relJob?.retainer_series_id || null,
                 rowNumber: rowNum,
                 type: jobType,
                 isJobCosting,
@@ -1683,6 +1734,7 @@ export default async function handler(req, res) {
           },
           mode,
           directCostsMode,
+          jobsMode: sbCtx?.jobsMode || "grid",
           isJobCosting,
           jobCostingStyle,
           standardChargeOutRate,

@@ -441,9 +441,14 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
     if (!_sheetContextCache.inFlight) {
       _sheetContextCache.inFlight = (async () => {
         try {
-          const { data, error } = await supabase
+          let { data, error } = await supabase
             .from("clients")
-            .select("id, client_name, normalized_key, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+          if (error && String(error.message || "").includes("jobs_mode")) {
+            ({ data, error } = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"));
+          }
           if (!error && Array.isArray(data)) {
             const bySheetId = new Map();
             const byClientName = new Map();
@@ -469,6 +474,9 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                 normalizedKey: normKey,
                 masterMode: row.master_mode || "sheet",
                 clientMode: row.client_mode || "sheet",
+                jobsMode: String(row.jobs_mode || row.metadata?.jobs_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
                 sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
                 clientSheetId: cId,
                 masterSheetId: mId,
@@ -2092,6 +2100,18 @@ async function loadReferencedReconGridsForClientFormulas_(ctx, formulaGrids, raw
   return Object.keys(out).length > 0 ? out : null;
 }
 
+async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
+  if (!ctx || ctx.jobsMode !== "relational") return;
+  const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => t === "Confirmed" || t === "Pipeline"))];
+  if (relevant.length === 0) return;
+  try {
+    const { reconcileClientRelationalJobsFromGrids } = await import("./relationalJobsService.js");
+    await reconcileClientRelationalJobsFromGrids(ctx, relevant);
+  } catch (err) {
+    console.warn(`[masterEngineService] Phase 2 relational job reconciliation warning (${ctx.clientName}):`, err?.message);
+  }
+}
+
 async function recomputeAndPersistImmediateClientTabs_(
   ctx,
   targetTabNames,
@@ -2259,6 +2279,8 @@ async function recomputeAndPersistImmediateClientTabs_(
       );
     })
   );
+
+  await syncPhase2RelationalJobsIfEnabled_(ctx, allImmediateTabs);
 
   let activeSourceSet = _activeRecomputeSourceTabsByClient.get(clientKey);
   if (!activeSourceSet) {
@@ -2726,6 +2748,8 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
       )
     )
   );
+
+  await syncPhase2RelationalJobsIfEnabled_(ctx, [...new Set([...allUpdatedTabs, ...dirtyTabs])]);
 
   if (dirtyTabs.length > 0) {
     await import("./cacheService.js")
@@ -4143,6 +4167,7 @@ export async function handleVirtualSheetsCall({
           );
         }
       } else if (noteOnlyClientTabs.size > 0) {
+        await syncPhase2RelationalJobsIfEnabled_(ctx, [...noteOnlyClientTabs]);
         const noteGrids = {};
         for (const [tName, rec] of dirtyTargets.entries()) {
           noteGrids[tName] = {

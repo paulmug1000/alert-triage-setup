@@ -2185,7 +2185,12 @@ async function recomputeAndPersistImmediateClientTabs_(
   }
   for (const t of allImmediateTabs) activeSourceSet.add(t);
 
-  if (ctx.clientMode === "supabase" && ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+  if (
+    ctx.clientMode === "supabase" &&
+    !ctx._suppressBridgeOutbound &&
+    ctx.sheetBridgeMode &&
+    ctx.sheetBridgeMode !== "off"
+  ) {
     import("./clientSheetBridgeService.js")
       .then(({ scheduleOutboundSheetBridgeSync }) =>
         scheduleOutboundSheetBridgeSync(ctx.clientName, allImmediateTabs)
@@ -2248,7 +2253,11 @@ export async function recomputeClientFormulasForBridge(clientName, changedTabs =
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx || ctx.clientMode !== "supabase") return;
   const tabs = Array.isArray(changedTabs) && changedTabs.length > 0 ? changedTabs : ["Confirmed"];
-  await recomputeClientFormulasAfterVirtualWrite_({ ...ctx, sheetRole: "client" }, tabs, null);
+  await recomputeAndPersistImmediateClientTabs_(
+    { ...ctx, sheetRole: "client", _suppressBridgeOutbound: true },
+    tabs,
+    null
+  );
 }
 
 const CLIENT_TAB_DIRECT_DEPS = {

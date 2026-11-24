@@ -1387,6 +1387,7 @@ export default function JobsView({
     jobsSortBy, setJobsSortBy,
     jobsData, setJobsData,
     jobsLoading, setJobsLoading,
+    jobsLoadError,
     jobsExpanded, setJobsExpanded,
     jobsEditSplit, setJobsEditSplit,
     productLines,
@@ -4655,7 +4656,43 @@ export default function JobsView({
 
                 {/* Loading State */}
                 {!jobsData ? (
-                  <PmaJobsTableSkeleton />
+                  jobsLoading ? (
+                    <PmaJobsTableSkeleton />
+                  ) : (
+                    <div
+                      style={{
+                        textAlign: "center",
+                        padding: "36px 24px",
+                        background: "#ffffff",
+                        borderRadius: "10px",
+                        border: "1px solid #fecaca",
+                        color: "#334155",
+                      }}
+                    >
+                      <div style={{ fontSize: "14px", fontWeight: "700", color: "#991b1b", marginBottom: "6px" }}>
+                        Could not load jobs
+                      </div>
+                      <div style={{ fontSize: "13px", color: "#64748b", marginBottom: "14px" }}>
+                        {jobsLoadError || "Could not load jobs right now."}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => loadJobsData(jobsClient, effectiveViewMode === "legacy" ? (jobsTab || "Confirmed") : "All", true)}
+                        style={{
+                          padding: "7px 14px",
+                          borderRadius: "6px",
+                          border: "1px solid #1d4ed8",
+                          background: "#1d4ed8",
+                          color: "#ffffff",
+                          fontSize: "12.5px",
+                          fontWeight: "600",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )
                 ) : processedJobs.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "48px 0", background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", color: "#64748b" }}>
                     <div style={{ fontSize: "18px", fontWeight: "600", color: "#334155", marginBottom: "4px" }}>No jobs found</div>
@@ -6867,7 +6904,43 @@ export default function JobsView({
                 </div>
 
                 {!jobsData ? (
-                  <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
+                  jobsLoading ? (
+                    <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
+                  ) : (
+                    <div
+                      style={{
+                        textAlign: "center",
+                        padding: "32px 24px",
+                        background: "#ffffff",
+                        borderRadius: "8px",
+                        border: "1px solid #fecaca",
+                        color: "#334155",
+                      }}
+                    >
+                      <div style={{ fontSize: "14px", fontWeight: "700", color: "#991b1b", marginBottom: "6px" }}>
+                        Could not load jobs
+                      </div>
+                      <div style={{ fontSize: "13px", color: "#64748b", marginBottom: "14px" }}>
+                        {jobsLoadError || "Could not load jobs right now."}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => loadJobsData(jobsClient, effectiveViewMode === "legacy" ? (jobsTab || "Confirmed") : "All", true)}
+                        style={{
+                          padding: "7px 14px",
+                          borderRadius: "6px",
+                          border: "1px solid #1d4ed8",
+                          background: "#1d4ed8",
+                          color: "#ffffff",
+                          fontSize: "12.5px",
+                          fontWeight: "600",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )
                 ) : (
                   <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
                     <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "2000px", tableLayout: "fixed" }}>

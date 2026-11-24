@@ -255,6 +255,22 @@ export async function resolvePortalCache({
     } catch (_) { }
   };
 
+  if (!isAutoRefresh) {
+    const rawTargetSheetId = extractSheetIdFromCacheKey_(cacheKey);
+    if (rawTargetSheetId) {
+      try {
+        const { resolveSupabaseSheetContext } = await import("./masterEngineService.js");
+        const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: rawTargetSheetId });
+        if (sbCtx?.sheetRole === "client" && sbCtx?.clientMode === "supabase" && sbCtx?.sheetBridgeMode === "live") {
+          const { ensureClientSheetBridgeFreshOnRead } = await import("./clientSheetBridgeService.js");
+          await ensureClientSheetBridgeFreshOnRead(sbCtx);
+        }
+      } catch (bridgeErr) {
+        console.warn(`[resolvePortalCache] Bridge read check warning for ${cacheKey}:`, bridgeErr?.message);
+      }
+    }
+  }
+
   // 1. Check L1 Memory Cache (when not bypassing)
   if (!bypassCache) {
     const memCached = memoryCache.get(cacheKey);

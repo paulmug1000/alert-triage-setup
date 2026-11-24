@@ -53,7 +53,7 @@ const BRIDGE_BIDIRECTIONAL_TAB_SET = new Set(BRIDGE_BIDIRECTIONAL_TABS);
 const BRIDGE_OUTBOUND_ONLY_SET = new Set(BRIDGE_OUTBOUND_ONLY_TABS);
 const BASELINE_TAB_NAME = "SheetBridgeBaseline";
 const OUTBOUND_DEBOUNCE_MS = 3000;
-const READ_CHECK_THROTTLE_MS = 10000;
+const READ_CHECK_THROTTLE_MS = 15000;
 const RECENT_LOG_LIMIT = 15;
 const TEXT_ONLY_SLOT_COLS = new Set([42, 49, 56, 81, 88, 95]); // AQ, AX, BE, CD, CK, CR
 const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
@@ -378,6 +378,7 @@ export function computeThreeWayTabMerge({
   supaFormulas = [],
   supaNotes = {},
   applyOutboundToBaseline = true,
+  maxRowBound = null,
 }) {
   const isOutboundOnly = BRIDGE_OUTBOUND_ONLY_SET.has(tabName);
   const supportsNotes = BRIDGE_NOTE_TABS.has(tabName);
@@ -393,10 +394,11 @@ export function computeThreeWayTabMerge({
       : false;
 
   const maxRows = Math.max(baselineValues.length, sheetValues.length, supaValues.length);
+  const scanRows = Number.isInteger(maxRowBound) && maxRowBound > 0 ? Math.min(maxRows, maxRowBound) : maxRows;
   const mergedValues = clone2DGrid_(supaValues);
   const mergedFormulas = clone2DGrid_(supaFormulas?.length ? supaFormulas : supaValues);
-  while (mergedValues.length < maxRows) mergedValues.push([]);
-  while (mergedFormulas.length < maxRows) mergedFormulas.push([]);
+  while (mergedValues.length < scanRows) mergedValues.push([]);
+  while (mergedFormulas.length < scanRows) mergedFormulas.push([]);
 
   const nextBaselineValues = [];
   const inboundCellChanges = [];
@@ -404,7 +406,7 @@ export function computeThreeWayTabMerge({
   const conflicts = [];
   let formulaCellsProtectedCount = 0;
 
-  for (let r = 0; r < maxRows; r++) {
+  for (let r = 0; r < scanRows; r++) {
     const bRow = Array.isArray(baselineValues[r]) ? baselineValues[r] : [];
     const sRow = Array.isArray(sheetValues[r]) ? sheetValues[r] : [];
     const sfRow = Array.isArray(sheetFormulas[r]) ? sheetFormulas[r] : [];
@@ -425,10 +427,17 @@ export function computeThreeWayTabMerge({
 
       const isSheetFormula = typeof sheetForm === "string" && sheetForm.trim().startsWith("=");
       const isPureFormulaRecalcDrift = isSheetFormula && String(sheetForm) === String(supaForm || "");
+      const isProtectedSheetFormula =
+        isSheetFormula &&
+        !isCellAllowedForOutboundBridgeWrite(tabName, r, c, sheetForm, sheetVal, {
+          isJobCosting,
+          headerRow,
+        });
 
       const inChanged =
         !isOutboundOnly &&
         !isPureFormulaRecalcDrift &&
+        !isProtectedSheetFormula &&
         !areBridgeCellsEquivalent(sheetVal, baseVal);
       const outChanged = !areBridgeCellsEquivalent(supaVal, baseVal);
 
@@ -939,14 +948,60 @@ async function updateClientBridgeState_(supabase, clientName, patchState = {}, n
   return nextMeta;
 }
 
-async function fetchRealSheetTabsAndNotes_(rawSheets, spreadsheetId, tabNames) {
+function findLastActiveJobRowCount_(grid = []) {
+  if (!Array.isArray(grid) || grid.length === 0) return 0;
+  for (let i = grid.length - 1; i >= 0; i--) {
+    const r = grid[i];
+    if (!r) continue;
+    // Skip bottom summary/totals row (around row 1000 or row 5002 where A/B/C job metadata are empty)
+    if (i >= 350 && !r[0] && !r[1] && !r[2]) continue;
+    if (r[0] || r[1] || r[2] || r[17] || r[32] || r[33] || r[41] || r[42] || r[48] || r[55] || r[75] || r[82] || r[89]) {
+      return i + 1;
+    }
+  }
+  return 0;
+}
+
+async function fetchRealSheetTabsAndNotes_(
+  rawSheets,
+  spreadsheetId,
+  tabNames,
+  { minRowHorizonByTab = {} } = {}
+) {
   const uniqueTabs = [...new Set(tabNames)].filter(Boolean);
-  const metaResp = await withRetry(() =>
-    rawSheets.spreadsheets.get({
-      spreadsheetId,
-      fields: "sheets(properties(sheetId,title,gridProperties.rowCount))",
-    })
-  );
+  const probeConfigs = [];
+  if (uniqueTabs.includes("Confirmed")) {
+    probeConfigs.push(
+      { tab: "Confirmed", kind: "main", range: "Confirmed!A1:C5000" },
+      { tab: "Confirmed", kind: "slot", range: "Confirmed!AP1:AQ5000" },
+      { tab: "Confirmed", kind: "slot", range: "Confirmed!BX1:BY5000" }
+    );
+  }
+  if (uniqueTabs.includes("Pipeline")) {
+    probeConfigs.push(
+      { tab: "Pipeline", kind: "main", range: "Pipeline!A1:C1500" },
+      { tab: "Pipeline", kind: "slot", range: "Pipeline!AP1:AQ1500" }
+    );
+  }
+
+  const [metaResp, probeResp] = await Promise.all([
+    withRetry(() =>
+      rawSheets.spreadsheets.get({
+        spreadsheetId,
+        fields: "sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))",
+      })
+    ),
+    probeConfigs.length > 0
+      ? withRetry(() =>
+          rawSheets.spreadsheets.values.batchGet({
+            spreadsheetId,
+            ranges: probeConfigs.map((p) => p.range),
+            valueRenderOption: "UNFORMATTED_VALUE",
+          })
+        ).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+
   const sheetPropsByTitle = createSafeMap_();
   for (const s of metaResp?.data?.sheets || []) {
     const title = s?.properties?.title;
@@ -954,38 +1009,115 @@ async function fetchRealSheetTabsAndNotes_(rawSheets, spreadsheetId, tabNames) {
       sheetPropsByTitle[title] = {
         sheetId: s.properties.sheetId,
         rowCount: Number(s.properties?.gridProperties?.rowCount || 1000),
+        columnCount: Number(s.properties?.gridProperties?.columnCount || 120),
       };
     }
   }
 
+  const probedLastByTab = createSafeMap_();
+  if (probeResp?.data?.valueRanges) {
+    const mainRowsByTab = createSafeMap_();
+    probeConfigs.forEach((cfg, idx) => {
+      if (cfg.kind === "main") {
+        mainRowsByTab[cfg.tab] = probeResp.data.valueRanges[idx]?.values || [];
+      }
+    });
+    probeConfigs.forEach((cfg, idx) => {
+      const vals = probeResp.data.valueRanges[idx]?.values || [];
+      const mainVals = mainRowsByTab[cfg.tab] || [];
+      for (let i = vals.length - 1; i >= 0; i--) {
+        const r = vals[i];
+        if (!r || (!r[0] && !r[1] && !r[2])) continue;
+        const mRow = mainVals[i] || [];
+        if (i >= 350 && !mRow[0] && !mRow[1] && !mRow[2]) continue;
+        probedLastByTab[cfg.tab] = Math.max(probedLastByTab[cfg.tab] || 0, i + 1);
+        break;
+      }
+    });
+  }
+
   const existingTabs = uniqueTabs.filter((t) => Boolean(sheetPropsByTitle[t]));
   const resultByTab = createSafeMap_();
-  const chunkSize = 8;
+  const boundedLimitByTab = createSafeMap_();
+  const fetchRangeByTab = createSafeMap_();
 
+  for (const tName of existingTabs) {
+    if (tName === "Confirmed" || tName === "Pipeline") {
+      const sheetRowCount = sheetPropsByTitle[tName].rowCount;
+      const defaultFloor = tName === "Confirmed" ? 340 : 150;
+      const boundedMaxRow = Math.min(
+        sheetRowCount,
+        Math.max(probedLastByTab[tName] || 0, Number(minRowHorizonByTab?.[tName] || 0), defaultFloor) + 30
+      );
+      boundedLimitByTab[tName] = boundedMaxRow;
+      fetchRangeByTab[tName] = `'${tName}'!A1:DF${boundedMaxRow}`;
+    } else {
+      boundedLimitByTab[tName] = null;
+      fetchRangeByTab[tName] = `'${tName}'`;
+    }
+  }
+
+  const chunkSize = 8;
+  const batches = [];
   for (let i = 0; i < existingTabs.length; i += chunkSize) {
-    const batch = existingTabs.slice(i, i + chunkSize);
-    const ranges = batch.map((t) => `'${t}'`);
-    const [valResp, formResp] = await Promise.all([
-      withRetry(() =>
-        rawSheets.spreadsheets.values.batchGet({
-          spreadsheetId,
-          ranges,
-          valueRenderOption: "UNFORMATTED_VALUE",
+    batches.push(existingTabs.slice(i, i + chunkSize));
+  }
+
+  const noteTabsPresent = existingTabs.filter((t) => Boolean(NOTE_FETCH_RANGES[t]));
+  const noteRangesToFetch = noteTabsPresent.map((t) => {
+    if (t === "Confirmed" && boundedLimitByTab.Confirmed) {
+      return `Confirmed!AP2:CR${Math.min(boundedLimitByTab.Confirmed, 1000)}`;
+    }
+    if (t === "Pipeline" && boundedLimitByTab.Pipeline) {
+      return `Pipeline!AP2:CR${Math.min(boundedLimitByTab.Pipeline, 600)}`;
+    }
+    return NOTE_FETCH_RANGES[t].range;
+  });
+
+  const [batchPairResults, noteResp] = await Promise.all([
+    Promise.all(
+      batches.map(async (batch) => {
+        const ranges = batch.map((t) => fetchRangeByTab[t]);
+        const [valResp, formResp] = await Promise.all([
+          withRetry(() =>
+            rawSheets.spreadsheets.values.batchGet({
+              spreadsheetId,
+              ranges,
+              valueRenderOption: "UNFORMATTED_VALUE",
+            })
+          ),
+          withRetry(() =>
+            rawSheets.spreadsheets.values.batchGet({
+              spreadsheetId,
+              ranges,
+              valueRenderOption: "FORMULA",
+            })
+          ),
+        ]);
+        return { batch, valResp, formResp };
+      })
+    ),
+    noteRangesToFetch.length > 0
+      ? withRetry(() =>
+          rawSheets.spreadsheets.get({
+            spreadsheetId,
+            ranges: noteRangesToFetch,
+            fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
+          })
+        ).catch((noteErr) => {
+          console.warn("[clientSheetBridge] Note batch read warning:", noteErr.message);
+          return null;
         })
-      ),
-      withRetry(() =>
-        rawSheets.spreadsheets.values.batchGet({
-          spreadsheetId,
-          ranges,
-          valueRenderOption: "FORMULA",
-        })
-      ),
-    ]);
+      : Promise.resolve(null),
+  ]);
+
+  for (const { batch, valResp, formResp } of batchPairResults) {
     for (let j = 0; j < batch.length; j++) {
       const tName = batch[j];
       resultByTab[tName] = {
         sheetId: sheetPropsByTitle[tName].sheetId,
         rowCount: sheetPropsByTitle[tName].rowCount,
+        scannedRowLimit: boundedLimitByTab[tName],
         values: valResp?.data?.valueRanges?.[j]?.values || [],
         formulas: formResp?.data?.valueRanges?.[j]?.values || [],
         notes: createSafeMap_(),
@@ -993,37 +1125,22 @@ async function fetchRealSheetTabsAndNotes_(rawSheets, spreadsheetId, tabNames) {
     }
   }
 
-  // Batch fetch cell notes on note-bearing tabs
-  const noteTabsPresent = existingTabs.filter((t) => Boolean(NOTE_FETCH_RANGES[t]));
-  if (noteTabsPresent.length > 0) {
-    try {
-      const noteResp = await withRetry(() =>
-        rawSheets.spreadsheets.get({
-          spreadsheetId,
-          ranges: noteTabsPresent.map((t) => NOTE_FETCH_RANGES[t].range),
-          fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
-        })
-      );
-      for (const sheetObj of noteResp?.data?.sheets || []) {
-        const tName = sheetObj?.properties?.title;
-        const cfg = NOTE_FETCH_RANGES[tName];
-        if (!tName || !cfg || !resultByTab[tName]) continue;
-        const gridData = sheetObj?.data?.[0];
-        const sR = Number(gridData?.startRow ?? cfg.startRow0);
-        const sC = Number(gridData?.startColumn ?? cfg.startCol0);
-        const notesOut = createSafeMap_();
-        (gridData?.rowData || []).forEach((rowObj, rOff) => {
-          (rowObj?.values || []).forEach((cellObj, cOff) => {
-            if (cellObj?.note) {
-              notesOut[`${sR + rOff}:${sC + cOff}`] = String(cellObj.note);
-            }
-          });
-        });
-        resultByTab[tName].notes = notesOut;
-      }
-    } catch (noteErr) {
-      console.warn("[clientSheetBridge] Note batch read warning:", noteErr.message);
-    }
+  for (const sheetObj of noteResp?.data?.sheets || []) {
+    const tName = sheetObj?.properties?.title;
+    const cfg = NOTE_FETCH_RANGES[tName];
+    if (!tName || !cfg || !resultByTab[tName]) continue;
+    const gridData = sheetObj?.data?.[0];
+    const sR = Number(gridData?.startRow ?? cfg.startRow0);
+    const sC = Number(gridData?.startColumn ?? cfg.startCol0);
+    const notesOut = createSafeMap_();
+    (gridData?.rowData || []).forEach((rowObj, rOff) => {
+      (rowObj?.values || []).forEach((cellObj, cOff) => {
+        if (cellObj?.note) {
+          notesOut[`${sR + rOff}:${sC + cOff}`] = String(cellObj.note);
+        }
+      });
+    });
+    resultByTab[tName].notes = notesOut;
   }
 
   return { sheetPropsByTitle, resultByTab };
@@ -1175,10 +1292,14 @@ export async function ensureClientSheetBridgeFreshOnRead(ctx, { throttleMs = REA
     } catch { }
   }
 
-  return await checkAndSyncClientSheetBridge(ctx.clientName, { direction: "inbound_check" }).catch((err) => {
-    console.warn(`[clientSheetBridge] Read freshness check warning (${ctx.clientName}):`, err.message);
-    return null;
-  });
+  try {
+    return await checkAndSyncClientSheetBridge(ctx.clientName, { direction: "inbound_check" }).catch((err) => {
+      console.warn(`[clientSheetBridge] Read freshness check warning (${ctx.clientName}):`, err.message);
+      return null;
+    });
+  } finally {
+    _lastReadCheckByClient.set(key, Date.now());
+  }
 }
 
 /**
@@ -1340,6 +1461,7 @@ export async function checkAndSyncClientSheetBridge(
         wantsOutbound;
 
       let sheetBundle = null;
+      const preloadedSupaByTab = createSafeMap_();
       if (needRealSheetFetch) {
         const tabsToLoad = wantsInbound && (driveVersionChanged || forceInboundFetch)
           ? [...BRIDGE_BIDIRECTIONAL_TABS, "KeyInfo", "OutgNotes"]
@@ -1351,7 +1473,22 @@ export async function checkAndSyncClientSheetBridge(
                 "OutgNotes",
               ]),
             ];
-        sheetBundle = await fetchRealSheetTabsAndNotes_(rawSheets, ctx.clientSheetId, tabsToLoad);
+        const minRowHorizonByTab = createSafeMap_();
+        await Promise.all(
+          ["Confirmed", "Pipeline"].map(async (tName) => {
+            if (!tabsToLoad.includes(tName)) return;
+            const supaRec = await getOrLoadVirtualTabGrid_(ctx, "client", tName, rawSheets, {
+              includeNotes: BRIDGE_NOTE_TABS.has(tName),
+            }).catch(() => null);
+            if (supaRec) preloadedSupaByTab[tName] = supaRec;
+            const supaLast = findLastActiveJobRowCount_(supaRec?.values_grid || []);
+            const baseLast = findLastActiveJobRowCount_(baseline.tabs?.[tName]?.values || []);
+            minRowHorizonByTab[tName] = Math.max(supaLast, baseLast);
+          })
+        );
+        sheetBundle = await fetchRealSheetTabsAndNotes_(rawSheets, ctx.clientSheetId, tabsToLoad, {
+          minRowHorizonByTab,
+        });
       }
 
       const mergeResults = [];
@@ -1375,9 +1512,11 @@ export async function checkAndSyncClientSheetBridge(
         const sheetTab = sheetBundle?.resultByTab?.[tabName];
         if (!sheetTab) continue;
 
-        const supaRec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheets, {
-          includeNotes: BRIDGE_NOTE_TABS.has(tabName),
-        }).catch(() => null);
+        const supaRec =
+          preloadedSupaByTab[tabName] ||
+          (await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheets, {
+            includeNotes: BRIDGE_NOTE_TABS.has(tabName),
+          }).catch(() => null));
         if (!supaRec) continue;
 
         tabGridsMap[tabName] = {
@@ -1397,6 +1536,7 @@ export async function checkAndSyncClientSheetBridge(
           supaFormulas: supaRec.formulas_grid || supaRec.values_grid || [],
           supaNotes: supaRec.notes_grid || {},
           applyOutboundToBaseline: Boolean(wantsOutbound && effectiveMode === "live"),
+          maxRowBound: sheetTab.scannedRowLimit || null,
         });
         mergeResults.push({ tabName, merge, supaRec, sheetTab });
 
@@ -1883,17 +2023,25 @@ export async function pushSupabaseClientToSheet(clientName) {
       throw new Error("Primary Google Service Account Drive/Sheets clients unavailable.");
     }
 
-    const confirmedRec = await getOrLoadVirtualTabGrid_(ctx, "client", "Confirmed", rawSheets, {
-      includeNotes: true,
-    }).catch(() => null);
+    const [confirmedRec, pipelineRec] = await Promise.all([
+      getOrLoadVirtualTabGrid_(ctx, "client", "Confirmed", rawSheets, { includeNotes: true }).catch(() => null),
+      getOrLoadVirtualTabGrid_(ctx, "client", "Pipeline", rawSheets, { includeNotes: true }).catch(() => null),
+    ]);
     if (!confirmedRec || !Array.isArray(confirmedRec.values_grid) || confirmedRec.values_grid.length === 0) {
       throw new Error(`"${ctx.clientName}" has no Client Sheet data in Supabase yet. Run "Push sheet data to Supabase" first.`);
     }
 
-    const sheetBundle = await fetchRealSheetTabsAndNotes_(rawSheets, ctx.clientSheetId, [
-      ...BRIDGE_ALL_SYNCED_TABS,
-      "OutgNotes",
-    ]);
+    const sheetBundle = await fetchRealSheetTabsAndNotes_(
+      rawSheets,
+      ctx.clientSheetId,
+      [...BRIDGE_ALL_SYNCED_TABS, "OutgNotes"],
+      {
+        minRowHorizonByTab: {
+          Confirmed: findLastActiveJobRowCount_(confirmedRec.values_grid || []),
+          Pipeline: findLastActiveJobRowCount_(pipelineRec?.values_grid || []),
+        },
+      }
+    );
 
     const allOutboundDiffs = [];
     const tabGridsMap = createSafeMap_();
@@ -1911,9 +2059,11 @@ export async function pushSupabaseClientToSheet(clientName) {
       const supaRec =
         tabName === "Confirmed"
           ? confirmedRec
-          : await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheets, {
-              includeNotes: BRIDGE_NOTE_TABS.has(tabName),
-            }).catch(() => null);
+          : tabName === "Pipeline"
+            ? pipelineRec
+            : await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheets, {
+                includeNotes: BRIDGE_NOTE_TABS.has(tabName),
+              }).catch(() => null);
       if (!supaRec || !Array.isArray(supaRec.values_grid) || supaRec.values_grid.length === 0) {
         continue;
       }
@@ -1936,6 +2086,7 @@ export async function pushSupabaseClientToSheet(clientName) {
         supaFormulas: supaRec.formulas_grid || supaRec.values_grid || [],
         supaNotes: supaRec.notes_grid || {},
         applyOutboundToBaseline: true,
+        maxRowBound: sheetTab.scannedRowLimit || null,
       });
 
       totalFormulaProtected += merge.formulaCellsProtectedCount;

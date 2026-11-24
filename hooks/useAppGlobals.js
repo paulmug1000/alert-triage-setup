@@ -544,7 +544,16 @@ export function AppGlobalsProvider({ children }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "get_all_client_jobs", clientSheetId: cleanClientId, tabName: "All" })
       });
-      const d = await res.json();
+      const rawText = await res.text();
+      let d;
+      try {
+        d = JSON.parse(rawText);
+      } catch {
+        throw new Error(`Request timed out or returned status ${res.status}. Please retry.`);
+      }
+      if (!res.ok || d?.success === false) {
+        throw new Error(d?.error || `Failed to load jobs (HTTP ${res.status}).`);
+      }
       if (d.success) setCachedClientData(cleanClientId, "jobs_All", d);
       return d;
     };

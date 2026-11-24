@@ -23,6 +23,7 @@ export function useJobs(initialClient = null) {
     }
     return false;
   });
+  const [jobsLoadError, setJobsLoadError] = useState(null);
   const [jobsExpanded, setJobsExpanded] = useState(() => new Set());
   const [jobsEditSplit, setJobsEditSplit] = useState(null);
   const [hasAccountingIntegration, setHasAccountingIntegration] = useState(() => {
@@ -116,6 +117,7 @@ export function useJobs(initialClient = null) {
     // 1. Check in-memory PMA Client Cache (0ms instant render)
     const cached = !bypassCache ? getCachedClientData(client.clientSheetId, cacheKey) : null;
     if (cached?.data?.jobs) {
+      setJobsLoadError(null);
       setJobsData(cached.data.jobs);
       if (cached.data.productLines) setProductLines(cached.data.productLines);
       if (cached.data.leadSources) setLeadSources(cached.data.leadSources);
@@ -162,13 +164,23 @@ export function useJobs(initialClient = null) {
       }
     }
 
+    setJobsLoadError(null);
     try {
       const doFetch = async () => {
         const res = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "get_all_client_jobs", clientSheetId: client.clientSheetId, tabName, bypassCache }),
         });
-        const d = await res.json();
+        const rawText = await res.text();
+        let d;
+        try {
+          d = JSON.parse(rawText);
+        } catch {
+          throw new Error(`Request timed out or returned status ${res.status}. Please retry.`);
+        }
+        if (!res.ok || d?.success === false) {
+          throw new Error(d?.error || `Failed to load jobs (HTTP ${res.status}).`);
+        }
         if (d.success) {
           setCachedClientData(client.clientSheetId, cacheKey, d);
         }
@@ -193,6 +205,7 @@ export function useJobs(initialClient = null) {
       }
     } catch (e) {
       console.error("loadJobsData error:", e);
+      setJobsLoadError(e?.message || "Could not load jobs. Please retry.");
     } finally {
       setJobsLoading(false);
     }
@@ -204,6 +217,7 @@ export function useJobs(initialClient = null) {
     jobsSortBy, setJobsSortBy,
     jobsData, setJobsData,
     jobsLoading, setJobsLoading,
+    jobsLoadError,
     jobsExpanded, setJobsExpanded,
     jobsEditSplit, setJobsEditSplit,
     productLines, setProductLines,

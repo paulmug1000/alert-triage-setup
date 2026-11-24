@@ -52,7 +52,7 @@ export const BRIDGE_NOTE_TABS = new Set(["Confirmed", "Pipeline", "Outgoings", "
 const BRIDGE_BIDIRECTIONAL_TAB_SET = new Set(BRIDGE_BIDIRECTIONAL_TABS);
 const BRIDGE_OUTBOUND_ONLY_SET = new Set(BRIDGE_OUTBOUND_ONLY_TABS);
 const BASELINE_TAB_NAME = "SheetBridgeBaseline";
-const OUTBOUND_DEBOUNCE_MS = 3000;
+const OUTBOUND_DEBOUNCE_MS = 1200;
 const READ_CHECK_THROTTLE_MS = 15000;
 const RECENT_LOG_LIMIT = 15;
 const TEXT_ONLY_SLOT_COLS = new Set([42, 49, 56, 81, 88, 95]); // AQ, AX, BE, CD, CK, CR
@@ -598,8 +598,9 @@ const MONEY_COL_INDICES_CONF_PIPE = new Set([17, 32, 33, 41, 48, 55, 75, 82, 89]
 const SHORT_HEADER_MAP = [
   [/^revenue\b/i, "Revenue"],
   [/^direct costs\b/i, "Direct costs"],
-  [/start date/i, "Start date"],
-  [/end date/i, "End date"],
+  [/\bsent date\b|\bsend date\b/i, "Sent date"],
+  [/\bstart date\b/i, "Start date"],
+  [/\bend date\b/i, "End date"],
   [/likelihood/i, "Likelihood"],
   [/date added/i, "Date added"],
   [/crm id|deal id/i, "CRM ID"],
@@ -1310,12 +1311,12 @@ export async function ensureClientSheetBridgeFreshOnRead(ctx, { throttleMs = REA
 export function scheduleOutboundSheetBridgeSync(clientName, dirtyTabs = []) {
   const cleanName = String(clientName || "").trim();
   const key = normalizeKey_(cleanName);
-  if (!key || _suppressOutboundByClient.has(key)) return;
+  if (!key || _suppressOutboundByClient.has(key)) return null;
 
   const relevantTabs = (Array.isArray(dirtyTabs) ? dirtyTabs : []).filter(
     (t) => BRIDGE_BIDIRECTIONAL_TAB_SET.has(t) || BRIDGE_OUTBOUND_ONLY_SET.has(t)
   );
-  if (relevantTabs.length === 0) return;
+  if (relevantTabs.length === 0) return null;
 
   if (redisClient?.isOpen) {
     redisClient.sAdd(`pulse:sheet_bridge_dirty:${key}`, relevantTabs).catch(() => { });
@@ -1358,6 +1359,21 @@ export function scheduleOutboundSheetBridgeSync(clientName, dirtyTabs = []) {
       if (current?.resolveFlush) current.resolveFlush();
     }
   }, OUTBOUND_DEBOUNCE_MS);
+
+  return entry.promise;
+}
+
+export async function waitForPendingOutboundSheetBridge(clientName) {
+  const key = normalizeKey_(clientName);
+  if (!key) return;
+  const pending = _pendingOutboundByClient.get(key);
+  if (pending?.promise) {
+    await pending.promise.catch(() => {});
+  }
+  const inFlight = _inFlightBridgeByClient.get(key);
+  if (inFlight) {
+    await inFlight.catch(() => {});
+  }
 }
 
 /**
@@ -1460,19 +1476,29 @@ export async function checkAndSyncClientSheetBridge(
         (wantsInbound && (driveVersionChanged || forceInboundFetch)) ||
         wantsOutbound;
 
+      const structDirtyTabs = queuedStructOps.map((op) => op.tabName).filter(Boolean);
+      const scopedDirtyTabs = [
+        ...new Set([
+          ...(Array.isArray(dirtyTabsHint) ? dirtyTabsHint : []),
+          ...redisDirtyTabs,
+          ...structDirtyTabs,
+        ]),
+      ].filter((t) => BRIDGE_ALL_SYNCED_TABS.includes(t));
+
+      const canScopeToDirtyTabsOnly =
+        wantsOutbound &&
+        !force &&
+        !(wantsInbound && (driveVersionChanged || forceInboundFetch)) &&
+        scopedDirtyTabs.length > 0;
+
       let sheetBundle = null;
       const preloadedSupaByTab = createSafeMap_();
       if (needRealSheetFetch) {
-        const tabsToLoad = wantsInbound && (driveVersionChanged || forceInboundFetch)
-          ? [...BRIDGE_BIDIRECTIONAL_TABS, "KeyInfo", "OutgNotes"]
-          : [
-              ...new Set([
-                ...(Array.isArray(dirtyTabsHint) && dirtyTabsHint.length > 0 ? dirtyTabsHint : BRIDGE_ALL_SYNCED_TABS),
-                ...redisDirtyTabs,
-                ...BRIDGE_ALL_SYNCED_TABS,
-                "OutgNotes",
-              ]),
-            ];
+        const tabsToLoad = canScopeToDirtyTabsOnly
+          ? [...scopedDirtyTabs, ...(scopedDirtyTabs.includes("Outgoings") ? ["OutgNotes"] : [])]
+          : wantsInbound && (driveVersionChanged || forceInboundFetch)
+            ? [...BRIDGE_BIDIRECTIONAL_TABS, "KeyInfo", "OutgNotes"]
+            : [...BRIDGE_ALL_SYNCED_TABS, "OutgNotes"];
         const minRowHorizonByTab = createSafeMap_();
         await Promise.all(
           ["Confirmed", "Pipeline"].map(async (tName) => {
@@ -1504,9 +1530,11 @@ export async function checkAndSyncClientSheetBridge(
       const nextBaselineTabs = { ...baseline.tabs };
       const maxTargetRowByTab = createSafeMap_();
 
-      const tabsToProcess = wantsOutbound
-        ? BRIDGE_ALL_SYNCED_TABS
-        : BRIDGE_BIDIRECTIONAL_TABS;
+      const tabsToProcess = canScopeToDirtyTabsOnly
+        ? scopedDirtyTabs
+        : wantsOutbound
+          ? BRIDGE_ALL_SYNCED_TABS
+          : BRIDGE_BIDIRECTIONAL_TABS;
 
       for (const tabName of tabsToProcess) {
         const sheetTab = sheetBundle?.resultByTab?.[tabName];
@@ -1701,8 +1729,8 @@ export async function checkAndSyncClientSheetBridge(
         _pendingStructuralOpsByClient.delete(key);
       }
 
-      if (redisClient?.isOpen && wantsOutbound && (effectiveMode === "live" || !hasOutboundWork)) {
-        redisClient.del(`pulse:sheet_bridge_dirty:${key}`).catch(() => { });
+      if (redisClient?.isOpen && wantsOutbound && (effectiveMode === "live" || !hasOutboundWork) && tabsToProcess.length > 0) {
+        redisClient.sRem(`pulse:sheet_bridge_dirty:${key}`, tabsToProcess).catch(() => { });
       }
 
       // Persist updated baseline whenever inbound applied in live/manual mode, outbound committed in live mode, or baseline was missing

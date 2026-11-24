@@ -1811,13 +1811,28 @@ function queuePendingClientTabs_(clientNameOrCtx, tabNames, { isSkippedStep = fa
 }
 
 function scheduleBackgroundClientRecompute_(ctx, rawSheetsApi = null) {
-  // Yield briefly so the active HTTP response can flush over the socket before
-  // synchronous recalculateClientGrids CPU work occupies the Node.js event loop.
-  const bgPromise = new Promise((resolve) => setTimeout(resolve, 75))
-    .then(() => recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi))
-    .catch((e) =>
-      console.warn("[masterEngineService] Background client formula recompute warning:", e.message)
-    );
+  // Yield briefly so the active HTTP response flushes, then let any fast
+  // debounced outbound Google Sheet push finish before CPU-bound HyperFormula runs.
+  const bgPromise = (async () => {
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    if (
+      ctx?.clientMode === "supabase" &&
+      !ctx._suppressBridgeOutbound &&
+      ctx?.sheetBridgeMode &&
+      ctx.sheetBridgeMode !== "off"
+    ) {
+      try {
+        const { waitForPendingOutboundSheetBridge } = await import("./clientSheetBridgeService.js");
+        await Promise.race([
+          waitForPendingOutboundSheetBridge(ctx.clientName),
+          new Promise((resolve) => setTimeout(resolve, 8000)),
+        ]);
+      } catch { }
+    }
+    await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi);
+  })().catch((e) =>
+    console.warn("[masterEngineService] Background client formula recompute warning:", e.message)
+  );
   try {
     waitUntil(bgPromise);
   } catch {
@@ -2191,11 +2206,10 @@ async function recomputeAndPersistImmediateClientTabs_(
     ctx.sheetBridgeMode &&
     ctx.sheetBridgeMode !== "off"
   ) {
-    import("./clientSheetBridgeService.js")
-      .then(({ scheduleOutboundSheetBridgeSync }) =>
-        scheduleOutboundSheetBridgeSync(ctx.clientName, allImmediateTabs)
-      )
-      .catch(() => { });
+    try {
+      const { scheduleOutboundSheetBridgeSync } = await import("./clientSheetBridgeService.js");
+      scheduleOutboundSheetBridgeSync(ctx.clientName, allImmediateTabs);
+    } catch { }
   }
 
   queuePendingClientTabs_(ctx, allImmediateTabs);

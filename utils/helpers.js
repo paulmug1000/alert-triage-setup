@@ -2656,12 +2656,20 @@ const JOB_COSTING_COL_INDEX_TO_LETTER = {
   13: "N",
   14: "O",
   20: "U",
+  24: "Y",
   32: "AG",
   33: "AH",
   37: "AL",
   38: "AM",
   40: "AO",
 };
+
+/**
+ * Returns true if a cell holds the JobCosting Pipeline likelihood formula `=J<row>`.
+ */
+export function isJobCostingColJLikelihoodFormula(val) {
+  return typeof val === "string" && /^=\s*\$?J\$?\d+\s*$/i.test(val.trim());
+}
 
 /**
  * Returns the job-costing formula map keyed by A1 column letters instead of 0-based indices.

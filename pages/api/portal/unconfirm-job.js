@@ -9,6 +9,7 @@ import {
   isPlaceholderInvoice,
   isPlaceholderExpense,
   isJobCostingStyle,
+  isJobCostingColJLikelihoodFormula,
   buildJobRowClearAndRestorePlan,
   rewriteRowFormulasToTargetRow,
   normalizeLikelihoodInput,
@@ -281,8 +282,24 @@ export default async function handler(req, res) {
       values: [parentA_AM],
     });
 
+    let writeLikelihoodCol = "AN";
+    if (isJobCosting && isExistingJob) {
+      try {
+        const anFormulaResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: clientSheetId,
+            range: `${pipelineSheetName}!AN${pipelineRow}`,
+            valueRenderOption: "FORMULA",
+          })
+        );
+        if (isJobCostingColJLikelihoodFormula(anFormulaResp.data?.values?.[0]?.[0])) {
+          writeLikelihoodCol = "J";
+        }
+      } catch (_) { }
+    }
+
     pipelineBatchData.push({
-      range: `${pipelineSheetName}!AN${pipelineRow}`,
+      range: `${pipelineSheetName}!${writeLikelihoodCol}${pipelineRow}`,
       values: [[sanitizeFormulaInput(targetLikelihood)]],
     });
 
@@ -591,7 +608,7 @@ export default async function handler(req, res) {
       oldJobKey: prevConfKey,
       newJobKey: nextPipeKey,
       newJobLabel: buildJobNoteLabel({ client: parentClient, jobName: parentJobName }),
-    }).catch(() => {});
+    }).catch(() => { });
 
     return res.status(200).json({
       success: true,

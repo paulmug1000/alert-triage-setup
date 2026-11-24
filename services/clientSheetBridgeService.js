@@ -72,6 +72,16 @@ function formulaRefsExternalOrCustomTab_(formulaStr) {
   return false;
 }
 
+function isOverridableJobCostingDefaultFormula_(tabName, col0, formulaStr, isJobCosting) {
+  if (!isJobCosting || (tabName !== "Confirmed" && tabName !== "Pipeline") || col0 !== 10) {
+    return false;
+  }
+  return (
+    typeof formulaStr === "string" &&
+    /^=\s*\$?M\$?\d+\s*\*\s*KeyInfo!\$?D\$?13\s*$/i.test(formulaStr.trim())
+  );
+}
+
 const NOTE_FETCH_RANGES = {
   Outgoings: { range: "Outgoings!G13:AV112", startRow0: 12, startCol0: 6 },
   Confirmed: { range: "Confirmed!AP2:CR500", startRow0: 1, startCol0: 41 },
@@ -230,10 +240,9 @@ export function isCellInEditableBridgePosition(tabName, row0, col0, options = {}
     );
     if (isJc) {
       if (
-        col0 === 10 ||
         (col0 >= 12 && col0 <= 14) ||
         col0 === 20 ||
-        col0 === 24 ||
+        (tabName === "Pipeline" && col0 === 24) ||
         col0 === 32 ||
         col0 === 33 ||
         col0 === 37 ||
@@ -287,7 +296,13 @@ export function isCellInEditableBridgePosition(tabName, row0, col0, options = {}
     return row0 >= 0 && row0 <= 110 && col0 >= 0 && col0 <= 47;
   }
 
-  if (tabName === "Salaries" || tabName === "Budget" || tabName === "NBtoFind") {
+  if (tabName === "Salaries") {
+    // Only employee metadata (A4:I53 -> cols 0..8) and monthly actual payroll overrides (L4:JD53 -> cols 11..263) are editable.
+    // Never touch summary formula rows (55..77), Forecast spill block (154..208, A154=={A4:I53}), or Effective spill block (304..362, A304=={A4:I53}, I360=={I73:JC75}).
+    return row0 >= 3 && row0 <= 52 && ((col0 >= 0 && col0 <= 8) || (col0 >= 11 && col0 <= 263));
+  }
+
+  if (tabName === "Budget" || tabName === "NBtoFind") {
     return row0 >= 1;
   }
 
@@ -313,7 +328,16 @@ export function isCellAllowedForOutboundBridgeWrite(
   const isSheetFormula = typeof sheetFormulaCell === "string" && sheetFormulaCell.trim().startsWith("=");
   const isNextFormula = typeof nextFormulaOrVal === "string" && nextFormulaOrVal.trim().startsWith("=");
   if (isSheetFormula && !isNextFormula) {
-    return false;
+    const isJc = Boolean(
+      options.isJobCosting !== undefined
+        ? options.isJobCosting
+        : options.headerRow
+          ? isJobCostingStyle({ headers: options.headerRow })
+          : false
+    );
+    if (!isOverridableJobCostingDefaultFormula_(tabName, col0, sheetFormulaCell, isJc)) {
+      return false;
+    }
   }
 
   return true;
@@ -476,12 +500,20 @@ export function computeThreeWayTabMerge({
         !areBridgeCellsEquivalent(supaVal, baseVal) &&
         areBridgeCellsEquivalent(sheetVal, baseVal);
 
+      const didSupaOverrideDefaultFormula =
+        isEditablePos &&
+        !isSupaFormula &&
+        isOverridableJobCostingDefaultFormula_(tabName, c, sheetForm, isJobCosting) &&
+        !areBridgeCellsEquivalent(supaVal, baseVal) &&
+        areBridgeCellsEquivalent(sheetVal, baseVal);
+
       const editableSheetFormulaNeedsPull =
         !isOutboundOnly &&
         isEditablePos &&
         isSheetFormula &&
         !isSheetErrorVal &&
         !didSupaEditFormula &&
+        !didSupaOverrideDefaultFormula &&
         (!areBridgeCellsEquivalent(sheetVal, supaVal) || String(sheetForm) !== String(supaForm || ""));
 
       const inChanged =
@@ -492,7 +524,7 @@ export function computeThreeWayTabMerge({
 
       const outChanged =
         !isPureFormulaRecalcDrift &&
-        !(isEditablePos && isSheetFormula && !didSupaEditFormula) &&
+        !(isEditablePos && isSheetFormula && !didSupaEditFormula && !didSupaOverrideDefaultFormula) &&
         !areBridgeCellsEquivalent(supaVal, baseVal);
 
       if (inChanged && outChanged) {

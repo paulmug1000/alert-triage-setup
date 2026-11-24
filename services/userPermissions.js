@@ -748,7 +748,7 @@ export function sanitizeFormulaInput(val) {
   return val;
 }
 
-const JOB_COSTING_FORMULA_COLS = new Set([10, 12, 13, 14, 20, 32, 33, 37, 38]);
+const JOB_COSTING_FORMULA_COLS = new Set([10, 12, 13, 14, 20, 24, 32, 33, 37, 38]);
 const PRIMARY_NUMERIC_FORMULA_COLS = new Set([8, 9, 11, 15, 16, 17, 19, 32, 33]);
 const DANGEROUS_FORMULA_FN_RE = /=\s*[\s\S]*\b(IMPORT(?:XML|DATA|HTML|FEED|RANGE)|IMAGE|HYPERLINK|QUERY|WEBSERVICE|GOOGLEFINANCE|FILTERXML)\s*\(/i;
 

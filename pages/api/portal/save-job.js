@@ -28,6 +28,7 @@ import {
   NO_END_DATE_SHEET_VALUE,
   isNoEndDateSentinel,
   isJobCostingStyle,
+  isJobCostingColJLikelihoodFormula,
   getJobCostingRowFormulasMap,
   buildJobRowClearAndRestorePlan,
   normalizeLikelihoodInput,
@@ -339,6 +340,13 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, o
         if (c === 10 && rowArray[10] !== "" && rowArray[10] !== undefined) continue;
         rowArray[c] = formula;
       }
+      if (
+        sheetName === "Pipeline" &&
+        typeof rowArray[24] === "string" &&
+        /^=\s*\$?I\$?\d+\s*\*\s*\$?X\$?\d+\s*$/i.test(rowArray[24].trim())
+      ) {
+        rowArray[24] = `=I${rowNum}*X${rowNum}`;
+      }
     }
   } else {
     if (cols.revenue !== -1 && job.revenue !== undefined) rowArray[cols.revenue] = parseMoney(job.revenue);
@@ -354,8 +362,12 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots, o
   }
 
   if (cols.likelihood !== -1 && job.likelihood !== undefined) {
-    if (!(typeof rowArray[cols.likelihood] === "string" && rowArray[cols.likelihood].startsWith("="))) {
-      rowArray[cols.likelihood] = normalizeLikelihoodInput(parseText(job.likelihood));
+    const normalizedLikel = normalizeLikelihoodInput(parseText(job.likelihood));
+    if (isJobCosting && sheetName === "Pipeline" && isJobCostingColJLikelihoodFormula(rowArray[cols.likelihood])) {
+      rowArray[9] = normalizedLikel;
+      rowArray[cols.likelihood] = `=J${rowNum}`;
+    } else if (!(typeof rowArray[cols.likelihood] === "string" && rowArray[cols.likelihood].startsWith("="))) {
+      rowArray[cols.likelihood] = normalizedLikel;
     }
   }
   if (cols.prodTime !== -1 && job.prodTime !== undefined) rowArray[cols.prodTime] = parseNumber(job.prodTime);
@@ -1203,7 +1215,10 @@ export default async function handler(req, res) {
       {
         range: `${sheetName}!AN${parentRow}`,
         values: [[
-          canEnterFormulas && typeof updatedParentRow[39] === "string" && /^\s*=/.test(updatedParentRow[39]) && !isDangerousFormulaStr_(updatedParentRow[39])
+          ((canEnterFormulas || (isJobCosting && sheetName === "Pipeline" && isJobCostingColJLikelihoodFormula(updatedParentRow[39]))) &&
+            typeof updatedParentRow[39] === "string" &&
+            /^\s*=/.test(updatedParentRow[39]) &&
+            !isDangerousFormulaStr_(updatedParentRow[39]))
             ? updatedParentRow[39]
             : sanitizeFormulaInput(updatedParentRow[39] !== undefined ? updatedParentRow[39] : ""),
         ]],

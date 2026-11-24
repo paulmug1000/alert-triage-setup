@@ -1,4 +1,4 @@
-//Version 1.13 - Fix LET/LAMBDA short variable shadowing in range resolution, clear OutgNotes/Monthly spill tails, support Recon IMPORTRANGE, and preserve unloaded external-tab formula values
+//Version 1.14 - Harden JobCosting row formula injection for new rows while preserving LET/LAMBDA and spill parity
 // Evaluates Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -4019,14 +4019,43 @@ function ensureJobRowFormulasPopulated_(grids) {
     const t = grids[tab];
     if (!t || !Array.isArray(t.formulas) || !t.formulas[1]) continue;
     const isJobTab = tab === "Confirmed" || tab === "Pipeline";
+    const hdr0 = Array.isArray(t.values?.[0]) ? t.values[0] : [];
+    const isJc =
+      isJobTab &&
+      (String(hdr0[5] || "").trim().toLowerCase() === "date job will start" ||
+        String(hdr0[8] || "").trim().toLowerCase() === "job revenue");
 
     const templateRowF = t.formulas[1]; // Row 2 (r=1)
     const srcTab = tab === "ConfCalcs" ? "Confirmed" : tab === "PipeCalcs" ? "Pipeline" : tab;
     const maxR = Math.min(findLastActiveJobRow_(grids[srcTab]?.values) + 1, t.formulas.length - 1);
     const startCol = isJobTab ? 40 : 0; // On Confirmed/Pipeline, never overwrite or inject A..AN (0..39) on existing rows
+    const jcFormulaCols = [10, 12, 13, 14, 20, 24, 32, 33, 37, 38, 39];
     for (let r = 2; r <= maxR; r++) {
       if (!t.formulas[r]) t.formulas[r] = [];
       const vRow = t.values?.[r] || [];
+      if (isJc) {
+        const hasPrimaryJcInput =
+          (vRow[5] !== "" && vRow[5] !== null && vRow[5] !== undefined) ||
+          (vRow[6] !== "" && vRow[6] !== null && vRow[6] !== undefined) ||
+          (vRow[8] !== "" && vRow[8] !== null && vRow[8] !== undefined);
+        const lacksCoreJobFormulas =
+          !t.formulas[r][32] &&
+          !t.formulas[r][37] &&
+          !t.formulas[r][38] &&
+          (vRow[32] === "" || vRow[32] === null || vRow[32] === undefined) &&
+          (vRow[37] === "" || vRow[37] === null || vRow[37] === undefined) &&
+          (vRow[38] === "" || vRow[38] === null || vRow[38] === undefined);
+        if (hasPrimaryJcInput && lacksCoreJobFormulas) {
+          for (const c of jcFormulaCols) {
+            const tf = templateRowF[c];
+            if (typeof tf === "string" && tf.startsWith("=") && !isPotentialSpillFormula_(tf)) {
+              if (!t.formulas[r][c] && (vRow[c] === "" || vRow[c] === null || vRow[c] === undefined)) {
+                t.formulas[r][c] = shiftRowFormulaFromRow2_(tf, r + 1);
+              }
+            }
+          }
+        }
+      }
       for (let c = startCol; c < templateRowF.length; c++) {
         const tf = templateRowF[c];
         if (typeof tf === "string" && tf.startsWith("=") && !isPotentialSpillFormula_(tf)) {

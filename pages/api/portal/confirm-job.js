@@ -13,6 +13,7 @@ import {
   NO_END_DATE_SHEET_VALUE,
   isNoEndDateSentinel,
   isJobCostingStyle,
+  isJobCostingColJLikelihoodFormula,
   rewriteRowFormulasToTargetRow,
   assertTrustedOrigin,
   sanitizeSpreadsheetTerms,
@@ -253,6 +254,11 @@ export default async function handler(req, res) {
       const cIdx = hRow.findIndex((h) => { const s = String(h || "").trim().toLowerCase(); return s.includes("copied") || s.includes("conf?"); });
       if (cIdx !== -1) copiedStatusCol = colToLetter(cIdx);
 
+      const updateLikelihoodCol =
+        isJobCosting && likelihoodCol === "AN" && isJobCostingColJLikelihoodFormula(parentData[39])
+          ? "J"
+          : likelihoodCol;
+
       await withRetry(() =>
         sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: clientSheetId,
@@ -260,7 +266,7 @@ export default async function handler(req, res) {
           requestBody: {
             valueInputOption: "USER_ENTERED",
             data: [
-              { range: `${pipelineSheetName}!${likelihoodCol}${pRow}`, values: [["100%"]] },
+              { range: `${pipelineSheetName}!${updateLikelihoodCol}${pRow}`, values: [["100%"]] },
               { range: `${pipelineSheetName}!${copiedStatusCol}${pRow}`, values: [["Yes"]] },
             ],
           },
@@ -605,9 +611,14 @@ export default async function handler(req, res) {
       console.warn("⚠️ Failed to detect pipeline header columns, falling back to AN & DD:", e.message);
     }
 
+    const updateLikelihoodCol =
+      isJobCosting && likelihoodCol === "AN" && isJobCostingColJLikelihoodFormula(parentData[39])
+        ? "J"
+        : likelihoodCol;
+
     confirmedBatchData.push(
       {
-        range: `${pipelineSheetName}!${likelihoodCol}${pRow}`,
+        range: `${pipelineSheetName}!${updateLikelihoodCol}${pRow}`,
         values: [["100%"]],
       },
       {

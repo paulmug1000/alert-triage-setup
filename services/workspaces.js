@@ -18,6 +18,7 @@ import {
   formatJobEndDateDisplay,
   classifyExpenseCategory,
   isJobCostingStyle,
+  isJobCostingColJLikelihoodFormula,
   getJobCostingRowFormulasMap,
   getJobCostingRowFormulasLetterMap,
   buildJobRowClearAndRestorePlan,
@@ -2443,9 +2444,24 @@ export async function handleUpdateJobField(req, res, sheets) {
         _skipFormulaRecompute: true,
       });
     } else {
+      let writeCellRef = validatedCellRef;
+      if (tabName === "Pipeline" && targetCol === "AN") {
+        try {
+          const anResp = await withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: sheetIdClean,
+              range: `Pipeline!AN${targetRow}`,
+              valueRenderOption: "FORMULA",
+            })
+          );
+          if (isJobCostingColJLikelihoodFormula(anResp.data?.values?.[0]?.[0])) {
+            writeCellRef = `J${targetRow}`;
+          }
+        } catch (_) {}
+      }
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
-        range: `${tabName}!${validatedCellRef}`,
+        range: `${tabName}!${writeCellRef}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [[safeValue]] },
         _skipFormulaRecompute: true,
@@ -2662,6 +2678,32 @@ export async function handleUpdateJobFields(req, res, sheets) {
       return true;
     });
 
+    const anRedirectRows = new Set();
+    if (tabName === "Pipeline") {
+      const anRowsToCheck = [...new Set(
+        initialUpdates
+          .filter(u => u._coord.colLetters === "AN" && Number.isInteger(u._coord.rowNum))
+          .map(u => u._coord.rowNum)
+      )];
+      if (anRowsToCheck.length > 0) {
+        try {
+          const anBatch = await withRetry(() =>
+            sheets.spreadsheets.values.batchGet({
+              spreadsheetId: sheetIdClean,
+              ranges: anRowsToCheck.map(r => `Pipeline!AN${r}`),
+              valueRenderOption: "FORMULA",
+            })
+          );
+          const vRanges = anBatch.data?.valueRanges || [];
+          anRowsToCheck.forEach((r, idx) => {
+            if (isJobCostingColJLikelihoodFormula(vRanges[idx]?.values?.[0]?.[0])) {
+              anRedirectRows.add(r);
+            }
+          });
+        } catch (_) {}
+      }
+    }
+
     const initialBatchData = initialUpdates.map(u => {
       const colUp = u._coord.colLetters;
       const uRowNum = u._coord.rowNum;
@@ -2677,6 +2719,9 @@ export async function handleUpdateJobFields(req, res, sheets) {
         else if (colUp === "AM") writeCol = "G";
         else if (colUp === "AG") writeCol = "I";
         else if (colUp === "AH") writeCol = "K";
+      }
+      if (tabName === "Pipeline" && colUp === "AN" && anRedirectRows.has(uRowNum)) {
+        writeCol = "J";
       }
       const writeColIdx0 = writeCol.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
       if (isProtectedJobColumn_(tabName, writeColIdx0)) {

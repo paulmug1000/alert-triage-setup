@@ -298,10 +298,10 @@ export default function MonthView({
       style={{
         width: "100%",
         margin: "0 auto",
-        padding: "0.5rem 0 3rem 0",
+        padding: "0 0 3rem 0",
         display: "flex",
         flexDirection: "column",
-        gap: "1rem"
+        gap: "6px"
       }}
     >
       {/* Deep Dive Popover */}
@@ -321,13 +321,15 @@ export default function MonthView({
 
       {/* Action Bar (Standardized Top Right Controls as per original app) */}
       <div
+        className="home-action-bar"
         style={{
           display: "flex",
           justifyContent: "flex-end",
           alignItems: "center",
-          gap: "8px",
+          gap: "4px",
           width: "100%",
-          padding: "0 4px"
+          padding: "0 4px",
+          marginTop: "-10px"
         }}
       >
         <button
@@ -340,7 +342,7 @@ export default function MonthView({
             background: "transparent",
             border: "none",
             cursor: "pointer",
-            padding: "8px",
+            padding: "5px",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -352,8 +354,8 @@ export default function MonthView({
           onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
         >
           <svg
-            width="22"
-            height="22"
+            width="18"
+            height="18"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -378,7 +380,7 @@ export default function MonthView({
             background: "transparent",
             border: "none",
             cursor: "pointer",
-            padding: "8px",
+            padding: "5px",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -390,8 +392,8 @@ export default function MonthView({
           onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
         >
           <svg
-            width="22"
-            height="22"
+            width="18"
+            height="18"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -1059,7 +1061,7 @@ export default function MonthView({
 
     @media (max-width: 1080px) {
       :global(.home-view-container) {
-        padding: 0.5rem 0.5rem 3rem 0.5rem !important;
+        padding: 0 0.5rem 3rem 0.5rem !important;
       }
       .home-workspace-grid {
         display: flex;
@@ -1108,6 +1110,9 @@ export default function MonthView({
     }
 
     @media (max-width: 768px) {
+      :global(.home-action-bar) {
+        margin-top: -4px !important;
+      }
       :global(.home-chart-legend) {
         font-size: 10px !important;
       }

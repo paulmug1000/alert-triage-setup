@@ -176,14 +176,15 @@ export function MonthViewSkeleton() {
       style={{
         width: "100%",
         margin: "0 auto",
-        padding: "0.5rem 0 3rem 0",
+        padding: "0 0 3rem 0",
         display: "flex",
         flexDirection: "column",
-        gap: "1rem",
+        gap: "6px",
       }}
     >
       {/* Top Action Bar matching MonthView.jsx */}
       <div
+        className="home-action-bar"
         style={{
           display: "flex",
           justifyContent: "space-between",
@@ -191,7 +192,8 @@ export function MonthViewSkeleton() {
           gap: "8px",
           width: "100%",
           padding: "0 4px",
-          minHeight: "38px",
+          marginTop: "-10px",
+          minHeight: "28px",
         }}
       >
         <div
@@ -219,14 +221,14 @@ export function MonthViewSkeleton() {
           <span>Loading...</span>
         </div>
 
-        <div style={{ display: "flex", gap: "8px" }}>
+        <div style={{ display: "flex", gap: "4px" }}>
           <button
             type="button"
             disabled
             style={{
               background: "transparent",
               border: "none",
-              padding: "8px",
+              padding: "5px",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -235,8 +237,8 @@ export function MonthViewSkeleton() {
             }}
           >
             <svg
-              width="22"
-              height="22"
+              width="18"
+              height="18"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -256,7 +258,7 @@ export function MonthViewSkeleton() {
             style={{
               background: "transparent",
               border: "none",
-              padding: "8px",
+              padding: "5px",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -265,8 +267,8 @@ export function MonthViewSkeleton() {
             }}
           >
             <svg
-              width="22"
-              height="22"
+              width="18"
+              height="18"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -498,6 +500,14 @@ export function MonthViewSkeleton() {
           </div>
         </div>
       </div>
+
+      <style jsx>{`
+        @media (max-width: 768px) {
+          .home-action-bar {
+            margin-top: -4px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

@@ -141,12 +141,28 @@ export default function CashOpeningModal({
     setSaving(true);
     setFeedback(null);
     try {
-      const updates = entries.map((e) => ({
-        role: e.role,
-        openingMonthKey: e.openingMonthKey,
-        ...(e.targetColLetter ? { targetColLetter: e.targetColLetter, targetRow: e.targetRow } : {}),
-        amount: parseNum(e.amount),
-      }));
+      const updates = entries.map((e) => {
+        const basis = e.selectedBasis || "statement";
+        const includedAccounts = (e.accounts || [])
+          .filter((a) => a.included)
+          .map((a) => ({
+            name: a.accountName,
+            accountId: a.accountId || "",
+            amount:
+              basis === "statement" && a.hasStatementBalance
+                ? Number(a.statementBalance || 0)
+                : Number(a.closingXeroBalance || 0),
+          }));
+        return {
+          role: e.role,
+          openingMonthKey: e.openingMonthKey,
+          closingMonthKey: e.closingMonthKey,
+          basis,
+          accounts: includedAccounts,
+          ...(e.targetColLetter ? { targetColLetter: e.targetColLetter, targetRow: e.targetRow } : {}),
+          amount: parseNum(e.amount),
+        };
+      });
       const res = await fetch("/api/setup/cash-opening", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

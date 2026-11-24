@@ -1,7 +1,7 @@
 import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
-import { fetchCashData, saveCashBatch, saveCashCellNote } from "../../../services/cashEditService.js";
+import { fetchCashData, saveCashBatch, saveCashCellNote, saveCashBankBreakdown } from "../../../services/cashEditService.js";
 import { getClients } from "../../../services/workspaces.js";
-import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
+import { assertSetupClientSheetBinding, canAccessPma, isReadOnlySession, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
@@ -46,14 +46,16 @@ export default async function handler(req, res) {
       });
     }
 
-    if (!sessionUser.isAdmin) {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
-      clientName = auth.clientName || clientName;
+    const sheets = await getSheetsClient();
+    const binding = await assertSetupClientSheetBinding(sessionUser, {
+      clientName: clientName || "",
+      clientSheetId,
+      sheets,
+    });
+    if (!binding.authorized) {
+      return res.status(binding.status || 403).json({ success: false, error: binding.error || "Access denied to this client." });
     }
+    clientName = binding.clientName || clientName;
 
     try {
       const data = await fetchCashData(
@@ -86,7 +88,7 @@ export default async function handler(req, res) {
     }
   }
 
-  // 3. POST: Save Changes (Batch of cells or Note)
+  // 3. POST: Save Changes (Batch of cells, Note, or Bank Breakdown)
   if (req.method === "POST") {
     if (!assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser)) {
@@ -102,6 +104,9 @@ export default async function handler(req, res) {
       colIdx,
       colLetter,
       note,
+      monthKey,
+      accounts,
+      clear,
     } = req.body || {};
     const automationCommanderSheetId = getCanonicalAcSheetId();
 
@@ -119,14 +124,16 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing required clientSheetId." });
     }
 
-    if (!sessionUser.isAdmin) {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
-      clientName = auth.clientName || clientName;
+    const sheets = await getSheetsClient();
+    const binding = await assertSetupClientSheetBinding(sessionUser, {
+      clientName: clientName || "",
+      clientSheetId,
+      sheets,
+    });
+    if (!binding.authorized) {
+      return res.status(binding.status || 403).json({ success: false, error: binding.error || "Access denied to this client." });
     }
+    clientName = binding.clientName || clientName;
 
     try {
       if (action === "save_note") {
@@ -144,12 +151,43 @@ export default async function handler(req, res) {
         return res.status(200).json(result);
       }
 
+      if (action === "save_bank_breakdown") {
+        if (!monthKey || !/^\d{4}-\d{2}$/.test(String(monthKey).trim())) {
+          return res.status(400).json({ success: false, error: "Valid monthKey (YYYY-MM) is required." });
+        }
+        if (!clear) {
+          if (!Array.isArray(accounts) || accounts.length === 0) {
+            return res.status(400).json({ success: false, error: "At least one bank account balance is required." });
+          }
+          if (accounts.length > 30) {
+            return res.status(400).json({ success: false, error: "Too many bank accounts in request (max 30)." });
+          }
+        }
+        const result = await saveCashBankBreakdown({
+          clientName: clientName || "Client",
+          clientSheetId,
+          monthKey: String(monthKey).trim(),
+          accounts: Array.isArray(accounts) ? accounts : [],
+          clear: Boolean(clear),
+          userEmail: sessionUser.email,
+          automationCommanderSheetId,
+        });
+        return res.status(200).json(result);
+      }
+
+      if (Array.isArray(updates) && updates.length > 500) {
+        return res.status(400).json({ success: false, error: "Too many cell updates in batch (max 500)." });
+      }
+      if (Array.isArray(cellNotes) && cellNotes.length > 500) {
+        return res.status(400).json({ success: false, error: "Too many cell notes in batch (max 500)." });
+      }
+
       // Default action: save_batch
       const result = await saveCashBatch({
         clientName: clientName || "Client",
         clientSheetId,
-        updates: updates || [],
-        cellNotes: cellNotes || [],
+        updates: Array.isArray(updates) ? updates : [],
+        cellNotes: Array.isArray(cellNotes) ? cellNotes : [],
         userEmail: sessionUser.email,
         automationCommanderSheetId,
         isAdmin: Boolean(sessionUser.isAdmin),

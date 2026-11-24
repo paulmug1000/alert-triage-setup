@@ -2459,13 +2459,33 @@ export async function handleUpdateJobField(req, res, sheets) {
           }
         } catch (_) {}
       }
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: sheetIdClean,
-        range: `${tabName}!${writeCellRef}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[safeValue]] },
-        _skipFormulaRecompute: true,
-      });
+      let wroteVatGroup = false;
+      if (targetCol === "AI" && targetRow) {
+        const vatGroup = await resolveFullJobRowGroup_(sheets, sheetIdClean, tabName, [targetRow]).catch(() => null);
+        if (vatGroup && vatGroup.parentRowNum === targetRow && Array.isArray(vatGroup.allRowNums) && vatGroup.allRowNums.length > 1) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: {
+              valueInputOption: "USER_ENTERED",
+              data: vatGroup.allRowNums.map((rn) => ({
+                range: `${tabName}!AI${rn}`,
+                values: [[safeValue]],
+              })),
+            },
+            _skipFormulaRecompute: true,
+          });
+          wroteVatGroup = true;
+        }
+      }
+      if (!wroteVatGroup) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: sheetIdClean,
+          range: `${tabName}!${writeCellRef}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [[safeValue]] },
+          _skipFormulaRecompute: true,
+        });
+      }
     }
 
     const FIELD_NAMES = {

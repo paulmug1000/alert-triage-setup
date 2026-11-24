@@ -31,6 +31,11 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
 import { getSettingsRedisKey } from "./clientSettingsService.js";
+import {
+  saveClientCashBankBreakdownMonth,
+  sanitizeBreakdownAccounts,
+  buildRow36FormulaFromAccounts,
+} from "./cashBankBreakdownService.js";
 
 const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -382,31 +387,38 @@ export async function saveCashOpeningBalances({ clientName, masterSheetId, updat
   const cashHdrRow = cashHdrResp.data?.values?.[0] || [];
   const cashColsByOpenKey = new Map();
   const cashColsByCloseKey = new Map();
+  const cashColsByColLetter = new Map();
   for (let c = 1; c < cashHdrRow.length && c <= 36; c++) {
     const parsed = parseHeaderMonthMeta_(cashHdrRow[c]);
     if (!parsed) continue;
     const dObj = new Date(parsed.year, parsed.monthIdx, 1);
     const colLetter = colIndexToLetter(c + 1);
-    cashColsByOpenKey.set(monthKeyFromDate(dObj), { col0: c, colLetter, rowNum: c === 1 ? 4 : 36 });
+    const mKey = monthKeyFromDate(dObj);
+    cashColsByOpenKey.set(mKey, { col0: c, colLetter, rowNum: c === 1 ? 4 : 36, monthKey: mKey });
     const nextD = new Date(dObj.getFullYear(), dObj.getMonth() + 1, 1);
-    cashColsByCloseKey.set(monthKeyFromDate(nextD), { col0: c, colLetter, rowNum: 36 });
+    cashColsByCloseKey.set(monthKeyFromDate(nextD), { col0: c, colLetter, rowNum: 36, monthKey: mKey });
+    cashColsByColLetter.set(colLetter, mKey);
   }
 
   const batchData = [];
+  const breakdownSaves = [];
   for (const item of updates || []) {
     if (!item || item.amount === "" || item.amount === null || item.amount === undefined) continue;
     let colLet = "";
     let rowNum = 36;
+    let resolvedClosingMonthKey = "";
 
     const openKey = String(item.openingMonthKey || "").trim();
     if (/^\d{4}-\d{2}$/.test(openKey) && cashColsByCloseKey.has(openKey)) {
       const resolved = cashColsByCloseKey.get(openKey);
       colLet = resolved.colLetter;
       rowNum = 36;
+      resolvedClosingMonthKey = resolved.monthKey;
     } else if (/^\d{4}-\d{2}$/.test(openKey) && cashColsByOpenKey.has(openKey)) {
       const resolved = cashColsByOpenKey.get(openKey);
       colLet = resolved.colLetter;
       rowNum = resolved.rowNum;
+      resolvedClosingMonthKey = resolved.monthKey;
     } else {
       colLet = String(item.targetColLetter || "").trim().toUpperCase();
       rowNum = Number(item.targetRow) === 4 ? 4 : 36;
@@ -415,12 +427,36 @@ export async function saveCashOpeningBalances({ clientName, masterSheetId, updat
       } else if (!/^([B-Z]|A[A-K])$/.test(colLet)) {
         continue;
       }
+      resolvedClosingMonthKey = cashColsByColLetter.get(colLet) || "";
     }
 
     const val = round2(parseYear0Number(item.amount));
+    let sheetCellVal = val;
+    if (rowNum === 36 && resolvedClosingMonthKey && Array.isArray(item.accounts) && item.accounts.length > 0) {
+      const cleanAccounts = sanitizeBreakdownAccounts(item.accounts);
+      if (cleanAccounts.length > 0) {
+        const accountsSum = round2(cleanAccounts.reduce((s, a) => s + a.amount, 0));
+        if (Math.abs(accountsSum - val) <= 0.02) {
+          const nonZeroCount = cleanAccounts.filter((a) => Math.abs(a.amount) > 0.0001).length;
+          if (nonZeroCount >= 2) {
+            sheetCellVal = buildRow36FormulaFromAccounts(cleanAccounts);
+          }
+          breakdownSaves.push({
+            clientName: clientName || "",
+            monthKey: resolvedClosingMonthKey,
+            accounts: cleanAccounts,
+            total: val,
+            source: "setup_cash_opening",
+            basis: item.basis || "statement",
+            updatedBy: "Setup",
+          });
+        }
+      }
+    }
+
     batchData.push({
       range: `Cash!${colLet}${rowNum}`,
-      values: [[val]],
+      values: [[sheetCellVal]],
     });
   }
 
@@ -437,6 +473,14 @@ export async function saveCashOpeningBalances({ clientName, masterSheetId, updat
       },
     })
   );
+
+  for (const bd of breakdownSaves) {
+    if (bd.clientName) {
+      await saveClientCashBankBreakdownMonth(bd).catch((err) =>
+        console.warn("Failed to persist setup cash bank breakdown:", err.message)
+      );
+    }
+  }
 
   if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
     await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => {});

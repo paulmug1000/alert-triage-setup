@@ -2696,8 +2696,8 @@ export default function JobsView({
         value: val
       });
 
-      // If client name or job name changed, also update child rows to keep sheet synchronized
-      if ((fieldKey === "client" || fieldKey === "jobName") && job.rows && job.rows.length > 1) {
+      // If client name, job name, or VAT changed, also update child rows to keep sheet synchronized
+      if ((fieldKey === "client" || fieldKey === "jobName" || fieldKey === "vat") && job.rows && job.rows.length > 1) {
         job.rows.slice(1).forEach((childRow) => {
           updates.push({
             colLetter: meta.colLetter,
@@ -2735,7 +2735,7 @@ export default function JobsView({
           if (f === "likelihood" && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
             nextVal = normalizeLikelihoodInput(nextVal);
           }
-          if (rIdx === 0 || f === "client" || f === "jobName") {
+          if (rIdx === 0 || f === "client" || f === "jobName" || f === "vat") {
             nextRow[f] = nextVal;
           }
         });
@@ -3343,29 +3343,36 @@ export default function JobsView({
     const fieldName = FIELD_NAMES[colLetter] || `Field ${colLetter}`;
 
     setJobsData((prev) =>
-      prev.map((job) => ({
-        ...job,
-        rows: job.rows.map((r) => {
-          if (r.rowNum !== rowNum) return r;
-          const updated = { ...r };
-          if (colLetter === "A") updated.client = newValue;
-          if (colLetter === "B") updated.jobName = newValue;
-          if (colLetter === "C") updated.projectCode = newValue;
-          if (colLetter === "R") updated.rechargedExpenses = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
-          if (colLetter === "AG") updated.revenue = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
-          if (colLetter === "AH") updated.directCosts = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
-          if (colLetter === "AI") updated.vat = newValue;
-          if (colLetter === "AJ") updated.projectRetainer = newValue;
-          if (colLetter === "AL") updated.startDate = newValue;
-          if (colLetter === "AM") updated.endDate = newValue;
-          if (colLetter === "AN") updated.likelihood = effectiveValue;
-          if (colLetter === "DD") updated.copiedToConf = newValue;
-          if (colLetter === "D") updated.dateConf = newValue;
-          if (colLetter === "E") updated.leadSrc = newValue;
-          if (colLetter === "AK") updated.prodLine = newValue;
-          return updated;
-        })
-      }))
+      prev.map((job) => {
+        const isParentVatEdit = colLetter === "AI" && job.rows?.[0]?.rowNum === rowNum;
+        return {
+          ...job,
+          rows: job.rows.map((r) => {
+            if (r.rowNum !== rowNum && !isParentVatEdit) return r;
+            const updated = { ...r };
+            if (isParentVatEdit) {
+              updated.vat = newValue;
+              return updated;
+            }
+            if (colLetter === "A") updated.client = newValue;
+            if (colLetter === "B") updated.jobName = newValue;
+            if (colLetter === "C") updated.projectCode = newValue;
+            if (colLetter === "R") updated.rechargedExpenses = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
+            if (colLetter === "AG") updated.revenue = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
+            if (colLetter === "AH") updated.directCosts = newValue !== "" && newValue !== null && newValue !== undefined ? formatCurrency(newValue) : "";
+            if (colLetter === "AI") updated.vat = newValue;
+            if (colLetter === "AJ") updated.projectRetainer = newValue;
+            if (colLetter === "AL") updated.startDate = newValue;
+            if (colLetter === "AM") updated.endDate = newValue;
+            if (colLetter === "AN") updated.likelihood = effectiveValue;
+            if (colLetter === "DD") updated.copiedToConf = newValue;
+            if (colLetter === "D") updated.dateConf = newValue;
+            if (colLetter === "E") updated.leadSrc = newValue;
+            if (colLetter === "AK") updated.prodLine = newValue;
+            return updated;
+          })
+        };
+      })
     );
 
     try {

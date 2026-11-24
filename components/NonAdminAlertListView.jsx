@@ -1585,6 +1585,8 @@ export default function NonAdminAlertListView({
                           const slot = m.slot || alert.slot;
                           const ref = m.ref || alert.ref || (isExp ? (m.appId || alert.appId) : "");
                           const balance = m.balanceAmount || alert.balanceAmount;
+                          const totalAmount = m.totalAmount || alert.totalAmount;
+                          const parsedTotal = totalAmount !== undefined && totalAmount !== null && totalAmount !== "" ? parseFloat(totalAmount) : NaN;
                           const sendDate = m.sendDate || alert.sendDate || m.recDate || alert.recDate;
                           const targetDate = m.targetDate || alert.targetDate;
                           const defaultIso = m.isoTargetDate || toInputDateFormat(targetDate);
@@ -1597,6 +1599,14 @@ export default function NonAdminAlertListView({
                               {clientName && <div><strong>{isExp ? "Contractor:" : "End client:"}</strong> {clientName}</div>}
                               {jName && !isExp && <div><strong>Job:</strong> {jName}</div>}
                               {ref && <div><strong>{isExp ? "Expense ID:" : "Invoice ref:"}</strong> {ref}</div>}
+                              {!isNaN(parsedTotal) && parsedTotal > 0 && (
+                                <div>
+                                  <strong>{isExp ? "Total expense amount:" : "Total invoice amount:"}</strong>{" "}
+                                  <span style={{ fontWeight: "600", color: "#0f172a" }}>
+                                    £{parsedTotal.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </span>
+                                </div>
+                              )}
                               {balance && <div><strong>Unpaid balance:</strong> <span style={{ fontWeight: "600", color: "#0f172a" }}>£{parseFloat(balance).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>}
                               {sendDate && <div><strong>{isExp ? "Received date:" : "Sent date:"}</strong> {sendDate}</div>}
 

@@ -7,7 +7,12 @@ import {
   isSupabaseControlPlaneActive,
   shouldDualWriteLegacyControlPlaneSheets,
 } from "./supabaseClient.js";
-import { memoryCache } from "./cacheService.js";
+import { memoryCache, invalidatePmaClientCache } from "./cacheService.js";
+import {
+  saveClientCashBankBreakdownMonth,
+  sanitizeBreakdownAccounts,
+  buildRow36FormulaFromAccounts,
+} from "./cashBankBreakdownService.js";
 import { seedEomControlPlaneFromSheets } from "./controlPlaneMigrationService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
@@ -1995,7 +2000,7 @@ export async function handleEomGetCashBalanceProgress(req, res, sheets) {
 }
 
 export async function handleEomSaveCashBalance(req, res, sheets) {
-  const { automationCommanderSheetId, clientSheetId: cashClientSheetId, clientName: cashClientName, monthKey: cashTargetMonthKey, amounts } = req.body;
+  const { automationCommanderSheetId, clientSheetId: cashClientSheetId, clientName: cashClientName, monthKey: cashTargetMonthKey, amounts, bankBreakdown } = req.body;
   if (!automationCommanderSheetId || !cashClientSheetId || !cashClientName || !cashTargetMonthKey || !Array.isArray(amounts) || amounts.length === 0) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
@@ -2004,7 +2009,10 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
     return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client." });
   }
   const numericAmounts = amounts.map(a => parseFloat(a)).filter(a => !isNaN(a) && a !== 0);
-  if (numericAmounts.length === 0) return res.status(400).json({ success: false, error: "No valid, non-zero amounts provided" });
+  const cleanBreakdown = Array.isArray(bankBreakdown) ? sanitizeBreakdownAccounts(bankBreakdown) : [];
+  if (numericAmounts.length === 0 && cleanBreakdown.length === 0) {
+    return res.status(400).json({ success: false, error: "No valid, non-zero amounts provided" });
+  }
   try {
     const monthLabel = eomKeyToMonthStr_(cashTargetMonthKey);
     const [headerResp, colAResp] = await Promise.all([
@@ -2022,12 +2030,33 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
     if (targetRowIdx === -1) return res.status(400).json({ success: false, error: `Could not find the "Actual closing balance" line in Cashflow.` });
     const targetColLetter = columnIndexToLetter_(targetColIdx0 + 1);
     const targetRow = targetRowIdx + 1;
-    const formula = "=" + numericAmounts.join("+");
+
+    let formula = "";
+    if (cleanBreakdown.length > 0) {
+      formula = buildRow36FormulaFromAccounts(cleanBreakdown);
+    } else {
+      formula = "=" + numericAmounts.map((n, idx) => (idx === 0 ? String(n) : (n < 0 ? `-${Math.abs(n)}` : `+${n}`))).join("").replace(/^\+/, "");
+    }
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: cashClientSheetId, range: `Cash!${targetColLetter}${targetRow}`,
       valueInputOption: "USER_ENTERED", requestBody: { values: [[formula]] },
     });
+
+    if (cleanBreakdown.length > 0 && /^\d{4}-\d{2}$/.test(String(cashTargetMonthKey || "").trim())) {
+      const total = Math.round(cleanBreakdown.reduce((s, a) => s + a.amount, 0) * 100) / 100;
+      await saveClientCashBankBreakdownMonth({
+        clientName: cashClientName,
+        monthKey: String(cashTargetMonthKey).trim(),
+        accounts: cleanBreakdown,
+        total,
+        source: "eom_cash_balance",
+        basis: "manual",
+        updatedBy: sessionUser?.email || "System",
+      }).catch((err) => console.warn("Failed to persist EoM bank breakdown:", err.message));
+    }
+
+    await invalidatePmaClientCache(cashClientSheetId, cashClientName, ["cash"]).catch(() => {});
 
     const cashWorkMonthKey = eomTargetMonthToWorkMonth_(cashTargetMonthKey);
     const completedTaskId = await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashWorkMonthKey);

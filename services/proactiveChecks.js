@@ -3654,6 +3654,16 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
     return `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
   };
 
+  const normalizeInvoiceRefKey_ = (raw) => {
+    const cleaned = String(raw ?? "").trim().toUpperCase().replace(/[\s\u00A0]/g, "");
+    if (!cleaned) return "";
+    const stripped = cleaned.replace(/^INV[-_]?/i, "");
+    return stripped || cleaned;
+  };
+
+  const normalizeExpenseBaseId_ = (raw) =>
+    String(raw || "").trim().replace(/-(?:bal|p\d+)$/i, "").trim().toLowerCase();
+
   try {
     // 1. INVOICE PART-PAID BALANCES (in Confirmed tab)
     let confirmedData = sharedData?.confirmedData || null;
@@ -3682,6 +3692,36 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
         3: { amt: 55, ref: 56, sendDate: 57, days: 58, status: 59 },
       };
 
+      const jobRefTotals = new Map();
+      const globalRefTotals = new Map();
+      for (let r = 1; r < confirmedData.length; r++) {
+        const row = confirmedData[r];
+        if (!row || row.length === 0) continue;
+
+        const rowClient = String((clientCol !== -1 ? row[clientCol] : row[0]) || "").trim();
+        const rowJob = String((jobCol !== -1 ? row[jobCol] : row[1]) || "").trim();
+        if (!rowClient && !rowJob) continue;
+
+        for (let s = 1; s <= 3; s++) {
+          const cfg = slotCols[s];
+          const normRef = normalizeInvoiceRefKey_(row[cfg.ref]);
+          if (!normRef) continue;
+          const sAmt = parseFloat(String(row[cfg.amt] ?? "0").replace(/[£$€,\s]/g, "")) || 0;
+          if (sAmt <= 0.005) continue;
+
+          const jobKey = `${rowClient.toLowerCase()}|||${rowJob.toLowerCase()}|||${normRef}`;
+          const jBucket = jobRefTotals.get(jobKey) || { total: 0, count: 0 };
+          jBucket.total += sAmt;
+          jBucket.count += 1;
+          jobRefTotals.set(jobKey, jBucket);
+
+          const gBucket = globalRefTotals.get(normRef) || { total: 0, count: 0 };
+          gBucket.total += sAmt;
+          gBucket.count += 1;
+          globalRefTotals.set(normRef, gBucket);
+        }
+      }
+
       for (let r = 1; r < confirmedData.length; r++) {
         const row = confirmedData[r];
         if (!row || row.length === 0) continue;
@@ -3700,6 +3740,17 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
           if (balanceAmt <= 0.005) continue;
 
           const refVal = String(row[cfg.ref] || "").trim();
+          const normRef = normalizeInvoiceRefKey_(refVal);
+          const jobBucket = normRef ? jobRefTotals.get(`${rowClient.toLowerCase()}|||${rowJob.toLowerCase()}|||${normRef}`) : null;
+          const globalBucket = normRef ? globalRefTotals.get(normRef) : null;
+          let totalInvoiceAmt = null;
+          if (jobBucket && jobBucket.count >= 2 && jobBucket.total > balanceAmt + 0.005) {
+            totalInvoiceAmt = Math.round(jobBucket.total * 100) / 100;
+          } else if (globalBucket && globalBucket.count >= 2 && globalBucket.total > balanceAmt + 0.005) {
+            totalInvoiceAmt = Math.round(globalBucket.total * 100) / 100;
+          }
+          const totalAmountStr = totalInvoiceAmt !== null ? totalInvoiceAmt.toFixed(2) : "";
+
           const sendDateRaw = row[cfg.sendDate];
           const sendDateObj = parseConfirmedDate_(sendDateRaw) || new Date();
           const daysToPay = parseInt(row[cfg.days], 10) || 0;
@@ -3719,7 +3770,7 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
             alertKey: `part_paid_balance|${clientName}|invoice|${r + 1}|${s}|${refVal || "noref"}`,
             legacyAlertKey: `part_paid_balance|${clientName}|${refVal || (r + 1)}`,
             heading: "Part-paid invoice balance",
-            detail: `${endClient} | ${rowJob}: invoice ${displayRef} has an unpaid balance of £${balanceAmt.toFixed(2)}. Projected payment date: ${projectedDateStr}.`,
+            detail: `${endClient} | ${rowJob}: invoice ${displayRef}${totalAmountStr ? ` (total £${totalAmountStr})` : ""} has an unpaid balance of £${balanceAmt.toFixed(2)}. Projected payment date: ${projectedDateStr}.`,
             itemType: "invoice",
             clientName,
             endClientName: endClient,
@@ -3729,6 +3780,7 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
             ref: displayRef,
             rawRef: refVal,
             balanceAmount: balanceAmt.toFixed(2),
+            ...(totalAmountStr ? { totalAmount: totalAmountStr } : {}),
             sendDate: sendDateStr,
             daysToPay: String(daysToPay),
             targetDate: projectedDateStr,
@@ -3745,6 +3797,7 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
               ref: displayRef,
               rawRef: refVal,
               balanceAmount: balanceAmt.toFixed(2),
+              ...(totalAmountStr ? { totalAmount: totalAmountStr } : {}),
               sendDate: sendDateStr,
               daysToPay: String(daysToPay),
               targetDate: projectedDateStr,
@@ -3780,12 +3833,45 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
         const contractor = String(rowCells[0]?.formattedValue || "").trim();
         if (!contractor || contractor.toLowerCase() === "contractors" || contractor.toLowerCase().startsWith("total")) continue;
 
+        const rowAppIdTotals = new Map();
+        for (let cIdx = 1; cIdx < rowCells.length; cIdx++) {
+          const scanNote = String(rowCells[cIdx]?.note || "");
+          if (!/\{App ID:/i.test(scanNote)) continue;
+          const scanBlocks = scanNote.split(/(?=\{App ID:)/i).map(b => b.trim()).filter(Boolean);
+          for (const sb of scanBlocks) {
+            const bAppId = sb.match(/\{App ID:\s*([^}]+)\}/i)?.[1]?.trim() || "";
+            const bBaseId = normalizeExpenseBaseId_(bAppId);
+            if (!bBaseId) continue;
+            const bAmtStr = sb.match(/\{Amt:\s*([^}]+)\}/i)?.[1] || "";
+            const bAmt = parseFloat(bAmtStr.replace(/[£$€,\s]/g, "")) || 0;
+            if (bAmt <= 0.005) continue;
+            const bucket = rowAppIdTotals.get(bBaseId) || { total: 0, count: 0 };
+            bucket.total += bAmt;
+            bucket.count += 1;
+            rowAppIdTotals.set(bBaseId, bucket);
+          }
+        }
+
         for (let cIdx = 1; cIdx < rowCells.length; cIdx++) {
           const cell = rowCells[cIdx];
           const note = String(cell?.note || "");
           if (!note.toLowerCase().includes("balance") || !note.toLowerCase().includes("part")) continue;
 
           const blocks = note.split(/(?=\{App ID:)/i).map(b => b.trim()).filter(Boolean);
+          const cellAppIdTotals = new Map();
+          for (const b of blocks) {
+            const bAppId = b.match(/\{App ID:\s*([^}]+)\}/i)?.[1]?.trim() || "";
+            const bBaseId = normalizeExpenseBaseId_(bAppId);
+            if (!bBaseId) continue;
+            const bAmtStr = b.match(/\{Amt:\s*([^}]+)\}/i)?.[1] || "";
+            const bAmt = parseFloat(bAmtStr.replace(/[£$€,\s]/g, "")) || 0;
+            if (bAmt <= 0.005) continue;
+            const bucket = cellAppIdTotals.get(bBaseId) || { total: 0, count: 0 };
+            bucket.total += bAmt;
+            bucket.count += 1;
+            cellAppIdTotals.set(bBaseId, bucket);
+          }
+
           for (const block of blocks) {
             const statusMatch = block.match(/\{Status:\s*([^}]*)\}/i);
             const status = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
@@ -3795,6 +3881,18 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
             const amtStr = block.match(/\{Amt:\s*([^}]+)\}/i)?.[1] || "";
             const amount = parseFloat(amtStr.replace(/[£$€,\s]/g, "")) || 0;
             if (amount <= 0.005) continue;
+
+            const baseId = normalizeExpenseBaseId_(appId);
+            const cellBucket = baseId ? cellAppIdTotals.get(baseId) : null;
+            const rowBucket = baseId ? rowAppIdTotals.get(baseId) : null;
+            let matchedBucket = null;
+            if (cellBucket && cellBucket.count >= 2 && cellBucket.total > amount + 0.005) {
+              matchedBucket = cellBucket;
+            } else if (rowBucket && rowBucket.count >= 2 && rowBucket.total > amount + 0.005) {
+              matchedBucket = rowBucket;
+            }
+            const totalExpenseAmt = matchedBucket ? Math.round(matchedBucket.total * 100) / 100 : null;
+            const totalAmountStr = totalExpenseAmt !== null ? totalExpenseAmt.toFixed(2) : "";
 
             const recDateRaw = block.match(/\{Rec date:\s*([^}]*)\}/i)?.[1]?.trim() || "";
             const payDateRaw = block.match(/\{Pay date:\s*([^}]*)\}/i)?.[1]?.trim() || "";
@@ -3808,7 +3906,7 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
               alertKey: `part_paid_balance|${clientName}|expense|${cellCoord}|${appId || "part"}`,
               legacyAlertKey: `part_paid_balance|${clientName}|expense|${cellCoord}`,
               heading: "Part-paid expense balance",
-              detail: `${contractor} (Outgoings Cell ${cellCoord}): expense ${appId || ""} has an unpaid balance of £${amount.toFixed(2)}. Projected payment date: ${payDateRaw || "estimated"}.`,
+              detail: `${contractor} (Outgoings Cell ${cellCoord}): expense ${appId || ""}${totalAmountStr ? ` (total £${totalAmountStr})` : ""} has an unpaid balance of £${amount.toFixed(2)}. Projected payment date: ${payDateRaw || "estimated"}.`,
               itemType: "expense",
               clientName,
               endClientName: contractor,
@@ -3818,6 +3916,7 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
               rowNum: rIdx + 1,
               appId,
               balanceAmount: amount.toFixed(2),
+              ...(totalAmountStr ? { totalAmount: totalAmountStr } : {}),
               recDate: recDateRaw,
               targetDate: payDateRaw,
               isoTargetDate: toInputDateFormat(payDateRaw),
@@ -3833,6 +3932,7 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
                 rowNum: rIdx + 1,
                 appId,
                 balanceAmount: amount.toFixed(2),
+                ...(totalAmountStr ? { totalAmount: totalAmountStr } : {}),
                 recDate: recDateRaw,
                 targetDate: payDateRaw,
                 isoTargetDate: toInputDateFormat(payDateRaw),

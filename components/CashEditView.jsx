@@ -6,6 +6,7 @@ import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
 import CellNoteIndicator from "./CellNoteIndicator";
 import CellNoteModal from "./CellNoteModal";
+import CashBankBreakdownModal from "./CashBankBreakdownModal";
 import EditClientSelector from "./EditClientSelector";
 import { formatMoney as universalFormatMoney, parseMoney } from "../services/deepDiveHelper";
 
@@ -120,13 +121,27 @@ export default function CashEditView({
     initialNote: "",
   });
 
+  // Bank Breakdown Hover & Edit Modal State (Row 36: Actual closing balance)
+  const [hoveredBreakdownCell, setHoveredBreakdownCell] = useState(null); // { colIdx, monthLabel, breakdown, rect, hasValue }
+  const hoveringNoteRef = useRef(false);
+  const [bankModal, setBankModal] = useState({
+    isOpen: false,
+    colIdx: null,
+    monthKey: "",
+    monthLabel: "",
+    colLetter: "",
+  });
+  const [bankModalSaving, setBankModalSaving] = useState(false);
+  const [bankModalError, setBankModalError] = useState(null);
+
   // Collapsible Sections
   const [table1Open, setTable1Open] = useState(true);
   const [table2Open, setTable2Open] = useState(true);
 
   // Currency
-  const currencySymbol = "£";
+  const currencySymbol = cashData?.currencySymbol || "£";
   const formatMoney = useCallback((val) => universalFormatMoney(val, 0, currencySymbol, ","), [currencySymbol]);
+  const formatMoney2 = useCallback((val) => universalFormatMoney(val, 2, currencySymbol, ","), [currencySymbol]);
 
   // Horizontal Scroll Reference for Timeline
   const scrollContainerRef = useRef(null);
@@ -241,11 +256,13 @@ export default function CashEditView({
             colIdx: c.colIdx,
             colLetter: c.colLetter,
             formattedValue: c.formattedValue || "",
+            numericValue: c.numericValue ?? null,
             formula: c.formula || "",
             note: c.note || "",
             isEditable: c.isEditable,
             bgColor: c.bgColor || null,
             isBold: Boolean(c.isBold),
+            bankBreakdown: c.bankBreakdown || null,
           };
         });
       });
@@ -278,6 +295,7 @@ export default function CashEditView({
       pendingNotesRef.current.size === 0 &&
       !editingCell &&
       !noteModal.isOpen &&
+      !bankModal.isOpen &&
       !isDraggingRef.current,
     onRevalidate: () => {
       if (selectedClient?.clientSheetId) {
@@ -539,6 +557,9 @@ export default function CashEditView({
           ...existing,
           formattedValue: updatedVal,
           note: updatedNote,
+          ...(sheetRow === 36 && value !== undefined
+            ? { numericValue: parseNum(value), bankBreakdown: null }
+            : {}),
         };
 
         undoRecord.push({
@@ -624,13 +645,175 @@ export default function CashEditView({
     });
   }, [matrix, cashData, isSysAdmin]);
 
+  const openBankBreakdownModalForCell = useCallback((colIdx) => {
+    if (user?.isReadOnly) return;
+    const monthCol = cashData?.monthCols?.find((m) => m.colIdx === colIdx);
+    if (!monthCol?.monthKey) return;
+    const cellData = matrix[`36_${colIdx}`];
+    setHoveredBreakdownCell(null);
+    setBankModalError(null);
+    setBankModal({
+      isOpen: true,
+      colIdx,
+      monthKey: monthCol.monthKey,
+      monthLabel: monthCol.label || monthCol.monthKey,
+      colLetter: cellData?.colLetter || monthCol.colLetter || colIdxToLetter(colIdx),
+    });
+  }, [user?.isReadOnly, cashData, matrix]);
+
+  const handleSaveBankBreakdown = async (accounts) => {
+    if (!selectedClient?.clientSheetId || !bankModal.monthKey) return;
+    setBankModalSaving(true);
+    setBankModalError(null);
+    try {
+      const res = await fetch("/api/pma/cash", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_bank_breakdown",
+          clientName: selectedClient.clientName,
+          clientSheetId: selectedClient.clientSheetId,
+          monthKey: bankModal.monthKey,
+          accounts,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || "Failed to save bank balances");
+      }
+
+      const colIdx = bankModal.colIdx;
+      const newFormatted = json.formattedValue || formatMoney(json.total ?? 0);
+      setMatrix((prev) => {
+        const key = `36_${colIdx}`;
+        const existing = prev[key] || { sheetRow: 36, colIdx, colLetter: bankModal.colLetter, isEditable: true };
+        const next = {
+          ...prev,
+          [key]: {
+            ...existing,
+            formattedValue: newFormatted,
+            numericValue: json.numericValue ?? json.total ?? 0,
+            bankBreakdown: json.bankBreakdown || null,
+          },
+        };
+        return simulateCashFlow(next, cashData?.monthCols || []);
+      });
+
+      if (cashData) {
+        const cleanId = cleanSheetId(selectedClient.clientSheetId);
+        const updatedCashData = {
+          ...cashData,
+          table1Rows: (cashData.table1Rows || []).map((r) =>
+            r.sheetRow === 36
+              ? {
+                  ...r,
+                  cells: (r.cells || []).map((c) =>
+                    c.colIdx === colIdx
+                      ? {
+                          ...c,
+                          formattedValue: newFormatted,
+                          numericValue: json.numericValue ?? json.total ?? 0,
+                          bankBreakdown: json.bankBreakdown || null,
+                        }
+                      : c
+                  ),
+                }
+              : r
+          ),
+        };
+        setCashData(updatedCashData);
+        setCachedClientData(cleanId, "cash", updatedCashData);
+      }
+
+      setBankModal((prev) => ({ ...prev, isOpen: false }));
+      setSaveStatus("saved");
+      setTimeout(() => {
+        setSaveStatus((prev) => (prev === "saved" ? "idle" : prev));
+      }, 2500);
+    } catch (err) {
+      setBankModalError(err.message || "Failed to save bank balances");
+    } finally {
+      setBankModalSaving(false);
+    }
+  };
+
+  const handleClearBankBreakdown = async () => {
+    if (!selectedClient?.clientSheetId || !bankModal.monthKey) return;
+    setBankModalSaving(true);
+    setBankModalError(null);
+    try {
+      const res = await fetch("/api/pma/cash", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_bank_breakdown",
+          clientName: selectedClient.clientName,
+          clientSheetId: selectedClient.clientSheetId,
+          monthKey: bankModal.monthKey,
+          clear: true,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || "Failed to clear actual closing balance");
+      }
+
+      const colIdx = bankModal.colIdx;
+      setMatrix((prev) => {
+        const key = `36_${colIdx}`;
+        const existing = prev[key] || { sheetRow: 36, colIdx, colLetter: bankModal.colLetter, isEditable: true };
+        const next = {
+          ...prev,
+          [key]: {
+            ...existing,
+            formattedValue: "",
+            numericValue: null,
+            bankBreakdown: null,
+          },
+        };
+        return simulateCashFlow(next, cashData?.monthCols || []);
+      });
+
+      if (cashData) {
+        const cleanId = cleanSheetId(selectedClient.clientSheetId);
+        const updatedCashData = {
+          ...cashData,
+          table1Rows: (cashData.table1Rows || []).map((r) =>
+            r.sheetRow === 36
+              ? {
+                  ...r,
+                  cells: (r.cells || []).map((c) =>
+                    c.colIdx === colIdx
+                      ? { ...c, formattedValue: "", numericValue: null, bankBreakdown: null }
+                      : c
+                  ),
+                }
+              : r
+          ),
+        };
+        setCashData(updatedCashData);
+        setCachedClientData(cleanId, "cash", updatedCashData);
+      }
+
+      setBankModal((prev) => ({ ...prev, isOpen: false }));
+      setSaveStatus("saved");
+      setTimeout(() => {
+        setSaveStatus((prev) => (prev === "saved" ? "idle" : prev));
+      }, 2500);
+    } catch (err) {
+      setBankModalError(err.message || "Failed to clear actual closing balance");
+    } finally {
+      setBankModalSaving(false);
+    }
+  };
+
   // ─────────────────────────────────────────────────────────────────────────────
   // KEYBOARD NAVIGATION & SHORTCUTS (CTRL+C, CTRL+V, CTRL+Z, SHIFT+F2)
   // ─────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Don't intercept if user is typing in a modal or non-grid input
-      if (noteModal.isOpen) return;
+      if (noteModal.isOpen || bankModal.isOpen) return;
       if (document.activeElement?.tagName === "TEXTAREA" || (document.activeElement?.tagName === "INPUT" && !document.activeElement?.classList.contains("cash-grid-input"))) {
         return;
       }
@@ -722,8 +905,12 @@ export default function CashEditView({
           const isEditable = isCashCellEditable(sheetRow, colIdx);
           if (isEditable) {
             e.preventDefault();
-            const curVal = matrix[`${sheetRow}_${colIdx}`]?.formattedValue || "";
-            setEditingCell({ sheetRow, colIdx, editValue: curVal });
+            if (sheetRow === 36) {
+              openBankBreakdownModalForCell(colIdx);
+            } else {
+              const curVal = matrix[`${sheetRow}_${colIdx}`]?.formattedValue || "";
+              setEditingCell({ sheetRow, colIdx, editValue: curVal });
+            }
           }
         } else if ((e.key === "Delete" || e.key === "Backspace") && isCashCellEditable(sheetRow, colIdx)) {
           e.preventDefault();
@@ -734,7 +921,7 @@ export default function CashEditView({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeCell, editingCell, matrix, noteModal.isOpen, cashData, handleUndo, handleRedo, applyCellChanges, openNoteModalForCell]);
+  }, [activeCell, editingCell, matrix, noteModal.isOpen, bankModal.isOpen, cashData, handleUndo, handleRedo, applyCellChanges, openNoteModalForCell, openBankBreakdownModalForCell]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // DRAG-TO-FILL MOUSE HANDLERS
@@ -1098,6 +1285,9 @@ export default function CashEditView({
       {cashData && (
         <div
           ref={scrollContainerRef}
+          onScroll={() => {
+            if (hoveredBreakdownCell) setHoveredBreakdownCell(null);
+          }}
           style={{
             background: "#ffffff",
             borderRadius: "10px",
@@ -1214,11 +1404,15 @@ export default function CashEditView({
                     onCellDoubleClick={(sheetRow, colIdx) => {
                       if (isCashCellEditable(sheetRow, colIdx)) {
                         setActiveCell({ sheetRow, colIdx });
-                        setEditingCell({
-                          sheetRow,
-                          colIdx,
-                          editValue: matrix[`${sheetRow}_${colIdx}`]?.formattedValue || "",
-                        });
+                        if (sheetRow === 36) {
+                          openBankBreakdownModalForCell(colIdx);
+                        } else {
+                          setEditingCell({
+                            sheetRow,
+                            colIdx,
+                            editValue: matrix[`${sheetRow}_${colIdx}`]?.formattedValue || "",
+                          });
+                        }
                       }
                     }}
                     onEditChange={(editValue) => setEditingCell((prev) => prev ? { ...prev, editValue } : null)}
@@ -1234,6 +1428,36 @@ export default function CashEditView({
                     }}
                     onDragStart={handleDragHandleMouseDown}
                     onOpenNoteModal={openNoteModalForCell}
+                    onActualClosingHover={(e, monthObj, cellData) => {
+                      if (editingCell || bankModal.isOpen || hoveringNoteRef.current) return;
+                      const hasValue = Boolean(
+                        (cellData?.formattedValue && String(cellData.formattedValue).trim() !== "") ||
+                          (cellData?.numericValue !== null && cellData?.numericValue !== undefined)
+                      );
+                      if (!cellData?.bankBreakdown && !hasValue) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      setHoveredBreakdownCell({
+                        colIdx: monthObj.colIdx,
+                        monthLabel: monthObj.label,
+                        breakdown: cellData?.bankBreakdown || null,
+                        hasValue,
+                        rect: {
+                          top: rect.top,
+                          bottom: rect.bottom,
+                          left: rect.left,
+                          right: rect.right,
+                          width: rect.width,
+                        },
+                      });
+                    }}
+                    onActualClosingLeave={() => {
+                      setHoveredBreakdownCell(null);
+                    }}
+                    onNoteHoverChange={(isOverNote) => {
+                      hoveringNoteRef.current = isOverNote;
+                      if (isOverNote) setHoveredBreakdownCell(null);
+                    }}
+                    readOnly={Boolean(user?.isReadOnly)}
                   />
                 );
               })}
@@ -1282,11 +1506,15 @@ export default function CashEditView({
                     onCellDoubleClick={(sheetRow, colIdx) => {
                       if (isCashCellEditable(sheetRow, colIdx)) {
                         setActiveCell({ sheetRow, colIdx });
-                        setEditingCell({
-                          sheetRow,
-                          colIdx,
-                          editValue: matrix[`${sheetRow}_${colIdx}`]?.formattedValue || "",
-                        });
+                        if (sheetRow === 36) {
+                          openBankBreakdownModalForCell(colIdx);
+                        } else {
+                          setEditingCell({
+                            sheetRow,
+                            colIdx,
+                            editValue: matrix[`${sheetRow}_${colIdx}`]?.formattedValue || "",
+                          });
+                        }
                       }
                     }}
                     onEditChange={(editValue) => setEditingCell((prev) => prev ? { ...prev, editValue } : null)}
@@ -1302,6 +1530,36 @@ export default function CashEditView({
                     }}
                     onDragStart={handleDragHandleMouseDown}
                     onOpenNoteModal={openNoteModalForCell}
+                    onActualClosingHover={(e, monthObj, cellData) => {
+                      if (editingCell || bankModal.isOpen || hoveringNoteRef.current) return;
+                      const hasValue = Boolean(
+                        (cellData?.formattedValue && String(cellData.formattedValue).trim() !== "") ||
+                          (cellData?.numericValue !== null && cellData?.numericValue !== undefined)
+                      );
+                      if (!cellData?.bankBreakdown && !hasValue) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      setHoveredBreakdownCell({
+                        colIdx: monthObj.colIdx,
+                        monthLabel: monthObj.label,
+                        breakdown: cellData?.bankBreakdown || null,
+                        hasValue,
+                        rect: {
+                          top: rect.top,
+                          bottom: rect.bottom,
+                          left: rect.left,
+                          right: rect.right,
+                          width: rect.width,
+                        },
+                      });
+                    }}
+                    onActualClosingLeave={() => {
+                      setHoveredBreakdownCell(null);
+                    }}
+                    onNoteHoverChange={(isOverNote) => {
+                      hoveringNoteRef.current = isOverNote;
+                      if (isOverNote) setHoveredBreakdownCell(null);
+                    }}
+                    readOnly={Boolean(user?.isReadOnly)}
                   />
                 );
               })}
@@ -1309,6 +1567,157 @@ export default function CashEditView({
           </table>
         </div>
       )}
+
+      {/* ── HOVER BANK BREAKDOWN TOOLTIP (ROW 36) ──────────────────────────────── */}
+      {hoveredBreakdownCell && !bankModal.isOpen && typeof window !== "undefined" && (() => {
+        const { rect, monthLabel, breakdown, hasValue } = hoveredBreakdownCell;
+        const tooltipWidth = 290;
+        const showBelow = rect.top < 220;
+        const centerX = rect.left + rect.width / 2;
+        const clampedLeft = Math.max(12, Math.min(window.innerWidth - tooltipWidth - 12, centerX - tooltipWidth / 2));
+        const stylePos = showBelow
+          ? { top: `${rect.bottom + 6}px`, left: `${clampedLeft}px` }
+          : { bottom: `${window.innerHeight - rect.top + 6}px`, left: `${clampedLeft}px` };
+
+        return (
+          <div
+            style={{
+              position: "fixed",
+              ...stylePos,
+              width: `${tooltipWidth}px`,
+              background: "#1e293b",
+              color: "#f8fafc",
+              padding: "10px 12px",
+              borderRadius: "8px",
+              fontSize: "12px",
+              lineHeight: "1.45",
+              boxShadow: "0 12px 28px -4px rgba(0, 0, 0, 0.35), 0 8px 12px -6px rgba(0, 0, 0, 0.25)",
+              border: "1px solid #334155",
+              zIndex: 9999,
+              pointerEvents: "none",
+              textAlign: "left",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+              <span style={{ fontSize: "11px", fontWeight: 700, color: "#94a3b8" }}>
+                Bank balance breakdown
+              </span>
+              <span style={{ fontSize: "11px", fontWeight: 600, color: "#cbd5e1" }}>
+                {monthLabel}
+              </span>
+            </div>
+
+            {breakdown && Array.isArray(breakdown.accounts) && breakdown.accounts.length > 0 ? (
+              <>
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  {breakdown.accounts.map((acct, idx) => (
+                    <div
+                      key={`${acct.name}_${idx}`}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "baseline",
+                        gap: "10px",
+                      }}
+                    >
+                      <span
+                        style={{
+                          color: "#f8fafc",
+                          fontWeight: 500,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {acct.name}
+                      </span>
+                      <span
+                        style={{
+                          color: Number(acct.amount) < 0 ? "#fca5a5" : "#ffffff",
+                          fontWeight: 600,
+                          fontVariantNumeric: "tabular-nums",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {formatMoney2(acct.amount)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: "7px",
+                    paddingTop: "6px",
+                    borderTop: "1px solid #334155",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    fontWeight: 700,
+                  }}
+                >
+                  <span style={{ color: "#cbd5e1" }}>Total</span>
+                  <span style={{ color: Number(breakdown.total) < 0 ? "#fca5a5" : "#93c5fd", fontVariantNumeric: "tabular-nums" }}>
+                    {formatMoney2(breakdown.total)}
+                  </span>
+                </div>
+
+                {breakdown.matchesCell === false && (
+                  <div style={{ marginTop: "6px", fontSize: "11px", color: "#fbbf24" }}>
+                    Breakdown total differs from displayed balance
+                  </div>
+                )}
+
+                {breakdown.labelsInferred && (
+                  <div style={{ marginTop: "5px", fontSize: "11px", color: "#93c5fd" }}>
+                    Account names were not recorded — double-click to confirm
+                  </div>
+                )}
+              </>
+            ) : hasValue ? (
+              <div style={{ color: "#cbd5e1", fontSize: "11.5px" }}>
+                No bank breakdown recorded
+              </div>
+            ) : null}
+
+            {!user?.isReadOnly && (
+              <div
+                style={{
+                  marginTop: "6px",
+                  paddingTop: "5px",
+                  borderTop: "1px solid #334155",
+                  fontSize: "10.5px",
+                  color: "#60a5fa",
+                  fontWeight: 600,
+                }}
+              >
+                {breakdown ? "Double-click to edit bank balances" : "Double-click to add bank balances"}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── BANK BALANCE BREAKDOWN MODAL ───────────────────────────────────────── */}
+      <CashBankBreakdownModal
+        isOpen={bankModal.isOpen}
+        monthLabel={bankModal.monthLabel}
+        monthKey={bankModal.monthKey}
+        colLetter={bankModal.colLetter}
+        isSysAdmin={isSysAdmin}
+        currencySymbol={currencySymbol}
+        configuredBankAccounts={cashData?.bankAccounts || []}
+        initialBreakdown={bankModal.colIdx != null ? matrix[`36_${bankModal.colIdx}`]?.bankBreakdown || null : null}
+        currentCellNumericValue={bankModal.colIdx != null ? matrix[`36_${bankModal.colIdx}`]?.numericValue ?? null : null}
+        currentFormattedValue={bankModal.colIdx != null ? matrix[`36_${bankModal.colIdx}`]?.formattedValue || "" : ""}
+        saving={bankModalSaving}
+        error={bankModalError}
+        onSave={handleSaveBankBreakdown}
+        onClear={handleClearBankBreakdown}
+        onClose={() => {
+          if (!bankModalSaving) setBankModal((prev) => ({ ...prev, isOpen: false }));
+        }}
+      />
 
       {/* ── CELL NOTE MODAL ────────────────────────────────────────────────────── */}
       <CellNoteModal
@@ -1341,6 +1750,10 @@ function CashRow({
   onEditKeyDown,
   onDragStart,
   onOpenNoteModal,
+  onActualClosingHover,
+  onActualClosingLeave,
+  onNoteHoverChange,
+  readOnly = false,
 }) {
   const { sheetRow, label, labelBg, isBold: isRowBold } = rowDef;
 
@@ -1425,6 +1838,7 @@ function CashRow({
         }
 
         const isBoldCell = Boolean(cellData.isBold || isRowBold || isClosingBalRow || isNetCashRow || isOpeningBalRow || isActualClosingRow);
+        const hasBreakdown = Boolean(isActualClosingRow && cellData.bankBreakdown?.accounts?.length > 0);
 
         return (
           <td
@@ -1432,6 +1846,8 @@ function CashRow({
             data-cash-col-idx={m.colIdx}
             onClick={() => onCellClick(sheetRow, m.colIdx)}
             onDoubleClick={() => onCellDoubleClick(sheetRow, m.colIdx)}
+            onMouseEnter={isActualClosingRow && onActualClosingHover ? (e) => onActualClosingHover(e, m, cellData) : undefined}
+            onMouseLeave={isActualClosingRow && onActualClosingLeave ? onActualClosingLeave : undefined}
             onContextMenu={(e) => {
               e.preventDefault();
               onOpenNoteModal(sheetRow, m.colIdx);
@@ -1445,7 +1861,7 @@ function CashRow({
               borderBottom: isClosingBalRow ? "2px solid #94a3b8" : "1px solid #e2e8f0",
               position: "relative",
               userSelect: "none",
-              cursor: isEditable ? "cell" : "default",
+              cursor: isActualClosingRow && !readOnly ? "pointer" : (isEditable ? "cell" : "default"),
               fontWeight: isBoldCell ? 700 : 400,
               color: isActualClosingRow ? "#0047AB" : (val.startsWith("-") || val.startsWith("(") ? "#dc2626" : "#0f172a"),
               background,
@@ -1455,11 +1871,17 @@ function CashRow({
             }}
           >
             {/* Note Indicator Triangle */}
-            <CellNoteIndicator
-              note={cellData.note}
-              onClick={() => onOpenNoteModal(sheetRow, m.colIdx)}
-              showAddOnHover={true}
-            />
+            <div
+              onMouseEnter={isActualClosingRow && onNoteHoverChange ? () => onNoteHoverChange(true) : undefined}
+              onMouseLeave={isActualClosingRow && onNoteHoverChange ? () => onNoteHoverChange(false) : undefined}
+              style={{ position: "absolute", top: 0, right: 0, width: "12px", height: "12px", zIndex: 3 }}
+            >
+              <CellNoteIndicator
+                note={cellData.note}
+                onClick={() => onOpenNoteModal(sheetRow, m.colIdx)}
+                showAddOnHover={true}
+              />
+            </div>
 
             {/* In-Cell Edit Mode Input */}
             {isEditing ? (
@@ -1487,13 +1909,22 @@ function CashRow({
                 }}
               />
             ) : (
-              <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <span
+                style={{
+                  display: "block",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  textDecoration: hasBreakdown ? "underline dotted rgba(0, 71, 171, 0.45)" : "none",
+                  textUnderlineOffset: hasBreakdown ? "3px" : undefined,
+                }}
+              >
                 {val === "£0" && !isEditable && !isClosingBalRow && !isNetCashRow ? "—" : val}
               </span>
             )}
 
             {/* Bottom-right Drag Fill Handle on Active Editable Cell */}
-            {isActive && !isEditing && isEditable && (
+            {isActive && !isEditing && isEditable && !isActualClosingRow && (
               <div
                 onMouseDown={(e) => onDragStart(e, sheetRow, m.colIdx)}
                 style={{

@@ -1191,7 +1191,7 @@ export default function JobDetailModal({
         value: val
       });
 
-      if ((f === "client" || f === "jobName") && job.rows && job.rows.length > 1) {
+      if ((f === "client" || f === "jobName" || f === "vat") && job.rows && job.rows.length > 1) {
         job.rows.slice(1).forEach((childRow) => {
           updates.push({
             colLetter: meta.colLetter,
@@ -1291,7 +1291,7 @@ export default function JobDetailModal({
             if (f === "likelihood" && nextVal !== "" && nextVal !== null && nextVal !== undefined) {
               nextVal = normalizeLikelihoodInput(nextVal);
             }
-            if (rIdx === 0 || f === "client" || f === "jobName") nextRow[f] = nextVal;
+            if (rIdx === 0 || f === "client" || f === "jobName" || f === "vat") nextRow[f] = nextVal;
           });
           if (invUpdatesMap.size > 0 && Array.isArray(nextRow.invoiceSlots)) {
             nextRow.invoiceSlots = nextRow.invoiceSlots.map((sl) => {

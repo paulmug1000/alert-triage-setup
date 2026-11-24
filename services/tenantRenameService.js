@@ -460,27 +460,58 @@ async function renameUserAssignments_({ sb, oldClientName, newClientName, summar
   }
 }
 
-async function renameSystemConfigReferences_({ sb, oldClientName, newClientName, summary }) {
+async function renameSystemConfigReferences_({ sb, oldClientName, newClientName, oldNormKey, newNormKey, summary }) {
   const { data: rows, error } = await sb
     .from("system_config")
     .select("key, value")
     .in("key", SYSTEM_CONFIG_KEYS);
   if (error) {
     summary.warnings.push(`system_config lookup warning: ${error.message}`);
-    return;
+  } else {
+    for (const row of rows || []) {
+      const res = renameClientReferencesRecursive_(row.value, oldClientName, newClientName);
+      if (!res.changed) continue;
+      const { error: updErr } = await sb
+        .from("system_config")
+        .update({ value: res.value, updated_by: "TenantRename" })
+        .eq("key", row.key);
+      if (updErr) {
+        summary.warnings.push(`system_config[${row.key}] update warning: ${updErr.message}`);
+      } else {
+        summary.systemConfigKeysUpdated.push(row.key);
+      }
+    }
   }
 
-  for (const row of rows || []) {
-    const res = renameClientReferencesRecursive_(row.value, oldClientName, newClientName);
-    if (!res.changed) continue;
-    const { error: updErr } = await sb
-      .from("system_config")
-      .update({ value: res.value, updated_by: "TenantRename" })
-      .eq("key", row.key);
-    if (updErr) {
-      summary.warnings.push(`system_config[${row.key}] update warning: ${updErr.message}`);
-    } else {
-      summary.systemConfigKeysUpdated.push(row.key);
+  if (oldNormKey && newNormKey && oldNormKey !== newNormKey) {
+    const oldBdKey = `cash_bank_breakdowns:${oldNormKey}`;
+    const newBdKey = `cash_bank_breakdowns:${newNormKey}`;
+    try {
+      const { data: bdRow } = await sb
+        .from("system_config")
+        .select("key, value, description")
+        .eq("key", oldBdKey)
+        .maybeSingle();
+      if (bdRow?.value) {
+        const nextVal = {
+          ...(typeof bdRow.value === "object" && !Array.isArray(bdRow.value) ? bdRow.value : {}),
+          clientName: newClientName,
+        };
+        const { error: upErr } = await sb.from("system_config").upsert({
+          key: newBdKey,
+          value: nextVal,
+          description: bdRow.description || "Per-month bank balance breakdowns for Cash Row 36",
+          updated_by: "TenantRename",
+        });
+        if (upErr) {
+          summary.warnings.push(`system_config[${newBdKey}] upsert warning: ${upErr.message}`);
+        } else {
+          await sb.from("system_config").delete().eq("key", oldBdKey);
+          summary.systemConfigKeysUpdated.push(newBdKey);
+        }
+      }
+    } catch (bdErr) {
+      summary.warnings.push(`system_config[${oldBdKey}] rename warning: ${bdErr.message}`);
     }
   }
 }
@@ -699,6 +730,8 @@ export async function renameTenantClient({
     sb,
     oldClientName: currentName,
     newClientName: cleanNewName,
+    oldNormKey,
+    newNormKey,
     summary,
   });
 

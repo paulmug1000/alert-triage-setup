@@ -14,6 +14,7 @@ import {
   resolveLiveInvoiceSlot_, resolveLiveExpenseSlot_,
   runAdjustAndNormalizeJobSlots_, mergeSlotBatchWrites_,
   applySlotNoteAndFormattingRelocations_, resolveFullJobRowGroup_,
+  resolveMasterSheetIdForClient_,
   isAutoInvoicePlaceholderRef_, isAutoExpensePlaceholderId_
 } from "./workspaces.js";
 import { provisionRetainerScheduleInBackground } from "./retainers.js";
@@ -52,6 +53,275 @@ function hasNonZeroMoney_(val) {
   if (!s) return false;
   const n = parseFloat(s.replace(/[£$€,\s]/g, ""));
   return !isNaN(n) && Math.abs(n) > 0.001;
+}
+
+/**
+ * Resolves the full parent + contiguous child row group (or full [VarRetainer] series)
+ * for an invoice row in Confirmed. Walks upward to the parent row and downward through
+ * all child rows so VAT updates never skip the parent or earlier/later child rows.
+ */
+export function resolveInvoiceJobRowsForVat_(invConfirmedRows, matchedRowNum) {
+  if (!Array.isArray(invConfirmedRows) || !matchedRowNum || matchedRowNum < 2 || matchedRowNum > invConfirmedRows.length) {
+    return null;
+  }
+  const norm = (s) => String(s || "").trim().toLowerCase();
+  const isParentRowAt = (r) => Boolean(
+    r && (hasNonZeroMoney_(r[17]) || hasNonZeroMoney_(r[32]) || hasNonZeroMoney_(r[33]) || String(r[37] || "").trim())
+  );
+  const rowHasSlotData = (r) => {
+    if (!r) return false;
+    for (let c = 41; c <= 61; c++) {
+      if (r[c] !== undefined && r[c] !== null && String(r[c]).trim() !== "") return true;
+    }
+    for (let c = 75; c <= 95; c++) {
+      if (r[c] !== undefined && r[c] !== null && String(r[c]).trim() !== "") return true;
+    }
+    return false;
+  };
+
+  let parentIdx0 = matchedRowNum - 1;
+  const seedRow = invConfirmedRows[parentIdx0] || [];
+  let curClient = norm(seedRow[0]);
+  let curJob = norm(seedRow[1]);
+
+  // Walk upward if matchedRowNum is a child row
+  while (parentIdx0 > 1 && !isParentRowAt(invConfirmedRows[parentIdx0])) {
+    const prev = invConfirmedRows[parentIdx0 - 1] || [];
+    const pClient = norm(prev[0]);
+    const pJob = norm(prev[1]);
+    if ((curClient || curJob) && (pClient || pJob) && (pClient !== curClient || pJob !== curJob)) break;
+    if (!curClient && !curJob && (pClient || pJob)) {
+      curClient = pClient;
+      curJob = pJob;
+    }
+    parentIdx0--;
+  }
+
+  const parentRowNum = parentIdx0 + 1;
+  const parentRow = invConfirmedRows[parentIdx0] || [];
+  const parentClient = norm(parentRow[0]) || curClient;
+  const parentJob = norm(parentRow[1]) || curJob;
+
+  const collectContiguousGroupFromParent = (pIdx0) => {
+    const pRow = invConfirmedRows[pIdx0] || [];
+    const pClient = norm(pRow[0]) || parentClient;
+    const pJob = norm(pRow[1]) || parentJob;
+    const rows = [{ row: pRow, rowNum: pIdx0 + 1, isParent: true }];
+    for (let nextIdx0 = pIdx0 + 1; nextIdx0 < invConfirmedRows.length; nextIdx0++) {
+      const r = invConfirmedRows[nextIdx0] || [];
+      if (isParentRowAt(r)) break;
+      const rClient = norm(r[0]);
+      const rJob = norm(r[1]);
+      const hasIdentity = Boolean(rClient || rJob);
+      const matchesParent = (rClient === pClient && rJob === pJob) || (!hasIdentity && rowHasSlotData(r));
+      if (!matchesParent) break;
+      rows.push({ row: r, rowNum: nextIdx0 + 1, isParent: false });
+    }
+    return rows;
+  };
+
+  const varTag = parseVariableRetainerTag(parentRow[30]);
+  if (varTag?.seriesName) {
+    const targetSeriesLower = varTag.seriesName.toLowerCase();
+    const seenRowNums = new Set();
+    const seriesRows = [];
+    for (let ri = 1; ri < invConfirmedRows.length; ri++) {
+      const r = invConfirmedRows[ri] || [];
+      const rTag = parseVariableRetainerTag(r[30]);
+      if (!rTag?.seriesName) continue;
+      if (rTag.seriesName.toLowerCase() !== targetSeriesLower) continue;
+      if (parentClient && norm(r[0]) !== parentClient) continue;
+      for (const item of collectContiguousGroupFromParent(ri)) {
+        if (!seenRowNums.has(item.rowNum)) {
+          seenRowNums.add(item.rowNum);
+          seriesRows.push(item);
+        }
+      }
+    }
+    seriesRows.sort((a, b) => a.rowNum - b.rowNum);
+    return {
+      parentRowNum,
+      parentRow,
+      isVarRetainerSeries: true,
+      seriesName: varTag.seriesName,
+      groupRows: seriesRows.length > 0 ? seriesRows : collectContiguousGroupFromParent(parentIdx0),
+    };
+  }
+
+  return {
+    parentRowNum,
+    parentRow,
+    isVarRetainerSeries: false,
+    seriesName: "",
+    groupRows: collectContiguousGroupFromParent(parentIdx0),
+  };
+}
+
+/**
+ * Inspects all real invoices across a job (or [VarRetainer] series) against InvAppList
+ * to decide whether to update VAT across the whole job, from this invoice forward, or on a single row.
+ */
+export function evaluateJobVatScope_({
+  groupInfo,
+  matchedRowNum,
+  invoiceNo,
+  invSentDate,
+  targetHasVat,
+  invAppRows = [],
+  isRealSlotRef,
+}) {
+  if (!groupInfo || !Array.isArray(groupInfo.groupRows) || groupInfo.groupRows.length === 0) {
+    return {
+      mode: "single_row",
+      singleRows: matchedRowNum ? [matchedRowNum] : [],
+      totalCheckedInvoices: 1,
+      oppositeCount: 0,
+      hasSameRowConflict: false,
+    };
+  }
+
+  const checkRealRef = typeof isRealSlotRef === "function"
+    ? isRealSlotRef
+    : (ref) => {
+      const r = String(ref || "").trim();
+      return Boolean(r && !isPlaceholderInvoice(r));
+    };
+
+  const invAppByRef = new Map();
+  for (const r of (invAppRows || [])) {
+    if (!Array.isArray(r)) continue;
+    const rawRef = String(r[5] || "").trim().toLowerCase();
+    if (!rawRef) continue;
+    const cleanRef = rawRef.replace(/^#/, "");
+    const vatVal = parseFloat(String(r[4] || "0").replace(/[£$€,\s]/g, "")) || 0;
+    const sentSerial = toSerialOrNull(r[6]);
+    const entry = { vat: vatVal, sentSerial };
+    if (!invAppByRef.has(cleanRef)) invAppByRef.set(cleanRef, entry);
+    if (rawRef !== cleanRef && !invAppByRef.has(rawRef)) invAppByRef.set(rawRef, entry);
+  }
+
+  const cleanCurrentRef = String(invoiceNo || "").trim().toLowerCase().replace(/^#/, "");
+  const currentSentSerial = toSerialOrNull(invSentDate);
+  const slotDefs = [
+    { refIdx: 42, sentIdx: 43, slotNum: 1 },
+    { refIdx: 49, sentIdx: 50, slotNum: 2 },
+    { refIdx: 56, sentIdx: 57, slotNum: 3 },
+  ];
+
+  const seenInvoices = new Map();
+  const oppositeByRow = new Set();
+  let hasSameRowConflict = false;
+
+  for (const { row, rowNum } of groupInfo.groupRows) {
+    for (const sd of slotDefs) {
+      const rawRef = String(row?.[sd.refIdx] || "").trim();
+      if (!checkRealRef(rawRef)) continue;
+      const cleanRef = rawRef.toLowerCase().replace(/^#/, "");
+      const isCurrent = Boolean(cleanCurrentRef && cleanRef === cleanCurrentRef);
+      const acct = invAppByRef.get(cleanRef);
+      if (!isCurrent && !acct) continue;
+
+      const hasVat = isCurrent ? Boolean(targetHasVat) : (acct.vat > 0);
+      const sentSerial = isCurrent
+        ? (currentSentSerial ?? toSerialOrNull(row?.[sd.sentIdx]))
+        : (acct.sentSerial ?? toSerialOrNull(row?.[sd.sentIdx]));
+
+      if (!isCurrent && rowNum === matchedRowNum && hasVat !== Boolean(targetHasVat)) {
+        hasSameRowConflict = true;
+      }
+      if (hasVat !== Boolean(targetHasVat)) {
+        oppositeByRow.add(rowNum);
+      }
+
+      if (!seenInvoices.has(cleanRef)) {
+        seenInvoices.set(cleanRef, {
+          ref: rawRef,
+          cleanRef,
+          rowNum,
+          hasVat,
+          sentSerial,
+          isCurrent,
+        });
+      } else if (isCurrent) {
+        seenInvoices.get(cleanRef).isCurrent = true;
+      }
+    }
+  }
+
+  if (cleanCurrentRef && !seenInvoices.has(cleanCurrentRef)) {
+    seenInvoices.set(cleanCurrentRef, {
+      ref: invoiceNo,
+      cleanRef: cleanCurrentRef,
+      rowNum: matchedRowNum,
+      hasVat: Boolean(targetHasVat),
+      sentSerial: currentSentSerial,
+      isCurrent: true,
+    });
+  }
+
+  const allChecked = Array.from(seenInvoices.values());
+  const oppositeInvoices = allChecked.filter((inv) => inv.hasVat !== Boolean(targetHasVat));
+  const matchingInvoices = allChecked.filter((inv) => inv.hasVat === Boolean(targetHasVat) && !inv.isCurrent);
+  const totalCheckedInvoices = Math.max(1, allChecked.length);
+
+  if (oppositeInvoices.length === 0) {
+    const allNums = groupInfo.groupRows.map((g) => g.rowNum);
+    const orderedRows = [
+      ...(allNums.includes(groupInfo.parentRowNum) ? [groupInfo.parentRowNum] : []),
+      ...allNums.filter((n) => n !== groupInfo.parentRowNum).sort((a, b) => a - b),
+    ];
+    return {
+      mode: "all_job_rows",
+      targetRows: [...new Set(orderedRows)],
+      totalCheckedInvoices,
+      oppositeCount: 0,
+      hasSameRowConflict: false,
+    };
+  }
+
+  if (!hasSameRowConflict) {
+    const isBeforeCurrent = (inv) => {
+      if (inv.sentSerial !== null && currentSentSerial !== null) {
+        return inv.sentSerial < currentSentSerial;
+      }
+      return inv.rowNum < matchedRowNum;
+    };
+    const isAtOrAfterCurrent = (inv) => {
+      if (inv.sentSerial !== null && currentSentSerial !== null) {
+        return inv.sentSerial >= currentSentSerial;
+      }
+      return inv.rowNum >= matchedRowNum;
+    };
+
+    const isCleanSwitch = oppositeInvoices.every(isBeforeCurrent) && matchingInvoices.every(isAtOrAfterCurrent);
+    if (isCleanSwitch) {
+      const includeParent = !groupInfo.isVarRetainerSeries && !oppositeByRow.has(groupInfo.parentRowNum);
+      const laterRows = groupInfo.groupRows
+        .map((g) => g.rowNum)
+        .filter((rn) => rn >= matchedRowNum && !oppositeByRow.has(rn))
+        .sort((a, b) => a - b);
+      const forwardRows = [
+        ...(includeParent ? [groupInfo.parentRowNum] : []),
+        ...laterRows.filter((rn) => !includeParent || rn !== groupInfo.parentRowNum),
+      ];
+      return {
+        mode: "regime_switch",
+        forwardRows: [...new Set(forwardRows)],
+        singleRows: [matchedRowNum],
+        totalCheckedInvoices,
+        oppositeCount: oppositeInvoices.length,
+        hasSameRowConflict: false,
+      };
+    }
+  }
+
+  return {
+    mode: "single_row",
+    singleRows: [matchedRowNum],
+    totalCheckedInvoices,
+    oppositeCount: oppositeInvoices.length,
+    hasSameRowConflict,
+  };
 }
 
 const ALERT_MEMORY_TAB = "AlertMemory";
@@ -4970,7 +5240,12 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           const isInvMismatch = isInvAlert && String(alert.data?.flags?.[0] || "").trim() !== "1";
           const isDupInvoice = Boolean(alert.isDuplicateInvoice || String(alert.data?.flags?.[4] || "").trim() === "1" || (alert.spreadsheetItems && alert.spreadsheetItems.length > 1));
           if (isInvMismatch && (!opt.actionButtonText || String(opt.actionButtonText).includes("Mark as reviewed") || String(opt.actionButtonText).includes("Mark as resolved") || opt.matchType === "info")) return true;
-          if (isInvMismatch && !isDupInvoice && (validCachedOptions.length !== 2 || !validCachedOptions.some(o => o.matchType === "ignore"))) return true;
+          if (isInvMismatch && !isDupInvoice && (validCachedOptions.length < 2 || validCachedOptions.length > 3 || !validCachedOptions.some(o => o.matchType === "ignore"))) return true;
+          const isCachedVatOption = isInvMismatch && !isDupInvoice && validCachedOptions.some(o =>
+            /\bvat\b/i.test(String(o.title || "")) ||
+            (Array.isArray(o.recommendedActions) && o.recommendedActions.some(a => /\bwrite\s+(?:yes|no)\s+to\s+AI\d+\b/i.test(String(a))))
+          );
+          if (isCachedVatOption && !validCachedOptions.some(o => o.vatScopeChecked === true)) return true;
           if (isDupInvoice && (!validCachedOptions.some(o => o.matchType === "delete" || String(o.title || "").includes("Clear invoice")) || !validCachedOptions.some(o => o.matchType === "ignore"))) return true;
           const isCrmAlert = alert.type === "crm" || alert.sheetName === "CRMComp" || Boolean(alert.alertType?.startsWith("crm")) || Boolean(alert.flagType?.startsWith("crm"));
           const isCrmMismatch = isCrmAlert && alert.subType === "field_mismatch";
@@ -7380,93 +7655,105 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
         const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
 
-        const writeActions = [];
-        const mismatchNames = [];
-        const explanationParts = [];
+        const nonVatWriteActions = [];
+        const nonVatMismatchNames = [];
+        const nonVatExplanationParts = [];
 
-        // 1. VAT Mismatch scenario check
-        const epsilon = 0.01;
+        // 1. VAT Mismatch scenario check (with dynamic VAT rate & full-job invoice inspection)
+        const vatEpsilon = 0.02;
+        const vatPlausible = (vatIncluded > 0 && !jobVATYes) || (vatIncluded === 0 && jobVATYes);
+        let vatRate = 0.2;
+        let invAppRowsForVat = [];
+        if (vatPlausible) {
+          try {
+            const masterIdForVat =
+              alert.masterSheetId ||
+              alert.masterId ||
+              req.body?.masterSheetId ||
+              (await resolveMasterSheetIdForClient_(sheets, alert.clientId, alert.clientName).catch(() => ""));
+            if (masterIdForVat) {
+              const vatMetaResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+                spreadsheetId: masterIdForVat,
+                ranges: ["KeyInfo!B9", "InvAppList!A4:K5000"],
+              }));
+              const rawRateStr = String(vatMetaResp.data.valueRanges?.[0]?.values?.[0]?.[0] ?? "").trim();
+              if (rawRateStr) {
+                const hadPct = rawRateStr.includes("%");
+                let parsedRate = parseFloat(rawRateStr.replace(/[%£$€,\s]/g, ""));
+                if (!isNaN(parsedRate) && parsedRate > 0) {
+                  if (hadPct || parsedRate > 1) parsedRate = parsedRate / 100;
+                  vatRate = parsedRate;
+                }
+              }
+              invAppRowsForVat = vatMetaResp.data.valueRanges?.[1]?.values || [];
+            }
+          } catch (vatMetaErr) {
+            console.warn(`  ⚠ Could not fetch KeyInfo!B9 / InvAppList for VAT scope check: ${vatMetaErr.message}`);
+          }
+        }
+
         // Scenario A: Invoice sent WITH VAT, job marked NO VAT
-        const isVatScenarioA = vatIncluded > 0 && !jobVATYes && Math.abs(totalExclVAT - dashboardTotal) < epsilon;
+        const isVatScenarioA = vatIncluded > 0 && !jobVATYes && Math.abs(totalExclVAT - dashboardTotal) <= vatEpsilon;
         // Scenario B: Invoice sent WITHOUT VAT, job marked YES VAT
-        const isVatScenarioB = vatIncluded === 0 && jobVATYes && Math.abs(grossAmount * 1.2 - dashboardTotal) < epsilon;
+        const expectedGrossWithVat = grossAmount * (1 + vatRate);
+        const isVatScenarioB =
+          vatIncluded === 0 &&
+          jobVATYes &&
+          (Math.abs(expectedGrossWithVat - dashboardTotal) <= vatEpsilon ||
+            Math.abs(Math.round(expectedGrossWithVat * 100) / 100 - dashboardTotal) <= vatEpsilon);
 
-        if (isVatScenarioA) {
-          mismatchNames.push("VAT setting");
-          explanationParts.push(`VAT setting: "Yes" (invoice sent with £${vatIncluded.toFixed(2)} VAT)`);
-          // Update AI on all job rows
-          const allJobRows = [{ row: matchedJob, rowNum: matchedRowNum }];
-          const jcLower = jobClient.toLowerCase();
-          const jnLower = jobName.toLowerCase();
-          for (let ri = matchedRowNum; ri < invConfirmedRows.length; ri++) {
-            const r = invConfirmedRows[ri] || [];
-            const rClient = String(r[0] || "").trim().toLowerCase();
-            const rJob = String(r[1] || "").trim().toLowerCase();
-            if (!rClient && !rJob) break;
-            if (rClient !== jcLower || rJob !== jnLower) break;
-            if (hasNonZeroMoney_(r[17]) || String(r[32] || "").trim()) break;
-            allJobRows.push({ row: r, rowNum: ri + 1 });
-          }
-          for (const { rowNum } of allJobRows) {
-            writeActions.push(`write Yes to AI${rowNum}`);
-          }
-        } else if (isVatScenarioB) {
-          mismatchNames.push("VAT setting");
-          explanationParts.push(`VAT setting: "No" (invoice sent without VAT)`);
-          const allJobRows = [{ row: matchedJob, rowNum: matchedRowNum }];
-          const jcLower = jobClient.toLowerCase();
-          const jnLower = jobName.toLowerCase();
-          for (let ri = matchedRowNum; ri < invConfirmedRows.length; ri++) {
-            const r = invConfirmedRows[ri] || [];
-            const rClient = String(r[0] || "").trim().toLowerCase();
-            const rJob = String(r[1] || "").trim().toLowerCase();
-            if (!rClient && !rJob) break;
-            if (rClient !== jcLower || rJob !== jnLower) break;
-            if (hasNonZeroMoney_(r[17]) || String(r[32] || "").trim()) break;
-            allJobRows.push({ row: r, rowNum: ri + 1 });
-          }
-          for (const { rowNum } of allJobRows) {
-            writeActions.push(`write No to AI${rowNum}`);
-          }
+        let vatScopeRes = null;
+        let vatGroupInfo = null;
+        if (isVatScenarioA || isVatScenarioB) {
+          vatGroupInfo = resolveInvoiceJobRowsForVat_(invConfirmedRows, matchedRowNum);
+          vatScopeRes = evaluateJobVatScope_({
+            groupInfo: vatGroupInfo,
+            matchedRowNum,
+            invoiceNo,
+            invSentDate,
+            targetHasVat: isVatScenarioA,
+            invAppRows: invAppRowsForVat,
+            isRealSlotRef,
+          });
         }
 
         // 2. Amount mismatch check (never overwrite individual tranche amounts on duplicate/split invoices unless Inv amt mismatch? is flagged)
         if (isInvAmtMismatch || (!isDuplicateInvoice && Math.abs(curSlotAmt - correctAmount) >= 0.01)) {
           if (Math.abs(curSlotAmt - correctAmount) >= 0.01) {
-            mismatchNames.push("amount");
-            explanationParts.push(`Amount: £${correctAmount.toFixed(2)} (excl VAT)`);
-            writeActions.push(`write ${correctAmount.toFixed(2)} to ${slotCols.amt}${matchedRowNum}`);
+            nonVatMismatchNames.push("amount");
+            nonVatExplanationParts.push(`Amount: £${correctAmount.toFixed(2)} (excl VAT)`);
+            nonVatWriteActions.push(`write ${correctAmount.toFixed(2)} to ${slotCols.amt}${matchedRowNum}`);
           } else if (!isVatScenarioA && !isVatScenarioB) {
-            explanationParts.push(`Amount: £${curSlotAmt.toFixed(2)} excl VAT matches accounting`);
+            nonVatExplanationParts.push(`Amount: £${curSlotAmt.toFixed(2)} excl VAT matches accounting`);
           }
         }
 
         // 3. Sent date mismatch
         if ((isSentDateMismatch || (invSentDate && curSlotSent !== invSentDate)) && invSentDate) {
-          mismatchNames.push("sent date");
-          explanationParts.push(`Sent date: "${invSentDate}"`);
-          writeActions.push(`write ${invSentDate} to ${slotCols.sent}${matchedRowNum}`);
+          nonVatMismatchNames.push("sent date");
+          nonVatExplanationParts.push(`Sent date: "${invSentDate}"`);
+          nonVatWriteActions.push(`write ${invSentDate} to ${slotCols.sent}${matchedRowNum}`);
         }
 
         // 4. Status mismatch
         if ((isStatusMismatch || (invStatus && curSlotStatus.toLowerCase() !== invStatus.toLowerCase())) && invStatus) {
-          mismatchNames.push("status");
-          explanationParts.push(`Status: "${invStatus}"`);
-          writeActions.push(`write ${invStatus} to ${slotCols.status}${matchedRowNum}`);
+          nonVatMismatchNames.push("status");
+          nonVatExplanationParts.push(`Status: "${invStatus}"`);
+          nonVatWriteActions.push(`write ${invStatus} to ${slotCols.status}${matchedRowNum}`);
         }
 
         // 5. Pay date mismatch
         const invPayDate = String(invAccounting[8] || "").trim();
         if ((isPayDateMismatch || (invPayDate && curSlotDays !== invPayDate)) && invPayDate) {
-          mismatchNames.push("pay date");
-          explanationParts.push(`Pay date: "${invPayDate}"`);
-          writeActions.push(`write ${invPayDate} to ${slotCols.days}${matchedRowNum}`);
+          nonVatMismatchNames.push("pay date");
+          nonVatExplanationParts.push(`Pay date: "${invPayDate}"`);
+          nonVatWriteActions.push(`write ${invPayDate} to ${slotCols.days}${matchedRowNum}`);
         }
 
         // 6. Client mismatch (update parent row and any explicit child continuation rows with Col A populated)
         if ((isClientMismatch || (invClient && jobClient.toLowerCase() !== invClient.toLowerCase())) && invClient) {
-          mismatchNames.push("client");
-          explanationParts.push(`Client: "${invClient}"`);
+          nonVatMismatchNames.push("client");
+          nonVatExplanationParts.push(`Client: "${invClient}"`);
           const jcLower = jobClient.toLowerCase();
           const jnLower = jobName.toLowerCase();
           let parentRowForClient = matchedRowNum;
@@ -7495,56 +7782,116 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             clientWriteRows.push(ri + 1);
           }
           for (const rNum of clientWriteRows) {
-            writeActions.push(`write "${invClient.replace(/"/g, "'")}" to A${rNum}`);
+            nonVatWriteActions.push(`write "${invClient.replace(/"/g, "'")}" to A${rNum}`);
           }
         }
 
-        // Fallback if no specific fields identified but it's a data mismatch
-        if (mismatchNames.length === 0) {
-          mismatchNames.push("invoice details");
-          if (correctAmount > 0) {
-            explanationParts.push(`Amount: £${correctAmount.toFixed(2)}`);
-            writeActions.push(`write ${correctAmount.toFixed(2)} to ${slotCols.amt}${matchedRowNum}`);
-          }
-          if (invSentDate) {
-            explanationParts.push(`Sent date: "${invSentDate}"`);
-            writeActions.push(`write ${invSentDate} to ${slotCols.sent}${matchedRowNum}`);
-          }
-          if (invStatus) {
-            explanationParts.push(`Status: "${invStatus}"`);
-            writeActions.push(`write ${invStatus} to ${slotCols.status}${matchedRowNum}`);
-          }
-        }
+        const buildVatUpdateOption = ({ optionId, title, explanation, targetVatRows, vatScopeTag, reasonSuffix }) => {
+          const targetVatStr = isVatScenarioA ? "Yes" : "No";
+          const vatOnlyParts = [
+            `VAT setting: "${targetVatStr}" (${isVatScenarioA ? `invoice sent with £${vatIncluded.toFixed(2)} VAT` : "invoice sent without VAT"})`,
+            ...nonVatExplanationParts,
+          ];
+          const optionMismatchNames = ["VAT setting", ...nonVatMismatchNames];
+          const vatWriteActions = (targetVatRows || []).map((rNum) => `write ${targetVatStr} to AI${rNum}`);
+          const allActions = [...vatWriteActions, ...nonVatWriteActions];
+          const firstRow = targetVatRows?.[0] || matchedRowNum;
+          const summaryRowArr = (vatGroupInfo && firstRow === vatGroupInfo.parentRowNum && vatGroupInfo.parentRow)
+            ? vatGroupInfo.parentRow
+            : matchedJob;
+          const summaryClient = String(summaryRowArr[0] || jobClient || invClient || "").trim();
+          const summaryJobName = String(summaryRowArr[1] || jobName || "").trim();
+          const summaryRev = String(summaryRowArr[32] || "").trim();
+          const summaryStart = String(summaryRowArr[37] || "").trim();
 
-        const options = [
-          {
-            optionId: 1,
-            title: `Update ${mismatchNames.join(", ")} in Pulse for invoice #${invoiceNo} on "${jobName}" (Row ${matchedRowNum})`,
+          return {
+            optionId,
+            title,
             actionButtonText: "Update Pulse",
             matchType: "existing_job",
-            jobRow: matchedRowNum,
-            jobName,
-            explanation: `Accounting system shows: ${explanationParts.join("; ")}. Updating Pulse to match.`,
+            jobRow: firstRow,
+            jobName: summaryJobName || jobName,
+            explanation,
+            vatScopeChecked: true,
+            vatScope: vatScopeTag,
             matchingDetails: {
               unmatchedJobSummary: {
-                clientName: jobClient || invClient,
-                jobName,
-                revenue: jobRevenue,
-                startDate: jobStart,
+                clientName: summaryClient,
+                jobName: summaryJobName || jobName,
+                revenue: summaryRev,
+                startDate: summaryStart,
               },
             },
             matchAnalysis: {
               matchConfidence: "High",
-              reasonForChoice: `Discrepancy: ${activeInvFlags.join(", ") || mismatchNames.join(", ")}. Accounting shows: ${explanationParts.join("; ")}. Updating Confirmed tab slot ${matchedSlot} (Row ${matchedRowNum}) to match.`,
-              discrepancies: activeInvFlags.join(", ") || mismatchNames.join(", "),
+              reasonForChoice: `Discrepancy: ${activeInvFlags.join(", ") || optionMismatchNames.join(", ")}. Accounting shows: ${vatOnlyParts.join("; ")}. ${reasonSuffix}`,
+              discrepancies: activeInvFlags.join(", ") || optionMismatchNames.join(", "),
             },
             recommendedActions: [
-              `Update ${mismatchNames.join(", ")} for invoice #${invoiceNo} on "${jobName}" in Confirmed tab: ${explanationParts.join(", ")}`,
-              ...writeActions,
+              `Update ${optionMismatchNames.join(", ")} for invoice #${invoiceNo} on "${jobName}" in Confirmed tab: ${vatOnlyParts.join(", ")}`,
+              ...allActions,
             ],
-          },
-          {
-            optionId: 2,
+          };
+        };
+
+        let options = [];
+        if (isVatScenarioA || isVatScenarioB) {
+          const targetVatStr = isVatScenarioA ? "Yes" : "No";
+          const nonVatSuffix = nonVatExplanationParts.length > 0 ? `; also updating ${nonVatExplanationParts.join(", ")}` : "";
+          const entityNoun = vatGroupInfo?.isVarRetainerSeries ? "retainer series" : "job";
+          const sentVatPhrase = isVatScenarioA ? `with VAT (£${vatIncluded.toFixed(2)})` : "without VAT";
+
+          if (vatScopeRes?.mode === "all_job_rows") {
+            const invCount = vatScopeRes.totalCheckedInvoices;
+            options.push(
+              buildVatUpdateOption({
+                optionId: 1,
+                title: `Update ${["VAT setting", ...nonVatMismatchNames].join(", ")} for the whole job "${jobName}" (Row ${vatGroupInfo.parentRowNum})`,
+                explanation: `All ${invCount} invoice${invCount === 1 ? "" : "s"} on this ${entityNoun} were sent ${sentVatPhrase}. Updating the VAT setting to "${targetVatStr}" across the whole ${entityNoun} (including future scheduled invoices)${nonVatSuffix}.`,
+                targetVatRows: vatScopeRes.targetRows,
+                vatScopeTag: "all_job_rows",
+                reasonSuffix: `Updating VAT across all ${vatScopeRes.targetRows.length} row(s) of the ${entityNoun} (including parent row ${vatGroupInfo.parentRowNum}).`,
+              })
+            );
+          } else if (vatScopeRes?.mode === "regime_switch") {
+            const oppCount = vatScopeRes.oppositeCount;
+            options.push(
+              buildVatUpdateOption({
+                optionId: 1,
+                title: `Update VAT setting from invoice #${invoiceNo} onward on "${jobName}" (Row ${matchedRowNum})`,
+                explanation: `${oppCount} earlier invoice${oppCount === 1 ? " had" : "s had"} the previous VAT setting, while invoice #${invoiceNo} was sent ${sentVatPhrase}. Updating this invoice, future scheduled invoices, and the job default to "${targetVatStr}" while keeping earlier invoiced months unchanged${nonVatSuffix}.`,
+                targetVatRows: vatScopeRes.forwardRows,
+                vatScopeTag: "current_and_future_and_parent",
+                reasonSuffix: `Updating VAT from invoice #${invoiceNo} onward across ${vatScopeRes.forwardRows.length} row(s) while preserving earlier invoiced rows.`,
+              }),
+              buildVatUpdateOption({
+                optionId: 2,
+                title: `Update VAT setting for invoice #${invoiceNo} only on "${jobName}" (Row ${matchedRowNum})`,
+                explanation: `Update only this invoice's VAT setting to "${targetVatStr}" without changing the job default or future scheduled invoices${nonVatSuffix}.`,
+                targetVatRows: vatScopeRes.singleRows,
+                vatScopeTag: "single_row",
+                reasonSuffix: `Updating VAT on Confirmed tab row ${matchedRowNum} only.`,
+              })
+            );
+          } else {
+            const oppCount = vatScopeRes?.oppositeCount || 0;
+            const sameRowNote = vatScopeRes?.hasSameRowConflict
+              ? " Note: another invoice shares this same entry with the opposite VAT setting in accounting, so updating this setting will affect both."
+              : "";
+            options.push(
+              buildVatUpdateOption({
+                optionId: 1,
+                title: `Update ${["VAT setting", ...nonVatMismatchNames].join(", ")} for invoice #${invoiceNo} only on "${jobName}" (Row ${matchedRowNum})`,
+                explanation: `Invoice #${invoiceNo} was sent ${sentVatPhrase}, while ${oppCount} other invoice${oppCount === 1 ? "" : "s"} on this ${entityNoun} had the opposite VAT setting. Updating only this invoice to "${targetVatStr}" so other invoices are unaffected${nonVatSuffix}.${sameRowNote}`,
+                targetVatRows: vatScopeRes?.singleRows || [matchedRowNum],
+                vatScopeTag: "single_row",
+                reasonSuffix: `Updating VAT on Confirmed tab row ${matchedRowNum} only due to mixed VAT across job invoices.`,
+              })
+            );
+          }
+
+          options.push({
+            optionId: options.length + 1,
             title: "Ignore discrepancy (keep Pulse value)",
             actionButtonText: "Ignore discrepancy",
             matchType: "ignore",
@@ -7554,8 +7901,70 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             recommendedActions: [
               "Mark this discrepancy as ignored - no changes will be made to either system",
             ],
-          },
-        ];
+          });
+        } else {
+          const writeActions = [...nonVatWriteActions];
+          const mismatchNames = [...nonVatMismatchNames];
+          const explanationParts = [...nonVatExplanationParts];
+
+          // Fallback if no specific fields identified but it's a data mismatch
+          if (mismatchNames.length === 0) {
+            mismatchNames.push("invoice details");
+            if (correctAmount > 0) {
+              explanationParts.push(`Amount: £${correctAmount.toFixed(2)}`);
+              writeActions.push(`write ${correctAmount.toFixed(2)} to ${slotCols.amt}${matchedRowNum}`);
+            }
+            if (invSentDate) {
+              explanationParts.push(`Sent date: "${invSentDate}"`);
+              writeActions.push(`write ${invSentDate} to ${slotCols.sent}${matchedRowNum}`);
+            }
+            if (invStatus) {
+              explanationParts.push(`Status: "${invStatus}"`);
+              writeActions.push(`write ${invStatus} to ${slotCols.status}${matchedRowNum}`);
+            }
+          }
+
+          options = [
+            {
+              optionId: 1,
+              title: `Update ${mismatchNames.join(", ")} in Pulse for invoice #${invoiceNo} on "${jobName}" (Row ${matchedRowNum})`,
+              actionButtonText: "Update Pulse",
+              matchType: "existing_job",
+              jobRow: matchedRowNum,
+              jobName,
+              explanation: `Accounting system shows: ${explanationParts.join("; ")}. Updating Pulse to match.`,
+              matchingDetails: {
+                unmatchedJobSummary: {
+                  clientName: jobClient || invClient,
+                  jobName,
+                  revenue: jobRevenue,
+                  startDate: jobStart,
+                },
+              },
+              matchAnalysis: {
+                matchConfidence: "High",
+                reasonForChoice: `Discrepancy: ${activeInvFlags.join(", ") || mismatchNames.join(", ")}. Accounting shows: ${explanationParts.join("; ")}. Updating Confirmed tab slot ${matchedSlot} (Row ${matchedRowNum}) to match.`,
+                discrepancies: activeInvFlags.join(", ") || mismatchNames.join(", "),
+              },
+              recommendedActions: [
+                `Update ${mismatchNames.join(", ")} for invoice #${invoiceNo} on "${jobName}" in Confirmed tab: ${explanationParts.join(", ")}`,
+                ...writeActions,
+              ],
+            },
+            {
+              optionId: 2,
+              title: "Ignore discrepancy (keep Pulse value)",
+              actionButtonText: "Ignore discrepancy",
+              matchType: "ignore",
+              jobRow: matchedRowNum,
+              jobName,
+              explanation: "Mark this discrepancy as ignored. No changes will be made to either Pulse or the accounting system.",
+              recommendedActions: [
+                "Mark this discrepancy as ignored - no changes will be made to either system",
+              ],
+            },
+          ];
+        }
 
         const mismatchSummary = alert.summary?.summary || `Invoice ${invoiceNo} (£${grossAmount.toFixed(2)})`;
         if (memoryRow) {

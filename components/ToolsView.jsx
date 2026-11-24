@@ -470,13 +470,17 @@ export default function ToolsView({
     const client = (allOutgoingsClients || []).find(c => c.clientName === eomCashEntryClient);
     if (!client) return;
     const amounts = Object.values(eomCashEntryAmounts);
+    const bankBreakdown = Object.entries(eomCashEntryAmounts).map(([name, val]) => ({
+      name,
+      amount: val === "" || val === null || val === undefined ? 0 : parseFloat(val) || 0,
+    }));
     setEomCashSaveStatus("saving");
     setEomCashSaveError("");
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "eom_save_cash_balance", clientSheetId: client.clientSheetId,
-        clientName: eomCashEntryClient, monthKey: eomCashMonthKey, amounts, automationCommanderSheetId
+        clientName: eomCashEntryClient, monthKey: eomCashMonthKey, amounts, bankBreakdown, automationCommanderSheetId
       })
     })
       .then(r => r.json())

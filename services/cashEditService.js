@@ -14,10 +14,20 @@ import { getSheetsClient, withRetry, getSheetGid, colLetterToNum, extractSheetId
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeCashAdjustmentInput } from "./cashflowReconService.js";
 import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
-import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
+import { sanitizeFormulaInput, unwrapSheetId, resolveClientNameBySheetId } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
 import { scheduleWaitUntil_ } from "./alertState.js";
 import { evaluateSafeArithmetic } from "../utils/helpers.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { formatMoney as universalFormatMoney } from "./deepDiveHelper.js";
+import {
+  getClientCashBankBreakdowns,
+  saveClientCashBankBreakdownMonth,
+  deleteClientCashBankBreakdownMonth,
+  resolveMonthlyBankBreakdown,
+  sanitizeBreakdownAccounts,
+  buildRow36FormulaFromAccounts,
+} from "./cashBankBreakdownService.js";
 
 export function colIdxToLetter(colIdx) {
   let temp = colIdx + 1;
@@ -113,24 +123,54 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
     minBypassAgeMs: options?.minBypassAgeMs || 0,
     l1TtlSecs: 120,
     redisTtlSecs: 86400,
-    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.table1Rows)),
+    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.table1Rows) && Array.isArray(p.bankAccounts)),
     fetchFreshFn: async () => {
       const sheets = await getSheetsClient();
 
-      // Fetch Cash!A1:AK76 with values, formulas, notes, and effective formats (shading)
-      const res = await withRetry(async () => {
-        return await sheets.spreadsheets.get({
-          spreadsheetId: cleanId,
-          ranges: ["Cash!A1:AK76"],
-          fields: "sheets(properties(title,sheetId),data.rowData.values(formattedValue,userEnteredValue,note,effectiveFormat(backgroundColor,textFormat)))",
-        });
-      });
+      let resolvedClientName = String(clientName || "").trim();
+      const sbCtx = await resolveSupabaseSheetContext({
+        spreadsheetId: cleanId,
+        clientName: resolvedClientName && resolvedClientName !== "Client" ? resolvedClientName : "",
+      }).catch(() => null);
+      if (sbCtx?.clientName) {
+        resolvedClientName = sbCtx.clientName;
+      } else if (!resolvedClientName || resolvedClientName === "Client") {
+        const lookedUp = await resolveClientNameBySheetId(sheets, cleanId).catch(() => "");
+        if (lookedUp) resolvedClientName = lookedUp;
+      }
+
+      // Fetch Cash!A1:AK76 and KeyInfo!A1:I21 with values, formulas, notes, and effective formats (shading)
+      const [res, storedBreakdowns] = await Promise.all([
+        withRetry(async () => {
+          return await sheets.spreadsheets.get({
+            spreadsheetId: cleanId,
+            ranges: ["Cash!A1:AK76", "KeyInfo!A1:I21"],
+            fields: "sheets(properties(title,sheetId),data.rowData.values(formattedValue,effectiveValue,userEnteredValue,note,effectiveFormat(backgroundColor,textFormat)))",
+          });
+        }),
+        getClientCashBankBreakdowns(resolvedClientName),
+      ]);
 
       const cashSheet = res.data?.sheets?.find((s) => s.properties?.title === "Cash") || res.data?.sheets?.[0];
       const rowData = cashSheet?.data?.[0]?.rowData || [];
 
       if (!rowData.length) {
         throw new Error("Cash sheet is empty or not found in client spreadsheet.");
+      }
+
+      const keyInfoSheet = res.data?.sheets?.find((s) => s.properties?.title === "KeyInfo");
+      const kiRows = keyInfoSheet?.data?.[0]?.rowData || [];
+      const currencyRaw = String(kiRows?.[16]?.values?.[1]?.formattedValue || "GBP").trim() || "GBP";
+      const currencyUpper = currencyRaw.toUpperCase();
+      const currencySymbol = currencyUpper === "USD" ? "$" : currencyUpper === "EUR" ? "€" : "£";
+
+      const bankAccounts = [];
+      for (let rIdx = 11; rIdx <= 20; rIdx++) {
+        const vals = kiRows?.[rIdx]?.values || [];
+        const acctName = String(vals?.[7]?.formattedValue || "").trim();
+        const acctId = String(vals?.[8]?.formattedValue || "").trim();
+        if (!acctName || acctName.endsWith(":") || acctName.toLowerCase().includes("non-cash")) continue;
+        bankAccounts.push({ name: acctName, accountId: acctId });
       }
 
       const row0 = (rowData[0]?.values || []).map((c) => String(c?.formattedValue || "").trim());
@@ -155,6 +195,7 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
         const rawLabel = row0[c] || `Month ${c}`;
         const parsed = parseMonthHeader(rawLabel);
         const colLetter = colIdxToLetter(c);
+        const monthKey = parsed ? `${parsed.year}-${String(parsed.monthIdx + 1).padStart(2, "0")}` : null;
 
         let isPrevious = false;
         let isCurrent = false;
@@ -175,6 +216,7 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
           colLetter,
           label: rawLabel,
           parsed,
+          monthKey,
           isPreviousMonth: isPrevious,
           isCurrentMonth: isCurrent,
         });
@@ -195,23 +237,42 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
               ? String(cellData.formattedValue).trim()
               : "";
             const formula = cellData?.userEnteredValue?.formulaValue || "";
+            const numericValue =
+              typeof cellData?.effectiveValue?.numberValue === "number"
+                ? cellData.effectiveValue.numberValue
+                : (typeof cellData?.userEnteredValue?.numberValue === "number" ? cellData.userEnteredValue.numberValue : null);
             const note = cellData?.note || "";
             const isEditable = isCashCellEditable(r, m.colIdx);
             const bgColor = colorToCss(cellData?.effectiveFormat?.backgroundColor);
             const cellBold = Boolean(cellData?.effectiveFormat?.textFormat?.bold);
 
-            return {
+            const cellOut = {
               sheetRow: r,
               colIdx: m.colIdx,
               colLetter: m.colLetter,
               cellRef: `${m.colLetter}${r}`,
               formattedValue,
+              numericValue,
               formula,
               note,
               isEditable,
               bgColor,
               isBold: cellBold,
             };
+
+            if (r === 36) {
+              const hasCellValue = Boolean(formattedValue !== "" || formula !== "" || numericValue !== null);
+              cellOut.bankBreakdown = resolveMonthlyBankBreakdown({
+                monthKey: m.monthKey,
+                cellNumericValue: numericValue,
+                hasCellValue,
+                formula,
+                storedEntry: m.monthKey ? storedBreakdowns.months?.[m.monthKey] || null : null,
+                configuredBankAccounts: bankAccounts,
+              });
+            }
+
+            return cellOut;
           });
 
           // Special check: is this an empty spacer row?
@@ -234,8 +295,11 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
 
       const result = {
         success: true,
-        clientName,
+        clientName: resolvedClientName || clientName,
         clientSheetId: cleanId,
+        currency: currencyRaw,
+        currencySymbol,
+        bankAccounts,
         monthCols,
         previousMonthColIdx,
         currentMonthColIdx,
@@ -264,8 +328,20 @@ export async function saveCashBatch({
   isAdmin = true,
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
-  const cleanId = String(clientSheetId).trim();
+  const cleanId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || String(clientSheetId).trim());
   const sheets = await getSheetsClient();
+
+  let resolvedClientName = String(clientName || "").trim();
+  const sbCtx = await resolveSupabaseSheetContext({
+    spreadsheetId: cleanId,
+    clientName: resolvedClientName && resolvedClientName !== "Client" ? resolvedClientName : "",
+  }).catch(() => null);
+  if (sbCtx?.clientName) {
+    resolvedClientName = sbCtx.clientName;
+  } else if (!resolvedClientName || resolvedClientName === "Client") {
+    const lookedUp = await resolveClientNameBySheetId(sheets, cleanId).catch(() => "");
+    if (lookedUp) resolvedClientName = lookedUp;
+  }
 
   const validValueUpdates = [];
   for (const up of updates) {
@@ -294,6 +370,7 @@ export async function saveCashBatch({
       range: `Cash!${colLetter}${rowNum}`,
       values: [[cleanVal]],
       rowNum,
+      colIdx,
       colLetter,
       value: cleanVal,
     });
@@ -353,11 +430,36 @@ export async function saveCashBatch({
         },
       });
     });
+
+    // Clear stale stored bank breakdown if Row 36 was overwritten/cleared via raw batch save
+    const row36Updates = validValueUpdates.filter((v) => v.rowNum === 36);
+    if (row36Updates.length > 0 && resolvedClientName) {
+      try {
+        const hdrResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: cleanId,
+            range: "Cash!A1:AK1",
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        );
+        const hdrRow = hdrResp.data?.values?.[0] || [];
+        for (const u of row36Updates) {
+          const parsedHdr = parseMonthHeader(String(hdrRow[u.colIdx] || "").trim());
+          if (!parsedHdr) continue;
+          const mKey = `${parsedHdr.year}-${String(parsedHdr.monthIdx + 1).padStart(2, "0")}`;
+          await deleteClientCashBankBreakdownMonth({
+            clientName: resolvedClientName,
+            monthKey: mKey,
+            updatedBy: userEmail || "System",
+          }).catch(() => {});
+        }
+      } catch { }
+    }
   }
 
   // Invalidate caches
   try {
-    await invalidatePmaClientCache(cleanId, null, ["cash"]);
+    await invalidatePmaClientCache(cleanId, resolvedClientName || clientName, ["cash"]);
   } catch { }
 
   // Log activity in background
@@ -374,7 +476,7 @@ export async function saveCashBatch({
       logPmaActivity({
         userEmail: userEmail || "system",
         action: "UPDATE_CASH_CELLS",
-        clientName: clientName || "Client",
+        clientName: resolvedClientName || clientName || "Client",
         details: `Updated ${changeSummary.join(" and ")} on Cash tab`,
         automationCommanderSheetId,
       })
@@ -385,6 +487,174 @@ export async function saveCashBatch({
     success: true,
     savedValuesCount: validValueUpdates.length,
     savedNotesCount: validNoteRequests.length,
+  };
+}
+
+/**
+ * Save or clear a per-bank-account breakdown and update Cash Row 36 for a month.
+ */
+export async function saveCashBankBreakdown({
+  clientName,
+  clientSheetId,
+  monthKey,
+  accounts = [],
+  clear = false,
+  userEmail,
+  automationCommanderSheetId,
+}) {
+  if (!clientSheetId) throw new Error("Client Sheet ID is required");
+  const cleanMonth = String(monthKey || "").trim();
+  if (!/^\d{4}-\d{2}$/.test(cleanMonth)) {
+    throw new Error("Invalid monthKey: expected YYYY-MM format.");
+  }
+
+  const cleanId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || String(clientSheetId).trim());
+  const sheets = await getSheetsClient();
+
+  let resolvedClientName = String(clientName || "").trim();
+  const sbCtx = await resolveSupabaseSheetContext({
+    spreadsheetId: cleanId,
+    clientName: resolvedClientName && resolvedClientName !== "Client" ? resolvedClientName : "",
+  }).catch(() => null);
+  if (sbCtx?.clientName) {
+    resolvedClientName = sbCtx.clientName;
+  } else if (!resolvedClientName || resolvedClientName === "Client") {
+    const lookedUp = await resolveClientNameBySheetId(sheets, cleanId).catch(() => "");
+    if (lookedUp) resolvedClientName = lookedUp;
+  }
+
+  // Server-side column resolution from Cash!A1:AK1 + currency from KeyInfo!B17
+  const hdrResp = await withRetry(() =>
+    sheets.spreadsheets.values.batchGet({
+      spreadsheetId: cleanId,
+      ranges: ["Cash!A1:AK1", "KeyInfo!B17"],
+      valueRenderOption: "FORMATTED_VALUE",
+    })
+  );
+  const hdrRow = hdrResp.data?.valueRanges?.[0]?.values?.[0] || [];
+  const currencyRaw = String(hdrResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "GBP").trim().toUpperCase();
+  const currencySymbol = currencyRaw === "USD" ? "$" : currencyRaw === "EUR" ? "€" : "£";
+
+  let targetColIdx = -1;
+  for (let c = 1; c <= 36 && c < hdrRow.length; c++) {
+    const parsed = parseMonthHeader(String(hdrRow[c] || "").trim());
+    if (!parsed) continue;
+    const key = `${parsed.year}-${String(parsed.monthIdx + 1).padStart(2, "0")}`;
+    if (key === cleanMonth) {
+      targetColIdx = c;
+      break;
+    }
+  }
+  if (targetColIdx === -1) {
+    throw new Error(`Could not locate month ${cleanMonth} in Cash headers.`);
+  }
+  const colLetter = colIdxToLetter(targetColIdx);
+  const cellRange = `Cash!${colLetter}36`;
+
+  const cleanAccounts = clear ? [] : sanitizeBreakdownAccounts(accounts);
+  if (clear || cleanAccounts.length === 0) {
+    await withRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId: cleanId,
+        range: cellRange,
+        valueInputOption: "USER_ENTERED",
+        _deferBackgroundRecompute: true,
+        requestBody: { values: [[""]] },
+      })
+    );
+
+    if (resolvedClientName) {
+      await deleteClientCashBankBreakdownMonth({
+        clientName: resolvedClientName,
+        monthKey: cleanMonth,
+        updatedBy: userEmail || "System",
+      });
+    }
+
+    try {
+      await invalidatePmaClientCache(cleanId, resolvedClientName || clientName, ["cash", "dashboard", "views"]);
+    } catch { }
+
+    scheduleWaitUntil_(() =>
+      logPmaActivity({
+        userEmail: userEmail || "system",
+        action: "UPDATE_CASH_BANK_BREAKDOWN",
+        clientName: resolvedClientName || clientName || "Client",
+        details: `Cleared actual closing balance and bank breakdown for ${cleanMonth} (${cellRange})`,
+        automationCommanderSheetId,
+      }),
+      25
+    );
+
+    return {
+      success: true,
+      cleared: true,
+      monthKey: cleanMonth,
+      colIdx: targetColIdx,
+      total: null,
+      numericValue: null,
+      formattedValue: "",
+      bankBreakdown: null,
+    };
+  }
+
+  const total = Math.round(cleanAccounts.reduce((s, a) => s + a.amount, 0) * 100) / 100;
+  const sheetCellValue = buildRow36FormulaFromAccounts(cleanAccounts);
+
+  await withRetry(() =>
+    sheets.spreadsheets.values.update({
+      spreadsheetId: cleanId,
+      range: cellRange,
+      valueInputOption: "USER_ENTERED",
+      _deferBackgroundRecompute: true,
+      requestBody: { values: [[sheetCellValue]] },
+    })
+  );
+
+  const savedEntry = await saveClientCashBankBreakdownMonth({
+    clientName: resolvedClientName || clientName || "Client",
+    monthKey: cleanMonth,
+    accounts: cleanAccounts,
+    total,
+    source: "pma_cash_edit",
+    basis: "manual",
+    updatedBy: userEmail || "System",
+  });
+
+  try {
+    await invalidatePmaClientCache(cleanId, resolvedClientName || clientName, ["cash", "dashboard", "views"]);
+  } catch { }
+
+  scheduleWaitUntil_(() =>
+    logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "UPDATE_CASH_BANK_BREAKDOWN",
+      clientName: resolvedClientName || clientName || "Client",
+      details: `Updated actual closing balance (${total}) with ${cleanAccounts.length} bank account(s) for ${cleanMonth}`,
+      automationCommanderSheetId,
+    }),
+    25
+  );
+
+  return {
+    success: true,
+    cleared: false,
+    monthKey: cleanMonth,
+    colIdx: targetColIdx,
+    total,
+    numericValue: total,
+    formattedValue: universalFormatMoney(total, 0, currencySymbol, ","),
+    bankBreakdown: {
+      monthKey: cleanMonth,
+      source: savedEntry.source,
+      basis: savedEntry.basis,
+      accounts: cleanAccounts,
+      total,
+      matchesCell: true,
+      cellTotal: total,
+      labelsInferred: false,
+      updatedAt: savedEntry.updatedAt,
+    },
   };
 }
 
@@ -402,7 +672,7 @@ export async function saveCashCellNote({
   automationCommanderSheetId,
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
-  const cleanId = String(clientSheetId).trim();
+  const cleanId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || String(clientSheetId).trim());
   const rowNum = parseInt(sheetRow, 10);
   const finalColIdx = colIdx !== undefined ? parseInt(colIdx, 10) : colLetterToNum(colLetter) - 1;
 

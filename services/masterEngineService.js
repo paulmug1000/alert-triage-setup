@@ -2033,14 +2033,63 @@ export function getLastClientEditTimestamp(clientName) {
 
 function formulaRefsMissingSheetInMap_(f, currentTab, loadedMap) {
   if (typeof f !== "string" || !f.includes("!")) return false;
-  const matches = f.matchAll(/([A-Za-z0-9_]+)\!/g);
+  const stripped = f.replace(/"(?:""|[^"])*"/g, "");
+  const hasTab = (name) =>
+    loadedMap instanceof Set ? loadedMap.has(name) : Boolean(loadedMap && loadedMap[name]);
+  const matches = stripped.matchAll(/(?:'([^']+)'|([A-Za-z0-9_]+))!/g);
   for (const m of matches) {
-    const refTab = m[1];
-    if (refTab !== currentTab && refTab !== "REF" && !loadedMap[refTab]) {
+    const refTab = m[1] || m[2];
+    if (refTab && refTab !== currentTab && refTab !== "REF" && !hasTab(refTab)) {
       return true;
     }
   }
   return false;
+}
+
+const CORE_CLIENT_FORMULA_TABS_SET = new Set([
+  ...CORE_CLIENT_TABS,
+  "REF",
+  "AppData",
+  "FormCheck",
+]);
+
+async function loadReferencedReconGridsForClientFormulas_(ctx, formulaGrids, rawSheetsApi = null) {
+  const reconTabs = new Set();
+  const rx = /IMPORTRANGE\s*\(\s*(?:KeyInfo!)?\$?G\$?1\s*,\s*"([^"]+)"/gi;
+  for (const fGrid of formulaGrids || []) {
+    if (!Array.isArray(fGrid)) continue;
+    for (let r = 0; r < fGrid.length; r++) {
+      const row = fGrid[r];
+      if (!Array.isArray(row)) continue;
+      for (let c = 0; c < row.length; c++) {
+        const f = row[c];
+        if (typeof f !== "string" || !f.includes("!") || !/IMPORTRANGE/i.test(f)) continue;
+        rx.lastIndex = 0;
+        let m;
+        while ((m = rx.exec(f)) !== null) {
+          const refRange = m[1] || "";
+          const bang = refRange.indexOf("!");
+          if (bang > 0) {
+            const tabName = refRange.slice(0, bang).trim().replace(/^'|'$/g, "");
+            if (tabName) reconTabs.add(tabName);
+          }
+        }
+      }
+    }
+  }
+  if (reconTabs.size === 0) return null;
+  const out = Object.create(null);
+  await Promise.all(
+    [...reconTabs].map(async (tabName) => {
+      const rec = await getOrLoadVirtualTabGrid_(ctx, "recon", tabName, rawSheetsApi, {
+        valuesOnly: true,
+      }).catch(() => null);
+      if (rec && Array.isArray(rec.values_grid)) {
+        out[tabName] = { values: rec.values_grid };
+      }
+    })
+  );
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 async function recomputeAndPersistImmediateClientTabs_(
@@ -2138,6 +2187,7 @@ async function recomputeAndPersistImmediateClientTabs_(
   }
 
   // Wipe self-contained formula cells on each target tab so recalculateClientGrids computes fresh values
+  const preservedFormulaValues = new Map();
   for (const tabName of allImmediateTabs) {
     const entry = localGrids[tabName];
     if (!entry) continue;
@@ -2159,7 +2209,18 @@ async function recomputeAndPersistImmediateClientTabs_(
           if (tabName === "DataForReport" && (c === 6 || r === 2)) {
             continue;
           }
-          if (formulaRefsMissingSheetInMap_(f, tabName, localGrids)) {
+          const refsMissing = formulaRefsMissingSheetInMap_(f, tabName, localGrids);
+          const hasImportRange = /IMPORTRANGE\s*\(/i.test(f);
+          if (
+            (refsMissing || hasImportRange) &&
+            curV !== "" &&
+            curV !== null &&
+            curV !== undefined &&
+            !(typeof curV === "string" && curV.startsWith("#VALUE! (Cannot coerce 'Symbol("))
+          ) {
+            preservedFormulaValues.set(`${tabName}!${r},${c}`, curV);
+          }
+          if (refsMissing) {
             continue;
           }
           if (vGrid[r]) vGrid[r][c] = "";
@@ -2168,9 +2229,15 @@ async function recomputeAndPersistImmediateClientTabs_(
     }
   }
 
+  const reconGrids = localGrids.Cash?.formulas
+    ? await loadReferencedReconGridsForClientFormulas_(ctx, [localGrids.Cash.formulas], rawSheetsApi)
+    : null;
+
   recalculateClientGrids(localGrids, {
     changedTabs: allImmediateTabs,
     onlyTabs: new Set(allImmediateTabs),
+    reconGrids,
+    preservedFormulaValues,
   });
 
   await Promise.all(
@@ -2401,6 +2468,7 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
   const recordsByTab = {};
   const prevSnapshots = {};
   const grids = Object.create(null);
+  const preservedFormulaValues = new Map();
   const alreadyEvaluatedTabs = new Set();
   const wasPersistedToDbImmediate = new Set();
 
@@ -2581,6 +2649,20 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
           if (tabName === "DataForReport" && (c === 6 || r === 2)) {
             continue;
           }
+          const refsNonCore = formulaRefsMissingSheetInMap_(f, tabName, CORE_CLIENT_FORMULA_TABS_SET);
+          const hasImportRange = /IMPORTRANGE\s*\(/i.test(f);
+          if (
+            (refsNonCore || hasImportRange) &&
+            curV !== "" &&
+            curV !== null &&
+            curV !== undefined &&
+            !(typeof curV === "string" && curV.startsWith("#VALUE! (Cannot coerce 'Symbol("))
+          ) {
+            preservedFormulaValues.set(`${tabName}!${r},${c}`, curV);
+          }
+          if (refsNonCore) {
+            continue;
+          }
           if (tabName === "Calcs" && curV !== "" && curV !== undefined && curV !== null) {
             const refsPipe = f.includes("PipeCalcs");
             const refsConf = f.includes("ConfCalcs");
@@ -2599,10 +2681,17 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
     };
   }
 
+  const reconGrids =
+    grids.Cash?.formulas && !unaffectedTabs.has("Cash")
+      ? await loadReferencedReconGridsForClientFormulas_(ctx, [grids.Cash.formulas], rawSheetsApi)
+      : null;
+
   recalculateClientGrids(grids, {
     changedTabs: allUpdatedTabs,
     unaffectedTabs,
     alreadyEvaluatedTabs,
+    reconGrids,
+    preservedFormulaValues,
   });
 
   // 2. Persist any unpersisted updated tabs plus any downstream tabs whose evaluated values changed

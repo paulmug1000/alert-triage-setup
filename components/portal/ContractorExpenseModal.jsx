@@ -2,6 +2,9 @@ import React, { useState } from "react";
 import Spinner from "../Spinner";
 import PlaceholderPill, { isAutoPlaceholder } from "../PlaceholderPill";
 import { isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../../utils/helpers";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import { buildContractorBillNoteKey, buildContractorCellNoteKey } from "../../utils/pulseNotesKeys";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -76,6 +79,7 @@ export default function ContractorExpenseModal({
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState(null);
+  const { openNotes, getEntitySummary } = usePulseNotes();
 
   React.useEffect(() => {
     if (isOpen) {
@@ -285,22 +289,56 @@ export default function ContractorExpenseModal({
               <strong>{contractor.name}</strong> · {monthLabel}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isSaving || isDeleting}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "#94a3b8",
-              cursor: "pointer",
-              fontSize: "20px",
-              lineHeight: 1,
-              padding: "4px",
-            }}
-          >
-            ✕
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            {!isNew && (() => {
+              const billIdx = Math.max(1, (allBlocks || []).findIndex((b) => b === item || (b?.appId && b.appId === item?.appId)) + 1);
+              const billKey = buildContractorBillNoteKey(contractor.name, monthLabel, item, billIdx);
+              const cellKey = buildContractorCellNoteKey(contractor.name, monthLabel);
+              const billSum = getEntitySummary(billKey);
+              return (
+                <PulseNoteTrigger
+                  variant="inline"
+                  label="Notes"
+                  count={billSum?.count || 0}
+                  openNotifyCount={billSum?.openNotifyCount || 0}
+                  unreadReplyCount={billSum?.unreadReplyCount || 0}
+                  latestSnippet={billSum?.latestSnippet || ""}
+                  onClick={() =>
+                    openNotes({
+                      scopeType: "entity",
+                      entityType: "contractor_bill",
+                      entityKey: billKey,
+                      parentEntityKey: cellKey,
+                      entityLabel: `${contractor.name} (${monthLabel}) — ${item?.description || item?.rawDesc || `Bill #${billIdx}`}`,
+                      drawerTitle: "Contractor bill notes",
+                      contextMeta: {
+                        contractorName: contractor.name,
+                        monthLabel,
+                        appId: item?.appId || "",
+                        amount: item?.amount,
+                      },
+                    })
+                  }
+                />
+              );
+            })()}
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSaving || isDeleting}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#94a3b8",
+                cursor: "pointer",
+                fontSize: "20px",
+                lineHeight: 1,
+                padding: "4px",
+              }}
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* Body */}

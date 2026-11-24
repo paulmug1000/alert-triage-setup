@@ -15,6 +15,7 @@ import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
 import { getJobExpenseItems } from "../utils/jobItemsHelpers";
 import { useOutgoings } from "../hooks/useOutgoings";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import PmaClientNoteBadge from "./PmaClientNoteBadge";
 import { useTriage } from "../contexts/TriageContext";
 import { useAuth } from "../hooks/useAuth";
 import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
@@ -2494,6 +2495,12 @@ export default function OutgoingsView({
                 >
                   {(outgoingsLoading || directCostsLoading) ? <><Spinner size={12} color="#475569" /> Refreshing...</> : "↻ Refresh"}
                 </button>
+                <PmaClientNoteBadge
+                  clientName={outgoingsClient.clientName}
+                  entityType={isPassThroughScreen ? "outgoing" : "contractor"}
+                  label="Client notes"
+                  user={auth.user}
+                />
                 {isAdmin && outgoingsClient.clientSheetId && (
                   <button
                     className="triage-btn"

@@ -2,6 +2,9 @@ import React, { useState, useMemo } from "react";
 import { BudgetSkeleton } from "../Skeleton";
 import { formatMoney as universalFormatMoney, parseMoney as universalParseMoney, hasNBToFindInPerformance, hasNBToFindInBudget } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import { buildScreenNoteKey } from "../../utils/pulseNotesKeys";
 
 export default function BudgetVarianceView({
   clientName,
@@ -17,6 +20,7 @@ export default function BudgetVarianceView({
   const [viewMode, setViewMode] = useState("ytd"); // 'month' | 'ytd' | 'fy'
   const [userMonthIdx, setUserMonthIdx] = useState(null);
   const [userYearIdx, setUserYearIdx] = useState(null);
+  const { openNotes, getEntitySummary } = usePulseNotes();
 
   const defaultYearIdx = useMemo(() => {
     if (allFYData?.currentYearIdx !== undefined && allFYData.currentYearIdx > 0) {
@@ -630,6 +634,30 @@ export default function BudgetVarianceView({
               </select>
             </div>
           )}
+
+          {(() => {
+            const noteKey = buildScreenNoteKey("budget", activeFyLabel);
+            const noteSum = getEntitySummary(noteKey);
+            return (
+              <PulseNoteTrigger
+                variant="toolbar"
+                count={noteSum?.count || 0}
+                openNotifyCount={noteSum?.openNotifyCount || 0}
+                unreadReplyCount={noteSum?.unreadReplyCount || 0}
+                latestSnippet={noteSum?.latestSnippet || ""}
+                onClick={() =>
+                  openNotes({
+                    scopeType: "screen",
+                    entityType: "budget",
+                    entityKey: noteKey,
+                    entityLabel: `Budget — ${activeFyLabel}`,
+                    drawerTitle: "Budget notes",
+                    contextMeta: { fyLabel: activeFyLabel, subView: "budgetVariance" },
+                  })
+                }
+              />
+            );
+          })()}
 
           <button
             type="button"

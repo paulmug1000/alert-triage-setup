@@ -17,6 +17,8 @@ import {
   sanitizeSpreadsheetTerms
 } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
+import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
 
 function colToLetter(colIndex) {
   let temp, letter = "";
@@ -571,6 +573,25 @@ export default async function handler(req, res) {
       },
       user: sessionUser.name || sessionUser.email
     }).catch((logErr) => console.warn("⚠️ Failed to log unconfirm-job activity:", logErr.message));
+
+    const prevConfKey = buildJobNoteKey({
+      client: parentClient,
+      jobName: parentJobName,
+      projectCode: parentProjectCode,
+      rowNumber: cRow,
+    });
+    const nextPipeKey = buildJobNoteKey({
+      client: parentClient,
+      jobName: parentJobName,
+      projectCode: parentProjectCode,
+      rowNumber: pipelineRow,
+    });
+    relinkNotesForJobChange({
+      clientName: verifiedClientName || clientName || parentClient || "",
+      oldJobKey: prevConfKey,
+      newJobKey: nextPipeKey,
+      newJobLabel: buildJobNoteLabel({ client: parentClient, jobName: parentJobName }),
+    }).catch(() => {});
 
     return res.status(200).json({
       success: true,

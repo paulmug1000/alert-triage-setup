@@ -4,6 +4,9 @@ import { CashflowSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney as universalParseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import { buildScreenNoteKey } from "../../utils/pulseNotesKeys";
 
 export default function CashflowView({
   clientName,
@@ -20,6 +23,7 @@ export default function CashflowView({
   const [inclOpen, setInclOpen] = useState(false);
   const [activePopover, setActivePopover] = useState(null);
   const [hoveredPoint, setHoveredPoint] = useState(null);
+  const { openNotes, getEntitySummary } = usePulseNotes();
 
   useEffect(() => {
     if (activePopover?.isOpen && activePopover._clickParams && keyData) {
@@ -559,6 +563,29 @@ export default function CashflowView({
         </h2>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {(() => {
+            const noteKey = buildScreenNoteKey("cash");
+            const noteSum = getEntitySummary(noteKey);
+            return (
+              <PulseNoteTrigger
+                variant="toolbar"
+                count={noteSum?.count || 0}
+                openNotifyCount={noteSum?.openNotifyCount || 0}
+                unreadReplyCount={noteSum?.unreadReplyCount || 0}
+                latestSnippet={noteSum?.latestSnippet || ""}
+                onClick={() =>
+                  openNotes({
+                    scopeType: "screen",
+                    entityType: "cash",
+                    entityKey: noteKey,
+                    entityLabel: "Cashflow forecast",
+                    drawerTitle: "Cashflow notes",
+                    contextMeta: { subView: "cash" },
+                  })
+                }
+              />
+            );
+          })()}
           <button
             type="button"
             className="refresh-btn no-click-spinner"

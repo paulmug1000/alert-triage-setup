@@ -5,6 +5,8 @@ import Skeleton, { PmaJobsTableSkeleton } from "./Skeleton";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
+import AssignAccountingItemsModal from "./AssignAccountingItemsModal";
+import RetainersEditModal from "./RetainersEditModal";
 import JobsNewJobModal from "./JobsNewJobModal";
 import EditClientSelector from "./EditClientSelector";
 import CellNoteModal from "./CellNoteModal";
@@ -1404,6 +1406,8 @@ export default function JobsView({
 
   const [showPullFromSheetConfirm, setShowPullFromSheetConfirm] = useState(false);
   const [pullingFromSheet, setPullingFromSheet] = useState(false);
+  const [assignModalConfig, setAssignModalConfig] = useState(null); // null | { itemType, job }
+  const [retainersEditJob, setRetainersEditJob] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchScope, setSearchScope] = useState("all");
@@ -2939,11 +2943,104 @@ export default function JobsView({
       else conf++;
     }
 
+    if (effectiveViewMode !== "modern") {
+      return {
+        baseMatchedJobs: matched,
+        counts: { all: conf + pipe, confirmed: conf, pipeline: pipe }
+      };
+    }
+
+    // Group Confirmed [VarRetainer] monthly rows into a single series row in modern view
+    const finalMatched = [];
+    const varSeriesOrder = [];
+    const varSeriesMap = Object.create(null);
+
+    for (const j of matched) {
+      if (!isPipelineJob(j) && j.isVariableRetainer) {
+        const meta = j.varRetainerMeta || {};
+        const clientStr = String(j.rows?.[0]?.client || j.client || "").trim();
+        const rawJobStr = String(j.rows?.[0]?.jobName || j.jobName || "").trim();
+        const seriesName = meta.seriesName || rawJobStr.replace(/\s*-\s*[A-Za-z]{3}\s+\d{4}$/, "").trim();
+        const k = `${clientStr.toLowerCase()}||${seriesName.toLowerCase()}`;
+        if (!varSeriesMap[k]) {
+          varSeriesMap[k] = [];
+          varSeriesOrder.push(k);
+        }
+        varSeriesMap[k].push(j);
+      } else {
+        finalMatched.push(j);
+      }
+    }
+
+    let groupedConf = finalMatched.filter((x) => !isPipelineJob(x)).length;
+    for (const k of varSeriesOrder) {
+      const mList = varSeriesMap[k];
+      mList.sort((a, b) => (parseSheetDateToTs(a.rows?.[0]?.startDate) || 0) - (parseSheetDateToTs(b.rows?.[0]?.startDate) || 0));
+      const firstM = mList[0];
+      const lastM = mList[mList.length - 1];
+      const firstParent = firstM.rows?.[0] || {};
+      const lastParent = lastM.rows?.[0] || {};
+      const meta = lastM.varRetainerMeta || firstM.varRetainerMeta || {};
+      const seriesName = meta.seriesName || String(firstParent.jobName || firstM.jobName || "").replace(/\s*-\s*[A-Za-z]{3}\s+\d{4}$/, "").trim();
+      const baseRevNum = Number(meta.baseRev ?? parseFloat(stripCurrency(firstParent.revenue))) || 0;
+      const baseDcNum = Number(meta.baseDC ?? parseFloat(stripCurrency(firstParent.directCosts))) || 0;
+      const monthRows = mList.map((m) => {
+        const p = m.rows?.[0] || {};
+        return {
+          ...p,
+          isRevOverridden: Boolean(m.varRetainerMeta?.overrideRev),
+          isDcOverridden: Boolean(m.varRetainerMeta?.overrideDc),
+          varRetainerMeta: m.varRetainerMeta,
+          expenseSlots: (m.rows || []).flatMap((rr) => (rr.expenseSlots || []).map((es) => ({ ...es, rowNum: rr.rowNum }))),
+        };
+      });
+      const baseRevFormatted = `£${baseRevNum.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const baseDcFormatted = `£${baseDcNum.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const seriesEndDate = meta.noEndDate ? NO_END_DATE_SHEET_VALUE : (meta.endDate || lastParent.endDate || "");
+      const summaryParentRow = {
+        ...firstParent,
+        jobName: seriesName,
+        revenue: baseRevFormatted,
+        directCosts: baseDcFormatted,
+        startDate: firstParent.startDate || "",
+        endDate: seriesEndDate,
+        likelihood: "100%",
+        projectRetainer: "Retainer",
+      };
+
+      finalMatched.push({
+        id: `varret_${firstParent.rowNum || 0}_${seriesName}`,
+        tabName: "Confirmed",
+        client: firstParent.client || firstM.client,
+        jobName: seriesName,
+        seriesName,
+        projectCode: firstParent.projectCode || "",
+        projectRetainer: "Retainer",
+        revenue: baseRevFormatted,
+        directCosts: baseDcFormatted,
+        baseRevenue: baseRevNum,
+        baseDirectCosts: baseDcNum,
+        sendDay: meta.sendDay || 28,
+        startDate: firstParent.startDate || "",
+        endDate: seriesEndDate,
+        noEndDate: Boolean(meta.noEndDate),
+        vat: firstParent.vat || "Yes",
+        likelihood: "100%",
+        parentRowNum: firstParent.rowNum,
+        isVariableRetainer: true,
+        isVariableRetainerSeries: true,
+        varRetainerMeta: meta,
+        varSeriesMonths: monthRows,
+        rows: [summaryParentRow, ...monthRows.slice(1)],
+      });
+      groupedConf++;
+    }
+
     return {
-      baseMatchedJobs: matched,
-      counts: { all: conf + pipe, confirmed: conf, pipeline: pipe }
+      baseMatchedJobs: finalMatched,
+      counts: { all: groupedConf + pipe, confirmed: groupedConf, pipeline: pipe }
     };
-  }, [jobsData, showZeroPercentJobs, draftEdits, searchQuery, searchScope, isJobCopiedToConfirmed, isJobZeroPercent, isPipelineJob]);
+  }, [jobsData, showZeroPercentJobs, draftEdits, searchQuery, searchScope, isJobCopiedToConfirmed, isJobZeroPercent, isPipelineJob, effectiveViewMode]);
 
   // Filtered and sorted jobs list
   const processedJobs = useMemo(() => {
@@ -5075,25 +5172,60 @@ export default function JobsView({
 
                                 {/* Job Type (Project / Retainer) */}
                                 <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
-                                  <select
-                                    value={isRetainer ? "Retainer" : "Project"}
-                                    onChange={(e) => handleDraftFieldChange(job, "projectRetainer", e.target.value)}
-                                    onKeyDown={(e) => handleFieldKeyDown(e, job, "projectRetainer")}
-                                    style={{
-                                      padding: "3px 6px",
-                                      borderRadius: "5px",
-                                      border: isDirty && draftEdits[jobKey]?.projectRetainer !== undefined ? "1px solid #f59e0b" : "1px solid #e2e8f0",
-                                      background: isRetainer ? "#e0f2fe" : "#f3e8ff",
-                                      color: isRetainer ? "#0284c7" : "#7e22ce",
-                                      fontSize: "11px",
-                                      fontWeight: "600",
-                                      cursor: "pointer",
-                                      outline: "none"
-                                    }}
-                                  >
-                                    <option value="Project">Project</option>
-                                    <option value="Retainer">Retainer</option>
-                                  </select>
+                                  {job.isVariableRetainerSeries || job.isVariableRetainer ? (
+                                    <div style={{ display: "inline-flex", flexDirection: "column", gap: "3px" }}>
+                                      <span
+                                        style={{
+                                          padding: "3px 7px",
+                                          borderRadius: "5px",
+                                          border: "1px solid #bae6fd",
+                                          background: "#e0f2fe",
+                                          color: "#0369a1",
+                                          fontSize: "11px",
+                                          fontWeight: "600",
+                                          display: "inline-block",
+                                          whiteSpace: "nowrap"
+                                        }}
+                                      >
+                                        Retainer
+                                      </span>
+                                      <span
+                                        style={{
+                                          padding: "1px 6px",
+                                          borderRadius: "999px",
+                                          background: "#f0f9ff",
+                                          border: "1px solid #bae6fd",
+                                          color: "#0284c7",
+                                          fontSize: "10px",
+                                          fontWeight: "600",
+                                          textAlign: "center",
+                                          whiteSpace: "nowrap"
+                                        }}
+                                      >
+                                        Variable
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <select
+                                      value={isRetainer ? "Retainer" : "Project"}
+                                      onChange={(e) => handleDraftFieldChange(job, "projectRetainer", e.target.value)}
+                                      onKeyDown={(e) => handleFieldKeyDown(e, job, "projectRetainer")}
+                                      style={{
+                                        padding: "3px 6px",
+                                        borderRadius: "5px",
+                                        border: isDirty && draftEdits[jobKey]?.projectRetainer !== undefined ? "1px solid #f59e0b" : "1px solid #e2e8f0",
+                                        background: isRetainer ? "#e0f2fe" : "#f3e8ff",
+                                        color: isRetainer ? "#0284c7" : "#7e22ce",
+                                        fontSize: "11px",
+                                        fontWeight: "600",
+                                        cursor: "pointer",
+                                        outline: "none"
+                                      }}
+                                    >
+                                      <option value="Project">Project</option>
+                                      <option value="Retainer">Retainer</option>
+                                    </select>
+                                  )}
                                 </td>
 
                                 {/* Revenue */}
@@ -5488,7 +5620,220 @@ export default function JobsView({
                               </tr>
 
                               {/* Expanded Panel Details */}
-                              {isExpanded && (
+                              {isExpanded && job.isVariableRetainerSeries && (
+                                <tr>
+                                  <td colSpan={12} style={{ padding: 0, borderBottom: "1px solid #e2e8f0" }}>
+                                    <div style={{ background: "#f8fafc", padding: "18px 24px 22px", borderTop: "1px solid #e2e8f0" }}>
+                                      <div style={{ background: "#ffffff", borderRadius: "8px", border: "1px solid #e2e8f0", padding: "14px 16px" }}>
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "10px", paddingBottom: "8px", borderBottom: "1px solid #f1f5f9" }}>
+                                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                            <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>Monthly schedule</span>
+                                            <span style={{ fontSize: "11px", padding: "1px 7px", borderRadius: "10px", background: "#f1f5f9", color: "#475569", fontWeight: "600" }}>
+                                              {(job.varSeriesMonths || []).length} {(job.varSeriesMonths || []).length === 1 ? "month" : "months"}
+                                            </span>
+                                            <span style={{ fontSize: "11.5px", color: "#64748b" }}>
+                                              Base forecast: {job.revenue}/month revenue · {job.directCosts}/month direct costs
+                                            </span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setRetainersEditJob({
+                                                ...job,
+                                                rows: job.varSeriesMonths || [],
+                                              });
+                                            }}
+                                            style={{
+                                              padding: "5px 12px",
+                                              borderRadius: "6px",
+                                              border: "1px solid #0284c7",
+                                              background: "#f0f9ff",
+                                              color: "#0369a1",
+                                              fontSize: "12px",
+                                              fontWeight: "600",
+                                              cursor: "pointer"
+                                            }}
+                                          >
+                                            Manage base &amp; overrides
+                                          </button>
+                                        </div>
+
+                                        {/* Shared Job Details Strip */}
+                                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))", gap: "8px 14px", padding: "8px 10px", marginBottom: "12px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", fontSize: "11.5px" }}>
+                                          <div>
+                                            <div style={{ color: "#64748b", fontSize: "10.5px", fontWeight: 600 }}>Project code</div>
+                                            <div style={{ color: "#1e293b", fontWeight: 600 }}>{job.projectCode || "—"}</div>
+                                          </div>
+                                          <div>
+                                            <div style={{ color: "#64748b", fontSize: "10.5px", fontWeight: 600 }}>VAT?</div>
+                                            <div style={{ color: "#1e293b", fontWeight: 600 }}>{job.vat || "Yes"}</div>
+                                          </div>
+                                          <div>
+                                            <div style={{ color: "#64748b", fontSize: "10.5px", fontWeight: 600 }}>Date confirmed</div>
+                                            <div style={{ color: "#1e293b", fontWeight: 600 }}>{job.dateConfirmed || "—"}</div>
+                                          </div>
+                                          <div>
+                                            <div style={{ color: "#64748b", fontSize: "10.5px", fontWeight: 600 }}>Product line</div>
+                                            <div style={{ color: "#1e293b", fontWeight: 600 }}>{job.productLine || "—"}</div>
+                                          </div>
+                                          <div>
+                                            <div style={{ color: "#64748b", fontSize: "10.5px", fontWeight: 600 }}>Lead source</div>
+                                            <div style={{ color: "#1e293b", fontWeight: 600 }}>{job.leadSource || "—"}</div>
+                                          </div>
+                                          <div>
+                                            <div style={{ color: "#64748b", fontSize: "10.5px", fontWeight: 600 }}>Contract dates</div>
+                                            <div style={{ color: "#1e293b", fontWeight: 600 }}>
+                                              {job.startDate || "—"} – {isNoEndDateSentinel(job.endDate) ? "Ongoing" : (job.endDate || "—")}
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        <div style={{ overflowX: "auto", maxHeight: "340px", overflowY: "auto" }}>
+                                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                                            <thead>
+                                              <tr style={{ borderBottom: "1px solid #e2e8f0", color: "#64748b", textAlign: "left" }}>
+                                                <th style={{ padding: "6px 8px" }}>Month</th>
+                                                <th style={{ padding: "6px 8px" }}>Status</th>
+                                                <th style={{ padding: "6px 8px", textAlign: "right" }}>Revenue</th>
+                                                <th style={{ padding: "6px 8px", textAlign: "right" }}>Direct costs</th>
+                                                <th style={{ padding: "6px 8px" }}>Invoices</th>
+                                                <th style={{ padding: "6px 8px" }}>Direct bills</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {(job.varSeriesMonths || []).map((mr, mIdx) => {
+                                                const mLabel = getRetainerRowMonthLabel(mr, mIdx, job);
+                                                const realInvs = (mr.invoiceSlots || []).filter((s) => {
+                                                  const r = String(s.ref || "").trim();
+                                                  const st = String(s.status || "").trim().toLowerCase();
+                                                  return (r && !isPlaceholderInvoice(r, st)) || st.includes("sent") || st.includes("paid");
+                                                });
+                                                const visibleExpSlots = (mr.expenseSlots || []).filter((es) =>
+                                                  (es.description && String(es.description).trim() !== "") ||
+                                                  (es.transactionId && String(es.transactionId).trim() !== "") ||
+                                                  (parseFloat(stripCurrency(es.amount)) || 0) > 0
+                                                );
+                                                const isOverridden = Boolean(mr.isRevOverridden || mr.isDcOverridden);
+                                                const stLabel = realInvs.length > 0 ? "Invoiced" : (isOverridden ? "Overridden" : "Base forecast");
+                                                const stStyle = realInvs.length > 0
+                                                  ? { background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }
+                                                  : isOverridden
+                                                    ? { background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }
+                                                    : { background: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
+                                                return (
+                                                  <tr key={mr.rowNum || mIdx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                                    <td style={{ padding: "7px 8px", fontWeight: "600", color: "#1e293b", whiteSpace: "nowrap" }}>
+                                                      {mLabel}
+                                                      {isSysAdmin && <span style={{ color: "#94a3b8", fontWeight: "400", marginLeft: "6px" }}>#{mr.rowNum}</span>}
+                                                    </td>
+                                                    <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>
+                                                      <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", fontWeight: "600", ...stStyle }}>
+                                                        {stLabel}
+                                                      </span>
+                                                    </td>
+                                                    <td style={{ padding: "7px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: "600" }}>
+                                                      {formatCurrency(mr.revenue) || "£0.00"}
+                                                    </td>
+                                                    <td style={{ padding: "7px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#475569" }}>
+                                                      {formatCurrency(mr.directCosts) || "£0.00"}
+                                                    </td>
+                                                    <td style={{ padding: "7px 8px" }}>
+                                                      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                                                        {(mr.invoiceSlots || [])
+                                                          .filter((s) => (s.ref && String(s.ref).trim() !== "") || (parseFloat(stripCurrency(s.amount)) || 0) > 0)
+                                                          .map((s) => {
+                                                            const isPlace = isPlaceholderInvoice(s.ref, s.status);
+                                                            return (
+                                                              <button
+                                                                key={`${s.rowNum || mr.rowNum}_${s.slotNum}`}
+                                                                type="button"
+                                                                onClick={(e) => {
+                                                                  e.stopPropagation();
+                                                                  setInvoicesEditSlot({
+                                                                    rowNum: s.rowNum || mr.rowNum,
+                                                                    slotNum: s.slotNum,
+                                                                    slot: s,
+                                                                    jobClient: mr.client || job.client,
+                                                                    jobName: mr.jobName || job.jobName,
+                                                                    slotLabel: s.ref ? `#${s.ref}` : "Placeholder",
+                                                                    tabName: "Confirmed",
+                                                                    job,
+                                                                  });
+                                                                }}
+                                                                style={{
+                                                                  fontSize: "10px",
+                                                                  padding: "1px 6px",
+                                                                  borderRadius: "6px",
+                                                                  border: "1px solid #cbd5e1",
+                                                                  background: isPlace ? "#faf5ff" : "#eff6ff",
+                                                                  color: isPlace ? "#6b21a8" : "#1d4ed8",
+                                                                  cursor: "pointer",
+                                                                  fontWeight: "600"
+                                                                }}
+                                                              >
+                                                                {isPlace ? "Forecast" : `#${s.ref}`} ({formatCurrency(s.amount)})
+                                                              </button>
+                                                            );
+                                                          })}
+                                                      </div>
+                                                    </td>
+                                                    <td style={{ padding: "7px 8px" }}>
+                                                      {visibleExpSlots.length > 0 ? (
+                                                        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                                                          {visibleExpSlots.map((es, eIdx) => {
+                                                            const isPlace = isPlaceholderExpense(es.transactionId, es.description, es.status);
+                                                            const billLabel = isPlace
+                                                              ? "Forecast"
+                                                              : (es.description || es.transactionId || `Bill ${eIdx + 1}`);
+                                                            return (
+                                                              <button
+                                                                key={`${es.rowNum || mr.rowNum}_${es.slotNum}_${eIdx}`}
+                                                                type="button"
+                                                                onClick={(e) => {
+                                                                  e.stopPropagation();
+                                                                  setDirectCostsEditSlot({
+                                                                    rowNum: es.rowNum || mr.rowNum,
+                                                                    slotNum: es.slotNum,
+                                                                    slot: es,
+                                                                    jobClient: mr.client || job.client,
+                                                                    jobName: mr.jobName || job.jobName,
+                                                                    slotLabel: billLabel,
+                                                                    tabName: "Confirmed",
+                                                                  });
+                                                                }}
+                                                                style={{
+                                                                  fontSize: "10px",
+                                                                  padding: "1px 6px",
+                                                                  borderRadius: "6px",
+                                                                  border: "1px solid #cbd5e1",
+                                                                  background: isPlace ? "#faf5ff" : "#f0fdf4",
+                                                                  color: isPlace ? "#6b21a8" : "#166534",
+                                                                  cursor: "pointer",
+                                                                  fontWeight: "600"
+                                                                }}
+                                                              >
+                                                                {billLabel} ({formatCurrency(es.amount)})
+                                                              </button>
+                                                            );
+                                                          })}
+                                                        </div>
+                                                      ) : (
+                                                        <span style={{ color: "#94a3b8" }}>—</span>
+                                                      )}
+                                                    </td>
+                                                  </tr>
+                                                );
+                                              })}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                              {isExpanded && !job.isVariableRetainerSeries && (
                                 <tr>
                                   <td colSpan={12} style={{ padding: 0, borderBottom: "1px solid #e2e8f0" }}>
                                     <div
@@ -5828,55 +6173,75 @@ export default function JobsView({
                                                 flexDirection: "column"
                                               }}
                                             >
-                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
+                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px", gap: "8px", flexWrap: "wrap" }}>
                                                 <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                                                   Invoices ({invoiceItems.length})
                                                 </div>
-                                                {isConfirmed && (metrics.revenue > 0 || metrics.rechargedExpenses > 0) && (
-                                                  metrics.leftToInvoice > 0 ? (
-                                                    <span
-                                                      style={{
-                                                        fontSize: "11px",
-                                                        padding: "3px 9px",
-                                                        borderRadius: "12px",
-                                                        fontWeight: "600",
-                                                        background: "#fef3c7",
-                                                        color: "#92400e",
-                                                        border: "1px solid #fde68a",
-                                                        display: "inline-flex",
-                                                        alignItems: "center",
-                                                        gap: "4px"
-                                                      }}
-                                                      title={
-                                                        isRetainer
-                                                          ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
-                                                          : `${metrics.rechargedExpenses > 0 ? `Fee revenue: ${formatCurrency(metrics.revenue)} · Recharged expenses: ${formatCurrency(metrics.rechargedExpenses)} · Total billable: ${formatCurrency(metrics.totalBillable)}` : `Total revenue: ${formatCurrency(metrics.revenue)}`} · Real invoiced: ${formatCurrency(metrics.realInvoiced)} · Left to invoice: ${formatCurrency(metrics.leftToInvoice)}${metrics.draftInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.draftInvoiced)} in draft invoices` : ""}${metrics.placeholderInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders` : ""}`
-                                                      }
-                                                    >
-                                                      <span>⚠️</span> Left to invoice: {formatCurrency(metrics.leftToInvoice)}
-                                                    </span>
-                                                  ) : (
-                                                    !isRetainer && (
+                                                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                                  {isConfirmed && (metrics.revenue > 0 || metrics.rechargedExpenses > 0) && (
+                                                    metrics.leftToInvoice > 0 ? (
                                                       <span
                                                         style={{
                                                           fontSize: "11px",
                                                           padding: "3px 9px",
                                                           borderRadius: "12px",
                                                           fontWeight: "600",
-                                                          background: "#dcfce7",
-                                                          color: "#166534",
-                                                          border: "1px solid #bbf7d0",
+                                                          background: "#fef3c7",
+                                                          color: "#92400e",
+                                                          border: "1px solid #fde68a",
                                                           display: "inline-flex",
                                                           alignItems: "center",
                                                           gap: "4px"
                                                         }}
-                                                        title={`${metrics.rechargedExpenses > 0 ? `Fee revenue: ${formatCurrency(metrics.revenue)} · Recharged expenses: ${formatCurrency(metrics.rechargedExpenses)} · Total billable: ${formatCurrency(metrics.totalBillable)}` : `Total revenue: ${formatCurrency(metrics.revenue)}`} · 100% invoiced (${formatCurrency(metrics.realInvoiced)})`}
+                                                        title={
+                                                          isRetainer
+                                                            ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
+                                                            : `${metrics.rechargedExpenses > 0 ? `Fee revenue: ${formatCurrency(metrics.revenue)} · Recharged expenses: ${formatCurrency(metrics.rechargedExpenses)} · Total billable: ${formatCurrency(metrics.totalBillable)}` : `Total revenue: ${formatCurrency(metrics.revenue)}`} · Real invoiced: ${formatCurrency(metrics.realInvoiced)} · Left to invoice: ${formatCurrency(metrics.leftToInvoice)}${metrics.draftInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.draftInvoiced)} in draft invoices` : ""}${metrics.placeholderInvoiced > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders` : ""}`
+                                                        }
                                                       >
-                                                        <span>✓</span> Fully invoiced
+                                                        <span>⚠️</span> Left to invoice: {formatCurrency(metrics.leftToInvoice)}
                                                       </span>
+                                                    ) : (
+                                                      !isRetainer && (
+                                                        <span
+                                                          style={{
+                                                            fontSize: "11px",
+                                                            padding: "3px 9px",
+                                                            borderRadius: "12px",
+                                                            fontWeight: "600",
+                                                            background: "#dcfce7",
+                                                            color: "#166534",
+                                                            border: "1px solid #bbf7d0",
+                                                            display: "inline-flex",
+                                                            alignItems: "center",
+                                                            gap: "4px"
+                                                          }}
+                                                          title={`${metrics.rechargedExpenses > 0 ? `Fee revenue: ${formatCurrency(metrics.revenue)} · Recharged expenses: ${formatCurrency(metrics.rechargedExpenses)} · Total billable: ${formatCurrency(metrics.totalBillable)}` : `Total revenue: ${formatCurrency(metrics.revenue)}`} · 100% invoiced (${formatCurrency(metrics.realInvoiced)})`}
+                                                        >
+                                                          <span>✓</span> Fully invoiced
+                                                        </span>
+                                                      )
                                                     )
-                                                  )
-                                                )}
+                                                  )}
+                                                  {isConfirmed && hasAccountingIntegration && !auth?.user?.isReadOnly && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => setAssignModalConfig({ itemType: "invoice", job: effectiveJobForDisplay, metrics, isRetainer })}
+                                                      style={{
+                                                        padding: "3px 9px",
+                                                        borderRadius: "5px",
+                                                        border: "1px solid #bfdbfe",
+                                                        background: "#eff6ff",
+                                                        color: "#1d4ed8",
+                                                        fontSize: "11px",
+                                                        fontWeight: "600",
+                                                        cursor: "pointer",
+                                                      }}
+                                                    >
+                                                      Assign invoice
+                                                    </button>
+                                                  )}
+                                                </div>
                                               </div>
 
                                               <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
@@ -6206,55 +6571,75 @@ export default function JobsView({
                                                 flexDirection: "column"
                                               }}
                                             >
-                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
+                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px", gap: "8px", flexWrap: "wrap" }}>
                                                 <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                                                   Direct Costs ({expenseItems.length})
                                                 </div>
-                                                {isConfirmed && metrics.directCosts > 0 && (
-                                                  metrics.costsLeftToReceive > 0 ? (
-                                                    <span
-                                                      style={{
-                                                        fontSize: "11px",
-                                                        padding: "3px 9px",
-                                                        borderRadius: "12px",
-                                                        fontWeight: "600",
-                                                        background: "#fef3c7",
-                                                        color: "#92400e",
-                                                        border: "1px solid #fde68a",
-                                                        display: "inline-flex",
-                                                        alignItems: "center",
-                                                        gap: "4px"
-                                                      }}
-                                                      title={
-                                                        isRetainer
-                                                          ? `Prior month unreceived costs: ${formatCurrency(metrics.costsLeftToReceive)} (${metrics.priorMonthsUnreceivedCount} prior month${metrics.priorMonthsUnreceivedCount === 1 ? "" : "s"} unreceived) · Real costs to date: ${formatCurrency(metrics.realCostsReceived)}`
-                                                          : `Costs budget: ${formatCurrency(metrics.directCosts)} · Real received: ${formatCurrency(metrics.realCostsReceived)} · Left to receive: ${formatCurrency(metrics.costsLeftToReceive)}${metrics.draftCosts > 0 ? ` · Excludes ${formatCurrency(metrics.draftCosts)} in draft costs` : ""}${metrics.placeholderCosts > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderCosts)} in gap placeholders` : ""}`
-                                                      }
-                                                    >
-                                                      <span>⚠️</span> Left to receive: {formatCurrency(metrics.costsLeftToReceive)}
-                                                    </span>
-                                                  ) : (
-                                                    !isRetainer && (
+                                                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                                  {isConfirmed && metrics.directCosts > 0 && (
+                                                    metrics.costsLeftToReceive > 0 ? (
                                                       <span
                                                         style={{
                                                           fontSize: "11px",
                                                           padding: "3px 9px",
                                                           borderRadius: "12px",
                                                           fontWeight: "600",
-                                                          background: "#dcfce7",
-                                                          color: "#166534",
-                                                          border: "1px solid #bbf7d0",
+                                                          background: "#fef3c7",
+                                                          color: "#92400e",
+                                                          border: "1px solid #fde68a",
                                                           display: "inline-flex",
                                                           alignItems: "center",
                                                           gap: "4px"
                                                         }}
-                                                        title={`Costs budget: ${formatCurrency(metrics.directCosts)} · 100% received (${formatCurrency(metrics.realCostsReceived)})`}
+                                                        title={
+                                                          isRetainer
+                                                            ? `Prior month unreceived costs: ${formatCurrency(metrics.costsLeftToReceive)} (${metrics.priorMonthsUnreceivedCount} prior month${metrics.priorMonthsUnreceivedCount === 1 ? "" : "s"} unreceived) · Real costs to date: ${formatCurrency(metrics.realCostsReceived)}`
+                                                            : `Costs budget: ${formatCurrency(metrics.directCosts)} · Real received: ${formatCurrency(metrics.realCostsReceived)} · Left to receive: ${formatCurrency(metrics.costsLeftToReceive)}${metrics.draftCosts > 0 ? ` · Excludes ${formatCurrency(metrics.draftCosts)} in draft costs` : ""}${metrics.placeholderCosts > 0 ? ` · Excludes ${formatCurrency(metrics.placeholderCosts)} in gap placeholders` : ""}`
+                                                        }
                                                       >
-                                                        <span>✓</span> Fully received
+                                                        <span>⚠️</span> Left to receive: {formatCurrency(metrics.costsLeftToReceive)}
                                                       </span>
+                                                    ) : (
+                                                      !isRetainer && (
+                                                        <span
+                                                          style={{
+                                                            fontSize: "11px",
+                                                            padding: "3px 9px",
+                                                            borderRadius: "12px",
+                                                            fontWeight: "600",
+                                                            background: "#dcfce7",
+                                                            color: "#166534",
+                                                            border: "1px solid #bbf7d0",
+                                                            display: "inline-flex",
+                                                            alignItems: "center",
+                                                            gap: "4px"
+                                                          }}
+                                                          title={`Costs budget: ${formatCurrency(metrics.directCosts)} · 100% received (${formatCurrency(metrics.realCostsReceived)})`}
+                                                        >
+                                                          <span>✓</span> Fully received
+                                                        </span>
+                                                      )
                                                     )
-                                                  )
-                                                )}
+                                                  )}
+                                                  {isConfirmed && hasAccountingIntegration && !auth?.user?.isReadOnly && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => setAssignModalConfig({ itemType: "directCost", job: effectiveJobForDisplay, metrics, isRetainer })}
+                                                      style={{
+                                                        padding: "3px 9px",
+                                                        borderRadius: "5px",
+                                                        border: "1px solid #bfdbfe",
+                                                        background: "#eff6ff",
+                                                        color: "#1d4ed8",
+                                                        fontSize: "11px",
+                                                        fontWeight: "600",
+                                                        cursor: "pointer",
+                                                      }}
+                                                    >
+                                                      Assign direct cost
+                                                    </button>
+                                                  )}
+                                                </div>
                                               </div>
 
                                               <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
@@ -7309,6 +7694,61 @@ export default function JobsView({
             </div>
           </div>
         </div>
+      )}
+
+      {assignModalConfig && jobsClient && (
+        <AssignAccountingItemsModal
+          isOpen={Boolean(assignModalConfig)}
+          onClose={() => setAssignModalConfig(null)}
+          itemType={assignModalConfig.itemType}
+          surface="pma"
+          isAdmin={isAdmin}
+          clientName={jobsClient.clientName || ""}
+          clientSheetId={jobsClient.clientSheetId || ""}
+          masterSheetId={jobsClient.masterSheetId || ""}
+          targetJob={(() => {
+            const j = assignModalConfig.job;
+            const pRow = j?.rows?.[0] || j || {};
+            const m = assignModalConfig.metrics || {};
+            return {
+              client: pRow.client || j?.client || "",
+              jobName: pRow.jobName || j?.jobName || "",
+              projectCode: pRow.projectCode || j?.projectCode || "",
+              isRetainer: Boolean(assignModalConfig.isRetainer),
+              startDate: pRow.startDate || "",
+              endDate: pRow.endDate || "",
+              revenue: m.revenue ?? 0,
+              rechargedExpenses: m.rechargedExpenses ?? 0,
+              directCosts: m.directCosts ?? 0,
+              isJobCosting: Boolean(j?.isJobCosting),
+              rowNum: pRow.rowNum || j?.rowNum,
+              currentRealInvoiced: m.realInvoiced ?? 0,
+              currentRealDirectCosts: m.realCostsReceived ?? 0,
+            };
+          })()}
+          onCompleted={() => {
+            if (jobsClient?.masterSheetId) {
+              outgoingsPullPendingRef.current = jobsClient.masterSheetId;
+            }
+            loadJobsData(jobsClient, effectiveViewMode === "legacy" ? (jobsTab || "Confirmed") : "All", true);
+          }}
+        />
+      )}
+      {retainersEditJob && jobsClient && (
+        <RetainersEditModal
+          job={retainersEditJob}
+          clientName={jobsClient.clientName || ""}
+          clientSheetId={jobsClient.clientSheetId || ""}
+          masterSheetId={jobsClient.masterSheetId || ""}
+          onClose={() => setRetainersEditJob(null)}
+          onRenamedInPlace={() => setRetainersEditJob(null)}
+          onNeedsReload={() => {
+            if (jobsClient?.masterSheetId) {
+              outgoingsPullPendingRef.current = jobsClient.masterSheetId;
+            }
+            loadJobsData(jobsClient, effectiveViewMode === "legacy" ? (jobsTab || "Confirmed") : "All", true);
+          }}
+        />
       )}
     </>
   );

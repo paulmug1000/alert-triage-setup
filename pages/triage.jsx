@@ -33,6 +33,7 @@ const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: 
 const ActivityView = dynamic(() => import("../components/ActivityView"), { loading: () => <PmaActivitySkeleton /> });
 const IgnoredAlertsView = dynamic(() => import("../components/IgnoredAlertsView"), { loading: () => <PmaAlertsSkeleton /> });
 const TasksView = dynamic(() => import("../components/TasksView"), { loading: () => <PmaTasksSkeleton standalone /> });
+const ClientNotesView = dynamic(() => import("../components/ClientNotesView"), { loading: () => <PmaTasksSkeleton standalone /> });
 const CreateTaskModal = dynamic(() => import("../components/CreateTaskModal"));
 const ToolsView = dynamic(() => import("../components/ToolsView"), { loading: () => <PmaSetupOverviewSkeleton standalone /> });
 const SettingsView = dynamic(() => import("../components/SettingsView"), { loading: () => <PmaSetupOverviewSkeleton standalone /> });
@@ -174,6 +175,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     }
     return "";
   });
+  const [notesInitialId, setNotesInitialId] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("noteId") || "";
+    }
+    return "";
+  });
+  const [pmaNotesCount, setPmaNotesCount] = useState(0);
   const [settingsSection, setSettingsSection] = useState(() => {
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
@@ -216,6 +225,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       setSettingsSubsection(query.subsection);
     } else if (asPath && !asPath.includes("subsection=")) {
       setSettingsSubsection("");
+    }
+    if (query.noteId && typeof query.noteId === "string") {
+      setNotesInitialId(query.noteId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router?.isReady, router?.asPath]);
@@ -815,8 +827,28 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNav, managedClient, triageEngine.sessionId, allOutgoingsClients, triageEngine.clientsWithFlags]);
+  const refreshPmaNotesCount = useCallback(async () => {
+    if (!isAuthenticated || authChecking || isPulseOnly || user?.isReadOnly) return;
+    try {
+      const qs = new URLSearchParams({ mode: "count" });
+      if (managedClient?.clientName) qs.set("clientName", managedClient.clientName);
+      const res = await fetch(`/api/pma/notes?${qs.toString()}`);
+      const data = await res.json();
+      if (data?.success) {
+        setPmaNotesCount(Number(data.count || 0));
+      }
+    } catch {
+      // Non-fatal
+    }
+  }, [isAuthenticated, authChecking, isPulseOnly, user?.isReadOnly, managedClient?.clientName]);
+
+  useEffect(() => {
+    refreshPmaNotesCount();
+  }, [refreshPmaNotesCount]);
+
   const handleNavOverview = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); });
   const handleNavTasks = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); });
+  const handleNavNotes = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("notes"); loadClients(); refreshPmaNotesCount(); });
   const handleNavActivity = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("activity"); loadClients(); });
   const handleNavAppLog = handleNavActivity;
   const handleNavSettings = (clientName = "", section = "", subsection = "") => navigateWithGuard(() => {
@@ -1088,10 +1120,12 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           assignedByClient={assignedByClient}
           assignedAppIds={assignedAppIds}
           navTaskCount={navTaskCount}
+          notesCount={pmaNotesCount}
           user={user}
           isAdmin={isAdmin}
           onGoToAlerts={handleNavAlerts}
           onGoToTasks={handleNavTasks}
+          onGoToNotes={handleNavNotes}
           onGoToSetup={(clientName) => {
             handleNavSetup(clientName);
           }}
@@ -1568,6 +1602,19 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       );
     }
 
+    // ── CLIENT NOTES SCREEN ─────────────────────────────────────────────────────
+    if (activeNav === "notes") {
+      return (
+        <ClientNotesView
+          clients={allOutgoingsClients}
+          managedClient={managedClient}
+          initialNoteId={notesInitialId}
+          onClearManagedClient={handleClearManagedClient}
+          onNotesCountChange={(cnt) => setPmaNotesCount(Number(cnt || 0))}
+        />
+      );
+    }
+
     // ── DEFAULT FALLBACK SCREEN ─────────────────────────────────────────────────
     return (
       <div className="pma-page-container" style={styles.container}>
@@ -1598,6 +1645,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onAlerts={handleNavAlerts}
         onOverview={handleNavOverview}
         onTasks={handleNavTasks}
+        onNotes={handleNavNotes}
         onActivity={handleNavActivity}
         onAppLog={handleNavAppLog}
         onOutgoings={handleNavOutgoings}
@@ -1620,6 +1668,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onDb={handleNavDb}
         homeAlertCount={triageEngine.triageComplete ? (managedClient ? (managedClientAlertCount ?? 0) : currentLiveAlertCount) : undefined}
         taskCount={navTaskCount}
+        notesCount={pmaNotesCount}
         integrationsCount={integrationsAttentionCount}
         user={user}
         onLogout={logout}

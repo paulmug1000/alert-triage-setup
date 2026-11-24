@@ -4,7 +4,7 @@ import { verifyUserAuthorizedForSheet, unwrapSheetId } from "../../../services/u
 import { assertClientPortalLive } from "../../../services/setupService.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
-import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense, isJobCostingStyle, formatLikelihood, assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
+import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense, isJobCostingStyle, formatLikelihood, assertTrustedOrigin, sanitizeSpreadsheetTerms, parseVariableRetainerTag, isFixedScheduleRetainer } from "../../../utils/helpers.js";
 import { getClients } from "../../../services/workspaces.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s L1 fresh window
@@ -570,6 +570,10 @@ export default async function handler(req, res) {
             if (isParent) {
               const projectRetainer = getValueByHeader(row, colMap, ["project / retainer", "proj / ret"]) || "Project";
               const isRetainer = projectRetainer.toLowerCase().includes("retainer");
+              const rawSplitAe = getValueByHeader(row, colMap, ["revunevensplit"]) || (row[30] !== undefined ? String(row[30]) : "");
+              const varRetainerMeta = isRetainer ? parseVariableRetainerTag(rawSplitAe) : null;
+              const isVariableRetainer = Boolean(isRetainer && varRetainerMeta);
+              const isFixedRetainer = isRetainer && !isVariableRetainer;
 
               // Scan subsequent child rows
               let j = i + 1;
@@ -655,7 +659,7 @@ export default async function handler(req, res) {
               // Child invoices & Retainer child recognition periods
               const childRetainers = [];
               childRows.forEach((cr) => {
-                if (isRetainer) {
+                if (isFixedRetainer) {
                   let childInvSum = 0;
                   let childRechgdSum = 0;
                   for (let s = 1; s <= 3; s++) {
@@ -801,6 +805,8 @@ export default async function handler(req, res) {
                 productLine: getValueByHeader(row, colMap, ["prod. line", "product line"]),
                 leadSource: getValueByHeader(row, colMap, ["lead src", "lead source"]),
                 projectRetainer,
+                isVariableRetainer,
+                ...(varRetainerMeta ? { varRetainerMeta } : {}),
                 startDate,
                 endDate,
                 likelihood,

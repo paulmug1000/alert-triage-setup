@@ -5,6 +5,9 @@ import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString, isNBToFindLabel, hasNBToFindInPerformance } from "../../services/deepDiveHelper";
 import PerformanceTrajectoryChartRow from "./PerformanceTrajectoryChartRow";
 import { downloadCsv } from "../../utils/helpers";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import { buildScreenNoteKey } from "../../utils/pulseNotesKeys";
 
 export default function PerformanceYTDView({
   clientName,
@@ -20,6 +23,7 @@ export default function PerformanceYTDView({
   const years = data?.years || [];
   const [selectedYearIdx, setSelectedYearIdx] = useState(null);
   const [activePopover, setActivePopover] = useState(null);
+  const { openNotes, getEntitySummary } = usePulseNotes();
 
   useEffect(() => {
     if (activePopover?.isOpen && activePopover._clickParams && keyData) {
@@ -516,6 +520,31 @@ export default function PerformanceYTDView({
               ))}
             </select>
           </div>
+
+          {(() => {
+            const fyStr = activeYear?.fyLabel || activeYear?.displayTitle || "Current year";
+            const noteKey = buildScreenNoteKey("performance", fyStr);
+            const noteSum = getEntitySummary(noteKey);
+            return (
+              <PulseNoteTrigger
+                variant="toolbar"
+                count={noteSum?.count || 0}
+                openNotifyCount={noteSum?.openNotifyCount || 0}
+                unreadReplyCount={noteSum?.unreadReplyCount || 0}
+                latestSnippet={noteSum?.latestSnippet || ""}
+                onClick={() =>
+                  openNotes({
+                    scopeType: "screen",
+                    entityType: "performance",
+                    entityKey: noteKey,
+                    entityLabel: `Performance — ${fyStr}`,
+                    drawerTitle: "Performance notes",
+                    contextMeta: { fyLabel: fyStr, subView: "ytd" },
+                  })
+                }
+              />
+            );
+          })()}
 
           <button
             type="button"

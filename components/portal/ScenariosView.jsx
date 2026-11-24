@@ -4,6 +4,9 @@ import Skeleton, { PerformanceSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
 import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString, isNBToFindLabel, hasNBToFindInPerformance } from "../../services/deepDiveHelper";
 import { isNoEndDateSentinel } from "../../utils/helpers";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import { buildScreenNoteKey, buildScenarioSnapshot } from "../../utils/pulseNotesKeys";
 
 export default function ScenariosView({
   clientName,
@@ -25,6 +28,7 @@ export default function ScenariosView({
         : 0;
   const [selectedYearIdx, setSelectedYearIdx] = useState(null);
   const [pipelineSort, setPipelineSort] = useState("likelihood-desc");
+  const { openNotes, getEntitySummary } = usePulseNotes();
 
   const resolvedYearIdx = selectedYearIdx !== null ? selectedYearIdx : defaultYearIdx;
   const activeYearIdx = Math.min(Math.max(0, resolvedYearIdx), Math.max(0, years.length - 1));
@@ -629,6 +633,40 @@ export default function ScenariosView({
           >
             Reset scenario
           </button>
+
+          {(() => {
+            const fyStr = activeYear?.fyLabel || activeYear?.displayTitle || "Current year";
+            const noteKey = buildScreenNoteKey("scenario", fyStr);
+            const noteSum = getEntitySummary(noteKey);
+            return (
+              <PulseNoteTrigger
+                variant="toolbar"
+                count={noteSum?.count || 0}
+                openNotifyCount={noteSum?.openNotifyCount || 0}
+                unreadReplyCount={noteSum?.unreadReplyCount || 0}
+                latestSnippet={noteSum?.latestSnippet || ""}
+                onClick={() =>
+                  openNotes({
+                    scopeType: "screen",
+                    entityType: "scenario",
+                    entityKey: noteKey,
+                    entityLabel: `Scenarios — ${fyStr}`,
+                    drawerTitle: "Scenario notes",
+                    contextMeta: { fyLabel: fyStr, subView: "scenarios" },
+                    scenarioSnapshot: buildScenarioSnapshot({
+                      fyLabel: fyStr,
+                      months: activeYear?.headerMonths || [],
+                      pipelineJobs,
+                      disabledJobIds,
+                      confirmedJobIds,
+                      adjs,
+                      currencySymbol,
+                    }),
+                  })
+                }
+              />
+            );
+          })()}
 
           <button
             type="button"

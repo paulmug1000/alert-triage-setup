@@ -15,12 +15,15 @@ import {
   isJobCostingStyle,
   rewriteRowFormulasToTargetRow,
   assertTrustedOrigin,
-  sanitizeSpreadsheetTerms
+  sanitizeSpreadsheetTerms,
+  parseVariableRetainerTag,
 } from "../../../utils/helpers.js";
-import { buildRetainerChildRowsWritePlan } from "../../../services/retainers.js";
+import { buildRetainerChildRowsWritePlan, createVariableRetainerSeries_ } from "../../../services/retainers.js";
 import { getToleranceValues } from "../../../services/sharedHelpers.js";
 import { resolveMasterSheetIdForClient_ } from "../../../services/workspaces.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
+import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
 
 function colToLetter(colIndex) {
   let temp, letter = "";
@@ -206,6 +209,74 @@ export default async function handler(req, res) {
     }
 
     const isRetainer = String(parentData[35] || "").trim().toLowerCase().includes("retainer");
+    const varRetMeta = isRetainer ? parseVariableRetainerTag(parentData[30]) : null;
+    if (varRetMeta) {
+      const parseNum = (v) => parseFloat(String(v ?? "").replace(/[£$€,\s]/g, "")) || 0;
+      const initialInvoices = [];
+      for (const base of [41, 48, 55]) {
+        const amt = parentData[base];
+        const ref = String(parentData[base + 1] || "").trim();
+        const sent = parentData[base + 2];
+        const days = parentData[base + 3];
+        const st = String(parentData[base + 4] || "").trim();
+        if (ref && !isPlaceholderInvoice(ref, st)) {
+          initialInvoices.push({ amount: amt, ref, sendDate: sent, days, status: st });
+        }
+      }
+      const varRes = await createVariableRetainerSeries_(sheets, {
+        clientSheetId,
+        clientName: verifiedClientName || clientName || "",
+        client: parentClient,
+        jobName: varRetMeta.seriesName || parentJobName,
+        projectCode: parentProjectCode,
+        leadSource: String(parentData[4] || "").trim(),
+        productLine: String(parentData[36] || "").trim(),
+        baseRevenue: varRetMeta.baseRev || parseNum(parentData[32]),
+        baseDirectCosts: varRetMeta.baseDC || parseNum(parentData[33]),
+        vat: String(parentData[34] || "Yes").trim(),
+        startDate: parentData[isJobCosting ? 5 : 37],
+        endDate: varRetMeta.endDate || parentData[isJobCosting ? 6 : 38],
+        noEndDate: varRetMeta.noEndDate,
+        invoiceSendDay: varRetMeta.sendDay,
+        initialInvoices,
+        setDateConf: true,
+      });
+      if (!varRes.success) {
+        return res.status(400).json({ success: false, error: varRes.error || "Failed to confirm variable retainer" });
+      }
+      let likelihoodCol = "AN";
+      let copiedStatusCol = "DD";
+      const pHeaderRows = pHeaderResp?.data?.values || [];
+      const hRow = pHeaderRows[1] && pHeaderRows[1].length > 10 ? pHeaderRows[1] : (pHeaderRows[0] || []);
+      const lIdx = hRow.findIndex((h) => ["% likel.", "% likelihood", "% likely", "likelihood"].includes(String(h || "").trim().toLowerCase()));
+      if (lIdx !== -1) likelihoodCol = colToLetter(lIdx);
+      const cIdx = hRow.findIndex((h) => { const s = String(h || "").trim().toLowerCase(); return s.includes("copied") || s.includes("conf?"); });
+      if (cIdx !== -1) copiedStatusCol = colToLetter(cIdx);
+
+      await withRetry(() =>
+        sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: clientSheetId,
+          _deferBackgroundRecompute: true,
+          requestBody: {
+            valueInputOption: "USER_ENTERED",
+            data: [
+              { range: `${pipelineSheetName}!${likelihoodCol}${pRow}`, values: [["100%"]] },
+              { range: `${pipelineSheetName}!${copiedStatusCol}${pRow}`, values: [["Yes"]] },
+            ],
+          },
+        })
+      );
+      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => {});
+      return res.status(200).json({
+        success: true,
+        confirmedRow: varRes.firstRowNum,
+        childRows: [],
+        isVariableRetainer: true,
+        backgroundProvisioning: false,
+        message: "Successfully confirmed variable retainer",
+      });
+    }
+
     const shouldProvisionRetainer = isRetainer && childRowsData.length === 0;
 
     // Place new retainer parent row at lastJobRow + 1; keep existing placement for standard jobs
@@ -578,6 +649,25 @@ export default async function handler(req, res) {
       },
       user: sessionUser.name || sessionUser.email
     }).catch((logErr) => console.warn("⚠️ Failed to log confirm-job activity:", logErr.message));
+
+    const movedJobKey = buildJobNoteKey({
+      client: parentClient,
+      jobName: parentJobName,
+      projectCode: parentProjectCode,
+      rowNumber: targetParentRow,
+    });
+    const prevPipelineJobKey = buildJobNoteKey({
+      client: parentClient,
+      jobName: parentJobName,
+      projectCode: parentProjectCode,
+      rowNumber: pRow,
+    });
+    relinkNotesForJobChange({
+      clientName: verifiedClientName || clientName || parentClient || "",
+      oldJobKey: prevPipelineJobKey,
+      newJobKey: movedJobKey,
+      newJobLabel: buildJobNoteLabel({ client: parentClient, jobName: parentJobName }),
+    }).catch(() => {});
 
     return res.status(200).json({
       success: true,

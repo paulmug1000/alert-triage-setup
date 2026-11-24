@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import { formatMoney } from "../../services/deepDiveHelper";
 import Spinner from "../Spinner";
 import { DeepDiveSkeleton } from "../Skeleton";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
 
 export default function DeepDivePopover({
   isOpen,
@@ -16,7 +18,10 @@ export default function DeepDivePopover({
   thousandsSeparator,
   onClose,
   isLoading = false,
+  noteTarget = null,
 }) {
+  const { openNotes, getEntitySummary } = usePulseNotes();
+  const noteSum = noteTarget?.entityKey ? getEntitySummary(noteTarget.entityKey) : null;
   const popoverRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [openAccordions, setOpenAccordions] = useState({});
@@ -268,6 +273,17 @@ export default function DeepDivePopover({
             <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", letterSpacing: "-0.2px", flex: 1, minWidth: 0 }}>
               {title}
             </div>
+            {noteTarget && (
+              <PulseNoteTrigger
+                variant="inline"
+                label="Notes"
+                count={noteSum?.count || 0}
+                openNotifyCount={noteSum?.openNotifyCount || 0}
+                unreadReplyCount={noteSum?.unreadReplyCount || 0}
+                latestSnippet={noteSum?.latestSnippet || ""}
+                onClick={() => openNotes(noteTarget)}
+              />
+            )}
             {total !== undefined && (
               <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>
                 {formatGBP(total)}

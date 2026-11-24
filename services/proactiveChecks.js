@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputDateFormat, postGasWebAppLocked } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputDateFormat, postGasWebAppLocked, isVariableRetainerRow, isFixedScheduleRetainer, parseVariableRetainerTag } from "../utils/helpers.js";
 import { serialToDate } from "./gasRuntime/sheetValueUtils.js";
 import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid, sanitizeFormulaInput } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
@@ -345,6 +345,8 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const fmtDate = (d) => `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
 
+    const varRetainerGroups = Object.create(null);
+
     for (let r = 1; r < data.length; r++) {
       const row = data[r];
       const jobType = String(row[35] || "").toLowerCase();
@@ -358,6 +360,20 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
       const clientNameRow = String(row[0] || "").trim();
       const jobName = String(row[1] || "").trim();
       if (!jobName) continue;
+
+      const vrMeta = parseVariableRetainerTag(row[30]);
+      if (vrMeta) {
+        const sKey = (vrMeta.seriesName || jobName).toLowerCase();
+        const cKey = clientNameRow.toLowerCase();
+        if (cKey !== "__proto__" && sKey !== "__proto__") {
+          const gKey = `${cKey}|||${sKey}`;
+          if (!Object.prototype.hasOwnProperty.call(varRetainerGroups, gKey)) {
+            varRetainerGroups[gKey] = [];
+          }
+          varRetainerGroups[gKey].push({ r, row, clientNameRow, jobName, vrMeta, revenue, startVal, endVal });
+        }
+        continue;
+      }
 
       const endDate = parseConfirmedDate_(endVal);
       if (!endDate) continue;
@@ -600,6 +616,79 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         });
       }
     }
+
+    // Check variable retainer monthly rows for overdue uninvoiced past months
+    for (const groupItems of Object.values(varRetainerGroups)) {
+      for (const item of groupItems) {
+        const { r, row, clientNameRow, jobName, vrMeta, revenue, startVal, endVal } = item;
+        const jobRows = collectJobRows_(data, r);
+        let realInvCount = 0;
+        for (let jr = 0; jr < jobRows.length; jr++) {
+          const jRow = jobRows[jr].row;
+          const slots2 = [{ refIdx: 42 }, { refIdx: 49 }, { refIdx: 56 }];
+          for (const s2 of slots2) {
+            const refVal = String(jRow[s2.refIdx] || "").trim();
+            if (refVal && !isPlaceholderInvoice(refVal)) realInvCount++;
+          }
+        }
+        if (realInvCount > 0) continue;
+
+        const mStart = parseConfirmedDate_(startVal);
+        const mEnd = parseConfirmedDate_(endVal);
+        if (!mStart || !mEnd) continue;
+
+        let expectedSendDate = parseConfirmedDate_(row[43]);
+        if (!expectedSendDate) {
+          const day = Math.min(vrMeta.sendDay || 28, new Date(mStart.getFullYear(), mStart.getMonth() + 1, 0).getDate());
+          expectedSendDate = new Date(mStart.getFullYear(), mStart.getMonth(), day);
+        }
+        if (expectedSendDate >= today) continue;
+
+        const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+        const possibleMatch = await findPossibleRetainerInvoice_(masterSheetId, clientSheetId, clientNameRow, expectedSendDate, sharedData, sheets, r);
+        let detail = `${clientNameRow} - ${jobName}: invoice was scheduled for ${fmtDate(expectedSendDate)} but has no reference number - it may not have been sent yet.`;
+        let possibleMatchCase = "";
+        if (possibleMatch) {
+          const mStatus = String(possibleMatch.status || "").toLowerCase();
+          const mIsReal = (mStatus === "sent" || mStatus === "paid");
+          if (mIsReal) {
+            const mDiffers = Math.abs(possibleMatch.amount - monthlyRevenue) > 0.01;
+            possibleMatchCase = mDiffers ? "changed" : "matches";
+            detail += mDiffers
+              ? `\nPossible match: invoice ${possibleMatch.invoiceNo} for £${possibleMatch.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch.sentDate} (confidence: ${possibleMatch.confidence})${possibleMatch.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch.attachedToRow}` : " - not yet attached to any job in Confirmed"}.`
+              : `\nInvoice ${possibleMatch.invoiceNo} for £${possibleMatch.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch.sentDate}, matching the expected amount${possibleMatch.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch.attachedToRow}.` : ", but not yet attached to this job in Confirmed."}`;
+          } else {
+            possibleMatchCase = "draft";
+            detail += `\nNote: invoice ${possibleMatch.invoiceNo} for £${possibleMatch.amount.toFixed(2)}${possibleMatch.attachedToRow ? ` already exists on Confirmed row ${possibleMatch.attachedToRow}` : " already exists"} but is still marked "${possibleMatch.status || "unsent"}" - it likely just needs sending.`;
+          }
+        }
+        const expectedDateStr = fmtDate(expectedSendDate);
+        alerts.push({
+          alertType: "retainer_invoice",
+          alertKey: `retainer_invoice|${clientName}|${clientNameRow}|${jobName}|${expectedDateStr}`,
+          legacyAlertKey: `retainer_invoice|${clientName}|${clientNameRow}|${jobName}`,
+          heading: "Retainer invoice not sent",
+          detail,
+          jobName,
+          endClientName: clientNameRow,
+          confirmedRow: r + 1,
+          stableJobKey: `${clientNameRow}|${jobName}`,
+          revenue: String(revenue || ""),
+          startDate: fmtDate(mStart),
+          endDate: fmtDate(mEnd),
+          expectedByDate: expectedDateStr,
+          isVariableRetainer: true,
+          possibleMatchInvoiceNo: possibleMatch?.invoiceNo || "",
+          possibleMatchAmount: String(possibleMatch?.amount || ""),
+          possibleMatchSentDate: possibleMatch?.sentDate || "",
+          possibleMatchVatAmount: String(possibleMatch?.vatAmount || 0),
+          possibleMatchStatus: possibleMatch?.status || "",
+          possibleMatchConfidence: possibleMatch?.confidence || "",
+          possibleMatchConfirmedRow: possibleMatch?.attachedToRow ? String(possibleMatch.attachedToRow) : "",
+          possibleMatchCase,
+        });
+      }
+    }
   } catch (e) { }
   return alerts;
 }
@@ -786,12 +875,13 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
       if (!jobName) { r++; continue; }
 
       const isRetainer = jobType.includes("retainer");
+      const isFixedRetainer = isFixedScheduleRetainer(row);
       const jobRows = collectJobRows_(data, r);
 
       let mismatch = false, detail = "", mismatchTotalInvoiced = 0, mismatchFeeInvoiced = 0, mismatchRechargedInvoiced = 0;
       let billableDiff = 0, rechargedDiff = 0;
 
-      if (!isRetainer) {
+      if (!isFixedRetainer) {
         let totalInvoiced = 0;
         let rechargedInvoiced = 0;
         for (let jr = 0; jr < jobRows.length; jr++) {
@@ -896,12 +986,13 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
       if (!jobName) { r++; continue; }
 
       const isRetainer = jobType.includes("retainer");
+      const isFixedRetainer = isFixedScheduleRetainer(row);
       const jobRows = collectJobRows_(data, r);
       const sheetRow = startRow + r;
 
       let mismatch = false, detail = "", mismatchExpTotal = 0;
 
-      if (!isRetainer) {
+      if (!isFixedRetainer) {
         let totalExpenses = 0;
         for (let jr = 0; jr < jobRows.length; jr++) totalExpenses += sumExpSlotAmounts_(jobRows[jr].row);
         if (totalExpenses === 0) { r += jobRows.length; continue; }
@@ -1346,6 +1437,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
       if (!jobClient || !jobNameV || (!hasVal(revenue) && !hasVal(rechargedRaw)) || !hasVal(startVal) || !hasVal(endVal)) { r++; continue; }
 
       const isRetainer = jobType.includes("retainer");
+      const isFixedRetainer = isFixedScheduleRetainer(row);
       const jobRows = collectJobRows_(data, r);
       const hasChildren = jobRows.length > 1;
       const problems = [];
@@ -1374,7 +1466,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
         console.log(`  - endVal:   "${endVal}" -> parsed: ${parsedEnd}`);
       }
 
-      if (isRetainer && !hasChildren && !isSingleMonth) {
+      if (isFixedRetainer && !hasChildren && !isSingleMonth) {
         problems.push(`Row ${r + 1} (parent): retainer job has no child rows (single-row retainers are not allowed)`);
       }
 
@@ -1382,7 +1474,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
         const jRow = jobRows[jr].row, jSheetRow = jobRows[jr].sheetRow;
         const rowLabel = `Row ${jSheetRow} (${jobRows[jr].isParent ? "parent" : "child"})`;
 
-        if (isRetainer && (hasVal(jRow[invAmtIdx[1]]) || hasVal(jRow[invAmtIdx[2]]))) {
+        if (isFixedRetainer && (hasVal(jRow[invAmtIdx[1]]) || hasVal(jRow[invAmtIdx[2]]))) {
           const s1Ref = String(jRow[42] || "").trim();
           const s2Ref = String(jRow[49] || "").trim();
           const s3Ref = String(jRow[56] || "").trim();
@@ -1398,7 +1490,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
             problems.push(`${rowLabel}: retainer has data in invoice slot 2 or 3 - retainers should only ever use slot 1 per row (unless tracking part-payment installments)`);
           }
         }
-        if (isRetainer && hasChildren && jobRows[jr].isParent) {
+        if (isFixedRetainer && hasChildren && jobRows[jr].isParent) {
           if (hasInvSlotData(jRow, 0) || hasInvSlotData(jRow, 1) || hasInvSlotData(jRow, 2)) {
             problems.push(`${rowLabel}: retainer has child rows but the parent row also holds an invoice - once child rows exist, the parent should stay empty`);
           }
@@ -1424,7 +1516,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
         }
       }
 
-      if (!isRetainer) {
+      if (!isFixedRetainer) {
         let firstEmptyInv = null;
         let firstAutoInv = null;
         let reportedInvGap = false;
@@ -1602,7 +1694,7 @@ export async function checkUnreceivedExpenses_(clientName, clientSheetId, shared
       const revenue = row[32], directCosts = row[33], jobType = String(row[35] || "").toLowerCase(), startVal = row[37], endVal = row[38];
 
       if (!revenue || !startVal || !endVal) { r++; continue; }
-      if (jobType.indexOf("retainer") !== -1) { r += collectJobRows_(data, r).length; continue; }
+      if (isFixedScheduleRetainer(row)) { r += collectJobRows_(data, r).length; continue; }
 
       const directCostsAmt = parseFloat(String(directCosts || "0").replace(/[£$€,\s]/g, "")) || 0;
       if (directCostsAmt <= 0) { r += collectJobRows_(data, r).length; continue; }

@@ -1,4 +1,4 @@
-//Version 1.12 - Use Object.create(null) tab maps, linear-time wildcard glob matcher, and bounded RE2 quantifier validation
+//Version 1.13 - Fix LET/LAMBDA short variable shadowing in range resolution, clear OutgNotes/Monthly spill tails, support Recon IMPORTRANGE, and preserve unloaded external-tab formula values
 // Evaluates Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -1122,10 +1122,39 @@ function getLondonTodaySerial_() {
 
 const PRESERVE_EXISTING_SPILL = Symbol("PRESERVE_EXISTING_SPILL");
 
+class PreserveExistingValueSignal { }
+
 export function recalculateClientGrids(grids, options = {}) {
   if (!grids || typeof grids !== "object") return grids;
   if (Object.getPrototypeOf(grids) === Object.prototype) {
     Object.setPrototypeOf(grids, null);
+  }
+
+  const preservedFormulaValues =
+    options.preservedFormulaValues instanceof Map ? options.preservedFormulaValues : null;
+  const reconGrids =
+    options.reconGrids && typeof options.reconGrids === "object" ? options.reconGrids : null;
+
+  const initialFormulaVals = new Map();
+  for (const [tabName, tObj] of Object.entries(grids)) {
+    if (tabName === "__proto__" || tabName === "constructor" || tabName === "prototype") continue;
+    const fArr = tObj?.formulas;
+    const vArr = tObj?.values;
+    if (!Array.isArray(fArr) || !Array.isArray(vArr)) continue;
+    for (let r = 0; r < fArr.length; r++) {
+      const fRow = fArr[r];
+      const vRow = vArr[r];
+      if (!Array.isArray(fRow) || !Array.isArray(vRow)) continue;
+      for (let c = 0; c < fRow.length; c++) {
+        const f = fRow[c];
+        if (typeof f === "string" && f.startsWith("=")) {
+          const cur = vRow[c];
+          if (cur !== "" && cur !== null && cur !== undefined) {
+            initialFormulaVals.set(`${tabName}!${r},${c}`, cur);
+          }
+        }
+      }
+    }
   }
 
   const todaySerial =
@@ -1280,10 +1309,11 @@ export function recalculateClientGrids(grids, options = {}) {
 
   function formulaRefsMissingSheet_(f, currentTab) {
     if (!onlyTabs || typeof f !== "string" || !f.includes("!")) return false;
-    const matches = f.matchAll(/([A-Za-z0-9_]+)\!/g);
+    const stripped = f.replace(/"(?:""|[^"])*"/g, "");
+    const matches = stripped.matchAll(/(?:'([^']+)'|([A-Za-z0-9_]+))!/g);
     for (const m of matches) {
-      const refTab = m[1];
-      if (refTab !== currentTab && refTab !== "REF" && !grids[refTab]) {
+      const refTab = m[1] || m[2];
+      if (refTab && refTab !== currentTab && refTab !== "REF" && !grids[refTab]) {
         return true;
       }
     }
@@ -1330,6 +1360,12 @@ export function recalculateClientGrids(grids, options = {}) {
         if (hasFormula && onlyTabs && formulaRefsMissingSheet_(f, tab)) {
           if (c < rowV.length && rowV[c] === "") {
             rowV[c] = null;
+          }
+          if ((rowV[c] === null || rowV[c] === undefined) && preservedFormulaValues) {
+            const pVal = preservedFormulaValues.get(`${tab}!${r},${c}`);
+            if (pVal !== undefined && pVal !== null && pVal !== "") {
+              rowV[c] = pVal;
+            }
           }
           cellState[tab][r * numCols + c] = 2;
           continue;
@@ -1403,11 +1439,53 @@ export function recalculateClientGrids(grids, options = {}) {
     for (const ut of unaffectedTabs) tabSpillsInitialized.add(ut);
   }
 
+  function clearMonthlyFilterSpillTail_(mTab, mDims, r, c) {
+    const cf = mTab.formulas[r]?.[c];
+    if (typeof cf === "string" && /^=\s*FILTER\s*\(/i.test(cf)) {
+      const endClearR = Math.min(mDims.rows - 1, r + 72);
+      for (let tr = r + 1; tr <= endClearR; tr++) {
+        const tf = mTab.formulas[tr]?.[c];
+        if (!(typeof tf === "string" && tf.startsWith("=")) && mTab.values[tr]) {
+          mTab.values[tr][c] = null;
+        }
+      }
+    }
+  }
+
   function ensureTabSpillsEvaluated(tab) {
     if (tabSpillsInitialized.has(tab)) return;
     tabSpillsInitialized.add(tab);
     const origins = spillOriginsByTab[tab];
     if (!origins) return;
+    const t = grids[tab];
+    const dims = tabDims[tab];
+    if (t && dims && tab === "OutgNotes") {
+      let minSpillCol = Infinity;
+      for (const [or, oc] of origins) {
+        if (or >= 2 && oc >= 85 && oc < minSpillCol) minSpillCol = oc;
+      }
+      if (Number.isFinite(minSpillCol)) {
+        for (let r = 2; r < dims.rows; r++) {
+          const vRow = t.values[r];
+          if (!vRow) continue;
+          const fRow = t.formulas[r];
+          for (let c = minSpillCol; c < dims.cols; c++) {
+            const cf = fRow?.[c];
+            if (!(typeof cf === "string" && cf.startsWith("="))) {
+              vRow[c] = null;
+            }
+          }
+        }
+        rangeCacheByTab[tab]?.clear();
+      }
+    } else if (t && dims && tab === "Monthly") {
+      for (const [or, oc] of origins) {
+        if (!isMonthlyColUnaffected_(oc)) {
+          clearMonthlyFilterSpillTail_(t, dims, or, oc);
+        }
+      }
+      rangeCacheByTab[tab]?.clear();
+    }
     for (let i = 0; i < origins.length; i++) {
       const [r, c] = origins[i];
       evalCell(tab, r, c);
@@ -1416,7 +1494,10 @@ export function recalculateClientGrids(grids, options = {}) {
 
   function getCell(tab, r, c) {
     const t = grids[tab];
-    if (!t) return null;
+    if (!t) {
+      if (tab === "REF") throw new SheetError("#REF!", "Reference does not exist.");
+      throw new PreserveExistingValueSignal();
+    }
     if (r < 0 || c < 0) return null;
 
     // If tab has active row bound and r exceeds it, evaluate template row (maxR) and return its value
@@ -1476,7 +1557,10 @@ export function recalculateClientGrids(grids, options = {}) {
 
   function getRange2D(tab, r0, r1, c0, c1, clampInactive = true) {
     const t = grids[tab];
-    if (!t) return [[null]];
+    if (!t) {
+      if (tab === "REF") throw new SheetError("#REF!", "Reference does not exist.");
+      throw new PreserveExistingValueSignal();
+    }
     const dims = tabDims[tab] || { rows: t.values.length, cols: 1 };
     let startR = Math.max(0, Math.min(r0, r1));
     let endR = Math.min(dims.rows - 1, Math.max(r0, r1));
@@ -1583,7 +1667,9 @@ export function recalculateClientGrids(grids, options = {}) {
       };
       result = evalAST(ast, ctx);
     } catch (err) {
-      if (err instanceof SheetError) {
+      if (err instanceof PreserveExistingValueSignal) {
+        result = PRESERVE_EXISTING_SPILL;
+      } else if (err instanceof SheetError) {
         result = err.toString();
       } else {
         result = new SheetError("#ERROR!", err?.message || "Eval error").toString();
@@ -1591,8 +1677,18 @@ export function recalculateClientGrids(grids, options = {}) {
     }
 
     if (result === PRESERVE_EXISTING_SPILL) {
+      const key = `${tab}!${r},${c}`;
+      const cur = grids[tab].values[r]?.[c];
+      const hasCur = cur !== "" && cur !== null && cur !== undefined;
+      const fallback = hasCur
+        ? cur
+        : preservedFormulaValues?.get(key) ?? initialFormulaVals.get(key) ?? null;
+      if (fallback !== null && fallback !== undefined && fallback !== "" && !hasCur) {
+        setCellVal(tab, r, c, fallback);
+        return fallback;
+      }
       cellState[tab][idx] = 2;
-      return grids[tab].values[r]?.[c] ?? null;
+      return cur ?? null;
     }
 
     if (Array.isArray(result)) {
@@ -1671,8 +1767,13 @@ export function recalculateClientGrids(grids, options = {}) {
     if (node.type === "Ref") {
       return resolveRefCoords(node, ctx);
     }
-    if (node.type === "VarOrRef" && node.coord) {
-      return resolveRefCoords({ sheet: null, coord: node.coord }, ctx);
+    if (node.type === "VarOrRef") {
+      if (ctx.env.has(node.name.toLowerCase())) {
+        return null;
+      }
+      if (node.coord) {
+        return resolveRefCoords({ sheet: null, coord: node.coord }, ctx);
+      }
     }
     if (node.type === "Literal" && typeof node.value === "number") {
       return resolveRefCoords({ sheet: null, coord: { kind: "row", row: Math.trunc(node.value) - 1 } }, ctx);
@@ -3326,14 +3427,53 @@ export function recalculateClientGrids(grids, options = {}) {
       case "IMPORTRANGE": {
         const urlStr = toStringVal(evalScalar(args[0], ctx));
         const rangeStr = toStringVal(evalScalar(args[1], ctx));
-        const selfUrl = toStringVal(getCell("KeyInfo", 0, 2)); // KeyInfo!C1
-        const selfIdMatch = selfUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
-        const selfId = selfIdMatch ? selfIdMatch[1] : selfUrl;
-        if (selfId && urlStr.includes(selfId)) {
+        const extractSheetId = (raw) => {
+          const m = String(raw || "").match(/\/d\/([a-zA-Z0-9-_]+)/);
+          return m ? m[1] : String(raw || "").trim();
+        };
+        const targetId = extractSheetId(urlStr);
+        const selfId = extractSheetId(toStringVal(getCell("KeyInfo", 0, 2))); // KeyInfo!C1
+        if (selfId && targetId && (targetId === selfId || urlStr.includes(selfId))) {
           const b = parseIndirectRangeString(rangeStr, ctx.tab, false);
           return b.isSingle ? getCell(b.tab, b.r0, b.c0) : getRange2D(b.tab, b.r0, b.r1, b.c0, b.c1, false);
         }
-        return PRESERVE_EXISTING_SPILL;
+        const reconId = reconGrids ? extractSheetId(toStringVal(getCell("KeyInfo", 0, 6))) : ""; // KeyInfo!G1
+        if (reconGrids && reconId && targetId && (targetId === reconId || urlStr.includes(reconId))) {
+          const bangIdx = rangeStr.indexOf("!");
+          if (bangIdx >= 0) {
+            const rTab = rangeStr.slice(0, bangIdx).trim().replace(/^'|'$/g, "");
+            const rAddr = rangeStr.slice(bangIdx + 1).trim();
+            const reconTab = reconGrids[rTab];
+            if (reconTab && Array.isArray(reconTab.values)) {
+              const parts = rAddr.split(":");
+              const cLeft = parseCoordToken(parts[0].trim());
+              if (cLeft) {
+                if (parts.length === 1 && cLeft.kind === "cell") {
+                  const v = reconTab.values[cLeft.row]?.[cLeft.col];
+                  return v === undefined || v === "" ? null : v;
+                }
+                const cRight = parts[1] ? parseCoordToken(parts[1].trim()) : cLeft;
+                if (cRight) {
+                  const r0 = cLeft.row !== undefined ? cLeft.row : 0;
+                  const r1 = cRight.row !== undefined ? cRight.row : reconTab.values.length - 1;
+                  const c0 = cLeft.col !== undefined ? cLeft.col : 0;
+                  const c1 = cRight.col !== undefined ? cRight.col : (reconTab.values[0]?.length || 1) - 1;
+                  const out = [];
+                  for (let rr = r0; rr <= r1; rr++) {
+                    const row = [];
+                    for (let cc = c0; cc <= c1; cc++) {
+                      const cv = reconTab.values[rr]?.[cc];
+                      row.push(cv === undefined || cv === "" ? null : cv);
+                    }
+                    out.push(row);
+                  }
+                  return out.length === 1 && out[0].length === 1 ? out[0][0] : out;
+                }
+              }
+            }
+          }
+        }
+        throw new PreserveExistingValueSignal();
       }
 
       default:
@@ -3774,9 +3914,11 @@ export function recalculateClientGrids(grids, options = {}) {
           for (let r = 0; r < mDims.rows; r++) {
             for (let c = 132; c <= ecEnd; c++) {
               cellState.Monthly[r * mDims.cols + c] = 0;
+              clearMonthlyFilterSpillTail_(mTab, mDims, r, c);
             }
             for (let c = ftStart; c <= ftEnd; c++) {
               cellState.Monthly[r * mDims.cols + c] = 0;
+              clearMonthlyFilterSpillTail_(mTab, mDims, r, c);
             }
           }
           for (let r = 0; r < mTab.formulas.length; r++) {
@@ -3797,6 +3939,9 @@ export function recalculateClientGrids(grids, options = {}) {
               }
             }
           }
+        }
+        if (!onlyTabs || onlyTabs.has("Outgoings")) {
+          evaluateTabFormulasPass("Outgoings", true);
         }
         for (const downstreamTab of ["VAT", "Cash", "GPbyPL", "Year0Data", "ContrPayments"]) {
           if (!onlyTabs || onlyTabs.has(downstreamTab)) {

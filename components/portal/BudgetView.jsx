@@ -3,6 +3,9 @@ import Spinner from "../Spinner";
 import { BudgetSkeleton } from "../Skeleton";
 import { formatMoney as universalFormatMoney, parseMoney, hasNBToFindInPerformance, hasNBToFindInBudget } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import { buildScreenNoteKey } from "../../utils/pulseNotesKeys";
 
 export default function BudgetView({
   clientName,
@@ -27,6 +30,7 @@ export default function BudgetView({
 
   const [userYearIdx, setUserYearIdx] = useState(null);
   const selectedYearIdx = userYearIdx !== null ? userYearIdx : defaultYearIdx;
+  const { openNotes, getEntitySummary } = usePulseNotes();
 
   const isRevMode = useMemo(() => {
     if (keyData?.outgoingsMeta?.mode) {
@@ -399,6 +403,29 @@ export default function BudgetView({
 
         {/* Controls */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {(() => {
+            const noteKey = buildScreenNoteKey("budget", activeFyLabel);
+            const noteSum = getEntitySummary(noteKey);
+            return (
+              <PulseNoteTrigger
+                variant="toolbar"
+                count={noteSum?.count || 0}
+                openNotifyCount={noteSum?.openNotifyCount || 0}
+                unreadReplyCount={noteSum?.unreadReplyCount || 0}
+                latestSnippet={noteSum?.latestSnippet || ""}
+                onClick={() =>
+                  openNotes({
+                    scopeType: "screen",
+                    entityType: "budget",
+                    entityKey: noteKey,
+                    entityLabel: `Budget — ${activeFyLabel}`,
+                    drawerTitle: "Budget notes",
+                    contextMeta: { fyLabel: activeFyLabel, subView: "viewBudget" },
+                  })
+                }
+              />
+            );
+          })()}
           <button
             type="button"
             className="refresh-btn no-click-spinner"

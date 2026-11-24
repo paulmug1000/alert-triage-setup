@@ -43,6 +43,7 @@ export default function JobsNewJobModal({
   const [jobName, setJobName] = useState(initialJobData?.jobName || "");
   const [projectCode, setProjectCode] = useState(initialJobData?.projectCode || "");
   const [projectRetainer, setProjectRetainer] = useState(initialJobData?.projectRetainer || "Project");
+  const [isVariableRetainer, setIsVariableRetainer] = useState(Boolean(initialJobData?.isVariableRetainer || initialJobData?.retainerMode === "variable"));
   const [status, setStatus] = useState(initialJobData?.status || "");
   const [likelihood, setLikelihood] = useState(
     initialJobData?.likelihood !== undefined
@@ -523,6 +524,7 @@ export default function JobsNewJobModal({
             jobName: jobName.trim(),
             projectCode: projectCode.trim(),
             projectRetainer,
+            ...(projectRetainer === "Retainer" && isVariableRetainer ? { retainerMode: "variable", isVariableRetainer: true } : {}),
             status,
             likelihood: status === "Pipeline" ? normalizeLikelihoodInput(likelihood) : "",
             revenue: revenue === "" ? 0 : parseFloat(revenue) || 0,
@@ -746,12 +748,38 @@ export default function JobsNewJobModal({
                   onChange={(e) => {
                     const nextType = e.target.value;
                     setProjectRetainer(nextType);
-                    if (nextType !== "Retainer") setNoEndDate(false);
+                    if (nextType !== "Retainer") {
+                      setNoEndDate(false);
+                      setIsVariableRetainer(false);
+                    }
                   }}
                 >
                   <option value="Project">Project</option>
                   <option value="Retainer">Retainer</option>
                 </select>
+                {projectRetainer === "Retainer" && (
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      marginTop: "6px",
+                      fontSize: "11px",
+                      fontWeight: "600",
+                      color: isVariableRetainer ? "#0369a1" : "#475569",
+                      cursor: "pointer",
+                      userSelect: "none"
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isVariableRetainer}
+                      onChange={(e) => setIsVariableRetainer(e.target.checked)}
+                      style={{ margin: 0, cursor: "pointer" }}
+                    />
+                    Variable monthly amount
+                  </label>
+                )}
               </div>
 
               <div>
@@ -812,7 +840,7 @@ export default function JobsNewJobModal({
             <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr 2fr", gap: "12px" }}>
               <div>
                 <label style={labelStyle}>
-                  Revenue (excl. VAT) <span style={{ color: "#ef4444" }}>*</span>
+                  {projectRetainer === "Retainer" && isVariableRetainer ? "Base monthly revenue (excl. VAT)" : "Revenue (excl. VAT)"} <span style={{ color: "#ef4444" }}>*</span>
                 </label>
                 <input
                   type="number"
@@ -828,13 +856,19 @@ export default function JobsNewJobModal({
                   required
                 />
                 <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
-                  For retainers, enter the monthly amount
+                  {projectRetainer === "Retainer"
+                    ? (isVariableRetainer
+                      ? "Each month tracks independently from base forecasts and updates automatically from actuals"
+                      : "For retainers, enter the monthly amount")
+                    : "Total fee revenue"}
                 </div>
               </div>
 
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <label style={labelStyle}>Direct costs (excl. VAT)</label>
+                  <label style={labelStyle}>
+                    {projectRetainer === "Retainer" && isVariableRetainer ? "Base monthly direct costs (excl. VAT)" : "Direct costs (excl. VAT)"}
+                  </label>
                   {totalExpenseSum > 0 && parseFloat(directCosts) !== totalExpenseSum && (
                     <button
                       type="button"

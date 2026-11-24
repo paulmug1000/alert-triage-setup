@@ -6,6 +6,7 @@ import { PmaTransitionSkeleton } from "../Skeleton";
 import { useModalScrollLock } from "../../hooks/useModalScrollLock";
 import GoogleSheetLinkModal from "../integrations/GoogleSheetLinkModal";
 import ExcelLinkModal from "../integrations/ExcelLinkModal";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
 
 export default function PortalShell({
   clientName,
@@ -28,6 +29,7 @@ export default function PortalShell({
 }) {
   const router = useRouter();
   useModalScrollLock();
+  const { openAllNotes, unreadReplyCount, openNotifyCount } = usePulseNotes();
   const hadInitialClientNameRef = useRef(Boolean(clientName));
   const showClientSelectorBox =
     clients.length > 1 ||
@@ -828,6 +830,90 @@ export default function PortalShell({
               </div>
             )}
 
+            {/* Notes Button (opens all-notes drawer for current client) */}
+            {clientName && (
+              <div style={{ position: "relative" }}>
+                <button
+                  type="button"
+                  onClick={() => openAllNotes()}
+                  style={{
+                    background: "rgba(255, 255, 255, 0.15)",
+                    border: "1px solid rgba(255, 255, 255, 0.25)",
+                    color: "#ffffff",
+                    width: "36px",
+                    height: "36px",
+                    borderRadius: "50%",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    transition: "background 0.15s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255, 255, 255, 0.25)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255, 255, 255, 0.15)"; }}
+                  title={
+                    unreadReplyCount > 0
+                      ? `Notes (${unreadReplyCount} unread ${unreadReplyCount === 1 ? "reply" : "replies"})`
+                      : "View all notes"
+                  }
+                  aria-label="View all notes"
+                >
+                  <svg
+                    width="17"
+                    height="17"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  </svg>
+                </button>
+                {unreadReplyCount > 0 ? (
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: "-2px",
+                      right: "-2px",
+                      minWidth: "16px",
+                      height: "16px",
+                      padding: "0 4px",
+                      borderRadius: "999px",
+                      background: "#ef4444",
+                      color: "#ffffff",
+                      fontSize: "10px",
+                      fontWeight: 800,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      border: "2px solid #0047AB",
+                      lineHeight: 1,
+                      pointerEvents: "none",
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    {unreadReplyCount > 9 ? "9+" : unreadReplyCount}
+                  </span>
+                ) : openNotifyCount > 0 ? (
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: "0px",
+                      right: "0px",
+                      width: "9px",
+                      height: "9px",
+                      borderRadius: "50%",
+                      background: "#fbbf24",
+                      border: "1.5px solid #0047AB",
+                      pointerEvents: "none",
+                    }}
+                  />
+                ) : null}
+              </div>
+            )}
+
             {/* User Profile / Menu */}
             <div className="portal-nav-dropdown" style={{ position: "relative" }}>
               <button
@@ -1164,6 +1250,63 @@ export default function PortalShell({
               >
                 Home
               </a>
+
+              {clientName && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    openAllNotes({ initialFilter: unreadReplyCount > 0 ? "unread" : "all" });
+                  }}
+                  style={{
+                    ...mobileNavItemStyle(false),
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    width: "100%",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <span>Notes</span>
+                  {unreadReplyCount > 0 ? (
+                    <span
+                      style={{
+                        minWidth: "20px",
+                        height: "20px",
+                        padding: "0 6px",
+                        borderRadius: "999px",
+                        background: "#ef4444",
+                        color: "#ffffff",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      {unreadReplyCount > 9 ? "9+" : unreadReplyCount}
+                    </span>
+                  ) : openNotifyCount > 0 ? (
+                    <span
+                      style={{
+                        minWidth: "20px",
+                        height: "20px",
+                        padding: "0 6px",
+                        borderRadius: "999px",
+                        background: "#fbbf24",
+                        color: "#0f172a",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      {openNotifyCount > 9 ? "9+" : openNotifyCount}
+                    </span>
+                  ) : null}
+                </button>
+              )}
 
               <div style={mobileSectionHeaderStyle}>Performance</div>
               <a href={getPortalViewHref("dashboard")} onClick={(e) => handleLinkClick(e, "dashboard")} style={mobileSubItemStyle(activeView === "dashboard")}>

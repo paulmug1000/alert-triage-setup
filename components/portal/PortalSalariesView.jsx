@@ -3,6 +3,9 @@ import Spinner from "../Spinner";
 import { PortalTableSkeleton } from "../Skeleton";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import { buildEmployeeNoteKey } from "../../utils/pulseNotesKeys";
 
 /**
  * Robust date parser to determine if an employee's end date is earlier than today
@@ -188,6 +191,7 @@ export default function PortalSalariesView({
   const [optimisticRows, setOptimisticRows] = useState({}); // { [sheetRow]: string[] }
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const { openNotes, openAllNotes, getEntitySummary } = usePulseNotes();
 
   // Clear optimistic changes on fresh server data
   useEffect(() => {
@@ -621,6 +625,12 @@ export default function PortalSalariesView({
             )
           )}
 
+          <PulseNoteTrigger
+            variant="toolbar"
+            title="Employee notes"
+            onClick={() => openAllNotes({ entityType: "employee" })}
+          />
+
           <button
             type="button"
             className="refresh-btn no-click-spinner"
@@ -764,6 +774,7 @@ export default function PortalSalariesView({
                   return (
                     <tr
                       key={emp.sheetRow}
+                      className="pulse-note-row"
                       style={{
                         borderBottom: "1px solid #f1f5f9",
                         background: isFormer
@@ -891,7 +902,7 @@ export default function PortalSalariesView({
                                   justifyContent: isCenter ? "center" : isRight ? "flex-end" : "flex-start",
                                 }}
                               >
-                                <span>{displayContent}</span>
+                                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{displayContent}</span>
                                 {isFirstCol && isFormer && (
                                   <span
                                     style={{
@@ -906,6 +917,30 @@ export default function PortalSalariesView({
                                     Former
                                   </span>
                                 )}
+                                {isFirstCol && (() => {
+                                  const empName = String(emp.cells?.[0] || "").trim();
+                                  const empKey = buildEmployeeNoteKey(empName);
+                                  const empSum = getEntitySummary(empKey);
+                                  return (
+                                    <PulseNoteTrigger
+                                      variant="row"
+                                      count={empSum?.count || 0}
+                                      openNotifyCount={empSum?.openNotifyCount || 0}
+                                      unreadReplyCount={empSum?.unreadReplyCount || 0}
+                                      latestSnippet={empSum?.latestSnippet || ""}
+                                      onClick={() =>
+                                        openNotes({
+                                          scopeType: "entity",
+                                          entityType: "employee",
+                                          entityKey: empKey,
+                                          entityLabel: emp.cells?.[1] ? `${empName} (${emp.cells[1]})` : empName,
+                                          drawerTitle: "Employee notes",
+                                          contextMeta: { employeeName: empName, role: emp.cells?.[1] || "" },
+                                        })
+                                      }
+                                    />
+                                  );
+                                })()}
                               </div>
                             )}
                           </td>

@@ -7,6 +7,7 @@ import { redisClient } from "./redisClient.js";
 const PRECOMPUTED_KEY = "triage_precomputed";
 import { matchesClientName, stripRowInfo, ADMIN_ONLY_ALERT_TYPES, sanitizeSpreadsheetTerms } from "../utils/helpers.js";
 import { logPmaActivity } from "./pmaLogger.js";
+import { getOpenClientNotesForDigest } from "./pulseNotesService.js";
 
 /**
  * Format today's date in UK format: e.g. "Tuesday, 29 September"
@@ -40,6 +41,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
     if (cs.crmCount > 0) breakdownPills.push(`<span style="display:inline-block;background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;margin-right:5px;margin-bottom:4px;">CRM: ${cs.crmCount}</span>`);
     if (cs.proactiveCount > 0) breakdownPills.push(`<span style="display:inline-block;background:#fffbeb;color:#92400e;border:1px solid #fde68a;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;margin-right:5px;margin-bottom:4px;">Proactive: ${cs.proactiveCount}</span>`);
     if (cs.taskCount > 0) breakdownPills.push(`<span style="display:inline-block;background:#f3e8ff;color:#6b21a8;border:1px solid #e9d5ff;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;margin-right:5px;margin-bottom:4px;">Tasks: ${cs.taskCount}</span>`);
+    if (cs.clientNotesCount > 0) breakdownPills.push(`<span style="display:inline-block;background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;margin-right:5px;margin-bottom:4px;">Client notes: ${cs.clientNotesCount}</span>`);
 
     const alertBullets = (cs.alerts || []).slice(0, 4).map(a =>
       `<li style="margin-bottom:4px;color:#4b5563;font-size:13px;line-height:1.4;">${escapeHtml(a.summary)}</li>`
@@ -252,6 +254,8 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
     errors: []
   };
 
+  const openClientNotes = await getOpenClientNotesForDigest().catch(() => []);
+
   // 4. Process each eligible user
   for (const user of eligibleUsers) {
     const isAdminUser = user.role === "Admin" || Boolean(user.isAdmin);
@@ -272,8 +276,15 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
       return assignedList.some(assigned => matchesClientName(assigned, a.clientName));
     });
 
-    // Requirement #1: If user has 0 alerts, skip completely
-    if (userAlerts.length === 0) {
+    const userClientNotes = openClientNotes.filter((n) => {
+      if (!n.client_name) return false;
+      if (!allowSalaries && n.visibility_scope === "restricted_salary") return false;
+      if (isGlobal) return true;
+      return assignedList.some((assigned) => matchesClientName(assigned, n.client_name));
+    });
+
+    // Requirement #1: If user has 0 alerts and 0 open client notes, skip completely
+    if (userAlerts.length === 0 && userClientNotes.length === 0) {
       console.log(`  ⏭️ Skipped ${user.email}: 0 active alerts for assigned clients.`);
       results.skippedZeroAlerts.push(user.email);
       continue;
@@ -292,6 +303,7 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
           crmCount: 0,
           proactiveCount: 0,
           taskCount: 0,
+          clientNotesCount: 0,
           alerts: []
         };
       }
@@ -310,11 +322,35 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
       if (summaryText) cm.alerts.push({ summary: summaryText });
     }
 
+    for (const note of userClientNotes) {
+      const cName = note.client_name || "Unknown Client";
+      if (!clientMap[cName]) {
+        clientMap[cName] = {
+          clientName: cName,
+          totalClientAlerts: 0,
+          invoiceCount: 0,
+          expenseCount: 0,
+          crmCount: 0,
+          proactiveCount: 0,
+          taskCount: 0,
+          clientNotesCount: 0,
+          alerts: []
+        };
+      }
+      const cm = clientMap[cName];
+      cm.totalClientAlerts++;
+      cm.clientNotesCount++;
+      const label = sanitizeSpreadsheetTerms(note.entity_label || note.entity_type || "Note");
+      const snippet = sanitizeSpreadsheetTerms(String(note.body || "").trim().slice(0, 90));
+      cm.alerts.push({ summary: `Client note (${label}): ${snippet}` });
+    }
+
+    const totalItems = userAlerts.length + userClientNotes.length;
     const clientSummaries = Object.values(clientMap).sort((a, b) => b.totalClientAlerts - a.totalClientAlerts);
     const htmlBody = buildDigestHtml({
       user,
       formattedDate,
-      totalAlerts: userAlerts.length,
+      totalAlerts: totalItems,
       clientSummaries,
       appUrl
     });
@@ -624,7 +660,7 @@ export async function checkAndNotifyTabErrors({ sheets: providedSheets, automati
         user: "Pulse System",
         action: "AMD Tab Error Alert Sent",
         summary: `${subject}: ${errorDetails.join("; ")}`,
-      }).catch(() => {});
+      }).catch(() => { });
     } else {
       console.warn(`⚠️ [AMD Errors] PMA_EMAIL_APP_PASSWORD not set. Would send to ${recipient}: ${errorDetails.join("; ")}`);
     }

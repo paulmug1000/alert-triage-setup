@@ -583,8 +583,11 @@ export default function RetainersView({
                 <tbody>
                   {filteredAndSortedJobs.map((job, jobIdx) => {
                     const isExpanded = expandedRetainerJobs.has(job.parentRowNum);
+                    const isVarRet = Boolean(job.isVariableRetainer);
                     const jr = job.rows?.[0] || {};
-                    const invoiceItems = isExpanded ? groupSlotItemsForDisplay(getRetainerJobInvoiceItems(job), "invoice") : [];
+                    const invoiceItems = (isExpanded && !isVarRet) ? groupSlotItemsForDisplay(getRetainerJobInvoiceItems(job), "invoice") : [];
+                    const displayStartDate = isVarRet ? (job.startDate || jr.startDate) : jr.startDate;
+                    const displayEndDate = isVarRet ? (job.endDate || jr.endDate) : jr.endDate;
                     const toggleExpand = () => {
                       setExpandedRetainerJobs(prev => {
                         const next = new Set(prev);
@@ -607,7 +610,7 @@ export default function RetainersView({
                           <td style={{ padding: "8px 4px", borderBottom: "1px solid #eee", textAlign: "center" }}>
                             <span
                               style={{ cursor: "pointer", color: "#7c3aed", fontSize: "11px", userSelect: "none", display: "inline-block", width: "20px" }}
-                              title={isExpanded ? "Collapse invoices" : "Expand attached invoices"}
+                              title={isExpanded ? "Collapse details" : "Expand monthly schedule & invoices"}
                             >
                               {isExpanded ? "▼" : "▶"}
                             </span>
@@ -620,21 +623,182 @@ export default function RetainersView({
                                 e.stopPropagation();
                                 setRetainersEditJob(job);
                               }}
-                              style={{ cursor: "pointer" }}
+                              style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}
                               title="Edit retainer details"
                             >
-                              {jr.jobName || job.jobName} <span style={{ color: "#7c3aed", fontSize: "10px", marginLeft: "4px" }}>✎ edit</span>
+                              <span>{isVarRet ? job.jobName : (jr.jobName || job.jobName)}</span>
+                              {isVarRet && (
+                                <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd", fontWeight: "600" }}>
+                                  Variable
+                                </span>
+                              )}
+                              <span style={{ color: "#7c3aed", fontSize: "10px" }}>✎ edit</span>
                             </span>
                           </td>
                           <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: "600", color: "#0f172a" }}>
-                            {formatCurrency(job.revenue) || job.revenue}
+                            <div>{formatCurrency(job.revenue) || job.revenue}</div>
+                            {isVarRet && (
+                              <div style={{ fontSize: "10px", fontWeight: "500", color: "#64748b" }}>Base forecast</div>
+                            )}
                           </td>
-                          <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
+                          <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{displayStartDate}</td>
                           <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>
-                            {jr.endDate ? formatJobEndDateDisplay(jr.endDate, "") : ""}
+                            {displayEndDate ? formatJobEndDateDisplay(displayEndDate, "") : ""}
                           </td>
                         </tr>
-                        {isExpanded && (
+                        {isExpanded && isVarRet && (
+                          <tr style={{ background: "#f8fafc" }}>
+                            <td colSpan={isSysAdmin ? 7 : 6} style={{ padding: "14px 20px 18px 36px", borderBottom: "2px solid #cbd5e1" }}>
+                              <div
+                                style={{
+                                  background: "#ffffff",
+                                  borderRadius: "8px",
+                                  border: "1px solid #e2e8f0",
+                                  padding: "14px 16px",
+                                  maxWidth: "880px",
+                                  boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                                }}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px", paddingBottom: "8px", borderBottom: "1px solid #f1f5f9", flexWrap: "wrap", gap: "8px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b" }}>Monthly schedule</span>
+                                    <span style={{ fontSize: "11px", padding: "1px 7px", borderRadius: "10px", background: "#f1f5f9", color: "#475569", fontWeight: "600" }}>
+                                      {(job.rows || []).length} {(job.rows || []).length === 1 ? "month" : "months"}
+                                    </span>
+                                    <span style={{ fontSize: "11px", color: "#64748b" }}>
+                                      Base: {formatCurrency(job.baseRevenue ?? job.revenue)} revenue / {formatCurrency(job.baseDirectCosts ?? job.directCosts ?? 0)} direct costs
+                                    </span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setRetainersEditJob(job);
+                                    }}
+                                    style={{
+                                      padding: "5px 11px",
+                                      borderRadius: "6px",
+                                      border: "1px solid #0284c7",
+                                      background: "#f0f9ff",
+                                      color: "#0369a1",
+                                      fontSize: "11px",
+                                      fontWeight: "600",
+                                      cursor: "pointer"
+                                    }}
+                                  >
+                                    Manage base &amp; overrides
+                                  </button>
+                                </div>
+
+                                <div style={{ overflowX: "auto", maxHeight: "360px", overflowY: "auto" }}>
+                                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px" }}>
+                                    <thead>
+                                      <tr style={{ borderBottom: "1px solid #e2e8f0", color: "#64748b", textAlign: "left" }}>
+                                        <th style={{ padding: "6px 8px" }}>Month</th>
+                                        <th style={{ padding: "6px 8px" }}>Status</th>
+                                        <th style={{ padding: "6px 8px", textAlign: "right" }}>Revenue</th>
+                                        <th style={{ padding: "6px 8px", textAlign: "right" }}>Direct costs</th>
+                                        <th style={{ padding: "6px 8px" }}>Invoices</th>
+                                        <th style={{ padding: "6px 8px" }}>Direct bills</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {(job.rows || []).map((mr, mIdx) => {
+                                        const monthLabel = getRetainerRowMonthLabel(mr, mIdx, job);
+                                        const realInvs = (mr.invoiceSlots || []).filter((s) => {
+                                          const r = String(s.ref || "").trim();
+                                          const st = String(s.status || "").trim().toLowerCase();
+                                          return (r && !isPlaceholderInvoice(r, st)) || st.includes("sent") || st.includes("paid");
+                                        });
+                                        const realBills = (mr.expenseSlots || []).filter((es) => {
+                                          const amt = parseFloat(stripCurrency(es.amount)) || 0;
+                                          const desc = String(es.description || "").trim().toLowerCase();
+                                          const tid = String(es.transactionId || "").trim().toLowerCase();
+                                          const st = String(es.status || "").trim().toLowerCase();
+                                          return amt > 0 && ((!tid.startsWith("place-exp") && !desc.startsWith("placeholder")) || st === "paid" || st === "received");
+                                        });
+                                        const billsTotal = realBills.reduce((sum, es) => sum + (parseFloat(stripCurrency(es.amount)) || 0), 0);
+                                        const isOverridden = Boolean(mr.isRevOverridden || mr.isDcOverridden);
+                                        const statusLabel = realInvs.length > 0 ? "Invoiced" : (isOverridden ? "Overridden" : "Base forecast");
+                                        const statusStyle = realInvs.length > 0
+                                          ? { background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }
+                                          : isOverridden
+                                            ? { background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }
+                                            : { background: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
+
+                                        return (
+                                          <tr key={mr.rowNum || mIdx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                            <td style={{ padding: "7px 8px", fontWeight: "600", color: "#1e293b", whiteSpace: "nowrap" }}>
+                                              {monthLabel}
+                                              {isSysAdmin && <span style={{ color: "#94a3b8", fontWeight: "400", marginLeft: "6px" }}>#{mr.rowNum}</span>}
+                                            </td>
+                                            <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>
+                                              <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", fontWeight: "600", ...statusStyle }}>
+                                                {statusLabel}
+                                              </span>
+                                            </td>
+                                            <td style={{ padding: "7px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: "600", color: "#0f172a" }}>
+                                              {formatCurrency(mr.revenue) || "£0.00"}
+                                            </td>
+                                            <td style={{ padding: "7px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#334155" }}>
+                                              {formatCurrency(mr.directCosts) || "£0.00"}
+                                            </td>
+                                            <td style={{ padding: "7px 8px" }}>
+                                              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                                                {(mr.invoiceSlots || [])
+                                                  .filter((s) => (s.ref && String(s.ref).trim() !== "") || (parseFloat(stripCurrency(s.amount)) || 0) > 0)
+                                                  .map((s) => {
+                                                    const isPlace = isPlaceholderInvoice(s.ref, s.status);
+                                                    return (
+                                                      <button
+                                                        key={s.slotNum}
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                          e.stopPropagation();
+                                                          setInvoicesEditSlot({
+                                                            rowNum: mr.rowNum,
+                                                            slotNum: s.slotNum,
+                                                            slot: s,
+                                                            jobClient: mr.client || job.client,
+                                                            jobName: mr.jobName || job.jobName,
+                                                            slotLabel: s.ref ? `#${s.ref}` : "Placeholder",
+                                                            tabName: "Confirmed",
+                                                            job,
+                                                          });
+                                                        }}
+                                                        style={{
+                                                          fontSize: "10px",
+                                                          padding: "1px 6px",
+                                                          borderRadius: "6px",
+                                                          border: "1px solid #cbd5e1",
+                                                          background: isPlace ? "#faf5ff" : "#eff6ff",
+                                                          color: isPlace ? "#6b21a8" : "#1d4ed8",
+                                                          cursor: "pointer",
+                                                          fontWeight: "600"
+                                                        }}
+                                                      >
+                                                        {isPlace ? "Forecast" : `#${s.ref}`} ({formatCurrency(s.amount)})
+                                                      </button>
+                                                    );
+                                                  })}
+                                              </div>
+                                            </td>
+                                            <td style={{ padding: "7px 8px", color: "#475569", whiteSpace: "nowrap" }}>
+                                              {realBills.length > 0
+                                                ? `${realBills.length} ${realBills.length === 1 ? "bill" : "bills"} (${formatCurrency(billsTotal)})`
+                                                : "—"}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        {isExpanded && !isVarRet && (
                           <tr style={{ background: "#f8fafc" }}>
                             <td colSpan={isSysAdmin ? 7 : 6} style={{ padding: "14px 20px 18px 36px", borderBottom: "2px solid #cbd5e1" }}>
                               <div

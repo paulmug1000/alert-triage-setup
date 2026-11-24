@@ -30,6 +30,7 @@ import {
   flushPendingClientRecomputes,
   isVirtualSupabaseSheetId,
   colIdx0ToLetter,
+  CORE_CLIENT_TABS,
 } from "./masterEngineService.js";
 import { isCashCellEditable } from "./cashEditService.js";
 import { redisClient } from "./redisClient.js";
@@ -57,6 +58,19 @@ const READ_CHECK_THROTTLE_MS = 15000;
 const RECENT_LOG_LIMIT = 15;
 const TEXT_ONLY_SLOT_COLS = new Set([42, 49, 56, 81, 88, 95]); // AQ, AX, BE, CD, CK, CR
 const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const CORE_CLIENT_TAB_SET = new Set([...CORE_CLIENT_TABS, "REF", "AppData", "FormCheck"]);
+
+function formulaRefsExternalOrCustomTab_(formulaStr) {
+  if (typeof formulaStr !== "string" || !formulaStr.startsWith("=")) return false;
+  if (/IMPORTRANGE\s*\(/i.test(formulaStr)) return true;
+  const stripped = formulaStr.replace(/"(?:""|[^"])*"/g, "");
+  const matches = stripped.matchAll(/(?:'([^']+)'|([A-Za-z0-9_]+))!/g);
+  for (const m of matches) {
+    const refTab = m[1] || m[2];
+    if (refTab && !CORE_CLIENT_TAB_SET.has(refTab)) return true;
+  }
+  return false;
+}
 
 const NOTE_FETCH_RANGES = {
   Outgoings: { range: "Outgoings!G13:AV112", startRow0: 12, startCol0: 6 },
@@ -190,24 +204,11 @@ export function areBridgeCellsEquivalent(a, b) {
 }
 
 /**
- * Hard cell-level and tab-level safety boundary ensuring outbound bridge writes
- * NEVER overwrite live Google Sheet formulas or calculated columns/rows.
+ * Checks whether a cell coordinate is an editable user-input / Pulse-writable position
+ * (independent of whether the Google Sheet currently holds a custom formula there).
  */
-export function isCellAllowedForOutboundBridgeWrite(
-  tabName,
-  row0,
-  col0,
-  sheetFormulaCell,
-  nextFormulaOrVal,
-  options = {}
-) {
+export function isCellInEditableBridgePosition(tabName, row0, col0, options = {}) {
   if (!Number.isInteger(row0) || !Number.isInteger(col0) || row0 < 0 || col0 < 0) {
-    return false;
-  }
-
-  const isSheetFormula = typeof sheetFormulaCell === "string" && sheetFormulaCell.trim().startsWith("=");
-  const isNextFormula = typeof nextFormulaOrVal === "string" && nextFormulaOrVal.trim().startsWith("=");
-  if (isSheetFormula && !isNextFormula) {
     return false;
   }
 
@@ -291,6 +292,31 @@ export function isCellAllowedForOutboundBridgeWrite(
   }
 
   return false;
+}
+
+/**
+ * Hard cell-level and tab-level safety boundary ensuring outbound bridge writes
+ * NEVER overwrite live Google Sheet formulas or calculated columns/rows.
+ */
+export function isCellAllowedForOutboundBridgeWrite(
+  tabName,
+  row0,
+  col0,
+  sheetFormulaCell,
+  nextFormulaOrVal,
+  options = {}
+) {
+  if (!isCellInEditableBridgePosition(tabName, row0, col0, options)) {
+    return false;
+  }
+
+  const isSheetFormula = typeof sheetFormulaCell === "string" && sheetFormulaCell.trim().startsWith("=");
+  const isNextFormula = typeof nextFormulaOrVal === "string" && nextFormulaOrVal.trim().startsWith("=");
+  if (isSheetFormula && !isNextFormula) {
+    return false;
+  }
+
+  return true;
 }
 
 function formatBridgeCellValueForSheet_(col0, val, { isFormula = false } = {}) {
@@ -426,20 +452,48 @@ export function computeThreeWayTabMerge({
       const supaForm = ufRow[c] ?? "";
 
       const isSheetFormula = typeof sheetForm === "string" && sheetForm.trim().startsWith("=");
-      const isPureFormulaRecalcDrift = isSheetFormula && String(sheetForm) === String(supaForm || "");
-      const isProtectedSheetFormula =
+      const isSupaFormula = typeof supaForm === "string" && supaForm.trim().startsWith("=");
+      const isEditablePos = isCellInEditableBridgePosition(tabName, r, c, {
+        isJobCosting,
+        headerRow,
+      });
+      const isSystemFormulaCell = isSheetFormula && !isEditablePos;
+      const isExternalSheetFormula = isSheetFormula && formulaRefsExternalOrCustomTab_(sheetForm);
+      const isSheetErrorVal = typeof sheetVal === "string" && sheetVal.trim().startsWith("#");
+      const isSupaErrorVal = typeof supaVal === "string" && supaVal.trim().startsWith("#");
+
+      const isPureFormulaRecalcDrift =
         isSheetFormula &&
-        !isCellAllowedForOutboundBridgeWrite(tabName, r, c, sheetForm, sheetVal, {
-          isJobCosting,
-          headerRow,
-        });
+        String(sheetForm) === String(supaForm || "") &&
+        (isSystemFormulaCell ||
+          (!isExternalSheetFormula &&
+            (areBridgeCellsEquivalent(sheetVal, supaVal) || (isSheetErrorVal && isSupaErrorVal))));
+
+      const didSupaEditFormula =
+        isEditablePos &&
+        isSupaFormula &&
+        String(supaForm) !== String(sheetForm || "") &&
+        !areBridgeCellsEquivalent(supaVal, baseVal) &&
+        areBridgeCellsEquivalent(sheetVal, baseVal);
+
+      const editableSheetFormulaNeedsPull =
+        !isOutboundOnly &&
+        isEditablePos &&
+        isSheetFormula &&
+        !isSheetErrorVal &&
+        !didSupaEditFormula &&
+        (!areBridgeCellsEquivalent(sheetVal, supaVal) || String(sheetForm) !== String(supaForm || ""));
 
       const inChanged =
         !isOutboundOnly &&
+        !isSystemFormulaCell &&
+        (editableSheetFormulaNeedsPull ||
+          (!isPureFormulaRecalcDrift && !areBridgeCellsEquivalent(sheetVal, baseVal)));
+
+      const outChanged =
         !isPureFormulaRecalcDrift &&
-        !isProtectedSheetFormula &&
-        !areBridgeCellsEquivalent(sheetVal, baseVal);
-      const outChanged = !areBridgeCellsEquivalent(supaVal, baseVal);
+        !(isEditablePos && isSheetFormula && !didSupaEditFormula) &&
+        !areBridgeCellsEquivalent(supaVal, baseVal);
 
       if (inChanged && outChanged) {
         if (areBridgeCellsEquivalent(sheetVal, supaVal)) {
@@ -994,12 +1048,12 @@ async function fetchRealSheetTabsAndNotes_(
     ),
     probeConfigs.length > 0
       ? withRetry(() =>
-          rawSheets.spreadsheets.values.batchGet({
-            spreadsheetId,
-            ranges: probeConfigs.map((p) => p.range),
-            valueRenderOption: "UNFORMATTED_VALUE",
-          })
-        ).catch(() => null)
+        rawSheets.spreadsheets.values.batchGet({
+          spreadsheetId,
+          ranges: probeConfigs.map((p) => p.range),
+          valueRenderOption: "UNFORMATTED_VALUE",
+        })
+      ).catch(() => null)
       : Promise.resolve(null),
   ]);
 
@@ -1100,15 +1154,15 @@ async function fetchRealSheetTabsAndNotes_(
     ),
     noteRangesToFetch.length > 0
       ? withRetry(() =>
-          rawSheets.spreadsheets.get({
-            spreadsheetId,
-            ranges: noteRangesToFetch,
-            fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
-          })
-        ).catch((noteErr) => {
-          console.warn("[clientSheetBridge] Note batch read warning:", noteErr.message);
-          return null;
+        rawSheets.spreadsheets.get({
+          spreadsheetId,
+          ranges: noteRangesToFetch,
+          fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
         })
+      ).catch((noteErr) => {
+        console.warn("[clientSheetBridge] Note batch read warning:", noteErr.message);
+        return null;
+      })
       : Promise.resolve(null),
   ]);
 
@@ -1368,11 +1422,11 @@ export async function waitForPendingOutboundSheetBridge(clientName) {
   if (!key) return;
   const pending = _pendingOutboundByClient.get(key);
   if (pending?.promise) {
-    await pending.promise.catch(() => {});
+    await pending.promise.catch(() => { });
   }
   const inFlight = _inFlightBridgeByClient.get(key);
   if (inFlight) {
-    await inFlight.catch(() => {});
+    await inFlight.catch(() => { });
   }
 }
 
@@ -1440,9 +1494,9 @@ export async function checkAndSyncClientSheetBridge(
 
       const driveVersionChanged = Boolean(
         driveMeta.version &&
-          driveMeta.version !== lastSyncedVersion &&
-          driveMeta.version !== lastPulseWrittenVersion &&
-          !isRecentSaWrite
+        driveMeta.version !== lastSyncedVersion &&
+        driveMeta.version !== lastPulseWrittenVersion &&
+        !isRecentSaWrite
       );
 
       const wantsInbound =
@@ -1773,8 +1827,7 @@ export async function checkAndSyncClientSheetBridge(
       }
       if (allOutboundDiffs.length > 0 || queuedStructOps.length > 0) {
         summaryParts.push(
-          `${effectiveMode === "live" && wantsOutbound ? "Pushed" : "Would push"} ${allOutboundDiffs.length} field(s) across ${outReadable.totalRowsChanged} row(s)${
-            outboundTabsChanged.length > 0 ? ` (${outboundTabsChanged.join(", ")})` : ""
+          `${effectiveMode === "live" && wantsOutbound ? "Pushed" : "Would push"} ${allOutboundDiffs.length} field(s) across ${outReadable.totalRowsChanged} row(s)${outboundTabsChanged.length > 0 ? ` (${outboundTabsChanged.join(", ")})` : ""
           }${queuedStructOps.length > 0 ? ` + ${queuedStructOps.length} row layout change(s)` : ""}`
         );
       }
@@ -1796,20 +1849,20 @@ export async function checkAndSyncClientSheetBridge(
 
       const logEntry = shouldLog
         ? {
-            timestamp: nowIso,
-            mode: effectiveMode,
-            direction,
-            driveVersion: finalDriveVersion,
-            inboundCount: allInboundDiffs.length,
-            outboundCount: allOutboundDiffs.length,
-            rangeCount: outboundValueRanges.length,
-            structuralCount: queuedStructOps.length,
-            conflictCount: allConflicts.length,
-            formulaProtectedCount: totalFormulaProtected,
-            summary: summaryText,
-            readableRows,
-            sampleDiffs,
-          }
+          timestamp: nowIso,
+          mode: effectiveMode,
+          direction,
+          driveVersion: finalDriveVersion,
+          inboundCount: allInboundDiffs.length,
+          outboundCount: allOutboundDiffs.length,
+          rangeCount: outboundValueRanges.length,
+          structuralCount: queuedStructOps.length,
+          conflictCount: allConflicts.length,
+          formulaProtectedCount: totalFormulaProtected,
+          summary: summaryText,
+          readableRows,
+          sampleDiffs,
+        }
         : null;
 
       const statePatch = {
@@ -2036,7 +2089,7 @@ export async function pushSupabaseClientToSheet(clientName) {
     throw new Error(`Client "${ctx.clientName}" has no Google Client Sheet linked.`);
   }
 
-  await flushPendingClientRecomputes(null, ctx.clientName).catch(() => {});
+  await flushPendingClientRecomputes(null, ctx.clientName).catch(() => { });
 
   const key = normalizeKey_(ctx.clientName);
   const supabase = getSupabaseAdmin();
@@ -2090,8 +2143,8 @@ export async function pushSupabaseClientToSheet(clientName) {
           : tabName === "Pipeline"
             ? pipelineRec
             : await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheets, {
-                includeNotes: BRIDGE_NOTE_TABS.has(tabName),
-              }).catch(() => null);
+              includeNotes: BRIDGE_NOTE_TABS.has(tabName),
+            }).catch(() => null);
       if (!supaRec || !Array.isArray(supaRec.values_grid) || supaRec.values_grid.length === 0) {
         continue;
       }
@@ -2162,7 +2215,7 @@ export async function pushSupabaseClientToSheet(clientName) {
 
     _pendingStructuralOpsByClient.delete(key);
     if (redisClient?.isOpen) {
-      redisClient.del(`pulse:sheet_bridge_dirty:${key}`).catch(() => {});
+      redisClient.del(`pulse:sheet_bridge_dirty:${key}`).catch(() => { });
     }
 
     // Expand grid rows where Supabase grew beyond the Google Sheet grid height
@@ -2297,9 +2350,232 @@ export async function pushSupabaseClientToSheet(clientName) {
         summary: `Full push error: ${err.message}`,
         error: true,
       }
-    ).catch(() => {});
+    ).catch(() => { });
     throw err;
   } finally {
     if (lockOk) await releaseRedisBridgeLock_(key);
   }
+}
+
+function formatParityMonthHeader_(rawHdr, col0) {
+  if (typeof rawHdr === "number" && rawHdr >= 30000 && rawHdr <= 75000) {
+    const dStr = toSheetDateFormat(rawHdr);
+    const m = String(dStr || "").match(/^\d{1,2}-([A-Za-z]{3}-\d{2})$/);
+    if (m) return m[1];
+    if (dStr) return String(dStr);
+  }
+  const s = String(rawHdr ?? "").replace(/\s+/g, " ").trim();
+  if (s) return s.length > 18 ? `${s.slice(0, 16).trimEnd()}…` : s;
+  return `Col ${colIdx0ToLetter(col0)}`;
+}
+
+function extractParityRowLabel_(sRow = [], gRow = [], r0 = 0) {
+  for (const colIdx of [0, 1]) {
+    const raw = sRow[colIdx] !== undefined && sRow[colIdx] !== "" ? sRow[colIdx] : gRow[colIdx];
+    const clean = String(raw ?? "").replace(/\s+/g, " ").trim();
+    if (clean && parseComparableNumber_(clean) === null) {
+      return clean.length > 34 ? `${clean.slice(0, 32).trimEnd()}…` : clean;
+    }
+  }
+  return `Row ${r0 + 1}`;
+}
+
+function compareHeadlineTabGrid_(
+  tabName,
+  sheetVals = [],
+  supaVals = [],
+  { maxRows = 45, maxCols = 20, headerRowIdx = 3, minDataRowIdx = 4 } = {}
+) {
+  const mismatches = [];
+  const limitRows = Math.min(maxRows, Math.max(sheetVals.length, supaVals.length));
+  const hdrRowSupa = Array.isArray(supaVals[headerRowIdx]) ? supaVals[headerRowIdx] : [];
+  const hdrRowSheet = Array.isArray(sheetVals[headerRowIdx]) ? sheetVals[headerRowIdx] : [];
+
+  for (let r = minDataRowIdx; r < limitRows; r++) {
+    const gR = Array.isArray(sheetVals[r]) ? sheetVals[r] : [];
+    const sR = Array.isArray(supaVals[r]) ? supaVals[r] : [];
+    const rowLabel = extractParityRowLabel_(sR, gR, r);
+
+    for (let c = 2; c < maxCols; c++) {
+      const gV = gR[c] ?? "";
+      const sV = sR[c] ?? "";
+      if ((gV === "" && sV === 0) || (gV === 0 && sV === "") || (gV === "" && sV === "")) {
+        continue;
+      }
+
+      const nG = parseComparableNumber_(gV);
+      const nS = parseComparableNumber_(sV);
+      if (nG !== null && nS !== null) {
+        if (Math.abs(nG - nS) <= 1.0) continue;
+        mismatches.push({
+          tab: tabName,
+          cell: `${colIdx0ToLetter(c)}${r + 1}`,
+          rowLabel,
+          colLabel: formatParityMonthHeader_(hdrRowSupa[c] ?? hdrRowSheet[c], c),
+          sheetValue: Math.round(nG * 100) / 100,
+          supabaseValue: Math.round(nS * 100) / 100,
+        });
+        continue;
+      }
+
+      const strG = String(gV).trim();
+      const strS = String(sV).trim();
+      if (strG === strS) continue;
+      if (strG.startsWith("#") && strS.startsWith("#")) continue;
+
+      mismatches.push({
+        tab: tabName,
+        cell: `${colIdx0ToLetter(c)}${r + 1}`,
+        rowLabel,
+        colLabel: formatParityMonthHeader_(hdrRowSupa[c] ?? hdrRowSheet[c], c),
+        sheetValue: nG !== null ? Math.round(nG * 100) / 100 : strG,
+        supabaseValue: nS !== null ? Math.round(nS * 100) / 100 : strS,
+      });
+    }
+  }
+  return mismatches;
+}
+
+/**
+ * Verifies live Google Sheet `Dashboard` and `Cash` parity against Supabase
+ * across all bridged live clients (or a single specified client).
+ */
+export async function verifyBridgedClientsParity({ clientName = null } = {}) {
+  if (!isSupabaseConfigured()) throw new Error("Supabase is not configured.");
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase admin client unavailable.");
+
+  const { rawDrive, rawSheets } = getPrimaryRawGoogleClients();
+  if (!rawDrive || !rawSheets) {
+    throw new Error("Primary Google Service Account Drive/Sheets clients unavailable.");
+  }
+
+  let query = supabase
+    .from("clients")
+    .select("id, client_name, status, master_mode, client_mode, client_sheet_id, master_sheet_id, metadata")
+    .eq("status", "live")
+    .eq("client_mode", "supabase")
+    .order("client_name", { ascending: true });
+
+  if (clientName) {
+    query = query.eq("client_name", String(clientName).trim());
+  }
+
+  const { data: rows, error } = await query;
+  if (error) throw new Error(`Could not query clients: ${error.message}`);
+
+  const targets = (rows || []).filter((c) => {
+    const bMode = String(c.metadata?.sheet_bridge_mode || "off").toLowerCase();
+    return (
+      (bMode === "live" || bMode === "dry_run") &&
+      c.client_sheet_id &&
+      !isVirtualSupabaseSheetId(c.client_sheet_id)
+    );
+  });
+
+  const results = [];
+  for (let i = 0; i < targets.length; i += 4) {
+    const batch = targets.slice(i, i + 4);
+    const batchRes = await Promise.all(
+      batch.map(async (c) => {
+        const bridgeMode = String(c.metadata?.sheet_bridge_mode || "off").toLowerCase();
+        const st = c.metadata?.sheet_bridge_state || {};
+        const lastSynced = String(st.lastSyncedDriveVersion || "");
+        const lastPulse = String(st.lastPulseWrittenVersion || "");
+        const recentConflictCount = Number(st.recentLogs?.[0]?.conflictCount || 0);
+        const ctx = {
+          clientId: c.id,
+          clientName: c.client_name,
+          clientSheetId: c.client_sheet_id,
+          masterSheetId: c.master_sheet_id,
+          clientMode: c.client_mode,
+          masterMode: c.master_mode,
+        };
+
+        try {
+          const [driveMeta, sheetResp, supaDash, supaCash] = await Promise.all([
+            fetchDriveVersionMeta_(rawDrive, c.client_sheet_id).catch(() => null),
+            withRetry(() =>
+              rawSheets.spreadsheets.values.batchGet({
+                spreadsheetId: c.client_sheet_id,
+                ranges: ["Dashboard!A1:Z45", "Cash!A1:Z58"],
+                valueRenderOption: "UNFORMATTED_VALUE",
+              })
+            ),
+            getOrLoadVirtualTabGrid_(ctx, "client", "Dashboard", rawSheets, { valuesOnly: true }).catch(() => null),
+            getOrLoadVirtualTabGrid_(ctx, "client", "Cash", rawSheets, { valuesOnly: true }).catch(() => null),
+          ]);
+
+          const gDashVals = sheetResp?.data?.valueRanges?.[0]?.values || [];
+          const gCashVals = sheetResp?.data?.valueRanges?.[1]?.values || [];
+          const sDashVals = supaDash?.values_grid || [];
+          const sCashVals = supaCash?.values_grid || [];
+
+          const dashDiffs = compareHeadlineTabGrid_("Dashboard", gDashVals, sDashVals, {
+            maxRows: 45,
+            maxCols: 20,
+            headerRowIdx: 3,
+            minDataRowIdx: 4,
+          });
+          const cashDiffs = compareHeadlineTabGrid_("Cash", gCashVals, sCashVals, {
+            maxRows: 58,
+            maxCols: 20,
+            headerRowIdx: 2,
+            minDataRowIdx: 3,
+          });
+
+          const liveVer = String(driveMeta?.version || "");
+          const driveInSync = Boolean(!liveVer || liveVer === lastSynced || liveVer === lastPulse);
+          const totalMismatchCount = dashDiffs.length + cashDiffs.length;
+
+          return {
+            clientName: c.client_name,
+            bridgeMode,
+            driveVersion: liveVer,
+            lastSyncedDriveVersion: lastSynced,
+            driveInSync,
+            lastError: String(st.lastError || ""),
+            lastSummary: String(st.lastSummary || ""),
+            recentConflictCount,
+            dashboardMismatchCount: dashDiffs.length,
+            cashMismatchCount: cashDiffs.length,
+            totalMismatchCount,
+            sampleMismatches: [...dashDiffs.slice(0, 6), ...cashDiffs.slice(0, 6)].slice(0, 10),
+            error: null,
+          };
+        } catch (clientErr) {
+          return {
+            clientName: c.client_name,
+            bridgeMode,
+            driveVersion: "",
+            lastSyncedDriveVersion: lastSynced,
+            driveInSync: false,
+            lastError: String(st.lastError || ""),
+            lastSummary: String(st.lastSummary || ""),
+            recentConflictCount,
+            dashboardMismatchCount: 0,
+            cashMismatchCount: 0,
+            totalMismatchCount: 0,
+            sampleMismatches: [],
+            error: clientErr.message || "Parity check failed.",
+          };
+        }
+      })
+    );
+    results.push(...batchRes);
+  }
+
+  const errorClientsCount = results.filter((r) => Boolean(r.error || r.lastError)).length;
+  const mismatchClientsCount = results.filter((r) => !r.error && r.totalMismatchCount > 0).length;
+  const matchedClientsCount = results.filter((r) => !r.error && !r.lastError && r.totalMismatchCount === 0).length;
+
+  return {
+    success: true,
+    checkedAt: new Date().toISOString(),
+    clientsChecked: results.length,
+    matchedClientsCount,
+    mismatchClientsCount,
+    errorClientsCount,
+    results,
+  };
 }

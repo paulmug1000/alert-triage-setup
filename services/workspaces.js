@@ -25,6 +25,10 @@ import {
   normalizeLikelihoodInput,
   postGasWebAppLocked,
   sanitizeSpreadsheetTerms,
+  isVariableRetainerRow,
+  isFixedScheduleRetainer,
+  parseVariableRetainerTag,
+  formatVariableRetainerTag,
 } from "../utils/helpers.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, resolveClientSheetIdByClientName, resolveMasterSheetIdByClientName, assertSetupClientSheetBinding, unwrapSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
@@ -45,6 +49,7 @@ import {
   executeChangeRetainerEndDate,
   executeChangeRetainerStartDate,
   buildRetainerChildPlaceholderSlot,
+  createVariableRetainerSeries_,
 } from "./retainers.js";
 
 let _allClientsMemoryCache = null;
@@ -996,7 +1001,7 @@ export async function handleUpdateOutgoingsVendor(req, res, sheets) {
   }
 }
 
-function parseOutgoingsMonthHeaders_(headerCells) {
+export function parseOutgoingsMonthHeaders_(headerCells) {
   const SHEET_EPOCH = new Date(1899, 11, 30);
   const months = [];
   for (let i = 6; i < (headerCells || []).length; i++) {
@@ -1024,7 +1029,7 @@ function parseOutgoingsMonthHeaders_(headerCells) {
   return months;
 }
 
-function parseOutgoingsNoteParts_(note) {
+export function parseOutgoingsNoteParts_(note) {
   if (!note) return { topNote: "", blocks: [] };
   const firstBlockIdx = note.indexOf("{App ID:");
   let topNote = "";
@@ -2119,6 +2124,8 @@ export async function handleGetAllClientJobs(req, res, sheets) {
               }
             }
 
+            const vrMeta = parseVariableRetainerTag(colVal(row, 30));
+            const isVarRet = String(colVal(row, 35) || "").toLowerCase().includes("retainer") && Boolean(vrMeta);
             tabJobs.push({
               id: `${currentTab.toLowerCase()}_${parentRowNum}`,
               tabName: currentTab,
@@ -2128,6 +2135,8 @@ export async function handleGetAllClientJobs(req, res, sheets) {
               projectCode: row[2] || "",
               copiedToConf: currentTab === "Pipeline" ? colVal(row, pipelineCopiedColIdx) : null,
               note: getNote(currentTab, parentRowNum, 0),
+              isVariableRetainer: isVarRet,
+              ...(vrMeta ? { varRetainerMeta: vrMeta } : {}),
               rows: jobRows
             });
           }
@@ -3225,7 +3234,7 @@ export async function resetExpenseSlotFormatting_(sheets, spreadsheetId, tabName
   }
 }
 
-async function insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobClient, jobName, options = {}) {
+export async function insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobClient, jobName, options = {}) {
   const { cachedAllRows = null, deferValueWrites = false, tabName = "Confirmed" } = options;
   const targetTab = tabName || "Confirmed";
   const canReuseCachedRows = Array.isArray(cachedAllRows) && cachedAllRows.length >= 200;
@@ -4049,7 +4058,7 @@ export function normalizeJobSlotsInMemory_(group, targetTab, kind) {
   }
   const isConfTab = targetTab === "Confirmed";
   const parentRow = group.parentRow || group.allRows[group.parentRowNum - 1] || [];
-  const isRetainer = String(parentRow[35] || "").trim().toLowerCase().includes("retainer");
+  const isRetainer = isFixedScheduleRetainer(parentRow);
   const slotCols = getSlotColumnLayout_(kind, isConfTab);
   const width = kind === "invoice" ? (isConfTab ? 7 : 5) : 7;
 
@@ -4500,7 +4509,7 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
     if (!group || group.allRowNums.length === 0) return null;
 
     const { parentRowNum, allRowNums, parentRow, allRows } = group;
-    const isRetainer = String(parentRow[35] || "").trim().toLowerCase().includes("retainer"); // AJ = 35
+    const isRetainer = isFixedScheduleRetainer(parentRow); // AJ = 35 (fixed-schedule retainers only; variable retainers use single-period slot rules)
     const isConfTab = targetTab === "Confirmed";
 
     const slotCols = {
@@ -4869,7 +4878,7 @@ export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, target
     if (!group || group.allRowNums.length === 0) return null;
 
     const { parentRowNum, allRowNums, parentRow, allRows } = group;
-    const isRetainer = String(parentRow[35] || "").trim().toLowerCase().includes("retainer"); // AJ = 35
+    const isRetainer = isFixedScheduleRetainer(parentRow); // AJ = 35 (variable retainers aggregate parent + overflow children)
 
     const slotCols = {
       1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
@@ -5428,6 +5437,49 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
     // Compute slot normalization & placeholder adjustments BEFORE flushing valueUpdates so that any child row insertion
     // happens first and all value writes (placed expenses + new child row A/B/AJ + auto-placeholders + compaction)
     // are executed in a SINGLE values.batchUpdate call!
+    let effectiveJobBudget = req.body.jobBudget;
+    let varRetAutoBumpedDc = null;
+    if (liveGroup && isVariableRetainerRow(liveGroup.parentRow)) {
+      let realBillsTotal = 0;
+      for (const rNum of liveGroup.allRowNums || []) {
+        const rArr = liveGroup.allRows?.[rNum - 1] || [];
+        for (let s = 1; s <= 3; s++) {
+          const base = s === 1 ? 75 : s === 2 ? 82 : 89;
+          const desc = String(rArr[base] || "").trim();
+          const amt = parseFloat(String(rArr[base + 1] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          const id = String(rArr[base + 6] || "").trim();
+          if (amt > 0 && !isAutoExpensePlaceholderId_(id) && !isPlaceholderExpense(id, desc)) {
+            realBillsTotal += amt;
+          }
+        }
+      }
+      realBillsTotal = Math.round(realBillsTotal * 100) / 100;
+      const curAH = parseFloat(String(liveGroup.parentRow?.[33] || "0").replace(/[£$€,\s]/g, "")) || 0;
+      if (realBillsTotal > curAH + 0.01) {
+        try {
+          const fResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `Confirmed!A${liveGroup.parentRowNum}:AM${liveGroup.parentRowNum}`,
+            valueRenderOption: "FORMULA",
+          });
+          const fRow = fResp.data?.values?.[0] || [];
+          const isJC = isJobCostingStyle({ headers: liveGroup.allRows?.[0] || [] });
+          const dcColIdx = isJC ? 10 : 33;
+          const dcColLetter = isJC ? "K" : "AH";
+          const dcFormula = String(fRow[dcColIdx] ?? "").trim();
+          if (!dcFormula.startsWith("=")) {
+            valueUpdates.push({ range: `Confirmed!${dcColLetter}${liveGroup.parentRowNum}`, values: [[realBillsTotal]] });
+            if (liveGroup.parentRow) liveGroup.parentRow[33] = realBillsTotal;
+            if (liveGroup.allRows?.[liveGroup.parentRowNum - 1]) liveGroup.allRows[liveGroup.parentRowNum - 1][33] = realBillsTotal;
+            effectiveJobBudget = realBillsTotal;
+            varRetAutoBumpedDc = realBillsTotal;
+          }
+        } catch (fErr) {
+          console.warn("Variable retainer AH formula check warning:", fErr.message);
+        }
+      }
+    }
+
     let placeholderAdjustment = null;
     let normalizedSlots = [];
     let slotRelocations = [];
@@ -5440,7 +5492,7 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
           "Confirmed",
           liveGroup,
           "expense",
-          { jobBudgetOrRevenue: req.body.jobBudget, masterSheetId, preloadedTolerances }
+          { jobBudgetOrRevenue: effectiveJobBudget, masterSheetId, preloadedTolerances }
         );
         placeholderAdjustment = normRes.placeholderAdjustment;
         normalizedSlots = normRes.normalizedSlots;
@@ -5548,7 +5600,8 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
         placeholderAdjustment?.newChildRowCreated
       ),
       placeholderAdjustment,
-      normalizedSlots
+      normalizedSlots,
+      ...(varRetAutoBumpedDc !== null ? { updatedDirectCosts: varRetAutoBumpedDc } : {})
     });
   } catch (err) {
     console.error("❌ assign_expense_to_job error:", err);
@@ -5681,10 +5734,53 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
       },
     ];
 
+    let varRetAutoBumpedDc = null;
+    if (
+      targetTab === "Confirmed" &&
+      !deleteSlot &&
+      !isExpPlaceholder &&
+      liveGroup?.parentRow &&
+      isVariableRetainerRow(liveGroup.parentRow)
+    ) {
+      const pRowNum = liveGroup.parentRowNum || actualRowNum;
+      const pRowArr = liveGroup.allRows?.[pRowNum - 1] || liveGroup.parentRow;
+      let realBillsTotal = 0;
+      for (const rn of (liveGroup.allRowNums || [pRowNum])) {
+        const rArr = liveGroup.allRows?.[rn - 1] || [];
+        for (const baseCol of [75, 82, 89]) {
+          const dStr = String(rArr[baseCol] ?? "").trim();
+          const aNum = parseFloat(String(rArr[baseCol + 1] ?? "").replace(/[£$€,\s]/g, "")) || 0;
+          const stStr = String(rArr[baseCol + 5] ?? "").trim().toLowerCase();
+          const idStr = String(rArr[baseCol + 6] ?? "").trim();
+          if (aNum > 0 && ((!isPlaceholderExpense(idStr, dStr, stStr)) || stStr === "paid" || stStr === "received")) {
+            realBillsTotal += aNum;
+          }
+        }
+      }
+      realBillsTotal = Math.round(realBillsTotal * 100) / 100;
+      const curDC = parseFloat(String(pRowArr[33] ?? "").replace(/[£$€,\s]/g, "")) || 0;
+      if (realBillsTotal > curDC + 0.01) {
+        const isJC = isJobCostingStyle({ headers: liveGroup.allRows?.[0] || [] });
+        const fResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `Confirmed!${isJC ? "K" : "AH"}${pRowNum}`,
+          valueRenderOption: "FORMULA",
+        }).catch(() => null);
+        const existingF = String(fResp?.data?.values?.[0]?.[0] ?? "").trim();
+        if (!existingF.startsWith("=")) {
+          varRetAutoBumpedDc = realBillsTotal;
+          allWriteData.push({ range: `Confirmed!${isJC ? "K" : "AH"}${pRowNum}`, values: [[varRetAutoBumpedDc]] });
+          pRowArr[isJC ? 10 : 33] = varRetAutoBumpedDc;
+          pRowArr[33] = varRetAutoBumpedDc;
+        }
+      }
+    }
+
     let placeholderAdjustment = null;
     let normalizedSlots = [];
     let slotRelocations = [];
     try {
+      const effectiveBudgetArg = varRetAutoBumpedDc !== null ? varRetAutoBumpedDc : req.body.jobBudget;
       if (liveGroup) {
         const normRes = await runAdjustAndNormalizeJobSlots_(
           sheets,
@@ -5692,7 +5788,7 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
           targetTab,
           liveGroup,
           "expense",
-          { jobBudgetOrRevenue: req.body.jobBudget, masterSheetId, preloadedTolerances }
+          { jobBudgetOrRevenue: effectiveBudgetArg, masterSheetId, preloadedTolerances }
         );
         placeholderAdjustment = normRes.placeholderAdjustment;
         normalizedSlots = normRes.normalizedSlots;
@@ -5776,7 +5872,8 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
       rowNum: actualRowNum,
       slotNum: actualSlotNum,
       placeholderAdjustment,
-      normalizedSlots
+      normalizedSlots,
+      ...(varRetAutoBumpedDc !== null ? { updatedDirectCosts: varRetAutoBumpedDc } : {})
     });
   } catch (err) {
     console.error("❌ update_expense_slot error:", err);
@@ -6249,6 +6346,56 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       allRows,
     };
 
+    // For Variable Retainers: auto-update monthly revenue (AG) to the sum of real fee invoices
+    // on this month row (unless AG holds a custom sheet formula or updateJobRevenue was already set).
+    let varRetUpdatedRev = undefined;
+    if (isVariableRetainerRow(invGroup.parentRow) && effectiveRevenue === undefined) {
+      let realFeeTotal = 0;
+      let realInvCount = 0;
+      for (const rNum of invGroup.allRowNums) {
+        const rArr = invGroup.allRows[rNum - 1] || [];
+        for (let s = 1; s <= 3; s++) {
+          const base = s === 1 ? 41 : s === 2 ? 48 : 55;
+          const amt = parseFloat(String(rArr[base] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          const ref = String(rArr[base + 1] || "").trim();
+          const rech = parseFloat(String(rArr[base + 5] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          if (ref && !isAutoInvoicePlaceholderRef_(ref) && !isPlaceholderInvoice(ref)) {
+            realFeeTotal += Math.max(0, amt - rech);
+            realInvCount++;
+          }
+        }
+      }
+      realFeeTotal = Math.round(realFeeTotal * 100) / 100;
+      if (realInvCount > 0) {
+        try {
+          const fResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `Confirmed!A${invParentRowNum}:AM${invParentRowNum}`,
+            valueRenderOption: "FORMULA",
+          });
+          const fRow = fResp.data?.values?.[0] || [];
+          const isJC = isJobCostingStyle({ headers: allRows?.[0] || [] });
+          const revColIdx = isJC ? 8 : 32;
+          const revFormula = String(fRow[revColIdx] ?? "").trim();
+          if (!revFormula.startsWith("=")) {
+            if (isJC) {
+              allWriteData.push(
+                { range: `Confirmed!I${invParentRowNum}`, values: [[realFeeTotal]] },
+                { range: `Confirmed!AG${invParentRowNum}`, values: [[`=if(I${invParentRowNum}=0,"",I${invParentRowNum})`]] }
+              );
+            } else {
+              allWriteData.push({ range: `Confirmed!AG${invParentRowNum}`, values: [[realFeeTotal]] });
+            }
+            if (allRows[invParentRowNum - 1]) allRows[invParentRowNum - 1][32] = realFeeTotal;
+            effectiveRevenue = realFeeTotal;
+            varRetUpdatedRev = realFeeTotal;
+          }
+        } catch (fErr) {
+          console.warn("Variable retainer AG formula check warning:", fErr.message);
+        }
+      }
+    }
+
     let placeholderAdjustment = null;
     let normalizedSlots = [];
     let invRelocations = [];
@@ -6341,7 +6488,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       rowShifted: targetRowNum !== rowNum,
       placeholderAdjustment,
       normalizedSlots,
-      updatedRevenue: req.body.updateJobRevenue ? effectiveRevenue : undefined,
+      updatedRevenue: (req.body.updateJobRevenue || varRetUpdatedRev !== undefined) ? effectiveRevenue : undefined,
       updatedRechargedExpenses: req.body.updateJobRecharged ? effectiveRecharged : undefined
     });
   } catch (err) {
@@ -7362,6 +7509,52 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       }
     }
 
+    let varRetUpdatedRev = undefined;
+    if (
+      isConfTab &&
+      !deleteSlot &&
+      !isInvPlaceholder &&
+      !req.body.updateJobRevenue &&
+      cachedAllRows &&
+      (resolvedParentRowNum || actualRowNum)
+    ) {
+      const pRowNum = resolvedParentRowNum || actualRowNum;
+      const pRowArr = cachedAllRows[pRowNum - 1] || [];
+      if (isVariableRetainerRow(pRowArr)) {
+        let realFeeTotal = 0;
+        for (const rn of resolvedInvoiceJobRows) {
+          const rArr = cachedAllRows[rn - 1] || [];
+          for (const baseCol of [41, 48, 55]) {
+            const amt = parseFloat(String(rArr[baseCol] ?? "").replace(/[£$€,\s]/g, "")) || 0;
+            const refStr = String(rArr[baseCol + 1] ?? "").trim();
+            const stStr = String(rArr[baseCol + 4] ?? "").trim().toLowerCase();
+            const rechAmt = parseFloat(String(rArr[baseCol + 5] ?? "").replace(/[£$€,\s]/g, "")) || 0;
+            if (amt !== 0 && !isPlaceholderInvoice(refStr, stStr) && stStr !== "draft") {
+              realFeeTotal += Math.max(0, amt - rechAmt);
+            }
+          }
+        }
+        realFeeTotal = Math.round(realFeeTotal * 100) / 100;
+        const curRev = parseFloat(String(pRowArr[32] ?? "").replace(/[£$€,\s]/g, "")) || 0;
+        if (realFeeTotal > 0 && Math.abs(realFeeTotal - curRev) > 0.01) {
+          const isJC = isJobCostingStyle({ headers: cachedAllRows[0] || [] });
+          const fResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `Confirmed!${isJC ? "I" : "AG"}${pRowNum}`,
+            valueRenderOption: "FORMULA",
+          }).catch(() => null);
+          const existingF = String(fResp?.data?.values?.[0]?.[0] ?? "").trim();
+          if (!existingF.startsWith("=")) {
+            varRetUpdatedRev = realFeeTotal;
+            effectiveRevenue = realFeeTotal;
+            allWriteData.push({ range: `Confirmed!${isJC ? "I" : "AG"}${pRowNum}`, values: [[realFeeTotal]] });
+            pRowArr[isJC ? 8 : 32] = realFeeTotal;
+            pRowArr[32] = realFeeTotal;
+          }
+        }
+      }
+    }
+
     let placeholderAdjustment = null;
     let normalizedSlots = [];
     let invRelocations = [];
@@ -7485,7 +7678,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       restoredPlaceholderSlot,
       placeholderAdjustment,
       normalizedSlots,
-      updatedRevenue: req.body.updateJobRevenue ? effectiveRevenue : undefined,
+      updatedRevenue: (req.body.updateJobRevenue || varRetUpdatedRev !== undefined) ? effectiveRevenue : undefined,
       updatedRechargedExpenses: req.body.updateJobRecharged ? effectiveRecharged : undefined
     });
   } catch (err) {
@@ -7800,6 +7993,69 @@ export async function handleAddNewJob(req, res, sheets) {
     const isConfirmedRetainer =
       targetTab === "Confirmed" &&
       String(jobData.projectRetainer || "").trim().toLowerCase() === "retainer";
+    const parsedVarTag = parseVariableRetainerTag(jobData.unevenSplit || jobData.splitStr);
+    const isVarRetainerMode = Boolean(
+      String(jobData.projectRetainer || "").trim().toLowerCase() === "retainer" &&
+      (jobData.isVariableRetainer || String(jobData.retainerMode || "").toLowerCase() === "variable" || parsedVarTag)
+    );
+
+    if (isConfirmedRetainer && isVarRetainerMode) {
+      const varRes = await createVariableRetainerSeries_(sheets, {
+        clientSheetId: sheetIdClean,
+        masterSheetId: jobData.masterSheetId || req.body.masterSheetId,
+        clientName: req.body.clientName || "",
+        client: jobData.client || "",
+        jobName: parsedVarTag?.seriesName || jobData.jobName || "",
+        projectCode: jobData.projectCode || "",
+        leadSource: jobData.leadSource || "",
+        productLine: jobData.productLine || "",
+        baseRevenue: parsedVarTag?.baseRev ?? (parseFloat(jobData.jobRevenue ?? jobData.revenue) || 0),
+        baseDirectCosts: parsedVarTag?.baseDC ?? (parseFloat(jobData.directCosts) || 0),
+        vat: jobData.vat || "Yes",
+        startDate: jobData.startDate,
+        endDate: jobData.endDate,
+        noEndDate: Boolean(jobData.noEndDate || isNoEndDateSentinel(jobData.endDate)),
+        invoiceSendDay: jobData.invoiceSendDay ?? parsedVarTag?.sendDay ?? null,
+        setDateConf: true,
+      });
+      if (!varRes.success) {
+        return res.status(400).json({ success: false, error: varRes.error || "Failed to create variable retainer" });
+      }
+      const firstUi = varRes.createdRowsForUi?.[0] || {};
+      return res.status(200).json({
+        success: true,
+        targetRow: varRes.firstRowNum,
+        targetTab: "Confirmed",
+        isVariableRetainer: true,
+        childRowCount: varRes.monthCount,
+        backgroundProvisioning: false,
+        newJob: {
+          id: `confirmed_${varRes.firstRowNum}`,
+          tabName: "Confirmed",
+          status: "Confirmed",
+          client: jobData.client || "",
+          jobName: firstUi.jobName || varRes.seriesName,
+          projectCode: jobData.projectCode || "",
+          copiedToConf: null,
+          note: "",
+          isVariableRetainer: true,
+          varRetainerMeta: parseVariableRetainerTag(firstUi.unevenSplit),
+          rows: [firstUi],
+        },
+        createdRows: varRes.createdRowsForUi,
+      });
+    }
+
+    if (!isConfirmedRetainer && isVarRetainerMode && !parsedVarTag) {
+      jobData.unevenSplit = formatVariableRetainerTag({
+        seriesName: jobData.jobName || "",
+        baseRev: parseFloat(jobData.jobRevenue ?? jobData.revenue) || 0,
+        baseDC: parseFloat(jobData.directCosts) || 0,
+        endDate: jobData.endDate,
+        noEndDate: Boolean(jobData.noEndDate || isNoEndDateSentinel(jobData.endDate)),
+        sendDay: jobData.invoiceSendDay || 28,
+      });
+    }
 
     let targetMasterId = (jobData.masterSheetId || req.body.masterSheetId)
       ? (extractSheetIdFromUrl(jobData.masterSheetId || req.body.masterSheetId) || jobData.masterSheetId || req.body.masterSheetId)
@@ -8464,13 +8720,13 @@ function computeOutgoingsDefaultDates_(headerStr, recTimingStr, payTimingStr) {
   };
 }
 
-function sanitizeOutgNotesVal_(val) {
+export function sanitizeOutgNotesVal_(val) {
   return typeof val === "string" && /^[\s'’]*[=+\-@]/.test(val)
     ? "'" + val.replace(/^[\s'’]+/, "")
     : String(val || "");
 }
 
-function buildUpdatedCosNote_(cosCell, hCellStr, cosInvTiming, cosPayTiming, colLetter) {
+export function buildUpdatedCosNote_(cosCell, hCellStr, cosInvTiming, cosPayTiming, colLetter) {
   if (!cosCell) return null;
   const cosVal = typeof cosCell.effectiveValue?.numberValue === "number"
     ? cosCell.effectiveValue.numberValue
@@ -8491,7 +8747,7 @@ function buildUpdatedCosNote_(cosCell, hCellStr, cosInvTiming, cosPayTiming, col
   return `{App ID: ${cosPrefix}${rand}}{Amt: ${cosVal.toFixed(2)}}{Status: }{Rec date: ${cosEst.rec}}{Pay date: ${cosEst.pay}}{Description: Placeholder Entry - Making up CoS}`;
 }
 
-async function resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, explicitMasterSheetId) {
+export async function resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, explicitMasterSheetId) {
   let targetMasterId = explicitMasterSheetId ? (extractSheetIdFromUrl(explicitMasterSheetId) || explicitMasterSheetId) : null;
   if (!targetMasterId) {
     try {
@@ -8512,7 +8768,7 @@ async function resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, 
   return targetMasterId;
 }
 
-async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData }) {
+export async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData }) {
   const outgNotesUpdates = [
     sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: sheetIdClean,
@@ -8560,7 +8816,7 @@ async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMas
   }
 }
 
-function cleanNoteBlockField_(val) {
+export function cleanNoteBlockField_(val) {
   return String(val == null ? "" : val).replace(/[{}\r\n]/g, " ").trim();
 }
 

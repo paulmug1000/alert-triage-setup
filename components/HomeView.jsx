@@ -68,10 +68,12 @@ export default function HomeView({
   assignedByClient = {},
   assignedAppIds = new Set(),
   navTaskCount = 0,
+  notesCount = 0,
   user,
   isAdmin = false,
   onGoToAlerts,
   onGoToTasks,
+  onGoToNotes,
   onGoToSetup,
   onGoToIntegrations,
   onSelectClientAlerts,
@@ -470,6 +472,95 @@ export default function HomeView({
             }}
           >
             <span>Go to tasks</span>
+            <span style={{ fontSize: "14px" }}>→</span>
+          </a>
+        </div>
+
+        {/* 3. Client Notes Summary Card */}
+        <div
+          style={{
+            background: "#FFFFFF",
+            borderRadius: "12px",
+            border: "1px solid #E2E8F0",
+            padding: "20px 22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+            transition: "box-shadow 0.15s ease",
+          }}
+        >
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+              <span style={{ fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.6px", color: "#64748B" }}>
+                Client notes
+              </span>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: "28px",
+                  height: "28px",
+                  borderRadius: "50%",
+                  background: notesCount > 0 ? "rgba(0, 71, 171, 0.12)" : "rgba(34, 197, 94, 0.12)",
+                  color: notesCount > 0 ? "#0047AB" : "#16A34A",
+                  fontSize: "14px",
+                  fontWeight: "700",
+                }}
+              >
+                {notesCount > 0 ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  </svg>
+                ) : "✓"}
+              </span>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "8px" }}>
+              <span style={{ fontSize: "36px", fontWeight: "800", color: notesCount > 0 ? "#0047AB" : "#0F172A", lineHeight: 1 }}>
+                {notesCount}
+              </span>
+              <span style={{ fontSize: "14px", color: "#64748B", fontWeight: "500" }}>
+                open {notesCount === 1 ? "note" : "notes"}
+              </span>
+            </div>
+
+            <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#64748B", lineHeight: "1.4" }}>
+              {notesCount === 0
+                ? "No client notes awaiting a reply."
+                : "Client notes requesting manager review or reply."}
+            </p>
+          </div>
+
+          <a
+            href={managedClient?.clientName ? `/pma?nav=notes&client=${encodeURIComponent(managedClient.clientName)}` : "/pma?nav=notes"}
+            className="triage-btn"
+            onClick={(e) => {
+              if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                e.preventDefault();
+                onGoToNotes?.();
+              }
+            }}
+            style={{
+              background: "#F8FAFC",
+              color: "#1E293B",
+              border: "1px solid #CBD5E1",
+              borderRadius: "8px",
+              padding: "10px 16px",
+              fontSize: "13.5px",
+              fontWeight: "600",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "8px",
+              width: "100%",
+              textDecoration: "none",
+              boxSizing: "border-box"
+            }}
+          >
+            <span>Go to client notes</span>
             <span style={{ fontSize: "14px" }}>→</span>
           </a>
         </div>

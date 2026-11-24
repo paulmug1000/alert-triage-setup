@@ -8,6 +8,17 @@ import AddContractorModal from "./AddContractorModal";
 import AddExpenseModal from "./AddExpenseModal";
 import ContractorExpenseModal from "./ContractorExpenseModal";
 import OutgoingsEditVendorModal from "../OutgoingsEditVendorModal";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import {
+  buildContractorRowNoteKey,
+  buildContractorCellNoteKey,
+  buildContractorBillNoteKey,
+  buildOutgoingRowNoteKey,
+  buildOutgoingCellNoteKey,
+  buildDividendRowNoteKey,
+  buildDividendCellNoteKey,
+} from "../../utils/pulseNotesKeys";
 
 function getContractorColLetter(year, mIdx) {
   let colIndex = 6 + mIdx; // Year 1: cols G-R (6 to 17)
@@ -75,6 +86,21 @@ export default function PortalOutgoingsView({
   const [localNewItems, setLocalNewItems] = useState([]);
   const [editingContractor, setEditingContractor] = useState(null);
   const [localContractorUpdates, setLocalContractorUpdates] = useState({});
+  const { openNotes, openAllNotes, getEntitySummary } = usePulseNotes();
+
+  const rowEntityType = category === "contractors" ? "contractor" : category === "dividends" ? "dividend" : "outgoing";
+  const buildRowNoteKey = (name) =>
+    category === "contractors"
+      ? buildContractorRowNoteKey(name)
+      : category === "dividends"
+        ? buildDividendRowNoteKey(name)
+        : buildOutgoingRowNoteKey(name);
+  const buildCellNoteKey = (name, monthLabel) =>
+    category === "contractors"
+      ? buildContractorCellNoteKey(name, monthLabel)
+      : category === "dividends"
+        ? buildDividendCellNoteKey(name, monthLabel)
+        : buildOutgoingCellNoteKey(name, monthLabel);
 
   // Clear optimistic allocations and local new items when fresh server data arrives
   useEffect(() => {
@@ -694,6 +720,7 @@ export default function PortalOutgoingsView({
                   return (
                     <tr
                       key={item.rowNumber || idx}
+                      className="pulse-note-row"
                       style={{
                         borderBottom: "1px solid #f1f5f9",
                         background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
@@ -767,6 +794,29 @@ export default function PortalOutgoingsView({
                           ) : (
                             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</span>
                           )}
+                          {(() => {
+                            const rKey = buildRowNoteKey(item.name);
+                            const rSum = getEntitySummary(rKey);
+                            return (
+                              <PulseNoteTrigger
+                                variant="row"
+                                count={rSum?.count || 0}
+                                openNotifyCount={rSum?.openNotifyCount || 0}
+                                unreadReplyCount={rSum?.unreadReplyCount || 0}
+                                latestSnippet={rSum?.latestSnippet || ""}
+                                onClick={() =>
+                                  openNotes({
+                                    scopeType: "entity",
+                                    entityType: rowEntityType,
+                                    entityKey: rKey,
+                                    entityLabel: `${item.name} (${pageTitle.slice(0, -1) || pageTitle})`,
+                                    drawerTitle: `${pageTitle} notes`,
+                                    contextMeta: { category, itemName: item.name },
+                                  })
+                                }
+                              />
+                            );
+                          })()}
                         </div>
                       </td>
 
@@ -817,11 +867,15 @@ export default function PortalOutgoingsView({
                         if (category === "contractors" && isRowExpanded) {
                           const monthBlocks = item.monthlyBlocks?.[selectedYear]?.[mIdx] || [];
                           const colLetter = getContractorColLetter(selectedYear, mIdx);
+                          const cCellKey = buildCellNoteKey(item.name, mLabel);
+                          const cCellSum = getEntitySummary(cCellKey);
 
                           return (
                             <td
                               key={mIdx}
+                              className="pulse-note-cell"
                               style={{
+                                position: "relative",
                                 padding: "6px 4px",
                                 verticalAlign: "top",
                                 textAlign: "right",
@@ -830,6 +884,24 @@ export default function PortalOutgoingsView({
                                 borderRight: "1px solid #f1f5f9",
                               }}
                             >
+                              <PulseNoteTrigger
+                                variant="cell"
+                                count={cCellSum?.count || 0}
+                                openNotifyCount={cCellSum?.openNotifyCount || 0}
+                                unreadReplyCount={cCellSum?.unreadReplyCount || 0}
+                                latestSnippet={cCellSum?.latestSnippet || ""}
+                                onClick={() =>
+                                  openNotes({
+                                    scopeType: "entity",
+                                    entityType: "contractor",
+                                    entityKey: cCellKey,
+                                    parentEntityKey: buildRowNoteKey(item.name),
+                                    entityLabel: `${item.name} — ${mLabel}`,
+                                    drawerTitle: "Contractor month notes",
+                                    contextMeta: { category, itemName: item.name, monthLabel: mLabel },
+                                  })
+                                }
+                              />
                               {/* Cell Total at top */}
                               <div style={{ fontWeight: 700, fontSize: "11px", color: "#0047AB", marginBottom: "4px" }}>
                                 {formatGBP(val)}
@@ -841,6 +913,8 @@ export default function PortalOutgoingsView({
                                   const status = b.status || (isPlaceholderExpense(b.appId, b.description, b.status) ? "Placeholder" : "Received");
                                   const statusDisplay = String(status).toLowerCase() === "placeholder" ? "Placeh." : status;
                                   const statusStyle = getContractorStatusPill(status);
+                                  const billKey = buildContractorBillNoteKey(item.name, mLabel, b, bIdx + 1);
+                                  const billSum = getEntitySummary(billKey);
                                   return (
                                     <div
                                       key={b.appId || bIdx}
@@ -855,7 +929,7 @@ export default function PortalOutgoingsView({
                                           mIdx,
                                         });
                                       }}
-                                      title={`Click to edit · ${b.description || "Expense"} · ${status}`}
+                                      title={`Click to edit · ${b.description || "Expense"} · ${status}${billSum?.count ? ` · ${billSum.count} note${billSum.count === 1 ? "" : "s"}` : ""}`}
                                       style={{
                                         padding: "2px 5px",
                                         borderRadius: "4px",
@@ -875,7 +949,20 @@ export default function PortalOutgoingsView({
                                         boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
                                       }}
                                     >
-                                      <span style={{ fontWeight: 600 }}>{formatGBP(b.amount)}</span>
+                                      <span style={{ fontWeight: 600, display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                        {billSum?.count > 0 && (
+                                          <span
+                                            style={{
+                                              width: "6px",
+                                              height: "6px",
+                                              borderRadius: "50%",
+                                              background: billSum.unreadReplyCount > 0 ? "#dc2626" : billSum.openNotifyCount > 0 ? "#0047AB" : "#d97706",
+                                              flexShrink: 0,
+                                            }}
+                                          />
+                                        )}
+                                        {formatGBP(b.amount)}
+                                      </span>
                                       <span style={{ fontSize: "9px", opacity: 0.9 }}>{statusDisplay}</span>
                                     </div>
                                   );
@@ -922,12 +1009,16 @@ export default function PortalOutgoingsView({
                         }
 
                         if (category === "contractors") {
+                          const cCellKey = buildCellNoteKey(item.name, mLabel);
+                          const cCellSum = getEntitySummary(cCellKey);
                           // Unexpanded contractor cell: clicking on amount expands the row!
                           return (
                             <td
                               key={mIdx}
+                              className="pulse-note-cell"
                               onClick={() => toggleRowExpand(item.rowNumber || idx)}
                               style={{
+                                position: "relative",
                                 padding: "4px 4px",
                                 textAlign: "right",
                                 fontSize: "11px",
@@ -938,10 +1029,40 @@ export default function PortalOutgoingsView({
                               }}
                               title="Click to view item breakdown"
                             >
+                              <PulseNoteTrigger
+                                variant="cell"
+                                count={cCellSum?.count || 0}
+                                openNotifyCount={cCellSum?.openNotifyCount || 0}
+                                unreadReplyCount={cCellSum?.unreadReplyCount || 0}
+                                latestSnippet={cCellSum?.latestSnippet || ""}
+                                onClick={() =>
+                                  openNotes({
+                                    scopeType: "entity",
+                                    entityType: "contractor",
+                                    entityKey: cCellKey,
+                                    parentEntityKey: buildRowNoteKey(item.name),
+                                    entityLabel: `${item.name} — ${mLabel}`,
+                                    drawerTitle: "Contractor month notes",
+                                    contextMeta: { category, itemName: item.name, monthLabel: mLabel },
+                                  })
+                                }
+                              />
                               {formatGBP(val)}
                             </td>
                           );
                         }
+
+                        const cellNoteKey = buildCellNoteKey(item.name, mLabel);
+                        const cellNoteSum = getEntitySummary(cellNoteKey);
+                        const cellNoteTarget = {
+                          scopeType: "entity",
+                          entityType: rowEntityType,
+                          entityKey: cellNoteKey,
+                          parentEntityKey: buildRowNoteKey(item.name),
+                          entityLabel: `${item.name} — ${mLabel}`,
+                          drawerTitle: `${pageTitle} month notes`,
+                          contextMeta: { category, itemName: item.name, monthLabel: mLabel },
+                        };
 
                         const isClickable = Boolean(
                           category === "expenses" &&
@@ -956,6 +1077,7 @@ export default function PortalOutgoingsView({
                         return (
                           <td
                             key={mIdx}
+                            className={!isEditing ? "pulse-note-cell" : ""}
                             onClick={(e) => {
                               if (!isClickable) return;
                               const rect = e.currentTarget.getBoundingClientRect();
@@ -976,6 +1098,7 @@ export default function PortalOutgoingsView({
                                 items: ddData.items || [],
                                 sections: null,
                                 isLoading: Boolean(isLoading),
+                                noteTarget: cellNoteTarget,
                                 _clickParams: {
                                   categoryName: item.name,
                                   periodLabel: mLabel,
@@ -993,6 +1116,7 @@ export default function PortalOutgoingsView({
                               if (isClickable) e.currentTarget.style.filter = "none";
                             }}
                             style={{
+                              position: "relative",
                               padding: "4px 4px",
                               textAlign: "right",
                               fontSize: "11px",
@@ -1008,6 +1132,16 @@ export default function PortalOutgoingsView({
                             }}
                             title={isEditing && isCellLocked ? lockTooltip : undefined}
                           >
+                            {!isEditing && (
+                              <PulseNoteTrigger
+                                variant="cell"
+                                count={cellNoteSum?.count || 0}
+                                openNotifyCount={cellNoteSum?.openNotifyCount || 0}
+                                unreadReplyCount={cellNoteSum?.unreadReplyCount || 0}
+                                latestSnippet={cellNoteSum?.latestSnippet || ""}
+                                onClick={() => openNotes(cellNoteTarget)}
+                              />
+                            )}
                             {isEditing && !isCellLocked ? (
                               <input
                                 type="text"
@@ -1128,6 +1262,7 @@ export default function PortalOutgoingsView({
           thousandsSeparator={thousandsSeparator}
           onClose={() => setActivePopover(null)}
           isLoading={Boolean(isLoading || activePopover?.isLoading)}
+          noteTarget={activePopover?.noteTarget || null}
         />
       )}
 
@@ -1281,6 +1416,18 @@ export default function PortalOutgoingsView({
               <span>Edit</span>
             </button>
           )}
+
+          <PulseNoteTrigger
+            variant="toolbar"
+            title={
+              category === "contractors"
+                ? "Contractor notes"
+                : category === "dividends"
+                ? "Dividend notes"
+                : "Expense notes"
+            }
+            onClick={() => openAllNotes({ entityType: rowEntityType })}
+          />
 
           <button
             type="button"

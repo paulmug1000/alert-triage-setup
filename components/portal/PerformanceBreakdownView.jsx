@@ -3,6 +3,9 @@ import Spinner from "../Spinner";
 import { BreakdownViewSkeleton } from "../Skeleton";
 import { DeepDiveEngine, buildDeepDiveData, getDeepDiveType, parseMoney, formatMoney as universalFormatMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import { buildScreenNoteKey } from "../../utils/pulseNotesKeys";
 
 export default function PerformanceBreakdownView({
   clientName,
@@ -83,6 +86,7 @@ export default function PerformanceBreakdownView({
   const [selectedPeriodKey, setSelectedPeriodKey] = useState("");
   const [breakdownType, setBreakdownType] = useState("confRev");
   const [openAccordions, setOpenAccordions] = useState({});
+  const { openNotes, getEntitySummary } = usePulseNotes();
 
   useEffect(() => {
     setOpenAccordions({});
@@ -385,6 +389,31 @@ export default function PerformanceBreakdownView({
         </select>
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          {(() => {
+            const yrObj = activePeriod ? years[activePeriod.yearIdx] : years[0];
+            const fyStr = yrObj?.fyLabel || yrObj?.displayTitle || "Current year";
+            const noteKey = buildScreenNoteKey("performance", fyStr);
+            const noteSum = getEntitySummary(noteKey);
+            return (
+              <PulseNoteTrigger
+                variant="toolbar"
+                count={noteSum?.count || 0}
+                openNotifyCount={noteSum?.openNotifyCount || 0}
+                unreadReplyCount={noteSum?.unreadReplyCount || 0}
+                latestSnippet={noteSum?.latestSnippet || ""}
+                onClick={() =>
+                  openNotes({
+                    scopeType: "screen",
+                    entityType: "performance",
+                    entityKey: noteKey,
+                    entityLabel: `Performance — ${fyStr}`,
+                    drawerTitle: "Performance notes",
+                    contextMeta: { fyLabel: fyStr, subView: "perfBreakdown", period: activePeriod?.label || "" },
+                  })
+                }
+              />
+            );
+          })()}
           <button
             type="button"
             className="refresh-btn no-click-spinner"

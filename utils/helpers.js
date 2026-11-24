@@ -3299,6 +3299,264 @@ export function buildConnectionEmailContent({ contactName, accountingTool, crmTo
   return { subject, body };
 }
 
+export const VAR_RETAINER_PREFIX = "[VarRetainer]";
+
+const VAR_RET_MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const VAR_RET_MONTHS_MAP = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
+function parseVarRetSheetDate_(val) {
+  if (!val && val !== 0) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  const s = String(val).trim();
+  if (!s || s === "-" || s === "(blank)") return null;
+  if (/^\d{5}(?:\.\d+)?$/.test(s)) {
+    const num = parseFloat(s);
+    if (num > 20000 && num < 90000) {
+      const utc = new Date(Math.round((num - 25569) * 86400 * 1000));
+      return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+    }
+  }
+  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if (m) {
+    const mi = VAR_RET_MONTHS_MAP[m[2].toLowerCase()];
+    if (mi === undefined) return null;
+    let yr = parseInt(m[3], 10);
+    if (m[3].length === 2) yr += yr <= 69 ? 2000 : 1900;
+    return new Date(yr, mi, parseInt(m[1], 10));
+  }
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) {
+    return new Date(parseInt(iso[1], 10), parseInt(iso[2], 10) - 1, parseInt(iso[3], 10));
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function fmtVarRetSheetDate_(d) {
+  if (!(d instanceof Date) || isNaN(d.getTime())) return "";
+  return `${d.getDate()}-${VAR_RET_MONTHS_SHORT[d.getMonth()]}-${d.getFullYear()}`;
+}
+
+/**
+ * Parses a Confirmed!AE / Pipeline!AE `[VarRetainer]` metadata tag using linear-time string splitting.
+ * Format: `[VarRetainer] <SeriesName> | baseRev:<num> | baseDC:<num> | end:<DD-MMM-YYYY> | day:<1-31> | override:<rev|dc|both>`
+ */
+export function parseVariableRetainerTag(aeVal) {
+  if (aeVal === null || aeVal === undefined) return null;
+  let raw = String(aeVal).trim();
+  if (!raw) return null;
+  if (raw.startsWith("'")) raw = raw.slice(1).trim();
+  if (!raw.toLowerCase().startsWith(VAR_RETAINER_PREFIX.toLowerCase())) return null;
+
+  const rest = raw.slice(VAR_RETAINER_PREFIX.length).trim();
+  const segments = rest.split("|").map((s) => s.trim()).filter(Boolean);
+  const seriesName = segments[0] && !segments[0].includes(":") ? segments[0] : "";
+
+  let baseRev = 0;
+  let baseDC = 0;
+  let endDate = "31-Dec-2050";
+  let sendDay = 28;
+  let overrideRev = false;
+  let overrideDc = false;
+
+  const startIdx = seriesName ? 1 : 0;
+  for (let i = startIdx; i < segments.length; i++) {
+    const seg = segments[i];
+    const colonIdx = seg.indexOf(":");
+    if (colonIdx <= 0) continue;
+    const key = seg.slice(0, colonIdx).trim().toLowerCase();
+    const val = seg.slice(colonIdx + 1).trim();
+    if (key === "baserev") {
+      const n = parseFloat(val.replace(/[£$€,\s]/g, ""));
+      if (!isNaN(n) && n >= 0) baseRev = Math.round(n * 100) / 100;
+    } else if (key === "basedc") {
+      const n = parseFloat(val.replace(/[£$€,\s]/g, ""));
+      if (!isNaN(n) && n >= 0) baseDC = Math.round(n * 100) / 100;
+    } else if (key === "end") {
+      if (val) {
+        const parsed = parseVarRetSheetDate_(val);
+        endDate = parsed ? fmtVarRetSheetDate_(parsed) : val;
+      }
+    } else if (key === "day") {
+      const d = parseInt(val, 10);
+      if (!isNaN(d) && d >= 1 && d <= 31) sendDay = d;
+    } else if (key === "override") {
+      const ov = val.toLowerCase();
+      if (ov === "both") {
+        overrideRev = true;
+        overrideDc = true;
+      } else if (ov === "rev") {
+        overrideRev = true;
+      } else if (ov === "dc") {
+        overrideDc = true;
+      }
+    }
+  }
+
+  const parsedEnd = parseVarRetSheetDate_(endDate);
+  const noEndDate = !endDate || String(endDate).includes("2050") || (parsedEnd ? parsedEnd.getFullYear() >= 2050 : false);
+
+  return {
+    seriesName,
+    baseRev,
+    baseDC,
+    endDate: noEndDate ? "31-Dec-2050" : endDate,
+    noEndDate,
+    sendDay,
+    overrideRev,
+    overrideDc,
+    raw,
+  };
+}
+
+/**
+ * Formats a `[VarRetainer]` tag for Confirmed!AE / Pipeline!AE and sanitizes against formula injection.
+ */
+export function formatVariableRetainerTag({
+  seriesName = "",
+  baseRev = 0,
+  baseDC = 0,
+  endDate = "31-Dec-2050",
+  noEndDate = false,
+  sendDay = 28,
+  overrideRev = false,
+  overrideDc = false,
+} = {}) {
+  const cleanName = String(seriesName || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\|/g, "-")
+    .trim();
+  const revNum = Math.round((parseFloat(String(baseRev ?? 0).replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
+  const dcNum = Math.round((parseFloat(String(baseDC ?? 0).replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
+  const parsedEnd = noEndDate ? null : parseVarRetSheetDate_(endDate);
+  const endStr = (noEndDate || !endDate || (parsedEnd && parsedEnd.getFullYear() >= 2050))
+    ? "31-Dec-2050"
+    : (parsedEnd ? fmtVarRetSheetDate_(parsedEnd) : String(endDate).replace(/\|/g, "-").trim());
+  const dayInt = parseInt(sendDay, 10);
+  const safeDay = !isNaN(dayInt) && dayInt >= 1 && dayInt <= 31 ? dayInt : 28;
+
+  const parts = [
+    `${VAR_RETAINER_PREFIX} ${cleanName}`.trim(),
+    `baseRev:${revNum}`,
+    `baseDC:${dcNum}`,
+    `end:${endStr}`,
+    `day:${safeDay}`,
+  ];
+  if (overrideRev && overrideDc) parts.push("override:both");
+  else if (overrideRev) parts.push("override:rev");
+  else if (overrideDc) parts.push("override:dc");
+
+  return sanitizeFormulaInput(parts.join(" | "));
+}
+
+/**
+ * Returns true if a sheet row array or parsed job object represents a Variable Retainer monthly row.
+ */
+export function isVariableRetainerRow(rowOrJob) {
+  if (!rowOrJob) return false;
+  if (Array.isArray(rowOrJob)) {
+    const typeStr = String(rowOrJob[35] || "").trim().toLowerCase();
+    if (!typeStr.includes("retainer")) return false;
+    return parseVariableRetainerTag(rowOrJob[30]) !== null;
+  }
+  if (rowOrJob.isVariableRetainer === true) return true;
+  const typeStr = String(rowOrJob.projectRetainer || rowOrJob.type || "").trim().toLowerCase();
+  if (!typeStr.includes("retainer")) return false;
+  if (rowOrJob.varRetainerMeta && rowOrJob.varRetainerMeta.seriesName !== undefined) return true;
+  const aeVal = rowOrJob.splitStr ?? rowOrJob.unevenSplit ?? "";
+  return parseVariableRetainerTag(aeVal) !== null;
+}
+
+/**
+ * Returns true ONLY for standard fixed-schedule Retainer rows (excludes Variable Retainer rows).
+ */
+export function isFixedScheduleRetainer(rowOrJob) {
+  if (!rowOrJob) return false;
+  const typeStr = Array.isArray(rowOrJob)
+    ? String(rowOrJob[35] || "").trim().toLowerCase()
+    : String(rowOrJob.projectRetainer || rowOrJob.type || "").trim().toLowerCase();
+  if (!typeStr.includes("retainer")) return false;
+  return !isVariableRetainerRow(rowOrJob);
+}
+
+/**
+ * Formats a variable retainer month's Job Name: `<SeriesName> - MMM YYYY`.
+ */
+export function formatVarRetainerMonthJobName(seriesName, dateObj) {
+  const cleanSeries = String(seriesName || "").trim();
+  const d = dateObj instanceof Date ? dateObj : parseVarRetSheetDate_(dateObj);
+  if (!d || isNaN(d.getTime())) return cleanSeries;
+  const label = `${VAR_RET_MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+  return cleanSeries ? `${cleanSeries} - ${label}` : label;
+}
+
+/**
+ * Groups variable retainer monthly items by `(norm(client), norm(seriesName))` chronologically.
+ * Returns `{ seriesList, nonVariableItems }`.
+ */
+export function groupVariableRetainerSeries(items = []) {
+  const map = Object.create(null);
+  const nonVariableItems = [];
+
+  for (const item of items) {
+    if (!item) continue;
+    const tag = item.varRetainerMeta || parseVariableRetainerTag(item.splitStr ?? item.unevenSplit ?? "");
+    const isVar = Boolean(item.isVariableRetainer || (String(item.projectRetainer || "").toLowerCase().includes("retainer") && tag));
+    if (!isVar || !tag) {
+      nonVariableItems.push(item);
+      continue;
+    }
+    const client = String(item.client || "").trim();
+    const seriesName = tag.seriesName || String(item.jobName || "").replace(/\s*-\s*[A-Za-z]{3}\s+\d{4}$/, "").trim();
+    const cKey = client.toLowerCase();
+    const sKey = seriesName.toLowerCase();
+    if (!cKey || !sKey || cKey === "__proto__" || sKey === "__proto__") {
+      nonVariableItems.push(item);
+      continue;
+    }
+    const mapKey = `${cKey}|||${sKey}`;
+    if (!Object.prototype.hasOwnProperty.call(map, mapKey)) {
+      map[mapKey] = {
+        key: mapKey,
+        client,
+        seriesName,
+        items: [],
+      };
+    }
+    map[mapKey].items.push({ ...item, varRetainerMeta: tag });
+  }
+
+  const seriesList = Object.values(map).map((group) => {
+    group.items.sort((a, b) => {
+      const da = parseVarRetSheetDate_(a.startDate);
+      const db = parseVarRetSheetDate_(b.startDate);
+      const ta = da ? da.getTime() : 0;
+      const tb = db ? db.getTime() : 0;
+      if (ta !== tb) return ta - tb;
+      return (a.rowNumber || a.rowNum || 0) - (b.rowNumber || b.rowNum || 0);
+    });
+    const latest = group.items[group.items.length - 1];
+    const first = group.items[0];
+    const meta = latest?.varRetainerMeta || {};
+    return {
+      ...group,
+      baseRev: meta.baseRev ?? 0,
+      baseDC: meta.baseDC ?? 0,
+      endDate: meta.endDate || "31-Dec-2050",
+      noEndDate: Boolean(meta.noEndDate),
+      sendDay: meta.sendDay || 28,
+      startDate: first?.startDate || "",
+      latestItem: latest,
+      firstItem: first,
+    };
+  });
+
+  return { seriesList, nonVariableItems };
+}
+
 
 
 

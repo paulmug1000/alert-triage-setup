@@ -7,6 +7,7 @@ import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
+import PmaClientNoteBadge from "./PmaClientNoteBadge";
 
 export const parseSheetDate = (dStr) => {
   if (!dStr) return null;
@@ -875,6 +876,12 @@ export default function SalariesView({
 
         {selectedClient && (
           <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            <PmaClientNoteBadge
+              clientName={selectedClient.clientName}
+              entityType="employee"
+              label="Client notes"
+              user={user}
+            />
             <button
               type="button"
               onClick={() => selectedClient && fetchSalaries(selectedClient, true)}

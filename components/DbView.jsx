@@ -84,6 +84,19 @@ function formatTimestamp(ts) {
   });
 }
 
+function formatParityValue(val) {
+  if (val === "" || val === null || val === undefined) return "blank";
+  if (typeof val === "number" && Number.isFinite(val)) {
+    const sign = val < 0 ? "-" : "";
+    const abs = Math.abs(val);
+    return `${sign}£${abs.toLocaleString("en-GB", {
+      minimumFractionDigits: Number.isInteger(abs) ? 0 : 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+  return String(val);
+}
+
 const cardStyle = {
   background: "#ffffff",
   borderRadius: "10px",
@@ -122,9 +135,10 @@ export default function DbView({
     if (initialClientName) return String(initialClientName).trim();
     return "APPTEST";
   });
-  const [showAllClients, setShowAllClients] = useState(false);
+  const [overviewClientFilter, setOverviewClientFilter] = useState("active_migrated");
   const [stage2Data, setStage2Data] = useState(null);
   const [stage2Loading, setStage2Loading] = useState(true);
+  const [parityReport, setParityReport] = useState(null);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -513,6 +527,33 @@ export default function DbView({
     });
   };
 
+  const handleVerifySheetParity = (allBridged = true) => {
+    runTrackedOperation(
+      "verify_bridge_parity",
+      "Checking Dashboard & Cash parity across bridged clients...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_sheet_bridge_parity",
+            allBridged,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Parity verification failed.");
+        const r = data.parityReport || {};
+        setParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Checked ${r.clientsChecked || 0} bridged client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} with variance(s)${r.errorClientsCount ? `, ${r.errorClientsCount} error(s)` : ""}.`,
+        };
+      }
+    );
+  };
+
   const handleNativeSync = (syncType, label, clientOverride) => {
     const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
     runTrackedOperation(`sync_${syncType}`, `Running "${label}" on ${targetClient}...`, async () => {
@@ -827,17 +868,35 @@ export default function DbView({
   const migratedClientsCount = allClients.filter(
     (c) => (c.masterTabCount || 0) + (c.reconTabCount || 0) + (c.clientTabCount || 0) > 0
   ).length;
+  const bridgedLiveClientsCount = allClients.filter(
+    (c) => c.client_mode === "supabase" && (c.sheetBridgeMode === "live" || c.sheetBridgeMode === "dry_run")
+  ).length;
+  const bridgeErrorClientsCount = allClients.filter(
+    (c) => c.client_mode === "supabase" && c.sheetBridgeMode && c.sheetBridgeMode !== "off" && c.sheetBridgeState?.lastError
+  ).length;
 
-  const visibleOverviewClients = showAllClients
-    ? allClients
-    : allClients.filter(
-      (c) =>
-        c.master_mode === "supabase" ||
-        c.client_mode === "supabase" ||
-        (c.masterTabCount || 0) + (c.reconTabCount || 0) + (c.clientTabCount || 0) > 0 ||
-        String(c.client_name || "").trim().toUpperCase() ===
+  const getEffectiveClientStatus = (c) =>
+    String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+  const isArchivedOrSuspendedClient = (c) =>
+    ["archived", "suspended", "inactive"].includes(getEffectiveClientStatus(c));
+
+  const activeOverviewClients = allClients.filter((c) => !isArchivedOrSuspendedClient(c));
+  const hiddenArchivedSuspendedCount = allClients.length - activeOverviewClients.length;
+  const activeMigratedOverviewClients = activeOverviewClients.filter(
+    (c) =>
+      c.master_mode === "supabase" ||
+      c.client_mode === "supabase" ||
+      (c.masterTabCount || 0) + (c.reconTabCount || 0) + (c.clientTabCount || 0) > 0 ||
+      String(c.client_name || "").trim().toUpperCase() ===
         String(activeClientName || "").trim().toUpperCase()
-    );
+  );
+
+  const visibleOverviewClients =
+    overviewClientFilter === "all"
+      ? allClients
+      : overviewClientFilter === "active_all"
+        ? activeOverviewClients
+        : activeMigratedOverviewClients;
 
   const formatFreqLabel = (val) => {
     const s = String(val || "").trim();
@@ -889,18 +948,35 @@ export default function DbView({
                   Loading engine overview...
                 </span>
               ) : s2Ready ? (
-                <span
-                  style={{
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    padding: "2px 9px",
-                    borderRadius: "999px",
-                    background: "#dcfce7",
-                    color: "#166534",
-                  }}
-                >
-                  {supabaseEngineClientsCount} master live · {supabasePortalClientsCount} portal live · {migratedClientsCount} synced
-                </span>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      padding: "2px 9px",
+                      borderRadius: "999px",
+                      background: "#dcfce7",
+                      color: "#166534",
+                    }}
+                  >
+                    {`${supabaseEngineClientsCount} master live · ${supabasePortalClientsCount} portal live · ${migratedClientsCount} synced${bridgedLiveClientsCount > 0 ? ` · ${bridgedLiveClientsCount} sheet-bridged` : ""}`}
+                  </span>
+                  {bridgeErrorClientsCount > 0 && (
+                    <span
+                      style={{
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        padding: "2px 9px",
+                        borderRadius: "999px",
+                        background: "#fee2e2",
+                        color: "#991b1b",
+                        border: "1px solid #fecaca",
+                      }}
+                    >
+                      {`${bridgeErrorClientsCount} bridge error${bridgeErrorClientsCount === 1 ? "" : "s"}`}
+                    </span>
+                  )}
+                </div>
               ) : null}
             </div>
             <p style={{ margin: 0, fontSize: "12.5px", color: "#64748b", lineHeight: 1.5 }}>
@@ -1835,27 +1911,203 @@ export default function DbView({
               }}
             >
               <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
-                Client engine overview ({visibleOverviewClients.length} of {allClients.length} clients shown)
+                {overviewClientFilter === "all"
+                  ? `Client engine overview (${visibleOverviewClients.length} of ${allClients.length} clients shown)`
+                  : `Client engine overview (${visibleOverviewClients.length} of ${activeOverviewClients.length} active clients shown${hiddenArchivedSuspendedCount > 0 ? ` · ${hiddenArchivedSuspendedCount} archived/suspended hidden` : ""})`}
               </h2>
-              <button
-                type="button"
-                onClick={() => setShowAllClients((prev) => !prev)}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  disabled={!s2Ready || bridgedLiveClientsCount === 0 || isBusy}
+                  onClick={() => handleVerifySheetParity(true)}
+                  title={
+                    bridgedLiveClientsCount === 0
+                      ? "No clients currently have Google Sheet live or dry-run bridge enabled."
+                      : "Compare live Google Sheet Dashboard & Cash figures against Supabase for all bridged clients."
+                  }
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #93c5fd",
+                    background: !s2Ready || bridgedLiveClientsCount === 0 ? "#f3f4f6" : "#eff6ff",
+                    color: !s2Ready || bridgedLiveClientsCount === 0 ? "#9ca3af" : "#1e40af",
+                    cursor: !s2Ready || bridgedLiveClientsCount === 0 ? "not-allowed" : isBusy ? "wait" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "5px",
+                  }}
+                >
+                  {activeOp?.key === "verify_bridge_parity" && <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />}
+                  <span>
+                    {activeOp?.key === "verify_bridge_parity"
+                      ? "Checking parity..."
+                      : `Verify sheet parity (${bridgedLiveClientsCount})`}
+                  </span>
+                </button>
+
+                <select
+                  aria-label="Filter clients in overview"
+                  value={overviewClientFilter}
+                  onChange={(e) => setOverviewClientFilter(e.target.value)}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                    background: "#ffffff",
+                    color: "#334155",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="active_migrated">
+                    {`Active migrated & selected (${activeMigratedOverviewClients.length})`}
+                  </option>
+                  <option value="active_all">
+                    {`All active clients (${activeOverviewClients.length})`}
+                  </option>
+                  <option value="all">
+                    {`Show all clients (${allClients.length})`}
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            {parityReport && (
+              <div
                 style={{
-                  padding: "5px 11px",
-                  fontSize: "11.5px",
-                  fontWeight: 600,
-                  borderRadius: "6px",
-                  border: "1px solid #cbd5e1",
-                  background: "#ffffff",
-                  color: "#334155",
-                  cursor: "pointer",
+                  marginBottom: "12px",
+                  padding: "12px 14px",
+                  borderRadius: "8px",
+                  background: "#f8fafc",
+                  border: `1px solid ${parityReport.errorClientsCount > 0 ? "#fecaca" : parityReport.mismatchClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
                 }}
               >
-                {showAllClients
-                  ? "Show migrated & selected clients only"
-                  : `Show all ${allClients.length} clients`}
-              </button>
-            </div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "10px",
+                    flexWrap: "wrap",
+                    marginBottom: "8px",
+                  }}
+                >
+                  <div style={{ fontSize: "12px", fontWeight: 700, color: "#0f172a" }}>
+                    {`Sheet parity check (${formatTimestamp(parityReport.checkedAt)}) — ${parityReport.matchedClientsCount || 0} of ${parityReport.clientsChecked || 0} bridged clients match 100% on Dashboard & Cash`}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setParityReport(null)}
+                    style={{
+                      padding: "3px 8px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      borderRadius: "5px",
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                      color: "#475569",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Hide report
+                  </button>
+                </div>
+
+                {Array.isArray(parityReport.results) && parityReport.results.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {parityReport.results.map((r) => {
+                      const hasErr = Boolean(r.error || r.lastError);
+                      const hasDiff = r.totalMismatchCount > 0;
+                      const badgeBg = hasErr ? "#fee2e2" : hasDiff ? "#fef3c7" : "#dcfce7";
+                      const badgeFg = hasErr ? "#991b1b" : hasDiff ? "#92400e" : "#166534";
+                      const badgeText = hasErr
+                        ? "Error"
+                        : hasDiff
+                          ? `Dashboard ${r.dashboardMismatchCount} · Cash ${r.cashMismatchCount} diff(s)`
+                          : "Dashboard & Cash match";
+                      return (
+                        <div
+                          key={r.clientName}
+                          style={{
+                            background: "#ffffff",
+                            border: "1px solid #e2e8f0",
+                            borderRadius: "6px",
+                            padding: "8px 10px",
+                            fontSize: "11.5px",
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap" }}>
+                              <strong style={{ color: "#0f172a" }}>{r.clientName}</strong>
+                              <span
+                                style={{
+                                  padding: "1px 7px",
+                                  borderRadius: "999px",
+                                  fontSize: "10.5px",
+                                  fontWeight: 600,
+                                  background: badgeBg,
+                                  color: badgeFg,
+                                }}
+                              >
+                                {badgeText}
+                              </span>
+                              <span style={{ fontSize: "10.5px", color: r.driveInSync ? "#64748b" : "#b45309", fontWeight: r.driveInSync ? 500 : 600 }}>
+                                {r.driveInSync
+                                  ? `Drive v${r.driveVersion || "?"}`
+                                  : `Pending sheet edit (live v${r.driveVersion || "?"} vs synced v${r.lastSyncedDriveVersion || "?"})`}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectClient(r.clientName)}
+                              style={{
+                                padding: "2px 8px",
+                                fontSize: "10.5px",
+                                fontWeight: 600,
+                                borderRadius: "4px",
+                                border: "1px solid #cbd5e1",
+                                background: "#f8fafc",
+                                color: "#334155",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Select
+                            </button>
+                          </div>
+                          {(r.error || r.lastError) && (
+                            <div style={{ marginTop: "4px", color: "#b91c1c", fontSize: "11px" }}>
+                              {r.error || r.lastError}
+                            </div>
+                          )}
+                          {Array.isArray(r.sampleMismatches) && r.sampleMismatches.length > 0 && (
+                            <div style={{ marginTop: "5px", display: "flex", flexDirection: "column", gap: "2px", fontSize: "11px", color: "#475569" }}>
+                              {r.sampleMismatches.slice(0, 5).map((m, mIdx) => (
+                                <div key={mIdx}>
+                                  <strong>{`${m.tab}!${m.cell}`}</strong>
+                                  {` (${m.rowLabel} · ${m.colLabel}): Sheet ${formatParityValue(m.sheetValue)} vs Supabase ${formatParityValue(m.supabaseValue)}`}
+                                </div>
+                              ))}
+                              {r.totalMismatchCount > 5 && (
+                                <div style={{ color: "#64748b", fontSize: "10.5px" }}>
+                                  {`+${r.totalMismatchCount - 5} more difference(s)`}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: "11.5px", color: "#64748b" }}>
+                    No bridged clients found to check.
+                  </div>
+                )}
+              </div>
+            )}
 
             {allClients.length === 0 ? (
               <div
@@ -1893,10 +2145,19 @@ export default function DbView({
                     </tr>
                   </thead>
                   <tbody>
+                    {visibleOverviewClients.length === 0 && (
+                      <tr>
+                        <td colSpan={7} style={{ padding: "16px", textAlign: "center", color: "#64748b", fontSize: "12px" }}>
+                          No matching clients for this filter. Choose &quot;Show all clients&quot; above to view archived or suspended clients.
+                        </td>
+                      </tr>
+                    )}
                     {visibleOverviewClients.map((c) => {
                       const isSelected =
                         String(c.client_name || "").trim().toUpperCase() ===
                         String(activeClientName || "").trim().toUpperCase();
+                      const effectiveStatus = getEffectiveClientStatus(c);
+                      const isArchivedOrSuspended = isArchivedOrSuspendedClient(c);
                       const isSupabase = c.master_mode === "supabase";
                       const isClientSupabase = c.client_mode === "supabase";
                       const mTabs = c.masterTabCount || 0;
@@ -1915,7 +2176,7 @@ export default function DbView({
                           }}
                         >
                           <td style={{ padding: "8px 10px", fontWeight: 700, color: "#0f172a" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                               <span>{c.client_name}</span>
                               {isSelected && (
                                 <span
@@ -1929,6 +2190,24 @@ export default function DbView({
                                   }}
                                 >
                                   Selected
+                                </span>
+                              )}
+                              {isArchivedOrSuspended && (
+                                <span
+                                  style={{
+                                    fontSize: "10px",
+                                    fontWeight: 600,
+                                    padding: "1px 6px",
+                                    borderRadius: "4px",
+                                    background: effectiveStatus === "suspended" ? "#f3e8ff" : "#f1f5f9",
+                                    color: effectiveStatus === "suspended" ? "#6b21a8" : "#475569",
+                                  }}
+                                >
+                                  {effectiveStatus === "suspended"
+                                    ? "Suspended"
+                                    : effectiveStatus === "archived"
+                                      ? "Archived"
+                                      : "Inactive"}
                                 </span>
                               )}
                             </div>
@@ -1965,6 +2244,65 @@ export default function DbView({
                                         : "Portal: Supabase"
                                     : "Portal: Sheets"}
                                 </span>
+                              {isClientSupabase && (c.sheetBridgeMode === "live" || c.sheetBridgeMode === "dry_run") && (() => {
+                                const bState = c.sheetBridgeState || {};
+                                const hasErr = Boolean(bState.lastError);
+                                const hasConflict = Number(bState.recentLogs?.[0]?.conflictCount || 0) > 0;
+                                if (hasErr) {
+                                  return (
+                                    <span
+                                      title={bState.lastError}
+                                      style={{
+                                        padding: "2px 7px",
+                                        borderRadius: "999px",
+                                        fontWeight: 600,
+                                        fontSize: "10px",
+                                        background: "#fee2e2",
+                                        color: "#991b1b",
+                                        border: "1px solid #fecaca",
+                                      }}
+                                    >
+                                      Bridge error
+                                    </span>
+                                  );
+                                }
+                                if (hasConflict) {
+                                  return (
+                                    <span
+                                      title={bState.lastSummary || "Same-cell conflict recorded"}
+                                      style={{
+                                        padding: "2px 7px",
+                                        borderRadius: "999px",
+                                        fontWeight: 600,
+                                        fontSize: "10px",
+                                        background: "#fef3c7",
+                                        color: "#92400e",
+                                        border: "1px solid #fde68a",
+                                      }}
+                                    >
+                                      Conflict
+                                    </span>
+                                  );
+                                }
+                                if (c.sheetBridgeMode === "live") {
+                                  return (
+                                    <span
+                                      title={bState.lastSummary || "Sheet bridge active"}
+                                      style={{
+                                        padding: "2px 7px",
+                                        borderRadius: "999px",
+                                        fontWeight: 600,
+                                        fontSize: "10px",
+                                        background: "#dcfce7",
+                                        color: "#166534",
+                                      }}
+                                    >
+                                      In sync
+                                    </span>
+                                  );
+                                }
+                                return null;
+                              })()}
                             </div>
                           </td>
                           <td style={{ padding: "8px 10px", color: hasTabs ? "#1e293b" : "#94a3b8" }}>

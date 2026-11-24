@@ -44,10 +44,17 @@ import {
   handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, handleGetDefaultDaysToPay, handleTidyJobLayout, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
+  getAccountingCatalog,
+  refreshAccountingCatalogSource,
+  batchAssignOrUnassignJobItems,
+  moveAccountingItemToJob,
+} from "../../services/accountingCatalogService";
+import {
   handleGetRetainerJobs, handleRenameRetainerJob, handleChangeRetainerStartDate, handleChangeRetainerEndDate,
   handleChangeRetainerMonthlyAmount, handleChangeRetainerSendDates, handleCreateRetainerJob, handleTidyUpRetainers,
   handleComputeRetainerAlertResolution, handleComputeRetainerSplitInvoicePreview,
-  handleApplyRetainerSplitInvoice, handleDeleteRetainer
+  handleApplyRetainerSplitInvoice, handleDeleteRetainer,
+  handleUpdateVariableRetainerBase, handleUpdateVariableRetainerMonth
 } from "../../services/retainers";
 import {
   handleEomGetOverviewBootstrap,
@@ -264,6 +271,9 @@ export default async function handler(req, res) {
       assign_invoice_to_job: ["invoices", "jobs", "cash"],
       update_invoice_slot: ["invoices", "jobs", "cash"],
       move_invoice_to_job: ["invoices", "jobs", "cash"],
+      batch_assign_job_items: ["invoices", "jobs", "outgoings", "retainers", "cash", "views"],
+      move_job_item: ["invoices", "jobs", "outgoings", "retainers", "cash", "views"],
+      refresh_accounting_catalog: ["invoices", "outgoings"],
       verify_invoice_slot: ["invoices", "jobs"],
       create_job_from_invoice: ["invoices", "jobs", "retainers", "cash"],
       add_new_job: ["jobs", "retainers", "invoices", "outgoings", "cash"],
@@ -280,6 +290,8 @@ export default async function handler(req, res) {
       tidy_up_retainers: ["retainers", "jobs", "invoices", "cash"],
       apply_retainer_split_invoice: ["retainers", "jobs", "invoices", "cash"],
       delete_retainer: ["retainers", "jobs", "invoices", "cash"],
+      update_variable_retainer_base: ["retainers", "jobs", "invoices", "outgoings", "cash", "views"],
+      update_variable_retainer_month: ["retainers", "jobs", "invoices", "outgoings", "cash", "views"],
       create_outgoings_vendor: ["outgoings"],
       update_outgoings_vendor: ["outgoings"],
       update_outgoing_note: ["outgoings", "cash"],
@@ -389,6 +401,7 @@ export default async function handler(req, res) {
       "get_assigned_expenses",
       "get_outgoings_inbox",
       "get_invoices_inbox",
+      "get_accounting_catalog",
       "get_outgoings",
       "get_direct_costs_jobs",
       "get_invoice_jobs",
@@ -767,6 +780,95 @@ export default async function handler(req, res) {
       return await handleUpdateInvoiceSlot(req, res, sheets);
     } else if (action === "move_invoice_to_job") {
       return await handleMoveInvoiceToJob(req, res, sheets);
+    } else if (action === "get_accounting_catalog" || action === "refresh_accounting_catalog" || action === "batch_assign_job_items" || action === "move_job_item") {
+      const b = req.body || {};
+      const sheetIdsToBind = [b.clientSheetId, b.masterSheetId].filter(Boolean);
+      if (sheetIdsToBind.length === 0) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId" });
+      }
+      let boundClient = b.clientName ? String(b.clientName).trim() : "";
+      for (const sid of sheetIdsToBind) {
+        const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
+        if (!auth.authorized) {
+          return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+        }
+        if (auth.clientName) boundClient = auth.clientName;
+      }
+      const isSysAdmin = Boolean(!sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin"));
+      try {
+        if (action === "get_accounting_catalog") {
+          const result = await getAccountingCatalog({
+            sheets,
+            clientSheetId: b.clientSheetId,
+            masterSheetId: b.masterSheetId || "",
+            clientName: boundClient,
+            itemType: b.itemType || "invoice",
+            lookbackMonths: b.lookbackMonths || 3,
+            targetJob: b.targetJob || null,
+          });
+          return res.status(200).json(result);
+        }
+        if (action === "refresh_accounting_catalog") {
+          const result = await refreshAccountingCatalogSource({
+            sheets,
+            clientSheetId: b.clientSheetId,
+            masterSheetId: b.masterSheetId || "",
+            clientName: boundClient,
+            itemType: b.itemType || "invoice",
+            force: Boolean(b.force),
+            userEmail: sessionUser?.email || "PMA User",
+          });
+          return res.status(200).json(result);
+        }
+        if (action === "batch_assign_job_items") {
+          const result = await batchAssignOrUnassignJobItems({
+            sheets,
+            clientSheetId: b.clientSheetId,
+            masterSheetId: b.masterSheetId || "",
+            clientName: boundClient,
+            itemType: b.itemType || "invoice",
+            targetJob: b.targetJob,
+            assignItems: Array.isArray(b.assignItems) ? b.assignItems : [],
+            unassignKeys: Array.isArray(b.unassignKeys) ? b.unassignKeys : [],
+            updateJobRevenue: Boolean(b.updateJobRevenue),
+            newJobRevenue: b.newJobRevenue,
+            updateJobBudget: Boolean(b.updateJobBudget),
+            newJobBudget: b.newJobBudget,
+            userEmail: sessionUser?.email || "PMA User",
+            automationCommanderSheetId,
+            sessionId: b.sessionId || null,
+            isSysAdmin,
+          });
+          return res.status(200).json(result);
+        }
+        const result = await moveAccountingItemToJob({
+          sheets,
+          clientSheetId: b.clientSheetId,
+          masterSheetId: b.masterSheetId || "",
+          clientName: boundClient,
+          itemType: b.itemType || "invoice",
+          itemKey: b.itemKey || "",
+          sourceType: b.sourceType || "auto",
+          targetJob: b.targetJob,
+          updateJobRevenue: Boolean(b.updateJobRevenue),
+          newJobRevenue: b.newJobRevenue,
+          updateJobBudget: Boolean(b.updateJobBudget),
+          newJobBudget: b.newJobBudget,
+          userEmail: sessionUser?.email || "PMA User",
+          automationCommanderSheetId,
+          sessionId: b.sessionId || null,
+          isSysAdmin,
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error(`❌ triage (${action}) error:`, err);
+        const status = err?.statusCode || 500;
+        const rawMsg = err?.message || "Failed to process accounting assignment.";
+        return res.status(status).json({
+          success: false,
+          error: isSysAdmin ? rawMsg : sanitizeSpreadsheetTerms(rawMsg),
+        });
+      }
     } else if (action === "verify_invoice_slot") {
       return await handleVerifyInvoiceSlot(req, res, sheets);
     } else if (action === "verify_expense_in_pulse") {
@@ -809,6 +911,10 @@ export default async function handler(req, res) {
       return await handleApplyRetainerSplitInvoice(req, res, sheets);
     } else if (action === "delete_retainer") {
       return await handleDeleteRetainer(req, res, sheets);
+    } else if (action === "update_variable_retainer_base") {
+      return await handleUpdateVariableRetainerBase(req, res, sheets);
+    } else if (action === "update_variable_retainer_month") {
+      return await handleUpdateVariableRetainerMonth(req, res, sheets);
 
     } else if (action === "update_outgoing_note") {
       return await handleUpdateOutgoingNote(req, res, sheets);

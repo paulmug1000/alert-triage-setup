@@ -3,7 +3,22 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter, sa
 import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { resolveClientNameBySheetId, getAllClients, resolveMasterSheetIdForClient_, getSharedClientConfirmedAndKeyInfo } from "./workspaces.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, formatInvoiceRefForSheet, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay, isJobCostingStyle, getJobCostingRowFormulasLetterMap, buildJobRowClearAndRestorePlan } from "../utils/helpers.js";
+import {
+  isPlaceholderInvoice,
+  isPlaceholderExpense,
+  formatInvoiceRefForSheet,
+  canonicalizeInvoiceStatus,
+  canonicalizeExpenseStatus,
+  NO_END_DATE_SHEET_VALUE,
+  isNoEndDateSentinel,
+  formatJobEndDateDisplay,
+  isJobCostingStyle,
+  getJobCostingRowFormulasLetterMap,
+  buildJobRowClearAndRestorePlan,
+  parseVariableRetainerTag,
+  formatVariableRetainerTag,
+  formatVarRetainerMonthJobName,
+} from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
@@ -177,7 +192,7 @@ export function retFindRetainerJobs(rows, options) {
     const type = String(row[35] || "").trim();
     if (!client && !jobName) { ri++; continue; }
     const isRetainer = type.toLowerCase().includes("retainer");
-    if (!isRetainer || !revenue) { ri++; continue; }
+    if (!isRetainer || !revenue || parseVariableRetainerTag(row[30])) { ri++; continue; }
 
     const parentRowNum = ri + 1;
     const endDate = retParseSheetDate(row[38]);
@@ -214,6 +229,89 @@ export function retFindRetainerJobs(rows, options) {
     ri = cj;
   }
   return jobs;
+}
+
+export function retFindVariableRetainerSeries(rows) {
+  const seriesMap = Object.create(null);
+  let ri = 1;
+  while (ri < rows.length) {
+    const row = rows[ri] || [];
+    const client = String(row[0] || "").trim();
+    const jobName = String(row[1] || "").trim();
+    const type = String(row[35] || "").trim();
+    const vrMeta = parseVariableRetainerTag(row[30]);
+    if (!client || !type.toLowerCase().includes("retainer") || !vrMeta) {
+      ri++;
+      continue;
+    }
+
+    const monthRowNum = ri + 1;
+    const overflowRows = [];
+    let cj = ri + 1;
+    while (cj < rows.length) {
+      const next = rows[cj] || [];
+      const nc = String(next[0] || "").trim();
+      const nj = String(next[1] || "").trim();
+      const nRev = String(next[32] || "").trim();
+      const nStart = String(next[37] || "").trim();
+      const nType = String(next[35] || "").trim();
+      if (nc === client && nj === jobName && !nRev && !nStart && !nType) {
+        overflowRows.push({ rowNum: cj + 1, row: next });
+        cj++;
+      } else {
+        break;
+      }
+    }
+
+    const seriesName = vrMeta.seriesName || jobName.replace(/\s*-\s*[A-Za-z]{3}\s+\d{4}$/, "").trim() || jobName;
+    const cKey = client.toLowerCase();
+    const sKey = seriesName.toLowerCase();
+    if (cKey !== "__proto__" && sKey !== "__proto__") {
+      const mapKey = `${cKey}|||${sKey}`;
+      if (!Object.prototype.hasOwnProperty.call(seriesMap, mapKey)) {
+        seriesMap[mapKey] = {
+          client,
+          seriesName,
+          months: [],
+        };
+      }
+      seriesMap[mapKey].months.push({
+        rowNum: monthRowNum,
+        row,
+        overflowRows,
+        vrMeta,
+        startDate: retParseSheetDate(row[37]),
+        endDate: retParseSheetDate(row[38]),
+      });
+    }
+    ri = cj;
+  }
+
+  return Object.values(seriesMap).map((group) => {
+    group.months.sort((a, b) => {
+      const ta = a.startDate ? a.startDate.getTime() : 0;
+      const tb = b.startDate ? b.startDate.getTime() : 0;
+      if (ta !== tb) return ta - tb;
+      return a.rowNum - b.rowNum;
+    });
+    const first = group.months[0];
+    const latest = group.months[group.months.length - 1];
+    const meta = latest?.vrMeta || {};
+    return {
+      client: group.client,
+      seriesName: group.seriesName,
+      projectCode: String(latest?.row?.[2] || first?.row?.[2] || "").trim(),
+      vat: String(latest?.row?.[34] || first?.row?.[34] || "Yes").trim(),
+      baseRev: meta.baseRev ?? 0,
+      baseDC: meta.baseDC ?? 0,
+      endDate: meta.endDate || "31-Dec-2050",
+      noEndDate: Boolean(meta.noEndDate),
+      sendDay: meta.sendDay || 28,
+      startDate: first?.startDate || null,
+      endDateObj: retParseSheetDate(meta.endDate || "31-Dec-2050"),
+      months: group.months,
+    };
+  });
 }
 
 export const RET_INV_SLOTS = [
@@ -510,11 +608,25 @@ export async function handleGetRetainerJobs(req, res, sheets) {
           client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
           revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
           projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+          unevenSplit: colVal(row, 30),
           invoiceSlots: [1, 2, 3].map(n => {
             const base = n === 1 ? 41 : n === 2 ? 48 : 55;
             return {
               slotNum: n, amount: colVal(row, base), ref: colVal(row, base + 1), sentDate: colVal(row, base + 2),
               daysToPay: colVal(row, base + 3), status: colVal(row, base + 4)
+            };
+          }),
+          expenseSlots: [1, 2, 3].map(n => {
+            const base = n === 1 ? 75 : n === 2 ? 82 : 89;
+            return {
+              slotNum: n,
+              description: colVal(row, base),
+              amount: colVal(row, base + 1),
+              vat: colVal(row, base + 2),
+              date: colVal(row, base + 3),
+              daysToPay: colVal(row, base + 4),
+              status: canonicalizeExpenseStatus(colVal(row, base + 5)),
+              transactionId: colVal(row, base + 6),
             };
           }),
         });
@@ -528,10 +640,74 @@ export async function handleGetRetainerJobs(req, res, sheets) {
             revenue: job.revenue, vat: job.vat, projectRetainer: job.projectRetainer,
             parentRowNum: job.parentRowNum,
             isCompleted,
+            isVariableRetainer: false,
             rows: [buildRowData(job.parentRowNum, job.parentRow, true)]
               .concat(job.childRows.map(cr => buildRowData(cr.rowNum, cr.row, false))),
           };
         });
+
+        const varSeriesList = retFindVariableRetainerSeries(rows);
+        for (const series of varSeriesList) {
+          const isCompleted = Boolean(!series.noEndDate && series.endDateObj && series.endDateObj < todayStart);
+          const firstMonth = series.months[0];
+          const monthRows = series.months.map((m) => {
+            const baseData = buildRowData(m.rowNum, m.row, true);
+            const extraExpSlots = [];
+            for (const ov of m.overflowRows) {
+              for (let s = 1; s <= 3; s++) {
+                const b = s === 1 ? 75 : s === 2 ? 82 : 89;
+                const d = colVal(ov.row, b);
+                const a = colVal(ov.row, b + 1);
+                const tid = colVal(ov.row, b + 6);
+                if (d || a || tid) {
+                  extraExpSlots.push({
+                    rowNum: ov.rowNum,
+                    slotNum: s,
+                    description: d,
+                    amount: a,
+                    vat: colVal(ov.row, b + 2),
+                    date: colVal(ov.row, b + 3),
+                    daysToPay: colVal(ov.row, b + 4),
+                    status: canonicalizeExpenseStatus(colVal(ov.row, b + 5)),
+                    transactionId: tid,
+                  });
+                }
+              }
+            }
+            return {
+              ...baseData,
+              overflowRowNums: m.overflowRows.map(o => o.rowNum),
+              isRevOverridden: Boolean(m.vrMeta?.overrideRev),
+              isDcOverridden: Boolean(m.vrMeta?.overrideDc),
+              varRetainerMeta: m.vrMeta,
+              expenseSlots: [
+                ...baseData.expenseSlots.map(s => ({ ...s, rowNum: m.rowNum })),
+                ...extraExpSlots,
+              ],
+            };
+          });
+
+          jobs.push({
+            client: series.client,
+            jobName: series.seriesName,
+            seriesName: series.seriesName,
+            projectCode: series.projectCode,
+            revenue: `£${Number(series.baseRev || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+            directCosts: `£${Number(series.baseDC || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+            baseRevenue: series.baseRev,
+            baseDirectCosts: series.baseDC,
+            sendDay: series.sendDay,
+            startDate: firstMonth ? colVal(firstMonth.row, 37) : "",
+            endDate: series.endDate,
+            noEndDate: series.noEndDate,
+            vat: series.vat,
+            projectRetainer: "Retainer",
+            parentRowNum: firstMonth ? firstMonth.rowNum : 2,
+            isCompleted,
+            isVariableRetainer: true,
+            rows: monthRows,
+          });
+        }
 
         jobs.sort((a, b) => {
           const ca = String(a.client || "").toLowerCase();
@@ -597,6 +773,60 @@ export async function handleRenameRetainerJob(req, res, sheets) {
     const effectiveParentRowNum = resolvedParent.rowNum;
     const effectiveOldClient = resolvedParent.resolvedClient;
     const effectiveOldJobName = resolvedParent.resolvedJobName;
+
+    const vrMeta = parseVariableRetainerTag(resolvedParent.row?.[30]);
+    if (vrMeta) {
+      // Variable retainer series rename: fetch full Confirmed!A1:AM5000 if we only read a window
+      if (winStart > 1) {
+        const fullResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:AM5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        rows = fullResp.data.values || [];
+      }
+      const cleanNewSeries = String(newJobName || "").replace(/[\r\n\t]+/g, " ").replace(/\|/g, "-").trim();
+      const targetSeriesLower = (vrMeta.seriesName || effectiveOldJobName).toLowerCase();
+      const targetClientLower = effectiveOldClient.toLowerCase();
+      const data = [];
+      let ri = 1;
+      while (ri < rows.length) {
+        const row = rows[ri] || [];
+        const rc = String(row[0] || "").trim();
+        const rj = String(row[1] || "").trim();
+        const rMeta = parseVariableRetainerTag(row[30]);
+        if (rc.toLowerCase() === targetClientLower && rMeta && (rMeta.seriesName || "").toLowerCase() === targetSeriesLower) {
+          const rn = ri + 1;
+          const mStart = retParseSheetDate(row[37]);
+          const newMonthJobName = mStart ? formatVarRetainerMonthJobName(cleanNewSeries, mStart) : cleanNewSeries;
+          const newTag = formatVariableRetainerTag({ ...rMeta, seriesName: cleanNewSeries });
+          data.push({ range: `Confirmed!B${rn}`, values: [[sanitizeFormulaInput(newMonthJobName)]] });
+          data.push({ range: `Confirmed!AE${rn}`, values: [[newTag]] });
+
+          let cj = ri + 1;
+          while (cj < rows.length) {
+            const nx = rows[cj] || [];
+            if (String(nx[0] || "").trim() === rc && String(nx[1] || "").trim() === rj &&
+              !String(nx[32] || "").trim() && !String(nx[37] || "").trim() && !String(nx[35] || "").trim()) {
+              data.push({ range: `Confirmed!B${cj + 1}`, values: [[sanitizeFormulaInput(newMonthJobName)]] });
+              cj++;
+            } else break;
+          }
+          ri = cj;
+        } else {
+          ri++;
+        }
+      }
+
+      if (data.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { valueInputOption: "USER_ENTERED", data },
+        });
+      }
+      await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      return res.status(200).json({ success: true, rowsUpdated: data.length, isVariableRetainer: true });
+    }
 
     const targetRows = [effectiveParentRowNum];
     let cj = effectiveParentRowNum;
@@ -3294,16 +3524,381 @@ export function provisionRetainerScheduleInBackground(sheets, params = {}) {
   return bgPromise;
 }
 
+export async function createVariableRetainerSeries_(sheets, params = {}) {
+  const {
+    clientSheetId,
+    masterSheetId,
+    clientName = "",
+    client = "",
+    jobName = "",
+    projectCode = "",
+    leadSource = "",
+    productLine = "",
+    baseRevenue = 0,
+    baseDirectCosts = 0,
+    vat = "Yes",
+    startDate,
+    endDate,
+    noEndDate = false,
+    invoiceSendDay = null,
+    initialInvoices = [],
+    initialExpenses = [],
+    setDateConf = true,
+  } = params;
+
+  const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+  const start = retParseSheetDate(startDate);
+  const hasExplicitEnd = Boolean(endDate && !noEndDate && !isNoEndDateSentinel(endDate));
+  const end = hasExplicitEnd ? retParseSheetDate(endDate) : new Date(2050, 11, 31);
+  if (!sheetIdClean || !client || !jobName || !start || (hasExplicitEnd && !end) || end < start) {
+    return { success: false, error: "Invalid variable retainer parameters or date range" };
+  }
+  const formattedEnd = retFmtDate(end);
+  const revNum = Math.round((parseFloat(String(baseRevenue ?? 0).replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
+  const dcNum = Math.round((parseFloat(String(baseDirectCosts ?? 0).replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
+  if (revNum <= 0) {
+    return { success: false, error: "Base monthly revenue must be greater than zero" };
+  }
+
+  const resolvedMasterId =
+    (masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null) ||
+    (await resolveMasterSheetIdForClient_(sheets, sheetIdClean, clientName));
+
+  const [metaResp, freshResp, tolerance] = await Promise.all([
+    withRetry(() =>
+      sheets.spreadsheets.get({
+        spreadsheetId: sheetIdClean,
+        fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
+      })
+    ),
+    withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:CR5000",
+        valueRenderOption: "FORMULA",
+      })
+    ),
+    getToleranceValues(sheets, resolvedMasterId || sheetIdClean),
+  ]);
+
+  const rows = freshResp.data?.values || [];
+  const confirmedSheet = (metaResp.data?.sheets || []).find(s => s.properties?.title === "Confirmed");
+  if (!confirmedSheet) return { success: false, error: "Confirmed tab not found" };
+  const gridSheetId = confirmedSheet.properties.sheetId;
+  const currentMaxRows = confirmedSheet.properties.gridProperties?.rowCount || 5000;
+  const isJobCosting = isJobCostingStyle({ headers: rows[0] || [] });
+
+  const b51Day = parseInt(tolerance?.retainerInvoiceDay, 10) > 0 ? parseInt(tolerance.retainerInvoiceDay, 10) : 28;
+  const parsedDay = parseInt(invoiceSendDay, 10);
+  const sendDay = !isNaN(parsedDay) && parsedDay >= 1 && parsedDay <= 31 ? parsedDay : b51Day;
+  const parsedDefDays = parseInt(String(tolerance?.defaultDaysToPay ?? "").replace(/[^\d.-]/g, ""), 10);
+  const defaultDaysToPay = !isNaN(parsedDefDays) && parsedDefDays >= 0 && parsedDefDays <= 365 ? parsedDefDays : 30;
+  const expDay = parseInt(tolerance?.retainerExpenseDay, 10) > 0 ? parseInt(tolerance.retainerExpenseDay, 10) : 28;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
+  const endMonthVal = end.getFullYear() * 12 + end.getMonth();
+  const startMonthVal = start.getFullYear() * 12 + start.getMonth();
+
+  let pastCount = 0;
+  for (let mVal = startMonthVal; mVal <= Math.min(currentMonthVal, endMonthVal); mVal++) {
+    pastCount++;
+  }
+  const targetCount = pastCount + 18;
+  const monthEntries = [];
+  for (let idx = 0; idx < targetCount; idx++) {
+    const mVal = startMonthVal + idx;
+    if (mVal > endMonthVal) break;
+    const yr = Math.floor(mVal / 12);
+    const mo = ((mVal % 12) + 12) % 12;
+    monthEntries.push({
+      mStart: new Date(yr, mo, 1),
+      mEnd: new Date(yr, mo + 1, 0),
+    });
+  }
+
+  if (monthEntries.length === 0) {
+    return { success: false, error: "No months generated in variable retainer date range" };
+  }
+
+  const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, rows);
+  if (currentMaxRows - (trueLastRow + 1) < monthEntries.length) {
+    const toAdd = monthEntries.length - (currentMaxRows - (trueLastRow + 1)) + 5;
+    await withRetry(() =>
+      sheets.spreadsheets.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          requests: [{
+            insertDimension: {
+              range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd },
+              inheritFromBefore: true,
+            },
+          }],
+        },
+        _skipFormulaRecompute: true,
+      })
+    );
+  }
+
+  const cleanSeries = String(jobName || "").replace(/[\r\n\t]+/g, " ").replace(/\|/g, "-").trim();
+  const aeTag = formatVariableRetainerTag({
+    seriesName: cleanSeries,
+    baseRev: revNum,
+    baseDC: dcNum,
+    endDate: formattedEnd,
+    noEndDate: Boolean(noEndDate || isNoEndDateSentinel(formattedEnd)),
+    sendDay,
+  });
+  const todayStr = retFmtDate(today);
+  const vatClean = sanitizeFormulaInput(vat || "Yes");
+  const createdRowNums = [];
+  const allWriteData = [];
+  const createdRowsForUi = [];
+
+  for (let idx = 0; idx < monthEntries.length; idx++) {
+    const rowNum = trueLastRow + 1 + idx;
+    createdRowNums.push(rowNum);
+    const { mStart, mEnd } = monthEntries[idx];
+    const mJobName = formatVarRetainerMonthJobName(cleanSeries, mStart);
+    const mStartStr = retFmtDate(mStart);
+    const mEndStr = retFmtDate(mEnd);
+    const maxDim = mEnd.getDate();
+    const invDateStr = retFmtDate(new Date(mStart.getFullYear(), mStart.getMonth(), Math.min(sendDay, maxDim)));
+    const expDateStr = retFmtDate(new Date(mStart.getFullYear(), mStart.getMonth(), Math.min(expDay, maxDim)));
+
+    let rowRev = revNum;
+    let invWriteList = [];
+    if (idx === 0 && Array.isArray(initialInvoices) && initialInvoices.length > 0) {
+      invWriteList = initialInvoices.slice(0, 3);
+      const realFee = invWriteList.reduce((acc, inv) => {
+        const ref = String(inv.ref || inv.invoiceNo || "").trim();
+        if (ref && !isPlaceholderInvoice(ref, inv.status)) {
+          const amt = parseFloat(String(inv.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+          const rech = parseFloat(String(inv.ofWhichRechgd || "0").replace(/[£$€,\s]/g, "")) || 0;
+          return acc + Math.max(0, amt - rech);
+        }
+        return acc;
+      }, 0);
+      if (realFee > 0) rowRev = Math.round(realFee * 100) / 100;
+    }
+
+    allWriteData.push(
+      { range: `Confirmed!A${rowNum}`, values: [[sanitizeFormulaInput(client)]] },
+      { range: `Confirmed!B${rowNum}`, values: [[sanitizeFormulaInput(mJobName)]] },
+      ...(projectCode ? [{ range: `Confirmed!C${rowNum}`, values: [[sanitizeFormulaInput(projectCode)]] }] : []),
+      ...(setDateConf ? [{ range: `Confirmed!D${rowNum}`, values: [[todayStr]] }] : []),
+      ...(leadSource ? [{ range: `Confirmed!E${rowNum}`, values: [[sanitizeFormulaInput(leadSource)]] }] : []),
+      { range: `Confirmed!AE${rowNum}`, values: [[aeTag]] },
+      { range: `Confirmed!AI${rowNum}`, values: [[vatClean]] },
+      { range: `Confirmed!AJ${rowNum}`, values: [["Retainer"]] },
+      ...(productLine ? [{ range: `Confirmed!AK${rowNum}`, values: [[sanitizeFormulaInput(productLine)]] }] : []),
+    );
+
+    if (isJobCosting) {
+      allWriteData.push(
+        { range: `Confirmed!F${rowNum}`, values: [[mStartStr]] },
+        { range: `Confirmed!G${rowNum}`, values: [[mEndStr]] },
+        { range: `Confirmed!I${rowNum}`, values: [[rowRev]] },
+        ...(dcNum > 0 ? [{ range: `Confirmed!K${rowNum}`, values: [[dcNum]] }] : []),
+      );
+      const jcMap = getJobCostingRowFormulasLetterMap("Confirmed", rowNum, { hasExplicitContractorCosts: dcNum > 0 });
+      for (const [fCol, fStr] of Object.entries(jcMap)) {
+        allWriteData.push({ range: `Confirmed!${fCol}${rowNum}`, values: [[fStr]] });
+      }
+    } else {
+      allWriteData.push(
+        { range: `Confirmed!AG${rowNum}`, values: [[rowRev]] },
+        { range: `Confirmed!AH${rowNum}`, values: [[dcNum]] },
+        { range: `Confirmed!AL${rowNum}`, values: [[mStartStr]] },
+        { range: `Confirmed!AM${rowNum}`, values: [[mEndStr]] },
+      );
+    }
+
+    const rowInvoiceSlotsUi = [];
+    if (invWriteList.length > 0) {
+      invWriteList.forEach((inv, sIdx) => {
+        const sNum = sIdx + 1;
+        const startCol = sNum === 1 ? "AP" : sNum === 2 ? "AW" : "BD";
+        const endCol = sNum === 1 ? "AV" : sNum === 2 ? "BC" : "BJ";
+        const amt = parseFloat(String(inv.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+        const ref = formatInvoiceRefForSheet(inv.ref || inv.invoiceNo || "");
+        const sDate = inv.sentDate || inv.sendDate || invDateStr;
+        const dPay = inv.daysToPay ?? inv.days ?? defaultDaysToPay;
+        const st = sanitizeFormulaInput(canonicalizeInvoiceStatus(inv.status || "") || "");
+        const rech = parseFloat(String(inv.ofWhichRechgd || "0").replace(/[£$€,\s]/g, "")) || 0;
+        const cm = rech > 0 ? sanitizeFormulaInput(String(inv.costMonth || "").trim()) : "";
+        allWriteData.push({
+          range: `Confirmed!${startCol}${rowNum}:${endCol}${rowNum}`,
+          values: [[amt, ref, sDate, dPay, st, rech > 0 ? rech : "", cm]],
+        });
+        rowInvoiceSlotsUi.push({ slotNum: sNum, amount: String(amt), ref, sentDate: String(sDate), daysToPay: String(dPay), status: st, highlighted: false, note: "" });
+      });
+    } else {
+      allWriteData.push({
+        range: `Confirmed!AP${rowNum}:AT${rowNum}`,
+        values: [[rowRev, "", invDateStr, defaultDaysToPay, ""]],
+      });
+      rowInvoiceSlotsUi.push({ slotNum: 1, amount: String(rowRev), ref: "", sentDate: invDateStr, daysToPay: String(defaultDaysToPay), status: "", highlighted: false, note: "" });
+    }
+    while (rowInvoiceSlotsUi.length < 3) {
+      rowInvoiceSlotsUi.push({ slotNum: rowInvoiceSlotsUi.length + 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: "", highlighted: false, note: "" });
+    }
+
+    const rowExpenseSlotsUi = [];
+    if (idx === 0 && Array.isArray(initialExpenses) && initialExpenses.length > 0) {
+      initialExpenses.slice(0, 3).forEach((exp, sIdx) => {
+        const sNum = sIdx + 1;
+        const sCol = sNum === 1 ? "BX" : sNum === 2 ? "CE" : "CL";
+        const eCol = sNum === 1 ? "CD" : sNum === 2 ? "CK" : "CR";
+        const amt = parseFloat(String(exp.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+        const desc = sanitizeFormulaInput(exp.desc || exp.description || "");
+        const eVat = sanitizeFormulaInput(exp.vat || vatClean);
+        const eDate = exp.recDate || exp.date || expDateStr;
+        const eDays = exp.days ?? exp.daysToPay ?? defaultDaysToPay;
+        const eSt = sanitizeFormulaInput(canonicalizeExpenseStatus(exp.status || "") || "");
+        const eId = sanitizeFormulaInput(exp.appId || exp.transactionId || "");
+        allWriteData.push({
+          range: `Confirmed!${sCol}${rowNum}:${eCol}${rowNum}`,
+          values: [[desc, amt, eVat, eDate, eDays, eSt, eId]],
+        });
+        rowExpenseSlotsUi.push({ slotNum: sNum, description: desc, amount: String(amt), vat: eVat, date: String(eDate), daysToPay: String(eDays), status: eSt, transactionId: eId, highlighted: false, note: "" });
+      });
+    } else if (dcNum > 0) {
+      const mShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][mStart.getMonth()];
+      const yShort = String(mStart.getFullYear()).slice(-2);
+      const rand4 = Math.floor(1000 + Math.random() * 9000);
+      const phId = `PLACE-EXP-${mShort}-${yShort}-${rand4}`;
+      allWriteData.push({
+        range: `Confirmed!BX${rowNum}:CD${rowNum}`,
+        values: [["Placeholder - Direct cost", dcNum, vatClean, expDateStr, defaultDaysToPay, "", phId]],
+      });
+      rowExpenseSlotsUi.push({ slotNum: 1, description: "Placeholder - Direct cost", amount: String(dcNum), vat: vatClean, date: expDateStr, daysToPay: String(defaultDaysToPay), status: "", transactionId: phId, highlighted: false, note: "" });
+    }
+    while (rowExpenseSlotsUi.length < 3) {
+      rowExpenseSlotsUi.push({ slotNum: rowExpenseSlotsUi.length + 1, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "", highlighted: false, note: "" });
+    }
+
+    createdRowsForUi.push({
+      rowNum,
+      isParent: true,
+      tabName: "Confirmed",
+      isJobCosting,
+      note: "",
+      client: String(client),
+      jobName: mJobName,
+      projectCode: String(projectCode || ""),
+      dateConf: setDateConf ? todayStr : "",
+      leadSrc: String(leadSource || ""),
+      unevenSplit: aeTag,
+      revenue: `£${rowRev.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      directCosts: `£${dcNum.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      vat: String(vat || "Yes"),
+      projectRetainer: "Retainer",
+      prodLine: String(productLine || ""),
+      startDate: mStartStr,
+      endDate: mEndStr,
+      likelihood: "100%",
+      copiedToConf: null,
+      invoiceSlots: rowInvoiceSlotsUi,
+      expenseSlots: rowExpenseSlotsUi,
+    });
+  }
+
+  await withRetry(() =>
+    sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetIdClean,
+      requestBody: { valueInputOption: "USER_ENTERED", data: allWriteData },
+    })
+  );
+
+  memoryCache.del(`deleted_job_rows:${sheetIdClean}:confirmed`);
+  await invalidatePmaClientCache(sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
+
+  return {
+    success: true,
+    isVariableRetainer: true,
+    seriesName: cleanSeries,
+    firstRowNum: createdRowNums[0],
+    lastRowNum: createdRowNums[createdRowNums.length - 1],
+    createdRowNums,
+    monthCount: createdRowNums.length,
+    createdRowsForUi,
+    formattedEnd,
+  };
+}
+
 export async function handleCreateRetainerJob(req, res, sheets) {
   const {
     clientSheetId, masterSheetId, client, jobName, monthlyRevenue, monthlyDirectCosts,
     vat, startDate, endDate, noEndDate, invoiceFrequency = "monthly", invoiceSendDay,
+    retainerMode = "fixed",
   } = req.body;
   if (!clientSheetId || !client || !jobName || !monthlyRevenue || !startDate) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+    if (String(retainerMode || "").toLowerCase() === "variable") {
+      let sendDay = null;
+      if (invoiceSendDay !== undefined && invoiceSendDay !== null && String(invoiceSendDay).trim() !== "") {
+        sendDay = parseInt(invoiceSendDay, 10);
+        if (isNaN(sendDay) || sendDay < 1 || sendDay > 31) {
+          return res.status(400).json({ success: false, error: "Invalid invoice send day" });
+        }
+      }
+      const varRes = await createVariableRetainerSeries_(sheets, {
+        clientSheetId: sheetIdClean,
+        masterSheetId,
+        clientName: req.body.clientName || "",
+        client,
+        jobName,
+        baseRevenue: monthlyRevenue,
+        baseDirectCosts: monthlyDirectCosts || 0,
+        vat: vat || "No",
+        startDate,
+        endDate,
+        noEndDate: Boolean(noEndDate),
+        invoiceSendDay: sendDay,
+        setDateConf: true,
+      });
+      if (!varRes.success) {
+        return res.status(400).json({ success: false, error: varRes.error || "Failed to create variable retainer" });
+      }
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+      }
+      const jobIdentifier = client ? `"${client} - ${varRes.seriesName}"` : `"${varRes.seriesName}"`;
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "RETAINER",
+        action: "Variable Retainer Created",
+        summary: `Created variable retainer ${jobIdentifier} (base £${monthlyRevenue}/month, ${varRes.monthCount} months)`,
+        details: {
+          jobName: varRes.seriesName,
+          endClient: client,
+          clientName: tenantClient,
+          monthlyRevenue,
+          monthlyDirectCosts,
+          startDate,
+          endDate: formatJobEndDateDisplay(varRes.formattedEnd),
+          monthCount: varRes.monthCount,
+        },
+      }).catch(e => console.error("PMA log failed:", e));
+
+      const sessionUser = getSessionUser(req);
+      const isAdminUser = !sessionUser?.isReadOnly && Boolean(sessionUser?.isAdmin || sessionUser?.role === "Admin");
+      return res.status(200).json({
+        success: true,
+        isVariableRetainer: true,
+        ...(isAdminUser ? { parentRowNum: varRes.firstRowNum } : {}),
+        childRowCount: varRes.monthCount,
+        backgroundProvisioning: false,
+      });
+    }
     const start = retParseSheetDate(startDate);
     const hasExplicitEnd = Boolean(endDate && !noEndDate && !isNoEndDateSentinel(endDate));
     const end = hasExplicitEnd ? retParseSheetDate(endDate) : new Date(2050, 11, 31);
@@ -4420,6 +5015,97 @@ export async function handleDeleteRetainer(req, res, sheets) {
       });
     }
 
+    // Check if this is a Variable Retainer series
+    const vrMeta = parseVariableRetainerTag(pRow[30]);
+    if (vrMeta) {
+      const targetSeriesLower = (vrMeta.seriesName || "").toLowerCase();
+      const targetClientLower = pClient.toLowerCase();
+      const allSeriesRowsToClear = [];
+      let ri = 1;
+      while (ri < allRows.length) {
+        const r = allRows[ri] || [];
+        const rc = String(r[0] || "").trim();
+        const rj = String(r[1] || "").trim();
+        const rMeta = parseVariableRetainerTag(r[30]);
+        if (rc.toLowerCase() === targetClientLower && rMeta && (rMeta.seriesName || "").toLowerCase() === targetSeriesLower) {
+          allSeriesRowsToClear.push(ri + 1);
+          let cj = ri + 1;
+          while (cj < allRows.length) {
+            const nx = allRows[cj] || [];
+            if (String(nx[0] || "").trim() === rc && String(nx[1] || "").trim() === rj &&
+              !String(nx[32] || "").trim() && !String(nx[37] || "").trim() && !String(nx[35] || "").trim()) {
+              allSeriesRowsToClear.push(cj + 1);
+              cj++;
+            } else break;
+          }
+          ri = cj;
+        } else {
+          ri++;
+        }
+      }
+
+      for (const rNum of allSeriesRowsToClear) {
+        const rData = allRows[rNum - 1] || [];
+        const invSlots = [
+          { ref: rData[42], status: rData[45] },
+          { ref: rData[49], status: rData[52] },
+          { ref: rData[56], status: rData[59] },
+        ];
+        for (const s of invSlots) {
+          const ref = String(s.ref || "").trim();
+          const st = String(s.status || "").trim().toLowerCase();
+          if ((ref && !isPlaceholderInvoice(ref)) || st.includes("sent") || st.includes("paid")) {
+            return res.status(400).json({
+              success: false,
+              error: `Cannot delete variable retainer: Found real invoice "${ref || st}" on row ${rNum}`,
+            });
+          }
+        }
+        const expSlots = [
+          { desc: rData[75], status: rData[80], id: rData[81] },
+          { desc: rData[82], status: rData[87], id: rData[88] },
+          { desc: rData[89], status: rData[94], id: rData[95] },
+        ];
+        for (const s of expSlots) {
+          const id = String(s.id || "").trim();
+          const desc = String(s.desc || "").trim();
+          const st = String(s.status || "").trim().toLowerCase();
+          if ((id && !isPlaceholderExpense(id, desc, st)) || st === "paid" || st === "received") {
+            return res.status(400).json({
+              success: false,
+              error: `Cannot delete variable retainer: Found real expense "${desc || id}" on row ${rNum}`,
+            });
+          }
+        }
+      }
+
+      const isJobCosting = isJobCostingStyle({ headers: allRows[0] || [] });
+      const { clearRanges, restoreData } = buildJobRowClearAndRestorePlan({
+        sheetName: "Confirmed",
+        rowNums: allSeriesRowsToClear,
+        isJobCosting,
+        includeCopiedCol: false,
+      });
+
+      await withRetry(() =>
+        sheets.spreadsheets.values.batchClear({
+          spreadsheetId: sheetIdClean,
+          requestBody: { ranges: clearRanges },
+        })
+      );
+      if (restoreData.length > 0) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: { valueInputOption: "USER_ENTERED", data: restoreData },
+          })
+        );
+      }
+
+      await invalidatePmaClientCache(sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash", "views"]).catch(() => { });
+      return res.status(200).json({ success: true, clearedRows: allSeriesRowsToClear.length, isVariableRetainer: true });
+    }
+
     // Collect parent and child rows
     const rowsToClear = [parentRowNum];
     let ci = pIdx + 1;
@@ -4570,6 +5256,1093 @@ export async function handleDeleteRetainer(req, res, sheets) {
     return res.status(200).json({ success: true, clearedRows: rowsToClear.length });
   } catch (err) {
     console.error("❌ delete_retainer error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleUpdateVariableRetainerBase(req, res, sheets) {
+  const {
+    clientSheetId, masterSheetId, client, seriesName,
+    effectiveMonth, effectiveYear, baseRevenue, baseDirectCosts,
+    sendDay: rawSendDay, endDate: rawEndDate, noEndDate,
+  } = req.body;
+  if (!clientSheetId || !client || !seriesName || baseRevenue === undefined) {
+    return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+  const newBaseRev = Math.round((parseFloat(String(baseRevenue ?? 0).replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
+  const newBaseDC = Math.round((parseFloat(String(baseDirectCosts ?? 0).replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
+  if (newBaseRev <= 0 || newBaseDC < 0) {
+    return res.status(400).json({ success: false, error: "Base revenue must be greater than zero and direct costs cannot be negative." });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const resolvedMasterId =
+      (masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null) ||
+      (await resolveMasterSheetIdForClient_(sheets, sheetIdClean, req.body.clientName || ""));
+
+    const [valResp, formResp, metaResp, tolerance] = await Promise.all([
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:CR5000",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      }),
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:BJ5000",
+        valueRenderOption: "FORMULA",
+      }),
+      sheets.spreadsheets.get({
+        spreadsheetId: sheetIdClean,
+        fields: "sheets(properties.sheetId,properties.title,properties.gridProperties)",
+      }),
+      getToleranceValues(sheets, resolvedMasterId || sheetIdClean),
+    ]);
+
+    const rows = valResp.data?.values || [];
+    const formRows = formResp.data?.values || [];
+    const confirmedSheet = (metaResp.data?.sheets || []).find(s => s.properties?.title === "Confirmed");
+    if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+
+    const allSeries = retFindVariableRetainerSeries(rows);
+    const targetSeries = allSeries.find(
+      s => s.client.toLowerCase() === String(client).trim().toLowerCase() &&
+        s.seriesName.toLowerCase() === String(seriesName).trim().toLowerCase()
+    );
+    if (!targetSeries || targetSeries.months.length === 0) {
+      return res.status(404).json({ success: false, error: "Variable retainer series not found." });
+    }
+
+    const isJobCosting = isJobCostingStyle({ headers: rows[0] || [] });
+    const parsedEnd = (noEndDate || isNoEndDateSentinel(rawEndDate))
+      ? new Date(2050, 11, 31)
+      : (rawEndDate ? retParseSheetDate(rawEndDate) : targetSeries.endDateObj);
+    if (!parsedEnd) return res.status(400).json({ success: false, error: "Invalid end date" });
+    const formattedEnd = retFmtDate(parsedEnd);
+    const isNoEnd = Boolean(noEndDate || isNoEndDateSentinel(formattedEnd) || parsedEnd.getFullYear() >= 2050);
+    const newEndMonthVal = parsedEnd.getFullYear() * 12 + parsedEnd.getMonth();
+
+    const parsedSendDay = parseInt(rawSendDay, 10);
+    const newSendDay = (!isNaN(parsedSendDay) && parsedSendDay >= 1 && parsedSendDay <= 31)
+      ? parsedSendDay
+      : (targetSeries.sendDay || 28);
+    const parsedDefDays = parseInt(String(tolerance?.defaultDaysToPay ?? "").replace(/[^\d.-]/g, ""), 10);
+    const defaultDaysToPay = !isNaN(parsedDefDays) && parsedDefDays >= 0 && parsedDefDays <= 365 ? parsedDefDays : 30;
+    const expDay = parseInt(tolerance?.retainerExpenseDay, 10) > 0 ? parseInt(tolerance.retainerExpenseDay, 10) : 28;
+
+    const effMonthVal = (effectiveYear !== undefined && effectiveMonth !== undefined && effectiveYear !== "" && effectiveMonth !== "")
+      ? (parseInt(effectiveYear, 10) * 12 + parseInt(effectiveMonth, 10))
+      : null;
+
+    const rowsToTrim = [];
+    const batchData = [];
+    let updatedCount = 0;
+
+    for (const m of targetSeries.months) {
+      const mStart = m.startDate || retParseSheetDate(m.row[37]);
+      if (!mStart) continue;
+      const mMonthVal = mStart.getFullYear() * 12 + mStart.getMonth();
+      if (mMonthVal > newEndMonthVal) {
+        rowsToTrim.push(m);
+        continue;
+      }
+
+      const isEffective = effMonthVal === null || mMonthVal >= effMonthVal;
+      const fRow = formRows[m.rowNum - 1] || [];
+      const newTag = formatVariableRetainerTag({
+        seriesName: targetSeries.seriesName,
+        baseRev: isEffective ? newBaseRev : (m.vrMeta?.baseRev ?? newBaseRev),
+        baseDC: isEffective ? newBaseDC : (m.vrMeta?.baseDC ?? newBaseDC),
+        endDate: formattedEnd,
+        noEndDate: isNoEnd,
+        sendDay: newSendDay,
+        overrideRev: Boolean(m.vrMeta?.overrideRev),
+        overrideDc: Boolean(m.vrMeta?.overrideDc),
+      });
+      batchData.push({ range: `Confirmed!AE${m.rowNum}`, values: [[newTag]] });
+
+      if (isEffective) {
+        updatedCount++;
+        const hasRealInv = [42, 49, 56].some((idx, sIdx) => {
+          const r = String(m.row[idx] ?? "").trim();
+          const st = String(m.row[idx + 3] ?? "").trim().toLowerCase();
+          return (r && !isPlaceholderInvoice(r, st)) || st.includes("sent") || st.includes("paid");
+        });
+        const revFormula = String(fRow[isJobCosting ? 8 : 32] ?? "").trim();
+        const dcFormula = String(fRow[isJobCosting ? 10 : 33] ?? "").trim();
+        const apFormula = String(fRow[41] ?? "").trim();
+
+        if (!hasRealInv && !m.vrMeta?.overrideRev && !revFormula.startsWith("=")) {
+          const revColLetter = isJobCosting ? "I" : "AG";
+          batchData.push({ range: `Confirmed!${revColLetter}${m.rowNum}`, values: [[newBaseRev]] });
+          const s1Ref = String(m.row[42] ?? "").trim();
+          if ((!s1Ref || isPlaceholderInvoice(s1Ref)) && !apFormula.startsWith("=")) {
+            const maxDim = new Date(mStart.getFullYear(), mStart.getMonth() + 1, 0).getDate();
+            const sendDateStr = retFmtDate(new Date(mStart.getFullYear(), mStart.getMonth(), Math.min(newSendDay, maxDim)));
+            batchData.push({ range: `Confirmed!AP${m.rowNum}`, values: [[newBaseRev]] });
+            batchData.push({ range: `Confirmed!AR${m.rowNum}`, values: [[sendDateStr]] });
+          }
+        }
+
+        // Check real bills on this month (parent + overflow) before modifying AH
+        let realBillsTotal = 0;
+        const monthGroupRows = [m.row, ...m.overflowRows.map(o => o.row)];
+        for (const rArr of monthGroupRows) {
+          for (const b of [75, 82, 89]) {
+            const desc = String(rArr[b] ?? "").trim();
+            const amt = retParseMoney(rArr[b + 1]);
+            const st = String(rArr[b + 5] ?? "").trim().toLowerCase();
+            const id = String(rArr[b + 6] ?? "").trim();
+            if (amt > 0 && ((!isPlaceholderExpense(id, desc, st)) || st === "paid" || st === "received")) {
+              realBillsTotal += amt;
+            }
+          }
+        }
+        if (!m.vrMeta?.overrideDc && !dcFormula.startsWith("=") && realBillsTotal <= newBaseDC + 0.01) {
+          const dcColLetter = isJobCosting ? "K" : "AH";
+          batchData.push({ range: `Confirmed!${dcColLetter}${m.rowNum}`, values: [[newBaseDC]] });
+        }
+      }
+    }
+
+    // Validate trimming
+    for (const m of rowsToTrim) {
+      const checkRows = [{ rowNum: m.rowNum, row: m.row }, ...m.overflowRows];
+      const blocked = checkRows.find(cr => retRowHasRealData(cr.row));
+      if (blocked) {
+        return res.status(400).json({
+          success: false,
+          blocked: true,
+          error: `Cannot shorten this variable retainer - row ${blocked.rowNum} already has a real invoice or expense recorded.`,
+        });
+      }
+    }
+
+    const clearRowNums = [];
+    for (const m of rowsToTrim) {
+      clearRowNums.push(m.rowNum, ...m.overflowRows.map(o => o.rowNum));
+    }
+    if (clearRowNums.length > 0) {
+      const { clearRanges, restoreData } = buildJobRowClearAndRestorePlan({
+        sheetName: "Confirmed",
+        rowNums: clearRowNums,
+        isJobCosting,
+        includeCopiedCol: false,
+      });
+      await withRetry(() =>
+        sheets.spreadsheets.values.batchClear({
+          spreadsheetId: sheetIdClean,
+          requestBody: { ranges: clearRanges },
+        })
+      );
+      if (restoreData.length > 0) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: { valueInputOption: "USER_ENTERED", data: restoreData },
+          })
+        );
+      }
+    }
+
+    // Grow future runway if newEndMonthVal > last kept month
+    const keptMonths = targetSeries.months.filter(m => {
+      const d = m.startDate || retParseSheetDate(m.row[37]);
+      return d && (d.getFullYear() * 12 + d.getMonth()) <= newEndMonthVal;
+    });
+    const lastKept = keptMonths[keptMonths.length - 1];
+    const lastKeptDate = lastKept ? (lastKept.startDate || retParseSheetDate(lastKept.row[37])) : null;
+    let grownCount = 0;
+    if (lastKeptDate) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const maxFutureMonthVal = today.getFullYear() * 12 + today.getMonth() + 18;
+      const targetLastVal = Math.min(newEndMonthVal, maxFutureMonthVal);
+      const lastKeptVal = lastKeptDate.getFullYear() * 12 + lastKeptDate.getMonth();
+
+      if (targetLastVal > lastKeptVal) {
+        const freshAfterClear = clearRowNums.length > 0
+          ? (await sheets.spreadsheets.values.get({ spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR5000", valueRenderOption: "UNFORMATTED_VALUE" })).data?.values || rows
+          : rows;
+        const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshAfterClear);
+        const gridSheetId = confirmedSheet.properties.sheetId;
+        const currentMaxRows = confirmedSheet.properties.gridProperties?.rowCount || 5000;
+        const toGrow = targetLastVal - lastKeptVal;
+        if (currentMaxRows - (trueLastRow + 1) < toGrow) {
+          await withRetry(() =>
+            sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: {
+                requests: [{
+                  insertDimension: {
+                    range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + (toGrow - (currentMaxRows - (trueLastRow + 1)) + 5) },
+                    inheritFromBefore: true,
+                  },
+                }],
+              },
+              _skipFormulaRecompute: true,
+            })
+          );
+        }
+
+        const aeTagNew = formatVariableRetainerTag({
+          seriesName: targetSeries.seriesName,
+          baseRev: newBaseRev,
+          baseDC: newBaseDC,
+          endDate: formattedEnd,
+          noEndDate: isNoEnd,
+          sendDay: newSendDay,
+        });
+        const vatClean = sanitizeFormulaInput(targetSeries.vat || "Yes");
+        for (let k = 1; k <= toGrow; k++) {
+          const mVal = lastKeptVal + k;
+          const yr = Math.floor(mVal / 12);
+          const mo = ((mVal % 12) + 12) % 12;
+          const mStart = new Date(yr, mo, 1);
+          const mEnd = new Date(yr, mo + 1, 0);
+          const rNum = trueLastRow + k;
+          const mJobName = formatVarRetainerMonthJobName(targetSeries.seriesName, mStart);
+          const maxDim = mEnd.getDate();
+          const invDateStr = retFmtDate(new Date(yr, mo, Math.min(newSendDay, maxDim)));
+          const expDateStr = retFmtDate(new Date(yr, mo, Math.min(expDay, maxDim)));
+          grownCount++;
+
+          batchData.push(
+            { range: `Confirmed!A${rNum}`, values: [[sanitizeFormulaInput(targetSeries.client)]] },
+            { range: `Confirmed!B${rNum}`, values: [[sanitizeFormulaInput(mJobName)]] },
+            ...(targetSeries.projectCode ? [{ range: `Confirmed!C${rNum}`, values: [[sanitizeFormulaInput(targetSeries.projectCode)]] }] : []),
+            { range: `Confirmed!AE${rNum}`, values: [[aeTagNew]] },
+            { range: `Confirmed!AI${rNum}`, values: [[vatClean]] },
+            { range: `Confirmed!AJ${rNum}`, values: [["Retainer"]] },
+            { range: `Confirmed!AP${rNum}:AT${rNum}`, values: [[newBaseRev, "", invDateStr, defaultDaysToPay, ""]] },
+          );
+          if (isJobCosting) {
+            batchData.push(
+              { range: `Confirmed!F${rNum}`, values: [[retFmtDate(mStart)]] },
+              { range: `Confirmed!G${rNum}`, values: [[retFmtDate(mEnd)]] },
+              { range: `Confirmed!I${rNum}`, values: [[newBaseRev]] },
+              ...(newBaseDC > 0 ? [{ range: `Confirmed!K${rNum}`, values: [[newBaseDC]] }] : []),
+            );
+            const jcMap = getJobCostingRowFormulasLetterMap("Confirmed", rNum, { hasExplicitContractorCosts: newBaseDC > 0 });
+            for (const [fCol, fStr] of Object.entries(jcMap)) {
+              batchData.push({ range: `Confirmed!${fCol}${rNum}`, values: [[fStr]] });
+            }
+          } else {
+            batchData.push(
+              { range: `Confirmed!AG${rNum}`, values: [[newBaseRev]] },
+              { range: `Confirmed!AH${rNum}`, values: [[newBaseDC]] },
+              { range: `Confirmed!AL${rNum}`, values: [[retFmtDate(mStart)]] },
+              { range: `Confirmed!AM${rNum}`, values: [[retFmtDate(mEnd)]] },
+            );
+          }
+          if (newBaseDC > 0) {
+            const mShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][mo];
+            const yShort = String(yr).slice(-2);
+            const rand4 = Math.floor(1000 + Math.random() * 9000);
+            batchData.push({
+              range: `Confirmed!BX${rNum}:CD${rNum}`,
+              values: [["Placeholder - Direct cost", newBaseDC, vatClean, expDateStr, defaultDaysToPay, "", `PLACE-EXP-${mShort}-${yShort}-${rand4}`]],
+            });
+          }
+        }
+      }
+    }
+
+    if (batchData.length > 0) {
+      await withRetry(() =>
+        sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { valueInputOption: "USER_ENTERED", data: batchData },
+        })
+      );
+    }
+
+    await invalidatePmaClientCache(sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
+    return res.status(200).json({
+      success: true,
+      updatedCount,
+      trimmedCount: clearRowNums.length,
+      grownCount,
+    });
+  } catch (err) {
+    console.error("❌ update_variable_retainer_base error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleUpdateVariableRetainerMonth(req, res, sheets) {
+  const { clientSheetId, masterSheetId, rowNum, revenue, directCosts, resetToBase = false } = req.body;
+  const rNum = parseInt(rowNum, 10);
+  if (!clientSheetId || !rNum || rNum < 2) {
+    return res.status(400).json({ success: false, error: "Missing or invalid clientSheetId / rowNum" });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const [valResp, formResp] = await Promise.all([
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: `Confirmed!A${rNum}:BJ${rNum}`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      }),
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: `Confirmed!A${rNum}:BJ${rNum}`,
+        valueRenderOption: "FORMULA",
+      }),
+    ]);
+
+    const row = valResp.data?.values?.[0] || [];
+    const fRow = formResp.data?.values?.[0] || [];
+    const headerResp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetIdClean,
+      range: "Confirmed!A1:AM1",
+      valueRenderOption: "FORMATTED_VALUE",
+    });
+    const isJobCosting = isJobCostingStyle({ headers: headerResp.data?.values?.[0] || [] });
+
+    const vrMeta = parseVariableRetainerTag(row[30]);
+    if (!vrMeta || !String(row[35] || "").toLowerCase().includes("retainer")) {
+      return res.status(400).json({ success: false, error: "Target row is not a variable retainer month." });
+    }
+
+    const targetRev = resetToBase
+      ? vrMeta.baseRev
+      : Math.round((parseFloat(String(revenue ?? row[32] ?? 0).replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
+    const targetDC = resetToBase
+      ? vrMeta.baseDC
+      : Math.round((parseFloat(String(directCosts ?? row[33] ?? 0).replace(/[£$€,\s]/g, "")) || 0) * 100) / 100;
+
+    if (targetRev < 0 || targetDC < 0) {
+      return res.status(400).json({ success: false, error: "Revenue and direct costs cannot be negative." });
+    }
+
+    const newOverrideRev = resetToBase ? false : Math.abs(targetRev - vrMeta.baseRev) > 0.005;
+    const newOverrideDc = resetToBase ? false : Math.abs(targetDC - vrMeta.baseDC) > 0.005;
+    const newTag = formatVariableRetainerTag({
+      ...vrMeta,
+      overrideRev: newOverrideRev,
+      overrideDc: newOverrideDc,
+    });
+
+    const batchData = [
+      { range: `Confirmed!AE${rNum}`, values: [[newTag]] },
+    ];
+
+    const revFormula = String(fRow[isJobCosting ? 8 : 32] ?? "").trim();
+    if (!revFormula.startsWith("=")) {
+      batchData.push({ range: `Confirmed!${isJobCosting ? "I" : "AG"}${rNum}`, values: [[targetRev]] });
+    }
+    const dcFormula = String(fRow[isJobCosting ? 10 : 33] ?? "").trim();
+    if (!dcFormula.startsWith("=")) {
+      batchData.push({ range: `Confirmed!${isJobCosting ? "K" : "AH"}${rNum}`, values: [[targetDC]] });
+    }
+
+    const s1Ref = String(row[42] ?? "").trim();
+    const s1Status = String(row[45] ?? "").trim().toLowerCase();
+    const apFormula = String(fRow[41] ?? "").trim();
+    if ((!s1Ref || isPlaceholderInvoice(s1Ref, s1Status)) && !s1Status.includes("sent") && !s1Status.includes("paid") && !apFormula.startsWith("=")) {
+      batchData.push({ range: `Confirmed!AP${rNum}`, values: [[targetRev]] });
+    }
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: { valueInputOption: "USER_ENTERED", data: batchData },
+      })
+    );
+
+    await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
+    return res.status(200).json({
+      success: true,
+      rowNum: rNum,
+      revenue: targetRev,
+      directCosts: targetDC,
+      overrideRev: newOverrideRev,
+      overrideDc: newOverrideDc,
+    });
+  } catch (err) {
+    console.error("❌ update_variable_retainer_month error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Unified single-job save for a Variable Retainer series from Pulse Portal / PMA:
+ * saves shared job metadata (Client, Job name, Project code, VAT, Date confirmed,
+ * Product line, Lead source, End date / No end date), base forecast updates from an
+ * effective month onward, per-month forecast overrides, and per-month invoice &
+ * direct-cost changes (inserting overflow child rows when needed and keeping formula cells intact).
+ */
+export async function handleSaveVariableRetainerSeries_(req, res, sheets, { verifiedClientName, sessionUser } = {}) {
+  const { clientSheetId, masterSheetId, clientName, job } = req.body || {};
+  if (!clientSheetId || !job) {
+    return res.status(400).json({ success: false, error: "clientSheetId and job object are required" });
+  }
+
+  const newClient = String(job.client || "").trim();
+  const newSeriesName = String(job.jobName || "").replace(/[\r\n\t]+/g, " ").replace(/\|/g, "-").trim();
+  if (!newClient || !newSeriesName) {
+    return res.status(400).json({ success: false, error: "Client name and job name are required." });
+  }
+
+  const newBaseRev = Math.round(retParseMoney(job.revenue) * 100) / 100;
+  const newBaseDC = Math.round(retParseMoney(job.directCosts) * 100) / 100;
+  if (!(newBaseRev > 0) || newBaseDC < 0) {
+    return res.status(400).json({ success: false, error: "Base monthly revenue must be greater than zero and direct costs cannot be negative." });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const resolvedMasterId =
+      (masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null) ||
+      (await resolveMasterSheetIdForClient_(sheets, sheetIdClean, verifiedClientName || clientName || ""));
+
+    const [valResp, formResp, metaResp, tolerance] = await Promise.all([
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:CR5000",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      }),
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:BJ5000",
+        valueRenderOption: "FORMULA",
+      }),
+      sheets.spreadsheets.get({
+        spreadsheetId: sheetIdClean,
+        fields: "sheets(properties.sheetId,properties.title,properties.gridProperties)",
+      }),
+      getToleranceValues(sheets, resolvedMasterId || sheetIdClean),
+    ]);
+
+    const rows = valResp.data?.values || [];
+    let formRows = formResp.data?.values || [];
+    const confirmedSheet = (metaResp.data?.sheets || []).find(s => s.properties?.title === "Confirmed");
+    if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+    const gridSheetId = confirmedSheet.properties.sheetId;
+
+    const searchClient = String(job.originalClient || newClient).trim().toLowerCase();
+    const searchSeries = String(job.originalSeriesName || newSeriesName).trim().toLowerCase();
+    const allSeries = retFindVariableRetainerSeries(rows);
+    const targetSeries = allSeries.find(
+      s => s.client.toLowerCase() === searchClient && s.seriesName.toLowerCase() === searchSeries
+    );
+    if (!targetSeries || targetSeries.months.length === 0) {
+      return res.status(404).json({ success: false, error: "Variable retainer series not found." });
+    }
+
+    const isJobCosting = isJobCostingStyle({ headers: rows[0] || [] });
+    const isNoEnd = Boolean(job.noEndDate || isNoEndDateSentinel(job.endDate));
+    const parsedEnd = isNoEnd ? new Date(2050, 11, 31) : retParseSheetDate(job.endDate);
+    if (!parsedEnd) return res.status(400).json({ success: false, error: "Invalid end date" });
+    const formattedEnd = retFmtDate(parsedEnd);
+    const newEndMonthVal = parsedEnd.getFullYear() * 12 + parsedEnd.getMonth();
+
+    const parsedSendDay = parseInt(job.sendDay, 10);
+    const newSendDay = (!isNaN(parsedSendDay) && parsedSendDay >= 1 && parsedSendDay <= 31)
+      ? Math.min(28, parsedSendDay)
+      : (targetSeries.sendDay || 28);
+    const parsedDefDays = parseInt(String(tolerance?.defaultDaysToPay ?? "").replace(/[^\d.-]/g, ""), 10);
+    const defaultDaysToPay = !isNaN(parsedDefDays) && parsedDefDays >= 0 && parsedDefDays <= 365 ? parsedDefDays : 30;
+    const expDay = parseInt(tolerance?.retainerExpenseDay, 10) > 0 ? Math.min(28, parseInt(tolerance.retainerExpenseDay, 10)) : 28;
+
+    let effMonthVal = null;
+    if (job.effectiveMonth && /^\d{4}-\d{2}$/.test(String(job.effectiveMonth).trim())) {
+      const [ey, em] = String(job.effectiveMonth).trim().split("-").map(Number);
+      effMonthVal = ey * 12 + (em - 1);
+    }
+
+    const rowsToTrim = [];
+    const keptMonthsRaw = [];
+    for (const m of targetSeries.months) {
+      const mStart = m.startDate || retParseSheetDate(m.row[37]);
+      if (!mStart) continue;
+      const mMonthVal = mStart.getFullYear() * 12 + mStart.getMonth();
+      if (mMonthVal > newEndMonthVal) rowsToTrim.push(m);
+      else keptMonthsRaw.push({ ...m, mStart, mMonthVal });
+    }
+
+    for (const m of rowsToTrim) {
+      const checkRows = [{ rowNum: m.rowNum, row: m.row }, ...m.overflowRows];
+      const blocked = checkRows.find(cr => retRowHasRealData(cr.row));
+      if (blocked) {
+        return res.status(400).json({
+          success: false,
+          blocked: true,
+          error: `Cannot shorten this variable retainer - month ending ${retFmtDate(m.startDate || new Date())} already has a real invoice or expense recorded.`,
+        });
+      }
+    }
+
+    // Group incoming invoices & expenses onto keptMonths
+    const monthByRow = new Map();
+    const monthByYm = new Map();
+    for (const m of keptMonthsRaw) {
+      monthByRow.set(m.rowNum, m);
+      monthByYm.set(m.mMonthVal, m);
+    }
+    const nowDt = new Date();
+    const curYm = nowDt.getFullYear() * 12 + nowDt.getMonth();
+    const fallbackMonth = monthByYm.get(curYm) || keptMonthsRaw[0];
+
+    const incomingInvsByRow = new Map();
+    for (const inv of (Array.isArray(job.invoices) ? job.invoices : [])) {
+      const amtNum = Math.round(retParseMoney(inv.amount) * 100) / 100;
+      const refStr = String(inv.ref || "").trim();
+      const dtStr = String(inv.sendDate || "").trim();
+      const rechNum = Math.round(retParseMoney(inv.ofWhichRechgd) * 100) / 100;
+      if (!refStr && amtNum === 0 && !dtStr && rechNum === 0) continue;
+
+      let targetM = inv.monthRowNumber ? monthByRow.get(Number(inv.monthRowNumber)) : null;
+      if (!targetM && dtStr) {
+        const pd = retParseSheetDate(dtStr);
+        if (pd) targetM = monthByYm.get(pd.getFullYear() * 12 + pd.getMonth()) || null;
+      }
+      if (!targetM) targetM = fallbackMonth;
+      if (!targetM) continue;
+      if (!incomingInvsByRow.has(targetM.rowNum)) incomingInvsByRow.set(targetM.rowNum, []);
+      incomingInvsByRow.get(targetM.rowNum).push({
+        amount: amtNum,
+        ref: refStr,
+        sendDate: dtStr ? (retFmtDate(retParseSheetDate(dtStr)) || dtStr) : "",
+        days: String(inv.days || defaultDaysToPay || "30").trim(),
+        status: canonicalizeInvoiceStatus(String(inv.status || "").trim()),
+        ofWhichRechgd: rechNum,
+        costMonth: String(inv.costMonth || "").trim(),
+      });
+    }
+
+    const incomingExpsByRow = new Map();
+    for (const exp of (Array.isArray(job.directExpenses) ? job.directExpenses : [])) {
+      const amtNum = Math.round(retParseMoney(exp.amount) * 100) / 100;
+      const descStr = String(exp.desc || "").trim();
+      const dtStr = String(exp.recDate || "").trim();
+      const appIdStr = String(exp.appId || "").trim();
+      if (!descStr && amtNum === 0 && !dtStr && !appIdStr) continue;
+
+      let targetM = exp.monthRowNumber ? monthByRow.get(Number(exp.monthRowNumber)) : null;
+      if (!targetM && dtStr) {
+        const pd = retParseSheetDate(dtStr);
+        if (pd) targetM = monthByYm.get(pd.getFullYear() * 12 + pd.getMonth()) || null;
+      }
+      if (!targetM) targetM = fallbackMonth;
+      if (!targetM) continue;
+      if (!incomingExpsByRow.has(targetM.rowNum)) incomingExpsByRow.set(targetM.rowNum, []);
+      incomingExpsByRow.get(targetM.rowNum).push({
+        desc: descStr,
+        amount: amtNum,
+        vat: String(exp.vat || "Yes").trim() || "Yes",
+        recDate: dtStr ? (retFmtDate(retParseSheetDate(dtStr)) || dtStr) : "",
+        days: String(exp.days || defaultDaysToPay || "30").trim(),
+        status: canonicalizeExpenseStatus(String(exp.status || "").trim()),
+        appId: appIdStr,
+      });
+    }
+
+    const readExistingInvsForMonth_ = (m) => {
+      const out = [];
+      for (const rArr of [m.row, ...m.overflowRows.map(o => o.row)]) {
+        for (const base of [41, 48, 55]) {
+          const amt = Math.round(retParseMoney(rArr[base]) * 100) / 100;
+          const ref = String(rArr[base + 1] ?? "").trim();
+          const sd = rArr[base + 2] ? (retFmtDate(retParseSheetDate(rArr[base + 2])) || String(rArr[base + 2]).trim()) : "";
+          const days = String(rArr[base + 3] ?? "").trim();
+          const st = canonicalizeInvoiceStatus(String(rArr[base + 4] ?? "").trim());
+          const rech = Math.round(retParseMoney(rArr[base + 5]) * 100) / 100;
+          const cm = String(rArr[base + 6] ?? "").trim();
+          if (ref || amt !== 0 || sd || rech !== 0) {
+            out.push({ amount: amt, ref, sendDate: sd, days, status: st, ofWhichRechgd: rech, costMonth: cm });
+          }
+        }
+      }
+      return out;
+    };
+
+    const readExistingExpsForMonth_ = (m) => {
+      const out = [];
+      for (const rArr of [m.row, ...m.overflowRows.map(o => o.row)]) {
+        for (const base of [75, 82, 89]) {
+          const desc = String(rArr[base] ?? "").trim();
+          const amt = Math.round(retParseMoney(rArr[base + 1]) * 100) / 100;
+          const vatV = String(rArr[base + 2] ?? "").trim();
+          const rd = rArr[base + 3] ? (retFmtDate(retParseSheetDate(rArr[base + 3])) || String(rArr[base + 3]).trim()) : "";
+          const days = String(rArr[base + 4] ?? "").trim();
+          const st = canonicalizeExpenseStatus(String(rArr[base + 5] ?? "").trim());
+          const appId = String(rArr[base + 6] ?? "").trim();
+          if (desc || amt !== 0 || rd || appId) {
+            out.push({ desc, amount: amt, vat: vatV, recDate: rd, days, status: st, appId });
+          }
+        }
+      }
+      return out;
+    };
+
+    const invListChanged_ = (a, b) => {
+      if (a.length !== b.length) return true;
+      for (let idx = 0; idx < a.length; idx++) {
+        if (
+          Math.abs((a[idx].amount || 0) - (b[idx].amount || 0)) > 0.01 ||
+          a[idx].ref !== b[idx].ref ||
+          a[idx].sendDate !== b[idx].sendDate ||
+          String(a[idx].days || "30") !== String(b[idx].days || "30") ||
+          a[idx].status !== b[idx].status ||
+          Math.abs((a[idx].ofWhichRechgd || 0) - (b[idx].ofWhichRechgd || 0)) > 0.01 ||
+          a[idx].costMonth !== b[idx].costMonth
+        ) return true;
+      }
+      return false;
+    };
+
+    const expListChanged_ = (a, b) => {
+      if (a.length !== b.length) return true;
+      for (let idx = 0; idx < a.length; idx++) {
+        if (
+          a[idx].desc !== b[idx].desc ||
+          Math.abs((a[idx].amount || 0) - (b[idx].amount || 0)) > 0.01 ||
+          String(a[idx].vat || "Yes") !== String(b[idx].vat || "Yes") ||
+          a[idx].recDate !== b[idx].recDate ||
+          String(a[idx].days || "30") !== String(b[idx].days || "30") ||
+          a[idx].status !== b[idx].status ||
+          a[idx].appId !== b[idx].appId
+        ) return true;
+      }
+      return false;
+    };
+
+    // Determine per-month change flags & required extra overflow child rows
+    const monthPlan = keptMonthsRaw.map((m) => {
+      const nextInvs = incomingInvsByRow.get(m.rowNum) || [];
+      const curInvs = readExistingInvsForMonth_(m);
+      const nextExps = incomingExpsByRow.get(m.rowNum) || [];
+      const curExps = readExistingExpsForMonth_(m);
+      const invsChanged = invListChanged_(curInvs, nextInvs);
+      const expsChanged = expListChanged_(curExps, nextExps);
+      const rowsNeededForInvs = invsChanged ? Math.max(1, Math.ceil(nextInvs.length / 3)) : 1;
+      const rowsNeededForExps = expsChanged ? Math.max(1, Math.ceil(nextExps.length / 3)) : 1;
+      const totalRowsNeeded = Math.max(1 + m.overflowRows.length, rowsNeededForInvs, rowsNeededForExps);
+      const extraRowsToInsert = Math.max(0, totalRowsNeeded - (1 + m.overflowRows.length));
+      return {
+        origRowNum: m.rowNum,
+        m,
+        nextInvs,
+        nextExps,
+        invsChanged,
+        expsChanged,
+        extraRowsToInsert,
+      };
+    });
+
+    // If any month needs additional overflow child rows, insert bottom-up so row numbers shift cleanly
+    const insertions = monthPlan.filter(p => p.extraRowsToInsert > 0).sort((a, b) => b.m.rowNum - a.m.rowNum);
+    if (insertions.length > 0) {
+      const dimRequests = insertions.map((p) => {
+        const lastRowNum = p.m.overflowRows.length > 0
+          ? p.m.overflowRows[p.m.overflowRows.length - 1].rowNum
+          : p.m.rowNum;
+        return {
+          insertDimension: {
+            range: {
+              sheetId: gridSheetId,
+              dimension: "ROWS",
+              startIndex: lastRowNum, // 0-based index directly below lastRowNum (1-based)
+              endIndex: lastRowNum + p.extraRowsToInsert,
+            },
+            inheritFromBefore: false,
+          },
+        };
+      });
+      await withRetry(() =>
+        sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: dimRequests },
+          _skipFormulaRecompute: true,
+        })
+      );
+      // Update rowNum offsets after bottom-up insertions
+      for (const ins of insertions) {
+        const insertAfter = ins.m.overflowRows.length > 0
+          ? ins.m.overflowRows[ins.m.overflowRows.length - 1].rowNum
+          : ins.m.rowNum;
+        const delta = ins.extraRowsToInsert;
+        for (let k = 0; k < delta; k++) {
+          ins.m.overflowRows.push({ rowNum: insertAfter + 1 + k, row: [], newlyInserted: true });
+        }
+        for (const other of monthPlan) {
+          if (other.m.rowNum > insertAfter) other.m.rowNum += delta;
+          for (const ov of other.m.overflowRows) {
+            if (!ov.newlyInserted && ov.rowNum > insertAfter) ov.rowNum += delta;
+          }
+        }
+        for (const tm of rowsToTrim) {
+          if (tm.rowNum > insertAfter) tm.rowNum += delta;
+          for (const ov of tm.overflowRows) {
+            if (ov.rowNum > insertAfter) ov.rowNum += delta;
+          }
+        }
+      }
+      const fReload = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:BJ5000",
+        valueRenderOption: "FORMULA",
+      });
+      formRows = fReload.data?.values || formRows;
+    }
+
+    // Forecast override map keyed by original rowNumber from UI
+    const forecastEditMap = new Map();
+    for (const vf of (Array.isArray(job.varMonthForecasts) ? job.varMonthForecasts : [])) {
+      const rn = parseInt(vf.rowNumber, 10);
+      if (rn >= 2) forecastEditMap.set(rn, vf);
+    }
+
+    const cleanProjectCode = sanitizeFormulaInput(String(job.projectCode ?? "").trim());
+    const cleanLeadSrc = sanitizeFormulaInput(String(job.leadSource ?? "").trim());
+    const cleanVat = sanitizeFormulaInput(String(job.vat || "Yes").trim() || "Yes");
+    const cleanProdLine = sanitizeFormulaInput(String(job.productLine ?? "").trim());
+    const parsedDateConf = job.dateConfirmed ? retParseSheetDate(job.dateConfirmed) : null;
+    const formattedDateConf = parsedDateConf ? retFmtDate(parsedDateConf) : "";
+    const hasAnyExistingDateConf = keptMonthsRaw.some(km => String(km.row[3] ?? "").trim() !== "");
+
+    const batchData = [];
+    const safeClientCell = sanitizeFormulaInput(newClient);
+
+    for (let idx = 0; idx < monthPlan.length; idx++) {
+      const plan = monthPlan[idx];
+      const { origRowNum, m, nextInvs, nextExps, invsChanged, expsChanged } = plan;
+      const rNum = m.rowNum;
+      const fRow = formRows[rNum - 1] || [];
+      const mJobName = formatVarRetainerMonthJobName(newSeriesName, m.mStart);
+      const safeJobCell = sanitizeFormulaInput(mJobName);
+      const hadDateConf = String(m.row[3] ?? "").trim() !== "";
+      const isEffectiveBase = effMonthVal === null || m.mMonthVal >= effMonthVal;
+
+      // Update shared parent fields
+      batchData.push(
+        { range: `Confirmed!A${rNum}:C${rNum}`, values: [[safeClientCell, safeJobCell, cleanProjectCode]] },
+        { range: `Confirmed!E${rNum}`, values: [[cleanLeadSrc]] },
+        { range: `Confirmed!AI${rNum}:AJ${rNum}`, values: [[cleanVat, "Retainer"]] },
+        { range: `Confirmed!AK${rNum}`, values: [[cleanProdLine]] }
+      );
+      if (hadDateConf || (!hasAnyExistingDateConf && idx === 0 && formattedDateConf)) {
+        batchData.push({ range: `Confirmed!D${rNum}`, values: [[formattedDateConf]] });
+      }
+      for (const ov of m.overflowRows) {
+        batchData.push(
+          { range: `Confirmed!A${ov.rowNum}:B${ov.rowNum}`, values: [[safeClientCell, safeJobCell]] },
+          { range: `Confirmed!AI${ov.rowNum}`, values: [[cleanVat]] }
+        );
+      }
+
+      // Evaluate real invoices & real bills for this month (after any incoming changes)
+      const effInvs = invsChanged ? nextInvs : readExistingInvsForMonth_(m);
+      const realInvs = effInvs.filter(inv => {
+        const r = String(inv.ref || "").trim();
+        const st = String(inv.status || "").trim().toLowerCase();
+        return (r && !isPlaceholderInvoice(r, st)) || st.includes("sent") || st.includes("paid");
+      });
+      const realInvFeeTotal = Math.round(realInvs.reduce((s, inv) => s + Math.max(0, (inv.amount || 0) - (inv.ofWhichRechgd || 0)), 0) * 100) / 100;
+
+      const effExps = expsChanged ? nextExps : readExistingExpsForMonth_(m);
+      const realBillsTotal = Math.round(
+        effExps
+          .filter(exp => {
+            const st = String(exp.status || "").trim().toLowerCase();
+            return (exp.amount || 0) > 0 && (!isPlaceholderExpense(exp.appId, exp.desc, st) || st === "paid" || st === "received");
+          })
+          .reduce((s, exp) => s + (exp.amount || 0), 0) * 100
+      ) / 100;
+
+      // Determine revenue & direct costs forecast / override for this month
+      const curRev = Math.round(retParseMoney(m.row[32]) * 100) / 100;
+      const curDC = Math.round(retParseMoney(m.row[33]) * 100) / 100;
+      const vf = forecastEditMap.get(origRowNum);
+
+      let targetRev = curRev;
+      let targetDC = curDC;
+      let nextOverrideRev = Boolean(m.vrMeta?.overrideRev);
+      let nextOverrideDc = Boolean(m.vrMeta?.overrideDc);
+
+      if (vf?.resetToBase) {
+        targetRev = newBaseRev;
+        targetDC = newBaseDC;
+        nextOverrideRev = false;
+        nextOverrideDc = false;
+      } else {
+        const uiRev = vf ? Math.round(retParseMoney(vf.revenue) * 100) / 100 : curRev;
+        const uiOrigRev = vf ? Math.round(retParseMoney(vf.origRevenue) * 100) / 100 : curRev;
+        const uiDc = vf ? Math.round(retParseMoney(vf.directCosts) * 100) / 100 : curDC;
+        const uiOrigDc = vf ? Math.round(retParseMoney(vf.origDirectCosts) * 100) / 100 : curDC;
+
+        if (vf && Math.abs(uiRev - uiOrigRev) > 0.01) {
+          targetRev = uiRev;
+          nextOverrideRev = Math.abs(uiRev - newBaseRev) > 0.005;
+        } else if (isEffectiveBase && realInvs.length === 0 && !nextOverrideRev) {
+          targetRev = newBaseRev;
+        }
+
+        if (vf && Math.abs(uiDc - uiOrigDc) > 0.01) {
+          targetDC = uiDc;
+          nextOverrideDc = Math.abs(uiDc - newBaseDC) > 0.005;
+        } else if (isEffectiveBase && !nextOverrideDc && realBillsTotal <= newBaseDC + 0.01) {
+          targetDC = newBaseDC;
+        }
+      }
+
+      if (invsChanged && realInvs.length > 0 && realInvFeeTotal > 0 && !vf?.resetToBase) {
+        targetRev = realInvFeeTotal;
+      }
+      if (realBillsTotal > targetDC + 0.01) {
+        targetDC = realBillsTotal;
+      }
+
+      const revFormula = String(fRow[isJobCosting ? 8 : 32] ?? "").trim();
+      const dcFormula = String(fRow[isJobCosting ? 10 : 33] ?? "").trim();
+      const apFormula = String(fRow[41] ?? "").trim();
+
+      if (!revFormula.startsWith("=") && Math.abs(targetRev - curRev) > 0.01) {
+        batchData.push({ range: `Confirmed!${isJobCosting ? "I" : "AG"}${rNum}`, values: [[targetRev]] });
+      }
+      if (!dcFormula.startsWith("=") && Math.abs(targetDC - curDC) > 0.01) {
+        batchData.push({ range: `Confirmed!${isJobCosting ? "K" : "AH"}${rNum}`, values: [[targetDC]] });
+      }
+
+      const monthBaseRevTag = isEffectiveBase ? newBaseRev : (m.vrMeta?.baseRev ?? newBaseRev);
+      const monthBaseDcTag = isEffectiveBase ? newBaseDC : (m.vrMeta?.baseDC ?? newBaseDC);
+      const newTag = formatVariableRetainerTag({
+        seriesName: newSeriesName,
+        baseRev: monthBaseRevTag,
+        baseDC: monthBaseDcTag,
+        endDate: formattedEnd,
+        noEndDate: isNoEnd,
+        sendDay: newSendDay,
+        overrideRev: nextOverrideRev,
+        overrideDc: nextOverrideDc,
+      });
+      batchData.push({ range: `Confirmed!AE${rNum}`, values: [[newTag]] });
+
+      // Write changed invoices across parent + overflow rows (or update Slot 1 planned forecast if rev changed)
+      if (invsChanged) {
+        const allMonthRows = [m, ...m.overflowRows];
+        const invCols = [
+          { start: "AP", end: "AV" },
+          { start: "AW", end: "BC" },
+          { start: "BD", end: "BJ" },
+        ];
+        allMonthRows.forEach((mr, rOffset) => {
+          const mrForm = formRows[mr.rowNum - 1] || [];
+          invCols.forEach((sc, sIdx) => {
+            const slotIdx = rOffset * 3 + sIdx;
+            const item = nextInvs[slotIdx];
+            const firstCellFormula = sIdx === 0 && rOffset === 0 ? String(mrForm[41] ?? "").trim() : "";
+            if (item) {
+              const refFormatted = formatInvoiceRefForSheet(item.ref);
+              const amtVal = (firstCellFormula.startsWith("=") && sIdx === 0 && rOffset === 0) ? firstCellFormula : item.amount;
+              batchData.push({
+                range: `Confirmed!${sc.start}${mr.rowNum}:${sc.end}${mr.rowNum}`,
+                values: [[
+                  amtVal,
+                  sanitizeFormulaInput(refFormatted),
+                  sanitizeFormulaInput(item.sendDate),
+                  item.days || defaultDaysToPay || "30",
+                  sanitizeFormulaInput(item.status),
+                  item.ofWhichRechgd > 0 ? item.ofWhichRechgd : "",
+                  sanitizeFormulaInput(item.costMonth),
+                ]],
+              });
+            } else if (!firstCellFormula.startsWith("=")) {
+              batchData.push({
+                range: `Confirmed!${sc.start}${mr.rowNum}:${sc.end}${mr.rowNum}`,
+                values: [["", "", "", "", "", "", ""]],
+              });
+            }
+          });
+        });
+      } else if (realInvs.length === 0 && !apFormula.startsWith("=")) {
+        const s1Ref = String(m.row[42] ?? "").trim();
+        const s1Status = String(m.row[45] ?? "").trim().toLowerCase();
+        if ((!s1Ref || isPlaceholderInvoice(s1Ref, s1Status)) && !s1Status.includes("sent") && !s1Status.includes("paid")) {
+          const maxDim = new Date(m.mStart.getFullYear(), m.mStart.getMonth() + 1, 0).getDate();
+          const sendDateStr = retFmtDate(new Date(m.mStart.getFullYear(), m.mStart.getMonth(), Math.min(newSendDay, maxDim)));
+          batchData.push(
+            { range: `Confirmed!AP${rNum}`, values: [[targetRev]] },
+            { range: `Confirmed!AR${rNum}`, values: [[sendDateStr]] }
+          );
+        }
+      }
+
+      // Write changed direct expenses across parent + overflow rows
+      if (expsChanged) {
+        const allMonthRows = [m, ...m.overflowRows];
+        const expCols = [
+          { start: "BX", end: "CD" },
+          { start: "CE", end: "CK" },
+          { start: "CL", end: "CR" },
+        ];
+        allMonthRows.forEach((mr, rOffset) => {
+          expCols.forEach((sc, sIdx) => {
+            const slotIdx = rOffset * 3 + sIdx;
+            const item = nextExps[slotIdx];
+            if (item) {
+              batchData.push({
+                range: `Confirmed!${sc.start}${mr.rowNum}:${sc.end}${mr.rowNum}`,
+                values: [[
+                  sanitizeFormulaInput(item.desc),
+                  item.amount,
+                  sanitizeFormulaInput(item.vat || "Yes"),
+                  sanitizeFormulaInput(item.recDate),
+                  item.days || defaultDaysToPay || "30",
+                  sanitizeFormulaInput(item.status),
+                  sanitizeFormulaInput(item.appId),
+                ]],
+              });
+            } else {
+              batchData.push({
+                range: `Confirmed!${sc.start}${mr.rowNum}:${sc.end}${mr.rowNum}`,
+                values: [["", "", "", "", "", "", ""]],
+              });
+            }
+          });
+        });
+      }
+    }
+
+    // Clear any shortened tail months (already verified safe above)
+    const clearRowNums = [];
+    for (const m of rowsToTrim) {
+      clearRowNums.push(m.rowNum, ...m.overflowRows.map(o => o.rowNum));
+    }
+    if (clearRowNums.length > 0) {
+      const { clearRanges, restoreData } = buildJobRowClearAndRestorePlan({
+        sheetName: "Confirmed",
+        rowNums: clearRowNums,
+        isJobCosting,
+        includeCopiedCol: false,
+      });
+      await withRetry(() =>
+        sheets.spreadsheets.values.batchClear({
+          spreadsheetId: sheetIdClean,
+          requestBody: { ranges: clearRanges },
+        })
+      );
+      if (restoreData.length > 0) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: { valueInputOption: "USER_ENTERED", data: restoreData },
+          })
+        );
+      }
+    }
+
+    // Grow future runway if extended up to min(endDate, currentMonth + 18)
+    const lastKept = monthPlan[monthPlan.length - 1];
+    if (lastKept) {
+      const maxFutureMonthVal = nowDt.getFullYear() * 12 + nowDt.getMonth() + 18;
+      const targetLastVal = Math.min(newEndMonthVal, maxFutureMonthVal);
+      const lastKeptVal = lastKept.m.mMonthVal;
+      if (targetLastVal > lastKeptVal) {
+        const freshAfterOps = (await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "UNFORMATTED_VALUE",
+        })).data?.values || rows;
+        const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshAfterOps);
+        const currentMaxRows = confirmedSheet.properties.gridProperties?.rowCount || 5000;
+        const toGrow = targetLastVal - lastKeptVal;
+        if (currentMaxRows - (trueLastRow + 1) < toGrow) {
+          await withRetry(() =>
+            sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: {
+                requests: [{
+                  insertDimension: {
+                    range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + (toGrow - (currentMaxRows - (trueLastRow + 1)) + 5) },
+                    inheritFromBefore: true,
+                  },
+                }],
+              },
+              _skipFormulaRecompute: true,
+            })
+          );
+        }
+        const aeTagNew = formatVariableRetainerTag({
+          seriesName: newSeriesName,
+          baseRev: newBaseRev,
+          baseDC: newBaseDC,
+          endDate: formattedEnd,
+          noEndDate: isNoEnd,
+          sendDay: newSendDay,
+        });
+        for (let k = 1; k <= toGrow; k++) {
+          const mVal = lastKeptVal + k;
+          const yr = Math.floor(mVal / 12);
+          const mo = ((mVal % 12) + 12) % 12;
+          const mStart = new Date(yr, mo, 1);
+          const mEnd = new Date(yr, mo + 1, 0);
+          const rNum = trueLastRow + k;
+          const mJobName = formatVarRetainerMonthJobName(newSeriesName, mStart);
+          const maxDim = mEnd.getDate();
+          const invDateStr = retFmtDate(new Date(yr, mo, Math.min(newSendDay, maxDim)));
+          const expDateStr = retFmtDate(new Date(yr, mo, Math.min(expDay, maxDim)));
+          batchData.push(
+            { range: `Confirmed!A${rNum}:C${rNum}`, values: [[safeClientCell, sanitizeFormulaInput(mJobName), cleanProjectCode]] },
+            { range: `Confirmed!E${rNum}`, values: [[cleanLeadSrc]] },
+            { range: `Confirmed!AE${rNum}`, values: [[aeTagNew]] },
+            { range: `Confirmed!AI${rNum}:AK${rNum}`, values: [[cleanVat, "Retainer", cleanProdLine]] },
+            { range: `Confirmed!AP${rNum}:AT${rNum}`, values: [[newBaseRev, "", invDateStr, defaultDaysToPay, ""]] }
+          );
+          if (isJobCosting) {
+            batchData.push(
+              { range: `Confirmed!F${rNum}:G${rNum}`, values: [[retFmtDate(mStart), retFmtDate(mEnd)]] },
+              { range: `Confirmed!I${rNum}`, values: [[newBaseRev]] },
+              ...(newBaseDC > 0 ? [{ range: `Confirmed!K${rNum}`, values: [[newBaseDC]] }] : [])
+            );
+            const jcMap = getJobCostingRowFormulasLetterMap("Confirmed", rNum, { hasExplicitContractorCosts: newBaseDC > 0 });
+            for (const [fCol, fStr] of Object.entries(jcMap)) {
+              batchData.push({ range: `Confirmed!${fCol}${rNum}`, values: [[fStr]] });
+            }
+          } else {
+            batchData.push(
+              { range: `Confirmed!AG${rNum}:AH${rNum}`, values: [[newBaseRev, newBaseDC]] },
+              { range: `Confirmed!AL${rNum}:AM${rNum}`, values: [[retFmtDate(mStart), retFmtDate(mEnd)]] }
+            );
+          }
+          if (newBaseDC > 0) {
+            const mShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][mo];
+            const rand4 = Math.floor(1000 + Math.random() * 9000);
+            batchData.push({
+              range: `Confirmed!BX${rNum}:CD${rNum}`,
+              values: [["Placeholder - Direct cost", newBaseDC, cleanVat, expDateStr, defaultDaysToPay, "", `PLACE-EXP-${mShort}-${String(yr).slice(-2)}-${rand4}`]],
+            });
+          }
+        }
+      }
+    }
+
+    if (batchData.length > 0) {
+      await withRetry(() =>
+        sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { valueInputOption: "USER_ENTERED", data: batchData },
+        })
+      );
+    }
+
+    await invalidatePmaClientCache(sheetIdClean, resolvedMasterId, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: verifiedClientName || clientName || "Client",
+      category: "JOB",
+      action: "JOB_MODIFIED",
+      summary: `Updated variable retainer series "${newSeriesName}" for ${newClient}`,
+      details: { client: newClient, jobName: newSeriesName, baseRevenue: newBaseRev, baseDirectCosts: newBaseDC },
+      user: sessionUser?.name || sessionUser?.email || "",
+    }).catch(() => { });
+
+    return res.status(200).json({ success: true, sheetName: "Confirmed", childRowNumbers: [] });
+  } catch (err) {
+    console.error("❌ handleSaveVariableRetainerSeries_ error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

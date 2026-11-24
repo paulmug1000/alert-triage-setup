@@ -44,6 +44,7 @@ import {
   setClientSheetBridgeMode,
   checkAndSyncClientSheetBridge,
   pushSupabaseClientToSheet,
+  verifyBridgedClientsParity,
 } from "../../../services/clientSheetBridgeService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
@@ -291,6 +292,12 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, syncSummary, status });
     }
 
+    if (action === "verify_sheet_bridge_parity") {
+      const targetClientFilter = req.body?.allBridged ? null : cleanClient;
+      const parityReport = await verifyBridgedClientsParity({ clientName: targetClientFilter });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
     if (action === "sync_sheet_bridge_outbound") {
       const sheets = await getSheetsClient();
       const syncSummary = await checkAndSyncClientSheetBridge(cleanClient, {
@@ -308,6 +315,12 @@ export default async function handler(req, res) {
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, syncSummary, status });
+    }
+
+    if (action === "verify_sheet_bridge_parity") {
+      const targetClientFilter = req.body?.allBridged ? null : cleanClient;
+      const parityReport = await verifyBridgedClientsParity({ clientName: targetClientFilter });
+      return res.status(200).json({ success: true, parityReport });
     }
 
     if (action === "materialize_client_sheet") {

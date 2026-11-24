@@ -3,6 +3,9 @@ import Spinner from "../Spinner";
 import { BreakdownViewSkeleton } from "../Skeleton";
 import { CashDeepDiveEngine, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import { buildScreenNoteKey } from "../../utils/pulseNotesKeys";
 
 export default function CashflowBreakdownView({
   clientName,
@@ -16,6 +19,7 @@ export default function CashflowBreakdownView({
   isSenior = false,
 }) {
   const [activeCategory, setActiveCategory] = useState("cashConfInc");
+  const { openNotes, getEntitySummary } = usePulseNotes();
 
   const formatMoney = (val) => {
     return universalFormatMoney(val, 2, currencySymbol, thousandsSeparator);
@@ -728,6 +732,29 @@ export default function CashflowBreakdownView({
         </select>
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "10px" }}>
+          {(() => {
+            const noteKey = buildScreenNoteKey("cash");
+            const noteSum = getEntitySummary(noteKey);
+            return (
+              <PulseNoteTrigger
+                variant="toolbar"
+                count={noteSum?.count || 0}
+                openNotifyCount={noteSum?.openNotifyCount || 0}
+                unreadReplyCount={noteSum?.unreadReplyCount || 0}
+                latestSnippet={noteSum?.latestSnippet || ""}
+                onClick={() =>
+                  openNotes({
+                    scopeType: "screen",
+                    entityType: "cash",
+                    entityKey: noteKey,
+                    entityLabel: "Cashflow forecast",
+                    drawerTitle: "Cashflow notes",
+                    contextMeta: { subView: "cashBreakdown" },
+                  })
+                }
+              />
+            );
+          })()}
           {/* CSV Download Button */}
           <button
             type="button"

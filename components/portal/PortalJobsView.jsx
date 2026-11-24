@@ -30,16 +30,31 @@ import {
   generateRenewalJobName,
   calculateRenewalDates,
   formatLikelihood,
-  normalizeLikelihoodInput
+  normalizeLikelihoodInput,
+  getRetainerRowMonthLabel
 } from "../../utils/helpers";
 import { parseSplitString, formatSplitString, extractSplitMonths } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
+import AssignAccountingItemsModal from "../AssignAccountingItemsModal";
 import CrmSyncBadge, { CrmSyncIcon } from "../CrmSyncBadge";
 import PlaceholderPill, {
   isAutoPlaceholder,
   generatePlaceholderInvoiceRef,
   generatePlaceholderExpenseId
 } from "../PlaceholderPill";
+import PulseNoteTrigger from "./PulseNoteTrigger";
+import { usePulseNotes } from "../../contexts/PulseNotesContext";
+import {
+  buildJobNoteKey,
+  buildJobNoteLabel,
+  buildInvoiceNoteKey,
+  buildInvoiceNoteLabel,
+  buildJobExpenseNoteKey,
+  buildJobExpenseNoteLabel,
+  matchJobChildNotes,
+  normalizeAmountFingerprint,
+  normalizeDateFingerprint,
+} from "../../utils/pulseNotesKeys";
 
 const PORTAL_DATE_TS_CACHE = new Map();
 const PORTAL_MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -162,6 +177,42 @@ export default function PortalJobsView({
   const [isMovingInvoice, setIsMovingInvoice] = useState(false);
   const [crmWarningPrompt, setCrmWarningPrompt] = useState(null); // { type: "duplicate" | "renewal", job }
   const [customModalHeading, setCustomModalHeading] = useState(null);
+  const [assignModalType, setAssignModalType] = useState(null); // null | "invoice" | "directCost"
+  const [prefetchedCatalogByType, setPrefetchedCatalogByType] = useState({ invoice: null, directCost: null });
+  const [varItemMonthFilter, setVarItemMonthFilter] = useState("all");
+  const [showVarMonthlyForecasts, setShowVarMonthlyForecasts] = useState(false);
+  const { openNotes, openAllNotes, getEntitySummary, getParentSummary, getJobChildNotes } = usePulseNotes();
+
+  const editingJobChildMatches = useMemo(() => {
+    if (!editingJob) {
+      return {
+        invoiceMatched: new Map(),
+        invoiceUnmatched: [],
+        expenseMatched: new Map(),
+        expenseUnmatched: [],
+      };
+    }
+    const jobKey = buildJobNoteKey(editingJob);
+    const childNotes = getJobChildNotes(jobKey);
+    const invRes = matchJobChildNotes({
+      job: editingJob,
+      items: editingJob.invoices || [],
+      itemType: "invoice",
+      childNotes,
+    });
+    const expRes = matchJobChildNotes({
+      job: editingJob,
+      items: editingJob.directExpenses || [],
+      itemType: "job_expense",
+      childNotes,
+    });
+    return {
+      invoiceMatched: invRes.matchedByIndex,
+      invoiceUnmatched: invRes.unmatchedNotes,
+      expenseMatched: expRes.matchedByIndex,
+      expenseUnmatched: expRes.unmatchedNotes,
+    };
+  }, [editingJob, getJobChildNotes]);
 
   const hasAccounting = useMemo(() => {
     if (data?.hasAccountingIntegration !== undefined) return Boolean(data.hasAccountingIntegration);
@@ -453,6 +504,54 @@ export default function PortalJobsView({
     setOptimisticJobs({});
   }, [data?.jobs]);
 
+  // Background-prefetch accounting catalogs when an existing Confirmed job opens
+  useEffect(() => {
+    setPrefetchedCatalogByType({ invoice: null, directCost: null });
+    if (
+      !editingJob?.rowNumber ||
+      editingJob?.type !== "Confirmed" ||
+      !hasAccounting ||
+      isReadOnly ||
+      !clientSheetId
+    ) {
+      return;
+    }
+    let cancelled = false;
+    const targetPayload = {
+      client: editingJob.client || "",
+      jobName: editingJob.jobName || "",
+      projectCode: editingJob.projectCode || "",
+      isRetainer: String(editingJob.projectRetainer || "").toLowerCase().includes("retainer"),
+      startDate: editingJob.startDate || "",
+      endDate: editingJob.endDate || "",
+      rowNum: editingJob.rowNumber,
+    };
+    ["invoice", "directCost"].forEach((t) => {
+      fetch("/api/portal/accounting-catalog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "get",
+          clientSheetId,
+          clientName,
+          itemType: t,
+          lookbackMonths: 3,
+          targetJob: targetPayload,
+        }),
+      })
+        .then((r) => r.json())
+        .then((res) => {
+          if (!cancelled && res?.success) {
+            setPrefetchedCatalogByType((prev) => ({ ...prev, [t]: res }));
+          }
+        })
+        .catch(() => {});
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [editingJob?.rowNumber, editingJob?.type, editingJob?.jobName, editingJob?.client, hasAccounting, isReadOnly, clientSheetId, clientName]);
+
   // Lock background scroll when modal is open
   useEffect(() => {
     if (editingJob) {
@@ -489,6 +588,21 @@ export default function PortalJobsView({
   const jobsData = data?.jobs;
   const [showZeroPercentJobs, setShowZeroPercentJobs] = useState(false);
 
+  const rawSymbol =
+    (propCurrencySymbol && propCurrencySymbol !== "£" ? propCurrencySymbol : null) ||
+    data?.currencySymbol ||
+    data?.clientInfo?.currencySymbol ||
+    propCurrencySymbol ||
+    "£";
+  const currencySymbol =
+    rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
+  const thousandsSeparator =
+    (propThousandsSeparator && propThousandsSeparator !== "," ? propThousandsSeparator : null) ||
+    data?.thousandsSeparator ||
+    data?.clientInfo?.thousandsSeparator ||
+    propThousandsSeparator ||
+    (currencySymbol === "€" ? "." : ",");
+
   const isZeroPercentPipelineJob = (j) => {
     if (!j || j.type !== "Pipeline") return false;
     const lik = typeof j.likelihoodNum === "number" && !isNaN(j.likelihoodNum)
@@ -506,8 +620,64 @@ export default function PortalJobsView({
           return (key !== undefined && optimisticJobs[key]) ? { ...j, ...optimisticJobs[key] } : j;
         })
       : jobsData.all;
-    return showZeroPercentJobs ? baseList : baseList.filter((j) => !isZeroPercentPipelineJob(j));
-  }, [jobsData, optimisticJobs, showZeroPercentJobs]);
+    const afterZeroFilter = showZeroPercentJobs ? baseList : baseList.filter((j) => !isZeroPercentPipelineJob(j));
+
+    const grouped = [];
+    const varSeriesOrder = [];
+    const varSeriesMap = Object.create(null);
+    for (const j of afterZeroFilter) {
+      if (j.type === "Confirmed" && j.isVariableRetainer) {
+        const meta = j.varRetainerMeta || {};
+        const clientStr = String(j.client || "").trim();
+        const rawName = String(j.jobName || "").trim();
+        const seriesName = meta.seriesName || rawName.replace(/\s*-\s*[A-Za-z]{3}\s+\d{4}$/, "").trim();
+        const k = `${clientStr.toLowerCase()}||${seriesName.toLowerCase()}`;
+        if (!varSeriesMap[k]) {
+          varSeriesMap[k] = [];
+          varSeriesOrder.push(k);
+        }
+        varSeriesMap[k].push(j);
+      } else {
+        grouped.push(j);
+      }
+    }
+
+    for (const k of varSeriesOrder) {
+      const mList = varSeriesMap[k];
+      mList.sort((a, b) => (parsePortalDateToTs(a.startDate) || 0) - (parsePortalDateToTs(b.startDate) || 0));
+      const firstM = mList[0];
+      const lastM = mList[mList.length - 1];
+      const meta = lastM.varRetainerMeta || firstM.varRetainerMeta || {};
+      const seriesName = meta.seriesName || String(firstM.jobName || "").replace(/\s*-\s*[A-Za-z]{3}\s+\d{4}$/, "").trim();
+      const baseRevNum = Number(meta.baseRev ?? firstM.revNum ?? parseMoney(firstM.revenue)) || 0;
+      const baseDcNum = Number(meta.baseDC ?? firstM.costsNum ?? parseMoney(firstM.directCosts)) || 0;
+      const seriesEndDate = meta.noEndDate ? NO_END_DATE_SHEET_VALUE : (meta.endDate || lastM.endDate || "");
+      grouped.push({
+        ...firstM,
+        id: `varret_${firstM.rowNumber || 0}_${seriesName}`,
+        client: firstM.client,
+        jobName: seriesName,
+        seriesName,
+        projectRetainer: "Retainer",
+        revenue: formatMoney(baseRevNum, 2, currencySymbol, thousandsSeparator),
+        directCosts: formatMoney(baseDcNum, 2, currencySymbol, thousandsSeparator),
+        revNum: baseRevNum,
+        costsNum: baseDcNum,
+        baseRevenue: baseRevNum,
+        baseDirectCosts: baseDcNum,
+        sendDay: meta.sendDay || 28,
+        startDate: firstM.startDate || "",
+        endDate: seriesEndDate,
+        noEndDate: Boolean(meta.noEndDate),
+        isVariableRetainer: true,
+        isVariableRetainerSeries: true,
+        varRetainerMeta: meta,
+        varSeriesMonths: mList,
+      });
+    }
+
+    return grouped;
+  }, [jobsData, optimisticJobs, showZeroPercentJobs, currencySymbol, thousandsSeparator]);
 
   const visibleJobCounts = useMemo(() => {
     if (!baseVisibleJobs) {
@@ -659,21 +829,6 @@ export default function PortalJobsView({
 
     return list;
   }, [baseVisibleJobs, filterType, searchTerm, sortBy]);
-
-  const rawSymbol =
-    (propCurrencySymbol && propCurrencySymbol !== "£" ? propCurrencySymbol : null) ||
-    data?.currencySymbol ||
-    data?.clientInfo?.currencySymbol ||
-    propCurrencySymbol ||
-    "£";
-  const currencySymbol =
-    rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
-  const thousandsSeparator =
-    (propThousandsSeparator && propThousandsSeparator !== "," ? propThousandsSeparator : null) ||
-    data?.thousandsSeparator ||
-    data?.clientInfo?.thousandsSeparator ||
-    propThousandsSeparator ||
-    (currencySymbol === "€" ? "." : ",");
 
   const totalPages = Math.ceil(filteredJobs.length / pageSize) || 1;
   const paginatedJobs = useMemo(() => {
@@ -883,6 +1038,8 @@ export default function PortalJobsView({
     setEnableSplit(false);
     setLockedMonths({});
     lockedMonthsRef.current = {};
+    setVarItemMonthFilter("all");
+    setShowVarMonthlyForecasts(false);
     setEditingJob({
       id: "new",
       rowNumber: null,
@@ -920,6 +1077,108 @@ export default function PortalJobsView({
     if (e) e.stopPropagation();
     setSaveError(null);
     setCustomModalHeading(null);
+
+    if (job?.isVariableRetainerSeries) {
+      const months = Array.isArray(job.varSeriesMonths) ? job.varSeriesMonths : [];
+      const firstM = months[0] || job;
+      const mWithConf = months.find((m) => String(m.dateConfirmed || "").trim() !== "") || firstM;
+      const mWithCode = months.find((m) => String(m.projectCode || "").trim() !== "") || firstM;
+      const noEnd = Boolean(job.noEndDate || isNoEndDateSentinel(job.endDate));
+      const nowDt = new Date();
+      const curYmStr = `${nowDt.getFullYear()}-${String(nowDt.getMonth() + 1).padStart(2, "0")}`;
+
+      const flatInvs = [];
+      const flatExps = [];
+      const monthForecasts = months.map((mr, mIdx) => {
+        const mKey = String(toInputDateFormat(mr.startDate) || "").slice(0, 7);
+        const mLabel = getRetainerRowMonthLabel(mr, mIdx, job);
+        const mRealInvs = (mr.invoices || []).filter((inv) => {
+          const r = String(inv.ref || "").trim();
+          const st = String(inv.status || "").trim().toLowerCase();
+          return (r && !isPlaceholderInvoice(r, st)) || st.includes("sent") || st.includes("paid");
+        });
+        (mr.invoices || []).forEach((inv) => {
+          const amt = parseMoney(inv.amount, thousandsSeparator) || 0;
+          if (!inv.ref && amt === 0 && !inv.sendDate && !inv.status) return;
+          flatInvs.push({
+            ...inv,
+            amount: normalizeAmount(inv.amount),
+            ofWhichRechgd: normalizeAmount(inv.ofWhichRechgd),
+            costMonth: inv.costMonth || "",
+            status: inv.status || "",
+            monthRowNumber: mr.rowNumber,
+            monthKey: mKey,
+            monthLabel: mLabel,
+          });
+        });
+        (mr.directExpenses || []).forEach((exp) => {
+          const amt = parseMoney(exp.amount, thousandsSeparator) || 0;
+          if (!exp.desc && amt === 0 && !exp.recDate && !exp.appId && !exp.status) return;
+          flatExps.push({
+            ...exp,
+            amount: normalizeAmount(exp.amount),
+            status: exp.status || "",
+            monthRowNumber: mr.rowNumber,
+            monthKey: mKey,
+            monthLabel: mLabel,
+          });
+        });
+        const revN = mr.revNum ?? (parseMoney(mr.revenue, thousandsSeparator) || 0);
+        const dcN = mr.costsNum ?? (parseMoney(mr.directCosts, thousandsSeparator) || 0);
+        return {
+          rowNumber: mr.rowNumber,
+          monthKey: mKey,
+          monthLabel: mLabel,
+          revenue: String(revN),
+          origRevenue: String(revN),
+          directCosts: String(dcN),
+          origDirectCosts: String(dcN),
+          isRevOverridden: Boolean(mr.varRetainerMeta?.overrideRev),
+          isDcOverridden: Boolean(mr.varRetainerMeta?.overrideDc),
+          invoiced: mRealInvs.length > 0,
+          resetToBase: false,
+        };
+      });
+
+      setEnableSplit(false);
+      setLockedMonths({});
+      lockedMonthsRef.current = {};
+      setVarItemMonthFilter("all");
+      setShowVarMonthlyForecasts(false);
+      setEditingJob({
+        ...job,
+        id: job.id,
+        rowNumber: firstM.rowNumber || job.rowNumber,
+        client: job.client || "",
+        jobName: job.seriesName || job.jobName || "",
+        originalClient: job.client || "",
+        originalSeriesName: job.seriesName || job.jobName || "",
+        type: "Confirmed",
+        likelihood: "100%",
+        projectRetainer: "Retainer",
+        isVariableRetainer: true,
+        isVariableRetainerSeries: true,
+        projectCode: mWithCode?.projectCode || "",
+        dateConfirmed: toInputDateFormat(mWithConf?.dateConfirmed || ""),
+        vat: firstM.vat || "Yes",
+        productLine: (months.find((m) => String(m.productLine || "").trim() !== "") || firstM)?.productLine || "",
+        leadSource: (months.find((m) => String(m.leadSource || "").trim() !== "") || firstM)?.leadSource || "",
+        revenue: normalizeAmount(job.baseRevenue ?? job.revenue),
+        directCosts: normalizeAmount(job.baseDirectCosts ?? job.directCosts),
+        rechargedExpenses: "",
+        hasRechargedExpenses: false,
+        startDate: toInputDateFormat(firstM.startDate || job.startDate),
+        endDate: noEnd ? "" : toInputDateFormat(job.endDate),
+        noEndDate: noEnd,
+        sendDay: String(job.sendDay || 28),
+        effectiveMonth: curYmStr,
+        varMonthForecasts: monthForecasts,
+        varSeriesMonths: months,
+        invoices: flatInvs.map((inv, i) => ({ ...inv, num: i + 1 })),
+        directExpenses: flatExps.map((exp, i) => ({ ...exp, num: i + 1 })),
+      });
+      return;
+    }
 
     const splitStr = String(job?.splitStr || "").trim();
     if (splitStr.toLowerCase().startsWith("[split]")) {
@@ -1012,6 +1271,7 @@ export default function PortalJobsView({
       client: job.client || "",
       jobName: newJobName,
       projectRetainer: job.projectRetainer || "Project",
+      isVariableRetainer: Boolean(job.isVariableRetainer),
       revenue: normalizeAmount(job.revenue),
       directCosts: normalizeAmount(job.directCosts),
       isJobCosting: jobIsJobCosting,
@@ -1171,14 +1431,39 @@ export default function PortalJobsView({
       ? num.toLocaleString()
       : num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+  const resolveVarTargetMonthMeta = (jobObj) => {
+    const list = Array.isArray(jobObj?.varMonthForecasts) ? jobObj.varMonthForecasts : [];
+    if (list.length === 0) return null;
+    if (varItemMonthFilter && varItemMonthFilter !== "all") {
+      const picked = list.find((m) => String(m.rowNumber) === String(varItemMonthFilter));
+      if (picked) return picked;
+    }
+    const nowDt = new Date();
+    const curYm = `${nowDt.getFullYear()}-${String(nowDt.getMonth() + 1).padStart(2, "0")}`;
+    return list.find((m) => m.monthKey === curYm) || list[0];
+  };
+
   const addInvoice = () => {
-    setEditingJob((prev) => ({
-      ...prev,
-      invoices: [
-        ...(prev.invoices || []),
-        { num: (prev.invoices?.length || 0) + 1, amount: "", ofWhichRechgd: "", costMonth: "", ref: "", sendDate: "", days: "30", status: "" },
-      ],
-    }));
+    setEditingJob((prev) => {
+      const tm = prev?.isVariableRetainerSeries ? resolveVarTargetMonthMeta(prev) : null;
+      return {
+        ...prev,
+        invoices: [
+          ...(prev.invoices || []),
+          {
+            num: (prev.invoices?.length || 0) + 1,
+            amount: "",
+            ofWhichRechgd: "",
+            costMonth: "",
+            ref: "",
+            sendDate: "",
+            days: "30",
+            status: "",
+            ...(tm ? { monthRowNumber: tm.rowNumber, monthKey: tm.monthKey, monthLabel: tm.monthLabel } : {}),
+          },
+        ],
+      };
+    });
   };
 
   const removeInvoice = (idx) => {
@@ -1197,13 +1482,25 @@ export default function PortalJobsView({
   };
 
   const addExpense = () => {
-    setEditingJob((prev) => ({
-      ...prev,
-      directExpenses: [
-        ...(prev.directExpenses || []),
-        { num: (prev.directExpenses?.length || 0) + 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" },
-      ],
-    }));
+    setEditingJob((prev) => {
+      const tm = prev?.isVariableRetainerSeries ? resolveVarTargetMonthMeta(prev) : null;
+      return {
+        ...prev,
+        directExpenses: [
+          ...(prev.directExpenses || []),
+          {
+            num: (prev.directExpenses?.length || 0) + 1,
+            desc: "",
+            amount: "",
+            vat: "Yes",
+            recDate: "",
+            days: "30",
+            status: "",
+            ...(tm ? { monthRowNumber: tm.rowNumber, monthKey: tm.monthKey, monthLabel: tm.monthLabel } : {}),
+          },
+        ],
+      };
+    });
   };
 
   const removeExpense = (idx) => {
@@ -1412,6 +1709,18 @@ export default function PortalJobsView({
       }
     }
 
+    if (editingJob.isVariableRetainerSeries) {
+      const sDay = parseInt(editingJob.sendDay, 10) || 28;
+      if (sDay < 1 || sDay > 28) {
+        setSaveError("Invoice send day must be between 1 and 28.");
+        return;
+      }
+      if (!editingJob.noEndDate && !editingJob.endDate) {
+        setSaveError("End date is required unless No end date is ticked.");
+        return;
+      }
+    }
+
     setIsSaving(true);
     setSaveError(null);
 
@@ -1459,6 +1768,17 @@ export default function PortalJobsView({
       invoices: sanitizedInvoicesForSave,
       endDate: resolvedEndDateForSave,
       noEndDate: Boolean(isRetainerSaving && editingJob.noEndDate),
+      ...(isRetainerSaving && editingJob.isVariableRetainer ? { isVariableRetainer: true, retainerMode: "variable" } : {}),
+      ...(editingJob.isVariableRetainerSeries
+        ? {
+            isVariableRetainerSeries: true,
+            originalClient: editingJob.originalClient || editingJob.client,
+            originalSeriesName: editingJob.originalSeriesName || editingJob.seriesName || editingJob.jobName,
+            sendDay: Math.min(28, Math.max(1, parseInt(editingJob.sendDay, 10) || 28)),
+            effectiveMonth: editingJob.effectiveMonth || "",
+            varMonthForecasts: Array.isArray(editingJob.varMonthForecasts) ? editingJob.varMonthForecasts : [],
+          }
+        : {}),
       splitStr: splitStrResult,
     };
 
@@ -1487,12 +1807,14 @@ export default function PortalJobsView({
       if (resData.rowNumber) savedJob.rowNumber = resData.rowNumber;
       if (resData.childRowNumbers) savedJob.childRowNumbers = resData.childRowNumbers;
 
-      const jobKey = savedJob.id !== undefined ? savedJob.id : (savedJob.parentId !== undefined ? savedJob.parentId : savedJob.rowNumber);
-      if (jobKey !== undefined) {
-        setOptimisticJobs((prev) => ({
-          ...prev,
-          [jobKey]: savedJob,
-        }));
+      if (!jobToSave.isVariableRetainerSeries) {
+        const jobKey = savedJob.id !== undefined ? savedJob.id : (savedJob.parentId !== undefined ? savedJob.parentId : savedJob.rowNumber);
+        if (jobKey !== undefined) {
+          setOptimisticJobs((prev) => ({
+            ...prev,
+            [jobKey]: savedJob,
+          }));
+        }
       }
 
       setEditingJob(null);
@@ -1776,6 +2098,12 @@ export default function PortalJobsView({
               <line x1="12" y1="15" x2="12" y2="3" />
             </svg>
           </button>
+
+          <PulseNoteTrigger
+            variant="toolbar"
+            title="Job notes"
+            onClick={() => openAllNotes({ entityType: "job" })}
+          />
         </div>
       </div>
 
@@ -2011,6 +2339,7 @@ export default function PortalJobsView({
                   return (
                     <tr
                       key={job.id || idx}
+                      className="pulse-note-row"
                       onClick={(e) => handleOpenEditJob(job, e)}
                       style={{
                         borderBottom: "1px solid #f1f5f9",
@@ -2054,8 +2383,43 @@ export default function PortalJobsView({
 
                       {/* Job name */}
                       <td style={{ padding: "10px 12px", verticalAlign: "middle", wordBreak: "break-word", overflowWrap: "break-word", whiteSpace: "normal" }}>
-                        <div style={{ color: "#334155", fontWeight: 500, fontSize: "13px", lineHeight: "1.35", wordBreak: "break-word", overflowWrap: "break-word", whiteSpace: "normal" }}>
-                          {job.jobName}
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                          <div style={{ color: "#334155", fontWeight: 500, fontSize: "13px", lineHeight: "1.35", wordBreak: "break-word", overflowWrap: "break-word", whiteSpace: "normal" }}>
+                            {job.jobName}
+                          </div>
+                          {(() => {
+                            const jKey = buildJobNoteKey(job);
+                            const jSum = getEntitySummary(jKey);
+                            const pSum = getParentSummary(jKey);
+                            const combinedCount = (jSum?.count || 0) + (pSum?.count || 0);
+                            const combinedOpen = (jSum?.openNotifyCount || 0) + (pSum?.openNotifyCount || 0);
+                            const combinedUnread = (jSum?.unreadReplyCount || 0) + (pSum?.unreadReplyCount || 0);
+                            return (
+                              <PulseNoteTrigger
+                                variant="row"
+                                count={combinedCount}
+                                openNotifyCount={combinedOpen}
+                                unreadReplyCount={combinedUnread}
+                                latestSnippet={jSum?.latestSnippet || pSum?.latestSnippet || ""}
+                                onClick={() =>
+                                  openNotes({
+                                    scopeType: "entity",
+                                    entityType: "job",
+                                    entityKey: jKey,
+                                    parentEntityKey: jKey,
+                                    includeChildren: true,
+                                    entityLabel: buildJobNoteLabel(job),
+                                    drawerTitle: "Job notes",
+                                    contextMeta: {
+                                      jobKey: jKey,
+                                      projectCode: job.projectCode || "",
+                                      tabType: job.type || "Confirmed",
+                                    },
+                                  })
+                                }
+                              />
+                            );
+                          })()}
                         </div>
                       </td>
 
@@ -2073,6 +2437,23 @@ export default function PortalJobsView({
                         >
                           {job.projectRetainer || "Project"}
                         </span>
+                        {(job.isVariableRetainer || job.isVariableRetainerSeries) && (
+                          <span
+                            style={{
+                              marginLeft: "5px",
+                              padding: "1px 6px",
+                              borderRadius: "999px",
+                              fontSize: "11px",
+                              fontWeight: 600,
+                              background: "#f0f9ff",
+                              color: "#0369a1",
+                              border: "1px solid #bae6fd",
+                              display: "inline-block",
+                            }}
+                          >
+                            Variable
+                          </span>
+                        )}
                         {String(job.splitStr || "").trim().toLowerCase().startsWith("[split]") && (
                           <span
                             style={{
@@ -2243,23 +2624,59 @@ export default function PortalJobsView({
                   </span>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingJob(null);
-                  setCustomModalHeading(null);
-                }}
-                disabled={isSaving || isConfirming}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  fontSize: "18px",
-                  cursor: "pointer",
-                  color: "#64748b",
-                }}
-              >
-                ✕
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                {editingJob.rowNumber && (() => {
+                  const jKey = buildJobNoteKey(editingJob);
+                  const jSum = getEntitySummary(jKey);
+                  const pSum = getParentSummary(jKey);
+                  const combinedCount = (jSum?.count || 0) + (pSum?.count || 0);
+                  const combinedOpen = (jSum?.openNotifyCount || 0) + (pSum?.openNotifyCount || 0);
+                  const combinedUnread = (jSum?.unreadReplyCount || 0) + (pSum?.unreadReplyCount || 0);
+                  return (
+                    <PulseNoteTrigger
+                      variant="pill"
+                      label="Job notes"
+                      count={combinedCount}
+                      openNotifyCount={combinedOpen}
+                      unreadReplyCount={combinedUnread}
+                      latestSnippet={jSum?.latestSnippet || pSum?.latestSnippet || ""}
+                      onClick={() =>
+                        openNotes({
+                          scopeType: "entity",
+                          entityType: "job",
+                          entityKey: jKey,
+                          parentEntityKey: jKey,
+                          includeChildren: true,
+                          entityLabel: buildJobNoteLabel(editingJob),
+                          drawerTitle: "Job notes",
+                          contextMeta: {
+                            jobKey: jKey,
+                            projectCode: editingJob.projectCode || "",
+                            tabType: editingJob.type || "Confirmed",
+                          },
+                        })
+                      }
+                    />
+                  );
+                })()}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingJob(null);
+                    setCustomModalHeading(null);
+                  }}
+                  disabled={isSaving || isConfirming}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    fontSize: "18px",
+                    cursor: "pointer",
+                    color: "#64748b",
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             {/* Scrollable Form Body */}
@@ -2287,7 +2704,6 @@ export default function PortalJobsView({
                 </div>
               )}
 
-              {/* Form */}
               <form id="job-modal-form" onSubmit={handleSaveJob} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                 <fieldset disabled={isReadOnly} style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "1rem" }}>
                   {isEditingCrmDeal && (
@@ -2347,15 +2763,15 @@ export default function PortalJobsView({
                       <label style={formLabelStyle}>Type *</label>
                       <select
                         value={editingJob.projectRetainer || "Project"}
-                        disabled={isReadOnly || isEditingCrmDeal}
+                        disabled={isReadOnly || isEditingCrmDeal || Boolean(editingJob.isVariableRetainerSeries)}
                         title={crmLockedTooltip}
                         onChange={(e) => {
-                          if (isEditingCrmDeal) return;
+                          if (isEditingCrmDeal || editingJob.isVariableRetainerSeries) return;
                           const val = e.target.value;
                           setEditingJob({
                             ...editingJob,
                             projectRetainer: val,
-                            ...(val !== "Retainer" ? { noEndDate: false } : {}),
+                            ...(val !== "Retainer" ? { noEndDate: false, isVariableRetainer: false } : {}),
                           });
                           if (val === "Retainer") {
                             setEnableSplit(false);
@@ -2367,15 +2783,56 @@ export default function PortalJobsView({
                         <option value="Project">Project</option>
                         <option value="Retainer">Retainer</option>
                       </select>
+                      {editingJob.isVariableRetainerSeries ? (
+                        <div style={{ marginTop: "6px" }}>
+                          <span
+                            style={{
+                              display: "inline-block",
+                              fontSize: "11px",
+                              fontWeight: 600,
+                              color: "#0369a1",
+                              background: "#e0f2fe",
+                              border: "1px solid #bae6fd",
+                              borderRadius: "10px",
+                              padding: "1px 8px",
+                            }}
+                          >
+                            Variable monthly amount
+                          </span>
+                        </div>
+                      ) : (!editingJob.rowNumber && editingJob.projectRetainer === "Retainer" && (
+                        <label
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "5px",
+                            marginTop: "6px",
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            color: editingJob.isVariableRetainer ? "#0369a1" : "#475569",
+                            cursor: isReadOnly ? "default" : "pointer",
+                            userSelect: "none",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={isReadOnly}
+                            checked={Boolean(editingJob.isVariableRetainer)}
+                            onChange={(e) => setEditingJob({ ...editingJob, isVariableRetainer: e.target.checked })}
+                            style={{ margin: 0 }}
+                          />
+                          Variable monthly amount
+                        </label>
+                      ))}
                     </div>
                     <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Status *</label>
                       <select
                         value={editingJob.type || ""}
-                        disabled={isReadOnly || isEditingCrmDeal || isEditingCrmPipelineDeal}
+                        disabled={isReadOnly || isEditingCrmDeal || isEditingCrmPipelineDeal || Boolean(editingJob.isVariableRetainerSeries)}
                         title={crmLockedTooltip || (isEditingCrmPipelineDeal ? `Status must be updated directly in ${crmDisplayName}` : undefined)}
                         onChange={(e) => {
-                          if (isEditingCrmPipelineDeal || isEditingCrmDeal) return;
+                          if (isEditingCrmPipelineDeal || isEditingCrmDeal || editingJob.isVariableRetainerSeries) return;
                           const newType = e.target.value;
                           if (newType === "Confirmed") {
                             setEditingJob({ ...editingJob, type: "Confirmed", likelihood: "100%" });
@@ -2400,9 +2857,9 @@ export default function PortalJobsView({
                         }}
                         style={{
                           ...formInputStyle,
-                          cursor: (isEditingCrmDeal || isEditingCrmPipelineDeal) ? "not-allowed" : "pointer",
-                          backgroundColor: (isEditingCrmDeal || isEditingCrmPipelineDeal) ? "#f8fafc" : "#ffffff",
-                          opacity: (isEditingCrmDeal || isEditingCrmPipelineDeal) ? 0.85 : 1,
+                          cursor: (isEditingCrmDeal || isEditingCrmPipelineDeal || editingJob.isVariableRetainerSeries) ? "not-allowed" : "pointer",
+                          backgroundColor: (isEditingCrmDeal || isEditingCrmPipelineDeal || editingJob.isVariableRetainerSeries) ? "#f8fafc" : "#ffffff",
+                          opacity: (isEditingCrmDeal || isEditingCrmPipelineDeal || editingJob.isVariableRetainerSeries) ? 0.85 : 1,
                         }}
                       >
                         <option value=""></option>
@@ -2472,7 +2929,7 @@ export default function PortalJobsView({
                   </div>
 
                   {/* Recharged expenses toggle (Confirmed jobs only) */}
-                  {editingJob.type === "Confirmed" && (
+                  {editingJob.type === "Confirmed" && !editingJob.isVariableRetainerSeries && (
                     <div
                       style={{
                         display: "flex",
@@ -2536,7 +2993,9 @@ export default function PortalJobsView({
                               style={getCrmInputStyle(false)}
                             />
                             <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
-                              For retainers, enter the monthly amount
+                              {editingJob.projectRetainer === "Retainer" && editingJob.isVariableRetainer
+                                ? "Enter the base monthly forecast (each month can vary)"
+                                : "For retainers, enter the monthly amount"}
                             </div>
                           </div>
                           {showRechRow && (
@@ -2679,7 +3138,9 @@ export default function PortalJobsView({
                     return (
                     <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: stdRechActive ? "2fr 2fr 2fr 2fr 1fr 2fr" : "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
                       <div title={crmLockedTooltip}>
-                        <label style={formLabelStyle}>Revenue (excl. VAT) *</label>
+                        <label style={formLabelStyle}>
+                          {editingJob.isVariableRetainerSeries ? "Base monthly revenue (excl. VAT) *" : "Revenue (excl. VAT) *"}
+                        </label>
                         <input
                           type="text"
                           required
@@ -2694,7 +3155,9 @@ export default function PortalJobsView({
                           style={getCrmInputStyle(false)}
                         />
                         <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
-                          For retainers, enter the monthly amount
+                          {editingJob.isVariableRetainerSeries
+                            ? "Base monthly forecast for uninvoiced future months"
+                            : "For retainers, enter the monthly amount"}
                         </div>
                       </div>
                       {stdRechActive && (
@@ -2724,7 +3187,9 @@ export default function PortalJobsView({
                         </>
                       )}
                       <div title={crmLockedTooltip}>
-                        <label style={formLabelStyle}>Direct costs (excl. VAT) *</label>
+                        <label style={formLabelStyle}>
+                          {editingJob.isVariableRetainerSeries ? "Base monthly direct costs (excl. VAT) *" : "Direct costs (excl. VAT) *"}
+                        </label>
                         <input
                           type="text"
                           required
@@ -2776,7 +3241,7 @@ export default function PortalJobsView({
                       <input
                         type="date"
                         required
-                        disabled={isReadOnly || isEditingCrmDeal}
+                        disabled={isReadOnly || isEditingCrmDeal || Boolean(editingJob.isVariableRetainerSeries)}
                         title={crmLockedTooltip}
                         value={editingJob.startDate || ""}
                         onChange={(e) => setEditingJob({ ...editingJob, startDate: e.target.value })}
@@ -2877,6 +3342,192 @@ export default function PortalJobsView({
                       </select>
                     </div>
                   </div>
+
+                  {/* Variable Retainer Monthly Forecasts & Base Settings */}
+                  {editingJob.isVariableRetainerSeries && (() => {
+                    const monthForecasts = Array.isArray(editingJob.varMonthForecasts) ? editingJob.varMonthForecasts : [];
+                    const overriddenCount = monthForecasts.filter((mf) => mf.isRevOverridden || mf.isDcOverridden).length;
+                    const baseRevVal = parseMoney(editingJob.revenue, thousandsSeparator) || 0;
+                    const baseDcVal = parseMoney(editingJob.directCosts, thousandsSeparator) || 0;
+                    const updateMonthForecastField = (rowNum, patch) => {
+                      setEditingJob((prev) => {
+                        if (!prev) return prev;
+                        const nextList = (prev.varMonthForecasts || []).map((item) =>
+                          item.rowNumber === rowNum ? { ...item, ...patch } : item
+                        );
+                        return { ...prev, varMonthForecasts: nextList };
+                      });
+                    };
+
+                    return (
+                      <div
+                        style={{
+                          padding: "0.85rem 1rem",
+                          background: "#f8fafc",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: "8px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "0.75rem",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                          <div>
+                            <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                              Monthly forecasts &amp; base settings
+                            </div>
+                            <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                              Updating base revenue or direct costs applies to uninvoiced, non-overridden months from the selected month onward.
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowVarMonthlyForecasts((v) => !v)}
+                            style={{
+                              padding: "5px 10px",
+                              borderRadius: "6px",
+                              border: "1px solid #cbd5e1",
+                              background: "#ffffff",
+                              color: "#0369a1",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              cursor: "pointer",
+                            }}
+                          >
+                            {showVarMonthlyForecasts
+                              ? "Hide monthly forecasts"
+                              : `Monthly forecasts (${monthForecasts.length} ${monthForecasts.length === 1 ? "month" : "months"}${overriddenCount > 0 ? ` · ${overriddenCount} overridden` : ""})`}
+                          </button>
+                        </div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                          <div>
+                            <label style={formLabelStyle}>Update base rates from</label>
+                            <input
+                              type="month"
+                              disabled={isReadOnly}
+                              value={editingJob.effectiveMonth || ""}
+                              onChange={(e) => setEditingJob({ ...editingJob, effectiveMonth: e.target.value })}
+                              style={formInputStyle}
+                            />
+                          </div>
+                          <div>
+                            <label style={formLabelStyle}>Invoice send day (1–28)</label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="28"
+                              disabled={isReadOnly}
+                              value={editingJob.sendDay || "28"}
+                              onChange={(e) => setEditingJob({ ...editingJob, sendDay: e.target.value })}
+                              style={formInputStyle}
+                            />
+                          </div>
+                        </div>
+
+                        {showVarMonthlyForecasts && (
+                          <div style={{ maxHeight: "280px", overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: "6px", background: "#ffffff" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                              <thead>
+                                <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#64748b", textAlign: "left" }}>
+                                  <th style={{ padding: "6px 8px" }}>Month</th>
+                                  <th style={{ padding: "6px 8px" }}>Status</th>
+                                  <th style={{ padding: "6px 8px" }}>Revenue ({currencySymbol})</th>
+                                  <th style={{ padding: "6px 8px" }}>Direct costs ({currencySymbol})</th>
+                                  <th style={{ padding: "6px 8px", textAlign: "right" }}>Action</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {monthForecasts.map((mf) => {
+                                  const isOverridden = Boolean(mf.isRevOverridden || mf.isDcOverridden);
+                                  const stLabel = mf.invoiced ? "Invoiced" : (isOverridden ? "Overridden" : "Base forecast");
+                                  const stStyle = mf.invoiced
+                                    ? { background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }
+                                    : isOverridden
+                                      ? { background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }
+                                      : { background: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
+                                  return (
+                                    <tr key={mf.rowNumber} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                      <td style={{ padding: "6px 8px", fontWeight: 600, color: "#1e293b", whiteSpace: "nowrap" }}>
+                                        {mf.monthLabel}
+                                      </td>
+                                      <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
+                                        <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", fontWeight: 600, ...stStyle }}>
+                                          {stLabel}
+                                        </span>
+                                      </td>
+                                      <td style={{ padding: "5px 8px" }}>
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          disabled={isReadOnly}
+                                          value={mf.revenue}
+                                          onChange={(e) => {
+                                            const v = e.target.value;
+                                            const vNum = parseFloat(v);
+                                            updateMonthForecastField(mf.rowNumber, {
+                                              revenue: v,
+                                              resetToBase: false,
+                                              isRevOverridden: !isNaN(vNum) && Math.abs(vNum - baseRevVal) > 0.005,
+                                            });
+                                          }}
+                                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                                        />
+                                      </td>
+                                      <td style={{ padding: "5px 8px" }}>
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          disabled={isReadOnly}
+                                          value={mf.directCosts}
+                                          onChange={(e) => {
+                                            const v = e.target.value;
+                                            const vNum = parseFloat(v);
+                                            updateMonthForecastField(mf.rowNumber, {
+                                              directCosts: v,
+                                              resetToBase: false,
+                                              isDcOverridden: !isNaN(vNum) && Math.abs(vNum - baseDcVal) > 0.005,
+                                            });
+                                          }}
+                                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                                        />
+                                      </td>
+                                      <td style={{ padding: "6px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
+                                        {!isReadOnly && isOverridden && (
+                                          <button
+                                            type="button"
+                                            onClick={() => updateMonthForecastField(mf.rowNumber, {
+                                              revenue: String(baseRevVal),
+                                              directCosts: String(baseDcVal),
+                                              isRevOverridden: false,
+                                              isDcOverridden: false,
+                                              resetToBase: true,
+                                            })}
+                                            style={{
+                                              padding: "3px 8px",
+                                              borderRadius: "5px",
+                                              border: "1px solid #cbd5e1",
+                                              background: "#ffffff",
+                                              color: "#475569",
+                                              fontSize: "10.5px",
+                                              fontWeight: 600,
+                                              cursor: "pointer",
+                                            }}
+                                          >
+                                            Reset to base
+                                          </button>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Uneven Revenue Split Section */}
                   {isSplitSectionVisible && (
@@ -3070,6 +3721,8 @@ export default function PortalJobsView({
                         display: "flex",
                         justifyContent: "space-between",
                         alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: "8px",
                         marginBottom: "0.6rem",
                       }}
                     >
@@ -3119,30 +3772,66 @@ export default function PortalJobsView({
                           </span>
                         )}
                       </h4>
-                      {!isReadOnly && (
-                        <button
-                          type="button"
-                          onClick={addInvoice}
-                          style={{
-                            background: "#f0fdf4",
-                            border: "1px solid #bbf7d0",
-                            color: "#166534",
-                            fontSize: "11px",
-                            fontWeight: 700,
-                            padding: "3px 10px",
-                            borderRadius: "4px",
-                            cursor: "pointer",
-                          }}
-                        >
-                          + Add invoice
-                        </button>
-                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        {editingJob.isVariableRetainerSeries && Array.isArray(editingJob.varMonthForecasts) && editingJob.varMonthForecasts.length > 0 && (
+                          <select
+                            value={varItemMonthFilter}
+                            onChange={(e) => setVarItemMonthFilter(e.target.value)}
+                            disabled={false}
+                            aria-label="Filter invoices by month"
+                            style={{
+                              ...formSelectStyle,
+                              width: "auto",
+                              minWidth: "125px",
+                              padding: "3px 8px",
+                              fontSize: "11.5px",
+                              fontWeight: 600,
+                            }}
+                          >
+                            <option value="all">All months</option>
+                            {editingJob.varMonthForecasts.map((mf) => (
+                              <option key={mf.rowNumber} value={String(mf.rowNumber)}>
+                                {mf.monthLabel}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        {!isReadOnly && hasAccounting && editingJob.type === "Confirmed" && (
+                          <button
+                            type="button"
+                            onClick={() => editingJob.rowNumber && setAssignModalType("invoice")}
+                            disabled={!editingJob.rowNumber}
+                            title={!editingJob.rowNumber ? "Save this job first to assign invoices" : "Assign or reassign invoices from accounting"}
+                            style={{
+                              background: editingJob.rowNumber ? "#eff6ff" : "#f1f5f9",
+                              border: `1px solid ${editingJob.rowNumber ? "#bfdbfe" : "#e2e8f0"}`,
+                              color: editingJob.rowNumber ? "#1d4ed8" : "#94a3b8",
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              padding: "4px 10px",
+                              borderRadius: "5px",
+                              cursor: editingJob.rowNumber ? "pointer" : "not-allowed",
+                            }}
+                          >
+                            Assign invoice
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {groupInvoicesForDisplay(editingJob.invoices || []).map((inv, displayIdx) => {
+                      {groupInvoicesForDisplay(editingJob.invoices || [])
+                        .filter((inv) => {
+                          if (!editingJob.isVariableRetainerSeries || !varItemMonthFilter || varItemMonthFilter === "all") return true;
+                          const itemRow = inv.isComposite
+                            ? (inv.receivedTranches?.[0]?.monthRowNumber ?? inv.balanceTranche?.monthRowNumber)
+                            : inv.monthRowNumber;
+                          return String(itemRow || "") === String(varItemMonthFilter);
+                        })
+                        .map((inv, displayIdx) => {
                         if (inv.isComposite) {
                           const isLocked = Boolean(hasAccounting && inv.ref && String(inv.ref).trim() !== "");
+                          const compMonthLabel = inv.receivedTranches?.[0]?.monthLabel || inv.balanceTranche?.monthLabel || "";
                           return (
                             <div
                               key={`comp_inv_${inv.ref || displayIdx}`}
@@ -3176,6 +3865,21 @@ export default function PortalJobsView({
                                   >
                                     {inv.isFullyPaid ? `Paid in full (${inv.receivedTranches.length} payments)` : `Part-paid (${inv.percentPaid.toFixed(1)}% received)`}
                                   </span>
+                                  {editingJob.isVariableRetainerSeries && compMonthLabel && (
+                                    <span
+                                      style={{
+                                        fontSize: "10px",
+                                        fontWeight: 600,
+                                        background: "#f0f9ff",
+                                        color: "#0369a1",
+                                        border: "1px solid #bae6fd",
+                                        borderRadius: "10px",
+                                        padding: "1px 7px",
+                                      }}
+                                    >
+                                      {compMonthLabel}
+                                    </span>
+                                  )}
                                   {isLocked && (
                                     <span
                                       title="Synced from accounting software"
@@ -3189,8 +3893,50 @@ export default function PortalJobsView({
                                     </span>
                                   )}
                                 </div>
-                                <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
-                                  Total: {currencySymbol}{formatSummaryNum(inv.totalAmount)}
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                  {editingJob.rowNumber && (() => {
+                                    const compIdx = inv.receivedTranches?.[0]?.originalIndex ?? inv.balanceTranche?.originalIndex ?? 0;
+                                    const matchedList = editingJobChildMatches.invoiceMatched.get(compIdx) || [];
+                                    const directKey = buildInvoiceNoteKey(editingJob, inv, compIdx + 1);
+                                    const primaryMatchKey = matchedList[0]?.entityKey || directKey;
+                                    const invSum = getEntitySummary(primaryMatchKey) || (matchedList.length > 0 ? {
+                                      count: matchedList.length,
+                                      openNotifyCount: matchedList.filter((m) => m.notifyManager && m.status === "open").length,
+                                      unreadReplyCount: matchedList.filter((m) => m.clientUnreadReply).length,
+                                      latestSnippet: matchedList[0]?.body || "",
+                                    } : null);
+                                    const jobKey = buildJobNoteKey(editingJob);
+                                    return (
+                                      <PulseNoteTrigger
+                                        variant="inline"
+                                        label=""
+                                        count={invSum?.count || 0}
+                                        openNotifyCount={invSum?.openNotifyCount || 0}
+                                        unreadReplyCount={invSum?.unreadReplyCount || 0}
+                                        latestSnippet={invSum?.latestSnippet || ""}
+                                        onClick={() =>
+                                          openNotes({
+                                            scopeType: "entity",
+                                            entityType: "invoice",
+                                            entityKey: primaryMatchKey,
+                                            parentEntityKey: jobKey,
+                                            entityLabel: buildInvoiceNoteLabel(editingJob, inv, compIdx + 1, currencySymbol),
+                                            drawerTitle: "Invoice notes",
+                                            contextMeta: {
+                                              jobKey,
+                                              slotNum: compIdx + 1,
+                                              ref: inv.ref || "",
+                                              amount: normalizeAmountFingerprint(inv.totalAmount),
+                                              sendDate: normalizeDateFingerprint(inv.receivedTranches?.[0]?.sendDate || ""),
+                                            },
+                                          })
+                                        }
+                                      />
+                                    );
+                                  })()}
+                                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                                    Total: {currencySymbol}{formatSummaryNum(inv.totalAmount)}
+                                  </div>
                                 </div>
                               </div>
 
@@ -3460,9 +4206,86 @@ export default function PortalJobsView({
                                     <span>Synced</span>
                                   </span>
                                 )}
+                                {editingJob.isVariableRetainerSeries && Array.isArray(editingJob.varMonthForecasts) && editingJob.varMonthForecasts.length > 0 && (
+                                  <select
+                                    value={String(inv.monthRowNumber || "")}
+                                    disabled={isReadOnly || isLocked}
+                                    title={isLocked ? "Synced from accounting software" : "Month for this invoice"}
+                                    onChange={(e) => {
+                                      const picked = editingJob.varMonthForecasts.find((m) => String(m.rowNumber) === e.target.value);
+                                      if (!picked) return;
+                                      setEditingJob((prev) => {
+                                        if (!prev) return prev;
+                                        const nextInvs = [...(prev.invoices || [])];
+                                        nextInvs[idx] = {
+                                          ...nextInvs[idx],
+                                          monthRowNumber: picked.rowNumber,
+                                          monthKey: picked.monthKey,
+                                          monthLabel: picked.monthLabel,
+                                        };
+                                        return { ...prev, invoices: nextInvs };
+                                      });
+                                    }}
+                                    style={{
+                                      fontSize: "10.5px",
+                                      fontWeight: 600,
+                                      padding: "2px 6px",
+                                      borderRadius: "6px",
+                                      border: "1px solid #bae6fd",
+                                      background: "#f0f9ff",
+                                      color: "#0369a1",
+                                      cursor: (isReadOnly || isLocked) ? "not-allowed" : "pointer",
+                                    }}
+                                  >
+                                    {editingJob.varMonthForecasts.map((mf) => (
+                                      <option key={mf.rowNumber} value={String(mf.rowNumber)}>
+                                        {mf.monthLabel}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
                               </div>
 
                               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                {editingJob.rowNumber && (() => {
+                                  const matchedList = editingJobChildMatches.invoiceMatched.get(idx) || [];
+                                  const directKey = buildInvoiceNoteKey(editingJob, inv, idx + 1);
+                                  const primaryMatchKey = matchedList[0]?.entityKey || directKey;
+                                  const invSum = getEntitySummary(primaryMatchKey) || (matchedList.length > 0 ? {
+                                    count: matchedList.length,
+                                    openNotifyCount: matchedList.filter((m) => m.notifyManager && m.status === "open").length,
+                                    unreadReplyCount: matchedList.filter((m) => m.clientUnreadReply).length,
+                                    latestSnippet: matchedList[0]?.body || "",
+                                  } : null);
+                                  const jobKey = buildJobNoteKey(editingJob);
+                                  return (
+                                    <PulseNoteTrigger
+                                      variant="inline"
+                                      label=""
+                                      count={invSum?.count || 0}
+                                      openNotifyCount={invSum?.openNotifyCount || 0}
+                                      unreadReplyCount={invSum?.unreadReplyCount || 0}
+                                      latestSnippet={invSum?.latestSnippet || ""}
+                                      onClick={() =>
+                                        openNotes({
+                                          scopeType: "entity",
+                                          entityType: "invoice",
+                                          entityKey: primaryMatchKey,
+                                          parentEntityKey: jobKey,
+                                          entityLabel: buildInvoiceNoteLabel(editingJob, inv, idx + 1, currencySymbol),
+                                          drawerTitle: "Invoice notes",
+                                          contextMeta: {
+                                            jobKey,
+                                            slotNum: idx + 1,
+                                            ref: inv.ref || "",
+                                            amount: normalizeAmountFingerprint(inv.amount),
+                                            sendDate: normalizeDateFingerprint(inv.sendDate),
+                                          },
+                                        })
+                                      }
+                                    />
+                                  );
+                                })()}
                                 <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
                                   Total: {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(inv.amount)) || 0)}
                                 </div>
@@ -3656,6 +4479,34 @@ export default function PortalJobsView({
                           </div>
                         );
                       })}
+
+                      {!isReadOnly && (
+                        <button
+                          type="button"
+                          onClick={addInvoice}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: "6px",
+                            padding: "8px 12px",
+                            borderRadius: "6px",
+                            border: "1px dashed #cbd5e1",
+                            background: "#f8fafc",
+                            color: "#475569",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            marginTop: "2px",
+                          }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19" />
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                          </svg>
+                          Add invoice
+                        </button>
+                      )}
                     </div>
 
                     {deletePromptInvoice && (
@@ -3859,6 +4710,8 @@ export default function PortalJobsView({
                         display: "flex",
                         justifyContent: "space-between",
                         alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: "8px",
                         marginBottom: "0.6rem",
                       }}
                     >
@@ -3885,28 +4738,63 @@ export default function PortalJobsView({
                           </span>
                         )}
                       </h4>
-                      {!isReadOnly && (
-                        <button
-                          type="button"
-                          onClick={addExpense}
-                          style={{
-                            background: "#f0fdf4",
-                            border: "1px solid #bbf7d0",
-                            color: "#166534",
-                            fontSize: "11px",
-                            fontWeight: 700,
-                            padding: "3px 10px",
-                            borderRadius: "4px",
-                            cursor: "pointer",
-                          }}
-                        >
-                          + Add direct expense
-                        </button>
-                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        {editingJob.isVariableRetainerSeries && Array.isArray(editingJob.varMonthForecasts) && editingJob.varMonthForecasts.length > 0 && (
+                          <select
+                            value={varItemMonthFilter}
+                            onChange={(e) => setVarItemMonthFilter(e.target.value)}
+                            disabled={false}
+                            aria-label="Filter direct expenses by month"
+                            style={{
+                              ...formSelectStyle,
+                              width: "auto",
+                              minWidth: "125px",
+                              padding: "3px 8px",
+                              fontSize: "11.5px",
+                              fontWeight: 600,
+                            }}
+                          >
+                            <option value="all">All months</option>
+                            {editingJob.varMonthForecasts.map((mf) => (
+                              <option key={mf.rowNumber} value={String(mf.rowNumber)}>
+                                {mf.monthLabel}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        {!isReadOnly && hasAccounting && editingJob.type === "Confirmed" && (
+                          <button
+                            type="button"
+                            onClick={() => editingJob.rowNumber && setAssignModalType("directCost")}
+                            disabled={!editingJob.rowNumber}
+                            title={!editingJob.rowNumber ? "Save this job first to assign direct costs" : "Assign or reassign direct costs from accounting"}
+                            style={{
+                              background: editingJob.rowNumber ? "#eff6ff" : "#f1f5f9",
+                              border: `1px solid ${editingJob.rowNumber ? "#bfdbfe" : "#e2e8f0"}`,
+                              color: editingJob.rowNumber ? "#1d4ed8" : "#94a3b8",
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              padding: "4px 10px",
+                              borderRadius: "5px",
+                              cursor: editingJob.rowNumber ? "pointer" : "not-allowed",
+                            }}
+                          >
+                            Assign direct cost
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {groupExpensesForDisplay(editingJob.directExpenses || []).map((exp, displayIdx) => {
+                      {groupExpensesForDisplay(editingJob.directExpenses || [])
+                        .filter((exp) => {
+                          if (!editingJob.isVariableRetainerSeries || !varItemMonthFilter || varItemMonthFilter === "all") return true;
+                          const itemRow = exp.isComposite
+                            ? (exp.paidTranches?.[0]?.monthRowNumber ?? exp.balanceTranche?.monthRowNumber)
+                            : exp.monthRowNumber;
+                          return String(itemRow || "") === String(varItemMonthFilter);
+                        })
+                        .map((exp, displayIdx) => {
                         if (exp.isComposite) {
                           const isActual = Boolean(
                             hasAccounting &&
@@ -3914,6 +4802,7 @@ export default function PortalJobsView({
                             exp.appId &&
                             String(exp.appId).trim() !== ""
                           );
+                          const compMonthLabel = exp.paidTranches?.[0]?.monthLabel || exp.balanceTranche?.monthLabel || "";
                           return (
                             <div
                               key={`comp_exp_${exp.appId || exp.desc || displayIdx}`}
@@ -3947,6 +4836,21 @@ export default function PortalJobsView({
                                   >
                                     {exp.isFullyPaid ? `Paid in full (${exp.paidTranches.length} payments)` : `Part-paid (${exp.percentPaid.toFixed(1)}% paid)`}
                                   </span>
+                                  {editingJob.isVariableRetainerSeries && compMonthLabel && (
+                                    <span
+                                      style={{
+                                        fontSize: "10px",
+                                        fontWeight: 600,
+                                        background: "#f0f9ff",
+                                        color: "#0369a1",
+                                        border: "1px solid #bae6fd",
+                                        borderRadius: "10px",
+                                        padding: "1px 7px",
+                                      }}
+                                    >
+                                      {compMonthLabel}
+                                    </span>
+                                  )}
                                   {isActual && (
                                     <span
                                       title="Synced from accounting software"
@@ -3960,8 +4864,51 @@ export default function PortalJobsView({
                                     </span>
                                   )}
                                 </div>
-                                <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
-                                  Total: {currencySymbol}{formatSummaryNum(exp.totalAmount)}
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                  {editingJob.rowNumber && (() => {
+                                    const compIdx = exp.paidTranches?.[0]?.originalIndex ?? exp.balanceTranche?.originalIndex ?? 0;
+                                    const matchedList = editingJobChildMatches.expenseMatched.get(compIdx) || [];
+                                    const directKey = buildJobExpenseNoteKey(editingJob, exp, compIdx + 1);
+                                    const primaryMatchKey = matchedList[0]?.entityKey || directKey;
+                                    const expSum = getEntitySummary(primaryMatchKey) || (matchedList.length > 0 ? {
+                                      count: matchedList.length,
+                                      openNotifyCount: matchedList.filter((m) => m.notifyManager && m.status === "open").length,
+                                      unreadReplyCount: matchedList.filter((m) => m.clientUnreadReply).length,
+                                      latestSnippet: matchedList[0]?.body || "",
+                                    } : null);
+                                    const jobKey = buildJobNoteKey(editingJob);
+                                    return (
+                                      <PulseNoteTrigger
+                                        variant="inline"
+                                        label=""
+                                        count={expSum?.count || 0}
+                                        openNotifyCount={expSum?.openNotifyCount || 0}
+                                        unreadReplyCount={expSum?.unreadReplyCount || 0}
+                                        latestSnippet={expSum?.latestSnippet || ""}
+                                        onClick={() =>
+                                          openNotes({
+                                            scopeType: "entity",
+                                            entityType: "job_expense",
+                                            entityKey: primaryMatchKey,
+                                            parentEntityKey: jobKey,
+                                            entityLabel: buildJobExpenseNoteLabel(editingJob, exp, compIdx + 1, currencySymbol),
+                                            drawerTitle: "Direct expense notes",
+                                            contextMeta: {
+                                              jobKey,
+                                              slotNum: compIdx + 1,
+                                              appId: exp.appId || "",
+                                              desc: exp.desc || "",
+                                              amount: normalizeAmountFingerprint(exp.totalAmount),
+                                              recDate: normalizeDateFingerprint(exp.paidTranches?.[0]?.recDate || ""),
+                                            },
+                                          })
+                                        }
+                                      />
+                                    );
+                                  })()}
+                                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                                    Total: {currencySymbol}{formatSummaryNum(exp.totalAmount)}
+                                  </div>
                                 </div>
                               </div>
 
@@ -4240,9 +5187,87 @@ export default function PortalJobsView({
                                     <span>Synced</span>
                                   </span>
                                 )}
+                                {editingJob.isVariableRetainerSeries && Array.isArray(editingJob.varMonthForecasts) && editingJob.varMonthForecasts.length > 0 && (
+                                  <select
+                                    value={String(exp.monthRowNumber || "")}
+                                    disabled={isReadOnly || isActual}
+                                    title={isActual ? "Synced from accounting software" : "Month for this direct cost"}
+                                    onChange={(e) => {
+                                      const picked = editingJob.varMonthForecasts.find((m) => String(m.rowNumber) === e.target.value);
+                                      if (!picked) return;
+                                      setEditingJob((prev) => {
+                                        if (!prev) return prev;
+                                        const nextExps = [...(prev.directExpenses || [])];
+                                        nextExps[idx] = {
+                                          ...nextExps[idx],
+                                          monthRowNumber: picked.rowNumber,
+                                          monthKey: picked.monthKey,
+                                          monthLabel: picked.monthLabel,
+                                        };
+                                        return { ...prev, directExpenses: nextExps };
+                                      });
+                                    }}
+                                    style={{
+                                      fontSize: "10.5px",
+                                      fontWeight: 600,
+                                      padding: "2px 6px",
+                                      borderRadius: "6px",
+                                      border: "1px solid #bae6fd",
+                                      background: "#f0f9ff",
+                                      color: "#0369a1",
+                                      cursor: (isReadOnly || isActual) ? "not-allowed" : "pointer",
+                                    }}
+                                  >
+                                    {editingJob.varMonthForecasts.map((mf) => (
+                                      <option key={mf.rowNumber} value={String(mf.rowNumber)}>
+                                        {mf.monthLabel}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
                               </div>
 
                               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                {editingJob.rowNumber && (() => {
+                                  const matchedList = editingJobChildMatches.expenseMatched.get(idx) || [];
+                                  const directKey = buildJobExpenseNoteKey(editingJob, exp, idx + 1);
+                                  const primaryMatchKey = matchedList[0]?.entityKey || directKey;
+                                  const expSum = getEntitySummary(primaryMatchKey) || (matchedList.length > 0 ? {
+                                    count: matchedList.length,
+                                    openNotifyCount: matchedList.filter((m) => m.notifyManager && m.status === "open").length,
+                                    unreadReplyCount: matchedList.filter((m) => m.clientUnreadReply).length,
+                                    latestSnippet: matchedList[0]?.body || "",
+                                  } : null);
+                                  const jobKey = buildJobNoteKey(editingJob);
+                                  return (
+                                    <PulseNoteTrigger
+                                      variant="inline"
+                                      label=""
+                                      count={expSum?.count || 0}
+                                      openNotifyCount={expSum?.openNotifyCount || 0}
+                                      unreadReplyCount={expSum?.unreadReplyCount || 0}
+                                      latestSnippet={expSum?.latestSnippet || ""}
+                                      onClick={() =>
+                                        openNotes({
+                                          scopeType: "entity",
+                                          entityType: "job_expense",
+                                          entityKey: primaryMatchKey,
+                                          parentEntityKey: jobKey,
+                                          entityLabel: buildJobExpenseNoteLabel(editingJob, exp, idx + 1, currencySymbol),
+                                          drawerTitle: "Direct expense notes",
+                                          contextMeta: {
+                                            jobKey,
+                                            slotNum: idx + 1,
+                                            appId: exp.appId || "",
+                                            desc: exp.desc || "",
+                                            amount: normalizeAmountFingerprint(exp.amount),
+                                            recDate: normalizeDateFingerprint(exp.recDate),
+                                          },
+                                        })
+                                      }
+                                    />
+                                  );
+                                })()}
                                 <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
                                   Total: {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(exp.amount)) || 0)}
                                 </div>
@@ -4396,6 +5421,34 @@ export default function PortalJobsView({
                           </div>
                         );
                       })}
+
+                      {!isReadOnly && (
+                        <button
+                          type="button"
+                          onClick={addExpense}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: "6px",
+                            padding: "8px 12px",
+                            borderRadius: "6px",
+                            border: "1px dashed #cbd5e1",
+                            background: "#f8fafc",
+                            color: "#475569",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            marginTop: "2px",
+                          }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19" />
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                          </svg>
+                          Add direct cost
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -4445,7 +5498,7 @@ export default function PortalJobsView({
                   </button>
                 )}
 
-                {!isReadOnly && editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "confirmed" && (() => {
+                {!isReadOnly && editingJob.rowNumber && !editingJob.isVariableRetainerSeries && String(editingJob.type || "").toLowerCase() === "confirmed" && (() => {
                   const hasActualInvoices = (editingJob.invoices || []).some(
                     (inv) => Boolean(inv.ref && String(inv.ref).trim() !== "" && !isPlaceholderInvoice(inv.ref, inv.status))
                   );
@@ -4864,6 +5917,140 @@ export default function PortalJobsView({
           }}
         />
       )}
+
+      {assignModalType && editingJob && (() => {
+        const assignTargetMonth = editingJob.isVariableRetainerSeries ? resolveVarTargetMonthMeta(editingJob) : null;
+        const targetRowNum = assignTargetMonth?.rowNumber || editingJob.rowNumber;
+        const scopedInvoices = assignTargetMonth
+          ? (editingJob.invoices || []).filter((inv) => String(inv.monthRowNumber || "") === String(assignTargetMonth.rowNumber))
+          : (editingJob.invoices || []);
+        const scopedExpenses = assignTargetMonth
+          ? (editingJob.directExpenses || []).filter((exp) => String(exp.monthRowNumber || "") === String(assignTargetMonth.rowNumber))
+          : (editingJob.directExpenses || []);
+
+        return (
+          <AssignAccountingItemsModal
+            isOpen={Boolean(assignModalType)}
+            onClose={() => setAssignModalType(null)}
+            itemType={assignModalType}
+            surface="portal"
+            clientName={clientName}
+            clientSheetId={clientSheetId}
+            currencySymbol={currencySymbol}
+            prefetchedCatalog={prefetchedCatalogByType[assignModalType] || null}
+            onCatalogUpdated={(type, nextCatalog) =>
+              setPrefetchedCatalogByType((prev) => ({ ...prev, [type]: nextCatalog }))
+            }
+            targetJob={{
+              client: editingJob.client || "",
+              jobName: editingJob.jobName || "",
+              projectCode: editingJob.projectCode || "",
+              isRetainer: String(editingJob.projectRetainer || "").toLowerCase().includes("retainer"),
+              startDate: editingJob.startDate || "",
+              endDate: editingJob.endDate || "",
+              revenue: assignTargetMonth ? assignTargetMonth.revenue : editingJob.revenue,
+              rechargedExpenses: editingJob.rechargedExpenses,
+              directCosts: assignTargetMonth ? assignTargetMonth.directCosts : editingJob.directCosts,
+              isJobCosting: Boolean(editingJob.isJobCosting || isClientJobCosting),
+              rowNum: targetRowNum,
+              currentRealInvoiced: scopedInvoices.reduce((sum, inv) => {
+                if (inv.ref && !isPlaceholderInvoice(inv.ref, inv.status)) {
+                  return sum + (parseMoney(inv.amount, thousandsSeparator) || 0);
+                }
+                return sum;
+              }, 0),
+              currentRealDirectCosts: scopedExpenses.reduce((sum, exp) => {
+                if (!isPlaceholderExpense(exp.appId, exp.desc, exp.status) && exp.appId) {
+                  return sum + (parseMoney(exp.amount, thousandsSeparator) || 0);
+                }
+                return sum;
+              }, 0),
+            }}
+            onCompleted={(res) => {
+              setPrefetchedCatalogByType({ invoice: null, directCost: null });
+              setEditingJob((prev) => {
+                if (!prev) return prev;
+                const next = { ...prev };
+                const monthTag = assignTargetMonth
+                  ? {
+                      monthRowNumber: assignTargetMonth.rowNumber,
+                      monthKey: assignTargetMonth.monthKey,
+                      monthLabel: assignTargetMonth.monthLabel,
+                    }
+                  : null;
+
+                if (assignModalType === "invoice" && Array.isArray(res?.updatedInvoices)) {
+                  const mappedUpdated = res.updatedInvoices.map((inv) => ({
+                    ...inv,
+                    amount: normalizeAmount(inv.amount),
+                    ofWhichRechgd: normalizeAmount(inv.ofWhichRechgd),
+                    costMonth: inv.costMonth || "",
+                    status: inv.status || "",
+                    ...(monthTag || {}),
+                  }));
+                  if (prev.isVariableRetainerSeries && assignTargetMonth) {
+                    const otherInvs = (prev.invoices || []).filter(
+                      (inv) => String(inv.monthRowNumber || "") !== String(assignTargetMonth.rowNumber)
+                    );
+                    next.invoices = [...otherInvs, ...mappedUpdated].map((inv, i) => ({ ...inv, num: i + 1 }));
+                  } else {
+                    next.invoices =
+                      mappedUpdated.length > 0
+                        ? mappedUpdated.map((inv, i) => ({ ...inv, num: i + 1 }))
+                        : [{ num: 1, amount: "", ofWhichRechgd: "", costMonth: "", ref: "", sendDate: "", days: "30", status: "" }];
+                  }
+                }
+                if (assignModalType === "directCost" && Array.isArray(res?.updatedDirectExpenses)) {
+                  const mappedUpdated = res.updatedDirectExpenses.map((exp) => ({
+                    ...exp,
+                    amount: normalizeAmount(exp.amount),
+                    status: exp.status || "",
+                    ...(monthTag || {}),
+                  }));
+                  if (prev.isVariableRetainerSeries && assignTargetMonth) {
+                    const otherExps = (prev.directExpenses || []).filter(
+                      (exp) => String(exp.monthRowNumber || "") !== String(assignTargetMonth.rowNumber)
+                    );
+                    next.directExpenses = [...otherExps, ...mappedUpdated].map((exp, i) => ({ ...exp, num: i + 1 }));
+                  } else {
+                    next.directExpenses =
+                      mappedUpdated.length > 0
+                        ? mappedUpdated.map((exp, i) => ({ ...exp, num: i + 1 }))
+                        : [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" }];
+                  }
+                }
+                if (prev.isVariableRetainerSeries && assignTargetMonth) {
+                  if (res?.updatedRevenue !== undefined || res?.updatedDirectCosts !== undefined) {
+                    next.varMonthForecasts = (prev.varMonthForecasts || []).map((mf) => {
+                      if (String(mf.rowNumber) !== String(assignTargetMonth.rowNumber)) return mf;
+                      const updRev = res?.updatedRevenue !== undefined ? String(parseMoney(res.updatedRevenue, thousandsSeparator) || 0) : mf.revenue;
+                      const updDc = res?.updatedDirectCosts !== undefined ? String(parseMoney(res.updatedDirectCosts, thousandsSeparator) || 0) : mf.directCosts;
+                      return {
+                        ...mf,
+                        revenue: updRev,
+                        origRevenue: updRev,
+                        directCosts: updDc,
+                        origDirectCosts: updDc,
+                      };
+                    });
+                  }
+                } else {
+                  if (res?.updatedRevenue !== undefined) {
+                    const fmtRev = normalizeAmount(res.updatedRevenue);
+                    next.revenue = fmtRev;
+                    next.jobRevenue = fmtRev;
+                  }
+                  if (res?.updatedDirectCosts !== undefined) {
+                    next.directCosts = normalizeAmount(res.updatedDirectCosts);
+                  }
+                }
+                return next;
+              });
+              if (onRefresh) onRefresh();
+            }}
+          />
+        );
+      })()}
 
       <style jsx>{`
         @media (max-width: 640px) {

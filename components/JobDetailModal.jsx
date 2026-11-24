@@ -4,11 +4,14 @@ import Skeleton from "./Skeleton";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
+import AssignAccountingItemsModal from "./AssignAccountingItemsModal";
 import RetainerChangeSendDatesModal from "./RetainerChangeSendDatesModal";
 import InvoiceCostMonthControl from "./InvoiceCostMonthControl";
 import { extractSplitMonths } from "../services/splitHelper";
 import CellNoteModal from "./CellNoteModal";
 import NoteIndicatorButton from "./NoteIndicatorButton";
+import PmaClientNoteBadge from "./PmaClientNoteBadge";
+import { buildJobNoteKey, buildJobNoteLabel } from "../utils/pulseNotesKeys";
 import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef, generateManualPlaceholderInvoiceRef } from "./PlaceholderPill";
 import {
   JobDateInput,
@@ -196,6 +199,7 @@ export default function JobDetailModal({
   // Sub-modals state
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null);
+  const [assignModalType, setAssignModalType] = useState(null);
   const [jobsEditSplit, setJobsEditSplit] = useState(null);
   const [cellNoteModalConfig, setCellNoteModalConfig] = useState(null);
   const [retainerChangeSendDates, setRetainerChangeSendDates] = useState(null);
@@ -464,13 +468,13 @@ export default function JobDetailModal({
   // Close on Escape key if no sub-modal is open
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === "Escape" && isOpen && !invoicesEditSlot && !directCostsEditSlot && !jobsEditSplit) {
+      if (e.key === "Escape" && isOpen && !invoicesEditSlot && !directCostsEditSlot && !jobsEditSplit && !assignModalType) {
         handleCloseModal();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, invoicesEditSlot, directCostsEditSlot, jobsEditSplit, handleCloseModal]);
+  }, [isOpen, invoicesEditSlot, directCostsEditSlot, jobsEditSplit, assignModalType, handleCloseModal]);
 
   // Initialize draft invoices from job.rows whenever job loads
   useEffect(() => {
@@ -1796,6 +1800,30 @@ export default function JobDetailModal({
                   onClick={openJobNoteModal}
                   title={job?.note || parentRow?.note ? `Job note: ${job?.note || parentRow?.note}` : "Add note to job"}
                 />
+                {(() => {
+                  const resolvedName = resolvedClientInfo?.client?.clientName || target?.clientName || "";
+                  const jKey = buildJobNoteKey({
+                    client: clientVal || job?.client || "",
+                    jobName: jobNameVal || job?.jobName || "",
+                    projectCode: projectCodeVal || "",
+                    rowNumber: parentRow?.rowNum,
+                  });
+                  const jLabel = buildJobNoteLabel({
+                    client: clientVal || job?.client || "",
+                    jobName: jobNameVal || job?.jobName || "",
+                  });
+                  return resolvedName ? (
+                    <PmaClientNoteBadge
+                      clientName={resolvedName}
+                      entityType="job"
+                      entityKey={jKey}
+                      includeChildren={true}
+                      entityLabel={jLabel}
+                      label="Client notes"
+                      user={auth?.user}
+                    />
+                  ) : null;
+                })()}
               </div>
 
               {isJobFromCrm && (
@@ -2565,21 +2593,41 @@ export default function JobDetailModal({
                       overflow: "hidden"
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px", gap: "8px", flexWrap: "wrap" }}>
                       <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                         Invoices ({isRetainer ? invoiceItems.length : activeDraftInvoices.length})
                       </div>
-                      {activeBillableNum > 0 && (
-                        leftToInvoiceAmount <= 0.01 ? (
-                          <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
-                            ✓ 100% invoiced
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
-                            Remaining to invoice: {formatCurrency(leftToInvoiceAmount)}
-                          </span>
-                        )
-                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                        {activeBillableNum > 0 && (
+                          leftToInvoiceAmount <= 0.01 ? (
+                            <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
+                              ✓ 100% invoiced
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
+                              Remaining to invoice: {formatCurrency(leftToInvoiceAmount)}
+                            </span>
+                          )
+                        )}
+                        {isConfirmed && hasAccountingIntegration && !isReadOnly && (
+                          <button
+                            type="button"
+                            onClick={() => setAssignModalType("invoice")}
+                            style={{
+                              padding: "3px 9px",
+                              borderRadius: "5px",
+                              border: "1px solid #bfdbfe",
+                              background: "#eff6ff",
+                              color: "#1d4ed8",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              cursor: "pointer",
+                            }}
+                          >
+                            Assign invoice
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {isRetainer ? (
@@ -3330,21 +3378,41 @@ export default function JobDetailModal({
                       overflow: "hidden"
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px", gap: "8px", flexWrap: "wrap" }}>
                       <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                         Direct Costs ({expenseItems.length})
                       </div>
-                      {isConfirmed && metrics.directCosts > 0 && (
-                        metrics.costsLeftToReceive > 0 ? (
-                          <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
-                            Left to rec: {formatCurrency(metrics.costsLeftToReceive)}
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
-                            ✓ Received
-                          </span>
-                        )
-                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                        {isConfirmed && metrics.directCosts > 0 && (
+                          metrics.costsLeftToReceive > 0 ? (
+                            <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
+                              Left to rec: {formatCurrency(metrics.costsLeftToReceive)}
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: "600", background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
+                              ✓ Received
+                            </span>
+                          )
+                        )}
+                        {isConfirmed && hasAccountingIntegration && !isReadOnly && (
+                          <button
+                            type="button"
+                            onClick={() => setAssignModalType("directCost")}
+                            style={{
+                              padding: "3px 9px",
+                              borderRadius: "5px",
+                              border: "1px solid #bfdbfe",
+                              background: "#eff6ff",
+                              color: "#1d4ed8",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              cursor: "pointer",
+                            }}
+                          >
+                            Assign direct cost
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
@@ -3728,6 +3796,43 @@ export default function JobDetailModal({
           </div>
         </div>
       </div>
+
+      {assignModalType && job && (
+        <AssignAccountingItemsModal
+          isOpen={Boolean(assignModalType)}
+          onClose={() => setAssignModalType(null)}
+          itemType={assignModalType}
+          surface="pma"
+          isAdmin={isAdmin}
+          clientName={resolvedClientInfo?.client?.clientName || target?.clientName || ""}
+          clientSheetId={resolvedClientInfo?.clientSheetId || ""}
+          masterSheetId={resolvedClientInfo?.client?.masterSheetId || ""}
+          targetJob={{
+            client: clientVal || job.client || "",
+            jobName: jobNameVal || job.jobName || "",
+            projectCode: projectCodeVal || job.projectCode || "",
+            isRetainer,
+            startDate: startDateVal || "",
+            endDate: endDateVal || "",
+            revenue: activeRevenueNum,
+            rechargedExpenses: activeRechargedNum,
+            directCosts: parseFloat(stripCurrency(directCostsVal)) || 0,
+            isJobCosting: Boolean(job?.isJobCosting),
+            rowNum: parentRow?.rowNum,
+            currentRealInvoiced: metrics.realInvoiced,
+            currentRealDirectCosts: metrics.realCostsReceived,
+          }}
+          onCompleted={() => {
+            hasSavedChangesRef.current = true;
+            if (resolvedClientInfo?.client?.masterSheetId && typeof onMarkPullPending === "function") {
+              onMarkPullPending(resolvedClientInfo.client.masterSheetId);
+            }
+            if (typeof onJobSaved === "function") onJobSaved({ rowNum: parentRow?.rowNum, subModalSaved: true });
+            if (typeof onSaved === "function") onSaved({ rowNum: parentRow?.rowNum, subModalSaved: true });
+            setReloadTrigger((t) => t + 1);
+          }}
+        />
+      )}
 
       <style jsx>{`
         .job-detail-cards-grid {

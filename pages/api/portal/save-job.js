@@ -5,8 +5,16 @@ import { assertClientPortalLive } from "../../../services/setupService.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
-import { provisionRetainerChildRows_ } from "../../../services/retainers.js";
+import {
+  provisionRetainerChildRows_,
+  createVariableRetainerSeries_,
+  handleUpdateVariableRetainerBase,
+  handleUpdateVariableRetainerMonth,
+  handleSaveVariableRetainerSeries_,
+} from "../../../services/retainers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
+import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
 import {
   canonicalizeInvoiceStatus,
   canonicalizeExpenseStatus,
@@ -24,7 +32,9 @@ import {
   buildJobRowClearAndRestorePlan,
   normalizeLikelihoodInput,
   isPlaceholderInvoice,
-  isPlaceholderExpense
+  isPlaceholderExpense,
+  parseVariableRetainerTag,
+  formatVariableRetainerTag,
 } from "../../../utils/helpers.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
@@ -519,9 +529,13 @@ export default async function handler(req, res) {
     return res.status(429).json({ success: false, error: "Too many requests. Please wait a moment and try again." });
   }
 
-  const { clientSheetId, clientName, job } = req.body || {};
+  const { action: bodyAction, clientSheetId, clientName, job } = req.body || {};
 
-  if (!clientSheetId || !job) {
+  const isVarRetainerAction =
+    bodyAction === "update_variable_retainer_base" ||
+    bodyAction === "update_variable_retainer_month";
+
+  if (!clientSheetId || (!job && !isVarRetainerAction)) {
     return res.status(400).json({ success: false, error: "clientSheetId and job object are required" });
   }
 
@@ -536,6 +550,46 @@ export default async function handler(req, res) {
     const verifiedClientName = auth.clientName;
     const liveGate = await assertClientPortalLive(sessionUser, verifiedClientName, res);
     if (!liveGate.allowed) return;
+
+    const makeSafeVarRes_ = () =>
+      sessionUser?.isAdmin
+        ? res
+        : {
+            ...res,
+            status(code) {
+              res.status(code);
+              return this;
+            },
+            json(payload) {
+              if (payload && typeof payload === "object" && typeof payload.error === "string") {
+                return res.json({ ...payload, error: sanitizeSpreadsheetTerms(payload.error) });
+              }
+              return res.json(payload);
+            },
+          };
+
+    if (isVarRetainerAction) {
+      const delegatedReq = {
+        ...req,
+        body: {
+          ...(req.body || {}),
+          clientSheetId,
+          clientName: verifiedClientName || clientName || "",
+        },
+      };
+      const safeRes = makeSafeVarRes_();
+      if (bodyAction === "update_variable_retainer_base") {
+        return await handleUpdateVariableRetainerBase(delegatedReq, safeRes, sheets);
+      }
+      return await handleUpdateVariableRetainerMonth(delegatedReq, safeRes, sheets);
+    }
+
+    if (Boolean(job?.isVariableRetainerSeries)) {
+      return await handleSaveVariableRetainerSeries_(req, makeSafeVarRes_(), sheets, {
+        verifiedClientName,
+        sessionUser,
+      });
+    }
 
     // 1. Determine target sheet name and sheet metadata (including rowGroups to avoid a second metadata fetch later)
     const rawLikelihoodStr = String(job.likelihood || "").trim();
@@ -895,9 +949,89 @@ export default async function handler(req, res) {
     );
 
     const isRetainer = String(job.projectRetainer || "").toLowerCase() === "retainer";
+    const existingAeTag = !isNewJob && cols.splitStr !== -1 ? parseVariableRetainerTag(existingParentRow?.[cols.splitStr]) : null;
+    const incomingAeTag = parseVariableRetainerTag(job.splitStr ?? job.unevenSplit);
+    const isVarRetainer = Boolean(
+      isRetainer &&
+      (job.isVariableRetainer || String(job.retainerMode || "").toLowerCase() === "variable" || incomingAeTag || existingAeTag)
+    );
+    const isFixedRetainer = isRetainer && !isVarRetainer;
 
-    // Canonical slot ordering for non-retainer jobs: [Real -> Manual placeholder -> Auto placeholder]
-    if (!isRetainer) {
+    // Creating a new Confirmed Variable Retainer (or promoting Pipeline -> Confirmed) provisions monthly series rows
+    if (isTargetConfirmed && isVarRetainer && isNewJob) {
+      const seriesTag = incomingAeTag || existingAeTag;
+      const baseRevVal = seriesTag?.baseRev ?? (parseMoneyVal(job.revenue) || 0);
+      const baseDcVal = seriesTag?.baseDC ?? (parseMoneyVal(job.directCosts) || 0);
+      const varRes = await createVariableRetainerSeries_(sheets, {
+        clientSheetId,
+        clientName: verifiedClientName || clientName || "",
+        client: job.client || "",
+        jobName: seriesTag?.seriesName || job.jobName || "",
+        projectCode: job.projectCode || "",
+        leadSource: job.leadSource || "",
+        productLine: job.productLine || "",
+        baseRevenue: baseRevVal,
+        baseDirectCosts: baseDcVal,
+        vat: job.vat || "Yes",
+        startDate: formatDate(job.startDate),
+        endDate: job.noEndDate ? NO_END_DATE_SHEET_VALUE : formatDate(job.endDate),
+        noEndDate: Boolean(job.noEndDate || isNoEndDateSentinel(job.endDate)),
+        invoiceSendDay: job.invoiceSendDay ?? seriesTag?.sendDay ?? null,
+        initialInvoices: validInvoices,
+        initialExpenses: validExpenses,
+        setDateConf: true,
+      });
+      if (!varRes.success) {
+        return res.status(400).json({ success: false, error: varRes.error || "Failed to create variable retainer" });
+      }
+      if (deferredClearRanges.length > 0) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.batchClear({ spreadsheetId: clientSheetId, requestBody: { ranges: deferredClearRanges } })
+        );
+        if (deferredRestoreData.length > 0) {
+          await withRetry(() =>
+            sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: clientSheetId,
+              requestBody: { valueInputOption: "USER_ENTERED", data: deferredRestoreData },
+            })
+          );
+        }
+      }
+      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => {});
+      return res.status(200).json({
+        success: true,
+        rowNumber: varRes.firstRowNum,
+        sheetName,
+        isVariableRetainer: true,
+        childRowNumbers: [],
+        createdRowNums: varRes.createdRowNums,
+        backgroundProvisioning: false,
+      });
+    }
+
+    // Pipeline Variable Retainer: ensure [VarRetainer] tag is written to Col AE
+    if (!isTargetConfirmed && isVarRetainer && !incomingAeTag) {
+      job.splitStr = formatVariableRetainerTag({
+        seriesName: job.jobName || "",
+        baseRev: parseMoneyVal(job.revenue) || 0,
+        baseDC: parseMoneyVal(job.directCosts) || 0,
+        endDate: formatDate(job.endDate) || NO_END_DATE_SHEET_VALUE,
+        noEndDate: Boolean(job.noEndDate || isNoEndDateSentinel(job.endDate)),
+        sendDay: job.invoiceSendDay || 28,
+      });
+    } else if (isTargetConfirmed && isVarRetainer && existingAeTag) {
+      // Preserve tag & update override flags if user edited revenue or directCosts on this month
+      const editedRev = parseMoneyVal(job.revenue);
+      const editedDc = parseMoneyVal(job.directCosts);
+      job.splitStr = formatVariableRetainerTag({
+        ...existingAeTag,
+        overrideRev: existingAeTag.overrideRev || Math.abs(editedRev - existingAeTag.baseRev) > 0.005,
+        overrideDc: existingAeTag.overrideDc || Math.abs(editedDc - existingAeTag.baseDC) > 0.005,
+      });
+    }
+
+    // Canonical slot ordering for non-fixed-retainer jobs: [Real -> Manual placeholder -> Auto placeholder]
+    if (!isFixedRetainer) {
       const invTier = (inv) => {
         const ref = String(inv?.ref || "").trim();
         const isAuto = ref !== "" && /^(PLACE|MANUAL-INV|UNRECON-GAP)/i.test(ref);
@@ -917,17 +1051,18 @@ export default async function handler(req, res) {
       validInvoices.sort((a, b) => invTier(a) - invTier(b));
       validExpenses.sort((a, b) => expTier(a) - expTier(b));
     }
-    const wasPreviouslyRetainer =
+    const wasPreviouslyFixedRetainer =
       !isNewJob &&
       cols.projectRetainer !== -1 &&
       String(existingParentRow[cols.projectRetainer] || "")
         .trim()
         .toLowerCase()
-        .includes("retainer");
+        .includes("retainer") &&
+      !existingAeTag;
     const shouldProvisionRetainerSchedule =
       isTargetConfirmed &&
-      isRetainer &&
-      (isNewJob || !wasPreviouslyRetainer || existingChildRows.length === 0);
+      isFixedRetainer &&
+      (isNewJob || !wasPreviouslyFixedRetainer || existingChildRows.length === 0);
 
     if (isTargetConfirmed && !shouldProvisionRetainerSchedule && validInvoices.length > 0) {
       const totalJobRechgd = parseMoneyVal(job.rechargedExpenses);
@@ -947,7 +1082,7 @@ export default async function handler(req, res) {
       // Confirmed Retainers being created, promoted, or converted from Project have their
       // child rows and scheduled monthly invoices provisioned in the background.
       // Parent row invoice slots remain empty.
-    } else if (isRetainer) {
+    } else if (isFixedRetainer) {
       if (validInvoices.length === 1) {
         // Retainer with 1 invoice (e.g. Pipeline retainer): sits on parent row slot 1; slots 2 & 3 empty
         parentInvoices[1] = validInvoices[0];
@@ -1416,6 +1551,30 @@ export default async function handler(req, res) {
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }
+
+    // 10. Relink any existing Pulse notes if job name/code changed or manual invoice/expense slots shifted
+    const oldJobKey = !isNewJob && existingParentRow.length > 0
+      ? buildJobNoteKey({
+          client: existingParentRow[cols.client] || job.client,
+          jobName: existingParentRow[cols.jobName] || job.jobName,
+          projectCode: existingParentRow[cols.projectCode] || "",
+          rowNumber: parentRow,
+        })
+      : "";
+    const newJobKey = buildJobNoteKey({
+      client: job.client,
+      jobName: job.jobName,
+      projectCode: job.projectCode,
+      rowNumber: parentRow,
+    });
+    relinkNotesForJobChange({
+      clientName: verifiedClientName || clientName || job.client || "",
+      oldJobKey,
+      newJobKey,
+      newJobLabel: buildJobNoteLabel(job),
+      invoices: validInvoices,
+      directExpenses: validExpenses,
+    }).catch(() => {});
 
     return res.status(200).json({
       success: true,

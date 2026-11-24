@@ -289,9 +289,9 @@ if (typeof document !== "undefined") {
 // Persistent top bar - rendered around every screen
 export default function NavShell({
   activeNav, activeViewTab = "fyPerformance", onSelectViewTab,
-  onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
+  onHome, onAlerts, onOverview, onTasks, onNotes, onActivity, onAppLog,
   onOutgoings, onPassThrough, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onVat, onYear0, onViews, onTools, onIntegrations, onSetup, onSettings, onDb,
-  homeAlertCount, taskCount, integrationsCount, user, onLogout, clients = [],
+  homeAlertCount, taskCount, notesCount = 0, integrationsCount, user, onLogout, clients = [],
   managedClient, activeEditClient, onSelectManagedClient, onClearManagedClient,
   isSingleClientUser: propIsSingleClientUser, singleClient: propSingleClient,
   onBeforeNavigateToPulse,
@@ -520,6 +520,7 @@ export default function NavShell({
     { key: "home", label: "Home", handler: onHome },
     { key: "alerts", label: "Alerts", handler: onAlerts, badge: homeAlertCount },
     { key: "tasks", label: "Tasks", handler: onTasks, badge: taskCount },
+    { key: "notes", label: "Notes", handler: onNotes, badge: notesCount },
     {
       key: "edit",
       label: "Edit",

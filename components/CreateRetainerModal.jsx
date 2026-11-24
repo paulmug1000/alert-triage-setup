@@ -11,6 +11,7 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
   const [endDate, setEndDate] = React.useState("");
   const [noEndDate, setNoEndDate] = React.useState(false);
   const [invoiceFrequency, setInvoiceFrequency] = React.useState("monthly");
+  const [retainerMode, setRetainerMode] = React.useState("fixed");
   const [invoiceSendDay, setInvoiceSendDay] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [savingMessage, setSavingMessage] = React.useState("");
@@ -61,7 +62,9 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
           startDate: isoToSheetDate(startDate),
           endDate: noEndDate ? "31-Dec-2050" : (endDate ? isoToSheetDate(endDate) : ""),
           noEndDate,
-          invoiceFrequency, invoiceSendDay: sendDay,
+          invoiceFrequency: retainerMode === "variable" ? "monthly" : invoiceFrequency,
+          invoiceSendDay: sendDay,
+          retainerMode,
         }),
       });
       const data = await res.json();
@@ -97,13 +100,59 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
                 <label style={labelStyle}>Job name</label>
                 <input style={inputStyle} value={jobName} onChange={e => setJobName(e.target.value)} placeholder="e.g. Campaign retainer" />
               </div>
+              <div>
+                <label style={labelStyle}>Retainer type</label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setRetainerMode("fixed")}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      border: retainerMode === "fixed" ? "2px solid #7c3aed" : "1px solid #ddd",
+                      background: retainerMode === "fixed" ? "#f5f3ff" : "#fff",
+                      color: retainerMode === "fixed" ? "#5b21b6" : "#475569",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      textAlign: "left"
+                    }}
+                  >
+                    <div>Fixed monthly</div>
+                    <div style={{ fontSize: "10px", fontWeight: "400", color: "#64748b", marginTop: "2px" }}>Same fee every period</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setRetainerMode("variable"); setInvoiceFrequency("monthly"); }}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      border: retainerMode === "variable" ? "2px solid #0284c7" : "1px solid #ddd",
+                      background: retainerMode === "variable" ? "#f0f9ff" : "#fff",
+                      color: retainerMode === "variable" ? "#0369a1" : "#475569",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      textAlign: "left"
+                    }}
+                  >
+                    <div>Variable (base level)</div>
+                    <div style={{ fontSize: "10px", fontWeight: "400", color: "#64748b", marginTop: "2px" }}>Monthly amounts can vary from base</div>
+                  </button>
+                </div>
+                {retainerMode === "variable" && (
+                  <div style={{ marginTop: "6px", fontSize: "11px", color: "#0369a1", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "6px", padding: "7px 9px", lineHeight: 1.4 }}>
+                    Each month tracks independently from your base revenue and direct costs, with support for multiple bills and automatic updates from actual invoices.
+                  </div>
+                )}
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                 <div>
-                  <label style={labelStyle}>Monthly revenue (£)</label>
+                  <label style={labelStyle}>{retainerMode === "variable" ? "Base monthly revenue (£)" : "Monthly revenue (£)"}</label>
                   <input type="number" step="0.01" style={inputStyle} value={monthlyRevenue} onChange={e => setMonthlyRevenue(e.target.value)} />
                 </div>
                 <div>
-                  <label style={labelStyle}>Monthly direct costs (£)</label>
+                  <label style={labelStyle}>{retainerMode === "variable" ? "Base monthly direct costs (£)" : "Monthly direct costs (£)"}</label>
                   <input type="number" step="0.01" style={inputStyle} value={monthlyDirectCosts} onChange={e => setMonthlyDirectCosts(e.target.value)} placeholder="0" />
                 </div>
               </div>
@@ -117,9 +166,14 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
                 </div>
                 <div>
                   <label style={labelStyle}>Invoicing frequency</label>
-                  <select style={inputStyle} value={invoiceFrequency} onChange={e => setInvoiceFrequency(e.target.value)}>
+                  <select
+                    style={{ ...inputStyle, ...(retainerMode === "variable" ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed" } : {}) }}
+                    value={retainerMode === "variable" ? "monthly" : invoiceFrequency}
+                    disabled={retainerMode === "variable"}
+                    onChange={e => setInvoiceFrequency(e.target.value)}
+                  >
                     <option value="monthly">Monthly</option>
-                    <option value="quarterly">Quarterly</option>
+                    {retainerMode !== "variable" && <option value="quarterly">Quarterly</option>}
                   </select>
                 </div>
               </div>

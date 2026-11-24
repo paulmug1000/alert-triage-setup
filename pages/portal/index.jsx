@@ -23,6 +23,7 @@ import {
 import CompanyChooser from "../../components/portal/CompanyChooser";
 import SetupHoldingGate from "../../components/portal/SetupHoldingGate";
 import Spinner from "../../components/Spinner";
+import { PulseNotesProvider } from "../../contexts/PulseNotesContext";
 
 const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
@@ -1346,6 +1347,22 @@ export default function PortalPage({
         <title>{resolvedHeaderClientName ? `Pulse - ${resolvedHeaderClientName}` : "Pulse"}</title>
       </Head>
 
+      <PulseNotesProvider
+        clientName={resolvedHeaderClientName}
+        clientSheetId={selectedClient?.clientSheetId || ""}
+        user={user}
+        isReadOnly={isReadOnly}
+        onNavigateToView={setActiveView}
+        initialNoteId={typeof router.query.noteId === "string" ? router.query.noteId : ""}
+        onInitialNoteHandled={() => {
+          if (typeof window !== "undefined" && router.query.noteId) {
+            const p = new URLSearchParams(window.location.search);
+            p.delete("noteId");
+            const qs = p.toString();
+            window.history.replaceState({}, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
+          }
+        }}
+      >
       <PortalShell
         clientName={resolvedHeaderClientName}
         clients={clients}
@@ -1635,6 +1652,7 @@ export default function PortalPage({
           )}
         </>
       </PortalShell>
+      </PulseNotesProvider>
     </>
   );
 }

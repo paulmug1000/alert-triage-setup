@@ -11325,7 +11325,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               const r = tabRows[ri];
               const rClient = String(r[0] || "").trim().toLowerCase();
               const rJob = String(r[1] || "").trim().toLowerCase();
-              const hasRevenue = !!(r[32]) || (targetTab === "Confirmed" && !!(r[17]));
+              const hasRevenue = !!(r[32]) || (targetTab === "Confirmed" && hasNonZeroMoney_(r[17]));
               if (rClient === clientLower && rJob === jobNameLower && hasRevenue) {
                 allMatchingIdxs.push(ri);
               }
@@ -11708,7 +11708,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             const rClient = String(r[0] || "").trim().toLowerCase();
             const rJob = String(r[1] || "").trim().toLowerCase();
             if (rClient !== clientLower || rJob !== jobNameLower) break;
-            if (r[32] || r[17] || r[37] || r[38]) break; // has revenue/recharged/start/end = another parent
+            if (r[32] || hasNonZeroMoney_(r[17]) || r[37] || r[38]) break; // has revenue/recharged/start/end = another parent
             childRows.push({ row: r, sheetRow: ri + 1 });
           }
 

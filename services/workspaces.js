@@ -1,5 +1,5 @@
 import { waitUntil } from "@vercel/functions";
-import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient.js";
+import { getSheetsClient, getPrimaryRawGoogleClients, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient.js";
 import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay, getToleranceValues, buildInvFromAppMetaMap, lookupInvFromAppMeta } from "./sharedHelpers.js";
 import {
   isPlaceholderInvoice,
@@ -33,7 +33,7 @@ import { getSessionUser } from "./authService.js";
 import { getSettingsRedisKey } from "./clientSettingsService.js";
 import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
-import { resolveSupabaseSheetContext, flushPendingClientRecomputes, flushImmediateAndScheduleBackgroundClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId, flushPendingClientRecomputes, flushImmediateAndScheduleBackgroundClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
 import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
 import { memoryCache, get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
@@ -9804,6 +9804,198 @@ export async function handleGetDefaultDaysToPay(req, res, sheets) {
   }
 }
 
+/**
+ * Identifies trailing child rows on a multi-row project job whose invoice and expense slots
+ * are all empty after slot compaction (never returns the parent row or retainer child rows).
+ */
+export function findTrailingEmptyProjectChildRows_(group, targetTab) {
+  if (!group || !Array.isArray(group.allRowNums) || group.allRowNums.length <= 1 || !Array.isArray(group.allRows)) {
+    return [];
+  }
+  const parentRow = group.parentRow || group.allRows[group.parentRowNum - 1] || [];
+  const isRetainer = String(parentRow[35] || "").trim().toLowerCase().includes("retainer");
+  if (isRetainer) return [];
+
+  const isConfTab = targetTab === "Confirmed";
+  const invSlotCols = getSlotColumnLayout_("invoice", isConfTab);
+  const invWidth = isConfTab ? 7 : 5;
+  const expSlotCols = getSlotColumnLayout_("expense", isConfTab);
+  const expWidth = 7;
+
+  const sortedRows = [...group.allRowNums].map(Number).sort((a, b) => a - b);
+  const trailingEmpty = [];
+
+  for (let i = sortedRows.length - 1; i >= 0; i--) {
+    const rNum = sortedRows[i];
+    if (rNum === group.parentRowNum) break;
+    const rowArr = group.allRows[rNum - 1] || [];
+
+    if (
+      hasNonZeroMoney_(rowArr[32]) ||
+      hasNonZeroMoney_(rowArr[33]) ||
+      (isConfTab && hasNonZeroMoney_(rowArr[17])) ||
+      String(rowArr[37] ?? "").trim() !== ""
+    ) {
+      break;
+    }
+
+    let rowHasSlotData = false;
+    for (let s = 1; s <= 3; s++) {
+      const invCols = invSlotCols[s];
+      const invVals = [];
+      for (let k = 0; k < invWidth; k++) invVals.push(rowArr[invCols.base + k] ?? "");
+      if (!classifySlotValues_(invVals, "invoice", isConfTab).isEmpty) {
+        rowHasSlotData = true;
+        break;
+      }
+
+      const expCols = expSlotCols[s];
+      const expVals = [];
+      for (let k = 0; k < expWidth; k++) expVals.push(rowArr[expCols.base + k] ?? "");
+      if (!classifySlotValues_(expVals, "expense", isConfTab).isEmpty) {
+        rowHasSlotData = true;
+        break;
+      }
+    }
+    if (rowHasSlotData) break;
+
+    trailingEmpty.push(rNum);
+  }
+
+  return trailingEmpty.sort((a, b) => a - b);
+}
+
+/**
+ * Ungroups freed trailing empty project child rows (shrinking or removing covering row groups)
+ * and ensures those rows are unhidden in a single low-overhead batchUpdate call.
+ */
+export async function ungroupTrailingEmptyProjectRows_(targetSheetsClient, targetSpreadsheetId, targetTab, trailingRowNums) {
+  if (!targetSheetsClient || !targetSpreadsheetId || !Array.isArray(trailingRowNums) || trailingRowNums.length === 0) {
+    return;
+  }
+  try {
+    const metaResp = await withRetry(() =>
+      targetSheetsClient.spreadsheets.get({
+        spreadsheetId: targetSpreadsheetId,
+        fields: "sheets(properties.sheetId,properties.title,rowGroups)",
+      })
+    );
+    const sheetObj = (metaResp.data?.sheets || []).find((s) => s.properties?.title === targetTab);
+    const gridSheetId = sheetObj?.properties?.sheetId;
+    if (gridSheetId === undefined || gridSheetId === null) return;
+
+    const trimmedIdxSet = new Set(trailingRowNums.map((r) => Number(r) - 1));
+    const intersectingGroups = (sheetObj.rowGroups || [])
+      .filter((g) => {
+        if (!g?.range || !Number.isInteger(g.range.startIndex) || !Number.isInteger(g.range.endIndex)) return false;
+        for (let idx = g.range.startIndex; idx < g.range.endIndex; idx++) {
+          if (trimmedIdxSet.has(idx)) return true;
+        }
+        return false;
+      })
+      .sort((a, b) => (b.depth || 1) - (a.depth || 1));
+
+    const requests = [];
+    for (const g of intersectingGroups) {
+      requests.push({
+        deleteDimensionGroup: {
+          range: {
+            sheetId: gridSheetId,
+            dimension: "ROWS",
+            startIndex: g.range.startIndex,
+            endIndex: g.range.endIndex,
+          },
+        },
+      });
+
+      const segments = [];
+      let segStart = null;
+      for (let idx = g.range.startIndex; idx < g.range.endIndex; idx++) {
+        if (!trimmedIdxSet.has(idx)) {
+          if (segStart === null) segStart = idx;
+        } else if (segStart !== null) {
+          segments.push([segStart, idx]);
+          segStart = null;
+        }
+      }
+      if (segStart !== null) {
+        segments.push([segStart, g.range.endIndex]);
+      }
+
+      for (const [sStart, sEnd] of segments) {
+        requests.push({
+          addDimensionGroup: {
+            range: {
+              sheetId: gridSheetId,
+              dimension: "ROWS",
+              startIndex: sStart,
+              endIndex: sEnd,
+            },
+          },
+        });
+        if (g.collapsed) {
+          requests.push(
+            {
+              updateDimensionGroup: {
+                dimensionGroup: {
+                  range: {
+                    sheetId: gridSheetId,
+                    dimension: "ROWS",
+                    startIndex: sStart,
+                    endIndex: sEnd,
+                  },
+                  depth: g.depth || 1,
+                  collapsed: true,
+                },
+                fields: "collapsed",
+              },
+            },
+            {
+              updateDimensionProperties: {
+                range: {
+                  sheetId: gridSheetId,
+                  dimension: "ROWS",
+                  startIndex: sStart,
+                  endIndex: sEnd,
+                },
+                properties: { hiddenByUser: true },
+                fields: "hiddenByUser",
+              },
+            }
+          );
+        }
+      }
+    }
+
+    for (const rNum of trailingRowNums) {
+      requests.push({
+        updateDimensionProperties: {
+          range: {
+            sheetId: gridSheetId,
+            dimension: "ROWS",
+            startIndex: rNum - 1,
+            endIndex: rNum,
+          },
+          properties: { hiddenByUser: false },
+          fields: "hiddenByUser",
+        },
+      });
+    }
+
+    if (requests.length > 0) {
+      await withRetry(() =>
+        targetSheetsClient.spreadsheets.batchUpdate({
+          spreadsheetId: targetSpreadsheetId,
+          requestBody: { requests },
+          _skipFormulaRecompute: true,
+        })
+      );
+    }
+  } catch (err) {
+    console.warn("⚠️ ungroupTrailingEmptyProjectRows_ warning:", err.message);
+  }
+}
+
 export async function handleTidyJobLayout(req, res, sheets) {
   const {
     clientSheetId,
@@ -9940,8 +10132,33 @@ export async function handleTidyJobLayout(req, res, sheets) {
       preloadedTolerances,
     });
 
-    const allWriteData = mergeSlotBatchWrites_(invNorm.batchData, expNorm.batchData);
+    const trailingEmptyChildRows = findTrailingEmptyProjectChildRows_(group, targetTab);
+    const identityClearWrites = [];
+    for (const rNum of trailingEmptyChildRows) {
+      const rowArr = group.allRows[rNum - 1] || [];
+      if (String(rowArr[0] ?? "").trim() !== "" || String(rowArr[1] ?? "").trim() !== "") {
+        identityClearWrites.push({ range: `${targetTab}!A${rNum}:B${rNum}`, values: [["", ""]] });
+        rowArr[0] = "";
+        rowArr[1] = "";
+      }
+      if (String(rowArr[34] ?? "").trim() !== "") {
+        identityClearWrites.push({ range: `${targetTab}!AI${rNum}`, values: [[""]] });
+        rowArr[34] = "";
+      }
+    }
+
+    const allWriteData = mergeSlotBatchWrites_(invNorm.batchData, expNorm.batchData, identityClearWrites);
+    const hasTrailingRowCleanup = trailingEmptyChildRows.length > 0;
     const changed = Boolean(allWriteData.length > 0 || invNorm.changed || expNorm.changed);
+
+    const supaCtx = hasTrailingRowCleanup
+      ? await resolveSupabaseSheetContext({ clientSheetId: sheetIdClean }).catch(() => null)
+      : null;
+    const isSupabaseClient = supaCtx?.clientMode === "supabase";
+
+    if (hasTrailingRowCleanup && !isSupabaseClient) {
+      await ungroupTrailingEmptyProjectRows_(sheets, sheetIdClean, targetTab, trailingEmptyChildRows);
+    }
 
     if (allWriteData.length > 0) {
       await withRetry(() =>
@@ -9961,6 +10178,18 @@ export async function handleTidyJobLayout(req, res, sheets) {
       : `Job layout for "${resolvedJobLabel || "Job"}" is already tidy`;
 
     const bgTasks = (async () => {
+      if (
+        hasTrailingRowCleanup &&
+        isSupabaseClient &&
+        supaCtx?.sheetBridgeMode === "live" &&
+        supaCtx?.clientSheetId &&
+        !isVirtualSupabaseSheetId(supaCtx.clientSheetId)
+      ) {
+        const { rawSheets } = getPrimaryRawGoogleClients();
+        if (rawSheets) {
+          await ungroupTrailingEmptyProjectRows_(rawSheets, supaCtx.clientSheetId, targetTab, trailingEmptyChildRows);
+        }
+      }
       if (invNorm.relocations.length > 0 || expNorm.relocations.length > 0) {
         await Promise.all([
           invNorm.relocations.length > 0
@@ -9989,6 +10218,7 @@ export async function handleTidyJobLayout(req, res, sheets) {
               tabName: targetTab,
               invoiceRelocations: invNorm.relocations.length,
               expenseRelocations: expNorm.relocations.length,
+              ...(trailingEmptyChildRows.length > 0 ? { clearedEmptyChildRows: trailingEmptyChildRows } : {}),
             },
           });
         } catch (logErr) {
@@ -10004,6 +10234,7 @@ export async function handleTidyJobLayout(req, res, sheets) {
       summary,
       normalizedInvoiceSlots: invNorm.normalizedSlots,
       normalizedExpenseSlots: expNorm.normalizedSlots,
+      clearedEmptyChildRows: trailingEmptyChildRows,
     });
   } catch (err) {
     console.error("❌ handleTidyJobLayout error:", err);

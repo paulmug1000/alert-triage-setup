@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import SplitMonthCard from "./SplitMonthCard";
 import { parseSplitString, formatSplitString } from "../services/splitHelper";
+import { parseVariableRetainerTag } from "../utils/helpers";
 
 export default function UnevenSplitModal({ editSplit, client, tabName, onClose, onUpdateJobsData }) {
   const { jobRow } = editSplit;
@@ -215,7 +216,10 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
         });
       }
 
-      const isRetainer = Boolean(String(jobRow.projectRetainer || "").trim().toLowerCase().includes("retainer"));
+      const isFixedRetainer = Boolean(
+        String(jobRow.projectRetainer || "").trim().toLowerCase().includes("retainer") &&
+        !parseVariableRetainerTag(jobRow.unevenSplit || jobRow.splitStr)
+      );
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -228,7 +232,7 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
           rowNum: jobRow.rowNum,
           endClientName: jobRow.client,
           jobName: jobRow.jobName,
-          isRetainer,
+          isRetainer: isFixedRetainer,
           deferSheetWrite: true,
           updates
         })

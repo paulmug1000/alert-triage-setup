@@ -4138,8 +4138,13 @@ export async function handleTidyUpRetainers(req, res, sheets) {
 
       if (revenue || startVal) {
         const isRetainer = projType.includes("retainer");
+        const vrMeta = isRetainer ? parseVariableRetainerTag(row[30]) : null;
+        const seriesEndDt = vrMeta && !vrMeta.noEndDate ? parseDateLocal(vrMeta.endDate) : null;
         const endDate = parseDateLocal(row[38]);
-        const isFinished = endDate && endDate < today;
+        const isFinished = vrMeta
+          ? Boolean(!vrMeta.noEndDate && seriesEndDt && seriesEndDt < today)
+          : Boolean(endDate && endDate < today);
+        const startDt = parseDateLocal(row[37]);
 
         let cj = r + 1;
         while (cj < trueLastRow) {
@@ -4154,8 +4159,13 @@ export async function handleTidyUpRetainers(req, res, sheets) {
         blocks.push({
           id: `b_${blockId++}`,
           type: isRetainer ? "Retainer" : "Project",
-          isFinished, client, jobName,
-          size: cj - r, originalStartIdx: r
+          isFinished,
+          client,
+          jobName,
+          varSeriesKey: vrMeta ? vrMeta.seriesName.toLowerCase() : "",
+          sortStartMs: startDt ? startDt.getTime() : 0,
+          size: cj - r,
+          originalStartIdx: r
         });
         r = cj;
       } else {
@@ -4223,6 +4233,13 @@ export async function handleTidyUpRetainers(req, res, sheets) {
       const cB = b.client.toLowerCase();
       if (cA < cB) return -1;
       if (cA > cB) return 1;
+      if (a.varSeriesKey && b.varSeriesKey && a.varSeriesKey === b.varSeriesKey) {
+        return (a.sortStartMs || 0) - (b.sortStartMs || 0);
+      }
+      const keyA = (a.varSeriesKey || a.jobName).toLowerCase();
+      const keyB = (b.varSeriesKey || b.jobName).toLowerCase();
+      if (keyA < keyB) return -1;
+      if (keyA > keyB) return 1;
       const jA = a.jobName.toLowerCase();
       const jB = b.jobName.toLowerCase();
       if (jA < jB) return -1;

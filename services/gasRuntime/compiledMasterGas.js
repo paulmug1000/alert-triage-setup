@@ -1507,6 +1507,7 @@ function writeToAutoLog(category, summary, details) {
 /**
  * PART 2: INTERNAL SHEET MANIPULATION FUNCTIONS
  *
+ * v3.18 (Exempt [VarRetainer] rows from fixed-retainer parent shield in findMatchingJobForInvoice and fixed-retainer part-paid placement in findTargetBalanceSlot_)
  * v3.17 (Support [VarRetainer] monthly series: add parseVariableRetainerTag_/isVariableRetainerRow_/isFixedScheduleRetainer_, Pass 1C unambiguous invoice auto-match + formula-safe Col AG update, and part-paid parent shielding)
  * v3.16 (Add isNonZeroRecharged_ helper so static 0 values in Confirmed Col R do not trigger false zone-check row occupancy)
  * v3.15 (Preserve untouched formulas and sanitize string cells in pushOutgoingsWithPLAddsToClientSheet, updateOverdueInvoicesInConfirmed, and depreciation writes; fix invoiceData.client reference in findRecentJobs)
@@ -4107,13 +4108,14 @@ function findExactMatch(invoiceData, confirmedData, headerMap) {
   
   for (let i = 1; i < confirmedData.length; i++) {
     
-    // FIXED: Shield Multi-Row Retainer Parents from receiving invoices
+    // FIXED: Shield Multi-Row Fixed-Schedule Retainer Parents from receiving invoices
+    // Variable Retainer monthly rows carry [VarRetainer] in Col AE and hold their own invoices directly on the row.
     if (jobTypeCol !== undefined && startDateCol !== undefined) {
        const isRetainer = String(confirmedData[i][jobTypeCol] || '').trim().toLowerCase() === 'retainer';
        const hasStartDate = String(confirmedData[i][startDateCol] || '').trim() !== '';
        
-       if (isRetainer && hasStartDate) {
-           continue; // It's a Retainer Parent! Skip it and keep searching downward.
+       if (isRetainer && hasStartDate && !isVariableRetainerRow_(confirmedData[i])) {
+           continue; // It's a Fixed-Schedule Retainer Parent! Skip it and keep searching downward.
        }
     }
     // FIXED: Use the smarter checkClientMatch function instead of a strict 100% equality check
@@ -5679,7 +5681,11 @@ async function processPartPaidInvoices(ss, alertSheet) {
   // Helper to find or provision an empty slot for a part-paid invoice balance
   const findTargetBalanceSlot_ = (primaryLoc) => {
     const group = primaryLoc.jobGroup;
-    const isRetainer = group && (group.isRetainer || (group.childRows.length > 0 && colType !== -1 && String(confirmedData[group.parentRow - 1][colType] || "").trim().toLowerCase() === "retainer"));
+    const groupParentArr = confirmedData[group.parentRow - 1] || [];
+    const isRetainer =
+      group &&
+      !isVariableRetainerRow_(groupParentArr) &&
+      (group.isRetainer || (group.childRows.length > 0 && colType !== -1 && String(groupParentArr[colType] || "").trim().toLowerCase() === "retainer"));
 
     // 1. For RETAINER jobs:
     // The balance MUST be placed on the SAME month child row as primaryLoc (primaryLoc.rowNumber).
@@ -8080,6 +8086,7 @@ async function logMyQuickBooksTaxCodesWithIDs() {
  * ==      CRM TASKS (CRMComp) LOGIC      ==
  * =========================================
  *
+ * v3.23 (Support [VarRetainer] monthly series in _copyPipelineJobToConfirmed: expand 1-month-per-row entries with blank Date conf on rolled future months and formula-safe writes)
  * v3.22 (Use isNonZeroRecharged_ for Confirmed Col R zone checks in updateCheckedRows, updateCheckedRowsRight, and _copyPipelineJobToConfirmed so pre-filled 0s do not push new jobs past row 5000)
  * v3.21 (Safely coerce blank CRM Revenue and % Likelihood to 0 when updating existing Pipeline rows, guarded by a CRM-wide non-blank column circuit breaker)
  * v3.20 (Sanitize auto-linked blank project codes via sanitizeSheetCell_ and protect JobCosting formula columns from CRM discrepancy & Confirmed copy overwrites)
@@ -9932,8 +9939,17 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
   }
   const newRow = lastRowWithContent + 1;
 
+  const vrTagPreview_ = (typeof parseVariableRetainerTag_ === 'function') ? parseVariableRetainerTag_(details.revUnevenSplit) : null;
+  const isVarRetPreview_ = Boolean(String(details.jobType).trim().toLowerCase() === 'retainer' && vrTagPreview_);
+  let varRowsNeeded_ = 1;
+  if (isVarRetPreview_) {
+    varRowsNeeded_ = 19; // Conservative runway allocation (current + 18 future months)
+  }
+
   // FIXED: Prevent out-of-bounds crash. Ensure Confirmed tab has enough physical rows for parent + all children
-  const rowsNeeded = 1 + (String(details.jobType).trim().toLowerCase() === 'retainer' ? 18 : (pipelineChildRows ? pipelineChildRows.length : 0));
+  const rowsNeeded = isVarRetPreview_
+    ? varRowsNeeded_
+    : (1 + (String(details.jobType).trim().toLowerCase() === 'retainer' ? 18 : (pipelineChildRows ? pipelineChildRows.length : 0)));
   if (newRow + rowsNeeded > targetSheet.getMaxRows()) {
       targetSheet.insertRowsAfter(targetSheet.getMaxRows(), rowsNeeded + 5);
   }
@@ -10020,6 +10036,9 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
       ensureJobCostingRowFormulas_(targetSheet, newRow, true, headers, false);
   }
   const isRetainer = String(details.jobType).trim().toLowerCase() === 'retainer';
+  const vrTag = (typeof parseVariableRetainerTag_ === 'function') ? parseVariableRetainerTag_(details.revUnevenSplit) : null;
+  const isVarRetainer = Boolean(isRetainer && vrTag);
+  const isFixedRetainer = isRetainer && !isVarRetainer;
 
  // 1. Dump everything from the dynamic payload first
  if (details.dynamicPayload) {
@@ -10027,8 +10046,8 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
          const hNorm = String(header || '').trim().toLowerCase();
          const cleanH = hNorm.replace(/[^a-z0-9]/g, '');
 
-         // Retainers on Confirmed must never have invoice slots on the parent row
-         if (isRetainer && (cleanH.includes('inv') || cleanH.includes('invoice'))) {
+         // Fixed retainers on Confirmed must never have invoice slots on the parent row
+         if (isFixedRetainer && (cleanH.includes('inv') || cleanH.includes('invoice'))) {
              if (cleanH.includes('projectinvoice') || cleanH.includes('inv1') || cleanH.includes('inv2') || cleanH.includes('inv3')) {
                  continue;
              }
@@ -10136,11 +10155,116 @@ function _copyPipelineJobToConfirmed(ss, details, pipelineInvoices, pipelineExpe
      });
   }
 
-  // --- RETAINER LOGIC ---
+  // --- VARIABLE RETAINER SERIES LOGIC (1 row per month, zero fixed child rows) ---
   const targetDayVal = (retainerDay && retainerDay > 0) ? retainerDay : 28;
+  const parseDateSafe_ = (d) => {
+      if (d instanceof Date) return d;
+      if (typeof d === 'number' && d > 20000 && d < 70000) {
+          return new Date(new Date(1899, 11, 30).getTime() + Math.round(d * 86400000));
+      }
+      return new Date(d);
+  };
 
+  if (isVarRetainer && effectiveStartDate && effectiveStartDate !== "_SKIP_THIS_CELL_") {
+    const startDateVR = parseDateSafe_(effectiveStartDate);
+    const isOngoingVR = !effectiveEndDate || effectiveEndDate === "_SKIP_THIS_CELL_" || String(effectiveEndDate).indexOf("2050") !== -1 || Boolean(vrTag.noEndDate);
+    const endDateVR = isOngoingVR ? new Date(2050, 11, 31) : parseDateSafe_(effectiveEndDate);
+    if (startDateVR && !isNaN(startDateVR.getTime())) {
+      const startYm = startDateVR.getFullYear() * 12 + startDateVR.getMonth();
+      const nowVR = new Date();
+      const capYm = nowVR.getFullYear() * 12 + nowVR.getMonth() + 18;
+      const rawEndYm = (endDateVR && !isNaN(endDateVR.getTime())) ? (endDateVR.getFullYear() * 12 + endDateVR.getMonth()) : capYm;
+      const targetEndYm = Math.max(startYm, Math.min(rawEndYm, capYm));
+      const vrMonthsCount = targetEndYm - startYm + 1;
+
+      if (newRow + vrMonthsCount - 1 > targetSheet.getMaxRows()) {
+        targetSheet.insertRowsAfter(targetSheet.getMaxRows(), (newRow + vrMonthsCount - 1) - targetSheet.getMaxRows() + 5);
+      }
+
+      const rawBaseRev = vrTag.baseRev > 0 ? vrTag.baseRev : (parseFloat(String(effectiveRevenue || '0').replace(/[^0-9.-]/g, '')) || 0);
+      const dynamicDCVal = getDynamicVal_(['Direct costs', 'Direct Costs', 'Direct costs (Proj total / Ongoing pm) - excl VAT']);
+      const rawBaseDC = vrTag.baseDC >= 0 && vrTag.baseDC !== undefined ? vrTag.baseDC : (parseFloat(String(dynamicDCVal || '0').replace(/[^0-9.-]/g, '')) || 0);
+      const sendDayVR = Math.min(28, Math.max(1, vrTag.sendDay || targetDayVal));
+      const cleanSeriesName = String(vrTag.seriesName || details.jobName || '').replace(/[\r\n\t]+/g, ' ').replace(/\|/g, '-').trim();
+      const vrEndTagStr = vrTag.endDate || (isOngoingVR ? '31-Dec-2050' : Utilities.formatDate(endDateVR, Session.getScriptTimeZone() || 'Europe/London', 'dd-MMM-yyyy'));
+      const aeTagStr = `[VarRetainer] ${cleanSeriesName} | baseRev:${rawBaseRev} | baseDC:${rawBaseDC} | end:${vrEndTagStr} | day:${sendDayVR}`;
+      const mShortNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const leadSrcVal = getDynamicVal_(['Lead src', 'Lead source', 'Lead Source']);
+      const vatVal = getDynamicVal_(['VAT?', 'VAT']) || 'Yes';
+      const prodLineVal = getDynamicVal_(['Product line', 'Product Line', 'Prod. line']);
+      const pipeInv1Ref = pipelineInvoices && pipelineInvoices.inv1 ? String(pipelineInvoices.inv1.ref || '').trim() : '';
+      const pipeInv1HasReal = Boolean(pipeInv1Ref && (typeof isPlaceholderInvoice_ === 'function' ? !isPlaceholderInvoice_(pipeInv1Ref) : !pipeInv1Ref.includes('PLACE-INV')));
+      const expDayVR = 28;
+      const pipeHasExp1 = Boolean(pipelineExpenses && ((parseFloat(pipelineExpenses.exp1.amt) || 0) > 0 || pipelineExpenses.exp1.desc));
+
+      for (let m = 0; m < vrMonthsCount; m++) {
+        const ymVal = startYm + m;
+        const yr = Math.floor(ymVal / 12);
+        const mo = ((ymVal % 12) + 12) % 12;
+        const mStart = new Date(yr, mo, 1);
+        const mEnd = new Date(yr, mo + 1, 0);
+        const targetRowN = newRow + m;
+        const mJobName = `${cleanSeriesName} - ${mShortNames[mo]} ${yr}`;
+        const maxDim = mEnd.getDate();
+        const invDate = new Date(yr, mo, Math.min(sendDayVR, maxDim));
+        const expDate = new Date(yr, mo, Math.min(expDayVR, maxDim));
+
+        if (m > 0) {
+          try { targetSheet.unhideRow(targetSheet.getRange(targetRowN, 1, 1, 1)); } catch (e) {}
+          if (isTargetJobCosting) {
+            ensureJobCostingRowFormulas_(targetSheet, targetRowN, true, headers, false);
+          }
+          setVal(targetRowN, 'Client', details.client);
+          setVal(targetRowN, 'Project code', details.projCode);
+          // Future months keep Date conf blank so ConfCalcs!HN only counts Bookings once
+          setVal(targetRowN, 'Project / retainer', 'Retainer');
+          if (leadSrcVal !== undefined && leadSrcVal !== '') setVal(targetRowN, 'Lead src', leadSrcVal);
+          setVal(targetRowN, 'VAT?', vatVal);
+          if (prodLineVal !== undefined && prodLineVal !== '') setVal(targetRowN, 'Product line', prodLineVal);
+        }
+
+        setVal(targetRowN, 'Job name', mJobName);
+        setVal(targetRowN, 'RevUnevenSplit', aeTagStr);
+        if (isTargetJobCosting) {
+          setVal(targetRowN, 'Date job will start', mStart);
+          setVal(targetRowN, 'Date job will end', mEnd);
+          setVal(targetRowN, 'Job revenue', rawBaseRev);
+        } else {
+          setVal(targetRowN, 'Start date', mStart);
+          setVal(targetRowN, 'End date', mEnd);
+          setVal(targetRowN, 'Revenue', rawBaseRev);
+          setVal(targetRowN, 'Direct costs', rawBaseDC);
+        }
+
+        if (m > 0 || !pipeInv1HasReal) {
+          if (rawBaseRev > 0) {
+            setVal(targetRowN, 'Project invoice 1 / monthly retainer (excl VAT)', rawBaseRev);
+            setVal(targetRowN, 'Inv 1 SEND date', invDate);
+            setVal(targetRowN, 'Inv 1 days to pay', (pipelineInvoices && pipelineInvoices.inv1 && pipelineInvoices.inv1.days) || daysVal);
+          }
+        }
+        if ((m > 0 || !pipeHasExp1) && rawBaseDC > 0) {
+          const rand4 = Math.floor(1000 + Math.random() * 9000);
+          setVal(targetRowN, 'Direct inv 1 descr.', 'Placeholder - Direct cost');
+          setVal(targetRowN, 'Direct inv 1 amt', rawBaseDC);
+          setVal(targetRowN, 'Dir inv 1 VAT?', vatVal);
+          setVal(targetRowN, 'Direct inv 1 rec date', expDate);
+          setVal(targetRowN, 'Dir inv 1 days to pay', daysVal);
+          setVal(targetRowN, 'Dir inv 1 app id', `PLACE-EXP-${mShortNames[mo]}-${String(yr).slice(-2)}-${rand4}`);
+        }
+      }
+
+      const logClientVR = formatLogField_(details.client);
+      const logJobNameVR = formatLogField_(cleanSeriesName);
+      const logCodeVR = formatLogField_(details.projCode);
+      const codeSuffixVR = logCodeVR ? ` [${logCodeVR}]` : "";
+      return `Converted Pipeline Variable Retainer (${vrMonthsCount} months) to Confirmed: ${logClientVR} | ${logJobNameVR}${codeSuffixVR}`;
+    }
+  }
+
+  // --- RETAINER LOGIC ---
   // NEW LOGIC: Only use Generative Mode if the retainer has NO child rows in the Pipeline
-  if (isRetainer && (!pipelineChildRows || pipelineChildRows.length === 0) && effectiveStartDate && effectiveStartDate !== "_SKIP_THIS_CELL_" && effectiveEndDate && effectiveEndDate !== "_SKIP_THIS_CELL_" && effectiveRevenue && effectiveRevenue !== "_SKIP_THIS_CELL_") {
+  if (isFixedRetainer && (!pipelineChildRows || pipelineChildRows.length === 0) && effectiveStartDate && effectiveStartDate !== "_SKIP_THIS_CELL_" && effectiveEndDate && effectiveEndDate !== "_SKIP_THIS_CELL_" && effectiveRevenue && effectiveRevenue !== "_SKIP_THIS_CELL_") {
     // FIXED: Safely convert Google Sheets serial dates (like 46089) into JS Dates to prevent the 1970 glitch
     const parseDateSafe = (d) => {
         if (d instanceof Date) return d;

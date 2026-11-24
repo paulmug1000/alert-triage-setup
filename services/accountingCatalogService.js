@@ -36,6 +36,8 @@ import {
   isJobCostingStyle,
   sanitizeSpreadsheetTerms,
   hasActiveAccountingIntegration,
+  isFixedScheduleRetainer,
+  isVariableRetainerRow,
 } from "../utils/helpers.js";
 import {
   resetInvoiceSlotFormatting_,
@@ -398,6 +400,7 @@ function parseConfirmedJobsAndSlots_(confRows = []) {
       jobName,
       projectCode,
       isRetainer: typeStr.toLowerCase().includes("retainer"),
+      isVariableRetainer: isVariableRetainerRow(row),
       parentRowNum,
       rowNums,
     };
@@ -1386,7 +1389,7 @@ function findAvailableSlotInGroup_(group, kind, targetMonthKey = "") {
   const isInv = kind === "invoice";
   const slotCols = isInv ? INV_SLOT_COLS : EXP_SLOT_COLS;
   const parentRow = group.parentRow || group.allRows[group.parentRowNum - 1] || [];
-  const isRetainer = normalizeStr_(parentRow[35]).toLowerCase().includes("retainer");
+  const isRetainer = isFixedScheduleRetainer(parentRow);
 
   const candidates = [];
   for (const rNum of group.allRowNums) {
@@ -1518,7 +1521,7 @@ function applySlotWriteToGroup_(group, kind, rowNum, slotNum, values) {
 
 function maybeRestoreRetainerSlot_(group, clearedRowNum, clearedSlotNum, primaryWrite, allWriteData, rowSnapshot, tolerances) {
   const parentRow = group.parentRow || group.allRows[group.parentRowNum - 1] || [];
-  const isRetainer = normalizeStr_(parentRow[35]).toLowerCase().includes("retainer");
+  const isRetainer = isFixedScheduleRetainer(parentRow);
   if (!isRetainer || Number(clearedRowNum) === Number(group.parentRowNum)) return;
 
   const rAfter = group.allRows[clearedRowNum - 1] || [];
@@ -1556,10 +1559,13 @@ function maybeRestoreRetainerSlot_(group, clearedRowNum, clearedSlotNum, primary
   }
 }
 
-function buildRevenueOrBudgetWrites_(group, itemType, { updateJobRevenue, newJobRevenue, updateJobBudget, newJobBudget }) {
+function buildRevenueOrBudgetWrites_(group, itemType, { updateJobRevenue, newJobRevenue, updateJobBudget, newJobBudget, formulaRow = null }) {
   const writes = [];
   const parentRowNum = group.parentRowNum;
+  const parentRow = group.parentRow || group.allRows?.[parentRowNum - 1] || [];
+  const isVarRet = isVariableRetainerRow(parentRow);
   const isJobCosting = isJobCostingStyle({ headers: group.allRows?.[0] || [] });
+  const hasFormulaAt = (colIdx) => String(formulaRow?.[colIdx] || "").trim().startsWith("=");
   let updatedRevenue;
   let updatedDirectCosts;
 
@@ -1568,26 +1574,32 @@ function buildRevenueOrBudgetWrites_(group, itemType, { updateJobRevenue, newJob
     const rechargedExp = Math.max(0, round2_(parseMoney_(group.allRows?.[parentRowNum - 1]?.[17])));
     const pureFee = Math.max(0, round2_(requestedBillable - rechargedExp));
     if (isJobCosting) {
-      writes.push(
-        { range: `Confirmed!I${parentRowNum}`, values: [[pureFee]] },
-        { range: `Confirmed!AG${parentRowNum}`, values: [[`=if(I${parentRowNum}=0,"",I${parentRowNum})`]] }
-      );
-    } else {
+      if (!isVarRet || !hasFormulaAt(8)) {
+        writes.push({ range: `Confirmed!I${parentRowNum}`, values: [[pureFee]] });
+      }
+      if (!isVarRet || !hasFormulaAt(32)) {
+        writes.push({ range: `Confirmed!AG${parentRowNum}`, values: [[`=if(I${parentRowNum}=0,"",I${parentRowNum})`]] });
+      }
+    } else if (!isVarRet || !hasFormulaAt(32)) {
       writes.push({ range: `Confirmed!AG${parentRowNum}`, values: [[pureFee]] });
     }
-    if (group.allRows?.[parentRowNum - 1]) {
-      group.allRows[parentRowNum - 1][32] = pureFee;
+    if (!isVarRet || (!isJobCosting && !hasFormulaAt(32)) || (isJobCosting && !hasFormulaAt(8))) {
+      if (group.allRows?.[parentRowNum - 1]) {
+        group.allRows[parentRowNum - 1][32] = pureFee;
+      }
+      updatedRevenue = pureFee;
     }
-    updatedRevenue = pureFee;
   }
 
   if (itemType === "directCost" && updateJobBudget && newJobBudget !== undefined && !isJobCosting) {
     const budget = Math.max(0, round2_(parseMoney_(newJobBudget)));
-    writes.push({ range: `Confirmed!AH${parentRowNum}`, values: [[budget]] });
-    if (group.allRows?.[parentRowNum - 1]) {
-      group.allRows[parentRowNum - 1][33] = budget;
+    if (!isVarRet || !hasFormulaAt(33)) {
+      writes.push({ range: `Confirmed!AH${parentRowNum}`, values: [[budget]] });
+      if (group.allRows?.[parentRowNum - 1]) {
+        group.allRows[parentRowNum - 1][33] = budget;
+      }
+      updatedDirectCosts = budget;
     }
-    updatedDirectCosts = budget;
   }
 
   return { writes, updatedRevenue, updatedDirectCosts };
@@ -1768,10 +1780,29 @@ export async function batchAssignOrUnassignJobItems({
   }
 
   // Step C: Optional job revenue / direct cost budget increase
+  let formulaRowForStepC = null;
+  if (
+    isVariableRetainerRow(group.parentRow) &&
+    ((itemType === "invoice" && updateJobRevenue && newJobRevenue !== undefined) ||
+      (itemType === "directCost" && updateJobBudget && newJobBudget !== undefined))
+  ) {
+    try {
+      const fResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: cleanClientSheetId,
+          range: `Confirmed!A${group.parentRowNum}:AH${group.parentRowNum}`,
+          valueRenderOption: "FORMULA",
+        })
+      );
+      formulaRowForStepC = fResp.data?.values?.[0] || null;
+    } catch (_) {
+      formulaRowForStepC = null;
+    }
+  }
   const { writes: budgetWrites, updatedRevenue, updatedDirectCosts } = buildRevenueOrBudgetWrites_(
     group,
     itemType,
-    { updateJobRevenue, newJobRevenue, updateJobBudget, newJobBudget }
+    { updateJobRevenue, newJobRevenue, updateJobBudget, newJobBudget, formulaRow: formulaRowForStepC }
   );
   if (budgetWrites.length > 0) {
     writeData.push(...budgetWrites);

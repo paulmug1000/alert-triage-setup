@@ -452,8 +452,10 @@ export default function InvoicesView({
     }
 
     // 3. If no auto-placeholders and no empty slots:
-    const isRetainer = String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
-    if (!isRetainer) {
+    const isFixedRetainer =
+      String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer") &&
+      !job.rows?.[0]?.isVariableRetainer;
+    if (!isFixedRetainer) {
       const jobLastRow = job.rows[job.rows.length - 1]?.rowNum;
       initiatePlacement({
         job,

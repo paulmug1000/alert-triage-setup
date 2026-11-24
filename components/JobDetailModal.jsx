@@ -33,6 +33,7 @@ import {
   getCrmDisplayName,
   calculatePaymentDate,
   groupSlotItemsForDisplay,
+  parseVariableRetainerTag,
   NO_END_DATE_SHEET_VALUE,
   isNoEndDateSentinel,
   stripCurrency,
@@ -626,6 +627,8 @@ export default function JobDetailModal({
   const vatVal = getJobFieldValue("vat") || "Yes";
   const projectCodeVal = getJobFieldValue("projectCode");
   const unevenSplitVal = getJobFieldValue("unevenSplit") || parentRow.unevenSplit || "";
+  const isVarRetainer = Boolean(isRetainer && parseVariableRetainerTag(unevenSplitVal));
+  const isFixedRetainer = isRetainer && !isVarRetainer;
 
   // Distinct options
   const plOptions = Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort();
@@ -661,14 +664,14 @@ export default function JobDetailModal({
   const draftRechargedSum = Math.round(activeDraftInvoices.reduce((acc, inv) => {
     return acc + (parseFloat(stripCurrency(inv.ofWhichRechgd)) || 0);
   }, 0) * 100) / 100;
-  const hasAutoPlaceholderPreview = !isRetainer && leftToInvoiceAmount > 0.01 && activeBillableNum > 0;
+  const hasAutoPlaceholderPreview = !isFixedRetainer && leftToInvoiceAmount > 0.01 && activeBillableNum > 0;
   const autoPlaceholderRechgd = (isConfirmed && hasAutoPlaceholderPreview)
     ? Math.max(0, Math.min(leftToInvoiceAmount, Math.round((activeRechargedNum - draftRechargedSum) * 100) / 100))
     : 0;
   const showRechargedControls = isConfirmed && (hasRechargedExpenses || activeRechargedNum > 0 || draftRechargedSum > 0);
 
   const applySmartRechargedToDraftInvoices = (nextRechStr) => {
-    if (!isConfirmed || isRetainer) return;
+    if (!isConfirmed || isFixedRetainer) return;
     const parseMoney = (v) => parseFloat(String(stripCurrency(v) ?? "").replace(/[£$€,\s]/g, "")) || 0;
     const targetRech = Math.max(0, Math.round(parseMoney(nextRechStr) * 100) / 100);
     const activeEntries = (draftInvoices || []).filter((inv) => !inv.isDeleted);
@@ -1229,8 +1232,8 @@ export default function JobDetailModal({
     if (updates.length === 0 && !shouldSyncInvoices) return;
 
     const savedInvoicesModified = shouldSyncInvoices;
-    const wasExistingRetainer = String(parentRow?.projectRetainer || "").toLowerCase().includes("retainer");
-    const savedChangedToRetainer = !wasExistingRetainer && isRetainer;
+    const wasExistingRetainer = String(parentRow?.projectRetainer || "").toLowerCase().includes("retainer") && !parseVariableRetainerTag(parentRow?.unevenSplit);
+    const savedChangedToRetainer = !wasExistingRetainer && isFixedRetainer;
     setSaving(true);
     try {
       const res = await fetch("/api/triage", {
@@ -1245,7 +1248,7 @@ export default function JobDetailModal({
           rowNum: parentRowNum,
           endClientName: draftEdits.client || parentRow.client || job.client,
           jobName: draftEdits.jobName || parentRow.jobName || job.jobName,
-          isRetainer,
+          isRetainer: isFixedRetainer,
           updates,
           invoices: savedInvoicesModified ? activeDraftInvoices : undefined
         })
@@ -3811,7 +3814,7 @@ export default function JobDetailModal({
             client: clientVal || job.client || "",
             jobName: jobNameVal || job.jobName || "",
             projectCode: projectCodeVal || job.projectCode || "",
-            isRetainer,
+            isRetainer: isFixedRetainer,
             startDate: startDateVal || "",
             endDate: endDateVal || "",
             revenue: activeRevenueNum,

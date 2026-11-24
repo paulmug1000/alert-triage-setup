@@ -11539,6 +11539,28 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                       }
                     }
 
+                    // Variable retainer monthly row check (single-month row with [VarRetainer] in Col AE)
+                    if (isVariableRetainerRow(parentRow)) {
+                      const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+                      checks.push({ ok: true, message: `Variable retainer monthly row: ${fmt(startDate)} → ${fmt(endDate)}` });
+                      const invAmt = parseFloat(String(parentRow[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+                      const invRef = String(parentRow[42] || "").trim();
+                      if (invAmt > 0 || invRef) {
+                        checks.push({ ok: true, message: `✓ Slot 1 has invoice amount £${invAmt.toFixed(2)}${invRef ? ` (ref: ${invRef})` : ""}` });
+                      } else {
+                        checks.push({ ok: false, message: `✗ Slot 1 has no invoice amount` });
+                      }
+                      retainerChecks.push({
+                        jobName, clientName: clientN, projectCode,
+                        parentSheetRow: confirmedSheetRow,
+                        tab: targetTab,
+                        status: (invAmt > 0 || invRef) ? "ok" : "issue",
+                        periodLabel: "variable monthly",
+                        checks,
+                      });
+                      continue;
+                    }
+
                     // ── Single-row retainer check ────────────────────────────────────
                     let isSingleMonth = false;
                     if (startDate && endDate) {
@@ -12031,12 +12053,12 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                           }
                         }
                         const rawTypeStr = String(parentRowForType[35] || targetSheetRow[35] || "").trim().toLowerCase();
-                        const isMultiRowRetainer = parentRowForType !== targetSheetRow || (actualRowNum < confirmedRows.length && (() => {
+                        const isMultiRowRetainer = !isVariableRetainerRow(parentRowForType) && (parentRowForType !== targetSheetRow || (actualRowNum < confirmedRows.length && (() => {
                           const nextRow = confirmedRows[actualRowNum] || [];
                           return String(nextRow[0] || "").trim().toLowerCase() === targetClient &&
                             String(nextRow[1] || "").trim().toLowerCase() === targetJob &&
                             !nextRow[32] && !nextRow[37];
-                        })());
+                        })()));
                         resolvedJobType = (rawTypeStr.includes("retainer") || isMultiRowRetainer) ? "Retainer" : "Project";
                         resolvedProjectCode = String(parentRowForType[2] || targetSheetRow[2] || "").trim();
 

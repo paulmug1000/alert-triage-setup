@@ -729,7 +729,7 @@ export const CashDeepDiveEngine = {
         (job.invoices && job.invoices.some((inv) => inv.isChild || inv.childRowNum))
       );
       const parentHasNoInvoice = job.parentHasInvoice === false;
-      const isRecurringRetainer = isRetainer && !hasMultipleInvoices && !hasChildInvoice && !hasChildRows && !parentHasNoInvoice;
+      const isRecurringRetainer = isRetainer && !job.isVariableRetainer && !hasMultipleInvoices && !hasChildInvoice && !hasChildRows && !parentHasNoInvoice;
 
       if (isRecurringRetainer) {
         const amountRaw = job.inv1Amount || job.revenue;
@@ -887,7 +887,7 @@ export const CashDeepDiveEngine = {
         (job.directExpenses && job.directExpenses.some((exp) => exp.isChild || exp.childRowNum))
       );
       const parentHasNoInvoice = job.parentHasInvoice === false;
-      const isRecurringRetainer = isRetainer && !hasMultipleInvoices && !isDirCash && !hasChildInvoice && !hasChildRows && !parentHasNoInvoice;
+      const isRecurringRetainer = isRetainer && !job.isVariableRetainer && !hasMultipleInvoices && !isDirCash && !hasChildInvoice && !hasChildRows && !parentHasNoInvoice;
 
       if (isRecurringRetainer) {
         const amountRaw = job[`${prefix}1Amount`] || job.revenue;

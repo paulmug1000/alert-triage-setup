@@ -953,7 +953,8 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
   const tabName = "Confirmed";
   const startRow = 2;
   try {
-    const data = sharedData?.confirmedData ? sharedData.confirmedData.slice(startRow - 1) : [];
+    const rawConf = sharedData?.confirmedDataWide || sharedData?.confirmedData || [];
+    const data = rawConf.length > 0 ? rawConf.slice(startRow - 1) : [];
     if (data.length === 0) return alerts;
 
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -1185,8 +1186,13 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
       if (!startDate || startDate > oneMonthAgo) { r += collectJobRows_(data, r).length; continue; }
 
       // Completed jobs with uninvoiced revenue are handled with higher precedence by checkUninvoicedRevenue_
+      // Variable retainers are checked per-month by checkRetainerInvoices_
       const jobType = String(row[35] || "").toLowerCase();
       const isRetainer = jobType.includes("retainer");
+      if (isVariableRetainerRow(row)) {
+        r += collectJobRows_(data, r).length;
+        continue;
+      }
       const endDate = endVal ? parseConfirmedDate_(endVal) : null;
       const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
       const isCompletedPastGrace = !isRetainer && endDate && (today.getTime() - endDate.getTime()) > TWO_WEEKS_MS;
@@ -1437,6 +1443,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
       if (!jobClient || !jobNameV || (!hasVal(revenue) && !hasVal(rechargedRaw)) || !hasVal(startVal) || !hasVal(endVal)) { r++; continue; }
 
       const isRetainer = jobType.includes("retainer");
+      const isVarRetainer = isVariableRetainerRow(row);
       const isFixedRetainer = isFixedScheduleRetainer(row);
       const jobRows = collectJobRows_(data, r);
       const hasChildren = jobRows.length > 1;
@@ -1587,15 +1594,16 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
 
       if (problems.length > 0) {
         const problemFootprint = Buffer.from(problems.join("; ")).toString("base64");
+        const typeLabel = isVarRetainer ? "Variable Retainer" : (isRetainer ? "Retainer" : "Project");
 
         alerts.push({
           alertType: "job_structure_error",
           alertKey: `job_structure_error|${clientName}|${jobClient}|${jobNameV}${projectCode ? `|${projectCode}` : ""}|${problemFootprint}`,
           heading: "Job structure doesn't match expected invoice/expense layout",
-          detail: `${jobClient} | ${jobNameV}${projectCode ? ` [${projectCode}]` : ""} (${isRetainer ? "Retainer" : "Project"}): ${problems.join("; ")}`,
-          jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer, canAutoTidy: hasAutoFixableLayoutIssue,
+          detail: `${jobClient} | ${jobNameV}${projectCode ? ` [${projectCode}]` : ""} (${typeLabel}): ${problems.join("; ")}`,
+          jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer: isFixedRetainer, isVariableRetainer: isVarRetainer, canAutoTidy: hasAutoFixableLayoutIssue,
           metadata: {
-            jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer, clientName, canAutoTidy: hasAutoFixableLayoutIssue
+            jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer: isFixedRetainer, isVariableRetainer: isVarRetainer, clientName, canAutoTidy: hasAutoFixableLayoutIssue
           }
         });
       }

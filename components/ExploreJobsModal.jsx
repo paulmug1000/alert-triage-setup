@@ -90,6 +90,8 @@ export default function ExploreJobsModal({
     const enriched = jobs.map((j) => {
       const isRet = String(j.projectRetainer || j.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
       const pRow = j.rows?.[0] || {};
+      const isVarRet = Boolean(j.isVariableRetainer || pRow.isVariableRetainer);
+      const isFixedRet = isRet && !isVarRet;
       const revNum = parseFloat(String(j.revenue || pRow.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
 
       let realInvoicedTotal = 0;
@@ -112,12 +114,12 @@ export default function ExploreJobsModal({
       let uninvoicedAmount = 0;
       let hasUninvoiced = false;
 
-      if (isRet) {
+      if (isFixedRet) {
         hasUninvoiced = hasUnallocatedSlot || sheetLeftToInv > 0;
         uninvoicedAmount = sheetLeftToInv > 0 ? sheetLeftToInv : (hasUnallocatedSlot ? revNum : 0);
       } else {
         uninvoicedAmount = sheetLeftToInv > 0 ? sheetLeftToInv : Math.max(0, revNum - realInvoicedTotal);
-        hasUninvoiced = uninvoicedAmount > 0.01;
+        hasUninvoiced = uninvoicedAmount > 0.01 || (isVarRet && hasUnallocatedSlot);
       }
 
       return {

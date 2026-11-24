@@ -2326,6 +2326,17 @@ export async function handleUpdateJobField(req, res, sheets) {
       (["AG", "AH", "AL", "AM", "I", "K", "F", "G"].includes(targetCol) || (tabName === "Confirmed" && targetCol === "R"));
 
     if (isProvisioningRetainer) {
+      let existingAeVal = "";
+      try {
+        const aeResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `${tabName}!AE${targetRow}`,
+            valueRenderOption: "UNFORMATTED_VALUE",
+          })
+        );
+        existingAeVal = String(aeResp.data?.values?.[0]?.[0] || "");
+      } catch (_) { }
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
         range: `${tabName}!${validatedCellRef}`,
@@ -2333,14 +2344,16 @@ export async function handleUpdateJobField(req, res, sheets) {
         requestBody: { values: [[safeValue]] },
         _skipFormulaRecompute: true,
       });
-      await provisionRetainerChildRows_(sheets, {
-        clientSheetId: sheetIdClean,
-        masterSheetId: req.body.masterSheetId,
-        clientName: req.body.clientName || "",
-        parentRowNum: targetRow,
-        client: endClientName || "",
-        jobName: jobName || "",
-      });
+      if (!parseVariableRetainerTag(existingAeVal)) {
+        await provisionRetainerChildRows_(sheets, {
+          clientSheetId: sheetIdClean,
+          masterSheetId: req.body.masterSheetId,
+          clientName: req.body.clientName || "",
+          parentRowNum: targetRow,
+          client: endClientName || "",
+          jobName: jobName || "",
+        });
+      }
     } else if (needsPlaceholderAdjust) {
       const masterIdForTols = req.body.masterSheetId || (await resolveMasterSheetIdForClient_(sheets, sheetIdClean));
       const [preloadedGroup, preloadedTolerances] = await Promise.all([
@@ -2629,12 +2642,14 @@ export async function handleUpdateJobFields(req, res, sheets) {
       }
     }
 
-    const isChangingToRetainer = tabName === "Confirmed" && typeUpdate && String(typeUpdate.value || "").trim().toLowerCase() === "retainer";
-    const isExistingRetainer = isRetainerJob && !isChangingToRetainer;
+    const isVarRetainerRow = isVariableRetainerRow(preloadedGroup?.parentRow);
+    const isFixedRetainerJob = isRetainerJob && !isVarRetainerRow;
+    const isChangingToRetainer = tabName === "Confirmed" && typeUpdate && String(typeUpdate.value || "").trim().toLowerCase() === "retainer" && !isVarRetainerRow;
+    const isExistingRetainer = isFixedRetainerJob && !isChangingToRetainer;
 
     const isSettingRetainer = normalizedUpdates.some(
       u => u._coord.colLetters === "AJ" && String(u.value || "").trim().toLowerCase() === "retainer"
-    );
+    ) && !isVarRetainerRow;
 
     // If it's an existing retainer on Confirmed and start/end dates changed, exclude those date columns from initial write
     // so executeChangeRetainerStartDate / executeChangeRetainerEndDate can inspect current sheet values and handle row manipulation safely.
@@ -7463,7 +7478,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       Number(actualRowNum) !== Number(resolvedParentRowNum)
     ) {
       const parentRow = cachedAllRows[resolvedParentRowNum - 1] || [];
-      const isRetainerParent = String(parentRow[35] ?? "").trim().toLowerCase().includes("retainer");
+      const isRetainerParent = isFixedScheduleRetainer(parentRow);
       const rowAfterDelete = cachedAllRows[actualRowNum - 1] || [];
       const rowStillHasInvoice = [41, 48, 55].some((col) => {
         const a = parseFloat(String(rowAfterDelete[col] ?? "0").replace(/[£$€,\s]/g, "")) || 0;
@@ -10069,7 +10084,7 @@ export function findTrailingEmptyProjectChildRows_(group, targetTab) {
     return [];
   }
   const parentRow = group.parentRow || group.allRows[group.parentRowNum - 1] || [];
-  const isRetainer = String(parentRow[35] || "").trim().toLowerCase().includes("retainer");
+  const isRetainer = isFixedScheduleRetainer(parentRow);
   if (isRetainer) return [];
 
   const isConfTab = targetTab === "Confirmed";

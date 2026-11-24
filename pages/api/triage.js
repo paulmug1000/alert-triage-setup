@@ -32,7 +32,7 @@ import {
   handleLogClaudeUsage, handleGetAppLog, handleTriggerProactiveChecks,
   handleGetSweepSchedule, handleSaveSweepFrequency, handleTriggerAgentRun,
   handleAgentProgress, handleGetAgentRunProgress, handleGetActiveAgentRun,
-  handleSyncAllMasterScriptSecrets
+  handleSyncAllMasterScriptSecrets, handleResolveCrmSyncBlock
 } from "../../services/systemConfig";
 import {
   handleGetAllClients, handleGetAssignedExpenses, handleMarkExpenseAssigned,
@@ -293,6 +293,7 @@ export default async function handler(req, res) {
       set_recon_month_ready: ["outgoings", "expenses", "cash", "views"],
       sync_client_expense_breakdown: ["outgoings", "expenses", "cash", "views"],
       update_part_paid_date: ["invoices", "jobs", "cash"],
+      resolve_crm_sync_block: ["jobs", "views"],
       eom_push_outgoings: ["outgoings", "expenses", "cash", "views"],
       eom_save_cash_balance: ["cash"],
       eom_mark_month_actual: ["cash", "views"],
@@ -1541,6 +1542,8 @@ export default async function handler(req, res) {
       return await handleBulkAcknowledgeProactiveAlerts(req, res, sheets);
     } else if (action === "resolve_proactive_alert") {
       return await handleResolveProactiveAlert(req, res, sheets);
+    } else if (action === "resolve_crm_sync_block") {
+      return await handleResolveCrmSyncBlock(req, res, sheets);
     } else if (action === "update_part_paid_date") {
       const {
         clientName, clientSheetId, masterSheetId, itemType,

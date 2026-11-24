@@ -1304,6 +1304,108 @@ function getProactiveActivityCategory_(alertKey) {
   return "TRIAGE";
 }
 
+export async function clearCachedProactiveTypeForClient({
+  sheets,
+  acId,
+  clientName,
+  alertType,
+  alertKey = "",
+  rowIndex = null,
+  sessionId = "",
+  sessionUser = null,
+  isSystemAuthorized = false,
+}) {
+  const effectiveAcId = acId || DEFAULT_AC_SHEET_ID;
+  const cleanClient = String(clientName || "").trim();
+  const cleanType = String(alertType || "").trim();
+  if (!cleanClient || !cleanType) return;
+
+  await ensureAlertMemoryTab(sheets, effectiveAcId);
+  const specificHash = alertKey
+    ? createHash("sha256").update(alertKey).digest("hex").substring(0, 16)
+    : "";
+  const memoryRows = await queryAlertMemoryTargeted(sheets, effectiveAcId, {
+    ...(specificHash ? { hashes: [specificHash] } : {}),
+    clientName: cleanClient,
+    alertType: cleanType,
+    statuses: ["cached", "pending_automation"],
+  });
+
+  const targetIdsSet = new Set();
+  if (alertKey) targetIdsSet.add(alertKey);
+  if (specificHash) targetIdsSet.add(specificHash);
+  if (rowIndex != null) targetIdsSet.add(String(rowIndex));
+
+  const hashesToMark = new Set();
+  if (specificHash) hashesToMark.add(specificHash);
+
+  const matchingRows = (memoryRows || []).filter((r) => {
+    if (!r) return false;
+    const sameClient = !r.clientName || matchesClientName(r.clientName, cleanClient);
+    if (!sameClient) return false;
+    const isTargetType = r.alertType === cleanType || r.alertType === "proactive";
+    if (!isTargetType) return false;
+    if (specificHash && r.fingerprintHash === specificHash) return true;
+    return r.alertType === cleanType && (r.status === "cached" || r.status === "pending_automation");
+  });
+
+  const batchUpdates = [];
+  for (const r of matchingRows) {
+    if (r.fingerprintHash) {
+      targetIdsSet.add(r.fingerprintHash);
+      hashesToMark.add(r.fingerprintHash);
+    }
+    if (r.rowIndex != null) targetIdsSet.add(String(r.rowIndex));
+    try {
+      const snap = JSON.parse(r.dataSnapshot || "{}");
+      if (snap.alertKey) targetIdsSet.add(snap.alertKey);
+      if (snap.legacyAlertKey) targetIdsSet.add(snap.legacyAlertKey);
+      if (snap.metadata?.legacyAlertKey) targetIdsSet.add(snap.metadata.legacyAlertKey);
+    } catch (_) { }
+    if (r.status === "cached" || r.status === "pending_automation") {
+      batchUpdates.push({
+        rowIndex: r.rowIndex,
+        updates: {
+          ...r,
+          status: "accepted",
+          clientName: cleanClient || r.clientName || "",
+        },
+      });
+    }
+  }
+
+  if (batchUpdates.length > 0) {
+    await updateAlertMemoryRowsBatch(sheets, effectiveAcId, batchUpdates);
+  } else if (alertKey && specificHash) {
+    await appendAlertMemoryRow(sheets, effectiveAcId, {
+      fingerprintHash: specificHash,
+      alertType: cleanType,
+      clientName: cleanClient,
+      alertSummary: "Resolved proactive alert",
+      cachedOptionsJSON: "",
+      status: "accepted",
+      ignoreReason: "",
+      dataSnapshot: JSON.stringify({ alertKey, alertType: cleanType, clientName: cleanClient }),
+    });
+  }
+
+  const handledByHash = {};
+  for (const h of hashesToMark) {
+    if (h) handledByHash[h] = "accepted";
+  }
+  if (Object.keys(handledByHash).length > 0) {
+    await updateHandledAlertHashesBatch(effectiveAcId, handledByHash);
+  }
+
+  const canRemoveClient = (cName) =>
+    isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
+  await removeResolvedProactiveFromCaches_({
+    sessionId,
+    targetIds: Array.from(targetIdsSet),
+    canRemoveClient,
+  });
+}
+
 export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
   const { alertKey, clientName, sessionId, automationCommanderSheetId: acId, alertData, rowIndex } = req.body;
   const effectiveAlertKey = alertKey || alertData?.alertKey || "";

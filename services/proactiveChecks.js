@@ -632,6 +632,94 @@ export async function checkCRMWipe_(clientName, masterSheetId, sharedData) {
   return alerts;
 }
 
+export async function checkCrmSyncBlocked_(clientName, masterSheetId, sharedData) {
+  const alerts = [];
+  try {
+    let block = null;
+
+    // 1. Primary source: GasScriptProps (authoritative for Supabase masters)
+    const gasScriptProps = Array.isArray(sharedData?.gasScriptProps) ? sharedData.gasScriptProps : [];
+    for (let i = 0; i < gasScriptProps.length; i++) {
+      const row = gasScriptProps[i];
+      if (!Array.isArray(row)) continue;
+      if (String(row[0] || "").trim() === "CRM_SYNC_SWING_BLOCK_JSON") {
+        const rawVal = String(row[1] || "").trim();
+        if (rawVal) {
+          try {
+            const parsed = JSON.parse(rawVal);
+            if (parsed && typeof parsed === "object") block = parsed;
+          } catch (_) { }
+        }
+        break;
+      }
+    }
+
+    // 2. Fallback source: latest CRM AutoLog entry (for legacy Google Sheet masters)
+    if (!block) {
+      const autoLogRows = Array.isArray(sharedData?.autoLogData) ? sharedData.autoLogData : [];
+      for (let i = 0; i < autoLogRows.length; i++) {
+        const row = autoLogRows[i];
+        if (!Array.isArray(row)) continue;
+        const cat = String(row[1] || "").trim().toUpperCase();
+        if (cat !== "CRM") continue;
+        const details = String(row[3] || "");
+        const marker = "[CRM Sync Guard] Sync paused:";
+        const markerIdx = details.indexOf(marker);
+        if (markerIdx !== -1) {
+          const snippet = details.slice(markerIdx + marker.length, markerIdx + marker.length + 320);
+          const m = snippet.match(/^\s*([^:\n]{1,60}?)\s+returned\s+(\d+)\s+jobs\s+vs\s+(\d+)\s+currently synced\s+\(([+\-]?\d+)\s+jobs,\s*([+\-]?\d+(?:\.\d+)?)%;\s*threshold\s+[^0-9]{0,4}(\d+(?:\.\d+)?)%\)/i);
+          if (m) {
+            const tsRaw = row[0];
+            const blockedAt = tsRaw instanceof Date ? tsRaw.toISOString() : String(tsRaw || "");
+            block = {
+              crmTool: String(m[1] || "CRM").trim(),
+              incomingCount: Number(m[2]),
+              existingCount: Number(m[3]),
+              delta: Number(m[4]),
+              pctChange: Number(m[5]),
+              thresholdPct: Number(m[6]) || 25,
+              blockedAt,
+            };
+          }
+        }
+        // Only inspect the most recent CRM AutoLog entry so an older resolved pause cannot re-trigger
+        break;
+      }
+    }
+
+    if (!block) return alerts;
+    const existingCount = Number(block.existingCount);
+    const incomingCount = Number(block.incomingCount);
+    if (!Number.isFinite(existingCount) || !Number.isFinite(incomingCount)) return alerts;
+
+    const crmTool = String(block.crmTool || "CRM").trim() || "CRM";
+    const delta = incomingCount - existingCount;
+    const pctChange = Number.isFinite(Number(block.pctChange))
+      ? Number(block.pctChange)
+      : Math.round((delta / Math.max(1, existingCount)) * 1000) / 10;
+    const thresholdPct = Number(block.thresholdPct) || 25;
+    const direction = delta < 0 ? "decrease" : "increase";
+    const blockedAt = String(block.blockedAt || "");
+    const sign = delta >= 0 ? "+" : "";
+
+    alerts.push({
+      alertType: "crm_sync_blocked",
+      alertKey: `crm_sync_blocked|${clientName}|${crmTool}|${existingCount}|${incomingCount}`,
+      heading: "CRM sync paused — large change in job count",
+      detail: `${crmTool} sync was paused because the number of jobs changed from ${existingCount} to ${incomingCount} (${sign}${delta} jobs, ${sign}${pctChange}%), exceeding the ±${thresholdPct}% safety limit.`,
+      crmTool,
+      existingCount,
+      incomingCount,
+      delta,
+      pctChange,
+      thresholdPct,
+      direction,
+      blockedAt,
+    });
+  } catch (e) { }
+  return alerts;
+}
+
 export async function checkRevenueMismatch_(clientName, clientSheetId, sharedData) {
   const alerts = [];
   try {
@@ -1687,6 +1775,10 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
       const summary = String(row[2] || "").trim();
       const details = String(row[3] || "").trim();
 
+      if (details.includes("[CRM Sync Guard]") || summary.toLowerCase().includes("crm sync paused")) {
+        continue;
+      }
+
       // Extract error text, prioritizing the richer/more descriptive message
       const detailsMatch = details.match(errorRegex);
       const summaryMatch = summary.match(errorRegex);
@@ -1795,6 +1887,10 @@ export async function checkRetroactiveOutgoingsChanges_(clientName, masterSheetI
       const category = String(row[1] || "").trim();
       const summary = String(row[2] || "").trim();
       const details = String(row[3] || "").trim();
+
+      if (details.includes("[CRM Sync Guard]") || summary.toLowerCase().includes("crm sync paused")) {
+        continue;
+      }
 
       // Detect P&L Outgoings updates from automated sequence or bank transaction fallbacks
       const isOutgoingsUpdate = summary.toLowerCase().startsWith("p&l outgoings updated:");

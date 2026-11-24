@@ -844,6 +844,8 @@ export async function runNativeMasterSync({
   runId = null,
   onProgress = null,
   userEmail = "System",
+  allowCrmSwingOverride = false,
+  overrideApprovedBy = "",
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -895,6 +897,16 @@ export async function runNativeMasterSync({
     env.PropertiesService.getScriptProperties().setProperty("CURRENT_RUN_ID", String(runId));
     env.PropertiesService.getScriptProperties().setProperty("CURRENT_RUN_CLIENT", ctx.clientName);
   }
+  if (runCrm && allowCrmSwingOverride) {
+    env.PropertiesService.getScriptProperties().setProperty(
+      "CRM_SYNC_SWING_OVERRIDE_ONCE",
+      JSON.stringify({
+        approvedBy: String(overrideApprovedBy || userEmail || "PMA User").slice(0, 120),
+        approvedAt: new Date().toISOString(),
+        expiresAt: Date.now() + 15 * 60 * 1000,
+      })
+    );
+  }
 
   const gas = createMasterGasInstance(env);
 
@@ -920,6 +932,7 @@ export async function runNativeMasterSync({
   let capturedInvPreflightState = null;
   let capturedCrmPreflightState = null;
   let capturedExpPreflightState = null;
+  let crmSyncBlocked = null;
   try {
     await gas.runAgencyAutomator(runInv, runCrm, runExp);
 
@@ -973,13 +986,28 @@ export async function runNativeMasterSync({
     }
 
     if (runCrm) {
+      const crmSwingBlockRaw = env.PropertiesService.getScriptProperties().getProperty("CRM_SYNC_SWING_BLOCK_JSON");
+      if (crmSwingBlockRaw) {
+        try {
+          crmSyncBlocked = JSON.parse(crmSwingBlockRaw);
+        } catch (_) {
+          crmSyncBlocked = null;
+        }
+      }
       const crmRunHadError = didSequenceHaveError_(
         "CRM",
         dcaGridPreFlush[2]?.[64],
         dcaGridPreFlush[2]?.[28],
         autoLogGridPre
       );
-      if (!crmRunHadError) {
+      if (crmSyncBlocked) {
+        capturedCrmPreflightState = {
+          ...(baseFlags?.crm_preflight || {}),
+          fingerprint: null,
+          lastOutcome: "crm_sync_blocked",
+          lastCheckedAt: new Date().toISOString(),
+        };
+      } else if (!crmRunHadError) {
         try {
           const crmListGrid = env.masterSS.getSheetByName("CRMList")?.valuesGrid || [];
           const pfCapture = await captureCrmPreflightBaseline({
@@ -1106,6 +1134,7 @@ export async function runNativeMasterSync({
     invoicesPulled,
     directCostsPulled,
     crmDealsPulled,
+    crmSyncBlocked,
     comparisons,
     executionLogsCount: env.executionLogs?.length || 0,
   };

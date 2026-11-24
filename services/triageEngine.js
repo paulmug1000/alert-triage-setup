@@ -19,7 +19,7 @@ import {
 import { provisionRetainerScheduleInBackground } from "./retainers.js";
 import { applyAlertRemovalToTriageData, prunePrecomputedInBackground_, scheduleWaitUntil_ } from "./alertState.js";
 import {
-  checkRetainerInvoices_, checkCRMWipe_, checkRevenueMismatch_, checkDirectCostsMismatch_,
+  checkRetainerInvoices_, checkCRMWipe_, checkCrmSyncBlocked_, checkRevenueMismatch_, checkDirectCostsMismatch_,
   checkPipelineConfirmedOverlap_, checkRetainerShrinkBlocked_, checkUninvoicedNewJobs_,
   checkUninvoicedRevenue_, checkDeletedInvoices_, checkJobStructureErrors_,
   checkDeletedExpenses_, checkUnreceivedExpenses_, checkAutoLogErrors_, checkAutoLogInfiniteLoops_,
@@ -2418,7 +2418,8 @@ export async function handleStorePrecomputed(req, res, sheets) {
                 "directCosts", "unreceivedAmount", "placeholderCount", "placeholderTotal",
                 "feeRevenue", "rechargedExpenses", "billableBudget", "feeInvoiced", "rechargedInvoiced", "uninvoicedFee", "uninvoicedRecharged", "rechargedDiff",
                 "totalInvoiced", "totalExpenses", "diff", "childExp", "expectedForRow",
-                "errorSnippet", "occurrenceCount", "category", "entityKey", "fieldName", "transition1", "transition2", "conflictType", "suggestion", "rawLogSnippet", "invoiceNo", "rawSnippet"];
+                "errorSnippet", "occurrenceCount", "category", "entityKey", "fieldName", "transition1", "transition2", "conflictType", "suggestion", "rawLogSnippet", "invoiceNo", "rawSnippet",
+                "crmTool", "existingCount", "incomingCount", "delta", "pctChange", "thresholdPct", "direction", "blockedAt"];
               const metadata = { ...(alertObj.metadata || {}) };
               for (const f of metaFields) { if (alertObj[f] !== undefined) metadata[f] = alertObj[f]; }
               const liveProactiveMeta = getLiveClientMeta(alertObj.clientName || row.clientName) || {};
@@ -3111,7 +3112,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               (hasExpense && actionableDue) ? "KeyInfo!AT24:AT40" : "DataChgAlert!A1",
               (hasInvoice && actionableDue) ? "InvFromApp!A1:S5000" : "DataChgAlert!A1",
               (hasInvoice && actionableDue) ? "InvAppList!F1" : "DataChgAlert!A1",
-              (actionableDue && (hasInvoice || hasExpense)) ? "KeyInfo!B2" : "DataChgAlert!A1"
+              (actionableDue && (hasInvoice || hasExpense)) ? "KeyInfo!B2" : "DataChgAlert!A1",
+              ((actionableDue || infoDue || proactiveDue) && isVirtualSupabaseSheetId(client.masterSheetId)) ? "GasScriptProps!A1:B100" : "DataChgAlert!A1"
             ]
           });
           const ranges = batchResp.data.valueRanges || [];
@@ -3134,6 +3136,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           };
           batchData.invFromApp = ranges[9]?.values || [];
           batchData.invFormatRule = String(ranges[10]?.values?.[0]?.[0] || "").trim();
+          batchData.gasScriptProps = isVirtualSupabaseSheetId(client.masterSheetId) ? (ranges[12]?.values || []) : [];
           masterBatchSuccess = true;
         } catch (e) {
           console.log(`  ⚠️ Batch fetch failed for ${client.clientName}: ${e.message}`);
@@ -3271,14 +3274,20 @@ export async function handleRunFlagSweep(req, res, sheets) {
         }
 
         if ((actionableDue || infoDue || proactiveDue) && masterBatchSuccess) {
-          const autoLogSharedData = { autoLogData: batchData.autoLog || [], gasLocks };
-          const [autoLogErrAlerts, infiniteLoopAlerts] = await Promise.all([
+          const autoLogSharedData = {
+            autoLogData: batchData.autoLog || [],
+            gasScriptProps: batchData.gasScriptProps || [],
+            gasLocks,
+          };
+          const [autoLogErrAlerts, infiniteLoopAlerts, crmSyncBlockedAlerts] = await Promise.all([
             checkAutoLogErrors_(client.clientName, client.masterSheetId, autoLogSharedData),
             checkAutoLogInfiniteLoops_(client.clientName, client.masterSheetId, autoLogSharedData),
+            hasCRM ? checkCrmSyncBlocked_(client.clientName, client.masterSheetId, autoLogSharedData) : Promise.resolve([]),
           ]);
           const fastProactiveByType = {
             autolog_error: autoLogErrAlerts || [],
             infinite_loop: infiniteLoopAlerts || [],
+            crm_sync_blocked: crmSyncBlockedAlerts || [],
           };
           for (const [fastType, fastAlerts] of Object.entries(fastProactiveByType)) {
             fastAlerts.forEach(a => {

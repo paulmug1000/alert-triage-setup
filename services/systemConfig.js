@@ -7,9 +7,13 @@ import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import { runNativeMasterSync } from "./masterSyncEngine.js";
 import { isValidGoogleScriptUrl } from "./eomTools.js";
 import { getSessionUser, safeCompareSecret } from "./authService.js";
-import { isUserAuthorizedForClient, getCanonicalAcSheetId } from "./userPermissions.js";
+import { isUserAuthorizedForClient, getCanonicalAcSheetId, isReadOnlySession } from "./userPermissions.js";
 import { getClientWebAppUrl } from "./workspaces.js";
 import { postGasWebAppLocked } from "../utils/helpers.js";
+import { unwrapSheetId } from "./sheetTokenService.js";
+import { invalidatePmaClientCache } from "./cacheService.js";
+import { logPmaActivity } from "./pmaLogger.js";
+import { clearCachedProactiveTypeForClient } from "./alertState.js";
 
 async function requireSystemOrAdmin_(req, res) {
   if (req?.isSystemAuthorized) return true;
@@ -874,4 +878,184 @@ export async function handleSyncAllMasterScriptSecrets(req, res, _sheets) {
     validatedTargetCount,
     error: "Global secret broadcasting via sync_script_secrets has been disabled. Legacy Master Google Sheets are retiring in favour of Supabase Masters; rotate shared secrets in Vercel once retirement completes."
   });
+}
+
+export async function handleResolveCrmSyncBlock(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && (!sessionUser || isReadOnlySession(sessionUser))) {
+    return res.status(403).json({ success: false, error: "Forbidden: Active write-enabled session required." });
+  }
+
+  const {
+    mode,
+    clientName,
+    clientSheetId,
+    masterSheetId,
+    alertKey = "",
+    rowIndex = null,
+    sessionId = "",
+  } = req.body || {};
+
+  const cleanClientName = String(clientName || "").trim();
+  const cleanMode = String(mode || "").trim().toLowerCase();
+  if (!cleanClientName || (cleanMode !== "override" && cleanMode !== "retry")) {
+    return res.status(400).json({
+      success: false,
+      error: "Missing or invalid clientName or mode (expected 'override' or 'retry').",
+    });
+  }
+
+  if (!req.isSystemAuthorized && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, cleanClientName)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
+  }
+
+  const acId = getCanonicalAcSheetId();
+  const userEmail = sessionUser?.email || "PMA User";
+  const isOverride = cleanMode === "override";
+
+  try {
+    const supaCtx = await resolveSupabaseSheetContext({ clientName: cleanClientName });
+    if (supaCtx) {
+      if (clientSheetId) {
+        const rawCId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || String(clientSheetId).trim());
+        const validClientIds = new Set(
+          [supaCtx.clientSheetId, supaCtx.normalizedKey ? `sb-client-${supaCtx.normalizedKey}` : ""].filter(Boolean)
+        );
+        if (rawCId && validClientIds.size > 0 && !validClientIds.has(rawCId)) {
+          return res.status(403).json({ success: false, error: "Forbidden: Client sheet reference mismatch." });
+        }
+      }
+      if (masterSheetId) {
+        const rawMId = unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || String(masterSheetId).trim());
+        const validMasterIds = new Set(
+          [supaCtx.masterSheetId, supaCtx.normalizedKey ? `sb-master-${supaCtx.normalizedKey}` : ""].filter(Boolean)
+        );
+        if (rawMId && validMasterIds.size > 0 && !validMasterIds.has(rawMId)) {
+          return res.status(403).json({ success: false, error: "Forbidden: Master sheet reference mismatch." });
+        }
+      }
+    }
+
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      const syncRes = await runNativeMasterSync({
+        sheets,
+        clientName: supaCtx.clientName,
+        syncType: "crm",
+        types: ["crm"],
+        userEmail,
+        allowCrmSwingOverride: isOverride,
+        overrideApprovedBy: userEmail,
+      });
+
+      if (syncRes?.crmSyncBlocked) {
+        const blk = syncRes.crmSyncBlocked;
+        return res.status(200).json({
+          success: true,
+          resolved: false,
+          stillBlocked: true,
+          blockInfo: blk,
+          message: `${blk.crmTool || "CRM"} still returned ${blk.incomingCount} jobs vs ${blk.existingCount} in Pulse (${blk.delta >= 0 ? "+" : ""}${blk.pctChange}%). Fix the CRM filter or approve override to continue.`,
+        });
+      }
+
+      await clearCachedProactiveTypeForClient({
+        sheets,
+        acId,
+        clientName: supaCtx.clientName,
+        alertType: "crm_sync_blocked",
+        alertKey: alertKey || `crm_sync_blocked|${supaCtx.clientName}`,
+        rowIndex,
+        sessionId,
+        sessionUser,
+        isSystemAuthorized: Boolean(req.isSystemAuthorized),
+      });
+
+      await invalidatePmaClientCache(supaCtx.clientSheetId, supaCtx.masterSheetId, ["jobs", "views"]).catch(() => { });
+
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: supaCtx.clientName,
+        category: "CRM",
+        action: isOverride ? "CRM Sync Override Approved" : "CRM Sync Retried",
+        summary: isOverride
+          ? `Approved CRM job-count swing override for ${supaCtx.clientName} and completed CRM sync (${syncRes?.crmDealsPulled ?? 0} CRM jobs) by ${userEmail}`
+          : `Retried CRM sync for ${supaCtx.clientName} (${syncRes?.crmDealsPulled ?? 0} CRM jobs) and cleared paused-sync alert by ${userEmail}`,
+        details: { mode: cleanMode, crmDealsPulled: syncRes?.crmDealsPulled ?? 0, userEmail },
+      }).catch(() => { });
+
+      return res.status(200).json({
+        success: true,
+        resolved: true,
+        stillBlocked: false,
+        crmDealsPulled: syncRes?.crmDealsPulled ?? 0,
+        message: isOverride
+          ? "Override approved and CRM sync completed."
+          : "CRM sync completed and paused-sync alert cleared.",
+      });
+    }
+
+    // Fallback for legacy GAS sheet masters
+    const rawSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
+    const agentSecret = String(rawSecret).replace(/^["']|["']$/g, "").trim();
+    if (!agentSecret) {
+      return res.status(500).json({ success: false, error: "Agent trigger secret is not configured on server." });
+    }
+
+    const webAppUrl = await getClientWebAppUrl(sheets, cleanClientName, acId);
+    if (!webAppUrl || !isValidGoogleScriptUrl(webAppUrl)) {
+      return res.status(400).json({ success: false, error: `No valid automation endpoint configured for "${cleanClientName}".` });
+    }
+
+    const gasResp = await postGasWebAppLocked(webAppUrl, {
+      secret: agentSecret,
+      types: ["crm"],
+      clientName: cleanClientName,
+      allowCrmSwingOverride: isOverride,
+      overrideApprovedBy: userEmail,
+    });
+    const gasData = await gasResp.json().catch(() => null);
+    if (!gasResp.ok || (gasData && gasData.success === false)) {
+      return res.status(500).json({
+        success: false,
+        error: gasData?.error || `CRM sync failed (HTTP ${gasResp.status}).`,
+      });
+    }
+
+    if (isOverride) {
+      await clearCachedProactiveTypeForClient({
+        sheets,
+        acId,
+        clientName: supaCtx?.clientName || cleanClientName,
+        alertType: "crm_sync_blocked",
+        alertKey: alertKey || `crm_sync_blocked|${supaCtx?.clientName || cleanClientName}`,
+        rowIndex,
+        sessionId,
+        sessionUser,
+        isSystemAuthorized: Boolean(req.isSystemAuthorized),
+      });
+    }
+
+    await logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: supaCtx?.clientName || cleanClientName,
+      category: "CRM",
+      action: isOverride ? "CRM Sync Override Approved" : "CRM Sync Retried",
+      summary: isOverride
+        ? `Approved CRM job-count swing override for ${cleanClientName} by ${userEmail}`
+        : `Triggered CRM sync retry for ${cleanClientName} by ${userEmail}`,
+      details: { mode: cleanMode, userEmail },
+    }).catch(() => { });
+
+    return res.status(200).json({
+      success: true,
+      resolved: isOverride,
+      stillBlocked: false,
+      message: isOverride
+        ? "Override approved and CRM sync completed."
+        : "CRM sync retry triggered. Refresh alerts once complete.",
+    });
+  } catch (err) {
+    console.error(`resolve_crm_sync_block error for "${cleanClientName}":`, err);
+    return res.status(500).json({ success: false, error: err.message || "Failed to resolve CRM sync pause." });
+  }
 }

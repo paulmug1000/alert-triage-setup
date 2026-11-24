@@ -636,6 +636,7 @@ export function eomTargetMonthToWorkMonth(targetMonthKey) {
 export const PROACTIVE_TYPE_LABELS = {
   retainer_invoice: "Retainer invoice",
   crm_wipe: "CRM data wipe",
+  crm_sync_blocked: "CRM sync paused",
   revenue_mismatch: "Revenue / invoiced mismatch",
   direct_costs_mismatch: "Direct costs / expenses mismatch",
   pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
@@ -1602,6 +1603,15 @@ export function getProactiveCardTitle(alert, isAdmin = true) {
     }
     case "crm_wipe":
       return "Large drop in CRM deals detected during sync";
+    case "crm_sync_blocked": {
+      const tool = m.crmTool || alert.crmTool || "CRM";
+      const ex = m.existingCount ?? alert.existingCount;
+      const inc = m.incomingCount ?? alert.incomingCount;
+      if (ex !== undefined && ex !== null && inc !== undefined && inc !== null) {
+        return `${tool} sync paused — job count changed from ${ex} to ${inc}`;
+      }
+      return "CRM sync paused due to large change in job count";
+    }
     case "revenue_mismatch":
       return "Total invoiced does not match confirmed job revenue budget";
     case "direct_costs_mismatch":

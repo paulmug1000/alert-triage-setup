@@ -34,6 +34,7 @@ const KNOWN_PROACTIVE_TYPES = new Set([
   "retroactive_outgoings_update",
   "unmapped_pl_category",
   "crm_wipe",
+  "crm_sync_blocked",
   "revenue_mismatch",
   "direct_costs_mismatch",
   "pipeline_confirmed_overlap",
@@ -517,6 +518,75 @@ export default function AlertSelectionView({
   const [salaryForecastStartDates, setSalaryForecastStartDates] = useState({});
   const [resolvingSalaryForecast, setResolvingSalaryForecast] = useState({});
   const [salaryForecastMsg, setSalaryForecastMsg] = useState({});
+  const [resolvingCrmBlock, setResolvingCrmBlock] = useState({});
+  const [confirmOverrideCrmKey, setConfirmOverrideCrmKey] = useState(null);
+  const [crmBlockFeedback, setCrmBlockFeedback] = useState({});
+
+  const handleResolveCrmSyncBlock = async (alert, mode) => {
+    const alertKey = alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : "");
+    const m = alert.metadata || {};
+    const clientName = alert.clientName || selectedClient?.clientName;
+    if (!alertKey || !clientName) return;
+
+    const clientInfo = getClientInfoForAlert(alert, clientName);
+    const targetClientSheetId = m.clientSheetId || clientInfo?.clientSheetId || selectedClient?.clientSheetId || "";
+    const targetMasterSheetId = m.masterSheetId || clientInfo?.masterSheetId || selectedClient?.masterSheetId || "";
+
+    setResolvingCrmBlock(prev => ({ ...prev, [alertKey]: mode }));
+    setCrmBlockFeedback(prev => ({ ...prev, [alertKey]: null }));
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "resolve_crm_sync_block",
+          mode,
+          clientName,
+          clientSheetId: targetClientSheetId,
+          masterSheetId: targetMasterSheetId,
+          alertKey: alert.alertKey,
+          rowIndex: alert.rowIndex,
+          sessionId,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to update CRM sync status.");
+      }
+
+      setConfirmOverrideCrmKey(null);
+      if (data.resolved) {
+        setExitingAlertKeys(prev => new Set([...prev, alertKey]));
+        setTimeout(() => {
+          setExitingAlertKeys(prev => {
+            const next = new Set(prev);
+            next.delete(alertKey);
+            return next;
+          });
+          removeResolvedProactiveAlert(alert.alertKey, alert.rowIndex);
+        }, 320);
+      } else if (data.stillBlocked) {
+        setCrmBlockFeedback(prev => ({
+          ...prev,
+          [alertKey]: { type: "info", text: data.message || "CRM sync is still outside the ±25% limit." },
+        }));
+      } else {
+        setCrmBlockFeedback(prev => ({
+          ...prev,
+          [alertKey]: { type: "info", text: data.message || "CRM sync retry triggered." },
+        }));
+      }
+    } catch (err) {
+      setCrmBlockFeedback(prev => ({
+        ...prev,
+        [alertKey]: { type: "error", text: err.message || "Request failed." },
+      }));
+    } finally {
+      setResolvingCrmBlock(prev => ({ ...prev, [alertKey]: null }));
+    }
+  };
 
   const handleResolveSalaryForecast = async (alert, resolutionAction) => {
     const alertKey = alert.alertKey;
@@ -1750,6 +1820,7 @@ export default function AlertSelectionView({
             setRetainerSplitInvoice={setRetainerSplitInvoice}
             setRetainerChangeSendDates={setRetainerChangeSendDates}
             acknowledgeProactiveAlert={acknowledgeProactiveAlert}
+            onRemoveResolvedProactiveAlert={removeResolvedProactiveAlert}
             acknowledgingKey={acknowledgingKey}
             exitingAlertKeys={exitingAlertKeys}
             onNavInvoices={onNavInvoices}
@@ -2882,6 +2953,109 @@ export default function AlertSelectionView({
                                         {m.detailsSnippet && <div style={{ marginTop: "4px" }}><strong>AutoLog details:</strong><div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.detailsSnippet}</div></div>}
                                       </div>
                                     )}
+
+                                    {alert.alertType === "crm_sync_blocked" && (() => {
+                                      const blkKey = alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : "");
+                                      const crmTool = m.crmTool || alert.crmTool || "CRM";
+                                      const existingCount = m.existingCount ?? alert.existingCount;
+                                      const incomingCount = m.incomingCount ?? alert.incomingCount;
+                                      const delta = Number(m.delta ?? alert.delta ?? (Number(incomingCount) - Number(existingCount)));
+                                      const pctChange = Number(m.pctChange ?? alert.pctChange ?? 0);
+                                      const thresholdPct = Number(m.thresholdPct ?? alert.thresholdPct ?? 25);
+                                      const blockedAt = m.blockedAt || alert.blockedAt;
+                                      const busyMode = resolvingCrmBlock[blkKey];
+                                      const isConfirming = confirmOverrideCrmKey === blkKey;
+                                      const feedback = crmBlockFeedback[blkKey];
+                                      const sign = delta >= 0 ? "+" : "";
+
+                                      return (
+                                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "3px", marginTop: "2px", marginBottom: "4px" }}>
+                                          <div><strong>CRM source:</strong> {crmTool}</div>
+                                          {existingCount !== undefined && existingCount !== null && (
+                                            <div><strong>Currently synced jobs:</strong> {existingCount}</div>
+                                          )}
+                                          {incomingCount !== undefined && incomingCount !== null && (
+                                            <div><strong>Jobs returned by CRM:</strong> {incomingCount}</div>
+                                          )}
+                                          {Number.isFinite(delta) && (
+                                            <div>
+                                              <strong>Change:</strong>{" "}
+                                              <span style={{ fontWeight: "600", color: "#b45309" }}>
+                                                {sign}{delta} jobs ({sign}{pctChange}%, safety threshold ±{thresholdPct}%)
+                                              </span>
+                                            </div>
+                                          )}
+                                          {blockedAt && <div><strong>Paused at:</strong> {formatSeenTimestamp(blockedAt)}</div>}
+
+                                          <div style={{ marginTop: "6px", padding: "8px 10px", backgroundColor: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", color: "#92400e", lineHeight: "1.45" }}>
+                                            Sync was paused to protect your Pulse jobs from an accidental CRM filter or view change. If unintentional, fix the filter in your CRM and click Retry sync. If intentional, approve the override to proceed.
+                                          </div>
+
+                                          {feedback && (
+                                            <div style={{
+                                              marginTop: "4px",
+                                              padding: "7px 10px",
+                                              borderRadius: "6px",
+                                              fontSize: "12px",
+                                              backgroundColor: feedback.type === "error" ? "#fef2f2" : "#fffbeb",
+                                              border: `1px solid ${feedback.type === "error" ? "#fecaca" : "#fde68a"}`,
+                                              color: feedback.type === "error" ? "#991b1b" : "#92400e",
+                                            }}>
+                                              {feedback.text}
+                                            </div>
+                                          )}
+
+                                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                            {!isConfirming ? (
+                                              <>
+                                                <button
+                                                  type="button"
+                                                  className="triage-btn"
+                                                  disabled={!!busyMode}
+                                                  onClick={() => handleResolveCrmSyncBlock(alert, "retry")}
+                                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 12px", opacity: busyMode ? 0.65 : 1 }}
+                                                >
+                                                  {busyMode === "retry" ? <><Spinner size={12} /> Retrying...</> : "Retry sync"}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className="triage-btn"
+                                                  disabled={!!busyMode}
+                                                  onClick={() => setConfirmOverrideCrmKey(blkKey)}
+                                                  style={{ padding: "6px 12px", background: "#d97706", color: "#fff", border: "none", borderRadius: "6px", cursor: busyMode ? "default" : "pointer", fontSize: "12px", fontWeight: "600", opacity: busyMode ? 0.65 : 1 }}
+                                                >
+                                                  Override &amp; run sync
+                                                </button>
+                                              </>
+                                            ) : (
+                                              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", width: "100%", backgroundColor: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "8px 10px" }}>
+                                                <span style={{ fontSize: "12px", color: "#92400e", fontWeight: "500" }}>
+                                                  Proceed with syncing {incomingCount} jobs from {crmTool}?
+                                                </span>
+                                                <button
+                                                  type="button"
+                                                  className="triage-btn"
+                                                  disabled={!!busyMode}
+                                                  onClick={() => handleResolveCrmSyncBlock(alert, "override")}
+                                                  style={{ padding: "5px 12px", background: "#b45309", color: "#fff", border: "none", borderRadius: "5px", cursor: busyMode ? "default" : "pointer", fontSize: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "5px", opacity: busyMode ? 0.65 : 1 }}
+                                                >
+                                                  {busyMode === "override" ? <><Spinner size={12} color="#fff" /> Syncing...</> : "Confirm override"}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className="triage-btn"
+                                                  disabled={!!busyMode}
+                                                  onClick={() => setConfirmOverrideCrmKey(null)}
+                                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 10px" }}
+                                                >
+                                                  Cancel
+                                                </button>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
 
                                     {alert.alertType === "revenue_mismatch" && (() => {
                                       const parsed = (!m.revenue && !alert.revenue && alert.detail) ? parseRevenueMismatchDetail(alert.detail) : {};

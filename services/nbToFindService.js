@@ -23,6 +23,13 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
 import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import {
+  preloadClientRelationalInputsBundle,
+  reconstructRelationalTabFromBundle,
+  sliceRelationalTabValues,
+  buildRelationalSheetRowData,
+} from "./relationalInputsService.js";
 
 export function colIdxToLetter(colIdx) {
   let temp = colIdx + 1;
@@ -57,17 +64,53 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
 
   const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
   const cacheKey = `pma_nbtofind_${cleanClientId}`;
+  const forceMode =
+    options?._forceInputsReadMode === "grid" || options?._forceInputsReadMode === "relational"
+      ? options._forceInputsReadMode
+      : null;
 
-  const cachedResult = await resolvePortalCache({
-    cacheKey,
-    bypassCache: Boolean(bypassCache),
-    minBypassAgeMs: options?.minBypassAgeMs || 0,
-    l1TtlSecs: 120,
-    redisTtlSecs: 86400,
-    isValidPayload: (p) => Boolean(p && p.success && p.sections),
-    fetchFreshFn: async () => {
-      const sheets = await getSheetsClient();
+  const fetchFreshFn = async () => {
+    const sheets = await getSheetsClient();
+    const sbCtx = await resolveSupabaseSheetContext({
+      spreadsheetId: cleanClientId,
+      clientName: clientName && clientName !== "Client" ? clientName : "",
+    }).catch(() => null);
+    const useRelReads = forceMode
+      ? forceMode === "relational"
+      : Boolean(sbCtx?.inputsMode === "relational" && sbCtx?.inputsReadMode === "relational" && sbCtx?.clientId);
 
+    let rows = [];
+    let gridRowData = [];
+    let keyInfoB15 = "";
+    let currencyRows = [];
+    let keyInfoD8 = "";
+    let usedRelReads = false;
+
+    if (useRelReads && sbCtx?.clientId) {
+      const [keyInfoBatch, relBundle] = await Promise.all([
+        withRetry(() =>
+          sheets.spreadsheets.values.batchGet({
+            spreadsheetId: cleanClientId,
+            ranges: ["KeyInfo!B15", "KeyInfo!C4:D5", "KeyInfo!D8"],
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        ),
+        preloadClientRelationalInputsBundle(sbCtx, { includeNbToFind: true }),
+      ]);
+      const kiRanges = keyInfoBatch.data.valueRanges || [];
+      keyInfoB15 = String(kiRanges[0]?.values?.[0]?.[0] || "").trim();
+      currencyRows = kiRanges[1]?.values || [];
+      keyInfoD8 = String(kiRanges[2]?.values?.[0]?.[0] || "").trim();
+
+      if (relBundle?.nbRecord?.reconciled_rollups?._nbMeta) {
+        usedRelReads = true;
+        const nbState = reconstructRelationalTabFromBundle(relBundle, "NBtoFind");
+        rows = sliceRelationalTabValues(nbState, "NBtoFind", { startRow0: 0, endRow0: 24, startCol0: 0, endCol0: 47, formatted: true });
+        gridRowData = buildRelationalSheetRowData(nbState, "NBtoFind", { startRow0: 0, endRow0: 24, startCol0: 0, endCol0: 47, notesOnly: false });
+      }
+    }
+
+    if (!usedRelReads) {
       const [response, gridResponse] = await Promise.all([
         withRetry(async () => {
           return await sheets.spreadsheets.values.batchGet({
@@ -91,11 +134,12 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
       ]);
 
       const valueRanges = response.data.valueRanges || [];
-      const rows = valueRanges[0]?.values || [];
-      const gridRowData = gridResponse.data?.sheets?.[0]?.data?.[0]?.rowData || [];
-      const keyInfoB15 = String(valueRanges[1]?.values?.[0]?.[0] || "").trim();
-      const currencyRows = valueRanges[2]?.values || [];
-      const keyInfoD8 = String(valueRanges[3]?.values?.[0]?.[0] || "").trim();
+      rows = valueRanges[0]?.values || [];
+      gridRowData = gridResponse.data?.sheets?.[0]?.data?.[0]?.rowData || [];
+      keyInfoB15 = String(valueRanges[1]?.values?.[0]?.[0] || "").trim();
+      currencyRows = valueRanges[2]?.values || [];
+      keyInfoD8 = String(valueRanges[3]?.values?.[0]?.[0] || "").trim();
+    }
 
       const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
       let currencySymbol = rawCurrencySymbol;
@@ -282,11 +326,25 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
           row23,
           row25,
         },
+        inputsReadMode: usedRelReads ? "relational" : "grid",
         lastUpdated: new Date().toISOString(),
       };
 
       return result;
-    },
+  };
+
+  if (forceMode) {
+    return await fetchFreshFn();
+  }
+
+  const cachedResult = await resolvePortalCache({
+    cacheKey,
+    bypassCache: Boolean(bypassCache),
+    minBypassAgeMs: options?.minBypassAgeMs || 0,
+    l1TtlSecs: 120,
+    redisTtlSecs: 86400,
+    isValidPayload: (p) => Boolean(p && p.success && p.sections),
+    fetchFreshFn,
   });
 
   return cachedResult.data;

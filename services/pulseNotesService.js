@@ -20,6 +20,11 @@ import {
   normalizeAmountFingerprint,
   normalizeDateFingerprint,
   buildJobNoteKey,
+  buildContractorBillNoteKey,
+  buildContractorRowNoteKey,
+  buildDividendRowNoteKey,
+  buildEmployeeNoteKey,
+  buildOutgoingRowNoteKey,
 } from "../utils/pulseNotesKeys.js";
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -112,6 +117,9 @@ function mapNoteRow(r, replies = []) {
     id: r.id,
     clientId: r.client_id || null,
     jobId: r.job_id || null,
+    employeeId: r.employee_id || null,
+    outgoingItemId: r.outgoing_item_id || null,
+    contractorEntryId: r.contractor_entry_id || null,
     clientName: r.client_name || "",
     scopeType: r.scope_type || "entity",
     entityType: r.entity_type || "job",
@@ -910,10 +918,89 @@ export async function createPulseNote({
     } catch (_) { }
   }
 
+  let resolvedEmployeeId = null;
+  let resolvedOutgoingItemId = null;
+  let resolvedContractorEntryId = null;
+  if (clientRow?.id && (cleanType === "employee" || cleanType === "outgoing" || cleanType === "contractor" || cleanType === "dividend" || cleanType === "contractor_bill")) {
+    try {
+      const empCand = String(contextMeta?.employeeUuid || "").trim();
+      const outCand = String(contextMeta?.outgoingItemUuid || "").trim();
+      const ceCand = String(contextMeta?.contractorEntryUuid || "").trim();
+
+      if (cleanType === "employee") {
+        if (UUID_REGEX.test(empCand)) {
+          const { data: vEmp } = await sb.from("pulse_employees").select("id").eq("client_id", clientRow.id).eq("id", empCand).maybeSingle();
+          if (vEmp?.id) resolvedEmployeeId = vEmp.id;
+        }
+        if (!resolvedEmployeeId) {
+          const { data: emps } = await sb.from("pulse_employees").select("id, employee_name").eq("client_id", clientRow.id).limit(500);
+          for (const e of emps || []) {
+            if (e.employee_name && buildEmployeeNoteKey(e.employee_name) === cleanKey) {
+              resolvedEmployeeId = e.id;
+              break;
+            }
+          }
+        }
+      } else if (cleanType === "outgoing" || cleanType === "contractor" || cleanType === "dividend") {
+        if (UUID_REGEX.test(outCand)) {
+          const { data: vOut } = await sb.from("pulse_outgoing_items").select("id").eq("client_id", clientRow.id).eq("id", outCand).maybeSingle();
+          if (vOut?.id) resolvedOutgoingItemId = vOut.id;
+        }
+        if (!resolvedOutgoingItemId) {
+          const targetOutKey = cleanParentKey || cleanKey;
+          const { data: outs } = await sb.from("pulse_outgoing_items").select("id, section, name").eq("client_id", clientRow.id).limit(1000);
+          for (const o of outs || []) {
+            if (!o.name) continue;
+            const k =
+              o.section === "contractor" || o.section === "making_up_cos"
+                ? buildContractorRowNoteKey(o.name)
+                : o.section === "dividend"
+                  ? buildDividendRowNoteKey(o.name)
+                  : buildOutgoingRowNoteKey(o.name);
+            if (k === targetOutKey || k === cleanKey) {
+              resolvedOutgoingItemId = o.id;
+              break;
+            }
+          }
+        }
+      } else if (cleanType === "contractor_bill") {
+        if (UUID_REGEX.test(ceCand)) {
+          const { data: vCe } = await sb.from("pulse_contractor_entries").select("id, outgoing_item_id").eq("client_id", clientRow.id).eq("id", ceCand).maybeSingle();
+          if (vCe?.id) {
+            resolvedContractorEntryId = vCe.id;
+            if (vCe.outgoing_item_id) resolvedOutgoingItemId = vCe.outgoing_item_id;
+          }
+        }
+        if (!resolvedContractorEntryId) {
+          const { data: ces } = await sb.from("pulse_contractor_entries").select("id, outgoing_item_id, external_app_id").eq("client_id", clientRow.id).neq("external_app_id", "").limit(2000);
+          for (const ce of ces || []) {
+            if (ce.external_app_id && buildContractorBillNoteKey("", "", { appId: ce.external_app_id }) === cleanKey) {
+              resolvedContractorEntryId = ce.id;
+              if (ce.outgoing_item_id) resolvedOutgoingItemId = ce.outgoing_item_id;
+              break;
+            }
+          }
+        }
+        if (!resolvedOutgoingItemId && cleanParentKey) {
+          const { data: outs } = await sb.from("pulse_outgoing_items").select("id, section, name").eq("client_id", clientRow.id).limit(1000);
+          for (const o of outs || []) {
+            if (o.name && (o.section === "contractor" || o.section === "making_up_cos") && buildContractorRowNoteKey(o.name) === cleanParentKey) {
+              resolvedOutgoingItemId = o.id;
+              break;
+            }
+          }
+        }
+      }
+    } catch (_) { }
+  }
+
   const insertRow = {
     client_id: clientRow?.id || null,
     client_name: canonicalClientName,
     ...(resolvedJobId ? { job_id: resolvedJobId } : {}),
+    ...(resolvedEmployeeId ? { employee_id: resolvedEmployeeId } : {}),
+    ...(resolvedOutgoingItemId ? { outgoing_item_id: resolvedOutgoingItemId } : {}),
+    ...(resolvedContractorEntryId ? { contractor_entry_id: resolvedContractorEntryId } : {}),
     scope_type: resolvedScopeType,
     entity_type: cleanType,
     entity_key: cleanKey,
@@ -937,8 +1024,18 @@ export async function createPulseNote({
     .insert(insertRow)
     .select("*")
     .single();
-  if (error && resolvedJobId && String(error.message || "").includes("job_id")) {
+  if (
+    error &&
+    (resolvedJobId || resolvedEmployeeId || resolvedOutgoingItemId || resolvedContractorEntryId) &&
+    (String(error.message || "").includes("job_id") ||
+      String(error.message || "").includes("employee_id") ||
+      String(error.message || "").includes("outgoing_item_id") ||
+      String(error.message || "").includes("contractor_entry_id"))
+  ) {
     delete insertRow.job_id;
+    delete insertRow.employee_id;
+    delete insertRow.outgoing_item_id;
+    delete insertRow.contractor_entry_id;
     ({ data: created, error } = await sb.from("pulse_notes").insert(insertRow).select("*").single());
   }
 
@@ -972,7 +1069,7 @@ export async function createPulseNote({
       notifyManager: shouldNotify,
     },
     user: mappedNote.authorName || mappedNote.authorEmail,
-  }).catch(() => {});
+  }).catch(() => { });
 
   const emailTask = shouldNotify
     ? sendManagerNoteNotificationEmail({ note: mappedNote, recipients })
@@ -1126,7 +1223,7 @@ export async function addPulseNoteReply({ sessionUser, noteId, body, scheduleBg 
           : `Replied to note on ${mappedNote.entityLabel}`,
       details: { noteId: existing.id, isStaffReply: staffReply },
       user: actorName || actorEmail,
-    }).catch(() => {})
+    }).catch(() => { })
   );
 
   const bgPromise = Promise.all(tasks);
@@ -1152,20 +1249,20 @@ export async function setPulseNoteStatus({ sessionUser, noteId, status, schedule
   const patch =
     targetStatus === "resolved"
       ? {
-          status: "resolved",
-          resolved_by_email: actorEmail,
-          resolved_by_name: actorName,
-          resolved_at: new Date().toISOString(),
-          ...(staffActor && existing.author_email && existing.author_email.toLowerCase() !== actorEmail
-            ? { client_unread_reply: true }
-            : {}),
-        }
+        status: "resolved",
+        resolved_by_email: actorEmail,
+        resolved_by_name: actorName,
+        resolved_at: new Date().toISOString(),
+        ...(staffActor && existing.author_email && existing.author_email.toLowerCase() !== actorEmail
+          ? { client_unread_reply: true }
+          : {}),
+      }
       : {
-          status: existing.notify_manager ? "open" : "note",
-          resolved_by_email: "",
-          resolved_by_name: "",
-          resolved_at: null,
-        };
+        status: existing.notify_manager ? "open" : "note",
+        resolved_by_email: "",
+        resolved_by_name: "",
+        resolved_at: null,
+      };
 
   const { data: updated, error } = await sb
     .from("pulse_notes")
@@ -1208,7 +1305,7 @@ export async function setPulseNoteStatus({ sessionUser, noteId, status, schedule
           : `${targetStatus === "resolved" ? "Resolved" : "Reopened"} note on ${mappedNote.entityLabel}`,
       details: { noteId: existing.id },
       user: actorName || actorEmail,
-    }).catch(() => {})
+    }).catch(() => { })
   );
 
   const bgPromise = Promise.all(tasks);

@@ -17,8 +17,11 @@ import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cac
 import { sanitizeFormulaInput, unwrapSheetId, resolveClientNameBySheetId } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
 import { scheduleWaitUntil_ } from "./alertState.js";
-import { evaluateSafeArithmetic } from "../utils/helpers.js";
+import { evaluateSafeArithmetic, isCashCellEditable } from "../utils/helpers.js";
+export { isCashCellEditable };
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { preloadClientRelationalInputsBundle } from "./relationalInputsService.js";
+import { formatCellForDisplay } from "./gasRuntime/sheetValueUtils.js";
 import { formatMoney as universalFormatMoney } from "./deepDiveHelper.js";
 import {
   getClientCashBankBreakdowns,
@@ -65,48 +68,8 @@ export function parseMonthHeader(label) {
 }
 
 /**
- * Strict whitelist determining whether a cell is editable in the Cash tab.
- * @param {number} rowNum 1-based sheet row number (e.g. 4, 7, 36)
- * @param {number} colIdx 0-based column index (0 = A, 1 = B, 9 = J, etc.)
+ * Re-exported from utils/helpers.js to avoid circular imports with relationalInputsService.js.
  */
-export function isCashCellEditable(rowNum, colIdx) {
-  // Column A (index 0) is line item labels - never editable; columns beyond AK (36) are out of bounds
-  if (isNaN(colIdx) || colIdx < 1 || colIdx > 36) return false;
-
-  // 1. Whitelisted Single Override Cells
-  // B4 (Month 1 Opening balance)
-  if (rowNum === 4 && colIdx === 1) return true;
-  // B8 (Month 1 Salaries)
-  if (rowNum === 8 && colIdx === 1) return true;
-  // B12 (Month 1 Contractors)
-  if (rowNum === 12 && colIdx === 1) return true;
-  // B16 (Month 1 Other expenses)
-  if (rowNum === 16 && colIdx === 1) return true;
-  // B19 (Month 1 Corporation tax)
-  if (rowNum === 19 && colIdx === 1) return true;
-  // B21 (Month 1 VAT)
-  if (rowNum === 21 && colIdx === 1) return true;
-  // J19 (Month 9 Corporation tax)
-  if (rowNum === 19 && colIdx === 9) return true;
-
-  // Table 2 Pipeline Overrides
-  // B61 (Table 2 Month 1 Corporation tax)
-  if (rowNum === 61 && colIdx === 1) return true;
-  // B63 (Table 2 Month 1 VAT)
-  if (rowNum === 63 && colIdx === 1) return true;
-  // J61 (Table 2 Month 9 Corporation tax)
-  if (rowNum === 61 && colIdx === 9) return true;
-
-  // 2. Table 1 Adjustment Rows (All months, Col B onwards)
-  // Rows: 7, 9, 11, 13, 15, 17, 20, 22, 25, 27, 29, 30
-  const adjustmentRows = [7, 9, 11, 13, 15, 17, 20, 22, 25, 27, 29, 30];
-  if (adjustmentRows.includes(rowNum)) return true;
-
-  // 3. Actual Closing Balance Row (Row 36, all months)
-  if (rowNum === 36) return true;
-
-  return false;
-}
 
 /**
  * Fetch 36 months of data from Cash!A1:AK76
@@ -116,40 +79,52 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
 
   const cleanId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || String(clientSheetId).trim());
   const cacheKey = `pma_cash_${cleanId}`;
+  const forceMode =
+    options?._forceInputsReadMode === "grid" || options?._forceInputsReadMode === "relational"
+      ? options._forceInputsReadMode
+      : null;
 
-  const cachedResult = await resolvePortalCache({
-    cacheKey,
-    bypassCache: Boolean(bypassCache),
-    minBypassAgeMs: options?.minBypassAgeMs || 0,
-    l1TtlSecs: 120,
-    redisTtlSecs: 86400,
-    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.table1Rows) && Array.isArray(p.bankAccounts)),
-    fetchFreshFn: async () => {
-      const sheets = await getSheetsClient();
+  const fetchFreshFn = async () => {
+    const sheets = await getSheetsClient();
 
-      let resolvedClientName = String(clientName || "").trim();
-      const sbCtx = await resolveSupabaseSheetContext({
-        spreadsheetId: cleanId,
-        clientName: resolvedClientName && resolvedClientName !== "Client" ? resolvedClientName : "",
-      }).catch(() => null);
-      if (sbCtx?.clientName) {
-        resolvedClientName = sbCtx.clientName;
-      } else if (!resolvedClientName || resolvedClientName === "Client") {
-        const lookedUp = await resolveClientNameBySheetId(sheets, cleanId).catch(() => "");
-        if (lookedUp) resolvedClientName = lookedUp;
+    let resolvedClientName = String(clientName || "").trim();
+    const sbCtx = await resolveSupabaseSheetContext({
+      spreadsheetId: cleanId,
+      clientName: resolvedClientName && resolvedClientName !== "Client" ? resolvedClientName : "",
+    }).catch(() => null);
+    if (sbCtx?.clientName) {
+      resolvedClientName = sbCtx.clientName;
+    } else if (!resolvedClientName || resolvedClientName === "Client") {
+      const lookedUp = await resolveClientNameBySheetId(sheets, cleanId).catch(() => "");
+      if (lookedUp) resolvedClientName = lookedUp;
+    }
+
+    const useRelReads = forceMode
+      ? forceMode === "relational"
+      : Boolean(sbCtx?.inputsMode === "relational" && sbCtx?.inputsReadMode === "relational" && sbCtx?.clientId);
+
+    // Fetch Cash!A1:AK76 and KeyInfo!A1:I21 with values, formulas, notes, and effective formats (shading)
+    const [res, storedBreakdowns, relInputsBundle] = await Promise.all([
+      withRetry(async () => {
+        return await sheets.spreadsheets.get({
+          spreadsheetId: cleanId,
+          ranges: ["Cash!A1:AK76", "KeyInfo!A1:I21"],
+          fields: "sheets(properties(title,sheetId),data.rowData.values(formattedValue,effectiveValue,userEnteredValue,note,effectiveFormat(backgroundColor,textFormat)))",
+        });
+      }),
+      getClientCashBankBreakdowns(resolvedClientName, forceMode ? { _forceInputsReadMode: forceMode } : {}),
+      useRelReads && sbCtx?.clientId
+        ? preloadClientRelationalInputsBundle(sbCtx, { includeCash: true }).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+    const usedRelReads = Boolean(useRelReads && relInputsBundle);
+    const cashAdjByCoord = new Map();
+    if (usedRelReads) {
+      for (const adj of relInputsBundle.cashAdjustments || []) {
+        cashAdjByCoord.set(`${adj.sheet_row_num}:${adj.sheet_col_idx}`, adj);
       }
-
-      // Fetch Cash!A1:AK76 and KeyInfo!A1:I21 with values, formulas, notes, and effective formats (shading)
-      const [res, storedBreakdowns] = await Promise.all([
-        withRetry(async () => {
-          return await sheets.spreadsheets.get({
-            spreadsheetId: cleanId,
-            ranges: ["Cash!A1:AK76", "KeyInfo!A1:I21"],
-            fields: "sheets(properties(title,sheetId),data.rowData.values(formattedValue,effectiveValue,userEnteredValue,note,effectiveFormat(backgroundColor,textFormat)))",
-          });
-        }),
-        getClientCashBankBreakdowns(resolvedClientName),
-      ]);
+    }
 
       const cashSheet = res.data?.sheets?.find((s) => s.properties?.title === "Cash") || res.data?.sheets?.[0];
       const rowData = cashSheet?.data?.[0]?.rowData || [];
@@ -233,18 +208,34 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
 
           const cells = monthCols.map((m) => {
             const cellData = rowCells[m.colIdx];
-            const formattedValue = cellData?.formattedValue !== undefined && cellData?.formattedValue !== null
+            let formattedValue = cellData?.formattedValue !== undefined && cellData?.formattedValue !== null
               ? String(cellData.formattedValue).trim()
               : "";
-            const formula = cellData?.userEnteredValue?.formulaValue || "";
-            const numericValue =
+            let formula = cellData?.userEnteredValue?.formulaValue || "";
+            let numericValue =
               typeof cellData?.effectiveValue?.numberValue === "number"
                 ? cellData.effectiveValue.numberValue
                 : (typeof cellData?.userEnteredValue?.numberValue === "number" ? cellData.userEnteredValue.numberValue : null);
-            const note = cellData?.note || "";
+            let note = cellData?.note || "";
             const isEditable = isCashCellEditable(r, m.colIdx);
             const bgColor = colorToCss(cellData?.effectiveFormat?.backgroundColor);
             const cellBold = Boolean(cellData?.effectiveFormat?.textFormat?.bold);
+
+            if (usedRelReads) {
+              const adj = cashAdjByCoord.get(`${r}:${m.colIdx}`) || null;
+              if (isEditable) {
+                formula = adj?.formula || "";
+                const rawVal = adj && adj.raw_value !== undefined && adj.raw_value !== null ? adj.raw_value : "";
+                const strVal = rawVal === "" ? "" : String(rawVal);
+                formattedValue = strVal !== "" ? String(formatCellForDisplay("client", "Cash", r - 1, m.colIdx, rawVal) || "").trim() : "";
+                const numClean = typeof rawVal === "number" ? rawVal : parseFloat(strVal.replace(/[£$€,\s]/g, ""));
+                const isNum =
+                  typeof rawVal === "number" ||
+                  (strVal !== "" && !isNaN(numClean) && /^[-+]?[£$€]?\s*[\d,]+(\.\d+)?%?$/.test(strVal.trim()));
+                numericValue = isNum ? numClean : null;
+              }
+              note = adj?.cell_note || "";
+            }
 
             const cellOut = {
               sheetRow: r,
@@ -305,11 +296,25 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
         currentMonthColIdx,
         table1Rows,
         table2Rows,
+        inputsReadMode: usedRelReads ? "relational" : "grid",
         lastUpdated: new Date().toISOString(),
       };
 
       return result;
-    },
+  };
+
+  if (forceMode) {
+    return await fetchFreshFn();
+  }
+
+  const cachedResult = await resolvePortalCache({
+    cacheKey,
+    bypassCache: Boolean(bypassCache),
+    minBypassAgeMs: options?.minBypassAgeMs || 0,
+    l1TtlSecs: 120,
+    redisTtlSecs: 86400,
+    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.table1Rows) && Array.isArray(p.bankAccounts)),
+    fetchFreshFn,
   });
 
   return cachedResult.data;

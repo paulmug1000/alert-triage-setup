@@ -39,6 +39,42 @@ function createSafeMap_() {
   return Object.create(null);
 }
 
+function escapeIlikeLocal_(value) {
+  return String(value || "").replace(/[\\%_]/g, "\\$&");
+}
+
+async function resolveClientBankBalanceMeta_(sb, cleanName) {
+  const safeName = String(cleanName || "").trim();
+  if (!sb || !safeName) return null;
+  try {
+    let { data, error } = await sb
+      .from("clients")
+      .select("id, client_name, inputs_mode, inputs_read_mode, metadata")
+      .ilike("client_name", escapeIlikeLocal_(safeName))
+      .limit(1)
+      .maybeSingle();
+    if (error && String(error.message || "").includes("inputs_read_mode")) {
+      ({ data, error } = await sb
+        .from("clients")
+        .select("id, client_name, metadata")
+        .ilike("client_name", escapeIlikeLocal_(safeName))
+        .limit(1)
+        .maybeSingle());
+    }
+    if (error || !data?.id) return null;
+    const inputsMode = String(data.inputs_mode || data.metadata?.inputs_mode || "grid").trim().toLowerCase();
+    const inputsReadMode = String(data.inputs_read_mode || data.metadata?.inputs_read_mode || "grid").trim().toLowerCase();
+    return {
+      id: data.id,
+      client_name: data.client_name || safeName,
+      inputsMode: inputsMode === "relational" ? "relational" : "grid",
+      inputsReadMode: inputsReadMode === "relational" ? "relational" : "grid",
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Sanitizes and normalizes an array of per-bank balance entries.
  */
@@ -93,20 +129,66 @@ export function buildRow36FormulaFromAccounts(accounts = []) {
 }
 
 /**
- * Reads all stored monthly bank breakdowns for a client from public.system_config.
+ * Reads all stored monthly bank breakdowns for a client.
+ * Reads `pulse_cash_bank_balances` when `inputs_read_mode = 'relational'` (or forced),
+ * otherwise reads from `public.system_config` (`cash_bank_breakdowns:*`).
  */
-export async function getClientCashBankBreakdowns(clientName) {
+export async function getClientCashBankBreakdowns(clientName, options = {}) {
   const cleanName = String(clientName || "").trim();
   const empty = { clientName: cleanName, months: createSafeMap_() };
   if (!cleanName || !isSupabaseConfigured()) return empty;
 
-  const configKey = getBreakdownConfigKey(cleanName);
-  if (!configKey) return empty;
-
   const sb = getSupabaseAdmin();
   if (!sb) return empty;
 
+  const forceSource = options?.forceSource || null; // "system_config" | "relational" | null
+  const forceMode = options?._forceInputsReadMode || null; // "grid" | "relational" | null
+
   try {
+    let useRelational = false;
+    let clRow = null;
+    if (forceSource === "relational" || forceMode === "relational") {
+      clRow = await resolveClientBankBalanceMeta_(sb, cleanName);
+      useRelational = Boolean(clRow?.id);
+    } else if (!forceSource && forceMode !== "grid") {
+      clRow = await resolveClientBankBalanceMeta_(sb, cleanName);
+      useRelational = Boolean(clRow?.id && clRow.inputsMode === "relational" && clRow.inputsReadMode === "relational");
+    }
+
+    if (useRelational && clRow?.id) {
+      const { data: relRows, error: relErr } = await sb
+        .from("pulse_cash_bank_balances")
+        .select("period_ym, source, basis, total_balance, accounts, updated_at, updated_by")
+        .eq("client_id", clRow.id);
+
+      if (!relErr && Array.isArray(relRows)) {
+        const months = createSafeMap_();
+        for (const row of relRows) {
+          const mKey = String(row?.period_ym || "").trim();
+          if (!mKey || FORBIDDEN_KEYS.has(mKey) || !MONTH_KEY_RE.test(mKey)) continue;
+          const cleanAccounts = sanitizeBreakdownAccounts(row.accounts);
+          if (cleanAccounts.length === 0) continue;
+          const computedTotal = round2(cleanAccounts.reduce((s, a) => s + a.amount, 0));
+          months[mKey] = {
+            monthKey: mKey,
+            source: String(row.source || "manual"),
+            basis: String(row.basis || "manual"),
+            total: Number.isFinite(Number(row.total_balance)) ? round2(row.total_balance) : computedTotal,
+            accounts: cleanAccounts,
+            updatedAt: row.updated_at || null,
+            updatedBy: row.updated_by || "",
+          };
+        }
+        return {
+          clientName: String(clRow.client_name || cleanName),
+          months,
+        };
+      }
+    }
+
+    const configKey = getBreakdownConfigKey(cleanName);
+    if (!configKey) return empty;
+
     const { data, error } = await sb
       .from("system_config")
       .select("value")
@@ -149,7 +231,8 @@ export async function getClientCashBankBreakdowns(clientName) {
 }
 
 /**
- * Persists a single month's named bank balance breakdown for a client.
+ * Persists a single month's named bank balance breakdown for a client
+ * (writes system_config and dual-writes public.pulse_cash_bank_balances).
  */
 export async function saveClientCashBankBreakdownMonth({
   clientName,
@@ -186,7 +269,7 @@ export async function saveClientCashBankBreakdownMonth({
     throw new Error("Supabase is not configured.");
   }
 
-  const existing = await getClientCashBankBreakdowns(cleanName);
+  const existing = await getClientCashBankBreakdowns(cleanName, { forceSource: "system_config" });
   const nextMonths = {};
   for (const [k, v] of Object.entries(existing.months || {})) {
     if (FORBIDDEN_KEYS.has(k) || !MONTH_KEY_RE.test(k)) continue;
@@ -205,26 +288,49 @@ export async function saveClientCashBankBreakdownMonth({
   };
   nextMonths[cleanMonth] = entry;
 
-  const { error } = await sb.from("system_config").upsert({
-    key: configKey,
-    value: {
-      clientName: cleanName,
-      updatedAt: nowIso,
-      months: nextMonths,
-    },
-    description: "Per-month bank balance breakdowns for Cash Row 36",
-    updated_by: String(updatedBy || "System").slice(0, 160),
-  });
+  const [{ error }, clRow] = await Promise.all([
+    sb.from("system_config").upsert({
+      key: configKey,
+      value: {
+        clientName: cleanName,
+        updatedAt: nowIso,
+        months: nextMonths,
+      },
+      description: "Per-month bank balance breakdowns for Cash Row 36",
+      updated_by: String(updatedBy || "System").slice(0, 160),
+    }),
+    resolveClientBankBalanceMeta_(sb, cleanName),
+  ]);
 
   if (error) {
     throw new Error(`Failed to save cash bank breakdown: ${error.message}`);
+  }
+
+  if (clRow?.id) {
+    await sb
+      .from("pulse_cash_bank_balances")
+      .upsert(
+        {
+          client_id: clRow.id,
+          client_name: clRow.client_name,
+          period_ym: cleanMonth,
+          source: entry.source,
+          basis: entry.basis,
+          total_balance: finalTotal,
+          accounts: cleanAccounts,
+          updated_by: entry.updatedBy,
+        },
+        { onConflict: "client_id,period_ym" }
+      )
+      .catch(() => { });
   }
 
   return entry;
 }
 
 /**
- * Deletes a single month's stored bank balance breakdown for a client.
+ * Deletes a single month's stored bank balance breakdown for a client
+ * across both system_config and public.pulse_cash_bank_balances.
  */
 export async function deleteClientCashBankBreakdownMonth({
   clientName,
@@ -241,9 +347,25 @@ export async function deleteClientCashBankBreakdownMonth({
   const sb = getSupabaseAdmin();
   if (!sb) return { deleted: false };
 
-  const existing = await getClientCashBankBreakdowns(cleanName);
+  const [existing, clRow] = await Promise.all([
+    getClientCashBankBreakdowns(cleanName, { forceSource: "system_config" }),
+    resolveClientBankBalanceMeta_(sb, cleanName),
+  ]);
+
+  let relDeleted = false;
+  if (clRow?.id) {
+    try {
+      const { error: delRelErr, count } = await sb
+        .from("pulse_cash_bank_balances")
+        .delete({ count: "exact" })
+        .eq("client_id", clRow.id)
+        .eq("period_ym", cleanMonth);
+      if (!delRelErr && (count || 0) > 0) relDeleted = true;
+    } catch { }
+  }
+
   if (!existing.months || !Object.prototype.hasOwnProperty.call(existing.months, cleanMonth)) {
-    return { deleted: false };
+    return { deleted: relDeleted };
   }
 
   const nextMonths = {};

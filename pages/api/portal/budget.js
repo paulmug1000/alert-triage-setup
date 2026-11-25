@@ -5,6 +5,12 @@ import { assertClientPortalLive } from "../../../services/setupService.js";
 import { resolvePortalCache } from "../../../services/cacheService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 import { hasNBToFindInBudget } from "../../../services/deepDiveHelper.js";
+import { resolveSupabaseSheetContext } from "../../../services/masterEngineService.js";
+import {
+  preloadClientRelationalInputsBundle,
+  reconstructRelationalTabFromBundle,
+  sliceRelationalTabValues,
+} from "../../../services/relationalInputsService.js";
 
 const BUDGET_CACHE_TTL_SECS = 60; // 60s L1 fresh window
 const BUDGET_REDIS_TTL_SECS = 86400; // 24h Redis SWR retention
@@ -23,6 +29,206 @@ function parseMonthYear(str) {
   }
   const d = new Date(str);
   return isNaN(d.getTime()) ? null : d;
+}
+
+export async function buildPortalBudgetPayload({ sheets, clientSheetId, clientName = "", _forceInputsReadMode = null }) {
+  const [existingTitles, sbCtx] = await Promise.all([
+    getSheetTitles(sheets, clientSheetId),
+    resolveSupabaseSheetContext({ spreadsheetId: clientSheetId, clientName }).catch(() => null),
+  ]);
+
+  if (!existingTitles.has("Budget")) {
+    return {
+      _skipCache: true,
+      _noBudgetTab: true,
+      message: "No Budget tab found for this client sheet",
+    };
+  }
+
+  const forceMode =
+    _forceInputsReadMode === "grid" || _forceInputsReadMode === "relational"
+      ? _forceInputsReadMode
+      : null;
+  const useRelReads = forceMode
+    ? forceMode === "relational"
+    : Boolean(sbCtx?.inputsMode === "relational" && sbCtx?.inputsReadMode === "relational" && sbCtx?.clientId);
+
+  let budgetDisp = [];
+  let actualsDisp = [];
+  let budgetMath = [];
+  let mode = "Revenue";
+  let rawDirectCostsMode = "Contractors";
+  let usedRelReads = false;
+
+  if (useRelReads && sbCtx?.clientId) {
+    const [formattedBatchResp, relBundle] = await Promise.all([
+      withRetry(() =>
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientSheetId,
+          ranges: ["Performance!A1:AX47", "KeyInfo!B15", "KeyInfo!D8"],
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      ),
+      preloadClientRelationalInputsBundle(sbCtx, { includeBudget: true }).catch(() => null),
+    ]);
+    actualsDisp = formattedBatchResp.data?.valueRanges?.[0]?.values || [];
+    mode = String(formattedBatchResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "Revenue").trim();
+    rawDirectCostsMode = String(formattedBatchResp.data?.valueRanges?.[2]?.values?.[0]?.[0] || "Contractors").trim();
+
+    if (relBundle?.rollups?._budgetRollups) {
+      usedRelReads = true;
+      const budState = reconstructRelationalTabFromBundle(relBundle, "Budget");
+      budgetDisp = sliceRelationalTabValues(budState, "Budget", { startRow0: 0, endRow0: 46, startCol0: 0, endCol0: 49, formatted: true });
+      budgetMath = sliceRelationalTabValues(budState, "Budget", { startRow0: 0, endRow0: 46, startCol0: 0, endCol0: 49, formatted: false });
+    }
+  }
+
+  if (!usedRelReads) {
+    const [formattedBatchResp, mathResp] = await Promise.all([
+      withRetry(() =>
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientSheetId,
+          ranges: ["Budget!A1:AX47", "Performance!A1:AX47", "KeyInfo!B15", "KeyInfo!D8"],
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      ),
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: "Budget!A1:AX47",
+          valueRenderOption: "UNFORMATTED_VALUE",
+        })
+      ),
+    ]);
+
+    budgetDisp = formattedBatchResp.data?.valueRanges?.[0]?.values || [];
+    actualsDisp = formattedBatchResp.data?.valueRanges?.[1]?.values || [];
+    budgetMath = mathResp.data?.values || [];
+    mode = String(formattedBatchResp.data?.valueRanges?.[2]?.values?.[0]?.[0] || "Revenue").trim();
+    rawDirectCostsMode = String(formattedBatchResp.data?.valueRanges?.[3]?.values?.[0]?.[0] || "Contractors").trim();
+  }
+
+  const directCostsMode =
+    mode.toLowerCase() === "income"
+      ? "Pass-through"
+      : rawDirectCostsMode === "Pass-through"
+        ? "Pass-through"
+        : "Contractors";
+
+  if (budgetDisp.length === 0) {
+    return {
+      _skipCache: true,
+      _noBudgetTab: true,
+      message: "Budget tab is empty",
+    };
+  }
+
+  // 3 Year blocks (Year 1: G:T = start 6, Year 2: V:AI = start 21, Year 3: AK:AX = start 36)
+  const yearBlocks = [
+    { id: "year1", label: "Year 1", start: 6, count: 14 },
+    { id: "year2", label: "Year 2", start: 21, count: 14 },
+    { id: "year3", label: "Year 3", start: 36, count: 14 },
+  ];
+
+  const today = new Date();
+  let currentYearIdx = 0;
+  let fallbackIdx = 0;
+
+  const parsedYears = yearBlocks.map((blk, yIdx) => {
+    const startCol = blk.start;
+    const monthRow = budgetDisp[0] || [];
+    const statusRow = budgetDisp[1] || [];
+
+    // Extract 12 months
+    const months = [];
+    for (let m = 0; m < 12; m++) {
+      const colIdx = startCol + m;
+      const monthLabel = monthRow[colIdx] || `M${m + 1}`;
+      const status = statusRow[colIdx] || "Budget";
+      const dateObj = parseMonthYear(monthLabel);
+
+      if (dateObj) {
+        const fyStart = new Date(dateObj.getFullYear(), dateObj.getMonth(), 1);
+        const fyEnd = new Date(dateObj.getFullYear(), dateObj.getMonth() + 1, 0, 23, 59, 59);
+        if (today >= fyStart && today <= fyEnd) {
+          currentYearIdx = yIdx;
+        }
+        if (today > fyEnd) fallbackIdx = yIdx;
+      }
+
+      months.push({
+        index: m + 1,
+        label: monthLabel,
+        status: status,
+        colIdx,
+      });
+    }
+
+    const totalColIdx = startCol + 13;
+    const fyTotalLabel = monthRow[totalColIdx] || "FY Total";
+
+    // Extract rows (Row 3 to 47)
+    const rows = [];
+    const numRows = Math.min(budgetDisp.length, 47);
+    for (let r = 2; r < numRows; r++) {
+      let rowLabel = String(budgetDisp[r]?.[0] || "").trim();
+      if (!rowLabel) continue;
+      if (r === 29 && mode.toLowerCase() !== "income") {
+        if (directCostsMode === "Contractors") continue;
+        if (directCostsMode === "Pass-through") rowLabel = "Pass-through costs";
+      }
+
+      const rowValues = [];
+      for (let m = 0; m < 12; m++) {
+        rowValues.push(String(budgetDisp[r]?.[startCol + m] || "£0").trim());
+      }
+      const totalVal = String(budgetDisp[r]?.[totalColIdx] || "£0").trim();
+
+      // Actual row from Performance for comparison
+      const actualRowValues = [];
+      for (let m = 0; m < 12; m++) {
+        actualRowValues.push(String(actualsDisp[r]?.[startCol + m] || "£0").trim());
+      }
+      const actualTotalVal = String(actualsDisp[r]?.[totalColIdx] || "£0").trim();
+
+      rows.push({
+        rowIndex: r + 1,
+        label: rowLabel,
+        values: rowValues,
+        total: totalVal,
+        actualValues: actualRowValues,
+        actualTotal: actualTotalVal,
+      });
+    }
+
+    return {
+      id: blk.id,
+      label: blk.label,
+      yearIndex: yIdx,
+      months,
+      fyTotalLabel,
+      rows,
+    };
+  });
+
+  if (currentYearIdx === 0 && fallbackIdx > 0) {
+    currentYearIdx = fallbackIdx;
+  }
+
+  const hasNBToFind = Boolean(hasNBToFindInBudget({ rawVals: budgetDisp, mathVals: budgetMath, mode }));
+
+  return {
+    _cachedAt: new Date().toISOString(),
+    hasBudget: true,
+    hasNBToFind,
+    mode,
+    directCostsMode,
+    currentYearIdx,
+    years: parsedYears,
+    rawVals: budgetDisp,
+    mathVals: budgetMath,
+    inputsReadMode: usedRelReads ? "relational" : "grid",
+  };
 }
 
 export default async function handler(req, res) {
@@ -77,163 +283,12 @@ export default async function handler(req, res) {
       isReadOnly: Boolean(sessionUser.isReadOnly),
       l1TtlSecs: BUDGET_CACHE_TTL_SECS,
       redisTtlSecs: BUDGET_REDIS_TTL_SECS,
-      fetchFreshFn: async () => {
-        // Check if Budget sheet exists using 15-minute cached tab metadata
-        const existingTitles = await getSheetTitles(sheets, clientSheetId);
-
-        if (!existingTitles.has("Budget")) {
-          return {
-            _skipCache: true,
-            _noBudgetTab: true,
-            message: "No Budget tab found for this client sheet",
-          };
-        }
-
-        const [formattedBatchResp, mathResp] = await Promise.all([
-          withRetry(() =>
-            sheets.spreadsheets.values.batchGet({
-              spreadsheetId: clientSheetId,
-              ranges: ["Budget!A1:AX47", "Performance!A1:AX47", "KeyInfo!B15", "KeyInfo!D8"],
-              valueRenderOption: "FORMATTED_VALUE",
-            })
-          ),
-          withRetry(() =>
-            sheets.spreadsheets.values.get({
-              spreadsheetId: clientSheetId,
-              range: "Budget!A1:AX47",
-              valueRenderOption: "UNFORMATTED_VALUE",
-            })
-          ),
-        ]);
-
-        const budgetDisp = formattedBatchResp.data?.valueRanges?.[0]?.values || [];
-        const actualsDisp = formattedBatchResp.data?.valueRanges?.[1]?.values || [];
-        const budgetMath = mathResp.data?.values || [];
-        const mode = String(formattedBatchResp.data?.valueRanges?.[2]?.values?.[0]?.[0] || "Revenue").trim();
-        const rawDirectCostsMode = String(formattedBatchResp.data?.valueRanges?.[3]?.values?.[0]?.[0] || "Contractors").trim();
-        const directCostsMode =
-          mode.toLowerCase() === "income"
-            ? "Pass-through"
-            : rawDirectCostsMode === "Pass-through"
-              ? "Pass-through"
-              : "Contractors";
-
-        if (budgetDisp.length === 0) {
-          return {
-            _skipCache: true,
-            _noBudgetTab: true,
-            message: "Budget tab is empty",
-          };
-        }
-
-        // 3 Year blocks (Year 1: G:T = start 6, Year 2: V:AI = start 21, Year 3: AK:AX = start 36)
-        const yearBlocks = [
-          { id: "year1", label: "Year 1", start: 6, count: 14 },
-          { id: "year2", label: "Year 2", start: 21, count: 14 },
-          { id: "year3", label: "Year 3", start: 36, count: 14 },
-        ];
-
-        const today = new Date();
-        let currentYearIdx = 0;
-        let fallbackIdx = 0;
-
-        const parsedYears = yearBlocks.map((blk, yIdx) => {
-          const startCol = blk.start;
-          const monthRow = budgetDisp[0] || [];
-          const statusRow = budgetDisp[1] || [];
-
-          // Extract 12 months
-          const months = [];
-          for (let m = 0; m < 12; m++) {
-            const colIdx = startCol + m;
-            const monthLabel = monthRow[colIdx] || `M${m + 1}`;
-            const status = statusRow[colIdx] || "Budget";
-            const dateObj = parseMonthYear(monthLabel);
-
-            if (dateObj) {
-              const fyStart = new Date(dateObj.getFullYear(), dateObj.getMonth(), 1);
-              const fyEnd = new Date(dateObj.getFullYear(), dateObj.getMonth() + 1, 0, 23, 59, 59);
-              if (today >= fyStart && today <= fyEnd) {
-                currentYearIdx = yIdx;
-              }
-              if (today > fyEnd) fallbackIdx = yIdx;
-            }
-
-            months.push({
-              index: m + 1,
-              label: monthLabel,
-              status: status,
-              colIdx,
-            });
-          }
-
-          const totalColIdx = startCol + 13;
-          const fyTotalLabel = monthRow[totalColIdx] || "FY Total";
-
-          // Extract rows (Row 3 to 47)
-          const rows = [];
-          const numRows = Math.min(budgetDisp.length, 47);
-          for (let r = 2; r < numRows; r++) {
-            let rowLabel = String(budgetDisp[r]?.[0] || "").trim();
-            if (!rowLabel) continue;
-            if (r === 29 && mode.toLowerCase() !== "income") {
-              if (directCostsMode === "Contractors") continue;
-              if (directCostsMode === "Pass-through") rowLabel = "Pass-through costs";
-            }
-
-            const rowValues = [];
-            for (let m = 0; m < 12; m++) {
-              rowValues.push(String(budgetDisp[r]?.[startCol + m] || "£0").trim());
-            }
-            const totalVal = String(budgetDisp[r]?.[totalColIdx] || "£0").trim();
-
-            // Actual row from Performance for comparison
-            const actualRowValues = [];
-            for (let m = 0; m < 12; m++) {
-              actualRowValues.push(String(actualsDisp[r]?.[startCol + m] || "£0").trim());
-            }
-            const actualTotalVal = String(actualsDisp[r]?.[totalColIdx] || "£0").trim();
-
-            rows.push({
-              rowIndex: r + 1,
-              label: rowLabel,
-              values: rowValues,
-              total: totalVal,
-              actualValues: actualRowValues,
-              actualTotal: actualTotalVal,
-            });
-          }
-
-          return {
-            id: blk.id,
-            label: blk.label,
-            yearIndex: yIdx,
-            months,
-            fyTotalLabel,
-            rows,
-          };
-        });
-
-        if (currentYearIdx === 0 && fallbackIdx > 0) {
-          currentYearIdx = fallbackIdx;
-        }
-
-        const hasNBToFind = Boolean(hasNBToFindInBudget({ rawVals: budgetDisp, mathVals: budgetMath, mode }));
-
-        const budgetPayload = {
-          _cachedAt: new Date().toISOString(),
-          hasBudget: true,
-          hasNBToFind,
-          mode,
-          directCostsMode,
-          currentYearIdx,
-          years: parsedYears,
-          rawVals: budgetDisp,
-          mathVals: budgetMath,
-        };
-
-        return budgetPayload;
-      },
+      fetchFreshFn: () =>
+        buildPortalBudgetPayload({
+          sheets,
+          clientSheetId,
+          clientName: auth.clientName || clientName,
+        }),
     });
 
     if (result.data?._noBudgetTab) {

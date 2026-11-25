@@ -3565,6 +3565,29 @@ export function groupVariableRetainerSeries(items = []) {
   return { seriesList, nonVariableItems };
 }
 
+/**
+ * Strict whitelist determining whether a cell is editable in the Cash tab.
+ * @param {number} rowNum 1-based sheet row number (e.g. 4, 7, 36)
+ * @param {number} colIdx 0-based column index (0 = A, 1 = B, 9 = J, etc.)
+ */
+export function isCashCellEditable(rowNum, colIdx) {
+  if (isNaN(colIdx) || colIdx < 1 || colIdx > 36) return false;
+  if (rowNum === 4 && colIdx === 1) return true;
+  if (rowNum === 8 && colIdx === 1) return true;
+  if (rowNum === 12 && colIdx === 1) return true;
+  if (rowNum === 16 && colIdx === 1) return true;
+  if (rowNum === 19 && colIdx === 1) return true;
+  if (rowNum === 21 && colIdx === 1) return true;
+  if (rowNum === 19 && colIdx === 9) return true;
+  if (rowNum === 61 && colIdx === 1) return true;
+  if (rowNum === 63 && colIdx === 1) return true;
+  if (rowNum === 61 && colIdx === 9) return true;
+  const adjustmentRows = [7, 9, 11, 13, 15, 17, 20, 22, 25, 27, 29, 30];
+  if (adjustmentRows.includes(rowNum)) return true;
+  if (rowNum === 36) return true;
+  return false;
+}
+
 
 
 

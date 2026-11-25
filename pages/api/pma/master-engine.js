@@ -60,6 +60,8 @@ import {
   backfillAllClientsOperatingInputs,
   verifyRelationalInputsParity,
   setClientInputsMode,
+  verifyRelationalInputsReadParity,
+  setClientInputsReadMode,
 } from "../../../services/relationalInputsService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
@@ -419,6 +421,32 @@ export default async function handler(req, res) {
         category: "SYSTEM",
         action: "CLIENT_INPUTS_MODE_CHANGED",
         summary: `Switched ${cleanClient} operating inputs engine mode to "${inputsMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "verify_relational_inputs_read_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const parityReport = await verifyRelationalInputsReadParity({ clientName: targetClientFilter });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_inputs_read_mode") {
+      const inputsReadMode = String(req.body?.inputsReadMode || "").trim().toLowerCase();
+      if (inputsReadMode !== "grid" && inputsReadMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid inputsReadMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientInputsReadMode(cleanClient, inputsReadMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_INPUTS_READ_MODE_CHANGED",
+        summary: `Switched ${cleanClient} operating inputs read source to "${inputsReadMode}"`,
         details: updated,
         userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });

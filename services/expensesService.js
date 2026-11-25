@@ -21,6 +21,15 @@ import { sanitizeFormulaInput, unwrapSheetId } from "./userPermissions.js";
 import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 import { getClients } from "./workspaces.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import {
+  getClientRelationalInputsLookup,
+  preloadClientRelationalInputsBundle,
+  reconstructRelationalTabFromBundle,
+  sliceRelationalTabValues,
+  buildRelationalSheetRowData,
+  resolveAuthoritativeInputAnchor,
+} from "./relationalInputsService.js";
 
 export function colIdxToLetter(colIdx) {
   let temp = colIdx + 1;
@@ -67,19 +76,24 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
 
   const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
   const cacheKey = `pma_expenses_${cleanClientId}`;
+  const forceMode =
+    options?._forceInputsReadMode === "grid" || options?._forceInputsReadMode === "relational"
+      ? options._forceInputsReadMode
+      : null;
 
-  const cachedResult = await resolvePortalCache({
-    cacheKey,
-    bypassCache: Boolean(bypassCache),
-    minBypassAgeMs: options?.minBypassAgeMs || 0,
-    l1TtlSecs: 120,
-    redisTtlSecs: 86400,
-    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.expenses)),
-    fetchFreshFn: async () => {
-      const sheets = await getSheetsClient();
+  const fetchFreshFn = async () => {
+    const sheets = await getSheetsClient();
+    const sbCtx = await resolveSupabaseSheetContext({
+      spreadsheetId: cleanClientId,
+      clientName: clientName && clientName !== "Client" ? clientName : "",
+    }).catch(() => null);
+    const useRelReads = forceMode
+      ? forceMode === "relational"
+      : Boolean(sbCtx?.inputsMode === "relational" && sbCtx?.inputsReadMode === "relational" && sbCtx?.clientId);
 
-      // Resolve client reconSheetId to inspect CR2 reconciliation status per month in parallel with Outgoings read
-      let reconSheetId = null;
+    // Resolve client reconSheetId to inspect CR2 reconciliation status per month in parallel with Outgoings read
+    let reconSheetId = sbCtx?.reconSheetId || null;
+    if (!reconSheetId) {
       try {
         const clients = await getClients();
         const match = (clients || []).find(
@@ -93,40 +107,63 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
       } catch (err) {
         console.warn("Could not resolve reconSheetId for client:", clientName, err?.message);
       }
+    }
 
-      const fetchReconMap = async () => {
-        const map = {};
-        if (!reconSheetId) return map;
-        try {
-          const reconTitleSet = await getSheetTitles(sheets, reconSheetId);
-          const reconTabs = [...(reconTitleSet || [])].filter((t) => /^\d{4}$/.test(t));
-          if (reconTabs.length > 0) {
-            const batchRanges = reconTabs.map((t) => `'${t}'!CR2`);
-            const batchResp = await withRetry(() =>
-              sheets.spreadsheets.values.batchGet({
-                spreadsheetId: reconSheetId,
-                ranges: batchRanges,
-                valueRenderOption: "FORMATTED_VALUE",
-              })
-            );
-            const vRanges = batchResp.data.valueRanges || [];
-            reconTabs.forEach((tab, idx) => {
-              const val = vRanges[idx]?.values?.[0]?.[0];
-              const isRecon = Boolean(val === true || String(val || "").trim().toUpperCase() === "TRUE");
-              map[tab] = isRecon;
-              const yy = parseInt(tab.slice(0, 2), 10);
-              const mm = tab.slice(2, 4);
-              const fullYear = yy < 50 ? 2000 + yy : 1900 + yy;
-              map[`${fullYear}-${mm}`] = isRecon;
-            });
-          }
-        } catch (e) {
-          console.warn("Failed to fetch CR2 reconciliation status from Recon Sheet:", e?.message);
+    const fetchReconMap = async () => {
+      const map = {};
+      if (!reconSheetId) return map;
+      try {
+        const reconTitleSet = await getSheetTitles(sheets, reconSheetId);
+        const reconTabs = [...(reconTitleSet || [])].filter((t) => /^\d{4}$/.test(t));
+        if (reconTabs.length > 0) {
+          const batchRanges = reconTabs.map((t) => `'${t}'!CR2`);
+          const batchResp = await withRetry(() =>
+            sheets.spreadsheets.values.batchGet({
+              spreadsheetId: reconSheetId,
+              ranges: batchRanges,
+              valueRenderOption: "FORMATTED_VALUE",
+            })
+          );
+          const vRanges = batchResp.data.valueRanges || [];
+          reconTabs.forEach((tab, idx) => {
+            const val = vRanges[idx]?.values?.[0]?.[0];
+            const isRecon = Boolean(val === true || String(val || "").trim().toUpperCase() === "TRUE");
+            map[tab] = isRecon;
+            const yy = parseInt(tab.slice(0, 2), 10);
+            const mm = tab.slice(2, 4);
+            const fullYear = yy < 50 ? 2000 + yy : 1900 + yy;
+            map[`${fullYear}-${mm}`] = isRecon;
+          });
         }
-        return map;
-      };
+      } catch (e) {
+        console.warn("Failed to fetch CR2 reconciliation status from Recon Sheet:", e?.message);
+      }
+      return map;
+    };
 
-      const [headerResp, gridResp, reconStatusMap] = await Promise.all([
+    let row1 = [];
+    let rowData = [];
+    let reconStatusMap = {};
+    let relLookup = null;
+    let usedRelReads = false;
+
+    if (useRelReads && sbCtx?.clientId) {
+      const [relBundle, reconMap] = await Promise.all([
+        preloadClientRelationalInputsBundle(sbCtx, { includeOutgoings: true }),
+        fetchReconMap(),
+      ]);
+      reconStatusMap = reconMap;
+      if (relBundle?.rollups?._outgoingsRollups) {
+        usedRelReads = true;
+        const outState = reconstructRelationalTabFromBundle(relBundle, "Outgoings");
+        row1 = sliceRelationalTabValues(outState, "Outgoings", { startRow0: 0, endRow0: 1, startCol0: 0, endCol0: 51, formatted: true })?.[0] || [];
+        rowData = buildRelationalSheetRowData(outState, "Outgoings", { startRow0: 125, endRow0: 227, startCol0: 0, endCol0: 51, notesOnly: false });
+        relLookup = relBundle.relLookup;
+      }
+    }
+
+    if (!usedRelReads) {
+      const [headerResp, gridResp, reconMap, fetchedLookup] = await Promise.all([
         withRetry(async () => {
           return await sheets.spreadsheets.values.get({
             spreadsheetId: cleanClientId,
@@ -143,10 +180,15 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
           });
         }),
         fetchReconMap(),
+        sbCtx?.inputsMode === "relational"
+          ? getClientRelationalInputsLookup(sbCtx, { includeEmployees: false, includeOutgoing: true }).catch(() => null)
+          : Promise.resolve(null),
       ]);
-
-      const row1 = headerResp.data.values?.[0] || [];
-      const rowData = gridResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
+      row1 = headerResp.data.values?.[0] || [];
+      rowData = gridResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
+      reconStatusMap = reconMap;
+      relLookup = fetchedLookup;
+    }
 
       // Define the 3 Financial Year configurations
       const fyConfigs = [
@@ -264,8 +306,10 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
           fyData[fy.id] = { months, total };
         });
 
+        const relOut = relLookup?.outgoingsByRow?.get(sheetRow) || null;
         expenses.push({
           sheetRow,
+          outgoingItemUuid: relOut?.id || null,
           index: i,
           category,
           vat: vat.toLowerCase() === "yes" ? "Yes" : "No",
@@ -316,11 +360,25 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
         expenses,
         totals,
         firstAvailableRow: firstEmptyRow || null,
+        inputsReadMode: usedRelReads ? "relational" : "grid",
         lastUpdated: new Date().toISOString(),
       };
 
       return result;
-    },
+  };
+
+  if (forceMode) {
+    return await fetchFreshFn();
+  }
+
+  const cachedResult = await resolvePortalCache({
+    cacheKey,
+    bypassCache: Boolean(bypassCache),
+    minBypassAgeMs: options?.minBypassAgeMs || 0,
+    l1TtlSecs: 120,
+    redisTtlSecs: 86400,
+    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.expenses)),
+    fetchFreshFn,
   });
 
   return cachedResult.data;
@@ -333,6 +391,7 @@ export async function saveExpenseMetadata({
   clientName,
   clientSheetId,
   sheetRow,
+  outgoingItemUuid = null,
   category,
   vat,
   deliveryPct,
@@ -340,7 +399,15 @@ export async function saveExpenseMetadata({
   _skipFormulaRecompute = false,
 }) {
   if (!clientSheetId) throw new Error("Client identifier is required.");
-  const rowNum = parseInt(sheetRow, 10);
+  const anchor = await resolveAuthoritativeInputAnchor({
+    spreadsheetId: clientSheetId,
+    clientName,
+    entityType: "outgoing_item",
+    entityUuid: outgoingItemUuid,
+    expectedSection: "expense",
+    fallbackRowNum: sheetRow,
+  });
+  const rowNum = parseInt(anchor.rowNum ?? sheetRow, 10);
   if (isNaN(rowNum) || rowNum < 126 || rowNum > 224) {
     throw new Error("Invalid or system-managed expense entry.");
   }
@@ -395,11 +462,20 @@ export async function toggleExpenseDelivery({
   clientName,
   clientSheetId,
   sheetRow,
+  outgoingItemUuid = null,
   targetDelivery, // boolean or "100%" / "0%"
   userEmail,
 }) {
   if (!clientSheetId) throw new Error("Client identifier is required.");
-  const rowNum = parseInt(sheetRow, 10);
+  const anchor = await resolveAuthoritativeInputAnchor({
+    spreadsheetId: clientSheetId,
+    clientName,
+    entityType: "outgoing_item",
+    entityUuid: outgoingItemUuid,
+    expectedSection: "expense",
+    fallbackRowNum: sheetRow,
+  });
+  const rowNum = parseInt(anchor.rowNum ?? sheetRow, 10);
   if (isNaN(rowNum) || rowNum < 126 || rowNum > 224) {
     throw new Error("Invalid or system-managed expense entry.");
   }
@@ -457,13 +533,22 @@ export async function saveExpenseAmount({
   clientName,
   clientSheetId,
   sheetRow,
+  outgoingItemUuid = null,
   monthlyAmounts, // { [colLetter]: value }
   cellNotes, // { [colLetter]: note }
   userEmail,
   prefetchedData = null,
 }) {
   if (!clientSheetId) throw new Error("Client identifier is required.");
-  const rowNum = parseInt(sheetRow, 10);
+  const anchor = await resolveAuthoritativeInputAnchor({
+    spreadsheetId: clientSheetId,
+    clientName,
+    entityType: "outgoing_item",
+    entityUuid: outgoingItemUuid,
+    expectedSection: "expense",
+    fallbackRowNum: sheetRow,
+  });
+  const rowNum = parseInt(anchor.rowNum ?? sheetRow, 10);
   if (isNaN(rowNum) || rowNum < 126 || rowNum > 224) {
     throw new Error("Invalid or system-managed expense entry.");
   }

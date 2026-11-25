@@ -13,6 +13,12 @@ import {
   buildRelationalFormattedTabRowsFromBundle,
   parsePortalJobsFromFormattedRows,
 } from "../../../services/relationalJobsService.js";
+import {
+  getClientRelationalInputsLookup,
+  preloadClientRelationalInputsBundle,
+  reconstructRelationalTabFromBundle,
+  sliceRelationalTabValues,
+} from "../../../services/relationalInputsService.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s L1 fresh window
 const KEYDATA_REDIS_TTL_SECS = 86400; // 24h Redis SWR retention
@@ -245,1093 +251,12 @@ export default async function handler(req, res) {
       isReadOnly: Boolean(sessionUser.isReadOnly),
       l1TtlSecs: KEYDATA_CACHE_TTL_SECS,
       redisTtlSecs: KEYDATA_REDIS_TTL_SECS,
-      fetchFreshFn: async () => {
-        // Resolve reconSheetId upfront from cached client registry if available so we can fetch Recon titles in parallel
-        let initialReconSheetId = null;
-        try {
-          const allClients = await getClients();
-          const found = (allClients || []).find(
-            (c) =>
-              (c.clientSheetId && (extractSheetIdFromUrl(c.clientSheetId) || c.clientSheetId) === clientSheetId) ||
-              (clientName && c.clientName?.toLowerCase().trim() === clientName.toLowerCase().trim())
-          );
-          if (found?.reconSheetId) {
-            initialReconSheetId = extractSheetIdFromUrl(found.reconSheetId) || found.reconSheetId;
-          }
-        } catch (_) { }
-
-        // Check what sheets exist and resolve relational mode in parallel
-        const [existingSheetTitles, preloadedReconTitles, sbCtx] = await Promise.all([
-          getSheetTitles(sheets, clientSheetId),
-          initialReconSheetId
-            ? getSheetTitles(sheets, initialReconSheetId).catch(() => null)
-            : Promise.resolve(null),
-          resolveSupabaseSheetContext({
-            spreadsheetId: clientSheetId,
-            clientName: auth.clientName || clientName,
-          }).catch(() => null),
-        ]);
-
-        const hasConfirmed = existingSheetTitles.has("Confirmed") || existingSheetTitles.has("ConfCalcs");
-        const confirmedTitle = existingSheetTitles.has("ConfCalcs") ? "ConfCalcs" : "Confirmed";
-
-        const hasPipeline = existingSheetTitles.has("Pipeline") || existingSheetTitles.has("PipeCalcs");
-        const pipelineTitle = existingSheetTitles.has("PipeCalcs") ? "PipeCalcs" : "Pipeline";
-
-        const hasOutgoings = existingSheetTitles.has("Outgoings");
-        const hasOutgNotes = existingSheetTitles.has("OutgNotes");
-        const hasSalaries = existingSheetTitles.has("Salaries");
-        const hasNBtoFind = existingSheetTitles.has("NBtoFind");
-        const useRelationalJobReads = Boolean(sbCtx?.jobsMode === "relational" && sbCtx?.jobsReadMode === "relational" && sbCtx?.clientId);
-
-        const targetConfMaxRow = 2500;
-        const targetPipeMaxRow = 1000;
-
-        const batchRanges = [];
-        if (!useRelationalJobReads && hasConfirmed) batchRanges.push(`${confirmedTitle}!A1:JF${targetConfMaxRow}`);
-        if (!useRelationalJobReads && hasPipeline) batchRanges.push(`${pipelineTitle}!A1:JF${targetPipeMaxRow}`);
-        if (hasSalaries) {
-          batchRanges.push("Salaries!A1:I100");
-          batchRanges.push("Salaries!A1:JC1");
-          batchRanges.push("Salaries!A304:JC368");
-        }
-        if (hasOutgoings) batchRanges.push("Outgoings!A1:AV306");
-        if (hasOutgNotes) batchRanges.push("OutgNotes!A1:AV112");
-        if (hasNBtoFind) batchRanges.push("NBtoFind!A1:AV50");
-        batchRanges.push("KeyInfo!G32:G75"); // Lead sources
-        batchRanges.push("KeyInfo!C23:C26"); // Product lines
-        batchRanges.push("KeyInfo!F11:F12"); // Profit share % and switch
-        batchRanges.push("KeyInfo!B15");     // Mode (Revenue vs Income)
-        batchRanges.push("KeyInfo!D8");      // Direct costs mode (Contractors vs Pass-through)
-        batchRanges.push("KeyInfo!B20");     // Contractor source
-        batchRanges.push("KeyInfo!D15:D16"); // Split method (D15) & split enabled (D16)
-        batchRanges.push("KeyInfo!G1");      // Recon Sheet URL on Client Sheet KeyInfo
-        batchRanges.push("KeyInfo!C4:D5");   // Currency and thousands separator
-        batchRanges.push("KeyInfo!Q4");      // Accounting tool
-        batchRanges.push("KeyInfo!Q8:Q9");   // CRM tool (Q8) & CRM mode (Q9)
-        batchRanges.push("KeyInfo!D11:D13"); // Job table style (D11), standard charge-out rate (D12), contractor day rate (D13)
-
-        const [batchResp, outgoingsRawResp, relBundle] = await Promise.all([
-          withRetry(() =>
-            sheets.spreadsheets.values.batchGet({
-              spreadsheetId: clientSheetId,
-              ranges: batchRanges,
-              valueRenderOption: "FORMATTED_VALUE",
-            })
-          ),
-          hasOutgoings
-            ? withRetry(() =>
-              sheets.spreadsheets.values.get({
-                spreadsheetId: clientSheetId,
-                range: "Outgoings!A1:AV306",
-                valueRenderOption: "UNFORMATTED_VALUE",
-              })
-            ).catch(() => null)
-            : Promise.resolve(null),
-          useRelationalJobReads
-            ? preloadClientRelationalJobsBundle(sbCtx, { includeConfirmed: hasConfirmed, includePipeline: hasPipeline }).catch(() => null)
-            : Promise.resolve(null),
-        ]);
-
-        let relLookup = relBundle?.relLookup || null;
-        const usedRelationalJobReads = Boolean(
-          useRelationalJobReads &&
-          relBundle &&
-          (!hasConfirmed || Boolean(relBundle.tabHeaders?.Confirmed)) &&
-          (!hasPipeline || Boolean(relBundle.tabHeaders?.Pipeline))
-        );
-        if (!usedRelationalJobReads && sbCtx?.jobsMode === "relational") {
-          relLookup = await getClientRelationalJobsLookup(sbCtx).catch(() => null);
-        }
-
-        const valueRanges = batchResp.data.valueRanges || [];
-        const outgoingsRawRows = outgoingsRawResp?.data?.values || [];
-        let rangeIdx = 0;
-
-        let confirmedRows = !useRelationalJobReads && hasConfirmed
-          ? (valueRanges[rangeIdx++]?.values || [])
-          : (usedRelationalJobReads && hasConfirmed
-            ? buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { useCalcsTab: true, maxColLimit: 265 }).rows
-            : []);
-        let pipelineRows = !useRelationalJobReads && hasPipeline
-          ? (valueRanges[rangeIdx++]?.values || [])
-          : (usedRelationalJobReads && hasPipeline
-            ? buildRelationalFormattedTabRowsFromBundle(relBundle, "Pipeline", { useCalcsTab: true, maxColLimit: 265 }).rows
-            : []);
-
-        if (useRelationalJobReads && !usedRelationalJobReads && (hasConfirmed || hasPipeline)) {
-          const fallbackJobs = await withRetry(() =>
-            sheets.spreadsheets.values.batchGet({
-              spreadsheetId: clientSheetId,
-              ranges: [
-                ...(hasConfirmed ? [`${confirmedTitle}!A1:JF${targetConfMaxRow}`] : []),
-                ...(hasPipeline ? [`${pipelineTitle}!A1:JF${targetPipeMaxRow}`] : []),
-              ],
-              valueRenderOption: "FORMATTED_VALUE",
-            })
-          );
-          let fi = 0;
-          if (hasConfirmed) confirmedRows = fallbackJobs.data?.valueRanges?.[fi++]?.values || [];
-          if (hasPipeline) pipelineRows = fallbackJobs.data?.valueRanges?.[fi++]?.values || [];
-        }
-        const salariesRows = hasSalaries ? (valueRanges[rangeIdx++]?.values || []) : [];
-        const salariesHeadersRow = hasSalaries ? (valueRanges[rangeIdx++]?.values?.[0] || []) : [];
-        const salariesDeepDiveRows = hasSalaries ? (valueRanges[rangeIdx++]?.values || []) : [];
-        const outgoingsRows = hasOutgoings ? (valueRanges[rangeIdx++]?.values || []) : [];
-        const outgNotesPreloadedRows = hasOutgNotes ? (valueRanges[rangeIdx++]?.values || []) : [];
-        const nbtofindRows = hasNBtoFind ? (valueRanges[rangeIdx++]?.values || []) : [];
-        const leadSourcesRows = valueRanges[rangeIdx++]?.values || [];
-        const productLinesRows = valueRanges[rangeIdx++]?.values || [];
-        const profitShareRows = valueRanges[rangeIdx++]?.values || [];
-        const modeRows = valueRanges[rangeIdx++]?.values || [];
-        const directCostsModeRows = valueRanges[rangeIdx++]?.values || [];
-        const contractorSourceRows = valueRanges[rangeIdx++]?.values || [];
-        const splitInfoRows = valueRanges[rangeIdx++]?.values || [];
-        const reconUrlRows = valueRanges[rangeIdx++]?.values || [];
-        const currencyRows = valueRanges[rangeIdx++]?.values || [];
-        const accountingToolRows = valueRanges[rangeIdx++]?.values || [];
-        const crmToolRows = valueRanges[rangeIdx++]?.values || [];
-        const jobCostingRows = valueRanges[rangeIdx++]?.values || [];
-
-        // Automatic overflow fetch if Confirmed or Pipeline has active job data reaching the initial cap (grid mode only)
-        const overflowPromises = [];
-        if (
-          !usedRelationalJobReads &&
-          hasConfirmed &&
-          confirmedRows.length >= targetConfMaxRow &&
-          Boolean(confirmedRows[targetConfMaxRow - 1]?.[0] || confirmedRows[targetConfMaxRow - 1]?.[1])
-        ) {
-          overflowPromises.push(
-            withRetry(() =>
-              sheets.spreadsheets.values.get({
-                spreadsheetId: clientSheetId,
-                range: `${confirmedTitle}!A${targetConfMaxRow + 1}:JF5000`,
-                valueRenderOption: "FORMATTED_VALUE",
-              })
-            )
-              .then((r) => {
-                if (r.data?.values?.length) confirmedRows = [...confirmedRows, ...r.data.values];
-              })
-              .catch(() => { })
-          );
-        }
-        if (
-          !usedRelationalJobReads &&
-          hasPipeline &&
-          pipelineRows.length >= targetPipeMaxRow &&
-          Boolean(pipelineRows[targetPipeMaxRow - 1]?.[0] || pipelineRows[targetPipeMaxRow - 1]?.[1])
-        ) {
-          overflowPromises.push(
-            withRetry(() =>
-              sheets.spreadsheets.values.get({
-                spreadsheetId: clientSheetId,
-                range: `${pipelineTitle}!A${targetPipeMaxRow + 1}:JF1000`,
-                valueRenderOption: "FORMATTED_VALUE",
-              })
-            )
-              .then((r) => {
-                if (r.data?.values?.length) pipelineRows = [...pipelineRows, ...r.data.values];
-              })
-              .catch(() => { })
-          );
-        }
-        if (overflowPromises.length > 0) {
-          await Promise.all(overflowPromises);
-        }
-
-        const accountingTool = String(accountingToolRows?.[0]?.[0] || "None").trim();
-        const crmTool = String(crmToolRows?.[0]?.[0] || "None").trim();
-        const crmDrives = String(crmToolRows?.[1]?.[0] || "NA").trim();
-        const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some((t) => accountingTool.toLowerCase().includes(t));
-        const jobCostingStyleRaw = String(jobCostingRows?.[0]?.[0] || "").trim();
-        const isJobCosting = isJobCostingStyle({
-          d11Val: jobCostingStyleRaw,
-          headers: confirmedRows?.[0] || pipelineRows?.[0] || []
-        });
-        const jobCostingStyle = isJobCosting ? "JobCosting" : "Standard";
-        const standardChargeOutRate = parseFloat(String(jobCostingRows?.[1]?.[0] || "0").replace(/[£$€,\s]/g, "")) || 0;
-        const contractorDayRate = parseFloat(String(jobCostingRows?.[2]?.[0] || "0").replace(/[£$€,\s]/g, "")) || 0;
-
-        const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
-        let currencySymbol = rawCurrencySymbol;
-        if (currencySymbol.toUpperCase() === "EUR" || currencySymbol === "€") currencySymbol = "€";
-        else if (currencySymbol.toUpperCase() === "GBP" || currencySymbol === "£") currencySymbol = "£";
-        else if (currencySymbol.toUpperCase() === "USD" || currencySymbol === "$") currencySymbol = "$";
-
-        const rawThousandsSeparator = String(currencyRows?.[1]?.[1] || (currencyRows?.[1]?.[0] && currencyRows?.[1]?.[0] !== "Thous. separator" ? currencyRows?.[1]?.[0] : "") || "").trim();
-        const thousandsSeparator = rawThousandsSeparator || (currencySymbol === "€" ? "." : ",");
-
-        const leadSources = leadSourcesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
-        const productLines = productLinesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
-        const splitMethod = String(splitInfoRows[0]?.[0] || "Even By Month").trim();
-        const splitEnabled = String(splitInfoRows[1]?.[0] || "").trim().toLowerCase() === "yes";
-
-        const profitSharePctRaw = profitShareRows[0]?.[0] || "0%";
-        const profitSharePct = parseFloat(String(profitSharePctRaw).replace("%", "")) / 100 || 0;
-        const profitShareSwitch = String(profitShareRows[1]?.[0] || "").trim();
-        const mode = String(modeRows[0]?.[0] || "Revenue").trim();
-        const rawDirectCostsMode = String(directCostsModeRows[0]?.[0] || "Contractors").trim();
-        const directCostsMode =
-          mode.toLowerCase() === "income"
-            ? "Pass-through"
-            : rawDirectCostsMode === "Pass-through"
-              ? "Pass-through"
-              : "Contractors";
-        const contractorSource = String(contractorSourceRows[0]?.[0] || "Cell Values").trim();
-        const isNotesMode = contractorSource.toLowerCase().includes("notes");
-        const reconUrlFromClientKeyInfo = String(reconUrlRows[0]?.[0] || "").trim();
-
-        const confirmedJobs = parsePortalJobsFromFormattedRows({
-          rows: confirmedRows,
-          jobType: "Confirmed",
-          isJobCosting,
-          relLookup,
-        });
-        const pipelineJobs = parsePortalJobsFromFormattedRows({
-          rows: pipelineRows,
-          jobType: "Pipeline",
-          isJobCosting,
-          relLookup,
-        });
-        const allJobs = [...confirmedJobs, ...pipelineJobs];
-
-        const formatMoneyVal = (v) => {
-          if (v === null || v === undefined || v === "" || v === 0 || v === "0") return `${currencySymbol}0`;
-          const num = parseMoney(v);
-          return formatMoney(num, 0, currencySymbol, thousandsSeparator);
-        };
-
-        // Helper: Parse Salaries
-        const salariesList = [];
-        if (salariesRows.length > 3) {
-          for (let r = 3; r < salariesRows.length; r++) {
-            const row = salariesRows[r];
-            const name = String(row[0] || "").trim();
-            if (!name) continue;
-            const role = String(row[1] || "").trim();
-            const fteSalaryNum = parseMoney(row[2]);
-            const fteSalary = formatMoney(fteSalaryNum, 0, currencySymbol, thousandsSeparator);
-            row[2] = fteSalary; // Normalize rawRows for salaries
-            const fte = String(row[3] || "1.00").trim();
-            const startDate = String(row[4] || "").trim();
-            const endDate = String(row[5] || "").trim();
-            const deliveryPct = String(row[6] || "").trim();
-            const pensionPct = String(row[7] || "").trim();
-
-            const fteNum = parseFloat(String(fte)) || 1.0;
-            const actualAnnualCost = Math.round(fteSalaryNum * fteNum);
-            const isDelivery = deliveryPct === "100%" || (parseFloat(deliveryPct) || 0) > 0;
-
-            salariesList.push({
-              rowNumber: r + 1,
-              name,
-              role,
-              fteSalary,
-              fteSalaryNum,
-              fte,
-              fteNum,
-              actualAnnualCost,
-              startDate,
-              endDate,
-              deliveryPct: deliveryPct || "0%",
-              isDelivery,
-              pensionPct: pensionPct || "0%",
-            });
-          }
-        }
-
-        const totalHeadcount = salariesList.length;
-        const deliveryHeadcount = salariesList.filter((s) => s.isDelivery).length;
-        const nonDeliveryHeadcount = totalHeadcount - deliveryHeadcount;
-        const totalPayroll = salariesList.reduce((acc, s) => acc + s.actualAnnualCost, 0);
-
-        // Helper: Parse Outgoings (Contractors, Expenses, Dividends) with 3 Years
-        const outgoingsHeadersY1 = (outgoingsRows[0] || []).slice(6, 18).map((h) => String(h || "").trim());
-        const outgoingsHeadersY2 = (outgoingsRows[0] || []).slice(21, 33).map((h) => String(h || "").trim());
-        const outgoingsHeadersY3 = (outgoingsRows[0] || []).slice(36, 48).map((h) => String(h || "").trim());
-
-        const toNumericVal = (rawCell, fmtCell) => {
-          if (typeof rawCell === "number" && Number.isFinite(rawCell)) return rawCell;
-          return parseMoney(fmtCell);
-        };
-
-        const parseOutgoingsSection = (startRow, endRow) => {
-          const items = [];
-          for (let r = startRow; r <= endRow && r < outgoingsRows.length; r++) {
-            const row = outgoingsRows[r] || [];
-            const rawRow = outgoingsRawRows[r] || [];
-            const name = String(row[0] || "").trim();
-            if (!name || name.toLowerCase() === "hide") continue;
-
-            const vat = String(row[1] || "").trim();
-            const invoiceTiming = String(row[2] || "").trim();
-            const paymentTiming = String(row[3] || "").trim();
-            const deliveryPct = String(row[4] || "").trim();
-
-            const allocationsY1 = (row.slice(6, 18) || []).map(formatMoneyVal);
-            const allocationsY2 = (row.slice(21, 33) || []).map(formatMoneyVal);
-            const allocationsY3 = (row.slice(36, 48) || []).map(formatMoneyVal);
-
-            const extractRawSlice = (startIdx, endIdx) => {
-              const slice = [];
-              for (let c = startIdx; c < endIdx; c++) {
-                slice.push(toNumericVal(rawRow[c], row[c]));
-              }
-              return slice;
-            };
-
-            const rawAllocationsY1 = extractRawSlice(6, 18);
-            const rawAllocationsY2 = extractRawSlice(21, 33);
-            const rawAllocationsY3 = extractRawSlice(36, 48);
-
-            const sumAllocations = (arr) =>
-              Math.round(arr.reduce((acc, val) => acc + (typeof val === "number" ? val : parseMoney(val)), 0) * 100) / 100;
-
-            const totalY1 = sumAllocations(rawAllocationsY1);
-            const totalY2 = sumAllocations(rawAllocationsY2);
-            const totalY3 = sumAllocations(rawAllocationsY3);
-
-            items.push({
-              rowNumber: r + 1,
-              name,
-              vat,
-              invoiceTiming,
-              paymentTiming,
-              deliveryPct,
-              isDelivery: deliveryPct === "100%" || (parseFloat(deliveryPct) || 0) > 0,
-              isSystemRow: r === 224 || r === 225,
-              allocations: {
-                1: allocationsY1,
-                2: allocationsY2,
-                3: allocationsY3,
-              },
-              rawAllocations: {
-                1: rawAllocationsY1,
-                2: rawAllocationsY2,
-                3: rawAllocationsY3,
-              },
-              totals: {
-                1: totalY1,
-                2: totalY2,
-                3: totalY3,
-              },
-              monthlyAllocations: allocationsY1, // default to Year 1
-              rawMonthlyAllocations: rawAllocationsY1,
-              totalAnnual: totalY1,
-            });
-          }
-          return items;
-        };
-
-        // Contractors: rows 13 to 110 (indices 12 to 109)
-        const contractorsList = parseOutgoingsSection(12, 109);
-        // Dividends: rows 118 to 121 (indices 117 to 120), strictly excluding summary/total rows as in original WebApp
-        const dividendsList = parseOutgoingsSection(117, 120).filter((item) => !item.name.toLowerCase().includes("total"));
-        // Expenses: rows 126 to 226 (indices 125 to 225; includes non-editable system rows 225 & 226 for reporting/deep-dive)
-        const expensesList = parseOutgoingsSection(125, 225);
-
-        // Extract Transaction Breakdown (Row 300) and Actual VAT (Rows 304 & 305) from Outgoings
-        // 0-indexed row indices: Row 300 -> 299, Row 304 -> 303, Row 305 -> 304
-        const row300 = outgoingsRows[299] || [];
-        const row304 = outgoingsRows[303] || [];
-        const row305 = outgoingsRows[304] || [];
-
-        const parseJsonCell = (cellVal) => {
-          if (!cellVal) return [];
-          try {
-            const parsed = typeof cellVal === "string" ? JSON.parse(cellVal) : cellVal;
-            return Array.isArray(parsed) ? parsed : [];
-          } catch {
-            return [];
-          }
-        };
-
-        const parseYearRow = (row, sliceStart, sliceEnd, parser = (v) => v) => {
-          return (row.slice(sliceStart, sliceEnd) || []).map(parser);
-        };
-
-        const transactionsByMonth = {
-          1: parseYearRow(row300, 6, 18, parseJsonCell),
-          2: parseYearRow(row300, 21, 33, parseJsonCell),
-          3: parseYearRow(row300, 36, 48, parseJsonCell),
-        };
-
-        const vatCashByMonth = {
-          1: parseYearRow(row304, 6, 18, formatMoneyVal),
-          2: parseYearRow(row304, 21, 33, formatMoneyVal),
-          3: parseYearRow(row304, 36, 48, formatMoneyVal),
-        };
-
-        const vatAccrualByMonth = {
-          1: parseYearRow(row305, 6, 18, formatMoneyVal),
-          2: parseYearRow(row305, 21, 33, formatMoneyVal),
-          3: parseYearRow(row305, 36, 48, formatMoneyVal),
-        };
-
-        // In Notes metadata mode, parse transactions from Client Sheet's preloaded OutgNotes tab
-        let contractorTransactions = [];
-        const contractorLockedMap = {};
-        const contractorBlocksMap = {};
-
-        if (isNotesMode && clientSheetId) {
-          try {
-            const notesRows = outgNotesPreloadedRows || [];
-
-            const yearColRanges = [
-              { yr: 1, start: 6, count: 12 },  // Year 1: cols G-R (indices 6-17)
-              { yr: 2, start: 21, count: 12 }, // Year 2: cols V-AG (indices 21-32)
-              { yr: 3, start: 36, count: 12 }, // Year 3: cols AK-AV (indices 36-47)
-            ];
-
-            // Loop rows 13 to 111 (0-indexed indices 12 to 110)
-            // Row 111 (index 110) is "Making up CoS amount"
-            for (let r = 12; r <= 110 && r < notesRows.length; r++) {
-              const contractorRow = outgoingsRows[r] || [];
-              const contractorName = String(
-                contractorRow[0] || (r === 110 ? "Making up CoS amount" : `Contractor ${r - 11}`)
-              ).trim();
-              if (!contractorName || contractorName.toLowerCase() === "hide") continue;
-
-              // VAT setting from Col B of Outgoings (Row 111 VAT setting in Col B)
-              const vatSetting = String(contractorRow[1] || "").trim();
-              const isVat = vatSetting.toLowerCase() === "yes";
-
-              const notesCells = notesRows[r] || [];
-
-              // Track locked cells for this contractor row:
-              // Only cells exclusively made up of placeholders should be editable. Any other cells should be locked.
-              const locked = {
-                1: new Array(12).fill(false),
-                2: new Array(12).fill(false),
-                3: new Array(12).fill(false),
-              };
-
-              const blocksForContractor = {
-                1: Array.from({ length: 12 }, () => []),
-                2: Array.from({ length: 12 }, () => []),
-                3: Array.from({ length: 12 }, () => []),
-              };
-
-              for (const yrRange of yearColRanges) {
-                for (let mIdx = 0; mIdx < yrRange.count; mIdx++) {
-                  const c = yrRange.start + mIdx;
-                  const cellText = notesCells[c];
-                  if (!cellText || !cellText.includes("{App ID:")) continue;
-
-                  const rawBlocks = cellText.split(/(?=\{App ID:)/).map((s) => s.trim()).filter(Boolean);
-                  const cellBlocks = [];
-                  for (const raw of rawBlocks) {
-                    if (!raw.includes("{App ID:")) continue;
-                    const getTag = (key) => {
-                      const m = raw.match(new RegExp(`\\{${key}:\\s*([^}]*)\\}`, "i"));
-                      return m ? m[1].trim() : "";
-                    };
-                    const appId = getTag("App ID");
-                    const amtStr = getTag("Amt");
-                    const netAmount = parseFloat(amtStr.replace(/[£$€,\s]/g, "")) || 0;
-                    const status = getTag("Status");
-                    const recDate = getTag("Rec date");
-                    const payDate = getTag("Pay date");
-                    const rawDesc = getTag("Description");
-
-                    if (appId) {
-                      cellBlocks.push({ appId, netAmount, status, recDate, payDate, rawDesc });
-                    }
-                  }
-
-                  if (cellBlocks.length > 0) {
-                    blocksForContractor[yrRange.yr][mIdx] = cellBlocks.map((b) => ({
-                      appId: b.appId,
-                      amount: b.netAmount,
-                      status: b.status,
-                      recDate: b.recDate,
-                      payDate: b.payDate,
-                      description: b.rawDesc,
-                      vat: isVat ? "Yes" : "No",
-                      colLetter: colToLetter(c),
-                      sheetRow: r + 1,
-                    }));
-
-                    // If ANY block in this cell is an actual accounting bill (not a placeholder),
-                    // then this cell is NOT exclusively made up of placeholders -> locked!
-                    const hasActualBill = cellBlocks.some((b) => !isPlaceholderExpense(b.appId, b.rawDesc, b.status));
-                    if (hasActualBill) {
-                      locked[yrRange.yr][mIdx] = true;
-                    }
-
-                    // Add to contractorTransactions
-                    for (const b of cellBlocks) {
-                      let vendor = contractorName;
-                      let itemDesc = b.rawDesc;
-                      const parenMatch = b.rawDesc.match(/^(.*?)\s*\((.*)\)$/);
-                      if (parenMatch && parenMatch[1].trim() && parenMatch[2].trim()) {
-                        vendor = parenMatch[1].trim();
-                        itemDesc = parenMatch[2].trim();
-                      } else if (b.rawDesc.startsWith("Placeholder Entry - ")) {
-                        vendor = b.rawDesc.replace("Placeholder Entry - ", "").trim() || vendor;
-                        itemDesc = "Placeholder Entry";
-                      } else if (b.rawDesc === "Placeholder Entry") {
-                        vendor = contractorName;
-                        itemDesc = "Placeholder Entry";
-                      }
-
-                      const vatAmount = isVat ? Math.round(b.netAmount * 0.20 * 100) / 100 : 0;
-                      const grossAmount = Math.round((b.netAmount + vatAmount) * 100) / 100;
-
-                      contractorTransactions.push({
-                        appId: b.appId,
-                        vendor,
-                        itemDesc,
-                        rawDesc: b.rawDesc,
-                        contractorName,
-                        netAmount: b.netAmount,
-                        vatAmount,
-                        grossAmount,
-                        amount: -Math.abs(grossAmount),
-                        vatSetting: isVat ? "Yes" : "No",
-                        status: b.status,
-                        recDate: b.recDate,
-                        payDate: b.payDate,
-                        rowNumber: r + 1,
-                      });
-                    }
-                  }
-                }
-              }
-
-              contractorLockedMap[r + 1] = locked;
-              contractorBlocksMap[r + 1] = blocksForContractor;
-            }
-          } catch (notesErr) {
-            console.warn("⚠️ Failed to fetch OutgNotes from master sheet:", notesErr.message);
-          }
-        }
-
-        // Attach lockedCells state to each contractor in contractorsList
-        contractorsList.forEach((c) => {
-          c.lockedCells = contractorLockedMap[c.rowNumber] || {
-            1: new Array(12).fill(false),
-            2: new Array(12).fill(false),
-            3: new Array(12).fill(false),
-          };
-          c.monthlyBlocks = contractorBlocksMap[c.rowNumber] || {
-            1: Array.from({ length: 12 }, () => []),
-            2: Array.from({ length: 12 }, () => []),
-            3: Array.from({ length: 12 }, () => []),
-          };
-        });
-
-        // Fetch Recon Sheet bank transactions and CR2 "Month ready" gate
-        const reconMonths = {};
-        let reconSheetId =
-          initialReconSheetId ||
-          (reconUrlFromClientKeyInfo ? extractSheetIdFromUrl(reconUrlFromClientKeyInfo) || reconUrlFromClientKeyInfo : null);
-
-        if (reconSheetId) {
-          try {
-            const reconTitlesSet =
-              reconSheetId === initialReconSheetId && preloadedReconTitles
-                ? preloadedReconTitles
-                : await getSheetTitles(sheets, reconSheetId);
-            const allReconTabTitles = [...(reconTitlesSet || [])].filter((t) => /^\d{4}$/.test(t));
-
-            // Get months across Outgoings headers (Year 1, 2, 3)
-            const allOutgoingsMonthHeaders = [
-              ...outgoingsHeadersY1,
-              ...outgoingsHeadersY2,
-              ...outgoingsHeadersY3,
-            ].filter(Boolean);
-
-            const targetTabNames = [];
-            allOutgoingsMonthHeaders.forEach((h) => {
-              const d = parseMonthYear(h);
-              if (d) {
-                const tabName = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
-                if (allReconTabTitles.includes(tabName) && !targetTabNames.includes(tabName)) {
-                  targetTabNames.push(tabName);
-                }
-              }
-            });
-
-            if (targetTabNames.length > 0) {
-              const batchRanges = [];
-              targetTabNames.forEach((t) => {
-                batchRanges.push(`'${t}'!CR2`);
-                batchRanges.push(`'${t}'!CD4:CN30`);
-                batchRanges.push(`'${t}'!A3:Q200`);
-              });
-
-              const reconBatchResp = await withRetry(() =>
-                sheets.spreadsheets.values.batchGet({
-                  spreadsheetId: reconSheetId,
-                  ranges: batchRanges,
-                  valueRenderOption: "FORMATTED_VALUE",
-                })
-              );
-
-              const valueRanges = reconBatchResp.data.valueRanges || [];
-              for (let i = 0; i < targetTabNames.length; i++) {
-                const tabName = targetTabNames[i];
-                const cr2Val = valueRanges[i * 3]?.values?.[0]?.[0];
-                const isReconciled = Boolean(cr2Val === true || String(cr2Val || "").trim().toUpperCase() === "TRUE");
-                const unrecRows = valueRanges[i * 3 + 1]?.values || [];
-                const bankRows = valueRanges[i * 3 + 2]?.values || [];
-
-                const unreconciledItems = [];
-                unrecRows.forEach((r) => {
-                  const dateVal = r[2]; // CF
-                  const payee = String(r[3] || "").trim(); // CG
-                  const desc = String(r[4] || "").trim(); // CH
-                  const rawAmt = parseFloat(String(r[5] || "0").replace(/[£$€,\s]/g, "")) || 0; // CI
-                  const amt = Math.abs(rawAmt);
-                  const cat = String(r[9] || "").trim(); // CK
-                  const vatApplies = String(r[10] || "").trim().toLowerCase() === "yes"; // CL
-
-                  // Credit card purchases are not cash account transactions: exclude them from cashflow
-                  const isCreditCard = /master\s*card|credit\s*card|visa\s*credit|amex/i.test(`${desc} ${payee}`);
-                  if (isCreditCard) return;
-
-                  if (amt > 0 && cat) {
-                    const vatAmt = vatApplies ? Math.round(amt * (20 / 120) * 100) / 100 : 0;
-                    const netAmt = Math.round((amt - vatAmt) * 100) / 100;
-                    unreconciledItems.push({
-                      d: String(dateVal || ""),
-                      p: String(dateVal || ""),
-                      s: payee,
-                      c: cat,
-                      r: "UNRECON",
-                      n: netAmt,
-                      v: vatAmt,
-                      g: amt,
-                      u: true,
-                    });
-                  }
-                });
-
-                const isDateStr = (val) => {
-                  if (!val || typeof val !== "string") return false;
-                  const s = val.trim();
-                  if (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}$/.test(s)) return true;
-                  if (/^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}$/.test(s)) return true;
-                  if (/^\d{1,2}[\s\-][A-Za-z]{3,}[\s\-]\d{2,4}$/.test(s)) return true;
-                  return false;
-                };
-
-                const isTypeStr = (val) =>
-                  /^(expense|payment|bill payment|debit|credit|transfer|check|dd|deb|fpo|fpi|bgc|so|bp|chq|tfr|obp|bacs|fps|card|cash)$/i.test(
-                    String(val || "").trim()
-                  );
-                const isTaxRate = (val) =>
-                  /^(\d+(\.\d+)?%|no vat|zero|exempt)/i.test(String(val || "").trim()) ||
-                  /%/.test(String(val || ""));
-                const isAccountStr = (val) =>
-                  /bank account|business account|revolut|starling|tide|barclays|hsbc|current account/i.test(
-                    String(val || "").trim()
-                  );
-
-                const normCatKey = (s) =>
-                  String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
-                const knownExpenseCatSet = new Set(
-                  (expensesList || []).map((e) => normCatKey(e.name)).filter(Boolean)
-                );
-                const knownCategorySet = new Set(knownExpenseCatSet);
-                [
-                  "debtors",
-                  "creditors",
-                  "freelancer",
-                  "net pay control",
-                  "dividend paid",
-                  "bank charges",
-                  "sales",
-                  "revenue",
-                ].forEach((c) => knownCategorySet.add(c));
-
-                const bankOutgoings = [];
-                bankRows.forEach((r) => {
-                  const c = (idx) => String(r[idx] || "").trim();
-                  const outAmt = parseFloat(c(8).replace(/[£$€,\s]/g, "")) || 0;
-                  const inAmt = parseFloat(c(9).replace(/[£$€,\s]/g, "")) || 0;
-                  const catFormula = c(16);
-                  const catFormulaNorm = normCatKey(catFormula);
-
-                  if (catFormula.toLowerCase() === "outgoings" || knownExpenseCatSet.has(catFormulaNorm)) {
-                    // Collect non-empty cells across columns 0..7 with their column indices
-                    const cells = [];
-                    for (let i = 0; i <= 7; i++) {
-                      const val = c(i);
-                      if (val) cells.push({ col: i, val });
-                    }
-
-                    // 1. Identify Date: first cell matching isDateStr
-                    const dateCell = cells.find((item) => isDateStr(item.val));
-                    const date = dateCell ? dateCell.val : "";
-
-                    // 2. Filter out date, transaction types (Expense, Payment, DD, DEB, etc.), and tax rates
-                    const remaining = cells.filter((item) => {
-                      if (item === dateCell) return false;
-                      if (isDateStr(item.val)) return false;
-                      if (isTypeStr(item.val)) return false;
-                      if (isTaxRate(item.val)) return false;
-                      return true;
-                    });
-
-                    // 3. Identify Category only if it explicitly matches knownCategorySet
-                    let sheetCategory = "";
-                    const catIdx = remaining.findIndex((item) =>
-                      knownCategorySet.has(normCatKey(item.val))
-                    );
-                    let catCell = null;
-                    if (catIdx !== -1) {
-                      catCell = remaining[catIdx];
-                      sheetCategory = catCell.val;
-                    } else if (knownExpenseCatSet.has(catFormulaNorm)) {
-                      sheetCategory = catFormula;
-                    }
-
-                    // 4. Remaining cells after removing category
-                    const nonCat = remaining.filter((item) => item !== catCell);
-
-                    // 5. Account Name detection (col 2 is Account Name in standard Recon layout)
-                    let account = "";
-                    const accIdx = nonCat.findIndex((item) => isAccountStr(item.val));
-                    let accCell = null;
-                    if (accIdx !== -1 && nonCat.length > 1) {
-                      accCell = nonCat[accIdx];
-                      account = accCell.val;
-                    }
-
-                    // 6. Reference detection (Cols F/G = indices 5/6 in Recon layout, when not claimed as category/account)
-                    const rawRef5 = c(5);
-                    const rawRef6 = c(6);
-                    let ref = "";
-                    let refCell = null;
-                    if (rawRef6 && (!catCell || catCell.col !== 6) && !isDateStr(rawRef6)) {
-                      ref = rawRef6;
-                      refCell = nonCat.find((item) => item.col === 6) || null;
-                    } else if (rawRef5 && (!catCell || catCell.col !== 5) && !isDateStr(rawRef5)) {
-                      ref = rawRef5;
-                      refCell = nonCat.find((item) => item.col === 5) || null;
-                    }
-
-                    const payloadCells = nonCat.filter((item) => item !== accCell && item !== refCell);
-
-                    // 7. Payee and Description (prefer col 3 Payee and col 4 Particulars when present)
-                    const rawPayee = c(3);
-                    const rawParticulars = c(4);
-                    let payee = "";
-                    let desc = "";
-                    if (rawPayee && !isDateStr(rawPayee) && !isTypeStr(rawPayee) && (!catCell || catCell.col !== 3)) {
-                      payee = rawPayee;
-                      desc = (rawParticulars && (!catCell || catCell.col !== 4)) ? rawParticulars : "";
-                    } else if (rawParticulars && !isDateStr(rawParticulars) && !isTypeStr(rawParticulars) && (!catCell || catCell.col !== 4)) {
-                      payee = rawParticulars;
-                      desc = rawParticulars;
-                    } else if (payloadCells.length === 1) {
-                      payee = payloadCells[0].val;
-                    } else if (payloadCells.length >= 2) {
-                      payee = payloadCells[0].val;
-                      desc = payloadCells[1].val;
-                    }
-
-                    const netAmount = outAmt > 0 ? Math.abs(outAmt) : (inAmt > 0 ? -Math.abs(inAmt) : 0);
-                    if (netAmount !== 0) {
-                      bankOutgoings.push({
-                        d: date,
-                        account,
-                        payee,
-                        desc,
-                        ref,
-                        sheetCategory,
-                        amount: netAmount,
-                        isCredit: inAmt > 0 && outAmt === 0,
-                      });
-                    }
-                  }
-                });
-
-                reconMonths[tabName] = {
-                  isReconciled,
-                  unreconciledItems,
-                  bankOutgoings,
-                };
-              }
-            }
-          } catch (reconErr) {
-            console.warn("⚠️ Failed to fetch Recon sheet tabs:", reconErr.message);
-          }
-        }
-
-        const getFy = (headers, fallback) => {
-          if (!headers || headers.length === 0) return fallback;
-          const last = headers[headers.length - 1] || headers[0];
-          const m = String(last).match(/(\d{2,4})/);
-          return m ? `FY${m[1].slice(-2)}` : fallback;
-        };
-        const fyLabels = {
-          1: getFy(outgoingsHeadersY1, "FY26"),
-          2: getFy(outgoingsHeadersY2, "FY27"),
-          3: getFy(outgoingsHeadersY3, "FY28"),
-        };
-
-        const today = new Date();
-        let currentOutgoingsYear = 2; // Default to Year 2 (current financial year)
-        const yearHeaders = {
-          1: outgoingsHeadersY1,
-          2: outgoingsHeadersY2,
-          3: outgoingsHeadersY3,
-        };
-
-        // Calculate reconciledMonths across each FY: { 1: [bool x 12], 2: [bool x 12], 3: [bool x 12] }
-        const reconciledMonths = {
-          1: new Array(12).fill(false),
-          2: new Array(12).fill(false),
-          3: new Array(12).fill(false),
-        };
-
-        [1, 2, 3].forEach((yr) => {
-          const hdrs = yearHeaders[yr] || [];
-          for (let mIdx = 0; mIdx < 12; mIdx++) {
-            const h = hdrs[mIdx];
-            if (h) {
-              const d = parseMonthYear(h);
-              if (d) {
-                const tabName = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
-                if (reconMonths[tabName]) {
-                  reconciledMonths[yr][mIdx] = Boolean(reconMonths[tabName].isReconciled);
-                } else if (Array.isArray(transactionsByMonth[yr]?.[mIdx]) && transactionsByMonth[yr][mIdx].length > 0) {
-                  reconciledMonths[yr][mIdx] = true;
-                }
-              }
-            }
-          }
-        });
-
-        for (const y of [1, 2, 3]) {
-          const hdrs = yearHeaders[y] || [];
-          if (hdrs.length > 0) {
-            const first = parseMonthYear(hdrs[0]);
-            if (first) {
-              const start = new Date(first.getFullYear(), first.getMonth(), 1);
-              const end = new Date(first.getFullYear(), first.getMonth() + 12, 0, 23, 59, 59);
-              if (today >= start && today <= end) {
-                currentOutgoingsYear = y;
-                break;
-              }
-            }
-          }
-        }
-
-        // Helper: Parse NBtoFind with 3 Years
-        const nbHeadersY1 = (nbtofindRows[0] || []).slice(6, 18).map((h) => String(h || "").trim());
-        const nbHeadersY2 = (nbtofindRows[0] || []).slice(21, 33).map((h) => String(h || "").trim());
-        const nbHeadersY3 = (nbtofindRows[0] || []).slice(36, 48).map((h) => String(h || "").trim());
-
-        // Row 18: NB to find figure to use (1-indexed Row 18 is 0-indexed index 17)
-        const nbTargetRow = nbtofindRows[17] || nbtofindRows.find((r) => String(r[0] || "").toLowerCase().includes("figure to use")) || [];
-        const nbY1 = nbTargetRow.length > 0 ? (nbTargetRow.slice(6, 18) || []).map(formatMoneyVal) : [];
-        const nbY2 = nbTargetRow.length > 0 ? (nbTargetRow.slice(21, 33) || []).map(formatMoneyVal) : [];
-        const nbY3 = nbTargetRow.length > 0 ? (nbTargetRow.slice(36, 48) || []).map(formatMoneyVal) : [];
-
-        // Row 23: NB to find direct costs to use (1-indexed Row 23 is 0-indexed index 22)
-        const nbDirectCostsRow = nbtofindRows[22] || nbtofindRows.find((r) => String(r[0] || "").toLowerCase().includes("direct costs to use")) || [];
-        const nbDcY1 = nbDirectCostsRow.length > 0 ? (nbDirectCostsRow.slice(6, 18) || []).map(formatMoneyVal) : [];
-        const nbDcY2 = nbDirectCostsRow.length > 0 ? (nbDirectCostsRow.slice(21, 33) || []).map(formatMoneyVal) : [];
-        const nbDcY3 = nbDirectCostsRow.length > 0 ? (nbDirectCostsRow.slice(36, 48) || []).map(formatMoneyVal) : [];
-
-        const sumNB = (arr) =>
-          (arr || []).reduce((acc, v) => acc + parseMoney(v), 0);
-
-        const totalConfirmedRevenue = confirmedJobs.reduce((acc, j) => acc + j.revNum, 0);
-        const totalPipelineRevenue = pipelineJobs.reduce((acc, j) => acc + j.revNum, 0);
-        const weightedPipelineRevenue = pipelineJobs.reduce((acc, j) => acc + j.weightedRevenue, 0);
-
-        // Extract Outgoings Metadata for Advanced Scenario Planning & Making up CoS matching webappserver.gs (lines 3227-3281)
-        const yearBlocks = [
-          { start: 6, count: 12 },   // Year 1: Cols G-R (indices 6-17)
-          { start: 21, count: 12 },  // Year 2: Cols V-AG (indices 21-32)
-          { start: 36, count: 12 },  // Year 3: Cols AK-AV (indices 36-47)
-        ];
-
-        const outgoingsMeta = {
-          makingUpCosPct: 0,
-          salariesDel: [],
-          salariesNonDel: [],
-          directCostsAsContractors: [],
-          makingUpCosBase: [],
-          makingUpCosBaseConf: [],
-          makingUpCosHardZero: [],
-          profitShareBaseDel: [],
-          profitShareBaseNonDel: [],
-          contractorSource: contractorSource || "Cell Values",
-          isNotesMode,
-          contractorTransactions,
-          makingUpCosVat: "",
-          makingUpCosTiming: "Curr",
-          profitSharePct,
-          profitShareSwitch,
-          mode,
-          directCostsMode,
-        };
-
-        const makingUpCosPctRaw = outgoingsRows[111] ? outgoingsRows[111][0] : "0%";
-        outgoingsMeta.makingUpCosPct = parseFloat(String(makingUpCosPctRaw).replace("%", "")) / 100 || 0;
-
-        if (outgoingsRows[110]) {
-          outgoingsMeta.makingUpCosVat = outgoingsRows[110][1] || "";
-          outgoingsMeta.makingUpCosTiming = outgoingsRows[110][3] || "Curr";
-        }
-
-        const getOutgoingsNum = (rIdx, cIdx) => {
-          if (!outgoingsRows[rIdx] && !outgoingsRawRows[rIdx]) return 0;
-          const rawVal = outgoingsRawRows[rIdx]?.[cIdx];
-          if (typeof rawVal === "number" && Number.isFinite(rawVal)) return rawVal;
-          return parseFloat(String(outgoingsRows[rIdx]?.[cIdx] || 0).replace(/[£,]/g, "")) || 0;
-        };
-
-        for (let yi = 0; yi < yearBlocks.length; yi++) {
-          const blk = yearBlocks[yi];
-          const sDel = [], sNonDel = [], dcContr = [], mCos = [], mCosConf = [], mCosHz = [], psDel = [], psNonDel = [];
-          for (let j = 0; j < blk.count; j++) {
-            const cIdx = blk.start + j;
-            sDel.push(getOutgoingsNum(5, cIdx));
-            sNonDel.push(getOutgoingsNum(6, cIdx));
-            dcContr.push(getOutgoingsNum(8, cIdx));
-            mCos.push(getOutgoingsNum(110, cIdx));
-            mCosConf.push(getOutgoingsNum(244, cIdx));
-            const indicator = outgoingsRows[111] ? String(outgoingsRows[111][cIdx] || "").toUpperCase().trim() : "";
-            mCosHz.push(indicator === "ZERO");
-            psDel.push(getOutgoingsNum(234, cIdx));
-            psNonDel.push(getOutgoingsNum(235, cIdx));
-          }
-          outgoingsMeta.salariesDel.push(sDel);
-          outgoingsMeta.salariesNonDel.push(sNonDel);
-          outgoingsMeta.directCostsAsContractors.push(dcContr);
-          outgoingsMeta.makingUpCosBase.push(mCos);
-          outgoingsMeta.makingUpCosBaseConf.push(mCosConf);
-          outgoingsMeta.makingUpCosHardZero.push(mCosHz);
-          outgoingsMeta.profitShareBaseDel.push(psDel);
-          outgoingsMeta.profitShareBaseNonDel.push(psNonDel);
-        }
-
-        const keyDataPayload = {
-          _cachedAt: new Date().toISOString(),
-          outgoingsMeta,
-          jobs: {
-            all: allJobs,
-            confirmed: confirmedJobs,
-            pipeline: pipelineJobs,
-            totalRevenue: totalConfirmedRevenue,
-            pipelineRevenue: totalPipelineRevenue,
-            weightedPipelineRevenue,
-            totalJobsCount: allJobs.length,
-            confirmedCount: confirmedJobs.length,
-            pipelineCount: pipelineJobs.length,
-          },
-          salaries: {
-            staff: salariesList,
-            rawRows: salariesRows,
-            headers: salariesRows[0] || [],
-            monthHeaders: salariesHeadersRow,
-            deepDive: salariesDeepDiveRows,
-            totalHeadcount,
-            deliveryHeadcount,
-            nonDeliveryHeadcount,
-            totalPayroll,
-            averageSalary: totalHeadcount > 0 ? Math.round(totalPayroll / totalHeadcount) : 0,
-          },
-          outgoings: {
-            headers: {
-              1: outgoingsHeadersY1,
-              2: outgoingsHeadersY2,
-              3: outgoingsHeadersY3,
-            },
-            currentYear: currentOutgoingsYear,
-            fyLabels,
-            contractors: contractorsList,
-            expenses: expensesList,
-            dividends: dividendsList,
-            contractorSource: contractorSource || "Cell Values",
-            isNotesMode,
-            contractorTransactions,
-            transactionsByMonth,
-            reconMonths,
-            reconciledMonths,
-            vatCashByMonth,
-            vatAccrualByMonth,
-          },
-          nbtofind: {
-            headers: {
-              1: nbHeadersY1,
-              2: nbHeadersY2,
-              3: nbHeadersY3,
-            },
-            currentYear: currentOutgoingsYear,
-            mode,
-            directCostsMode,
-            isRevenueMode: mode.toLowerCase() === "revenue",
-            allocations: {
-              1: nbY1,
-              2: nbY2,
-              3: nbY3,
-            },
-            monthlyAllocations: currentOutgoingsYear === 2 ? nbY2 : (currentOutgoingsYear === 3 ? nbY3 : nbY1),
-            totalTargets: {
-              1: sumNB(nbY1),
-              2: sumNB(nbY2),
-              3: sumNB(nbY3),
-            },
-            directCosts: {
-              1: nbDcY1,
-              2: nbDcY2,
-              3: nbDcY3,
-            },
-            monthlyDirectCosts: currentOutgoingsYear === 2 ? nbDcY2 : (currentOutgoingsYear === 3 ? nbDcY3 : nbDcY1),
-            totalDirectCosts: {
-              1: sumNB(nbDcY1),
-              2: sumNB(nbDcY2),
-              3: sumNB(nbDcY3),
-            },
-          },
-          mode,
-          directCostsMode,
-          jobsMode: sbCtx?.jobsMode || "grid",
-          jobsReadMode: usedRelationalJobReads ? "relational" : "grid",
-          isJobCosting,
-          jobCostingStyle,
-          standardChargeOutRate,
-          contractorDayRate,
-          formOptions: {
-            leadSources,
-            productLines,
-            splitEnabled,
-            splitMethod,
-            isJobCosting,
-            jobCostingStyle,
-            standardChargeOutRate,
-            contractorDayRate,
-          },
-          splitEnabled,
-          splitMethod,
-          currencySymbol,
-          thousandsSeparator,
-          accountingTool,
-          crmTool,
-          crmDrives,
-          hasAccountingIntegration,
-          clientInfo: {
-            currencySymbol,
-            thousandsSeparator,
-            accountingTool,
-            hasAccountingIntegration,
-            isJobCosting,
-            jobCostingStyle,
-            standardChargeOutRate,
-            contractorDayRate,
-          },
-        };
-
-        return keyDataPayload;
-      },
+      fetchFreshFn: () =>
+        buildPortalKeyDataPayload({
+          sheets,
+          clientSheetId,
+          clientName: auth.clientName || clientName,
+        }),
     });
 
     return res.status(200).json({
@@ -1347,4 +272,1220 @@ export default async function handler(req, res) {
     console.error("❌ /api/portal/key-data error:", err);
     return res.status(500).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   }
+}
+
+export async function buildPortalKeyDataPayload({
+  sheets,
+  clientSheetId,
+  clientName = "",
+  initialReconSheetId = null,
+  _forceInputsReadMode = null,
+}) {
+  // Resolve reconSheetId upfront from cached client registry if available so we can fetch Recon titles in parallel
+  if (!initialReconSheetId) {
+    try {
+      const allClients = await getClients();
+      const found = (allClients || []).find(
+        (c) =>
+          (c.clientSheetId && (extractSheetIdFromUrl(c.clientSheetId) || c.clientSheetId) === clientSheetId) ||
+          (clientName && c.clientName?.toLowerCase().trim() === clientName.toLowerCase().trim())
+      );
+      if (found?.reconSheetId) {
+        initialReconSheetId = extractSheetIdFromUrl(found.reconSheetId) || found.reconSheetId;
+      }
+    } catch (_) { }
+  }
+
+  // Check what sheets exist and resolve relational mode in parallel
+  const [existingSheetTitles, preloadedReconTitles, sbCtx] = await Promise.all([
+    getSheetTitles(sheets, clientSheetId),
+    initialReconSheetId
+      ? getSheetTitles(sheets, initialReconSheetId).catch(() => null)
+      : Promise.resolve(null),
+    resolveSupabaseSheetContext({
+      spreadsheetId: clientSheetId,
+      clientName,
+    }).catch(() => null),
+  ]);
+
+  const hasConfirmed = existingSheetTitles.has("Confirmed") || existingSheetTitles.has("ConfCalcs");
+  const confirmedTitle = existingSheetTitles.has("ConfCalcs") ? "ConfCalcs" : "Confirmed";
+
+  const hasPipeline = existingSheetTitles.has("Pipeline") || existingSheetTitles.has("PipeCalcs");
+  const pipelineTitle = existingSheetTitles.has("PipeCalcs") ? "PipeCalcs" : "Pipeline";
+
+  const hasOutgoings = existingSheetTitles.has("Outgoings");
+  const hasOutgNotes = existingSheetTitles.has("OutgNotes");
+  const hasSalaries = existingSheetTitles.has("Salaries");
+  const hasNBtoFind = existingSheetTitles.has("NBtoFind");
+  const useRelationalJobReads = Boolean(sbCtx?.jobsMode === "relational" && sbCtx?.jobsReadMode === "relational" && sbCtx?.clientId);
+
+  const forceInputMode =
+    _forceInputsReadMode === "grid" || _forceInputsReadMode === "relational"
+      ? _forceInputsReadMode
+      : null;
+  const useRelationalInputReads = forceInputMode
+    ? Boolean(forceInputMode === "relational" && sbCtx?.clientId)
+    : Boolean(sbCtx?.inputsMode === "relational" && sbCtx?.inputsReadMode === "relational" && sbCtx?.clientId);
+
+  const targetConfMaxRow = 2500;
+  const targetPipeMaxRow = 1000;
+
+  const batchRanges = [];
+  if (!useRelationalJobReads && hasConfirmed) batchRanges.push(`${confirmedTitle}!A1:JF${targetConfMaxRow}`);
+  if (!useRelationalJobReads && hasPipeline) batchRanges.push(`${pipelineTitle}!A1:JF${targetPipeMaxRow}`);
+  if (!useRelationalInputReads && hasSalaries) {
+    batchRanges.push("Salaries!A1:I100");
+    batchRanges.push("Salaries!A1:JC1");
+    batchRanges.push("Salaries!A304:JC368");
+  }
+  if (!useRelationalInputReads && hasOutgoings) batchRanges.push("Outgoings!A1:AV306");
+  if (!useRelationalInputReads && hasOutgNotes) batchRanges.push("OutgNotes!A1:AV112");
+  if (!useRelationalInputReads && hasNBtoFind) batchRanges.push("NBtoFind!A1:AV50");
+  batchRanges.push("KeyInfo!G32:G75"); // Lead sources
+  batchRanges.push("KeyInfo!C23:C26"); // Product lines
+  batchRanges.push("KeyInfo!F11:F12"); // Profit share % and switch
+  batchRanges.push("KeyInfo!B15");     // Mode (Revenue vs Income)
+  batchRanges.push("KeyInfo!D8");      // Direct costs mode (Contractors vs Pass-through)
+  batchRanges.push("KeyInfo!B20");     // Contractor source
+  batchRanges.push("KeyInfo!D15:D16"); // Split method (D15) & split enabled (D16)
+  batchRanges.push("KeyInfo!G1");      // Recon Sheet URL on Client Sheet KeyInfo
+  batchRanges.push("KeyInfo!C4:D5");   // Currency and thousands separator
+  batchRanges.push("KeyInfo!Q4");      // Accounting tool
+  batchRanges.push("KeyInfo!Q8:Q9");   // CRM tool (Q8) & CRM mode (Q9)
+  batchRanges.push("KeyInfo!D11:D13"); // Job table style (D11), standard charge-out rate (D12), contractor day rate (D13)
+
+  const [batchResp, outgoingsRawResp, relBundle, relInputsBundle, relInputsLookupDirect] = await Promise.all([
+    withRetry(() =>
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientSheetId,
+        ranges: batchRanges,
+        valueRenderOption: "FORMATTED_VALUE",
+      })
+    ),
+    !useRelationalInputReads && hasOutgoings
+      ? withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: "Outgoings!A1:AV306",
+          valueRenderOption: "UNFORMATTED_VALUE",
+        })
+      ).catch(() => null)
+      : Promise.resolve(null),
+    useRelationalJobReads
+      ? preloadClientRelationalJobsBundle(sbCtx, { includeConfirmed: hasConfirmed, includePipeline: hasPipeline }).catch(() => null)
+      : Promise.resolve(null),
+    useRelationalInputReads
+      ? preloadClientRelationalInputsBundle(sbCtx, {
+        includeSalaries: hasSalaries,
+        includeOutgoings: hasOutgoings,
+        includeOutgNotes: hasOutgNotes,
+        includeNbToFind: hasNBtoFind,
+      }).catch(() => null)
+      : Promise.resolve(null),
+    !useRelationalInputReads && sbCtx?.inputsMode === "relational"
+      ? getClientRelationalInputsLookup(sbCtx, {
+        includeEmployees: hasSalaries,
+        includeOutgoing: hasOutgoings,
+        includeEntries: hasOutgNotes,
+      }).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+
+  let relLookup = relBundle?.relLookup || null;
+  const usedRelationalJobReads = Boolean(
+    useRelationalJobReads &&
+    relBundle &&
+    (!hasConfirmed || Boolean(relBundle.tabHeaders?.Confirmed)) &&
+    (!hasPipeline || Boolean(relBundle.tabHeaders?.Pipeline))
+  );
+  if (!usedRelationalJobReads && sbCtx?.jobsMode === "relational") {
+    relLookup = await getClientRelationalJobsLookup(sbCtx).catch(() => null);
+  }
+
+  const usedRelationalInputReads = Boolean(
+    useRelationalInputReads &&
+    relInputsBundle &&
+    (!hasSalaries || Boolean(relInputsBundle.rollups?._salariesRollups)) &&
+    (!hasOutgoings || Boolean(relInputsBundle.rollups?._outgoingsRollups)) &&
+    (!hasNBtoFind || Boolean(relInputsBundle.nbRecord?.reconciled_rollups?._nbMeta))
+  );
+  const relInputsLookup = usedRelationalInputReads
+    ? relInputsBundle?.relLookup || null
+    : relInputsLookupDirect || (sbCtx?.inputsMode === "relational" ? await getClientRelationalInputsLookup(sbCtx, { includeEmployees: hasSalaries, includeOutgoing: hasOutgoings, includeEntries: hasOutgNotes }).catch(() => null) : null);
+
+  const valueRanges = batchResp.data.valueRanges || [];
+  let outgoingsRawRows = outgoingsRawResp?.data?.values || [];
+  let rangeIdx = 0;
+
+  let confirmedRows = !useRelationalJobReads && hasConfirmed
+    ? (valueRanges[rangeIdx++]?.values || [])
+    : (usedRelationalJobReads && hasConfirmed
+      ? buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { useCalcsTab: true, maxColLimit: 265 }).rows
+      : []);
+  let pipelineRows = !useRelationalJobReads && hasPipeline
+    ? (valueRanges[rangeIdx++]?.values || [])
+    : (usedRelationalJobReads && hasPipeline
+      ? buildRelationalFormattedTabRowsFromBundle(relBundle, "Pipeline", { useCalcsTab: true, maxColLimit: 265 }).rows
+      : []);
+
+  if (useRelationalJobReads && !usedRelationalJobReads && (hasConfirmed || hasPipeline)) {
+    const fallbackJobs = await withRetry(() =>
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientSheetId,
+        ranges: [
+          ...(hasConfirmed ? [`${confirmedTitle}!A1:JF${targetConfMaxRow}`] : []),
+          ...(hasPipeline ? [`${pipelineTitle}!A1:JF${targetPipeMaxRow}`] : []),
+        ],
+        valueRenderOption: "FORMATTED_VALUE",
+      })
+    );
+    let fi = 0;
+    if (hasConfirmed) confirmedRows = fallbackJobs.data?.valueRanges?.[fi++]?.values || [];
+    if (hasPipeline) pipelineRows = fallbackJobs.data?.valueRanges?.[fi++]?.values || [];
+  }
+
+  let salariesRows = [];
+  let salariesHeadersRow = [];
+  let salariesDeepDiveRows = [];
+  let outgoingsRows = [];
+  let outgNotesPreloadedRows = [];
+  let nbtofindRows = [];
+
+  if (!useRelationalInputReads) {
+    salariesRows = hasSalaries ? (valueRanges[rangeIdx++]?.values || []) : [];
+    salariesHeadersRow = hasSalaries ? (valueRanges[rangeIdx++]?.values?.[0] || []) : [];
+    salariesDeepDiveRows = hasSalaries ? (valueRanges[rangeIdx++]?.values || []) : [];
+    outgoingsRows = hasOutgoings ? (valueRanges[rangeIdx++]?.values || []) : [];
+    outgNotesPreloadedRows = hasOutgNotes ? (valueRanges[rangeIdx++]?.values || []) : [];
+    nbtofindRows = hasNBtoFind ? (valueRanges[rangeIdx++]?.values || []) : [];
+  } else if (usedRelationalInputReads) {
+    if (hasSalaries) {
+      const salState = reconstructRelationalTabFromBundle(relInputsBundle, "Salaries");
+      salariesRows = sliceRelationalTabValues(salState, "Salaries", { startRow0: 0, endRow0: 99, startCol0: 0, endCol0: 8, formatted: true });
+      salariesHeadersRow = sliceRelationalTabValues(salState, "Salaries", { startRow0: 0, endRow0: 0, startCol0: 0, endCol0: 262, formatted: true })?.[0] || [];
+      salariesDeepDiveRows = sliceRelationalTabValues(salState, "Salaries", { startRow0: 303, endRow0: 367, startCol0: 0, endCol0: 262, formatted: true });
+    }
+    if (hasOutgoings) {
+      const outState = reconstructRelationalTabFromBundle(relInputsBundle, "Outgoings");
+      outgoingsRows = sliceRelationalTabValues(outState, "Outgoings", { startRow0: 0, endRow0: 305, startCol0: 0, endCol0: 47, formatted: true });
+      outgoingsRawRows = sliceRelationalTabValues(outState, "Outgoings", { startRow0: 0, endRow0: 305, startCol0: 0, endCol0: 47, formatted: false });
+    }
+    if (hasOutgNotes) {
+      const outNState = reconstructRelationalTabFromBundle(relInputsBundle, "OutgNotes");
+      outgNotesPreloadedRows = sliceRelationalTabValues(outNState, "OutgNotes", { startRow0: 0, endRow0: 111, startCol0: 0, endCol0: 47, formatted: true });
+    }
+    if (hasNBtoFind) {
+      const nbState = reconstructRelationalTabFromBundle(relInputsBundle, "NBtoFind");
+      nbtofindRows = sliceRelationalTabValues(nbState, "NBtoFind", { startRow0: 0, endRow0: 49, startCol0: 0, endCol0: 47, formatted: true });
+    }
+  } else if (hasSalaries || hasOutgoings || hasOutgNotes || hasNBtoFind) {
+    const fallbackInputRanges = [];
+    if (hasSalaries) {
+      fallbackInputRanges.push("Salaries!A1:I100", "Salaries!A1:JC1", "Salaries!A304:JC368");
+    }
+    if (hasOutgoings) fallbackInputRanges.push("Outgoings!A1:AV306");
+    if (hasOutgNotes) fallbackInputRanges.push("OutgNotes!A1:AV112");
+    if (hasNBtoFind) fallbackInputRanges.push("NBtoFind!A1:AV50");
+    const [fbInputs, fbOutRaw] = await Promise.all([
+      withRetry(() =>
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientSheetId,
+          ranges: fallbackInputRanges,
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      ),
+      hasOutgoings
+        ? withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: clientSheetId,
+            range: "Outgoings!A1:AV306",
+            valueRenderOption: "UNFORMATTED_VALUE",
+          })
+        ).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+    const fbVr = fbInputs.data?.valueRanges || [];
+    let fi = 0;
+    if (hasSalaries) {
+      salariesRows = fbVr[fi++]?.values || [];
+      salariesHeadersRow = fbVr[fi++]?.values?.[0] || [];
+      salariesDeepDiveRows = fbVr[fi++]?.values || [];
+    }
+    if (hasOutgoings) {
+      outgoingsRows = fbVr[fi++]?.values || [];
+      outgoingsRawRows = fbOutRaw?.data?.values || [];
+    }
+    if (hasOutgNotes) outgNotesPreloadedRows = fbVr[fi++]?.values || [];
+    if (hasNBtoFind) nbtofindRows = fbVr[fi++]?.values || [];
+  }
+
+  const leadSourcesRows = valueRanges[rangeIdx++]?.values || [];
+  const productLinesRows = valueRanges[rangeIdx++]?.values || [];
+  const profitShareRows = valueRanges[rangeIdx++]?.values || [];
+  const modeRows = valueRanges[rangeIdx++]?.values || [];
+  const directCostsModeRows = valueRanges[rangeIdx++]?.values || [];
+  const contractorSourceRows = valueRanges[rangeIdx++]?.values || [];
+  const splitInfoRows = valueRanges[rangeIdx++]?.values || [];
+  const reconUrlRows = valueRanges[rangeIdx++]?.values || [];
+  const currencyRows = valueRanges[rangeIdx++]?.values || [];
+  const accountingToolRows = valueRanges[rangeIdx++]?.values || [];
+  const crmToolRows = valueRanges[rangeIdx++]?.values || [];
+  const jobCostingRows = valueRanges[rangeIdx++]?.values || [];
+
+  // Automatic overflow fetch if Confirmed or Pipeline has active job data reaching the initial cap (grid mode only)
+  const overflowPromises = [];
+  if (
+    !usedRelationalJobReads &&
+    hasConfirmed &&
+    confirmedRows.length >= targetConfMaxRow &&
+    Boolean(confirmedRows[targetConfMaxRow - 1]?.[0] || confirmedRows[targetConfMaxRow - 1]?.[1])
+  ) {
+    overflowPromises.push(
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${confirmedTitle}!A${targetConfMaxRow + 1}:JF5000`,
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      )
+        .then((r) => {
+          if (r.data?.values?.length) confirmedRows = [...confirmedRows, ...r.data.values];
+        })
+        .catch(() => { })
+    );
+  }
+  if (
+    !usedRelationalJobReads &&
+    hasPipeline &&
+    pipelineRows.length >= targetPipeMaxRow &&
+    Boolean(pipelineRows[targetPipeMaxRow - 1]?.[0] || pipelineRows[targetPipeMaxRow - 1]?.[1])
+  ) {
+    overflowPromises.push(
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${pipelineTitle}!A${targetPipeMaxRow + 1}:JF1000`,
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      )
+        .then((r) => {
+          if (r.data?.values?.length) pipelineRows = [...pipelineRows, ...r.data.values];
+        })
+        .catch(() => { })
+    );
+  }
+  if (overflowPromises.length > 0) {
+    await Promise.all(overflowPromises);
+  }
+
+  const accountingTool = String(accountingToolRows?.[0]?.[0] || "None").trim();
+  const crmTool = String(crmToolRows?.[0]?.[0] || "None").trim();
+  const crmDrives = String(crmToolRows?.[1]?.[0] || "NA").trim();
+  const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some((t) => accountingTool.toLowerCase().includes(t));
+  const jobCostingStyleRaw = String(jobCostingRows?.[0]?.[0] || "").trim();
+  const isJobCosting = isJobCostingStyle({
+    d11Val: jobCostingStyleRaw,
+    headers: confirmedRows?.[0] || pipelineRows?.[0] || []
+  });
+  const jobCostingStyle = isJobCosting ? "JobCosting" : "Standard";
+  const standardChargeOutRate = parseFloat(String(jobCostingRows?.[1]?.[0] || "0").replace(/[£$€,\s]/g, "")) || 0;
+  const contractorDayRate = parseFloat(String(jobCostingRows?.[2]?.[0] || "0").replace(/[£$€,\s]/g, "")) || 0;
+
+  const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
+  let currencySymbol = rawCurrencySymbol;
+  if (currencySymbol.toUpperCase() === "EUR" || currencySymbol === "€") currencySymbol = "€";
+  else if (currencySymbol.toUpperCase() === "GBP" || currencySymbol === "£") currencySymbol = "£";
+  else if (currencySymbol.toUpperCase() === "USD" || currencySymbol === "$") currencySymbol = "$";
+
+  const rawThousandsSeparator = String(currencyRows?.[1]?.[1] || (currencyRows?.[1]?.[0] && currencyRows?.[1]?.[0] !== "Thous. separator" ? currencyRows?.[1]?.[0] : "") || "").trim();
+  const thousandsSeparator = rawThousandsSeparator || (currencySymbol === "€" ? "." : ",");
+
+  const leadSources = leadSourcesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
+  const productLines = productLinesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
+  const splitMethod = String(splitInfoRows[0]?.[0] || "Even By Month").trim();
+  const splitEnabled = String(splitInfoRows[1]?.[0] || "").trim().toLowerCase() === "yes";
+
+  const profitSharePctRaw = profitShareRows[0]?.[0] || "0%";
+  const profitSharePct = parseFloat(String(profitSharePctRaw).replace("%", "")) / 100 || 0;
+  const profitShareSwitch = String(profitShareRows[1]?.[0] || "").trim();
+  const mode = String(modeRows[0]?.[0] || "Revenue").trim();
+  const rawDirectCostsMode = String(directCostsModeRows[0]?.[0] || "Contractors").trim();
+  const directCostsMode =
+    mode.toLowerCase() === "income"
+      ? "Pass-through"
+      : rawDirectCostsMode === "Pass-through"
+        ? "Pass-through"
+        : "Contractors";
+  const contractorSource = String(contractorSourceRows[0]?.[0] || "Cell Values").trim();
+  const isNotesMode = contractorSource.toLowerCase().includes("notes");
+  const reconUrlFromClientKeyInfo = String(reconUrlRows[0]?.[0] || "").trim();
+
+  const confirmedJobs = parsePortalJobsFromFormattedRows({
+    rows: confirmedRows,
+    jobType: "Confirmed",
+    isJobCosting,
+    relLookup,
+  });
+  const pipelineJobs = parsePortalJobsFromFormattedRows({
+    rows: pipelineRows,
+    jobType: "Pipeline",
+    isJobCosting,
+    relLookup,
+  });
+  const allJobs = [...confirmedJobs, ...pipelineJobs];
+
+  const formatMoneyVal = (v) => {
+    if (v === null || v === undefined || v === "" || v === 0 || v === "0") return `${currencySymbol}0`;
+    const num = parseMoney(v);
+    return formatMoney(num, 0, currencySymbol, thousandsSeparator);
+  };
+
+  // Helper: Parse Salaries
+  const salariesList = [];
+  if (salariesRows.length > 3) {
+    for (let r = 3; r < salariesRows.length; r++) {
+      const row = salariesRows[r];
+      const name = String(row[0] || "").trim();
+      if (!name) continue;
+      const role = String(row[1] || "").trim();
+      const fteSalaryNum = parseMoney(row[2]);
+      const fteSalary = formatMoney(fteSalaryNum, 0, currencySymbol, thousandsSeparator);
+      row[2] = fteSalary; // Normalize rawRows for salaries
+      const fte = String(row[3] || "1.00").trim();
+      const startDate = String(row[4] || "").trim();
+      const endDate = String(row[5] || "").trim();
+      const deliveryPct = String(row[6] || "").trim();
+      const pensionPct = String(row[7] || "").trim();
+
+      const fteNum = parseFloat(String(fte)) || 1.0;
+      const actualAnnualCost = Math.round(fteSalaryNum * fteNum);
+      const isDelivery = deliveryPct === "100%" || (parseFloat(deliveryPct) || 0) > 0;
+
+      salariesList.push({
+        rowNumber: r + 1,
+        employeeUuid: relInputsLookup?.employeesByRow?.get(r + 1)?.id || null,
+        name,
+        role,
+        fteSalary,
+        fteSalaryNum,
+        fte,
+        fteNum,
+        actualAnnualCost,
+        startDate,
+        endDate,
+        deliveryPct: deliveryPct || "0%",
+        isDelivery,
+        pensionPct: pensionPct || "0%",
+      });
+    }
+  }
+
+  const totalHeadcount = salariesList.length;
+  const deliveryHeadcount = salariesList.filter((s) => s.isDelivery).length;
+  const nonDeliveryHeadcount = totalHeadcount - deliveryHeadcount;
+  const totalPayroll = salariesList.reduce((acc, s) => acc + s.actualAnnualCost, 0);
+
+  // Helper: Parse Outgoings (Contractors, Expenses, Dividends) with 3 Years
+  const outgoingsHeadersY1 = (outgoingsRows[0] || []).slice(6, 18).map((h) => String(h || "").trim());
+  const outgoingsHeadersY2 = (outgoingsRows[0] || []).slice(21, 33).map((h) => String(h || "").trim());
+  const outgoingsHeadersY3 = (outgoingsRows[0] || []).slice(36, 48).map((h) => String(h || "").trim());
+
+  const toNumericVal = (rawCell, fmtCell) => {
+    if (typeof rawCell === "number" && Number.isFinite(rawCell)) return rawCell;
+    return parseMoney(fmtCell);
+  };
+
+  const parseOutgoingsSection = (startRow, endRow) => {
+    const items = [];
+    for (let r = startRow; r <= endRow && r < outgoingsRows.length; r++) {
+      const row = outgoingsRows[r] || [];
+      const rawRow = outgoingsRawRows[r] || [];
+      const name = String(row[0] || "").trim();
+      if (!name || name.toLowerCase() === "hide") continue;
+
+      const vat = String(row[1] || "").trim();
+      const invoiceTiming = String(row[2] || "").trim();
+      const paymentTiming = String(row[3] || "").trim();
+      const deliveryPct = String(row[4] || "").trim();
+
+      const allocationsY1 = (row.slice(6, 18) || []).map(formatMoneyVal);
+      const allocationsY2 = (row.slice(21, 33) || []).map(formatMoneyVal);
+      const allocationsY3 = (row.slice(36, 48) || []).map(formatMoneyVal);
+
+      const extractRawSlice = (startIdx, endIdx) => {
+        const slice = [];
+        for (let c = startIdx; c < endIdx; c++) {
+          slice.push(toNumericVal(rawRow[c], row[c]));
+        }
+        return slice;
+      };
+
+      const rawAllocationsY1 = extractRawSlice(6, 18);
+      const rawAllocationsY2 = extractRawSlice(21, 33);
+      const rawAllocationsY3 = extractRawSlice(36, 48);
+
+      const sumAllocations = (arr) =>
+        Math.round(arr.reduce((acc, val) => acc + (typeof val === "number" ? val : parseMoney(val)), 0) * 100) / 100;
+
+      const totalY1 = sumAllocations(rawAllocationsY1);
+      const totalY2 = sumAllocations(rawAllocationsY2);
+      const totalY3 = sumAllocations(rawAllocationsY3);
+
+      items.push({
+        rowNumber: r + 1,
+        outgoingItemUuid: relInputsLookup?.outgoingsByRow?.get(r + 1)?.id || null,
+        name,
+        vat,
+        invoiceTiming,
+        paymentTiming,
+        deliveryPct,
+        isDelivery: deliveryPct === "100%" || (parseFloat(deliveryPct) || 0) > 0,
+        isSystemRow: r === 224 || r === 225,
+        allocations: {
+          1: allocationsY1,
+          2: allocationsY2,
+          3: allocationsY3,
+        },
+        rawAllocations: {
+          1: rawAllocationsY1,
+          2: rawAllocationsY2,
+          3: rawAllocationsY3,
+        },
+        totals: {
+          1: totalY1,
+          2: totalY2,
+          3: totalY3,
+        },
+        monthlyAllocations: allocationsY1, // default to Year 1
+        rawMonthlyAllocations: rawAllocationsY1,
+        totalAnnual: totalY1,
+      });
+    }
+    return items;
+  };
+
+  // Contractors: rows 13 to 110 (indices 12 to 109)
+  const contractorsList = parseOutgoingsSection(12, 109);
+  // Dividends: rows 118 to 121 (indices 117 to 120), strictly excluding summary/total rows as in original WebApp
+  const dividendsList = parseOutgoingsSection(117, 120).filter((item) => !item.name.toLowerCase().includes("total"));
+  // Expenses: rows 126 to 226 (indices 125 to 225; includes non-editable system rows 225 & 226 for reporting/deep-dive)
+  const expensesList = parseOutgoingsSection(125, 225);
+
+  // Extract Transaction Breakdown (Row 300) and Actual VAT (Rows 304 & 305) from Outgoings
+  // 0-indexed row indices: Row 300 -> 299, Row 304 -> 303, Row 305 -> 304
+  const row300 = outgoingsRows[299] || [];
+  const row304 = outgoingsRows[303] || [];
+  const row305 = outgoingsRows[304] || [];
+
+  const parseJsonCell = (cellVal) => {
+    if (!cellVal) return [];
+    try {
+      const parsed = typeof cellVal === "string" ? JSON.parse(cellVal) : cellVal;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const parseYearRow = (row, sliceStart, sliceEnd, parser = (v) => v) => {
+    return (row.slice(sliceStart, sliceEnd) || []).map(parser);
+  };
+
+  const transactionsByMonth = {
+    1: parseYearRow(row300, 6, 18, parseJsonCell),
+    2: parseYearRow(row300, 21, 33, parseJsonCell),
+    3: parseYearRow(row300, 36, 48, parseJsonCell),
+  };
+
+  const vatCashByMonth = {
+    1: parseYearRow(row304, 6, 18, formatMoneyVal),
+    2: parseYearRow(row304, 21, 33, formatMoneyVal),
+    3: parseYearRow(row304, 36, 48, formatMoneyVal),
+  };
+
+  const vatAccrualByMonth = {
+    1: parseYearRow(row305, 6, 18, formatMoneyVal),
+    2: parseYearRow(row305, 21, 33, formatMoneyVal),
+    3: parseYearRow(row305, 36, 48, formatMoneyVal),
+  };
+
+  // In Notes metadata mode, parse transactions from Client Sheet's preloaded OutgNotes tab
+  let contractorTransactions = [];
+  const contractorLockedMap = {};
+  const contractorBlocksMap = {};
+
+  if (isNotesMode && clientSheetId) {
+    try {
+      const notesRows = outgNotesPreloadedRows || [];
+
+      const yearColRanges = [
+        { yr: 1, start: 6, count: 12 },  // Year 1: cols G-R (indices 6-17)
+        { yr: 2, start: 21, count: 12 }, // Year 2: cols V-AG (indices 21-32)
+        { yr: 3, start: 36, count: 12 }, // Year 3: cols AK-AV (indices 36-47)
+      ];
+
+      // Loop rows 13 to 111 (0-indexed indices 12 to 110)
+      // Row 111 (index 110) is "Making up CoS amount"
+      for (let r = 12; r <= 110 && r < notesRows.length; r++) {
+        const contractorRow = outgoingsRows[r] || [];
+        const contractorName = String(
+          contractorRow[0] || (r === 110 ? "Making up CoS amount" : `Contractor ${r - 11}`)
+        ).trim();
+        if (!contractorName || contractorName.toLowerCase() === "hide") continue;
+
+        // VAT setting from Col B of Outgoings (Row 111 VAT setting in Col B)
+        const vatSetting = String(contractorRow[1] || "").trim();
+        const isVat = vatSetting.toLowerCase() === "yes";
+
+        const notesCells = notesRows[r] || [];
+
+        // Track locked cells for this contractor row:
+        // Only cells exclusively made up of placeholders should be editable. Any other cells should be locked.
+        const locked = {
+          1: new Array(12).fill(false),
+          2: new Array(12).fill(false),
+          3: new Array(12).fill(false),
+        };
+
+        const blocksForContractor = {
+          1: Array.from({ length: 12 }, () => []),
+          2: Array.from({ length: 12 }, () => []),
+          3: Array.from({ length: 12 }, () => []),
+        };
+
+        for (const yrRange of yearColRanges) {
+          for (let mIdx = 0; mIdx < yrRange.count; mIdx++) {
+            const c = yrRange.start + mIdx;
+            const cellText = notesCells[c];
+            if (!cellText || !cellText.includes("{App ID:")) continue;
+
+            const rawBlocks = cellText.split(/(?=\{App ID:)/).map((s) => s.trim()).filter(Boolean);
+            const cellBlocks = [];
+            for (const raw of rawBlocks) {
+              if (!raw.includes("{App ID:")) continue;
+              const getTag = (key) => {
+                const m = raw.match(new RegExp(`\\{${key}:\\s*([^}]*)\\}`, "i"));
+                return m ? m[1].trim() : "";
+              };
+              const appId = getTag("App ID");
+              const amtStr = getTag("Amt");
+              const netAmount = parseFloat(amtStr.replace(/[£$€,\s]/g, "")) || 0;
+              const status = getTag("Status");
+              const recDate = getTag("Rec date");
+              const payDate = getTag("Pay date");
+              const rawDesc = getTag("Description");
+
+              if (appId) {
+                cellBlocks.push({ appId, netAmount, status, recDate, payDate, rawDesc });
+              }
+            }
+
+            if (cellBlocks.length > 0) {
+              const resolveEntryUuid = (b, bIdx) => {
+                if (!relInputsLookup) return null;
+                const bySlot = relInputsLookup.entriesByRowColOrder?.get(`${r + 1}:${c}:${bIdx}`);
+                if (bySlot?.id) return bySlot.id;
+                const ak = String(b.appId || "").trim().toLowerCase().replace(/\s+/g, " ");
+                const byApp = ak && !isPlaceholderExpense(b.appId, b.rawDesc, b.status)
+                  ? relInputsLookup.entriesByAppId?.get(ak)
+                  : null;
+                return byApp?.id || null;
+              };
+
+              blocksForContractor[yrRange.yr][mIdx] = cellBlocks.map((b, bIdx) => ({
+                appId: b.appId,
+                contractorEntryUuid: resolveEntryUuid(b, bIdx),
+                amount: b.netAmount,
+                status: b.status,
+                recDate: b.recDate,
+                payDate: b.payDate,
+                description: b.rawDesc,
+                vat: isVat ? "Yes" : "No",
+                colLetter: colToLetter(c),
+                sheetRow: r + 1,
+              }));
+
+              // If ANY block in this cell is an actual accounting bill (not a placeholder),
+              // then this cell is NOT exclusively made up of placeholders -> locked!
+              const hasActualBill = cellBlocks.some((b) => !isPlaceholderExpense(b.appId, b.rawDesc, b.status));
+              if (hasActualBill) {
+                locked[yrRange.yr][mIdx] = true;
+              }
+
+              // Add to contractorTransactions
+              cellBlocks.forEach((b, bIdx) => {
+                let vendor = contractorName;
+                let itemDesc = b.rawDesc;
+                const parenMatch = b.rawDesc.match(/^(.*?)\s*\((.*)\)$/);
+                if (parenMatch && parenMatch[1].trim() && parenMatch[2].trim()) {
+                  vendor = parenMatch[1].trim();
+                  itemDesc = parenMatch[2].trim();
+                } else if (b.rawDesc.startsWith("Placeholder Entry - ")) {
+                  vendor = b.rawDesc.replace("Placeholder Entry - ", "").trim() || vendor;
+                  itemDesc = "Placeholder Entry";
+                } else if (b.rawDesc === "Placeholder Entry") {
+                  vendor = contractorName;
+                  itemDesc = "Placeholder Entry";
+                }
+
+                const vatAmount = isVat ? Math.round(b.netAmount * 0.20 * 100) / 100 : 0;
+                const grossAmount = Math.round((b.netAmount + vatAmount) * 100) / 100;
+
+                contractorTransactions.push({
+                  appId: b.appId,
+                  contractorEntryUuid: resolveEntryUuid(b, bIdx),
+                  vendor,
+                  itemDesc,
+                  rawDesc: b.rawDesc,
+                  contractorName,
+                  netAmount: b.netAmount,
+                  vatAmount,
+                  grossAmount,
+                  amount: -Math.abs(grossAmount),
+                  vatSetting: isVat ? "Yes" : "No",
+                  status: b.status,
+                  recDate: b.recDate,
+                  payDate: b.payDate,
+                  rowNumber: r + 1,
+                });
+              });
+            }
+          }
+        }
+
+        contractorLockedMap[r + 1] = locked;
+        contractorBlocksMap[r + 1] = blocksForContractor;
+      }
+    } catch (notesErr) {
+      console.warn("⚠️ Failed to fetch OutgNotes from master sheet:", notesErr.message);
+    }
+  }
+
+  // Attach lockedCells state to each contractor in contractorsList
+  contractorsList.forEach((c) => {
+    c.lockedCells = contractorLockedMap[c.rowNumber] || {
+      1: new Array(12).fill(false),
+      2: new Array(12).fill(false),
+      3: new Array(12).fill(false),
+    };
+    c.monthlyBlocks = contractorBlocksMap[c.rowNumber] || {
+      1: Array.from({ length: 12 }, () => []),
+      2: Array.from({ length: 12 }, () => []),
+      3: Array.from({ length: 12 }, () => []),
+    };
+  });
+
+  // Fetch Recon Sheet bank transactions and CR2 "Month ready" gate
+  const reconMonths = {};
+  let reconSheetId =
+    initialReconSheetId ||
+    (reconUrlFromClientKeyInfo ? extractSheetIdFromUrl(reconUrlFromClientKeyInfo) || reconUrlFromClientKeyInfo : null);
+
+  if (reconSheetId) {
+    try {
+      const reconTitlesSet =
+        reconSheetId === initialReconSheetId && preloadedReconTitles
+          ? preloadedReconTitles
+          : await getSheetTitles(sheets, reconSheetId);
+      const allReconTabTitles = [...(reconTitlesSet || [])].filter((t) => /^\d{4}$/.test(t));
+
+      // Get months across Outgoings headers (Year 1, 2, 3)
+      const allOutgoingsMonthHeaders = [
+        ...outgoingsHeadersY1,
+        ...outgoingsHeadersY2,
+        ...outgoingsHeadersY3,
+      ].filter(Boolean);
+
+      const targetTabNames = [];
+      allOutgoingsMonthHeaders.forEach((h) => {
+        const d = parseMonthYear(h);
+        if (d) {
+          const tabName = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
+          if (allReconTabTitles.includes(tabName) && !targetTabNames.includes(tabName)) {
+            targetTabNames.push(tabName);
+          }
+        }
+      });
+
+      if (targetTabNames.length > 0) {
+        const batchRanges = [];
+        targetTabNames.forEach((t) => {
+          batchRanges.push(`'${t}'!CR2`);
+          batchRanges.push(`'${t}'!CD4:CN30`);
+          batchRanges.push(`'${t}'!A3:Q200`);
+        });
+
+        const reconBatchResp = await withRetry(() =>
+          sheets.spreadsheets.values.batchGet({
+            spreadsheetId: reconSheetId,
+            ranges: batchRanges,
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        );
+
+        const valueRanges = reconBatchResp.data.valueRanges || [];
+        for (let i = 0; i < targetTabNames.length; i++) {
+          const tabName = targetTabNames[i];
+          const cr2Val = valueRanges[i * 3]?.values?.[0]?.[0];
+          const isReconciled = Boolean(cr2Val === true || String(cr2Val || "").trim().toUpperCase() === "TRUE");
+          const unrecRows = valueRanges[i * 3 + 1]?.values || [];
+          const bankRows = valueRanges[i * 3 + 2]?.values || [];
+
+          const unreconciledItems = [];
+          unrecRows.forEach((r) => {
+            const dateVal = r[2]; // CF
+            const payee = String(r[3] || "").trim(); // CG
+            const desc = String(r[4] || "").trim(); // CH
+            const rawAmt = parseFloat(String(r[5] || "0").replace(/[£$€,\s]/g, "")) || 0; // CI
+            const amt = Math.abs(rawAmt);
+            const cat = String(r[9] || "").trim(); // CK
+            const vatApplies = String(r[10] || "").trim().toLowerCase() === "yes"; // CL
+
+            // Credit card purchases are not cash account transactions: exclude them from cashflow
+            const isCreditCard = /master\s*card|credit\s*card|visa\s*credit|amex/i.test(`${desc} ${payee}`);
+            if (isCreditCard) return;
+
+            if (amt > 0 && cat) {
+              const vatAmt = vatApplies ? Math.round(amt * (20 / 120) * 100) / 100 : 0;
+              const netAmt = Math.round((amt - vatAmt) * 100) / 100;
+              unreconciledItems.push({
+                d: String(dateVal || ""),
+                p: String(dateVal || ""),
+                s: payee,
+                c: cat,
+                r: "UNRECON",
+                n: netAmt,
+                v: vatAmt,
+                g: amt,
+                u: true,
+              });
+            }
+          });
+
+          const isDateStr = (val) => {
+            if (!val || typeof val !== "string") return false;
+            const s = val.trim();
+            if (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}$/.test(s)) return true;
+            if (/^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}$/.test(s)) return true;
+            if (/^\d{1,2}[\s\-][A-Za-z]{3,}[\s\-]\d{2,4}$/.test(s)) return true;
+            return false;
+          };
+
+          const isTypeStr = (val) =>
+            /^(expense|payment|bill payment|debit|credit|transfer|check|dd|deb|fpo|fpi|bgc|so|bp|chq|tfr|obp|bacs|fps|card|cash)$/i.test(
+              String(val || "").trim()
+            );
+          const isTaxRate = (val) =>
+            /^(\d+(\.\d+)?%|no vat|zero|exempt)/i.test(String(val || "").trim()) ||
+            /%/.test(String(val || ""));
+          const isAccountStr = (val) =>
+            /bank account|business account|revolut|starling|tide|barclays|hsbc|current account/i.test(
+              String(val || "").trim()
+            );
+
+          const normCatKey = (s) =>
+            String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+          const knownExpenseCatSet = new Set(
+            (expensesList || []).map((e) => normCatKey(e.name)).filter(Boolean)
+          );
+          const knownCategorySet = new Set(knownExpenseCatSet);
+          [
+            "debtors",
+            "creditors",
+            "freelancer",
+            "net pay control",
+            "dividend paid",
+            "bank charges",
+            "sales",
+            "revenue",
+          ].forEach((c) => knownCategorySet.add(c));
+
+          const bankOutgoings = [];
+          bankRows.forEach((r) => {
+            const c = (idx) => String(r[idx] || "").trim();
+            const outAmt = parseFloat(c(8).replace(/[£$€,\s]/g, "")) || 0;
+            const inAmt = parseFloat(c(9).replace(/[£$€,\s]/g, "")) || 0;
+            const catFormula = c(16);
+            const catFormulaNorm = normCatKey(catFormula);
+
+            if (catFormula.toLowerCase() === "outgoings" || knownExpenseCatSet.has(catFormulaNorm)) {
+              // Collect non-empty cells across columns 0..7 with their column indices
+              const cells = [];
+              for (let i = 0; i <= 7; i++) {
+                const val = c(i);
+                if (val) cells.push({ col: i, val });
+              }
+
+              // 1. Identify Date: first cell matching isDateStr
+              const dateCell = cells.find((item) => isDateStr(item.val));
+              const date = dateCell ? dateCell.val : "";
+
+              // 2. Filter out date, transaction types (Expense, Payment, DD, DEB, etc.), and tax rates
+              const remaining = cells.filter((item) => {
+                if (item === dateCell) return false;
+                if (isDateStr(item.val)) return false;
+                if (isTypeStr(item.val)) return false;
+                if (isTaxRate(item.val)) return false;
+                return true;
+              });
+
+              // 3. Identify Category only if it explicitly matches knownCategorySet
+              let sheetCategory = "";
+              const catIdx = remaining.findIndex((item) =>
+                knownCategorySet.has(normCatKey(item.val))
+              );
+              let catCell = null;
+              if (catIdx !== -1) {
+                catCell = remaining[catIdx];
+                sheetCategory = catCell.val;
+              } else if (knownExpenseCatSet.has(catFormulaNorm)) {
+                sheetCategory = catFormula;
+              }
+
+              // 4. Remaining cells after removing category
+              const nonCat = remaining.filter((item) => item !== catCell);
+
+              // 5. Account Name detection (col 2 is Account Name in standard Recon layout)
+              let account = "";
+              const accIdx = nonCat.findIndex((item) => isAccountStr(item.val));
+              let accCell = null;
+              if (accIdx !== -1 && nonCat.length > 1) {
+                accCell = nonCat[accIdx];
+                account = accCell.val;
+              }
+
+              // 6. Reference detection (Cols F/G = indices 5/6 in Recon layout, when not claimed as category/account)
+              const rawRef5 = c(5);
+              const rawRef6 = c(6);
+              let ref = "";
+              let refCell = null;
+              if (rawRef6 && (!catCell || catCell.col !== 6) && !isDateStr(rawRef6)) {
+                ref = rawRef6;
+                refCell = nonCat.find((item) => item.col === 6) || null;
+              } else if (rawRef5 && (!catCell || catCell.col !== 5) && !isDateStr(rawRef5)) {
+                ref = rawRef5;
+                refCell = nonCat.find((item) => item.col === 5) || null;
+              }
+
+              const payloadCells = nonCat.filter((item) => item !== accCell && item !== refCell);
+
+              // 7. Payee and Description (prefer col 3 Payee and col 4 Particulars when present)
+              const rawPayee = c(3);
+              const rawParticulars = c(4);
+              let payee = "";
+              let desc = "";
+              if (rawPayee && !isDateStr(rawPayee) && !isTypeStr(rawPayee) && (!catCell || catCell.col !== 3)) {
+                payee = rawPayee;
+                desc = (rawParticulars && (!catCell || catCell.col !== 4)) ? rawParticulars : "";
+              } else if (rawParticulars && !isDateStr(rawParticulars) && !isTypeStr(rawParticulars) && (!catCell || catCell.col !== 4)) {
+                payee = rawParticulars;
+                desc = rawParticulars;
+              } else if (payloadCells.length === 1) {
+                payee = payloadCells[0].val;
+              } else if (payloadCells.length >= 2) {
+                payee = payloadCells[0].val;
+                desc = payloadCells[1].val;
+              }
+
+              const netAmount = outAmt > 0 ? Math.abs(outAmt) : (inAmt > 0 ? -Math.abs(inAmt) : 0);
+              if (netAmount !== 0) {
+                bankOutgoings.push({
+                  d: date,
+                  account,
+                  payee,
+                  desc,
+                  ref,
+                  sheetCategory,
+                  amount: netAmount,
+                  isCredit: inAmt > 0 && outAmt === 0,
+                });
+              }
+            }
+          });
+
+          reconMonths[tabName] = {
+            isReconciled,
+            unreconciledItems,
+            bankOutgoings,
+          };
+        }
+      }
+    } catch (reconErr) {
+      console.warn("⚠️ Failed to fetch Recon sheet tabs:", reconErr.message);
+    }
+  }
+
+  const getFy = (headers, fallback) => {
+    if (!headers || headers.length === 0) return fallback;
+    const last = headers[headers.length - 1] || headers[0];
+    const m = String(last).match(/(\d{2,4})/);
+    return m ? `FY${m[1].slice(-2)}` : fallback;
+  };
+  const fyLabels = {
+    1: getFy(outgoingsHeadersY1, "FY26"),
+    2: getFy(outgoingsHeadersY2, "FY27"),
+    3: getFy(outgoingsHeadersY3, "FY28"),
+  };
+
+  const today = new Date();
+  let currentOutgoingsYear = 2; // Default to Year 2 (current financial year)
+  const yearHeaders = {
+    1: outgoingsHeadersY1,
+    2: outgoingsHeadersY2,
+    3: outgoingsHeadersY3,
+  };
+
+  // Calculate reconciledMonths across each FY: { 1: [bool x 12], 2: [bool x 12], 3: [bool x 12] }
+  const reconciledMonths = {
+    1: new Array(12).fill(false),
+    2: new Array(12).fill(false),
+    3: new Array(12).fill(false),
+  };
+
+  [1, 2, 3].forEach((yr) => {
+    const hdrs = yearHeaders[yr] || [];
+    for (let mIdx = 0; mIdx < 12; mIdx++) {
+      const h = hdrs[mIdx];
+      if (h) {
+        const d = parseMonthYear(h);
+        if (d) {
+          const tabName = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
+          if (reconMonths[tabName]) {
+            reconciledMonths[yr][mIdx] = Boolean(reconMonths[tabName].isReconciled);
+          } else if (Array.isArray(transactionsByMonth[yr]?.[mIdx]) && transactionsByMonth[yr][mIdx].length > 0) {
+            reconciledMonths[yr][mIdx] = true;
+          }
+        }
+      }
+    }
+  });
+
+  for (const y of [1, 2, 3]) {
+    const hdrs = yearHeaders[y] || [];
+    if (hdrs.length > 0) {
+      const first = parseMonthYear(hdrs[0]);
+      if (first) {
+        const start = new Date(first.getFullYear(), first.getMonth(), 1);
+        const end = new Date(first.getFullYear(), first.getMonth() + 12, 0, 23, 59, 59);
+        if (today >= start && today <= end) {
+          currentOutgoingsYear = y;
+          break;
+        }
+      }
+    }
+  }
+
+  // Helper: Parse NBtoFind with 3 Years
+  const nbHeadersY1 = (nbtofindRows[0] || []).slice(6, 18).map((h) => String(h || "").trim());
+  const nbHeadersY2 = (nbtofindRows[0] || []).slice(21, 33).map((h) => String(h || "").trim());
+  const nbHeadersY3 = (nbtofindRows[0] || []).slice(36, 48).map((h) => String(h || "").trim());
+
+  // Row 18: NB to find figure to use (1-indexed Row 18 is 0-indexed index 17)
+  const nbTargetRow = nbtofindRows[17] || nbtofindRows.find((r) => String(r[0] || "").toLowerCase().includes("figure to use")) || [];
+  const nbY1 = nbTargetRow.length > 0 ? (nbTargetRow.slice(6, 18) || []).map(formatMoneyVal) : [];
+  const nbY2 = nbTargetRow.length > 0 ? (nbTargetRow.slice(21, 33) || []).map(formatMoneyVal) : [];
+  const nbY3 = nbTargetRow.length > 0 ? (nbTargetRow.slice(36, 48) || []).map(formatMoneyVal) : [];
+
+  // Row 23: NB to find direct costs to use (1-indexed Row 23 is 0-indexed index 22)
+  const nbDirectCostsRow = nbtofindRows[22] || nbtofindRows.find((r) => String(r[0] || "").toLowerCase().includes("direct costs to use")) || [];
+  const nbDcY1 = nbDirectCostsRow.length > 0 ? (nbDirectCostsRow.slice(6, 18) || []).map(formatMoneyVal) : [];
+  const nbDcY2 = nbDirectCostsRow.length > 0 ? (nbDirectCostsRow.slice(21, 33) || []).map(formatMoneyVal) : [];
+  const nbDcY3 = nbDirectCostsRow.length > 0 ? (nbDirectCostsRow.slice(36, 48) || []).map(formatMoneyVal) : [];
+
+  const sumNB = (arr) =>
+    (arr || []).reduce((acc, v) => acc + parseMoney(v), 0);
+
+  const totalConfirmedRevenue = confirmedJobs.reduce((acc, j) => acc + j.revNum, 0);
+  const totalPipelineRevenue = pipelineJobs.reduce((acc, j) => acc + j.revNum, 0);
+  const weightedPipelineRevenue = pipelineJobs.reduce((acc, j) => acc + j.weightedRevenue, 0);
+
+  // Extract Outgoings Metadata for Advanced Scenario Planning & Making up CoS matching webappserver.gs (lines 3227-3281)
+  const yearBlocks = [
+    { start: 6, count: 12 },   // Year 1: Cols G-R (indices 6-17)
+    { start: 21, count: 12 },  // Year 2: Cols V-AG (indices 21-32)
+    { start: 36, count: 12 },  // Year 3: Cols AK-AV (indices 36-47)
+  ];
+
+  const outgoingsMeta = {
+    makingUpCosPct: 0,
+    salariesDel: [],
+    salariesNonDel: [],
+    directCostsAsContractors: [],
+    makingUpCosBase: [],
+    makingUpCosBaseConf: [],
+    makingUpCosHardZero: [],
+    profitShareBaseDel: [],
+    profitShareBaseNonDel: [],
+    contractorSource: contractorSource || "Cell Values",
+    isNotesMode,
+    contractorTransactions,
+    makingUpCosVat: "",
+    makingUpCosTiming: "Curr",
+    profitSharePct,
+    profitShareSwitch,
+    mode,
+    directCostsMode,
+  };
+
+  const makingUpCosPctRaw = outgoingsRows[111] ? outgoingsRows[111][0] : "0%";
+  outgoingsMeta.makingUpCosPct = parseFloat(String(makingUpCosPctRaw).replace("%", "")) / 100 || 0;
+
+  if (outgoingsRows[110]) {
+    outgoingsMeta.makingUpCosVat = outgoingsRows[110][1] || "";
+    outgoingsMeta.makingUpCosTiming = outgoingsRows[110][3] || "Curr";
+  }
+
+  const getOutgoingsNum = (rIdx, cIdx) => {
+    if (!outgoingsRows[rIdx] && !outgoingsRawRows[rIdx]) return 0;
+    const rawVal = outgoingsRawRows[rIdx]?.[cIdx];
+    if (typeof rawVal === "number" && Number.isFinite(rawVal)) return rawVal;
+    return parseFloat(String(outgoingsRows[rIdx]?.[cIdx] || 0).replace(/[£,]/g, "")) || 0;
+  };
+
+  for (let yi = 0; yi < yearBlocks.length; yi++) {
+    const blk = yearBlocks[yi];
+    const sDel = [], sNonDel = [], dcContr = [], mCos = [], mCosConf = [], mCosHz = [], psDel = [], psNonDel = [];
+    for (let j = 0; j < blk.count; j++) {
+      const cIdx = blk.start + j;
+      sDel.push(getOutgoingsNum(5, cIdx));
+      sNonDel.push(getOutgoingsNum(6, cIdx));
+      dcContr.push(getOutgoingsNum(8, cIdx));
+      mCos.push(getOutgoingsNum(110, cIdx));
+      mCosConf.push(getOutgoingsNum(244, cIdx));
+      const indicator = outgoingsRows[111] ? String(outgoingsRows[111][cIdx] || "").toUpperCase().trim() : "";
+      mCosHz.push(indicator === "ZERO");
+      psDel.push(getOutgoingsNum(234, cIdx));
+      psNonDel.push(getOutgoingsNum(235, cIdx));
+    }
+    outgoingsMeta.salariesDel.push(sDel);
+    outgoingsMeta.salariesNonDel.push(sNonDel);
+    outgoingsMeta.directCostsAsContractors.push(dcContr);
+    outgoingsMeta.makingUpCosBase.push(mCos);
+    outgoingsMeta.makingUpCosBaseConf.push(mCosConf);
+    outgoingsMeta.makingUpCosHardZero.push(mCosHz);
+    outgoingsMeta.profitShareBaseDel.push(psDel);
+    outgoingsMeta.profitShareBaseNonDel.push(psNonDel);
+  }
+
+  const keyDataPayload = {
+    _cachedAt: new Date().toISOString(),
+    outgoingsMeta,
+    jobs: {
+      all: allJobs,
+      confirmed: confirmedJobs,
+      pipeline: pipelineJobs,
+      totalRevenue: totalConfirmedRevenue,
+      pipelineRevenue: totalPipelineRevenue,
+      weightedPipelineRevenue,
+      totalJobsCount: allJobs.length,
+      confirmedCount: confirmedJobs.length,
+      pipelineCount: pipelineJobs.length,
+    },
+    salaries: {
+      staff: salariesList,
+      rawRows: salariesRows,
+      headers: salariesRows[0] || [],
+      monthHeaders: salariesHeadersRow,
+      deepDive: salariesDeepDiveRows,
+      totalHeadcount,
+      deliveryHeadcount,
+      nonDeliveryHeadcount,
+      totalPayroll,
+      averageSalary: totalHeadcount > 0 ? Math.round(totalPayroll / totalHeadcount) : 0,
+    },
+    outgoings: {
+      headers: {
+        1: outgoingsHeadersY1,
+        2: outgoingsHeadersY2,
+        3: outgoingsHeadersY3,
+      },
+      currentYear: currentOutgoingsYear,
+      fyLabels,
+      contractors: contractorsList,
+      expenses: expensesList,
+      dividends: dividendsList,
+      contractorSource: contractorSource || "Cell Values",
+      isNotesMode,
+      contractorTransactions,
+      transactionsByMonth,
+      reconMonths,
+      reconciledMonths,
+      vatCashByMonth,
+      vatAccrualByMonth,
+    },
+    nbtofind: {
+      headers: {
+        1: nbHeadersY1,
+        2: nbHeadersY2,
+        3: nbHeadersY3,
+      },
+      currentYear: currentOutgoingsYear,
+      mode,
+      directCostsMode,
+      isRevenueMode: mode.toLowerCase() === "revenue",
+      allocations: {
+        1: nbY1,
+        2: nbY2,
+        3: nbY3,
+      },
+      monthlyAllocations: currentOutgoingsYear === 2 ? nbY2 : (currentOutgoingsYear === 3 ? nbY3 : nbY1),
+      totalTargets: {
+        1: sumNB(nbY1),
+        2: sumNB(nbY2),
+        3: sumNB(nbY3),
+      },
+      directCosts: {
+        1: nbDcY1,
+        2: nbDcY2,
+        3: nbDcY3,
+      },
+      monthlyDirectCosts: currentOutgoingsYear === 2 ? nbDcY2 : (currentOutgoingsYear === 3 ? nbDcY3 : nbDcY1),
+      totalDirectCosts: {
+        1: sumNB(nbDcY1),
+        2: sumNB(nbDcY2),
+        3: sumNB(nbDcY3),
+      },
+    },
+    mode,
+    directCostsMode,
+    jobsMode: sbCtx?.jobsMode || "grid",
+    jobsReadMode: usedRelationalJobReads ? "relational" : "grid",
+    inputsMode: sbCtx?.inputsMode || "grid",
+    inputsReadMode: usedRelationalInputReads ? "relational" : "grid",
+    isJobCosting,
+    jobCostingStyle,
+    standardChargeOutRate,
+    contractorDayRate,
+    formOptions: {
+      leadSources,
+      productLines,
+      splitEnabled,
+      splitMethod,
+      isJobCosting,
+      jobCostingStyle,
+      standardChargeOutRate,
+      contractorDayRate,
+    },
+    splitEnabled,
+    splitMethod,
+    currencySymbol,
+    thousandsSeparator,
+    accountingTool,
+    crmTool,
+    crmDrives,
+    hasAccountingIntegration,
+    clientInfo: {
+      currencySymbol,
+      thousandsSeparator,
+      accountingTool,
+      hasAccountingIntegration,
+      isJobCosting,
+      jobCostingStyle,
+      standardChargeOutRate,
+      contractorDayRate,
+    },
+  };
+
+  return keyDataPayload;
 }

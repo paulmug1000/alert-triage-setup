@@ -25,6 +25,15 @@ import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cac
 import { redisClient } from "./redisClient.js";
 import { scheduleWaitUntil_ } from "./alertState.js";
 import { parseSheetDate, toInputDateFormat, toSheetDateFormat } from "../utils/helpers.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import {
+  getClientRelationalInputsLookup,
+  preloadClientRelationalInputsBundle,
+  reconstructRelationalTabFromBundle,
+  sliceRelationalTabValues,
+  buildRelationalSheetRowData,
+  resolveAuthoritativeInputAnchor,
+} from "./relationalInputsService.js";
 
 export function colIdxToLetter(colIdx) {
   let temp = colIdx + 1;
@@ -86,7 +95,7 @@ export function getPreviousCalendarMonthLabel() {
   return `${capitalized} ${yStr}`;
 }
 
-export async function getSalariesData({ clientName, masterSheetId, clientSheetId, bypassCache = false, minBypassAgeMs = 0 }) {
+export async function getSalariesData({ clientName, masterSheetId, clientSheetId, bypassCache = false, minBypassAgeMs = 0, _forceInputsReadMode = null }) {
   if (!clientSheetId && !masterSheetId) {
     throw new Error("clientSheetId is required.");
   }
@@ -96,18 +105,54 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
   );
   const cacheKey = `salaries_data:${cleanClientId}`;
 
-  const cachedResult = await resolvePortalCache({
-    cacheKey,
-    bypassCache: Boolean(bypassCache),
-    minBypassAgeMs: Number(minBypassAgeMs) || 0,
-    l1TtlSecs: 120,
-    redisTtlSecs: 86400,
-    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.employees)),
-    fetchFreshFn: async () => {
-      const sheets = await getSheetsClient();
+  const fetchFreshFn = async () => {
+    const sheets = await getSheetsClient();
+    const sbCtx = await resolveSupabaseSheetContext({
+      spreadsheetId: cleanClientId,
+      clientName: clientName && clientName !== "Client" ? clientName : "",
+    }).catch(() => null);
 
+    const forceMode = _forceInputsReadMode === "grid" || _forceInputsReadMode === "relational" ? _forceInputsReadMode : null;
+    const useRelReads = forceMode
+      ? forceMode === "relational"
+      : Boolean(sbCtx?.inputsMode === "relational" && sbCtx?.inputsReadMode === "relational" && sbCtx?.clientId);
+
+    let outgoingsHeaders = [];
+    let outgoingsDividendsRaw = [];
+    let clientHeaders = [];
+    let clientEmployeesRaw = [];
+    let clientActualAmountsRaw = [];
+    let clientSummaryRaw = [];
+    let clientForecastAmountsRaw = [];
+    let clientEffectiveAmountsRaw = [];
+    let clientEffectiveTotalsRaw = [];
+    let employeeRowData = [];
+    let relLookup = null;
+    let usedRelReads = false;
+
+    if (useRelReads && sbCtx?.clientId) {
+      const bundle = await preloadClientRelationalInputsBundle(sbCtx, { includeSalaries: true, includeOutgoings: true });
+      if (bundle?.rollups?._salariesRollups && bundle?.rollups?._outgoingsRollups) {
+        usedRelReads = true;
+        const salState = reconstructRelationalTabFromBundle(bundle, "Salaries");
+        const outState = reconstructRelationalTabFromBundle(bundle, "Outgoings");
+        outgoingsHeaders = sliceRelationalTabValues(outState, "Outgoings", { startRow0: 0, endRow0: 0, startCol0: 0, endCol0: 52, formatted: true })[0] || [];
+        outgoingsDividendsRaw = sliceRelationalTabValues(outState, "Outgoings", { startRow0: 117, endRow0: 120, startCol0: 0, endCol0: 52, formatted: true });
+        clientHeaders = sliceRelationalTabValues(salState, "Salaries", { startRow0: 0, endRow0: 2, startCol0: 0, endCol0: 262, formatted: true });
+        clientEmployeesRaw = sliceRelationalTabValues(salState, "Salaries", { startRow0: 3, endRow0: 52, startCol0: 0, endCol0: 8, formatted: true });
+        clientActualAmountsRaw = sliceRelationalTabValues(salState, "Salaries", { startRow0: 3, endRow0: 52, startCol0: 11, endCol0: 262, formatted: true });
+        clientSummaryRaw = sliceRelationalTabValues(salState, "Salaries", { startRow0: 59, endRow0: 76, startCol0: 11, endCol0: 262, formatted: true });
+        clientForecastAmountsRaw = sliceRelationalTabValues(salState, "Salaries", { startRow0: 153, endRow0: 202, startCol0: 11, endCol0: 262, formatted: true });
+        clientEffectiveAmountsRaw = sliceRelationalTabValues(salState, "Salaries", { startRow0: 303, endRow0: 352, startCol0: 11, endCol0: 262, formatted: true });
+        clientEffectiveTotalsRaw = sliceRelationalTabValues(salState, "Salaries", { startRow0: 353, endRow0: 357, startCol0: 11, endCol0: 262, formatted: true });
+        employeeRowData = buildRelationalSheetRowData(salState, "Salaries", { startRow0: 3, endRow0: 52, startCol0: 0, endCol0: 8, notesOnly: false });
+        relLookup = bundle.relLookup;
+      }
+    }
+
+    if (!usedRelReads) {
       // 1. Fetch Salaries & Dividends directly from Client Sheet
-      const [clientBatchResp, employeesGetResp] = await Promise.all([
+      const [clientBatchResp, employeesGetResp, fetchedLookup] = await Promise.all([
         withRetry(() =>
           sheets.spreadsheets.values.batchGet({
             spreadsheetId: cleanClientId,
@@ -132,365 +177,387 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
             fields: "sheets.data.rowData.values(formattedValue,note)",
           })
         ),
+        sbCtx?.inputsMode === "relational"
+          ? getClientRelationalInputsLookup(sbCtx, { includeEmployees: true, includeOutgoing: true }).catch(() => null)
+          : Promise.resolve(null),
       ]);
 
       const clientRanges = clientBatchResp.data.valueRanges || [];
-      const outgoingsHeaders = clientRanges[0]?.values?.[0] || [];
-      const outgoingsDividendsRaw = clientRanges[1]?.values || [];
-      const clientHeaders = clientRanges[2]?.values || [];
-      const clientEmployeesRaw = clientRanges[3]?.values || [];
-      const clientActualAmountsRaw = clientRanges[4]?.values || [];
-      const clientSummaryRaw = clientRanges[5]?.values || [];
-      const clientForecastAmountsRaw = clientRanges[6]?.values || [];
-      const clientEffectiveAmountsRaw = clientRanges[7]?.values || [];
-      const clientEffectiveTotalsRaw = clientRanges[8]?.values || [];
+      outgoingsHeaders = clientRanges[0]?.values?.[0] || [];
+      outgoingsDividendsRaw = clientRanges[1]?.values || [];
+      clientHeaders = clientRanges[2]?.values || [];
+      clientEmployeesRaw = clientRanges[3]?.values || [];
+      clientActualAmountsRaw = clientRanges[4]?.values || [];
+      clientSummaryRaw = clientRanges[5]?.values || [];
+      clientForecastAmountsRaw = clientRanges[6]?.values || [];
+      clientEffectiveAmountsRaw = clientRanges[7]?.values || [];
+      clientEffectiveTotalsRaw = clientRanges[8]?.values || [];
+      employeeRowData = employeesGetResp.data?.sheets?.[0]?.data?.[0]?.rowData || [];
+      relLookup = fetchedLookup;
+    }
 
-      const masterHeaders = clientHeaders;
-      const masterEmployeesRaw = clientEmployeesRaw;
-      const effectiveAmountsRaw = clientEffectiveAmountsRaw;
-      const totalsRaw = clientEffectiveTotalsRaw;
-      const summaryRaw = clientSummaryRaw;
-      const forecastAmountsRaw = clientForecastAmountsRaw;
-      const masterActualAmountsRaw = clientActualAmountsRaw;
+    const masterHeaders = clientHeaders;
+    const masterEmployeesRaw = clientEmployeesRaw;
+    const effectiveAmountsRaw = clientEffectiveAmountsRaw;
+    const totalsRaw = clientEffectiveTotalsRaw;
+    const summaryRaw = clientSummaryRaw;
+    const forecastAmountsRaw = clientForecastAmountsRaw;
+    const masterActualAmountsRaw = clientActualAmountsRaw;
 
-      const employeeRowData = employeesGetResp.data?.sheets?.[0]?.data?.[0]?.rowData || [];
+    const employeesRaw = clientEmployeesRaw.length > 0 ? clientEmployeesRaw : masterEmployeesRaw;
+    const actualAmountsRaw = clientActualAmountsRaw.length > 0 ? clientActualAmountsRaw : masterActualAmountsRaw;
 
-      const employeesRaw = clientEmployeesRaw.length > 0 ? clientEmployeesRaw : masterEmployeesRaw;
-      const actualAmountsRaw = clientActualAmountsRaw.length > 0 ? clientActualAmountsRaw : masterActualAmountsRaw;
+    // =========================================================================
+    // PARSE SALARIES: EMPLOYEES (A4:I53)
+    // =========================================================================
+    const employees = [];
+    for (let i = 0; i < 50; i++) {
+      const row = employeesRaw[i] || masterEmployeesRaw[i] || [];
+      const rowCells = employeeRowData[i]?.values || [];
+      const sheetRow = 4 + i;
+      const relEmp = relLookup?.employeesByRow?.get(sheetRow) || null;
+      const name = String(row[0] || "").trim();
+      const role = String(row[1] || "").trim();
+      const fteSalary = String(row[2] || "").trim();
+      const fte = String(row[3] || "").trim();
+      const startDate = String(row[4] || "").trim();
+      const endDate = String(row[5] || "").trim();
+      const deliveryPct = String(row[6] || "").trim();
+      const studentLoan = String(row[7] || "").trim();
+      const pension = String(row[8] || "").trim();
 
-      // =========================================================================
-      // PARSE SALARIES: EMPLOYEES (A4:I53)
-      // =========================================================================
-      const employees = [];
-      for (let i = 0; i < 50; i++) {
-        const row = employeesRaw[i] || masterEmployeesRaw[i] || [];
-        const rowCells = employeeRowData[i]?.values || [];
-        const sheetRow = 4 + i;
-        const name = String(row[0] || "").trim();
-        const role = String(row[1] || "").trim();
-        const fteSalary = String(row[2] || "").trim();
-        const fte = String(row[3] || "").trim();
-        const startDate = String(row[4] || "").trim();
-        const endDate = String(row[5] || "").trim();
-        const deliveryPct = String(row[6] || "").trim();
-        const studentLoan = String(row[7] || "").trim();
-        const pension = String(row[8] || "").trim();
+      // Consolidate onto a single employee note attached to the Name cell (index 0),
+      // falling back to any legacy field notes if Name note is empty.
+      const rawNameNote = rowCells[0]?.note || "";
+      const legacyNotes = [1, 2, 3, 4, 5, 6, 7, 8]
+        .map((idx) => String(rowCells[idx]?.note || "").trim())
+        .filter(Boolean);
+      const combinedNameNote = rawNameNote || legacyNotes.join(" | ");
 
-        // Consolidate onto a single employee note attached to the Name cell (index 0),
-        // falling back to any legacy field notes if Name note is empty.
-        const rawNameNote = rowCells[0]?.note || "";
-        const legacyNotes = [1, 2, 3, 4, 5, 6, 7, 8]
-          .map((idx) => String(rowCells[idx]?.note || "").trim())
-          .filter(Boolean);
-        const combinedNameNote = rawNameNote || legacyNotes.join(" | ");
+      const notes = {
+        name: combinedNameNote,
+        role: "",
+        fteSalary: "",
+        fte: "",
+        startDate: "",
+        endDate: "",
+        deliveryPct: "",
+        studentLoan: "",
+        pension: "",
+      };
 
-        const notes = {
-          name: combinedNameNote,
-          role: "",
-          fteSalary: "",
-          fte: "",
-          startDate: "",
-          endDate: "",
-          deliveryPct: "",
-          studentLoan: "",
-          pension: "",
-        };
-
-        employees.push({
-          sheetRow,
-          index: i,
-          name,
-          role,
-          fteSalary,
-          fte,
-          startDate,
-          endDate,
-          deliveryPct,
-          studentLoan,
-          pension,
-          notes,
-          isPopulated: !!name,
-        });
-      }
-
-      // =========================================================================
-      // PARSE MASTER SHEET: MONTHS & AMOUNTS (Column L onwards)
-      // =========================================================================
-      const row1 = masterHeaders[0] || [];
-      const months = [];
-      const prevMonthTarget = getPreviousCalendarMonthLabel().toLowerCase();
-      let defaultMonthIndex = 0;
-
-      for (let c = 11; c < row1.length; c += 7) {
-        const rawMonthHeader = String(row1[c] || "").trim();
-        if (!rawMonthHeader) continue;
-
-        const startColLetter = colIdxToLetter(c);
-        const endColLetter = colIdxToLetter(c + 6);
-        const parsedM = parseMonthYearHeader(rawMonthHeader);
-        const monthLabel = parsedM ? parsedM.label : rawMonthHeader;
-
-        // Check if this month matches the previous calendar month
-        if (parsedM && monthLabel.toLowerCase() === prevMonthTarget) {
-          defaultMonthIndex = months.length;
-        }
-
-        // Offset in effectiveAmountsRaw / forecastAmountsRaw / actualAmountsRaw is (c - 11)
-        const colOffset = c - 11;
-
-        // Totals from row 55, 57, 58:
-        // totalsRaw index 0 = row 54, 1 = row 55, 2 = row 56, 3 = row 57, 4 = row 58
-        const row55 = totalsRaw[1] || [];
-        const row57 = totalsRaw[3] || [];
-        const row58 = totalsRaw[4] || [];
-
-        const colTotals = {
-          all: [
-            row55[colOffset + 0] || "£0.00",
-            row55[colOffset + 1] || "£0.00",
-            row55[colOffset + 2] || "£0.00",
-            row55[colOffset + 3] || "£0.00",
-            row55[colOffset + 4] || "£0.00",
-            row55[colOffset + 5] || "£0.00",
-            row55[colOffset + 6] || "£0.00",
-          ],
-          delivery: [
-            row57[colOffset + 0] || "£0.00",
-            row57[colOffset + 1] || "£0.00",
-            row57[colOffset + 2] || "£0.00",
-            row57[colOffset + 3] || "£0.00",
-            row57[colOffset + 4] || "£0.00",
-            row57[colOffset + 5] || "£0.00",
-            row57[colOffset + 6] || "£0.00",
-          ],
-          nonDelivery: [
-            row58[colOffset + 0] || "£0.00",
-            row58[colOffset + 1] || "£0.00",
-            row58[colOffset + 2] || "£0.00",
-            row58[colOffset + 3] || "£0.00",
-            row58[colOffset + 4] || "£0.00",
-            row58[colOffset + 5] || "£0.00",
-            row58[colOffset + 6] || "£0.00",
-          ],
-        };
-
-        // Summary calculations (rows 60 to 77)
-        // summaryRaw index = (sheetRowNum - 60)
-        // Row 60: Total cost for the month (before employment allowance) -> idx 0
-        // Row 62: Total delivery staff cost for month (post-EA) -> idx 2
-        // Row 63: Total non-delivery staff cost for month (post-EA) -> idx 3
-        // Row 66: Employment allowance b/f -> idx 6
-        // Row 67: Employment allowance usage this month -> idx 7
-        // Row 68: Adjusted Er NICs for this month -> idx 8
-        // Row 71: Total due to HMRC related to this month -> idx 11
-        // Row 73: Total leaving bank account for payroll -> idx 13
-        // Row 74: Total leaving bank account to HMRC (prev month/quarter) -> idx 14
-        // Row 75: Total leaving bank account for pension -> idx 15
-        // Row 77: Total leaving bank account in this month -> idx 17
-        const getSummVal = (rowNum) => {
-          const r = summaryRaw[rowNum - 60];
-          return r ? (r[colOffset] || "£0.00") : "£0.00";
-        };
-
-        const summary = {
-          totalCostBeforeEA: getSummVal(60),
-          employmentAllowanceBf: getSummVal(66),
-          employmentAllowanceUsage: getSummVal(67),
-          adjustedErNic: getSummVal(68),
-          totalDeliveryStaffCostPostEA: getSummVal(62),
-          totalNonDeliveryStaffCostPostEA: getSummVal(63),
-          totalDueHmrc: getSummVal(71),
-          totalLeavingBankPayroll: getSummVal(73),
-          totalLeavingBankHmrc: getSummVal(74),
-          totalLeavingBankPension: getSummVal(75),
-          totalLeavingBankMonth: getSummVal(77),
-        };
-
-        // Employee amounts for this month
-        let monthHasActuals = false;
-        const employeeAmounts = [];
-
-        for (let i = 0; i < 50; i++) {
-          const emp = employees[i];
-          const effRow = effectiveAmountsRaw[i] || [];
-          const actRow = actualAmountsRaw[i] || [];
-          const fcRow = forecastAmountsRaw[i] || [];
-
-          // Check whether this employee row has actuals in row 304:353
-          const actSalary = actRow[colOffset + 0];
-          const actEeNic = actRow[colOffset + 1];
-          const actErNic = actRow[colOffset + 2];
-          const actStudLoan = actRow[colOffset + 3];
-          const actEePen = actRow[colOffset + 4];
-          const actErPen = actRow[colOffset + 5];
-          const actPaye = actRow[colOffset + 6];
-
-          const hasAct = [actSalary, actEeNic, actErNic, actStudLoan, actEePen, actErPen, actPaye].some(
-            (v) => v !== undefined && v !== null && String(v).trim() !== ""
-          );
-
-          if (hasAct) monthHasActuals = true;
-
-          const salary = effRow[colOffset + 0] ?? (hasAct ? actSalary : fcRow[colOffset + 0]) ?? "";
-          const eeNic = effRow[colOffset + 1] ?? (hasAct ? actEeNic : fcRow[colOffset + 1]) ?? "";
-          const erNic = effRow[colOffset + 2] ?? (hasAct ? actErNic : fcRow[colOffset + 2]) ?? "";
-          const studentLoan = effRow[colOffset + 3] ?? (hasAct ? actStudLoan : fcRow[colOffset + 3]) ?? "";
-          const eePension = effRow[colOffset + 4] ?? (hasAct ? actEePen : fcRow[colOffset + 4]) ?? "";
-          const erPension = effRow[colOffset + 5] ?? (hasAct ? actErPen : fcRow[colOffset + 5]) ?? "";
-          const paye = effRow[colOffset + 6] ?? (hasAct ? actPaye : fcRow[colOffset + 6]) ?? "";
-
-          employeeAmounts.push({
-            employeeIndex: i,
-            sheetRow: emp.sheetRow,
-            name: emp.name,
-            isActual: hasAct,
-            type: hasAct ? "actual" : "forecast",
-            salary,
-            eeNic,
-            erNic,
-            studentLoan,
-            eePension,
-            erPension,
-            paye,
-          });
-        }
-
-        months.push({
-          monthIndex: months.length,
-          label: monthLabel,
-          rawHeader: rawMonthHeader,
-          colStartIdx: c,
-          colStartLetter: startColLetter,
-          colEndLetter: endColLetter,
-          isActualMonth: monthHasActuals,
-          colTotals,
-          summary,
-          employeeAmounts,
-        });
-      }
-
-      // =========================================================================
-      // PARSE CLIENT SHEET: "DIVIDENDS IN LIEU OF SALARY" (Outgoings Rows 118:121)
-      // =========================================================================
-      // Outgoings FY1: cols 6..17 (G..R), Total col 19 (T)
-      // Outgoings FY2: cols 21..32 (V..AG), Total col 34 (AI)
-      // Outgoings FY3: cols 36..47 (AK..AV), Total col 49 (AX)
-      const fyConfigs = [
-        {
-          fyIndex: 0,
-          label: String(outgoingsHeaders[19] || "FY1").replace(/total/i, "").trim() || "FY1",
-          totalColIdx: 19,
-          totalColLetter: "T",
-          monthCols: Array.from({ length: 12 }, (_, i) => ({
-            colIdx: 6 + i,
-            colLetter: colIdxToLetter(6 + i),
-            label: String(outgoingsHeaders[6 + i] || `M${i + 1}`).trim(),
-          })),
-        },
-        {
-          fyIndex: 1,
-          label: String(outgoingsHeaders[34] || "FY2").replace(/total/i, "").trim() || "FY2",
-          totalColIdx: 34,
-          totalColLetter: "AI",
-          monthCols: Array.from({ length: 12 }, (_, i) => ({
-            colIdx: 21 + i,
-            colLetter: colIdxToLetter(21 + i),
-            label: String(outgoingsHeaders[21 + i] || `M${i + 1}`).trim(),
-          })),
-        },
-        {
-          fyIndex: 2,
-          label: String(outgoingsHeaders[49] || "FY3").replace(/total/i, "").trim() || "FY3",
-          totalColIdx: 49,
-          totalColLetter: "AX",
-          monthCols: Array.from({ length: 12 }, (_, i) => ({
-            colIdx: 36 + i,
-            colLetter: colIdxToLetter(36 + i),
-            label: String(outgoingsHeaders[36 + i] || `M${i + 1}`).trim(),
-          })),
-        },
-      ];
-
-      // Find default FY matching current date
-      const now = new Date();
-      const curMonthIdx = now.getMonth();
-      const curYear = now.getFullYear();
-      let defaultFyIndex = 0;
-
-      fyConfigs.forEach((fy, fIdx) => {
-        const hasCur = fy.monthCols.some((m) => {
-          const parsed = parseMonthYearHeader(m.label);
-          return parsed && parsed.monthIdx === curMonthIdx && parsed.year === curYear;
-        });
-        if (hasCur) defaultFyIndex = fIdx;
+      employees.push({
+        sheetRow,
+        employeeUuid: relEmp?.id || null,
+        index: i,
+        name,
+        role,
+        fteSalary,
+        fte,
+        startDate,
+        endDate,
+        deliveryPct,
+        studentLoan,
+        pension,
+        notes,
+        isPopulated: !!name,
       });
+    }
 
-      // Outgoings Rows:
-      // outgoingsDividendsRaw[0] = Row 118 (Dividends in lieu of salary)
-      // outgoingsDividendsRaw[1] = Row 119 (Second row / slot)
-      // outgoingsDividendsRaw[2] = Row 120 (Total div in lieu of salary - delivery)
-      // outgoingsDividendsRaw[3] = Row 121 (Total div in lieu of salary - non-delivery)
-      const row118 = outgoingsDividendsRaw[0] || [];
-      const row119 = outgoingsDividendsRaw[1] || [];
-      const row120 = outgoingsDividendsRaw[2] || [];
-      const row121 = outgoingsDividendsRaw[3] || [];
+    // =========================================================================
+    // PARSE MASTER SHEET: MONTHS & AMOUNTS (Column L onwards)
+    // =========================================================================
+    const row1 = masterHeaders[0] || [];
+    const months = [];
+    const prevMonthTarget = getPreviousCalendarMonthLabel().toLowerCase();
+    let defaultMonthIndex = 0;
 
-      const dividendsSection = {
-        defaultFyIndex,
-        fyConfigs: fyConfigs.map((fy) => {
-          const getMonthVals = (rowArr) =>
-            fy.monthCols.map((m) => ({
-              colLetter: m.colLetter,
-              label: m.label,
-              value: rowArr[m.colIdx] || "£0",
-            }));
+    for (let c = 11; c < row1.length; c += 7) {
+      const rawMonthHeader = String(row1[c] || "").trim();
+      if (!rawMonthHeader) continue;
 
-          return {
-            ...fy,
-            row118: {
-              sheetRow: 118,
-              description: row118[0] || "Dividends in lieu of salary",
-              deliveryPct: row118[4] || "0%", // Col E (idx 4)
-              months: getMonthVals(row118),
-              total: row118[fy.totalColIdx] || "£0",
-            },
-            row119: {
-              sheetRow: 119,
-              description: row119[0] || "",
-              deliveryPct: row119[4] || "",
-              months: getMonthVals(row119),
-              total: row119[fy.totalColIdx] || "",
-              hasData: Boolean(row119[0] || row119[fy.totalColIdx]),
-            },
-            totalsDelivery: {
-              sheetRow: 120,
-              label: row120[0] || "Total div in lieu of salary - delivery",
-              months: getMonthVals(row120),
-              total: row120[fy.totalColIdx] || "£0",
-            },
-            totalsNonDelivery: {
-              sheetRow: 121,
-              label: row121[0] || "Total div in lieu of salary - non-delivery",
-              months: getMonthVals(row121),
-              total: row121[fy.totalColIdx] || "£0",
-            },
-          };
-        }),
+      const startColLetter = colIdxToLetter(c);
+      const endColLetter = colIdxToLetter(c + 6);
+      const parsedM = parseMonthYearHeader(rawMonthHeader);
+      const monthLabel = parsedM ? parsedM.label : rawMonthHeader;
+
+      // Check if this month matches the previous calendar month
+      if (parsedM && monthLabel.toLowerCase() === prevMonthTarget) {
+        defaultMonthIndex = months.length;
+      }
+
+      // Offset in effectiveAmountsRaw / forecastAmountsRaw / actualAmountsRaw is (c - 11)
+      const colOffset = c - 11;
+
+      // Totals from row 55, 57, 58:
+      // totalsRaw index 0 = row 54, 1 = row 55, 2 = row 56, 3 = row 57, 4 = row 58
+      const row55 = totalsRaw[1] || [];
+      const row57 = totalsRaw[3] || [];
+      const row58 = totalsRaw[4] || [];
+
+      const colTotals = {
+        all: [
+          row55[colOffset + 0] || "£0.00",
+          row55[colOffset + 1] || "£0.00",
+          row55[colOffset + 2] || "£0.00",
+          row55[colOffset + 3] || "£0.00",
+          row55[colOffset + 4] || "£0.00",
+          row55[colOffset + 5] || "£0.00",
+          row55[colOffset + 6] || "£0.00",
+        ],
+        delivery: [
+          row57[colOffset + 0] || "£0.00",
+          row57[colOffset + 1] || "£0.00",
+          row57[colOffset + 2] || "£0.00",
+          row57[colOffset + 3] || "£0.00",
+          row57[colOffset + 4] || "£0.00",
+          row57[colOffset + 5] || "£0.00",
+          row57[colOffset + 6] || "£0.00",
+        ],
+        nonDelivery: [
+          row58[colOffset + 0] || "£0.00",
+          row58[colOffset + 1] || "£0.00",
+          row58[colOffset + 2] || "£0.00",
+          row58[colOffset + 3] || "£0.00",
+          row58[colOffset + 4] || "£0.00",
+          row58[colOffset + 5] || "£0.00",
+          row58[colOffset + 6] || "£0.00",
+        ],
       };
 
-      const result = {
-        success: true,
-        clientName,
-        masterSheetId,
-        clientSheetId,
-        defaultMonthIndex,
-        employees,
-        months,
-        dividends: dividendsSection,
+      // Summary calculations (rows 60 to 77)
+      // summaryRaw index = (sheetRowNum - 60)
+      // Row 60: Total cost for the month (before employment allowance) -> idx 0
+      // Row 62: Total delivery staff cost for month (post-EA) -> idx 2
+      // Row 63: Total non-delivery staff cost for month (post-EA) -> idx 3
+      // Row 66: Employment allowance b/f -> idx 6
+      // Row 67: Employment allowance usage this month -> idx 7
+      // Row 68: Adjusted Er NICs for this month -> idx 8
+      // Row 71: Total due to HMRC related to this month -> idx 11
+      // Row 73: Total leaving bank account for payroll -> idx 13
+      // Row 74: Total leaving bank account to HMRC (prev month/quarter) -> idx 14
+      // Row 75: Total leaving bank account for pension -> idx 15
+      // Row 77: Total leaving bank account in this month -> idx 17
+      const getSummVal = (rowNum) => {
+        const r = summaryRaw[rowNum - 60];
+        return r ? (r[colOffset] || "£0.00") : "£0.00";
       };
 
-      return result;
-    },
+      const summary = {
+        totalCostBeforeEA: getSummVal(60),
+        employmentAllowanceBf: getSummVal(66),
+        employmentAllowanceUsage: getSummVal(67),
+        adjustedErNic: getSummVal(68),
+        totalDeliveryStaffCostPostEA: getSummVal(62),
+        totalNonDeliveryStaffCostPostEA: getSummVal(63),
+        totalDueHmrc: getSummVal(71),
+        totalLeavingBankPayroll: getSummVal(73),
+        totalLeavingBankHmrc: getSummVal(74),
+        totalLeavingBankPension: getSummVal(75),
+        totalLeavingBankMonth: getSummVal(77),
+      };
+
+      // Employee amounts for this month
+      let monthHasActuals = false;
+      const employeeAmounts = [];
+
+      for (let i = 0; i < 50; i++) {
+        const emp = employees[i];
+        const effRow = effectiveAmountsRaw[i] || [];
+        const actRow = actualAmountsRaw[i] || [];
+        const fcRow = forecastAmountsRaw[i] || [];
+
+        // Check whether this employee row has actuals in row 304:353
+        const actSalary = actRow[colOffset + 0];
+        const actEeNic = actRow[colOffset + 1];
+        const actErNic = actRow[colOffset + 2];
+        const actStudLoan = actRow[colOffset + 3];
+        const actEePen = actRow[colOffset + 4];
+        const actErPen = actRow[colOffset + 5];
+        const actPaye = actRow[colOffset + 6];
+
+        const hasAct = [actSalary, actEeNic, actErNic, actStudLoan, actEePen, actErPen, actPaye].some(
+          (v) => v !== undefined && v !== null && String(v).trim() !== ""
+        );
+
+        if (hasAct) monthHasActuals = true;
+
+        const salary = effRow[colOffset + 0] ?? (hasAct ? actSalary : fcRow[colOffset + 0]) ?? "";
+        const eeNic = effRow[colOffset + 1] ?? (hasAct ? actEeNic : fcRow[colOffset + 1]) ?? "";
+        const erNic = effRow[colOffset + 2] ?? (hasAct ? actErNic : fcRow[colOffset + 2]) ?? "";
+        const studentLoan = effRow[colOffset + 3] ?? (hasAct ? actStudLoan : fcRow[colOffset + 3]) ?? "";
+        const eePension = effRow[colOffset + 4] ?? (hasAct ? actEePen : fcRow[colOffset + 4]) ?? "";
+        const erPension = effRow[colOffset + 5] ?? (hasAct ? actErPen : fcRow[colOffset + 5]) ?? "";
+        const paye = effRow[colOffset + 6] ?? (hasAct ? actPaye : fcRow[colOffset + 6]) ?? "";
+
+        employeeAmounts.push({
+          employeeIndex: i,
+          sheetRow: emp.sheetRow,
+          name: emp.name,
+          isActual: hasAct,
+          type: hasAct ? "actual" : "forecast",
+          salary,
+          eeNic,
+          erNic,
+          studentLoan,
+          eePension,
+          erPension,
+          paye,
+        });
+      }
+
+      months.push({
+        monthIndex: months.length,
+        label: monthLabel,
+        rawHeader: rawMonthHeader,
+        colStartIdx: c,
+        colStartLetter: startColLetter,
+        colEndLetter: endColLetter,
+        isActualMonth: monthHasActuals,
+        colTotals,
+        summary,
+        employeeAmounts,
+      });
+    }
+
+    // =========================================================================
+    // PARSE CLIENT SHEET: "DIVIDENDS IN LIEU OF SALARY" (Outgoings Rows 118:121)
+    // =========================================================================
+    // Outgoings FY1: cols 6..17 (G..R), Total col 19 (T)
+    // Outgoings FY2: cols 21..32 (V..AG), Total col 34 (AI)
+    // Outgoings FY3: cols 36..47 (AK..AV), Total col 49 (AX)
+    const fyConfigs = [
+      {
+        fyIndex: 0,
+        label: String(outgoingsHeaders[19] || "FY1").replace(/total/i, "").trim() || "FY1",
+        totalColIdx: 19,
+        totalColLetter: "T",
+        monthCols: Array.from({ length: 12 }, (_, i) => ({
+          colIdx: 6 + i,
+          colLetter: colIdxToLetter(6 + i),
+          label: String(outgoingsHeaders[6 + i] || `M${i + 1}`).trim(),
+        })),
+      },
+      {
+        fyIndex: 1,
+        label: String(outgoingsHeaders[34] || "FY2").replace(/total/i, "").trim() || "FY2",
+        totalColIdx: 34,
+        totalColLetter: "AI",
+        monthCols: Array.from({ length: 12 }, (_, i) => ({
+          colIdx: 21 + i,
+          colLetter: colIdxToLetter(21 + i),
+          label: String(outgoingsHeaders[21 + i] || `M${i + 1}`).trim(),
+        })),
+      },
+      {
+        fyIndex: 2,
+        label: String(outgoingsHeaders[49] || "FY3").replace(/total/i, "").trim() || "FY3",
+        totalColIdx: 49,
+        totalColLetter: "AX",
+        monthCols: Array.from({ length: 12 }, (_, i) => ({
+          colIdx: 36 + i,
+          colLetter: colIdxToLetter(36 + i),
+          label: String(outgoingsHeaders[36 + i] || `M${i + 1}`).trim(),
+        })),
+      },
+    ];
+
+    // Find default FY matching current date
+    const now = new Date();
+    const curMonthIdx = now.getMonth();
+    const curYear = now.getFullYear();
+    let defaultFyIndex = 0;
+
+    fyConfigs.forEach((fy, fIdx) => {
+      const hasCur = fy.monthCols.some((m) => {
+        const parsed = parseMonthYearHeader(m.label);
+        return parsed && parsed.monthIdx === curMonthIdx && parsed.year === curYear;
+      });
+      if (hasCur) defaultFyIndex = fIdx;
+    });
+
+    // Outgoings Rows:
+    // outgoingsDividendsRaw[0] = Row 118 (Dividends in lieu of salary)
+    // outgoingsDividendsRaw[1] = Row 119 (Second row / slot)
+    // outgoingsDividendsRaw[2] = Row 120 (Total div in lieu of salary - delivery)
+    // outgoingsDividendsRaw[3] = Row 121 (Total div in lieu of salary - non-delivery)
+    const row118 = outgoingsDividendsRaw[0] || [];
+    const row119 = outgoingsDividendsRaw[1] || [];
+    const row120 = outgoingsDividendsRaw[2] || [];
+    const row121 = outgoingsDividendsRaw[3] || [];
+
+    const dividendsSection = {
+      defaultFyIndex,
+      fyConfigs: fyConfigs.map((fy) => {
+        const getMonthVals = (rowArr) =>
+          fy.monthCols.map((m) => ({
+            colLetter: m.colLetter,
+            label: m.label,
+            value: rowArr[m.colIdx] || "£0",
+          }));
+
+        return {
+          ...fy,
+          row118: {
+            sheetRow: 118,
+            outgoingItemUuid: relLookup?.outgoingsByRow?.get(118)?.id || null,
+            description: row118[0] || "Dividends in lieu of salary",
+            deliveryPct: row118[4] || "0%", // Col E (idx 4)
+            months: getMonthVals(row118),
+            total: row118[fy.totalColIdx] || "£0",
+          },
+          row119: {
+            sheetRow: 119,
+            outgoingItemUuid: relLookup?.outgoingsByRow?.get(119)?.id || null,
+            description: row119[0] || "",
+            deliveryPct: row119[4] || "",
+            months: getMonthVals(row119),
+            total: row119[fy.totalColIdx] || "",
+            hasData: Boolean(row119[0] || row119[fy.totalColIdx]),
+          },
+          totalsDelivery: {
+            sheetRow: 120,
+            label: row120[0] || "Total div in lieu of salary - delivery",
+            months: getMonthVals(row120),
+            total: row120[fy.totalColIdx] || "£0",
+          },
+          totalsNonDelivery: {
+            sheetRow: 121,
+            label: row121[0] || "Total div in lieu of salary - non-delivery",
+            months: getMonthVals(row121),
+            total: row121[fy.totalColIdx] || "£0",
+          },
+        };
+      }),
+    };
+
+    const result = {
+      success: true,
+      clientName,
+      masterSheetId,
+      clientSheetId,
+      defaultMonthIndex,
+      employees,
+      months,
+      dividends: dividendsSection,
+      inputsReadMode: usedRelReads ? "relational" : "grid",
+    };
+
+    return result;
+  };
+
+  if (_forceInputsReadMode === "grid" || _forceInputsReadMode === "relational") {
+    return await fetchFreshFn();
+  }
+
+  const cachedResult = await resolvePortalCache({
+    cacheKey,
+    bypassCache: Boolean(bypassCache),
+    minBypassAgeMs: Number(minBypassAgeMs) || 0,
+    l1TtlSecs: 120,
+    redisTtlSecs: 86400,
+    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.employees)),
+    fetchFreshFn,
   });
 
   return cachedResult.data;
@@ -517,13 +584,22 @@ export async function saveEmployeeData({
   clientSheetId,
   clientName,
   sheetRow,
+  employeeUuid = null,
   employeeData,
   sessionUser,
 }) {
-  if ((!masterSheetId && !clientSheetId) || !sheetRow || !employeeData) {
-    throw new Error("masterSheetId or clientSheetId, sheetRow, and employeeData are required.");
+  if ((!masterSheetId && !clientSheetId) || !employeeData) {
+    throw new Error("masterSheetId or clientSheetId and employeeData are required.");
   }
-  if (sheetRow < 4 || sheetRow > 53) {
+  const anchor = await resolveAuthoritativeInputAnchor({
+    spreadsheetId: clientSheetId || masterSheetId,
+    clientName,
+    entityType: "employee",
+    entityUuid: employeeUuid,
+    fallbackRowNum: sheetRow,
+  });
+  sheetRow = anchor.rowNum;
+  if (!sheetRow || sheetRow < 4 || sheetRow > 53) {
     throw new Error("sheetRow must be between 4 and 53.");
   }
 
@@ -616,14 +692,23 @@ export async function saveSalaryAmountOverride({
   clientSheetId,
   clientName,
   sheetRow,
+  employeeUuid = null,
   colLetterStart,
   amounts,
   sessionUser,
 }) {
-  if ((!masterSheetId && !clientSheetId) || !sheetRow || !colLetterStart || !Array.isArray(amounts)) {
-    throw new Error("masterSheetId or clientSheetId, sheetRow, colLetterStart, and amounts array are required.");
+  if ((!masterSheetId && !clientSheetId) || !colLetterStart || !Array.isArray(amounts)) {
+    throw new Error("masterSheetId or clientSheetId, colLetterStart, and amounts array are required.");
   }
-  if (sheetRow < 4 || sheetRow > 53) {
+  const anchor = await resolveAuthoritativeInputAnchor({
+    spreadsheetId: clientSheetId || masterSheetId,
+    clientName,
+    entityType: "employee",
+    entityUuid: employeeUuid,
+    fallbackRowNum: sheetRow,
+  });
+  sheetRow = anchor.rowNum;
+  if (!sheetRow || sheetRow < 4 || sheetRow > 53) {
     throw new Error("sheetRow must be between 4 and 53.");
   }
 
@@ -670,6 +755,7 @@ export async function saveDividendsData({
   masterSheetId,
   clientName,
   sheetRow = 118,
+  outgoingItemUuid = null,
   deliveryPct,
   monthlyAmounts, // { colLetter: value }
   description,
@@ -678,7 +764,15 @@ export async function saveDividendsData({
   if (!clientSheetId) {
     throw new Error("clientSheetId is required.");
   }
-  const rowNum = parseInt(sheetRow, 10);
+  const anchor = await resolveAuthoritativeInputAnchor({
+    spreadsheetId: clientSheetId,
+    clientName,
+    entityType: "outgoing_item",
+    entityUuid: outgoingItemUuid,
+    expectedSection: "dividend",
+    fallbackRowNum: sheetRow,
+  });
+  const rowNum = parseInt(anchor.rowNum ?? sheetRow, 10);
   if (rowNum !== 118 && rowNum !== 119) {
     throw new Error("Invalid dividends row: must be 118 or 119.");
   }

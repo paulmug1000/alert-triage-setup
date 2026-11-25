@@ -130,12 +130,13 @@ export default async function handler(req, res) {
 
     try {
       if (action === "save_employee") {
-        const { sheetRow, employeeData } = req.body;
+        const { sheetRow, employeeUuid, employeeData } = req.body;
         const result = await saveEmployeeData({
           masterSheetId,
           clientSheetId,
           clientName: clientName || "Client",
-          sheetRow: parseInt(sheetRow, 10),
+          sheetRow: sheetRow !== undefined && sheetRow !== null ? parseInt(sheetRow, 10) : null,
+          employeeUuid: employeeUuid || null,
           employeeData,
           sessionUser,
         });
@@ -143,12 +144,13 @@ export default async function handler(req, res) {
       }
 
       if (action === "save_amount_override") {
-        const { sheetRow, colLetterStart, amounts } = req.body;
+        const { sheetRow, employeeUuid, colLetterStart, amounts } = req.body;
         const result = await saveSalaryAmountOverride({
           masterSheetId,
           clientSheetId,
           clientName: clientName || "Client",
-          sheetRow: parseInt(sheetRow, 10),
+          sheetRow: sheetRow !== undefined && sheetRow !== null ? parseInt(sheetRow, 10) : null,
+          employeeUuid: employeeUuid || null,
           colLetterStart,
           amounts,
           sessionUser,
@@ -157,12 +159,13 @@ export default async function handler(req, res) {
       }
 
       if (action === "save_dividends") {
-        const { sheetRow, deliveryPct, monthlyAmounts, description } = req.body;
+        const { sheetRow, outgoingItemUuid, deliveryPct, monthlyAmounts, description } = req.body;
         const result = await saveDividendsData({
           clientSheetId,
           masterSheetId,
           clientName: clientName || "Client",
           sheetRow: parseInt(sheetRow || 118, 10),
+          outgoingItemUuid: outgoingItemUuid || null,
           deliveryPct,
           monthlyAmounts,
           description,
@@ -174,7 +177,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: `Unknown action: ${action}` });
     } catch (err) {
       console.error(`Error in POST /api/pma/salaries (action=${action}):`, err);
-      return res.status(500).json({
+      const status = Number.isInteger(err?.statusCode) ? err.statusCode : 500;
+      return res.status(status).json({
         success: false,
         error: sessionUser.isAdmin ? (err.message || "Failed to save salaries data") : sanitizeSpreadsheetTerms(err.message || "Failed to save salaries data")
       });

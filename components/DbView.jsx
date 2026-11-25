@@ -141,6 +141,7 @@ export default function DbView({
   const [parityReport, setParityReport] = useState(null);
   const [relationalParityReport, setRelationalParityReport] = useState(null);
   const [relationalInputsParityReport, setRelationalInputsParityReport] = useState(null);
+  const [relationalInputsReadParityReport, setRelationalInputsReadParityReport] = useState(null);
   const [copied0012Sql, setCopied0012Sql] = useState(false);
   const [copied0013Sql, setCopied0013Sql] = useState(false);
 
@@ -791,6 +792,60 @@ export default function DbView({
     );
   };
 
+  const handleVerifyRelationalInputsReadParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_inputs_read_parity",
+      "Verifying pure-relational operating inputs read payload parity across PMA & Portal...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_inputs_read_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Read payload parity check failed.");
+        const r = data.parityReport || {};
+        setRelationalInputsReadParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Operating inputs read parity verified across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientInputsReadMode = (nextMode, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    runTrackedOperation(
+      `set_inputs_read_mode_${nextMode}`,
+      `Switching ${targetClient} operating inputs read source to ${nextMode === "relational" ? "pure relational SQL" : "virtual grid"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_inputs_read_mode",
+            clientName: targetClient,
+            inputsReadMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update client inputs read mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} operating inputs read source to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
   const handleNativeSync = (syncType, label, clientOverride) => {
     const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
     runTrackedOperation(`sync_${syncType}`, `Running "${label}" on ${targetClient}...`, async () => {
@@ -1125,7 +1180,7 @@ export default function DbView({
       c.client_mode === "supabase" ||
       (c.masterTabCount || 0) + (c.reconTabCount || 0) + (c.clientTabCount || 0) > 0 ||
       String(c.client_name || "").trim().toUpperCase() ===
-        String(activeClientName || "").trim().toUpperCase()
+      String(activeClientName || "").trim().toUpperCase()
   );
 
   const visibleOverviewClients =
@@ -2463,24 +2518,24 @@ export default function DbView({
                               >
                                 {isSupabase ? "Master: Supabase" : "Master: Sheets"}
                               </span>
-                                <span
-                                  style={{
-                                    padding: "2px 7px",
-                                    borderRadius: "999px",
-                                    fontWeight: 600,
-                                    fontSize: "10px",
-                                    background: isClientSupabase ? "#dbeafe" : "#f1f5f9",
-                                    color: isClientSupabase ? "#1e40af" : "#475569",
-                                  }}
-                                >
-                                  {isClientSupabase
-                                    ? c.sheetBridgeMode === "live"
-                                      ? "Portal: Supabase + Sheet"
-                                      : c.sheetBridgeMode === "dry_run"
-                                        ? "Portal: Supabase (dry run)"
-                                        : "Portal: Supabase"
-                                    : "Portal: Sheets"}
-                                </span>
+                              <span
+                                style={{
+                                  padding: "2px 7px",
+                                  borderRadius: "999px",
+                                  fontWeight: 600,
+                                  fontSize: "10px",
+                                  background: isClientSupabase ? "#dbeafe" : "#f1f5f9",
+                                  color: isClientSupabase ? "#1e40af" : "#475569",
+                                }}
+                              >
+                                {isClientSupabase
+                                  ? c.sheetBridgeMode === "live"
+                                    ? "Portal: Supabase + Sheet"
+                                    : c.sheetBridgeMode === "dry_run"
+                                      ? "Portal: Supabase (dry run)"
+                                      : "Portal: Supabase"
+                                  : "Portal: Sheets"}
+                              </span>
                               {isClientSupabase && (c.sheetBridgeMode === "live" || c.sheetBridgeMode === "dry_run") && (() => {
                                 const bState = c.sheetBridgeState || {};
                                 const hasErr = Boolean(bState.lastError);
@@ -3822,7 +3877,7 @@ export default function DbView({
                       color: "#1e40af",
                     }}
                   >
-                    {`${stage2Data.phase3Inputs.inputsModeClientsCount || 0} relational · ${stage2Data.phase3Inputs.backfilledClientsCount || 0}/${allClients.length} backfilled`}
+                    {`${stage2Data.phase3Inputs.inputsModeClientsCount || 0} relational · ${stage2Data.phase3Inputs.inputsReadModeClientsCount || 0} direct reads · ${stage2Data.phase3Inputs.backfilledClientsCount || 0}/${allClients.length} backfilled`}
                   </span>
                 )}
               </div>
@@ -3991,7 +4046,111 @@ export default function DbView({
                     : `Switch ${activeClientName} to relational inputs`}
                 </span>
               </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase3Inputs?.schemaReady || isBusy}
+                onClick={() => handleVerifyRelationalInputsReadParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !stage2Data?.phase3Inputs?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_inputs_read_parity" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
+                <span>{`Verify read payload parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase3Inputs?.schemaReady || activeClientObj?.inputsMode !== "relational" || isBusy}
+                onClick={() =>
+                  handleSetClientInputsReadMode(
+                    activeClientObj?.inputsReadMode === "relational" ? "grid" : "relational",
+                    activeClientName
+                  )
+                }
+                style={{
+                  ...actionBtnBase,
+                  background:
+                    !stage2Data?.phase3Inputs?.schemaReady || activeClientObj?.inputsMode !== "relational"
+                      ? "#f3f4f6"
+                      : activeClientObj?.inputsReadMode === "relational"
+                        ? "#fef2f2"
+                        : "#eff6ff",
+                  borderColor:
+                    !stage2Data?.phase3Inputs?.schemaReady || activeClientObj?.inputsMode !== "relational"
+                      ? "#cbd5e1"
+                      : activeClientObj?.inputsReadMode === "relational"
+                        ? "#fecaca"
+                        : "#93c5fd",
+                  color:
+                    !stage2Data?.phase3Inputs?.schemaReady || activeClientObj?.inputsMode !== "relational"
+                      ? "#9ca3af"
+                      : activeClientObj?.inputsReadMode === "relational"
+                        ? "#b91c1c"
+                        : "#1e40af",
+                  cursor:
+                    !stage2Data?.phase3Inputs?.schemaReady || activeClientObj?.inputsMode !== "relational"
+                      ? "not-allowed"
+                      : isBusy
+                        ? "wait"
+                        : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.inputsReadMode === "relational"
+                    ? `Revert ${activeClientName} to grid reads`
+                    : `Switch ${activeClientName} to direct relational reads`}
+                </span>
+              </button>
             </div>
+
+            {relationalInputsReadParityReport && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${relationalInputsReadParityReport.mismatchClientsCount > 0 || relationalInputsReadParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Relational operating inputs read parity (${formatTimestamp(relationalInputsReadParityReport.checkedAt)}) — ${relationalInputsReadParityReport.matchedClientsCount || 0} of ${relationalInputsReadParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setRelationalInputsReadParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(relationalInputsReadParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || (r.matched ? "100% match across all 11 PMA & Portal operating-input endpoints" : JSON.stringify(r.sampleMismatches || []))}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? "100% match" : r.error || `${r.mismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {relationalInputsParityReport && (
               <div

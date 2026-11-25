@@ -121,13 +121,15 @@ export default async function handler(req, res) {
     }
 
     try {
+      const outgoingItemUuid = req.body?.outgoingItemUuid || null;
       // Action: save_metadata (Category, VAT, Delivery %)
       if (action === "save_metadata") {
-        if (!sheetRow) return res.status(400).json({ success: false, error: "sheetRow is required" });
+        if (!sheetRow && !outgoingItemUuid) return res.status(400).json({ success: false, error: "sheetRow is required" });
         const result = await saveExpenseMetadata({
           clientName: clientName || "Client",
           clientSheetId,
           sheetRow,
+          outgoingItemUuid,
           category,
           vat,
           deliveryPct,
@@ -138,11 +140,12 @@ export default async function handler(req, res) {
 
       // Action: toggle_delivery (move between delivery and non-delivery)
       if (action === "toggle_delivery") {
-        if (!sheetRow) return res.status(400).json({ success: false, error: "sheetRow is required" });
+        if (!sheetRow && !outgoingItemUuid) return res.status(400).json({ success: false, error: "sheetRow is required" });
         const result = await toggleExpenseDelivery({
           clientName: clientName || "Client",
           clientSheetId,
           sheetRow,
+          outgoingItemUuid,
           targetDelivery,
           userEmail: sessionUser.email,
         });
@@ -151,11 +154,12 @@ export default async function handler(req, res) {
 
       // Action: save_amounts (update monthly expense amounts)
       if (action === "save_amounts") {
-        if (!sheetRow) return res.status(400).json({ success: false, error: "sheetRow is required" });
+        if (!sheetRow && !outgoingItemUuid) return res.status(400).json({ success: false, error: "sheetRow is required" });
         const result = await saveExpenseAmount({
           clientName: clientName || "Client",
           clientSheetId,
           sheetRow,
+          outgoingItemUuid,
           monthlyAmounts,
           cellNotes: req.body?.cellNotes,
           userEmail: sessionUser.email,
@@ -195,7 +199,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: `Unknown action: ${action}` });
     } catch (err) {
       console.error("Error in POST /api/pma/expenses:", err);
-      return res.status(500).json({
+      const status = Number.isInteger(err?.statusCode) ? err.statusCode : 500;
+      return res.status(status).json({
         success: false,
         error: sessionUser.isAdmin ? (err.message || "Failed to save expenses") : sanitizeSpreadsheetTerms(err.message || "Failed to save expenses")
       });

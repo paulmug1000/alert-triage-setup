@@ -1709,13 +1709,13 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
   const watchedKeyInfoCells = [
     { range: "KeyInfo!E21", r: 20, c: 4 },
     { range: "KeyInfo!I29", r: 28, c: 8 },
-    { range: "KeyInfo!E2",  r: 1,  c: 4 },
-    { range: "KeyInfo!F2",  r: 1,  c: 5 },
-    { range: "KeyInfo!B4",  r: 3,  c: 1 },
-    { range: "KeyInfo!E6",  r: 5,  c: 4 },
-    { range: "KeyInfo!F6",  r: 5,  c: 5 },
-    { range: "KeyInfo!B7",  r: 6,  c: 1 },
-    { range: "KeyInfo!D9",  r: 8,  c: 3 },
+    { range: "KeyInfo!E2", r: 1, c: 4 },
+    { range: "KeyInfo!F2", r: 1, c: 5 },
+    { range: "KeyInfo!B4", r: 3, c: 1 },
+    { range: "KeyInfo!E6", r: 5, c: 4 },
+    { range: "KeyInfo!F6", r: 5, c: 5 },
+    { range: "KeyInfo!B7", r: 6, c: 1 },
+    { range: "KeyInfo!D9", r: 8, c: 3 },
   ];
   const prevKeyInfoVals = watchedKeyInfoCells.map((cell) => grids.KeyInfo?.[cell.r]?.[cell.c] ?? "");
 
@@ -1975,7 +1975,7 @@ export async function flushImmediateAndScheduleBackgroundClientRecomputes(rawShe
           console.warn("[masterEngineService] Immediate client flush warning:", e.message)
         );
       } else if (inFlight) {
-        await inFlight.catch(() => {});
+        await inFlight.catch(() => { });
       }
       continue;
     }
@@ -3772,6 +3772,7 @@ export async function handleVirtualSheetsCall({
 
         if (matchingRanges.length > 0) {
           const fieldsStr = String(params.fields || "");
+          const wantFormulas = !fieldsStr || fieldsStr.includes("userEnteredValue");
           const isNotesOnlyReq =
             fieldsStr.includes("note") &&
             !fieldsStr.includes("formattedValue") &&
@@ -3833,7 +3834,7 @@ export async function handleVirtualSheetsCall({
             }
 
             const slicedVals = sliceGrid2D_(t.values_grid || [], mr);
-            const slicedForms = sliceGrid2D_(t.formulas_grid || t.values_grid || [], mr);
+            const slicedForms = wantFormulas ? sliceGrid2D_(t.formulas_grid || t.values_grid || [], mr) : [];
             const rowCount = Math.max(
               slicedVals.length,
               slicedForms.length,
@@ -4191,13 +4192,13 @@ export async function handleVirtualSheetsCall({
             const rowBelowCells = inherit && nextForms[s] ? nextForms[s].cells : [];
             const tplFormCells = inherit
               ? rawDonorCells.map((c, colIdx) => {
-                  if (typeof c !== "string" || !c.startsWith("=")) return "";
-                  // Skip Row-2 vertical spill anchors when Row 3 does not hold a formula in that column
-                  if (s === 2 && !(typeof rowBelowCells[colIdx] === "string" && rowBelowCells[colIdx].startsWith("="))) {
-                    return "";
-                  }
-                  return c;
-                })
+                if (typeof c !== "string" || !c.startsWith("=")) return "";
+                // Skip Row-2 vertical spill anchors when Row 3 does not hold a formula in that column
+                if (s === 2 && !(typeof rowBelowCells[colIdx] === "string" && rowBelowCells[colIdx].startsWith("="))) {
+                  return "";
+                }
+                return c;
+              })
               : [];
 
             const insertedV = Array.from({ length: count }, () => []);
@@ -6065,10 +6066,20 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         }
       })
     ),
-    supabase
-      .from("clients")
-      .select("id, client_name, normalized_key, status, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
-      .order("client_name", { ascending: true }),
+    (() =>
+      supabase
+        .from("clients")
+        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+        .order("client_name", { ascending: true })
+        .then(async (res) => {
+          if (res.error && (String(res.error.message || "").includes("inputs_mode") || String(res.error.message || "").includes("jobs_read_mode"))) {
+            return supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, status, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+              .order("client_name", { ascending: true });
+          }
+          return res;
+        }))(),
     supabase
       .from("tenant_key_info")
       .select("client_name, accounting_tool, crm_tool, crm_drives, client_materialized_at, updated_at")
@@ -6220,11 +6231,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         hasRealReconSheet: Boolean(c.recon_sheet_id && !isVirtualSupabaseSheetId(c.recon_sheet_id)),
         sheetBridgeMode: String(c.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
         sheetBridgeState: c.metadata?.sheet_bridge_state || null,
-        jobsMode: String(c.metadata?.jobs_mode || "grid").trim().toLowerCase(),
-        jobsReadMode: String(c.metadata?.jobs_read_mode || "grid").trim().toLowerCase(),
+        jobsMode: String(c.jobs_mode || c.metadata?.jobs_mode || "grid").trim().toLowerCase(),
+        jobsReadMode: String(c.jobs_read_mode || c.metadata?.jobs_read_mode || "grid").trim().toLowerCase(),
         relationalJobsState: c.metadata?.relational_jobs_state || null,
-        inputsMode: String(c.metadata?.inputs_mode || "grid").trim().toLowerCase(),
-        inputsReadMode: String(c.metadata?.inputs_read_mode || "grid").trim().toLowerCase(),
+        inputsMode: String(c.inputs_mode || c.metadata?.inputs_mode || "grid").trim().toLowerCase(),
+        inputsReadMode: String(c.inputs_read_mode || c.metadata?.inputs_read_mode || "grid").trim().toLowerCase(),
         relationalInputsState: c.metadata?.relational_inputs_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
@@ -6255,11 +6266,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
   let inputsReadModeClientsCount = 0;
   for (const c of clientsData || []) {
     if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
-    if (String(c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
-    if (String(c?.metadata?.jobs_read_mode || "").trim().toLowerCase() === "relational") relationalReadModeClientsCount++;
+    if (String(c?.jobs_mode || c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
+    if (String(c?.jobs_read_mode || c?.metadata?.jobs_read_mode || "").trim().toLowerCase() === "relational") relationalReadModeClientsCount++;
     if (c?.metadata?.relational_inputs_state?.lastBackfilledAt) phase3BackfilledCount++;
-    if (String(c?.metadata?.inputs_mode || "").trim().toLowerCase() === "relational") inputsModeClientsCount++;
-    if (String(c?.metadata?.inputs_read_mode || "").trim().toLowerCase() === "relational") inputsReadModeClientsCount++;
+    if (String(c?.inputs_mode || c?.metadata?.inputs_mode || "").trim().toLowerCase() === "relational") inputsModeClientsCount++;
+    if (String(c?.inputs_read_mode || c?.metadata?.inputs_read_mode || "").trim().toLowerCase() === "relational") inputsReadModeClientsCount++;
   }
 
   return {
@@ -6275,42 +6286,42 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     clockStatus,
     phase2Jobs: phase2JobsStats
       ? {
-          ...phase2JobsStats,
-          backfilledClientsCount,
-          relationalModeClientsCount,
-          relationalReadModeClientsCount,
-        }
+        ...phase2JobsStats,
+        backfilledClientsCount,
+        relationalModeClientsCount,
+        relationalReadModeClientsCount,
+      }
       : {
-          schemaReady: false,
-          migrationSql: "",
-          totalJobs: 0,
-          totalSeries: 0,
-          totalInvoices: 0,
-          totalExpenses: 0,
-          backfilledClientsCount,
-          relationalModeClientsCount,
-        },
+        schemaReady: false,
+        migrationSql: "",
+        totalJobs: 0,
+        totalSeries: 0,
+        totalInvoices: 0,
+        totalExpenses: 0,
+        backfilledClientsCount,
+        relationalModeClientsCount,
+      },
     phase3Inputs: phase3InputsStats
       ? {
-          ...phase3InputsStats,
-          backfilledClientsCount: phase3BackfilledCount,
-          inputsModeClientsCount,
-          inputsReadModeClientsCount,
-        }
+        ...phase3InputsStats,
+        backfilledClientsCount: phase3BackfilledCount,
+        inputsModeClientsCount,
+        inputsReadModeClientsCount,
+      }
       : {
-          schemaReady: false,
-          migrationSql: "",
-          totalEmployees: 0,
-          totalOutgoingItems: 0,
-          totalContractorEntries: 0,
-          totalNbClients: 0,
-          totalBudgetItems: 0,
-          totalCashAdjustments: 0,
-          totalCashBankBalances: 0,
-          backfilledClientsCount: phase3BackfilledCount,
-          inputsModeClientsCount,
-          inputsReadModeClientsCount,
-        },
+        schemaReady: false,
+        migrationSql: "",
+        totalEmployees: 0,
+        totalOutgoingItems: 0,
+        totalContractorEntries: 0,
+        totalNbClients: 0,
+        totalBudgetItems: 0,
+        totalCashAdjustments: 0,
+        totalCashBankBalances: 0,
+        backfilledClientsCount: phase3BackfilledCount,
+        inputsModeClientsCount,
+        inputsReadModeClientsCount,
+      },
   };
 }
 

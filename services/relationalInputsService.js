@@ -24,11 +24,11 @@ import {
   resolveSupabaseSheetContext,
   invalidateSheetContextCache,
 } from "./masterEngineService.js";
-import { isCashCellEditable } from "./cashEditService.js";
 import { getClientCashBankBreakdowns } from "./cashBankBreakdownService.js";
+import { formatCellForDisplay } from "./gasRuntime/sheetValueUtils.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
-import { isPlaceholderExpense, toSheetDateFormat } from "../utils/helpers.js";
+import { isCashCellEditable, isPlaceholderExpense, toSheetDateFormat } from "../utils/helpers.js";
 import {
   buildContractorBillNoteKey,
   buildContractorRowNoteKey,
@@ -42,6 +42,7 @@ if (typeof window !== "undefined") {
 }
 
 const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MONTH_NAMES_3 = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
 export const PHASE3_INPUT_TABLES = [
@@ -69,7 +70,7 @@ const OUTGOINGS_TOTAL_COLS = [19, 34, 49];
 
 const NBTF_SETTING_ROWS0 = [8, 11, 20]; // A9, A12, A21
 const NBTF_EDITABLE_ROWS0 = new Set([2, 4, 9, 11, 19, 24]); // Rows 3, 5, 10, 12, 20, 25
-const NBTF_ROLLUP_ROWS0 = [0, 2, 4, 9, 11, 13, 17, 19, 22, 24];
+const NBTF_ROLLUP_ROWS0 = [0, 2, 4, 8, 9, 11, 13, 17, 19, 20, 22, 24];
 
 const BUDGET_ROW_SECTIONS = [];
 for (let r = 5; r <= 9; r++) BUDGET_ROW_SECTIONS.push({ rowNum: r, section: "revenue" });
@@ -376,12 +377,13 @@ export function parseSalariesTabToEmployees({
     }
 
     // Reconciled calculated forecast (rows 154..203) & effective (rows 304..353)
+    // Note: monthly_effective captures c >= 0 so Salaries!A304:JC368 is 100% preserved.
     const monthlyForecasts = {};
     const monthlyEffective = {};
     const fcRow = Array.isArray(valuesGrid[r0 + 150]) ? valuesGrid[r0 + 150] : [];
     const effRow = Array.isArray(valuesGrid[r0 + 300]) ? valuesGrid[r0 + 300] : [];
-    for (let c = 11; c < Math.max(fcRow.length, effRow.length); c++) {
-      if (isNonEmptyCell_(fcRow[c])) monthlyForecasts[String(c)] = fcRow[c];
+    for (let c = 0; c < Math.max(fcRow.length, effRow.length); c++) {
+      if (c >= 11 && isNonEmptyCell_(fcRow[c])) monthlyForecasts[String(c)] = fcRow[c];
       if (isNonEmptyCell_(effRow[c])) monthlyEffective[String(c)] = effRow[c];
     }
 
@@ -1007,11 +1009,15 @@ export function parseNbToFindTabToRecord({
   for (const r0 of NBTF_ROLLUP_ROWS0) {
     const vRow = Array.isArray(valuesGrid[r0]) ? valuesGrid[r0] : [];
     const rowObj = {};
-    for (const c of [...MONTHLY_48_COLS, ...OUTGOINGS_TOTAL_COLS]) {
+    for (const c of [0, ...MONTHLY_48_COLS, ...OUTGOINGS_TOTAL_COLS]) {
       if (isNonEmptyCell_(vRow[c])) rowObj[String(c)] = vRow[c];
     }
     if (Object.keys(rowObj).length > 0) reconciledRollups[String(r0)] = rowObj;
   }
+  reconciledRollups._nbMeta = {
+    rowCount: valuesGrid.length,
+    ...(notesGrid?.__dateCells && Object.keys(notesGrid.__dateCells).length > 0 ? { dateCells: notesGrid.__dateCells } : {}),
+  };
 
   return {
     client_id: clientId,
@@ -1438,6 +1444,168 @@ export function parseBankBreakdownsToRelational({ clientId, clientName, breakdow
 }
 
 // ============================================================================
+// 6B. COMPACT ROLLUP EXTRACTORS (FOR PURE-RELATIONAL PHASE 3B READS)
+// ============================================================================
+
+const MANAGED_OUTGOINGS_COLS = new Set([0, 1, 2, 3, 4, 5, ...MONTHLY_48_COLS, ...OUTGOINGS_TOTAL_COLS]);
+const MANAGED_BUDGET_COLS = new Set([0, 1, 2, 3, 4, ...MONTHLY_48_COLS, ...OUTGOINGS_TOTAL_COLS]);
+
+function extractSparseRowCells_(row = [], maxCol = 65, excludeSet = null) {
+  const out = {};
+  const limit = Math.min(Array.isArray(row) ? row.length - 1 : -1, maxCol);
+  for (let c = 0; c <= limit; c++) {
+    if (excludeSet && excludeSet.has(c)) continue;
+    const v = row[c];
+    if (isNonEmptyCell_(v)) out[String(c)] = v;
+  }
+  return out;
+}
+
+function extractSalariesRollups_(valuesGrid = [], notesGrid = {}, occupiedRow0Set = new Set()) {
+  const rows = {};
+  const notes = {};
+  const rowCount = Array.isArray(valuesGrid) ? valuesGrid.length : 0;
+
+  for (let r0 = 0; r0 < Math.min(rowCount, 368); r0++) {
+    const row = Array.isArray(valuesGrid[r0]) ? valuesGrid[r0] : [];
+    const isHeader = r0 <= 2;
+    const isEmpBand = r0 >= 3 && r0 <= 52;
+    const isSummaryBand = r0 >= 53 && r0 <= 99;
+    const isForecastBand = r0 >= 153 && r0 <= 202;
+    const isEffectiveBand = r0 >= 303 && r0 <= 352;
+    const isEffectiveTotalsBand = r0 >= 353 && r0 <= 367;
+
+    if (!isHeader && !isEmpBand && !isSummaryBand && !isForecastBand && !isEffectiveBand && !isEffectiveTotalsBand) {
+      continue;
+    }
+
+    let obj = {};
+    if (isHeader || isSummaryBand || isEffectiveTotalsBand) {
+      obj = extractSparseRowCells_(row, 280);
+    } else if (isEmpBand) {
+      if (!occupiedRow0Set.has(r0)) {
+        obj = extractSparseRowCells_(row, 280);
+      } else {
+        for (const c of [9, 10]) {
+          if (isNonEmptyCell_(row[c])) obj[String(c)] = row[c];
+        }
+      }
+    } else if (isForecastBand && !occupiedRow0Set.has(r0 - 150)) {
+      obj = extractSparseRowCells_(row, 280);
+    } else if (isEffectiveBand && !occupiedRow0Set.has(r0 - 300)) {
+      obj = extractSparseRowCells_(row, 280);
+    }
+
+    if (Object.keys(obj).length > 0) rows[String(r0)] = obj;
+  }
+
+  if (notesGrid && typeof notesGrid === "object") {
+    for (const [k, v] of Object.entries(notesGrid)) {
+      if (!k || k.startsWith("__") || PROTOTYPE_KEYS.has(k) || !v) continue;
+      const r0 = parseInt(k.slice(0, k.indexOf(":")), 10);
+      if (Number.isInteger(r0) && (r0 < 3 || r0 > 52 || !occupiedRow0Set.has(r0))) {
+        notes[k] = String(v);
+      }
+    }
+  }
+
+  return {
+    rowCount,
+    rows,
+    ...(Object.keys(notes).length > 0 ? { notes } : {}),
+    ...(notesGrid?.__dateCells && Object.keys(notesGrid.__dateCells).length > 0 ? { dateCells: notesGrid.__dateCells } : {}),
+  };
+}
+
+function extractOutgoingsRollups_(valuesGrid = [], notesGrid = {}, occupiedRowNumSet = new Set(), formulasGrid = []) {
+  const rows = {};
+  const notes = {};
+  const formulaColCounts = {};
+  const rowCount = Array.isArray(valuesGrid) ? valuesGrid.length : 0;
+  const formulaRowCount = Array.isArray(formulasGrid) ? formulasGrid.length : 0;
+
+  for (let r0 = 0; r0 < Math.min(Math.max(rowCount, formulaRowCount), 310); r0++) {
+    if (r0 < rowCount) {
+      const row = Array.isArray(valuesGrid[r0]) ? valuesGrid[r0] : [];
+      const isOcc = occupiedRowNumSet.has(r0 + 1);
+      const obj = isOcc
+        ? extractSparseRowCells_(row, 65, MANAGED_OUTGOINGS_COLS)
+        : extractSparseRowCells_(row, 65);
+      if (Object.keys(obj).length > 0) rows[String(r0)] = obj;
+    }
+    const vTrimLen = r0 < rowCount && Array.isArray(valuesGrid[r0]) ? trimTrailingEmptyGridCells_(valuesGrid[r0]).length : 0;
+    const fTrimLen = r0 < formulaRowCount && Array.isArray(formulasGrid[r0]) ? trimTrailingEmptyGridCells_(formulasGrid[r0]).length : 0;
+    if (fTrimLen > vTrimLen) {
+      formulaColCounts[String(r0)] = fTrimLen;
+    }
+  }
+
+  if (notesGrid && typeof notesGrid === "object") {
+    for (const [k, v] of Object.entries(notesGrid)) {
+      if (!k || k.startsWith("__") || PROTOTYPE_KEYS.has(k) || !v) continue;
+      const r0 = parseInt(k.slice(0, k.indexOf(":")), 10);
+      if (Number.isInteger(r0) && !occupiedRowNumSet.has(r0 + 1)) {
+        notes[k] = String(v);
+      }
+    }
+  }
+
+  return {
+    rowCount,
+    formulaRowCount,
+    formulaColCounts,
+    rows,
+    ...(Object.keys(notes).length > 0 ? { notes } : {}),
+    ...(notesGrid?.__dateCells && Object.keys(notesGrid.__dateCells).length > 0 ? { dateCells: notesGrid.__dateCells } : {}),
+    ...(notesGrid?.__bg_colors && Object.keys(notesGrid.__bg_colors).length > 0 ? { bgColors: notesGrid.__bg_colors } : {}),
+  };
+}
+
+function extractBudgetRollups_(valuesGrid = [], notesGrid = {}, occupiedRowNumSet = new Set(), formulasGrid = []) {
+  const rows = {};
+  const notes = {};
+  const formulaColCounts = {};
+  const rowCount = Array.isArray(valuesGrid) ? valuesGrid.length : 0;
+  const formulaRowCount = Array.isArray(formulasGrid) ? formulasGrid.length : 0;
+
+  for (let r0 = 0; r0 < Math.min(Math.max(rowCount, formulaRowCount), 260); r0++) {
+    if (r0 < rowCount) {
+      const row = Array.isArray(valuesGrid[r0]) ? valuesGrid[r0] : [];
+      const isOcc = occupiedRowNumSet.has(r0 + 1);
+      const obj = isOcc
+        ? extractSparseRowCells_(row, 66, MANAGED_BUDGET_COLS)
+        : extractSparseRowCells_(row, 66);
+      if (Object.keys(obj).length > 0) rows[String(r0)] = obj;
+    }
+    const vTrimLen = r0 < rowCount && Array.isArray(valuesGrid[r0]) ? trimTrailingEmptyGridCells_(valuesGrid[r0]).length : 0;
+    const fTrimLen = r0 < formulaRowCount && Array.isArray(formulasGrid[r0]) ? trimTrailingEmptyGridCells_(formulasGrid[r0]).length : 0;
+    if (fTrimLen > vTrimLen) {
+      formulaColCounts[String(r0)] = fTrimLen;
+    }
+  }
+
+  if (notesGrid && typeof notesGrid === "object") {
+    for (const [k, v] of Object.entries(notesGrid)) {
+      if (!k || k.startsWith("__") || PROTOTYPE_KEYS.has(k) || !v) continue;
+      const r0 = parseInt(k.slice(0, k.indexOf(":")), 10);
+      if (Number.isInteger(r0) && !occupiedRowNumSet.has(r0 + 1)) {
+        notes[k] = String(v);
+      }
+    }
+  }
+
+  return {
+    rowCount,
+    formulaRowCount,
+    formulaColCounts,
+    rows,
+    ...(Object.keys(notes).length > 0 ? { notes } : {}),
+    ...(notesGrid?.__dateCells && Object.keys(notesGrid.__dateCells).length > 0 ? { dateCells: notesGrid.__dateCells } : {}),
+    ...(notesGrid?.__bg_colors && Object.keys(notesGrid.__bg_colors).length > 0 ? { bgColors: notesGrid.__bg_colors } : {}),
+  };
+}
+
+// ============================================================================
 // 7. STRICT GRID COMPARATOR (100% VALUE, FORMULA, NOTE PARITY)
 // ============================================================================
 
@@ -1779,6 +1947,10 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
     cashBankBalancesMutated: 0,
   };
 
+  let salRollups = null;
+  let outRollups = null;
+  let budRollups = null;
+
   if (tabSet.has("Salaries")) {
     const g = loadedGrids.Salaries || {};
     const existing = await fetchAllRowsForClient_(supabase, "pulse_employees", ctx.clientId);
@@ -1801,6 +1973,11 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
     );
     employeesCount = desired.length;
     deltaStats.employeesMutated = r.mutatedCount;
+    salRollups = extractSalariesRollups_(
+      g.values_grid,
+      g.notes_grid,
+      new Set(desired.map((e) => Number(e.sheet_row_num) - 1))
+    );
   }
 
   let outgoingItemByRow = new Map();
@@ -1830,6 +2007,12 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
       for (const item of r.resolvedRows) {
         if (item.sheet_row_num) outgoingItemByRow.set(Number(item.sheet_row_num), item);
       }
+      outRollups = extractOutgoingsRollups_(
+        g.values_grid,
+        g.notes_grid,
+        new Set(desiredOuts.map((o) => Number(o.sheet_row_num))),
+        g.formulas_grid
+      );
     } else {
       for (const item of existingOuts) {
         if (item.sheet_row_num) outgoingItemByRow.set(Number(item.sheet_row_num), item);
@@ -1905,21 +2088,80 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
     deltaStats.contractorEntriesMutated = toUpsert.length + toInsert.length + obsIds.length;
   }
 
-  if (tabSet.has("NBtoFind")) {
-    const g = loadedGrids.NBtoFind || {};
-    const { data: existingNb } = await supabase
-      .from("pulse_nb_to_find")
-      .select("*")
-      .eq("client_id", ctx.clientId)
-      .maybeSingle();
-    const desiredNb = parseNbToFindTabToRecord({
+  if (tabSet.has("Budget")) {
+    const g = loadedGrids.Budget || {};
+    const existingBudget = await fetchAllRowsForClient_(supabase, "pulse_budget_items", ctx.clientId);
+    const desiredBudget = parseBudgetTabToItems({
       clientId: ctx.clientId,
       clientName: ctx.clientName,
       valuesGrid: g.values_grid,
       formulasGrid: g.formulas_grid,
       notesGrid: g.notes_grid,
     });
-    const nbPayload = { ...(existingNb?.id ? { id: existingNb.id } : {}), ...desiredNb };
+    const r = await reconcileRowBasedTable_(
+      supabase,
+      "pulse_budget_items",
+      desiredBudget,
+      existingBudget,
+      (x) => (x.name ? `${x.section}::${x.sheet_row_num}::${normalizeTextKey_(x.name)}` : `${x.section}::row:${x.sheet_row_num}`),
+      ["sort_order", "sheet_row_num", "equiv_salary", "delivery_pct", "making_up_cos_pct"],
+      ["monthly_values", "fy_totals", "raw_scalars", "custom_formulas", "cell_notes"],
+      forceFullUpsert
+    );
+    budgetItemsCount = desiredBudget.length;
+    deltaStats.budgetItemsMutated = r.mutatedCount;
+    budRollups = extractBudgetRollups_(
+      g.values_grid,
+      g.notes_grid,
+      new Set(desiredBudget.map((b) => Number(b.sheet_row_num))),
+      g.formulas_grid
+    );
+  }
+
+  if (tabSet.has("NBtoFind") || salRollups || outRollups || budRollups) {
+    const { data: existingNb } = await supabase
+      .from("pulse_nb_to_find")
+      .select("*")
+      .eq("client_id", ctx.clientId)
+      .maybeSingle();
+
+    let baseNbRecord = existingNb;
+    if (tabSet.has("NBtoFind") || !existingNb) {
+      const nbG = loadedGrids.NBtoFind ||
+        await getOrLoadVirtualTabGrid_(ctx, "client", "NBtoFind", null, { includeNotes: true }).catch(() => ({
+          values_grid: [],
+          formulas_grid: [],
+          notes_grid: {},
+        }));
+      baseNbRecord = parseNbToFindTabToRecord({
+        clientId: ctx.clientId,
+        clientName: ctx.clientName,
+        valuesGrid: nbG.values_grid,
+        formulasGrid: nbG.formulas_grid,
+        notesGrid: nbG.notes_grid,
+      });
+    }
+
+    const prevRollups = existingNb?.reconciled_rollups && typeof existingNb.reconciled_rollups === "object"
+      ? existingNb.reconciled_rollups
+      : {};
+    const nextRollups = {
+      ...prevRollups,
+      ...(tabSet.has("NBtoFind") || !existingNb ? baseNbRecord.reconciled_rollups : {}),
+      ...(salRollups ? { _salariesRollups: salRollups } : {}),
+      ...(outRollups ? { _outgoingsRollups: outRollups } : {}),
+      ...(budRollups ? { _budgetRollups: budRollups } : {}),
+    };
+    const nbPayload = {
+      ...(existingNb?.id ? { id: existingNb.id } : {}),
+      ...(tabSet.has("NBtoFind") || !existingNb ? baseNbRecord : existingNb),
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      reconciled_rollups: nextRollups,
+    };
+    delete nbPayload.created_at;
+    delete nbPayload.updated_at;
+
     const changed =
       forceFullUpsert ||
       !existingNb ||
@@ -1945,30 +2187,6 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
       if (error) throw new Error(`Failed upserting pulse_nb_to_find: ${error.message}`);
       deltaStats.nbToFindMutated = 1;
     }
-  }
-
-  if (tabSet.has("Budget")) {
-    const g = loadedGrids.Budget || {};
-    const existingBudget = await fetchAllRowsForClient_(supabase, "pulse_budget_items", ctx.clientId);
-    const desiredBudget = parseBudgetTabToItems({
-      clientId: ctx.clientId,
-      clientName: ctx.clientName,
-      valuesGrid: g.values_grid,
-      formulasGrid: g.formulas_grid,
-      notesGrid: g.notes_grid,
-    });
-    const r = await reconcileRowBasedTable_(
-      supabase,
-      "pulse_budget_items",
-      desiredBudget,
-      existingBudget,
-      (x) => (x.name ? `${x.section}::${x.sheet_row_num}::${normalizeTextKey_(x.name)}` : `${x.section}::row:${x.sheet_row_num}`),
-      ["sort_order", "sheet_row_num", "equiv_salary", "delivery_pct", "making_up_cos_pct"],
-      ["monthly_values", "fy_totals", "raw_scalars", "custom_formulas", "cell_notes"],
-      forceFullUpsert
-    );
-    budgetItemsCount = desiredBudget.length;
-    deltaStats.budgetItemsMutated = r.mutatedCount;
   }
 
   if (tabSet.has("Cash") || options.includeBankBreakdowns) {
@@ -2013,7 +2231,7 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
     if (options.includeBankBreakdowns || tabSet.has("Cash")) {
       const [existingBk, breakdownData] = await Promise.all([
         fetchAllRowsForClient_(supabase, "pulse_cash_bank_balances", ctx.clientId),
-        getClientCashBankBreakdowns(ctx.clientName),
+        getClientCashBankBreakdowns(ctx.clientName, { forceSource: "system_config" }),
       ]);
       const desiredBk = parseBankBreakdownsToRelational({
         clientId: ctx.clientId,
@@ -2192,7 +2410,7 @@ export async function verifyRelationalInputsParity({ clientName = null, source =
         getOrLoadVirtualTabGrid_(ctx, "client", "NBtoFind", null, { includeNotes: true }),
         getOrLoadVirtualTabGrid_(ctx, "client", "Budget", null, { includeNotes: true }),
         getOrLoadVirtualTabGrid_(ctx, "client", "Cash", null, { includeNotes: true }),
-        getClientCashBankBreakdowns(cl.client_name),
+        getClientCashBankBreakdowns(cl.client_name, { forceSource: "system_config" }),
       ]);
 
       const canUseDb =
@@ -2447,5 +2665,1004 @@ export async function setClientInputsMode(clientName, inputsMode) {
     clientName: cl.client_name,
     inputsMode,
     backfillSummary,
+  };
+}
+
+// ============================================================================
+// 11. PHASE 3B: UUID ANCHORS, PURE-RELATIONAL TAB RECONSTRUCTION & READ PARITY
+// ============================================================================
+
+function buildInputsRelLookupFromArrays_({
+  clientId,
+  employees = [],
+  outgoingItems = [],
+  contractorEntries = [],
+  budgetItems = [],
+}) {
+  const employeesByRow = new Map();
+  const employeesByUuid = new Map();
+  for (const e of employees || []) {
+    if (e.sheet_row_num !== null && e.sheet_row_num !== undefined) {
+      employeesByRow.set(Number(e.sheet_row_num), e);
+    }
+    if (e.id) employeesByUuid.set(e.id, e);
+  }
+
+  const outgoingsByRow = new Map();
+  const outgoingsByUuid = new Map();
+  for (const o of outgoingItems || []) {
+    if (o.sheet_row_num !== null && o.sheet_row_num !== undefined) {
+      outgoingsByRow.set(Number(o.sheet_row_num), o);
+    }
+    if (o.id) outgoingsByUuid.set(o.id, o);
+  }
+
+  const entriesByRowColOrder = new Map();
+  const entriesByAppId = new Map();
+  const entriesByUuid = new Map();
+  const sortedEntries = [...(contractorEntries || [])].sort((a, b) =>
+    (Number(a.sheet_row_num) - Number(b.sheet_row_num)) ||
+    (Number(a.sheet_col_idx) - Number(b.sheet_col_idx)) ||
+    (Number(a.block_order) - Number(b.block_order)) ||
+    String(a.id || "").localeCompare(String(b.id || ""))
+  );
+  for (const ce of sortedEntries) {
+    entriesByRowColOrder.set(`${ce.sheet_row_num}:${ce.sheet_col_idx}:${ce.block_order}`, ce);
+    const ak = normalizeTextKey_(ce.external_app_id);
+    if (ak && !ce.is_placeholder && !entriesByAppId.has(ak)) entriesByAppId.set(ak, ce);
+    if (ce.id) entriesByUuid.set(ce.id, ce);
+  }
+
+  const budgetByRow = new Map();
+  const budgetByUuid = new Map();
+  for (const b of budgetItems || []) {
+    if (b.sheet_row_num !== null && b.sheet_row_num !== undefined) {
+      budgetByRow.set(Number(b.sheet_row_num), b);
+    }
+    if (b.id) budgetByUuid.set(b.id, b);
+  }
+
+  return {
+    clientId,
+    employeesByRow,
+    employeesByUuid,
+    outgoingsByRow,
+    outgoingsByUuid,
+    entriesByRowColOrder,
+    entriesByAppId,
+    budgetByRow,
+    budgetByUuid,
+  };
+}
+
+/**
+ * Fast relational identity lookup map for hydrating operating inputs payloads with canonical UUIDs.
+ */
+export async function getClientRelationalInputsLookup(
+  ctxOrClientName,
+  { includeEmployees = true, includeOutgoing = true, includeEntries = false, includeBudget = false } = {}
+) {
+  if (!isSupabaseConfigured()) return null;
+  const ctx =
+    ctxOrClientName && typeof ctxOrClientName === "object" && ctxOrClientName.clientId
+      ? ctxOrClientName
+      : await resolveSupabaseSheetContext({ clientName: String(ctxOrClientName || "") });
+  if (!ctx?.clientId) return null;
+
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+
+  const [employees, outgoingItems, contractorEntries, budgetItems] = await Promise.all([
+    includeEmployees
+      ? fetchAllRowsForClient_(supabase, "pulse_employees", ctx.clientId, { selectCols: "id, sheet_row_num, employee_name" })
+      : Promise.resolve([]),
+    includeOutgoing
+      ? fetchAllRowsForClient_(supabase, "pulse_outgoing_items", ctx.clientId, { selectCols: "id, section, sheet_row_num, name" })
+      : Promise.resolve([]),
+    includeEntries
+      ? fetchAllRowsForClient_(supabase, "pulse_contractor_entries", ctx.clientId, { selectCols: "id, outgoing_item_id, sheet_row_num, sheet_col_idx, block_order, external_app_id, is_placeholder" })
+      : Promise.resolve([]),
+    includeBudget
+      ? fetchAllRowsForClient_(supabase, "pulse_budget_items", ctx.clientId, { selectCols: "id, section, sheet_row_num, name" })
+      : Promise.resolve([]),
+  ]);
+
+  return buildInputsRelLookupFromArrays_({
+    clientId: ctx.clientId,
+    employees,
+    outgoingItems,
+    contractorEntries,
+    budgetItems,
+  });
+}
+
+/**
+ * Resolves a caller-supplied `entityUuid` (`employee` | `outgoing_item` | `budget_item`)
+ * strictly scoped to `ctx.clientId`, healing stale row numbers or throwing 409 if removed/moved.
+ */
+export async function resolveAuthoritativeInputAnchor({
+  spreadsheetId = "",
+  clientName = "",
+  entityType = "",
+  entityUuid = "",
+  expectedSection = "",
+  fallbackRowNum = null,
+} = {}) {
+  const ctx = await resolveSupabaseSheetContext({ spreadsheetId, clientName });
+  const isRelational = ctx?.inputsMode === "relational";
+  const cleanUuid = String(entityUuid || "").trim();
+
+  if (!isRelational || !cleanUuid) {
+    return {
+      isRelational,
+      resolved: false,
+      entityUuid: cleanUuid || null,
+      rowNum: fallbackRowNum !== null && fallbackRowNum !== undefined ? Number(fallbackRowNum) : null,
+      record: null,
+    };
+  }
+
+  if (!UUID_REGEX.test(cleanUuid)) {
+    const err = new Error("Invalid item identifier.");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const tableByType = {
+    employee: { table: "pulse_employees", cols: "id, client_id, sheet_row_num, employee_name" },
+    outgoing_item: { table: "pulse_outgoing_items", cols: "id, client_id, section, sheet_row_num, name" },
+    budget_item: { table: "pulse_budget_items", cols: "id, client_id, section, sheet_row_num, name" },
+  };
+  const cfg = tableByType[entityType];
+  if (!cfg) {
+    const err = new Error(`Unsupported entityType "${entityType}".`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !ctx?.clientId) {
+    return {
+      isRelational,
+      resolved: false,
+      entityUuid: cleanUuid,
+      rowNum: fallbackRowNum !== null && fallbackRowNum !== undefined ? Number(fallbackRowNum) : null,
+      record: null,
+    };
+  }
+
+  const { data: rec, error } = await supabase
+    .from(cfg.table)
+    .select(cfg.cols)
+    .eq("client_id", ctx.clientId)
+    .eq("id", cleanUuid)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed verifying ${entityType} identity: ${error.message}`);
+  }
+  if (!rec) {
+    const err = new Error("This item was modified or removed in another session. Please refresh and try again.");
+    err.statusCode = 409;
+    throw err;
+  }
+  if (expectedSection && rec.section && rec.section !== expectedSection) {
+    const err = new Error("This item moved sections in another session. Please refresh and try again.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  return {
+    isRelational: true,
+    resolved: true,
+    entityUuid: rec.id,
+    rowNum: Number(rec.sheet_row_num),
+    record: rec,
+  };
+}
+
+/**
+ * Preloads a client's normalized Phase 3 operating input tables in a single parallel batch
+ * for pure-relational Phase 3B reads (zero `master_sheet_grids` reads).
+ */
+export async function preloadClientRelationalInputsBundle(
+  ctxOrClientName,
+  {
+    includeSalaries = false,
+    includeOutgoings = false,
+    includeOutgNotes = false,
+    includeNbToFind = false,
+    includeBudget = false,
+    includeCash = false,
+    includeBankBalances = false,
+  } = {}
+) {
+  if (!isSupabaseConfigured()) return null;
+  const ctx =
+    ctxOrClientName && typeof ctxOrClientName === "object" && ctxOrClientName.clientId
+      ? ctxOrClientName
+      : await resolveSupabaseSheetContext({ clientName: String(ctxOrClientName || "") });
+  if (!ctx?.clientId) return null;
+
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+
+  const needNbRollups = includeSalaries || includeOutgoings || includeNbToFind || includeBudget;
+  const [employees, outgoingItems, contractorEntries, nbResp, budgetItems, cashAdjustments, bankBalances] =
+    await Promise.all([
+      includeSalaries ? fetchAllRowsForClient_(supabase, "pulse_employees", ctx.clientId) : Promise.resolve([]),
+      includeOutgoings ? fetchAllRowsForClient_(supabase, "pulse_outgoing_items", ctx.clientId) : Promise.resolve([]),
+      includeOutgNotes ? fetchAllRowsForClient_(supabase, "pulse_contractor_entries", ctx.clientId) : Promise.resolve([]),
+      needNbRollups
+        ? supabase.from("pulse_nb_to_find").select("*").eq("client_id", ctx.clientId).maybeSingle()
+        : Promise.resolve({ data: null }),
+      includeBudget ? fetchAllRowsForClient_(supabase, "pulse_budget_items", ctx.clientId) : Promise.resolve([]),
+      includeCash ? fetchAllRowsForClient_(supabase, "pulse_cash_adjustments", ctx.clientId) : Promise.resolve([]),
+      includeBankBalances ? fetchAllRowsForClient_(supabase, "pulse_cash_bank_balances", ctx.clientId) : Promise.resolve([]),
+    ]);
+
+  const nbRecord = nbResp?.data || null;
+  const rollups = nbRecord?.reconciled_rollups && typeof nbRecord.reconciled_rollups === "object"
+    ? nbRecord.reconciled_rollups
+    : {};
+
+  return {
+    ctx,
+    clientId: ctx.clientId,
+    employees,
+    outgoingItems,
+    contractorEntries,
+    nbRecord,
+    budgetItems,
+    cashAdjustments,
+    bankBalances,
+    rollups,
+    relLookup: buildInputsRelLookupFromArrays_({
+      clientId: ctx.clientId,
+      employees,
+      outgoingItems,
+      contractorEntries,
+      budgetItems,
+    }),
+  };
+}
+
+function setGridCellDirect_(grid, r0, c0, val) {
+  while (grid.length <= r0) grid.push([]);
+  while (grid[r0].length <= c0) grid[r0].push("");
+  grid[r0][c0] = val !== undefined && val !== null ? val : "";
+}
+
+function applySparseRollupsToGrid_(valuesGrid, sparseRows = {}) {
+  if (!sparseRows || typeof sparseRows !== "object") return;
+  for (const [rKey, rowObj] of Object.entries(sparseRows)) {
+    const r0 = parseInt(rKey, 10);
+    if (!Number.isInteger(r0) || r0 < 0 || !rowObj || typeof rowObj !== "object") continue;
+    for (const [cKey, val] of Object.entries(rowObj)) {
+      const c0 = parseInt(cKey, 10);
+      if (!Number.isInteger(c0) || c0 < 0) continue;
+      setGridCellDirect_(valuesGrid, r0, c0, val);
+    }
+  }
+}
+
+/**
+ * Reconstructs `{ valuesGrid, notesGrid }` for an operating input tab strictly from
+ * the preloaded Phase 3 relational bundle (zero `master_sheet_grids` / Sheet reads).
+ */
+export function reconstructRelationalTabFromBundle(bundle, tabName) {
+  if (!bundle) return { valuesGrid: [], notesGrid: {} };
+  const rollups = bundle.rollups && typeof bundle.rollups === "object" ? bundle.rollups : {};
+
+  if (tabName === "Salaries") {
+    const salR = rollups._salariesRollups && typeof rollups._salariesRollups === "object" ? rollups._salariesRollups : {};
+    const targetLen = Math.max(0, Number(salR.rowCount) || 0);
+    const valuesGrid = Array.from({ length: targetLen }, () => []);
+    const notesGrid = {};
+    if (salR.dateCells && typeof salR.dateCells === "object") notesGrid.__dateCells = salR.dateCells;
+    if (salR.notes && typeof salR.notes === "object") {
+      for (const [k, v] of Object.entries(salR.notes)) {
+        if (!PROTOTYPE_KEYS.has(k) && v) notesGrid[k] = v;
+      }
+    }
+
+    applySparseRollupsToGrid_(valuesGrid, salR.rows || {});
+
+    for (const emp of bundle.employees || []) {
+      const r0 = Number(emp.sheet_row_num) - 1;
+      if (!Number.isInteger(r0) || r0 < 3 || r0 > 52) continue;
+      const rawScalars = emp.raw_scalars && typeof emp.raw_scalars === "object" ? emp.raw_scalars : {};
+      const monthlyOverrides = emp.monthly_overrides && typeof emp.monthly_overrides === "object" ? emp.monthly_overrides : {};
+      const monthlyForecasts = emp.monthly_forecasts && typeof emp.monthly_forecasts === "object" ? emp.monthly_forecasts : {};
+      const monthlyEffective = emp.monthly_effective && typeof emp.monthly_effective === "object" ? emp.monthly_effective : {};
+      const customFormulas = emp.custom_formulas && typeof emp.custom_formulas === "object" ? emp.custom_formulas : {};
+      const cellNotes = emp.cell_notes && typeof emp.cell_notes === "object" ? emp.cell_notes : {};
+
+      const useScalarFallback =
+        Object.keys(rawScalars).length === 0 &&
+        Object.keys(monthlyOverrides).length === 0 &&
+        Object.keys(customFormulas).length === 0 &&
+        Object.keys(cellNotes).length === 0;
+      const scalarFallback = {
+        0: emp.employee_name || "",
+        1: emp.role_title || "",
+        2: emp.fte_salary ?? "",
+        3: emp.fte ?? "",
+        4: emp.start_date || "",
+        5: emp.end_date || "",
+        6: emp.delivery_pct ?? "",
+        7: emp.student_loan_plan || "",
+        8: emp.pension_pct || "",
+      };
+      for (let c = 0; c <= 8; c++) {
+        const k = String(c);
+        const val = Object.prototype.hasOwnProperty.call(rawScalars, k)
+          ? rawScalars[k]
+          : useScalarFallback
+            ? scalarFallback[c]
+            : "";
+        if (isNonEmptyCell_(val)) setGridCellDirect_(valuesGrid, r0, c, val);
+      }
+      for (const [k, v] of Object.entries(monthlyOverrides)) {
+        const c = parseInt(k, 10);
+        if (Number.isInteger(c) && c >= 11 && isNonEmptyCell_(v)) setGridCellDirect_(valuesGrid, r0, c, v);
+      }
+      for (const [k, v] of Object.entries(monthlyForecasts)) {
+        const c = parseInt(k, 10);
+        if (Number.isInteger(c) && c >= 11 && isNonEmptyCell_(v)) setGridCellDirect_(valuesGrid, r0 + 150, c, v);
+      }
+      for (const [k, v] of Object.entries(monthlyEffective)) {
+        const c = parseInt(k, 10);
+        if (Number.isInteger(c) && c >= 0 && isNonEmptyCell_(v)) setGridCellDirect_(valuesGrid, r0 + 300, c, v);
+      }
+      for (const [k, nStr] of Object.entries(cellNotes)) {
+        const c = parseInt(k, 10);
+        if (Number.isInteger(c) && c >= 0 && nStr) notesGrid[`${r0}:${c}`] = nStr;
+      }
+    }
+
+    for (let r = 0; r < valuesGrid.length; r++) valuesGrid[r] = trimTrailingEmptyGridCells_(valuesGrid[r]);
+    return { valuesGrid, notesGrid };
+  }
+
+  if (tabName === "Outgoings") {
+    const outR = rollups._outgoingsRollups && typeof rollups._outgoingsRollups === "object" ? rollups._outgoingsRollups : {};
+    const targetLen = Math.max(0, Number(outR.rowCount) || 0);
+    const valuesGrid = Array.from({ length: targetLen }, () => []);
+    const notesGrid = {};
+    if (outR.dateCells && typeof outR.dateCells === "object") notesGrid.__dateCells = outR.dateCells;
+    if (outR.bgColors && typeof outR.bgColors === "object") notesGrid.__bg_colors = outR.bgColors;
+    if (outR.formulaRowCount != null) notesGrid.__formulaRowCount = Number(outR.formulaRowCount) || 0;
+    if (outR.formulaColCounts && typeof outR.formulaColCounts === "object") notesGrid.__formulaColCounts = outR.formulaColCounts;
+    if (outR.notes && typeof outR.notes === "object") {
+      for (const [k, v] of Object.entries(outR.notes)) {
+        if (!PROTOTYPE_KEYS.has(k) && v) notesGrid[k] = v;
+      }
+    }
+
+    applySparseRollupsToGrid_(valuesGrid, outR.rows || {});
+
+    for (const it of bundle.outgoingItems || []) {
+      const rowNum = Number(it.sheet_row_num);
+      const r0 = rowNum - 1;
+      if (!resolveOutgoingsSection_(rowNum)) continue;
+
+      const rawScalars = it.raw_scalars && typeof it.raw_scalars === "object" ? it.raw_scalars : {};
+      const monthlyAmounts = it.monthly_amounts && typeof it.monthly_amounts === "object" ? it.monthly_amounts : {};
+      const fyTotals = it.fy_totals && typeof it.fy_totals === "object" ? it.fy_totals : {};
+      const customFormulas = it.custom_formulas && typeof it.custom_formulas === "object" ? it.custom_formulas : {};
+      const cellNotes = it.cell_notes && typeof it.cell_notes === "object" ? it.cell_notes : {};
+
+      const useScalarFallback =
+        Object.keys(rawScalars).length === 0 &&
+        Object.keys(monthlyAmounts).length === 0 &&
+        Object.keys(customFormulas).length === 0 &&
+        Object.keys(cellNotes).length === 0;
+      const scalarFallback = {
+        0: it.name || "",
+        1: it.vat_applicable || "",
+        2: it.invoice_timing || "",
+        3: it.payment_timing || "",
+        4: it.delivery_pct ?? "",
+      };
+      for (let c = 0; c <= 5; c++) {
+        const k = String(c);
+        const hasRaw = Object.prototype.hasOwnProperty.call(rawScalars, k);
+        const val = hasRaw ? rawScalars[k] : useScalarFallback && c <= 4 ? scalarFallback[c] : "";
+        if (isNonEmptyCell_(val)) setGridCellDirect_(valuesGrid, r0, c, val);
+      }
+      for (const c of MONTHLY_48_COLS) {
+        const k = String(c);
+        const val = Object.prototype.hasOwnProperty.call(monthlyAmounts, k) ? monthlyAmounts[k] : "";
+        if (isNonEmptyCell_(val)) setGridCellDirect_(valuesGrid, r0, c, val);
+      }
+      for (const b of YEAR_MONTH_BANDS) {
+        const tv = fyTotals[String(b.fyIndex)];
+        if (isNonEmptyCell_(tv)) setGridCellDirect_(valuesGrid, r0, b.totalCol, tv);
+      }
+      for (const [k, nStr] of Object.entries(cellNotes)) {
+        const c = parseInt(k, 10);
+        if (Number.isInteger(c) && c >= 0 && nStr) notesGrid[`${r0}:${c}`] = nStr;
+      }
+    }
+
+    for (let r = 0; r < valuesGrid.length; r++) valuesGrid[r] = trimTrailingEmptyGridCells_(valuesGrid[r]);
+    return { valuesGrid, notesGrid };
+  }
+
+  if (tabName === "OutgNotes") {
+    const outHdr = rollups._outgoingsRollups?.rows?.["0"] || null;
+    const valuesGrid = Array.from({ length: 112 }, () => []);
+    if (outHdr) applySparseRollupsToGrid_(valuesGrid, { 0: outHdr });
+    const byCell = new Map();
+    for (const e of bundle.contractorEntries || []) {
+      const k = `${e.sheet_row_num}:${e.sheet_col_idx}`;
+      if (!byCell.has(k)) byCell.set(k, []);
+      byCell.get(k).push(e);
+    }
+    for (const list of byCell.values()) {
+      list.sort((a, b) => (Number(a.block_order) || 0) - (Number(b.block_order) || 0));
+      const first = list[0];
+      const r0 = Number(first.sheet_row_num) - 1;
+      const c0 = Number(first.sheet_col_idx);
+      if (r0 < 12 || r0 > 110 || !MONTHLY_48_COL_SET.has(c0)) continue;
+      const formulaMeta = String(first.custom_formula || "");
+      let combined = list.map((b) => String(b.raw_block ?? "")).join("");
+      if (formulaMeta === "__number__" && combined !== "" && !Number.isNaN(Number(combined))) {
+        combined = Number(combined);
+      }
+      if (isNonEmptyCell_(combined)) setGridCellDirect_(valuesGrid, r0, c0, combined);
+    }
+    for (let r = 0; r < valuesGrid.length; r++) valuesGrid[r] = trimTrailingEmptyGridCells_(valuesGrid[r]);
+    return { valuesGrid, notesGrid: {} };
+  }
+
+  if (tabName === "NBtoFind") {
+    const rec = bundle.nbRecord;
+    const rr = rec?.reconciled_rollups && typeof rec.reconciled_rollups === "object" ? rec.reconciled_rollups : {};
+    const nbMeta = rr._nbMeta && typeof rr._nbMeta === "object" ? rr._nbMeta : {};
+    const targetLen = Math.max(25, Number(nbMeta.rowCount) || 0);
+    const valuesGrid = Array.from({ length: targetLen }, () => []);
+    const notesGrid = {};
+    if (nbMeta.dateCells && typeof nbMeta.dateCells === "object") notesGrid.__dateCells = nbMeta.dateCells;
+
+    if (rec) {
+      for (const r0 of NBTF_ROLLUP_ROWS0) {
+        const rowObj = rr[String(r0)];
+        if (!rowObj || typeof rowObj !== "object") continue;
+        for (const [cKey, val] of Object.entries(rowObj)) {
+          const c0 = parseInt(cKey, 10);
+          if (Number.isInteger(c0) && c0 >= 0 && isNonEmptyCell_(val)) {
+            setGridCellDirect_(valuesGrid, r0, c0, val);
+          }
+        }
+      }
+      const rawCells = rec.raw_cells && typeof rec.raw_cells === "object" ? rec.raw_cells : {};
+      for (const [k, val] of Object.entries(rawCells)) {
+        const colon = k.indexOf(":");
+        if (colon <= 0) continue;
+        const r0 = parseInt(k.slice(0, colon), 10);
+        const c0 = parseInt(k.slice(colon + 1), 10);
+        if (Number.isInteger(r0) && Number.isInteger(c0) && isNonEmptyCell_(val)) {
+          setGridCellDirect_(valuesGrid, r0, c0, val);
+        }
+      }
+      const cellNotes = rec.cell_notes && typeof rec.cell_notes === "object" ? rec.cell_notes : {};
+      for (const [k, nStr] of Object.entries(cellNotes)) {
+        if (!PROTOTYPE_KEYS.has(k) && nStr) notesGrid[k] = nStr;
+      }
+    }
+
+    for (let r = 0; r < valuesGrid.length; r++) valuesGrid[r] = trimTrailingEmptyGridCells_(valuesGrid[r]);
+    return { valuesGrid, notesGrid };
+  }
+
+  if (tabName === "Budget") {
+    const budR = rollups._budgetRollups && typeof rollups._budgetRollups === "object" ? rollups._budgetRollups : {};
+    const targetLen = Math.max(0, Number(budR.rowCount) || 0);
+    const valuesGrid = Array.from({ length: targetLen }, () => []);
+    const notesGrid = {};
+    if (budR.dateCells && typeof budR.dateCells === "object") notesGrid.__dateCells = budR.dateCells;
+    if (budR.bgColors && typeof budR.bgColors === "object") notesGrid.__bg_colors = budR.bgColors;
+    if (budR.formulaRowCount != null) notesGrid.__formulaRowCount = Number(budR.formulaRowCount) || 0;
+    if (budR.formulaColCounts && typeof budR.formulaColCounts === "object") notesGrid.__formulaColCounts = budR.formulaColCounts;
+    if (budR.notes && typeof budR.notes === "object") {
+      for (const [k, v] of Object.entries(budR.notes)) {
+        if (!PROTOTYPE_KEYS.has(k) && v) notesGrid[k] = v;
+      }
+    }
+
+    applySparseRollupsToGrid_(valuesGrid, budR.rows || {});
+
+    for (const it of bundle.budgetItems || []) {
+      const rowNum = Number(it.sheet_row_num);
+      const r0 = rowNum - 1;
+      if (!BUDGET_SECTION_BY_ROW.has(rowNum)) continue;
+
+      const rawScalars = it.raw_scalars && typeof it.raw_scalars === "object" ? it.raw_scalars : {};
+      const monthlyValues = it.monthly_values && typeof it.monthly_values === "object" ? it.monthly_values : {};
+      const fyTotals = it.fy_totals && typeof it.fy_totals === "object" ? it.fy_totals : {};
+      const customFormulas = it.custom_formulas && typeof it.custom_formulas === "object" ? it.custom_formulas : {};
+      const cellNotes = it.cell_notes && typeof it.cell_notes === "object" ? it.cell_notes : {};
+
+      const useScalarFallback =
+        Object.keys(rawScalars).length === 0 &&
+        Object.keys(monthlyValues).length === 0 &&
+        Object.keys(customFormulas).length === 0 &&
+        Object.keys(cellNotes).length === 0;
+      const scalarFallback = {
+        0: it.name || "",
+        1: it.section === "salary" ? (it.equiv_salary ?? "") : (it.section === "making_up_cos" ? (it.making_up_cos_pct ?? "") : ""),
+        2: it.start_date || "",
+        3: it.end_date || "",
+        4: it.delivery_pct ?? "",
+      };
+      for (let c = 0; c <= 4; c++) {
+        const k = String(c);
+        const hasRaw = Object.prototype.hasOwnProperty.call(rawScalars, k);
+        const val = hasRaw ? rawScalars[k] : useScalarFallback ? scalarFallback[c] : "";
+        if (isNonEmptyCell_(val)) setGridCellDirect_(valuesGrid, r0, c, val);
+      }
+      for (const c of MONTHLY_48_COLS) {
+        const k = String(c);
+        const val = Object.prototype.hasOwnProperty.call(monthlyValues, k) ? monthlyValues[k] : "";
+        if (isNonEmptyCell_(val)) setGridCellDirect_(valuesGrid, r0, c, val);
+      }
+      for (const b of YEAR_MONTH_BANDS) {
+        const tv = fyTotals[String(b.fyIndex)];
+        if (isNonEmptyCell_(tv)) setGridCellDirect_(valuesGrid, r0, b.totalCol, tv);
+      }
+      for (const [k, nStr] of Object.entries(cellNotes)) {
+        const c = parseInt(k, 10);
+        if (Number.isInteger(c) && c >= 0 && nStr) notesGrid[`${r0}:${c}`] = nStr;
+      }
+    }
+
+    for (let r = 0; r < valuesGrid.length; r++) valuesGrid[r] = trimTrailingEmptyGridCells_(valuesGrid[r]);
+    return { valuesGrid, notesGrid };
+  }
+
+  return { valuesGrid: [], notesGrid: {} };
+}
+
+/**
+ * Slices a reconstructed relational tab into either `FORMATTED_VALUE` or `UNFORMATTED_VALUE` rows,
+ * matching `masterEngineService.js` (`sliceGrid2D_` + `formatGridForDisplay`) verbatim.
+ */
+export function sliceRelationalTabValues(
+  tabState,
+  tabName,
+  { startRow0 = 0, endRow0 = null, startCol0 = 0, endCol0 = null, formatted = true } = {}
+) {
+  const grid = tabState?.valuesGrid || [];
+  const notesGrid = tabState?.notesGrid || {};
+  if (!Array.isArray(grid) || grid.length === 0) return [];
+  const eRow = endRow0 != null ? Math.min(grid.length - 1, endRow0) : grid.length - 1;
+  if (startRow0 > eRow || startRow0 >= grid.length) return [];
+
+  const sliced = [];
+  for (let r = startRow0; r <= eRow; r++) {
+    const rowArr = Array.isArray(grid[r]) ? grid[r] : [];
+    const eCol = endCol0 != null ? endCol0 : Math.max(0, rowArr.length - 1);
+    if (startCol0 > eCol || rowArr.length === 0) {
+      sliced.push([]);
+      continue;
+    }
+    const rowSlice = rowArr.slice(startCol0, eCol + 1).map((v) => (v === null || v === undefined ? "" : v));
+    while (rowSlice.length > 0 && rowSlice[rowSlice.length - 1] === "") {
+      rowSlice.pop();
+    }
+    sliced.push(rowSlice);
+  }
+  while (sliced.length > 0 && sliced[sliced.length - 1].length === 0) {
+    sliced.pop();
+  }
+
+  if (!formatted) return sliced;
+  return sliced.map((row, rOffset) => {
+    if (!Array.isArray(row)) return [];
+    const absR = startRow0 + rOffset;
+    return row.map((cellVal, cOffset) =>
+      formatCellForDisplay("client", tabName, absR, startCol0 + cOffset, cellVal, grid, notesGrid)
+    );
+  });
+}
+
+/**
+ * Builds `spreadsheets.get`-compatible `rowData` from a reconstructed relational tab state,
+ * matching `masterEngineService.js` lines 3788-3902 verbatim.
+ */
+export function buildRelationalSheetRowData(
+  tabState,
+  tabName,
+  { startRow0 = 0, endRow0 = null, startCol0 = 0, endCol0 = null, notesOnly = false, includeFormulaDimensions = false } = {}
+) {
+  const grid = tabState?.valuesGrid || [];
+  const notesGrid = tabState?.notesGrid || {};
+
+  let maxNoteRowCount = 0;
+  const noteMaxColCountByRow = new Map();
+  for (const nKey of Object.keys(notesGrid)) {
+    if (!nKey || nKey.startsWith("__")) continue;
+    const colonIdx = nKey.indexOf(":");
+    if (colonIdx <= 0) continue;
+    const nr = parseInt(nKey.slice(0, colonIdx), 10);
+    const nc = parseInt(nKey.slice(colonIdx + 1), 10);
+    if (Number.isNaN(nr) || Number.isNaN(nc)) continue;
+    if (
+      nr >= startRow0 &&
+      (endRow0 == null || nr <= endRow0) &&
+      nc >= startCol0 &&
+      (endCol0 == null || nc <= endCol0)
+    ) {
+      const rOffset = nr - startRow0;
+      const cCount = nc - startCol0 + 1;
+      if (rOffset + 1 > maxNoteRowCount) maxNoteRowCount = rOffset + 1;
+      if (cCount > (noteMaxColCountByRow.get(rOffset) || 0)) {
+        noteMaxColCountByRow.set(rOffset, cCount);
+      }
+    }
+  }
+
+  if (notesOnly) {
+    const rowData = [];
+    for (let rOffset = 0; rOffset < maxNoteRowCount; rOffset++) {
+      const colCount = noteMaxColCountByRow.get(rOffset) || 0;
+      if (colCount === 0) {
+        rowData.push({ values: [] });
+        continue;
+      }
+      const absR = startRow0 + rOffset;
+      const values = [];
+      for (let cOffset = 0; cOffset < colCount; cOffset++) {
+        const absC = startCol0 + cOffset;
+        const noteStr = notesGrid[`${absR}:${absC}`] || "";
+        values.push(noteStr ? { note: noteStr } : {});
+      }
+      rowData.push({ values });
+    }
+    return rowData;
+  }
+
+  const slicedVals = sliceRelationalTabValues(tabState, tabName, {
+    startRow0,
+    endRow0,
+    startCol0,
+    endCol0,
+    formatted: false,
+  });
+  const fTotalRows = includeFormulaDimensions ? Number(notesGrid.__formulaRowCount) || 0 : 0;
+  const fSlicedRowCount =
+    fTotalRows > startRow0
+      ? (endRow0 != null ? Math.min(fTotalRows, endRow0 + 1) : fTotalRows) - startRow0
+      : 0;
+  const formulaColCounts =
+    includeFormulaDimensions && notesGrid.__formulaColCounts && typeof notesGrid.__formulaColCounts === "object"
+      ? notesGrid.__formulaColCounts
+      : {};
+  let maxFormulaColRowCount = 0;
+  for (const [fRk, fColLen] of Object.entries(formulaColCounts)) {
+    const fr = parseInt(fRk, 10);
+    if (
+      Number.isInteger(fr) &&
+      fr >= startRow0 &&
+      (endRow0 == null || fr <= endRow0) &&
+      Number(fColLen) > startCol0
+    ) {
+      maxFormulaColRowCount = Math.max(maxFormulaColRowCount, fr - startRow0 + 1);
+    }
+  }
+  const rowCount = Math.max(slicedVals.length, fSlicedRowCount, maxFormulaColRowCount, maxNoteRowCount);
+  const rowData = [];
+  for (let rOffset = 0; rOffset < rowCount; rOffset++) {
+    const absR = startRow0 + rOffset;
+    const rArr = slicedVals[rOffset] || [];
+    const fRawCols = Number(formulaColCounts[String(absR)] || 0);
+    const fMinCols =
+      fRawCols > startCol0
+        ? (endCol0 != null ? Math.min(fRawCols, endCol0 + 1) : fRawCols) - startCol0
+        : 0;
+    const colCount = Math.max(rArr.length, fMinCols, noteMaxColCountByRow.get(rOffset) || 0);
+    const values = [];
+    for (let cOffset = 0; cOffset < colCount; cOffset++) {
+      const absC = startCol0 + cOffset;
+      const cellVal = rArr[cOffset];
+      const strVal = cellVal == null ? "" : String(cellVal);
+      const dispVal = formatCellForDisplay("client", tabName, absR, absC, cellVal, grid, notesGrid);
+      const numClean = typeof cellVal === "number" ? cellVal : parseFloat(strVal.replace(/[£$€,\s]/g, ""));
+      const isNumeric =
+        typeof cellVal === "number" ||
+        (strVal !== "" && !isNaN(numClean) && /^[-+]?[£$€]?\s*[\d,]+(\.\d+)?%?$/.test(strVal.trim()));
+      const noteKey = `${absR}:${absC}`;
+      const noteStr = notesGrid[noteKey] || "";
+      const baseEffFmt = { backgroundColor: { red: 1, green: 1, blue: 1 } };
+      const savedBg = notesGrid.__bg_colors?.[noteKey];
+      const effFmt = savedBg ? { ...baseEffFmt, backgroundColor: savedBg } : baseEffFmt;
+      const cellObj = {
+        effectiveValue: isNumeric ? { numberValue: numClean } : { stringValue: strVal },
+        userEnteredValue: isNumeric ? { numberValue: numClean } : { stringValue: strVal },
+        note: noteStr,
+        effectiveFormat: effFmt,
+      };
+      if (dispVal !== "") cellObj.formattedValue = dispVal;
+      values.push(cellObj);
+    }
+    rowData.push({ values });
+  }
+  return rowData;
+}
+
+function findFirstInputJsonDiff_(a, b, pathStr = "$") {
+  if (a === b) return null;
+  if (Number.isNaN(a) && Number.isNaN(b)) return null;
+  if (typeof a !== typeof b || a === null || b === null) {
+    return { path: pathStr, expected: a, actual: b };
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return { path: pathStr, expected: a, actual: b };
+    if (a.length !== b.length) return { path: `${pathStr}.length`, expected: a.length, actual: b.length };
+    for (let i = 0; i < a.length; i++) {
+      const d = findFirstInputJsonDiff_(a[i], b[i], `${pathStr}[${i}]`);
+      if (d) return d;
+    }
+    return null;
+  }
+  if (typeof a === "object") {
+    const SKIP = new Set(["fetchedAt", "_cachedAt", "cachedAt", "lastUpdated", "updatedAt", "inputsReadMode", "jobsReadMode"]);
+    const aKeys = Object.keys(a).filter((k) => !SKIP.has(k));
+    const bKeys = Object.keys(b).filter((k) => !SKIP.has(k));
+    const allKeys = [...new Set([...aKeys, ...bKeys])].sort();
+    for (const k of allKeys) {
+      if (a[k] === undefined && b[k] === undefined) continue;
+      const d = findFirstInputJsonDiff_(a[k], b[k], `${pathStr}.${k}`);
+      if (d) return d;
+    }
+    return null;
+  }
+  return { path: pathStr, expected: a, actual: b };
+}
+
+/**
+ * Verifies byte-for-byte JSON parity between legacy grid-read and Phase 3B pure-relational
+ * read payloads across all 11 PMA + Portal operating input & bank-breakdown endpoints.
+ */
+export async function verifyRelationalInputsReadParity({ clientName = null } = {}) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase not configured.");
+  const schema = await checkPhase3RelationalSchemaStatus();
+  if (!schema.schemaReady) {
+    throw new Error("Migration 0013 must be applied in Supabase before verifying Phase 3B read parity.");
+  }
+
+  let query = supabase
+    .from("clients")
+    .select("id, client_name, inputs_mode, inputs_read_mode, client_sheet_id, master_sheet_id, metadata")
+    .order("client_name", { ascending: true });
+  if (clientName) query = query.eq("client_name", clientName);
+  const { data: clients, error } = await query;
+  if (error) throw new Error(`Failed listing clients: ${error.message}`);
+
+  const [
+    { getSheetsClient },
+    { getSalariesData },
+    { fetchExpensesData },
+    { handleGetOutgoings },
+    { fetchNBToFindData },
+    { fetchCashData },
+    { getClientViewData },
+    { buildPortalBudgetPayload },
+    { buildPortalKeyDataPayload },
+  ] = await Promise.all([
+    import("./sheetsClient.js"),
+    import("./salariesService.js"),
+    import("./expensesService.js"),
+    import("./workspaces.js"),
+    import("./nbToFindService.js"),
+    import("./cashEditService.js"),
+    import("./viewsService.js"),
+    import("../pages/api/portal/budget.js"),
+    import("../pages/api/portal/key-data.js"),
+  ]);
+  const sheets = await getSheetsClient();
+
+  const callOutgoingsHandler = async (body) => {
+    const resObj = {
+      statusCode: 200,
+      body: null,
+      status(c) { this.statusCode = c; return this; },
+      json(b) { this.body = b; return this; },
+    };
+    await handleGetOutgoings({ body }, resObj, sheets);
+    return resObj.body;
+  };
+
+  const results = [];
+  for (const cl of clients || []) {
+    try {
+      const ctx = await resolveSupabaseSheetContext({ clientName: cl.client_name });
+      if (!ctx?.clientId) throw new Error("Missing Supabase client context");
+
+      // Ensure rollups exist in pulse_nb_to_find.reconciled_rollups
+      const { data: nbMetaCheck } = await supabase
+        .from("pulse_nb_to_find")
+        .select("reconciled_rollups")
+        .eq("client_id", ctx.clientId)
+        .maybeSingle();
+      const rCheck = nbMetaCheck?.reconciled_rollups || {};
+      if (!rCheck._salariesRollups || !rCheck._outgoingsRollups?.formulaColCounts || !rCheck._budgetRollups?.formulaColCounts || !rCheck._nbMeta) {
+        await reconcileClientOperatingInputsFromGrids(ctx, ALL_INPUT_TABS, {
+          forceFullUpsert: true,
+          includeBankBreakdowns: true,
+        });
+      }
+
+      const mismatches = [];
+
+      const [
+        bkGrid, bkRel,
+        salGrid, salRel,
+        expGrid, expRel,
+        outGrid, outRel,
+        nbGrid, nbRel,
+        cashGrid, cashRel,
+        vConGrid, vConRel,
+        vOutGrid, vOutRel,
+        vBudGrid, vBudRel,
+        pBudGrid, pBudRel,
+        pKdGrid, pKdRel,
+      ] = await Promise.all([
+        getClientCashBankBreakdowns(cl.client_name, { _forceInputsReadMode: "grid" }),
+        getClientCashBankBreakdowns(cl.client_name, { _forceInputsReadMode: "relational" }),
+        getSalariesData({ clientName: cl.client_name, masterSheetId: ctx.masterSheetId, clientSheetId: ctx.clientSheetId, bypassCache: true, _forceInputsReadMode: "grid" }),
+        getSalariesData({ clientName: cl.client_name, masterSheetId: ctx.masterSheetId, clientSheetId: ctx.clientSheetId, bypassCache: true, _forceInputsReadMode: "relational" }),
+        fetchExpensesData(cl.client_name, ctx.clientSheetId, true, { _forceInputsReadMode: "grid" }),
+        fetchExpensesData(cl.client_name, ctx.clientSheetId, true, { _forceInputsReadMode: "relational" }),
+        callOutgoingsHandler({ clientSheetId: ctx.clientSheetId, bypassCache: true, _forceInputsReadMode: "grid" }),
+        callOutgoingsHandler({ clientSheetId: ctx.clientSheetId, bypassCache: true, _forceInputsReadMode: "relational" }),
+        fetchNBToFindData(cl.client_name, ctx.clientSheetId, true, { _forceInputsReadMode: "grid" }),
+        fetchNBToFindData(cl.client_name, ctx.clientSheetId, true, { _forceInputsReadMode: "relational" }),
+        fetchCashData(cl.client_name, ctx.clientSheetId, true, { _forceInputsReadMode: "grid" }),
+        fetchCashData(cl.client_name, ctx.clientSheetId, true, { _forceInputsReadMode: "relational" }),
+        getClientViewData({ clientSheetId: ctx.clientSheetId, masterSheetId: ctx.masterSheetId, tab: "contractors", bypassCache: true, _forceInputsReadMode: "grid" }),
+        getClientViewData({ clientSheetId: ctx.clientSheetId, masterSheetId: ctx.masterSheetId, tab: "contractors", bypassCache: true, _forceInputsReadMode: "relational" }),
+        getClientViewData({ clientSheetId: ctx.clientSheetId, masterSheetId: ctx.masterSheetId, tab: "outgoings", bypassCache: true, _forceInputsReadMode: "grid" }),
+        getClientViewData({ clientSheetId: ctx.clientSheetId, masterSheetId: ctx.masterSheetId, tab: "outgoings", bypassCache: true, _forceInputsReadMode: "relational" }),
+        getClientViewData({ clientSheetId: ctx.clientSheetId, masterSheetId: ctx.masterSheetId, tab: "budget", bypassCache: true, _forceInputsReadMode: "grid" }),
+        getClientViewData({ clientSheetId: ctx.clientSheetId, masterSheetId: ctx.masterSheetId, tab: "budget", bypassCache: true, _forceInputsReadMode: "relational" }),
+        buildPortalBudgetPayload({ sheets, clientSheetId: ctx.clientSheetId, clientName: cl.client_name, _forceInputsReadMode: "grid" }),
+        buildPortalBudgetPayload({ sheets, clientSheetId: ctx.clientSheetId, clientName: cl.client_name, _forceInputsReadMode: "relational" }),
+        buildPortalKeyDataPayload({ sheets, clientSheetId: ctx.clientSheetId, clientName: cl.client_name, _forceInputsReadMode: "grid" }),
+        buildPortalKeyDataPayload({ sheets, clientSheetId: ctx.clientSheetId, clientName: cl.client_name, _forceInputsReadMode: "relational" }),
+      ]);
+
+      const checks = [
+        ["bankBreakdowns", bkGrid, bkRel],
+        ["pma.salaries", salGrid, salRel],
+        ["pma.expenses", expGrid, expRel],
+        ["pma.outgoings", outGrid, outRel],
+        ["pma.nbToFind", nbGrid, nbRel],
+        ["pma.cash", cashGrid, cashRel],
+        ["pma.viewContractors", vConGrid, vConRel],
+        ["pma.viewOutgoings", vOutGrid, vOutRel],
+        ["pma.viewBudget", vBudGrid, vBudRel],
+        ["portal.budget", pBudGrid, pBudRel],
+        [
+          "portal.keyDataInputs",
+          pKdGrid ? { outgoingsMeta: pKdGrid.outgoingsMeta, salaries: pKdGrid.salaries, outgoings: pKdGrid.outgoings, nbtofind: pKdGrid.nbtofind } : null,
+          pKdRel ? { outgoingsMeta: pKdRel.outgoingsMeta, salaries: pKdRel.salaries, outgoings: pKdRel.outgoings, nbtofind: pKdRel.nbtofind } : null,
+        ],
+      ];
+
+      for (const [label, a, b] of checks) {
+        const d = findFirstInputJsonDiff_(a, b, label);
+        if (d) mismatches.push(d);
+      }
+
+      results.push({
+        clientName: cl.client_name,
+        inputsMode: cl.inputs_mode || cl.metadata?.inputs_mode || "grid",
+        inputsReadMode: cl.inputs_read_mode || cl.metadata?.inputs_read_mode || "grid",
+        matched: mismatches.length === 0,
+        mismatchCount: mismatches.length,
+        sampleMismatches: mismatches.slice(0, 5),
+        error: null,
+      });
+    } catch (err) {
+      results.push({
+        clientName: cl.client_name,
+        matched: false,
+        mismatchCount: 0,
+        sampleMismatches: [],
+        error: err.message,
+      });
+    }
+  }
+
+  return {
+    success: true,
+    checkedAt: new Date().toISOString(),
+    clientsChecked: results.length,
+    matchedClientsCount: results.filter((r) => r.matched && !r.error).length,
+    mismatchClientsCount: results.filter((r) => !r.matched && !r.error).length,
+    errorClientsCount: results.filter((r) => Boolean(r.error)).length,
+    results,
+  };
+}
+
+/**
+ * Toggles `clients.inputs_read_mode` between `'grid'` and `'relational'`.
+ * Switching to `'relational'` requires `inputs_mode = 'relational'` and verifies
+ * 0 JSON payload diffs across all 11 PMA & Portal operating-input readers before cutting over.
+ */
+export async function setClientInputsReadMode(clientName, inputsReadMode) {
+  if (inputsReadMode !== "grid" && inputsReadMode !== "relational") {
+    throw new Error("Invalid inputsReadMode. Expected 'grid' or 'relational'.");
+  }
+  const schema = await checkPhase3RelationalSchemaStatus();
+  if (!schema.schemaReady) {
+    throw new Error("Migration 0013 must be applied in Supabase SQL Editor before enabling relational inputs read mode.");
+  }
+
+  const supabase = getSupabaseAdmin();
+  const { data: cl, error: clErr } = await supabase
+    .from("clients")
+    .select("id, client_name, inputs_mode, metadata, client_sheet_id, master_sheet_id")
+    .eq("client_name", clientName)
+    .maybeSingle();
+  if (clErr || !cl) throw new Error(`Client "${clientName}" not found.`);
+
+  if (inputsReadMode === "relational") {
+    if (String(cl.inputs_mode || cl.metadata?.inputs_mode || "grid").toLowerCase() !== "relational") {
+      throw new Error(`Client "${cl.client_name}" must be in relational inputs_mode before enabling direct relational reads.`);
+    }
+    const ctx = await resolveSupabaseSheetContext({ clientName: cl.client_name });
+    await reconcileClientOperatingInputsFromGrids(ctx, ALL_INPUT_TABS, {
+      forceFullUpsert: true,
+      includeBankBreakdowns: true,
+    });
+    const parity = await verifyRelationalInputsReadParity({ clientName: cl.client_name });
+    const rec = parity.results?.[0];
+    if (!rec || rec.error || !rec.matched) {
+      throw new Error(
+        `Phase 3B read parity check failed for ${cl.client_name}: ${rec?.error || JSON.stringify(rec?.sampleMismatches || [])}`
+      );
+    }
+  }
+
+  const nextMeta = {
+    ...(cl.metadata && typeof cl.metadata === "object" ? cl.metadata : {}),
+    inputs_read_mode: inputsReadMode,
+  };
+  const { error: updErr } = await supabase
+    .from("clients")
+    .update({ inputs_read_mode: inputsReadMode, metadata: nextMeta })
+    .eq("id", cl.id);
+  if (updErr) throw new Error(`Failed updating inputs_read_mode: ${updErr.message}`);
+
+  invalidateSheetContextCache();
+  if (cl.client_sheet_id) {
+    await invalidatePmaClientCache(cl.client_sheet_id, cl.master_sheet_id || null, ["salaries", "outgoings", "expenses", "cash", "views", "budget"]).catch(() => { });
+    if (redisClient?.isOpen) {
+      await redisClient
+        .del([
+          `salaries_data:${cl.client_sheet_id}`,
+          `pma_expenses_${cl.client_sheet_id}`,
+          `pma_nbtofind_${cl.client_sheet_id}`,
+          `pma_cash_${cl.client_sheet_id}`,
+          `pulse:pma:outgoings:${cl.client_sheet_id}`,
+          `pulse:view_data:${cl.client_sheet_id}:contractors`,
+          `pulse:view_data:${cl.client_sheet_id}:outgoings`,
+          `pulse:view_data:${cl.client_sheet_id}:budget`,
+          `pulse:portal:budget:${cl.client_sheet_id}`,
+          `pulse:portal:keydata:${cl.client_sheet_id}:all`,
+        ])
+        .catch(() => { });
+    }
+  }
+
+  return {
+    success: true,
+    clientName: cl.client_name,
+    inputsReadMode,
   };
 }

@@ -45,6 +45,13 @@ import {
   preloadClientRelationalJobsBundle,
   buildRelationalFormattedTabRowsFromBundle,
 } from "./relationalJobsService.js";
+import {
+  getClientRelationalInputsLookup,
+  resolveAuthoritativeInputAnchor,
+  preloadClientRelationalInputsBundle,
+  reconstructRelationalTabFromBundle,
+  buildRelationalSheetRowData,
+} from "./relationalInputsService.js";
 import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
 import { memoryCache, get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
@@ -944,12 +951,27 @@ export async function handleCreateOutgoingsVendor(req, res, sheets) {
 }
 
 export async function handleUpdateOutgoingsVendor(req, res, sheets) {
-  const { clientSheetId, masterSheetId, sheetRow, vendorName, vatFlag, invTiming, payTiming, deliveryPct } = req.body;
-  if (!clientSheetId || !sheetRow) {
+  const { clientSheetId, masterSheetId, sheetRow, outgoingItemUuid, vendorName, vatFlag, invTiming, payTiming, deliveryPct } = req.body;
+  if (!clientSheetId || (!sheetRow && !outgoingItemUuid)) {
     return res.status(400).json({ success: false, error: "Missing clientSheetId or sheetRow" });
   }
 
-  const rowNum = parseInt(sheetRow, 10);
+  let rowNum = parseInt(sheetRow, 10);
+  if (outgoingItemUuid) {
+    try {
+      const anchor = await resolveAuthoritativeInputAnchor({
+        spreadsheetId: clientSheetId,
+        clientName: req.body?.clientName || "",
+        entityType: "outgoing_item",
+        entityUuid: outgoingItemUuid,
+        expectedSection: "contractor",
+        fallbackRowNum: rowNum,
+      });
+      if (anchor.rowNum) rowNum = anchor.rowNum;
+    } catch (anchorErr) {
+      return res.status(anchorErr.statusCode || 409).json({ success: false, error: anchorErr.message });
+    }
+  }
   if (isNaN(rowNum) || rowNum < 13 || rowNum > 110) {
     return res.status(400).json({ success: false, error: "Invalid row for Outgoings contractor" });
   }
@@ -1092,25 +1114,50 @@ export function parseOutgoingsNoteParts_(note) {
 }
 
 export async function handleGetOutgoings(req, res, sheets) {
-  const { clientSheetId, bypassCache } = req.body;
+  const { clientSheetId, bypassCache, _forceInputsReadMode } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
     const cacheKey = `pulse:pma:outgoings:${sheetIdClean}`;
+    const forceMode =
+      _forceInputsReadMode === "grid" || _forceInputsReadMode === "relational"
+        ? _forceInputsReadMode
+        : null;
 
-    const result = await resolvePortalCache({
-      cacheKey,
-      bypassCache: Boolean(bypassCache),
-      l1TtlSecs: 120,
-      redisTtlSecs: 86400,
-      isValidPayload: (c) =>
-        c &&
-        Array.isArray(c.contractors) &&
-        c.directCostsMode !== undefined &&
-        c.makingUpCos !== undefined &&
-        (c.contractors.length === 0 || c.contractors[0]?.deliveryPct !== undefined),
-      fetchFreshFn: async () => {
-        const [gridResp, keyInfoResp] = await Promise.all([
+    const fetchFreshFn = async () => {
+      const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
+      const useRelReads = forceMode
+        ? forceMode === "relational"
+        : Boolean(sbCtx?.inputsMode === "relational" && sbCtx?.inputsReadMode === "relational" && sbCtx?.clientId);
+
+      let headerCells = [];
+      let contractorRows = [];
+      let extraRows = [];
+      let keyInfoResp = null;
+      let relLookup = null;
+      let usedRelReads = false;
+
+      if (useRelReads && sbCtx?.clientId) {
+        const [relBundle, kiResp] = await Promise.all([
+          preloadClientRelationalInputsBundle(sbCtx, { includeOutgoings: true }).catch(() => null),
+          sheets.spreadsheets.values.batchGet({
+            spreadsheetId: sheetIdClean,
+            ranges: ["KeyInfo!B15", "KeyInfo!D8"],
+          }).catch(() => null),
+        ]);
+        keyInfoResp = kiResp;
+        if (relBundle?.rollups?._outgoingsRollups) {
+          usedRelReads = true;
+          const outState = reconstructRelationalTabFromBundle(relBundle, "Outgoings");
+          headerCells = buildRelationalSheetRowData(outState, "Outgoings", { startRow0: 0, endRow0: 0, startCol0: 0, endCol0: 58, notesOnly: false })?.[0]?.values || [];
+          contractorRows = buildRelationalSheetRowData(outState, "Outgoings", { startRow0: 12, endRow0: 109, startCol0: 0, endCol0: 58, notesOnly: false });
+          extraRows = buildRelationalSheetRowData(outState, "Outgoings", { startRow0: 110, endRow0: 249, startCol0: 0, endCol0: 58, notesOnly: false });
+          relLookup = relBundle.relLookup;
+        }
+      }
+
+      if (!usedRelReads) {
+        const [gridResp, kiResp, fetchedLookup] = await Promise.all([
           sheets.spreadsheets.get({
             spreadsheetId: sheetIdClean,
             ranges: ["Outgoings!A1:BG1", "Outgoings!A13:BG110", "Outgoings!A111:BG250"],
@@ -1121,115 +1168,152 @@ export async function handleGetOutgoings(req, res, sheets) {
             spreadsheetId: sheetIdClean,
             ranges: ["KeyInfo!B15", "KeyInfo!D8"],
           }).catch(() => null),
+          sbCtx?.inputsMode === "relational"
+            ? getClientRelationalInputsLookup(sbCtx, { includeEmployees: false, includeOutgoing: true }).catch(() => null)
+            : Promise.resolve(null),
         ]);
-        const kiRanges = keyInfoResp?.data?.valueRanges || [];
-        const revFocus = String(kiRanges[0]?.values?.[0]?.[0] || "Revenue").trim();
-        const rawDcMode = String(kiRanges[1]?.values?.[0]?.[0] || "Contractors").trim();
-        const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
-
+        keyInfoResp = kiResp;
+        relLookup = fetchedLookup;
         const sheetGrids = gridResp.data.sheets?.[0]?.data || [];
-        const headerGridData = sheetGrids[0];
-        const contractorGridData = sheetGrids[1];
-        const extraGridData = sheetGrids[2];
+        headerCells = sheetGrids[0]?.rowData?.[0]?.values || [];
+        contractorRows = sheetGrids[1]?.rowData || [];
+        extraRows = sheetGrids[2]?.rowData || [];
+      }
 
-        const headerCells = headerGridData?.rowData?.[0]?.values || [];
-        const contractorRows = contractorGridData?.rowData || [];
-        const extraRows = extraGridData?.rowData || [];
+      const kiRanges = keyInfoResp?.data?.valueRanges || [];
+      const revFocus = String(kiRanges[0]?.values?.[0]?.[0] || "Revenue").trim();
+      const rawDcMode = String(kiRanges[1]?.values?.[0]?.[0] || "Contractors").trim();
+      const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
 
-        const months = parseOutgoingsMonthHeaders_(headerCells);
-        const parseNoteParts = parseOutgoingsNoteParts_;
+      const months = parseOutgoingsMonthHeaders_(headerCells);
+      const parseNoteParts = parseOutgoingsNoteParts_;
 
-        const contractors = [];
-        for (let r = 0; r < contractorRows.length; r++) {
-          const rowCells = contractorRows[r]?.values || [];
-          const name = String(rowCells[0]?.formattedValue || "").trim();
-          if (!name) continue;
-          if (name.toLowerCase() === "contractors" || name.startsWith("Total") || name.startsWith("=")) continue;
+      const contractors = [];
+      for (let r = 0; r < contractorRows.length; r++) {
+        const rowCells = contractorRows[r]?.values || [];
+        const name = String(rowCells[0]?.formattedValue || "").trim();
+        if (!name) continue;
+        if (name.toLowerCase() === "contractors" || name.startsWith("Total") || name.startsWith("=")) continue;
 
-          const vatFlag = String(rowCells[1]?.formattedValue || "").trim();
-          const invTiming = String(rowCells[2]?.formattedValue || "").trim();
-          const payTiming = String(rowCells[3]?.formattedValue || "").trim();
-          const deliveryPct = String(rowCells[4]?.formattedValue || "").trim();
+        const vatFlag = String(rowCells[1]?.formattedValue || "").trim();
+        const invTiming = String(rowCells[2]?.formattedValue || "").trim();
+        const payTiming = String(rowCells[3]?.formattedValue || "").trim();
+        const deliveryPct = String(rowCells[4]?.formattedValue || "").trim();
 
-          const cells = {};
-          for (const month of months) {
-            const cellData = rowCells[month.colIndex];
-            const note = cellData?.note || "";
-            const value = cellData?.formattedValue || "";
-            const { topNote, blocks } = parseNoteParts(note);
-            cells[month.colLetter] = { value, note, topNote, blocks };
-          }
-
-          contractors.push({ sheetRow: 13 + r, name, vatFlag, invTiming, payTiming, deliveryPct, cells });
-        }
-
-        const extraOutgoingsRows = [];
-        for (let r = 0; r < extraRows.length; r++) {
-          const rowCells = extraRows[r]?.values || [];
-          const name = String(rowCells[0]?.formattedValue || "").trim();
-          if (!name || name.startsWith("Total") || name.startsWith("=")) continue;
-
-          const vatFlag = String(rowCells[1]?.formattedValue || "").trim();
-          const invTiming = String(rowCells[2]?.formattedValue || "").trim();
-          const payTiming = String(rowCells[3]?.formattedValue || "").trim();
-          const deliveryPct = String(rowCells[4]?.formattedValue || "").trim();
-
-          const cells = {};
-          let hasAnyNoteOrValue = false;
-          for (const month of months) {
-            const cellData = rowCells[month.colIndex];
-            const note = cellData?.note || "";
-            const value = cellData?.formattedValue || "";
-            if (note || value) hasAnyNoteOrValue = true;
-            const { topNote, blocks } = parseNoteParts(note);
-            cells[month.colLetter] = { value, note, topNote, blocks };
-          }
-
-          if (hasAnyNoteOrValue || r === 0) {
-            extraOutgoingsRows.push({ sheetRow: 111 + r, name, vatFlag, invTiming, payTiming, deliveryPct, cells });
-          }
-        }
-
-        // Row 111 is "Making up CoS" formula row; Row 112 is the "Zero" override row
-        const row111Values = extraRows[0]?.values || [];
-        const row112Values = extraRows[1]?.values || [];
-        const cosRawName = String(row111Values[0]?.formattedValue || "").trim();
-        const cosPct = String(row112Values[0]?.formattedValue || "").trim();
-
-        const makingUpCosCells = {};
+        const cells = {};
         for (const month of months) {
-          const cell111 = row111Values[month.colIndex];
-          const cell112 = row112Values[month.colIndex];
-
-          const val111Str = cell111?.formattedValue || "";
-          const val111Num = typeof cell111?.effectiveValue?.numberValue === "number"
-            ? cell111.effectiveValue.numberValue
-            : parseFloat(String(val111Str).replace(/[^0-9.-]/g, "")) || 0;
-
-          const raw112 = String(cell112?.formattedValue || cell112?.effectiveValue?.stringValue || "").trim();
-          const isZero = raw112.toUpperCase() === "ZERO";
-
-          makingUpCosCells[month.colLetter] = {
-            amount: val111Num,
-            formatted: val111Str || (val111Num ? `£${val111Num.toLocaleString("en-GB")}` : "£0"),
-            isZero,
-            overrideValue: raw112,
-            note: cell111?.note || "",
-          };
+          const cellData = rowCells[month.colIndex];
+          const note = cellData?.note || "";
+          const value = cellData?.formattedValue || "";
+          const { topNote, blocks } = parseNoteParts(note);
+          cells[month.colLetter] = { value, note, topNote, blocks };
         }
 
-        const makingUpCos = {
-          name: cosRawName || "Making up Cos",
-          pct: cosPct || "",
-          cells: makingUpCosCells,
-        };
+        const relOut = relLookup?.outgoingsByRow?.get(13 + r) || null;
+        contractors.push({
+          sheetRow: 13 + r,
+          outgoingItemUuid: relOut?.id || null,
+          name,
+          vatFlag,
+          invTiming,
+          payTiming,
+          deliveryPct,
+          cells,
+        });
+      }
 
-        return { success: true, contractors, extraOutgoingsRows, months, directCostsMode, makingUpCos };
-      },
-    });
+      const extraOutgoingsRows = [];
+      for (let r = 0; r < extraRows.length; r++) {
+        const rowCells = extraRows[r]?.values || [];
+        const name = String(rowCells[0]?.formattedValue || "").trim();
+        if (!name || name.startsWith("Total") || name.startsWith("=")) continue;
+
+        const vatFlag = String(rowCells[1]?.formattedValue || "").trim();
+        const invTiming = String(rowCells[2]?.formattedValue || "").trim();
+        const payTiming = String(rowCells[3]?.formattedValue || "").trim();
+        const deliveryPct = String(rowCells[4]?.formattedValue || "").trim();
+
+        const cells = {};
+        let hasAnyNoteOrValue = false;
+        for (const month of months) {
+          const cellData = rowCells[month.colIndex];
+          const note = cellData?.note || "";
+          const value = cellData?.formattedValue || "";
+          if (note || value) hasAnyNoteOrValue = true;
+          const { topNote, blocks } = parseNoteParts(note);
+          cells[month.colLetter] = { value, note, topNote, blocks };
+        }
+
+        if (hasAnyNoteOrValue || r === 0) {
+          extraOutgoingsRows.push({ sheetRow: 111 + r, name, vatFlag, invTiming, payTiming, deliveryPct, cells });
+        }
+      }
+
+      // Row 111 is "Making up CoS" formula row; Row 112 is the "Zero" override row
+      const row111Values = extraRows[0]?.values || [];
+      const row112Values = extraRows[1]?.values || [];
+      const cosRawName = String(row111Values[0]?.formattedValue || "").trim();
+      const cosPct = String(row112Values[0]?.formattedValue || "").trim();
+
+      const makingUpCosCells = {};
+      for (const month of months) {
+        const cell111 = row111Values[month.colIndex];
+        const cell112 = row112Values[month.colIndex];
+
+        const val111Str = cell111?.formattedValue || "";
+        const val111Num = typeof cell111?.effectiveValue?.numberValue === "number"
+          ? cell111.effectiveValue.numberValue
+          : parseFloat(String(val111Str).replace(/[^0-9.-]/g, "")) || 0;
+
+        const raw112 = String(cell112?.formattedValue || cell112?.effectiveValue?.stringValue || "").trim();
+        const isZero = raw112.toUpperCase() === "ZERO";
+
+        makingUpCosCells[month.colLetter] = {
+          amount: val111Num,
+          formatted: val111Str || (val111Num ? `£${val111Num.toLocaleString("en-GB")}` : "£0"),
+          isZero,
+          overrideValue: raw112,
+          note: cell111?.note || "",
+        };
+      }
+
+      const makingUpCos = {
+        name: cosRawName || "Making up Cos",
+        pct: cosPct || "",
+        cells: makingUpCosCells,
+      };
+
+      return {
+        success: true,
+        contractors,
+        extraOutgoingsRows,
+        months,
+        directCostsMode,
+        makingUpCos,
+        inputsReadMode: usedRelReads ? "relational" : "grid",
+      };
+    };
+
+    const payload = forceMode
+      ? await fetchFreshFn()
+      : (
+          await resolvePortalCache({
+            cacheKey,
+            bypassCache: Boolean(bypassCache),
+            l1TtlSecs: 120,
+            redisTtlSecs: 86400,
+            isValidPayload: (c) =>
+              c &&
+              Array.isArray(c.contractors) &&
+              c.directCostsMode !== undefined &&
+              c.makingUpCos !== undefined &&
+              (c.contractors.length === 0 || c.contractors[0]?.deliveryPct !== undefined),
+            fetchFreshFn,
+          })
+        ).data;
 
     const callerUser = getSessionUser(req);
-    let responsePayload = result.data;
+    let responsePayload = payload;
     if (responsePayload && callerUser && !canViewSalariesAndDividends(callerUser)) {
       const RESTRICTED_OUTGOINGS_RE = /salar|divid|payroll|wages|director|remuneration|net pay|pension|paye|\bnic\b/i;
       const filteredExtra = Array.isArray(responsePayload.extraOutgoingsRows)

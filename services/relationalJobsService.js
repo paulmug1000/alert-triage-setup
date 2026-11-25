@@ -282,7 +282,7 @@ function isActiveJobOrChildRow_(r0, vRow, fRow, rowNotes, { tabName, isJobCostin
       if (isNonEmptyCell_(vRow[c]) || isFormulaStr_(fRow[c])) return true;
     }
     if (!isJobCosting) {
-      for (const c of [37, 38, 39]) {
+      for (const c of [37, 38]) {
         if (isNonEmptyCell_(vRow[c]) || isFormulaStr_(fRow[c])) return true;
       }
     }
@@ -294,7 +294,7 @@ function isActiveJobOrChildRow_(r0, vRow, fRow, rowNotes, { tabName, isJobCostin
 /**
  * Determines if an active contiguous row directly below an existing job is an invoice/expense overflow child row.
  */
-function isOverflowChildRow_(vRow, fRow, parentJob, { tabName, isJobCosting }) {
+function isOverflowChildRow_(vRow, fRow, rowNotes, parentJob, { tabName, isJobCosting }) {
   if (!parentJob) return false;
   if (vRow[30] && parseVariableRetainerTag(vRow[30])) return false;
 
@@ -303,14 +303,18 @@ function isOverflowChildRow_(vRow, fRow, parentJob, { tabName, isJobCosting }) {
   const pClient = normalizeTextKey_(parentJob.customer_name);
   const pJob = normalizeTextKey_(parentJob.job_name);
 
-  const identityMatchesParent =
-    (rClient === "" && rJob === "") || (rClient === pClient && rJob === pJob);
+  const isExplicitSameJobChild = pClient !== "" && rClient === pClient && rJob === pJob;
+  const identityMatchesParent = (rClient === "" && rJob === "") || isExplicitSameJobChild;
   if (!identityMatchesParent) return false;
 
   const revCalcStart = tabName === "Confirmed" ? 62 : 60;
   const hasInvoicesOrExpenses =
-    hasAnyPopulatedInRange_(vRow, fRow, null, 41, revCalcStart) ||
-    hasAnyPopulatedInRange_(vRow, fRow, null, 75, 96);
+    hasAnyPopulatedInRange_(vRow, fRow, rowNotes, 41, revCalcStart) ||
+    hasAnyPopulatedInRange_(vRow, fRow, rowNotes, 75, 96);
+
+  if (!isExplicitSameJobChild && !hasInvoicesOrExpenses) {
+    return false;
+  }
 
   if (isJobCosting) {
     const revEmpty =
@@ -319,7 +323,7 @@ function isOverflowChildRow_(vRow, fRow, parentJob, { tabName, isJobCosting }) {
     const jcDatesEmpty = !isNonEmptyCell_(vRow[5]) && !isNonEmptyCell_(vRow[6]);
     const rechEmpty = !isNonEmptyCell_(vRow[17]) || parseNumericOrDefault_(vRow[17], 0) === 0;
     const revFormulaSafe = !isNonEmptyCell_(vRow[32]);
-    return revEmpty && jcDatesEmpty && rechEmpty && revFormulaSafe && (hasInvoicesOrExpenses || rClient === "");
+    return revEmpty && jcDatesEmpty && rechEmpty && revFormulaSafe;
   }
 
   const revEmpty = !isNonEmptyCell_(vRow[32]) && !isFormulaStr_(fRow[32]);
@@ -498,7 +502,7 @@ export function parseTabGridToRelationalModel({
     if (
       currentJob &&
       isContiguous &&
-      isOverflowChildRow_(vRow, fRow, currentJob, { tabName, isJobCosting })
+      isOverflowChildRow_(vRow, fRow, rowNotes, currentJob, { tabName, isJobCosting })
     ) {
       const childOffset = r + 1 - currentJob.sheet_row_num;
       currentJob.sheet_child_row_count = Math.max(currentJob.sheet_child_row_count, childOffset);
@@ -1247,7 +1251,7 @@ async function syncPulseNotesJobIdsForClient_(supabase, clientId) {
     }
   }
   if (updates.length > 0) {
-    await Promise.all(updates.map((p) => p.catch(() => { })));
+    await Promise.all(updates.map((p) => Promise.resolve(p).catch(() => {})));
   }
 }
 

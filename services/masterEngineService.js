@@ -1875,27 +1875,34 @@ export async function flushPendingClientRecomputes(rawSheetsApi = null, clientNa
  * formula recalculation runs in the background via Vercel waitUntil instead of blocking
  * interactive HTTP responses for ~40s.
  */
+const _inFlightImmediateClientFlushByClient = new Map();
+
 export async function flushImmediateAndScheduleBackgroundClientRecomputes(rawSheetsApi = null, clientName = null) {
   const keys = clientName
     ? [String(clientName).toLowerCase()]
     : [
       ...new Set([
         ..._unpersistedSkippedClientTabsByClient.keys(),
+        ..._inFlightImmediateClientFlushByClient.keys(),
         ..._pendingClientTabsByClient.keys(),
       ]),
     ];
   for (const key of keys) {
+    const inFlight = _inFlightImmediateClientFlushByClient.get(key);
     const ctx = _pendingClientCtxByClient.get(key);
-    if (!ctx) continue;
     const unpersistedSet = _unpersistedSkippedClientTabsByClient.get(key);
-    if (unpersistedSet && unpersistedSet.size > 0) {
-      await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
-        console.warn("[masterEngineService] Immediate client flush warning:", e.message)
-      );
+    if (inFlight || (unpersistedSet && unpersistedSet.size > 0)) {
+      if (ctx) {
+        await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Immediate client flush warning:", e.message)
+        );
+      } else if (inFlight) {
+        await inFlight.catch(() => {});
+      }
       continue;
     }
     const pendingSet = _pendingClientTabsByClient.get(key);
-    if (pendingSet && pendingSet.size > 0 && !_inFlightClientRecomputeByClient.has(key)) {
+    if (ctx && pendingSet && pendingSet.size > 0 && !_inFlightClientRecomputeByClient.has(key)) {
       scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
     }
   }
@@ -2113,6 +2120,44 @@ async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
 }
 
 async function recomputeAndPersistImmediateClientTabs_(
+  ctx,
+  targetTabNames,
+  rawSheetsApi = null,
+  { notesChangedTabs = new Set(), deferBackgroundRecompute = false } = {}
+) {
+  const clientKey = String(ctx.clientName || "").toLowerCase();
+  if (Array.isArray(targetTabNames) && targetTabNames.length > 0) {
+    queuePendingClientTabs_(ctx, targetTabNames, { isSkippedStep: true, notesChangedTabs });
+  } else {
+    _pendingClientCtxByClient.set(clientKey, ctx);
+    if (notesChangedTabs) {
+      queuePendingClientTabs_(ctx, [], { notesChangedTabs });
+    }
+  }
+
+  if (_inFlightImmediateClientFlushByClient.has(clientKey)) {
+    return _inFlightImmediateClientFlushByClient.get(clientKey);
+  }
+
+  const runLoop = (async () => {
+    while (true) {
+      const skippedSet = _unpersistedSkippedClientTabsByClient.get(clientKey);
+      if (!skippedSet || skippedSet.size === 0) break;
+      await runSingleImmediateClientTabsPass_(ctx, [], rawSheetsApi, { deferBackgroundRecompute });
+    }
+  })();
+
+  _inFlightImmediateClientFlushByClient.set(clientKey, runLoop);
+  try {
+    await runLoop;
+  } finally {
+    if (_inFlightImmediateClientFlushByClient.get(clientKey) === runLoop) {
+      _inFlightImmediateClientFlushByClient.delete(clientKey);
+    }
+  }
+}
+
+async function runSingleImmediateClientTabsPass_(
   ctx,
   targetTabNames,
   rawSheetsApi = null,

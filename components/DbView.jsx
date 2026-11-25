@@ -646,6 +646,59 @@ export default function DbView({
     );
   };
 
+  const handleSetClientJobsReadMode = (nextMode, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    runTrackedOperation(
+      `set_jobs_read_mode_${nextMode}`,
+      `Switching ${targetClient} jobs reads to ${nextMode === "relational" ? "direct relational SQL" : "grid parser"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_jobs_read_mode",
+            clientName: targetClient,
+            jobsReadMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update client jobs read mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} jobs read source to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyRelationalReadParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_jobs_read_parity",
+      "Verifying direct relational read payload parity across PMA & Portal...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_jobs_read_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Read payload parity check failed.");
+        const r = data.parityReport || {};
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Read parity verified across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
   const handleNativeSync = (syncType, label, clientOverride) => {
     const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
     runTrackedOperation(`sync_${syncType}`, `Running "${label}" on ${targetClient}...`, async () => {
@@ -3543,6 +3596,48 @@ export default function DbView({
                     ? `Revert ${activeClientName} to grid jobs`
                     : `Switch ${activeClientName} to relational jobs`}
                 </span>
+              </button>
+
+              {activeClientObj?.jobsMode === "relational" && (
+                <button
+                  type="button"
+                  disabled={!stage2Data?.phase2Jobs?.schemaReady || isBusy}
+                  onClick={() =>
+                    handleSetClientJobsReadMode(
+                      activeClientObj?.jobsReadMode === "relational" ? "grid" : "relational",
+                      activeClientName
+                    )
+                  }
+                  style={{
+                    ...actionBtnBase,
+                    background: activeClientObj?.jobsReadMode === "relational" ? "#fff7ed" : "#ecfeff",
+                    borderColor: activeClientObj?.jobsReadMode === "relational" ? "#fed7aa" : "#67e8f9",
+                    color: activeClientObj?.jobsReadMode === "relational" ? "#9a3412" : "#155e75",
+                    cursor: isBusy ? "wait" : "pointer",
+                  }}
+                >
+                  <span>
+                    {activeClientObj?.jobsReadMode === "relational"
+                      ? `Revert ${activeClientName} to grid reads`
+                      : `Switch ${activeClientName} to direct relational reads`}
+                  </span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyRelationalReadParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_jobs_read_parity" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
+                <span>{`Verify read payload parity (${allClients.length})`}</span>
               </button>
             </div>
 

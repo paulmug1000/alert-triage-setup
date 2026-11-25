@@ -1,4 +1,4 @@
-//Version 1.14 - Harden JobCosting row formula injection for new rows while preserving LET/LAMBDA and spill parity
+//Version 1.15 - Fix Row-2 vs Row-3 spill-anchor detection for FILTER/HSTACK per-row formulas and self-heal unshifted job row formulas
 // Evaluates Client Sheet tabs with 1:1 Google Sheets formula parity.
 
 const ERROR_PREFIXES = ["#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NUM!", "#NAME?", "#ERROR!"];
@@ -4014,6 +4014,16 @@ function findLastActiveJobRow_(values, minDefault = 50) {
   return Math.max(last, minDefault);
 }
 
+const ROW_FORMULA_TOKEN_RE_ = /"(?:""|[^"])*"|'(?:''|[^'])*'!|[A-Za-z0-9_]+!|(?<![A-Za-z0-9_])(\$?[A-Za-z]{1,3})(\$?)(\d+)(?![0-9(])/g;
+
+function normalizeRelativeRowRefs_(formula) {
+  if (typeof formula !== "string" || !formula.startsWith("=")) return "";
+  return formula.replace(ROW_FORMULA_TOKEN_RE_, (match, colPart, dollarRow) => {
+    if (!colPart || dollarRow === "$" || /^PL$/i.test(colPart)) return match;
+    return `${colPart}#`;
+  });
+}
+
 function ensureJobRowFormulasPopulated_(grids) {
   for (const tab of ["Confirmed", "Pipeline", "ConfCalcs", "PipeCalcs"]) {
     const t = grids[tab];
@@ -4026,6 +4036,22 @@ function ensureJobRowFormulasPopulated_(grids) {
         String(hdr0[8] || "").trim().toLowerCase() === "job revenue");
 
     const templateRowF = t.formulas[1]; // Row 2 (r=1)
+    const row3F = Array.isArray(t.formulas[2]) ? t.formulas[2] : [];
+    const normalizedRow2ByCol = new Array(templateRowF.length);
+    const isPerRowFormulaByCol = new Array(templateRowF.length).fill(false);
+    for (let c = 0; c < templateRowF.length; c++) {
+      const tf = templateRowF[c];
+      if (typeof tf !== "string" || !tf.startsWith("=")) continue;
+      const row3Cell = row3F[c];
+      const hasRow3Formula = typeof row3Cell === "string" && row3Cell.startsWith("=");
+      // Treat Row-2 formula as a vertical multi-row spill anchor ONLY when Row 3 does not hold a formula in that column
+      const isSpillAnchor = !hasRow3Formula && isPotentialSpillFormula_(tf);
+      if (!isSpillAnchor) {
+        isPerRowFormulaByCol[c] = true;
+        normalizedRow2ByCol[c] = normalizeRelativeRowRefs_(tf);
+      }
+    }
+
     const srcTab = tab === "ConfCalcs" ? "Confirmed" : tab === "PipeCalcs" ? "Pipeline" : tab;
     const maxR = Math.min(findLastActiveJobRow_(grids[srcTab]?.values) + 1, t.formulas.length - 1);
     const startCol = isJobTab ? 40 : 0; // On Confirmed/Pipeline, never overwrite or inject A..AN (0..39) on existing rows
@@ -4048,7 +4074,7 @@ function ensureJobRowFormulasPopulated_(grids) {
         if (hasPrimaryJcInput && lacksCoreJobFormulas) {
           for (const c of jcFormulaCols) {
             const tf = templateRowF[c];
-            if (typeof tf === "string" && tf.startsWith("=") && !isPotentialSpillFormula_(tf)) {
+            if (isPerRowFormulaByCol[c]) {
               if (!t.formulas[r][c] && (vRow[c] === "" || vRow[c] === null || vRow[c] === undefined)) {
                 t.formulas[r][c] = shiftRowFormulaFromRow2_(tf, r + 1);
               }
@@ -4057,12 +4083,29 @@ function ensureJobRowFormulasPopulated_(grids) {
         }
       }
       for (let c = startCol; c < templateRowF.length; c++) {
+        if (!isPerRowFormulaByCol[c]) continue;
         const tf = templateRowF[c];
-        if (typeof tf === "string" && tf.startsWith("=") && !isPotentialSpillFormula_(tf)) {
-          if (!t.formulas[r][c]) {
-            // On Confirmed/Pipeline, do not overwrite populated static cells on historical rows
-            if (isJobTab && vRow[c] !== "" && vRow[c] !== null && vRow[c] !== undefined) continue;
-            t.formulas[r][c] = shiftRowFormulaFromRow2_(tf, r + 1);
+        const expectedF = shiftRowFormulaFromRow2_(tf, r + 1);
+        const curF = t.formulas[r][c];
+        if (!curF) {
+          // On Confirmed/Pipeline, do not overwrite populated static cells on historical rows
+          if (isJobTab && vRow[c] !== "" && vRow[c] !== null && vRow[c] !== undefined) continue;
+          t.formulas[r][c] = expectedF;
+          continue;
+        }
+        // Self-heal unshifted copies of the row-relative template formula on system formula columns
+        const isSystemFormulaCol = !isJobTab ? c >= 144 : c === 74 || c === 106;
+        if (
+          isSystemFormulaCol &&
+          typeof curF === "string" &&
+          curF.startsWith("=") &&
+          curF !== expectedF &&
+          expectedF !== tf &&
+          normalizeRelativeRowRefs_(curF) === normalizedRow2ByCol[c]
+        ) {
+          t.formulas[r][c] = expectedF;
+          if (Array.isArray(t.values?.[r])) {
+            t.values[r][c] = "";
           }
         }
       }
@@ -4073,12 +4116,13 @@ function ensureJobRowFormulasPopulated_(grids) {
 function shiftRowFormulaFromRow2_(formulaRow2, targetRow1) {
   const delta = targetRow1 - 2;
   if (delta === 0) return formulaRow2;
-  // Replace relative row numbers (not preceded by $) in cell refs
-  return formulaRow2.replace(/(?<![A-Za-z0-9_])(\$?[A-Za-z]{1,3})(\$?)(\d+)(?![0-9(])/g, (match, colPart, dollarRow, rowStr) => {
+  // Replace relative row numbers (not preceded by $, skipping string literals & sheet qualifiers)
+  return formulaRow2.replace(ROW_FORMULA_TOKEN_RE_, (match, colPart, dollarRow, rowStr) => {
+    if (!colPart) return match;
     if (dollarRow === "$") return match;
     // Do not shift PL1, PL2, PL3, PL4
     if (/^PL$/i.test(colPart)) return match;
     const rNum = parseInt(rowStr, 10);
-    return `${colPart}${rNum + delta}`;
+    return `${colPart}${Math.max(1, rNum + delta)}`;
   });
 }

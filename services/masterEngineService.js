@@ -477,6 +477,9 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                 jobsMode: String(row.jobs_mode || row.metadata?.jobs_mode || "grid").trim().toLowerCase() === "relational"
                   ? "relational"
                   : "grid",
+                jobsReadMode: String(row.metadata?.jobs_read_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
                 sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
                 clientSheetId: cId,
                 masterSheetId: mId,
@@ -552,14 +555,75 @@ function findLastActiveClientJobRow_(values, minDefault = 50) {
   return Math.max(last, minDefault);
 }
 
+const FORMULA_TOKEN_SHIFT_RE_ = /"(?:""|[^"])*"|'(?:''|[^'])*'!|[A-Za-z0-9_]+!|(?<![A-Za-z0-9_])(\$?[A-Za-z]{1,3})(\$?)(\d+)(?![0-9(])/g;
+
 function shiftFormulaRowByDelta_(formula, delta) {
   if (!formula || typeof formula !== "string" || !formula.startsWith("=") || delta === 0) return formula;
-  return formula.replace(/(?<![A-Za-z0-9_])(\$?[A-Za-z]{1,3})(\$?)(\d+)(?![0-9(])/g, (match, colPart, dollarRow, rowStr) => {
+  return formula.replace(FORMULA_TOKEN_SHIFT_RE_, (match, colPart, dollarRow, rowStr) => {
+    if (!colPart) return match; // Skip quoted string literals and sheet prefixes
     if (dollarRow === "$") return match;
     if (/^PL$/i.test(colPart)) return match;
     const rNum = parseInt(rowStr, 10);
-    return `${colPart}${rNum + delta}`;
+    return `${colPart}${Math.max(1, rNum + delta)}`;
   });
+}
+
+function shiftRelativeRowsAboveThreshold_(formula, minRow1Inclusive, delta) {
+  if (!formula || typeof formula !== "string" || !formula.startsWith("=") || delta === 0) return formula;
+  return formula.replace(FORMULA_TOKEN_SHIFT_RE_, (match, colPart, dollarRow, rowStr) => {
+    if (!colPart) return match; // Skip quoted string literals and sheet prefixes
+    if (dollarRow === "$") return match;
+    if (/^PL$/i.test(colPart)) return match;
+    const rNum = parseInt(rowStr, 10);
+    if (rNum < minRow1Inclusive) return match;
+    return `${colPart}${Math.max(1, rNum + delta)}`;
+  });
+}
+
+function buildCompiledRowFormulaShifter_(tplFormRow) {
+  const descriptors = new Array(tplFormRow.length);
+  for (let c = 0; c < tplFormRow.length; c++) {
+    const cell = tplFormRow[c];
+    if (typeof cell !== "string" || !cell.startsWith("=")) {
+      descriptors[c] = null;
+      continue;
+    }
+    const parts = [];
+    const baseRows = [];
+    let lastIdx = 0;
+    FORMULA_TOKEN_SHIFT_RE_.lastIndex = 0;
+    let m;
+    while ((m = FORMULA_TOKEN_SHIFT_RE_.exec(cell)) !== null) {
+      const colPart = m[1];
+      if (!colPart || m[2] === "$" || /^PL$/i.test(colPart)) continue;
+      parts.push(cell.slice(lastIdx, m.index) + colPart);
+      baseRows.push(parseInt(m[3], 10));
+      lastIdx = m.index + m[0].length;
+    }
+    if (baseRows.length === 0) {
+      descriptors[c] = null;
+    } else {
+      parts.push(cell.slice(lastIdx));
+      descriptors[c] = { parts, baseRows };
+    }
+  }
+  return descriptors;
+}
+
+function applyCompiledRowFormulaShifter_(tplFormRow, descriptors, delta) {
+  if (delta === 0) return [...tplFormRow];
+  const out = [...tplFormRow];
+  for (let c = 0; c < descriptors.length; c++) {
+    const desc = descriptors[c];
+    if (!desc) continue;
+    const { parts, baseRows } = desc;
+    let s = parts[0];
+    for (let i = 0; i < baseRows.length; i++) {
+      s += Math.max(1, baseRows[i] + delta) + parts[i + 1];
+    }
+    out[c] = s;
+  }
+  return out;
 }
 
 function trimTrailingEmptyCells_(row) {
@@ -742,6 +806,7 @@ export function expandClientTabFromStorage_(data, tabName, { valuesOnly = false 
     const expandedForms = valuesOnly ? expandedVals : [];
     const tplValRow = storedVals[templateRowIdx] || [];
     const tplFormRow = uncompactedForms ? (uncompactedForms[templateRowIdx] || []) : null;
+    const tplFormulaShifter = !valuesOnly && tplFormRow ? buildCompiledRowFormulaShifter_(tplFormRow) : null;
     const tailValRow = storedVals[storedVals.length - 1] || [];
     const tailFormRow = uncompactedForms ? (uncompactedForms[uncompactedForms.length - 1] || []) : null;
 
@@ -758,7 +823,9 @@ export function expandClientTabFromStorage_(data, tabName, { valuesOnly = false 
     for (let r = templateRowIdx + 1; r < totalRows - 1; r++) {
       expandedVals.push([...tplValRow]);
       if (!valuesOnly) {
-        expandedForms.push(tplFormRow ? [...tplFormRow] : []);
+        expandedForms.push(
+          tplFormRow ? applyCompiledRowFormulaShifter_(tplFormRow, tplFormulaShifter, r - templateRowIdx) : []
+        );
       }
     }
     expandedVals.push([...tailValRow]);
@@ -2109,7 +2176,12 @@ async function loadReferencedReconGridsForClientFormulas_(ctx, formulaGrids, raw
 
 async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
   if (!ctx || ctx.jobsMode !== "relational") return;
-  const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => t === "Confirmed" || t === "Pipeline"))];
+  const mapped = [];
+  for (const t of Array.isArray(tabNames) ? tabNames : []) {
+    if (t === "Confirmed" || t === "ConfCalcs") mapped.push("Confirmed");
+    else if (t === "Pipeline" || t === "PipeCalcs") mapped.push("Pipeline");
+  }
+  const relevant = [...new Set(mapped)];
   if (relevant.length === 0) return;
   try {
     const { reconcileClientRelationalJobsFromGrids } = await import("./relationalJobsService.js");
@@ -4087,28 +4159,40 @@ export async function handleVirtualSheetsCall({
             while (nextForms.length < s) nextForms.push({ oldR1: nextForms.length + 1, cells: [] });
 
             const inherit = Boolean(req.insertDimension.inheritFromBefore) && s > 0;
-            const tplFormCells = inherit && nextForms[s - 1]
-              ? nextForms[s - 1].cells.map((c) => (typeof c === "string" && c.startsWith("=") ? c : ""))
+            const rawDonorCells = inherit && nextForms[s - 1] ? nextForms[s - 1].cells : [];
+            const rowBelowCells = inherit && nextForms[s] ? nextForms[s].cells : [];
+            const tplFormCells = inherit
+              ? rawDonorCells.map((c, colIdx) => {
+                  if (typeof c !== "string" || !c.startsWith("=")) return "";
+                  // Skip Row-2 vertical spill anchors when Row 3 does not hold a formula in that column
+                  if (s === 2 && !(typeof rowBelowCells[colIdx] === "string" && rowBelowCells[colIdx].startsWith("="))) {
+                    return "";
+                  }
+                  return c;
+                })
               : [];
-            const tplOldR1 = inherit ? s : -1;
 
             const insertedV = Array.from({ length: count }, () => []);
-            const insertedF = Array.from({ length: count }, () => ({
-              oldR1: tplOldR1,
-              cells: [...tplFormCells],
+            const insertedF = Array.from({ length: count }, (_, k) => ({
+              isInserted: true,
+              cells: tplFormCells.map((cell) => {
+                if (typeof cell !== "string" || !cell.startsWith("=")) return "";
+                const withShiftedBelow = shiftRelativeRowsAboveThreshold_(cell, s + 1, count);
+                // Shift inherited relative refs <= s by +(k + 1) without double-shifting refs that were >= s + 1
+                return withShiftedBelow.replace(FORMULA_TOKEN_SHIFT_RE_, (match, colPart, dollarRow, rowStr) => {
+                  if (!colPart || dollarRow === "$" || /^PL$/i.test(colPart)) return match;
+                  const rNum = parseInt(rowStr, 10);
+                  if (rNum > s) return match;
+                  return `${colPart}${Math.max(1, rNum + k + 1)}`;
+                });
+              }),
             }));
             nextVals.splice(s, 0, ...insertedV);
             nextForms.splice(s, 0, ...insertedF);
 
-            const finalForms = nextForms.map((fObj, newR0) => {
-              const newR1 = newR0 + 1;
-              if (fObj.oldR1 <= 0 || fObj.oldR1 === newR1) return fObj.cells;
-              const re = new RegExp(`(?<![A-Za-z0-9_$'!])(\\$?[A-Za-z]{1,3})${fObj.oldR1}(?![0-9(])`, "g");
-              return fObj.cells.map((cell) =>
-                typeof cell === "string" && cell.startsWith("=")
-                  ? cell.replace(re, (m, colPart) => (/^PL$/i.test(colPart) ? m : `${colPart}${newR1}`))
-                  : cell
-              );
+            const finalForms = nextForms.map((fObj) => {
+              if (fObj.isInserted) return fObj.cells;
+              return fObj.cells.map((cell) => shiftRelativeRowsAboveThreshold_(cell, s + 1, count));
             });
             target.values_grid = nextVals;
             target.formulas_grid = finalForms;
@@ -4134,16 +4218,9 @@ export async function handleVirtualSheetsCall({
           if (count > 0 && s < nextVals.length) {
             nextVals.splice(s, count);
             nextForms.splice(s, count);
-            const finalForms = nextForms.map((fObj, newR0) => {
-              const newR1 = newR0 + 1;
-              if (fObj.oldR1 === newR1) return fObj.cells;
-              const re = new RegExp(`(?<![A-Za-z0-9_$'!])(\\$?[A-Za-z]{1,3})${fObj.oldR1}(?![0-9(])`, "g");
-              return fObj.cells.map((cell) =>
-                typeof cell === "string" && cell.startsWith("=")
-                  ? cell.replace(re, (m, colPart) => (/^PL$/i.test(colPart) ? m : `${colPart}${newR1}`))
-                  : cell
-              );
-            });
+            const finalForms = nextForms.map((fObj) =>
+              fObj.cells.map((cell) => shiftRelativeRowsAboveThreshold_(cell, e + 1, -count))
+            );
             target.values_grid = nextVals;
             target.formulas_grid = finalForms;
             target.notes_grid = remapNotesGridRows_(target.notes_grid, (oldR0) => {
@@ -6104,6 +6181,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         sheetBridgeMode: String(c.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
         sheetBridgeState: c.metadata?.sheet_bridge_state || null,
         jobsMode: String(c.metadata?.jobs_mode || "grid").trim().toLowerCase(),
+        jobsReadMode: String(c.metadata?.jobs_read_mode || "grid").trim().toLowerCase(),
         relationalJobsState: c.metadata?.relational_jobs_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
@@ -6128,9 +6206,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
 
   let backfilledClientsCount = 0;
   let relationalModeClientsCount = 0;
+  let relationalReadModeClientsCount = 0;
   for (const c of clientsData || []) {
     if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
     if (String(c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
+    if (String(c?.metadata?.jobs_read_mode || "").trim().toLowerCase() === "relational") relationalReadModeClientsCount++;
   }
 
   return {
@@ -6149,6 +6229,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
           ...phase2JobsStats,
           backfilledClientsCount,
           relationalModeClientsCount,
+          relationalReadModeClientsCount,
         }
       : {
           schemaReady: false,

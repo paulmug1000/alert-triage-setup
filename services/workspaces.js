@@ -39,7 +39,12 @@ import { getSettingsRedisKey } from "./clientSettingsService.js";
 import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId, flushPendingClientRecomputes, flushImmediateAndScheduleBackgroundClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
-import { getClientRelationalJobsLookup, resolveAuthoritativeJobAnchor } from "./relationalJobsService.js";
+import {
+  getClientRelationalJobsLookup,
+  resolveAuthoritativeJobAnchor,
+  preloadClientRelationalJobsBundle,
+  buildRelationalFormattedTabRowsFromBundle,
+} from "./relationalJobsService.js";
 import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
 import { memoryCache, get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
@@ -1238,23 +1243,27 @@ const _inFlightSharedJobsRaw = new Map();
 export async function getSharedClientConfirmedAndKeyInfo(
   sheets,
   rawSheetId,
-  { includePipeline = false, bypassCache = false } = {}
+  { includePipeline = false, bypassCache = false, keyInfoOnly = false } = {}
 ) {
   const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(rawSheetId) || rawSheetId);
-  const sharedKey = `pulse:pma:shared_jobs_raw:${sheetIdClean}`;
+  const sharedKey = keyInfoOnly
+    ? `pulse:pma:shared_jobs_keyinfo:${sheetIdClean}`
+    : `pulse:pma:shared_jobs_raw:${sheetIdClean}`;
 
   if (!bypassCache) {
     const cached = memoryCache.get(sharedKey);
-    if (cached && Array.isArray(cached.confRows) && (!includePipeline || cached.hasPipeline)) {
+    if (keyInfoOnly) {
+      if (cached && cached.accountingTool !== undefined) return cached;
+    } else if (cached && Array.isArray(cached.confRows) && (!includePipeline || cached.hasPipeline)) {
       return cached;
     }
   }
 
-  const inFlightAll = _inFlightSharedJobsRaw.get(`${sheetIdClean}:all`);
+  const inFlightAll = !keyInfoOnly ? _inFlightSharedJobsRaw.get(`${sheetIdClean}:all`) : null;
   if (inFlightAll && !bypassCache) {
     return inFlightAll;
   }
-  const inFlightKey = `${sheetIdClean}:${includePipeline ? "all" : "conf"}`;
+  const inFlightKey = `${sheetIdClean}:${keyInfoOnly ? "ki" : (includePipeline ? "all" : "conf")}`;
   if (_inFlightSharedJobsRaw.has(inFlightKey) && !bypassCache) {
     return _inFlightSharedJobsRaw.get(inFlightKey);
   }
@@ -1264,8 +1273,8 @@ export async function getSharedClientConfirmedAndKeyInfo(
     const targetPipeMaxRow = 1000;
 
     const ranges = [
-      `Confirmed!A1:DD${targetConfMaxRow}`,
-      ...(includePipeline ? [`Pipeline!A1:DD${targetPipeMaxRow}`] : []),
+      ...(keyInfoOnly ? [] : [`Confirmed!A1:DD${targetConfMaxRow}`]),
+      ...(!keyInfoOnly && includePipeline ? [`Pipeline!A1:DD${targetPipeMaxRow}`] : []),
       "KeyInfo!B15",
       "KeyInfo!D8",
       "KeyInfo!C23:C26",
@@ -1290,7 +1299,7 @@ export async function getSharedClientConfirmedAndKeyInfo(
     let standardChargeOutRate = 0;
     let contractorDayRate = 0;
 
-    const offset = includePipeline ? 2 : 1;
+    const offset = keyInfoOnly ? 0 : (includePipeline ? 2 : 1);
 
     try {
       const batchResp = await sheets.spreadsheets.values.batchGet({
@@ -1299,8 +1308,8 @@ export async function getSharedClientConfirmedAndKeyInfo(
         valueRenderOption: "FORMATTED_VALUE",
       });
       const vRanges = batchResp.data.valueRanges || [];
-      confRows = vRanges[0]?.values || [];
-      pipeRows = includePipeline ? vRanges[1]?.values || [] : [];
+      confRows = keyInfoOnly ? [] : (vRanges[0]?.values || []);
+      pipeRows = !keyInfoOnly && includePipeline ? vRanges[1]?.values || [] : [];
       revFocus = String(vRanges[offset]?.values?.[0]?.[0] || "Revenue").trim();
       rawDcMode = String(vRanges[offset + 1]?.values?.[0]?.[0] || "Contractors").trim();
       productLines = (vRanges[offset + 2]?.values || []).flat().map((v) => String(v || "").trim()).filter(Boolean);
@@ -1315,28 +1324,31 @@ export async function getSharedClientConfirmedAndKeyInfo(
       if (d11Data?.[1]?.[0] !== undefined) standardChargeOutRate = parseFloat(String(d11Data[1][0]).replace(/[£$€,\s]/g, "")) || 0;
       if (d11Data?.[2]?.[0] !== undefined) contractorDayRate = parseFloat(String(d11Data[2][0]).replace(/[£$€,\s]/g, "")) || 0;
     } catch (_) {
-      try {
-        const cResp = await sheets.spreadsheets.values.get({
-          spreadsheetId: sheetIdClean,
-          range: `Confirmed!A1:DD${targetConfMaxRow}`,
-          valueRenderOption: "FORMATTED_VALUE",
-        });
-        confRows = cResp.data.values || [];
-      } catch (_) { }
-      if (includePipeline) {
+      if (!keyInfoOnly) {
         try {
-          const pResp = await sheets.spreadsheets.values.get({
+          const cResp = await sheets.spreadsheets.values.get({
             spreadsheetId: sheetIdClean,
-            range: `Pipeline!A1:DD${targetPipeMaxRow}`,
+            range: `Confirmed!A1:DD${targetConfMaxRow}`,
             valueRenderOption: "FORMATTED_VALUE",
           });
-          pipeRows = pResp.data.values || [];
+          confRows = cResp.data.values || [];
         } catch (_) { }
+        if (includePipeline) {
+          try {
+            const pResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: sheetIdClean,
+              range: `Pipeline!A1:DD${targetPipeMaxRow}`,
+              valueRenderOption: "FORMATTED_VALUE",
+            });
+            pipeRows = pResp.data.values || [];
+          } catch (_) { }
+        }
       }
     }
 
     // Automatic overflow check for Confirmed (2501..5000)
     if (
+      !keyInfoOnly &&
       confRows.length >= targetConfMaxRow &&
       Boolean(confRows[targetConfMaxRow - 1]?.[0] || confRows[targetConfMaxRow - 1]?.[1])
     ) {
@@ -1352,7 +1364,8 @@ export async function getSharedClientConfirmedAndKeyInfo(
 
     if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
       try {
-        const clientNameMatch = confRows[1]?.[0] || pipeRows[1]?.[0] || "";
+        const sbCtxFallback = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
+        const clientNameMatch = sbCtxFallback?.clientName || confRows[1]?.[0] || pipeRows[1]?.[0] || "";
         if (clientNameMatch) {
           const normKey = String(clientNameMatch).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
           const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
@@ -1405,25 +1418,49 @@ export async function getSharedClientConfirmedAndKeyInfo(
 }
 
 export async function handleGetDirectCostsJobs(req, res, sheets) {
-  const { clientSheetId, showAll, bypassCache } = req.body;
+  const { clientSheetId, showAll, bypassCache, _forceJobsReadMode } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
-    const cacheKey = `pulse:pma:direct_costs_jobs:${sheetIdClean}:${showAll ? "all" : "active"}`;
+    const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
+    const useRelationalReads =
+      _forceJobsReadMode === "relational"
+        ? true
+        : _forceJobsReadMode === "grid"
+          ? false
+          : (sbCtx?.jobsMode === "relational" && sbCtx?.jobsReadMode === "relational");
+    const cacheKey = _forceJobsReadMode
+      ? `pulse:pma:direct_costs_jobs:${sheetIdClean}:probe:${_forceJobsReadMode}:${showAll ? "all" : "active"}`
+      : `pulse:pma:direct_costs_jobs:${sheetIdClean}:${showAll ? "all" : "active"}`;
 
     const result = await resolvePortalCache({
       cacheKey,
-      bypassCache: Boolean(bypassCache),
+      bypassCache: Boolean(bypassCache || _forceJobsReadMode),
       l1TtlSecs: 120,
-      redisTtlSecs: 86400,
+      redisTtlSecs: _forceJobsReadMode ? 10 : 86400,
       isValidPayload: (c) => c && Array.isArray(c.jobs) && c.directCostsMode !== undefined,
       fetchFreshFn: async () => {
-        const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
-          includePipeline: false,
-          bypassCache: Boolean(bypassCache),
-        });
-        const rows = shared.confRows || [];
-        const directCostsMode = shared.directCostsMode || "Contractors";
+        let rows = [];
+        let directCostsMode = "Contractors";
+        if (useRelationalReads && sbCtx?.clientId) {
+          const [sharedKi, relBundle] = await Promise.all([
+            getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+              includePipeline: false,
+              bypassCache: Boolean(bypassCache),
+              keyInfoOnly: true,
+            }),
+            preloadClientRelationalJobsBundle(sbCtx, { includeConfirmed: true, includePipeline: false }),
+          ]);
+          directCostsMode = sharedKi.directCostsMode || "Contractors";
+          rows = buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { maxColLimit: 107 }).rows;
+        } else {
+          const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+            includePipeline: false,
+            bypassCache: Boolean(bypassCache),
+          });
+          rows = shared.confRows || [];
+          directCostsMode = shared.directCostsMode || "Contractors";
+        }
 
         const parseSheetDate = (d) => {
           if (!d) return null;
@@ -1558,24 +1595,48 @@ export async function handleGetDirectCostsJobs(req, res, sheets) {
 }
 
 export async function handleGetInvoiceJobs(req, res, sheets) {
-  const { clientSheetId, showAll, bypassCache } = req.body;
+  const { clientSheetId, showAll, bypassCache, _forceJobsReadMode } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
-    const cacheKey = `pulse:pma:invoice_jobs:${sheetIdClean}:${showAll ? "all" : "active"}`;
+    const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
+    const useRelationalReads =
+      _forceJobsReadMode === "relational"
+        ? true
+        : _forceJobsReadMode === "grid"
+          ? false
+          : (sbCtx?.jobsMode === "relational" && sbCtx?.jobsReadMode === "relational");
+    const cacheKey = _forceJobsReadMode
+      ? `pulse:pma:invoice_jobs:${sheetIdClean}:probe:${_forceJobsReadMode}:${showAll ? "all" : "active"}`
+      : `pulse:pma:invoice_jobs:${sheetIdClean}:${showAll ? "all" : "active"}`;
 
     const result = await resolvePortalCache({
       cacheKey,
-      bypassCache: Boolean(bypassCache),
+      bypassCache: Boolean(bypassCache || _forceJobsReadMode),
       l1TtlSecs: 120,
-      redisTtlSecs: 86400,
+      redisTtlSecs: _forceJobsReadMode ? 10 : 86400,
       isValidPayload: (c) => c && Array.isArray(c.jobs) && c.hasAccountingIntegration !== undefined,
       fetchFreshFn: async () => {
-        const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
-          includePipeline: false,
-          bypassCache: Boolean(bypassCache),
-        });
-        const rows = shared.confRows || [];
+        let shared = null;
+        let rows = [];
+        if (useRelationalReads && sbCtx?.clientId) {
+          const [sharedKi, relBundle] = await Promise.all([
+            getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+              includePipeline: false,
+              bypassCache: Boolean(bypassCache),
+              keyInfoOnly: true,
+            }),
+            preloadClientRelationalJobsBundle(sbCtx, { includeConfirmed: true, includePipeline: false }),
+          ]);
+          shared = sharedKi;
+          rows = buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { maxColLimit: 107 }).rows;
+        } else {
+          shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+            includePipeline: false,
+            bypassCache: Boolean(bypassCache),
+          });
+          rows = shared.confRows || [];
+        }
         const accountingTool = shared.accountingTool || "None";
         const crmTool = shared.crmTool || "None";
         const crmDrives = shared.crmDrives || "NA";
@@ -1865,26 +1926,34 @@ function applyPendingJobFieldOverlayToJobs_(jobs, overlayEntries) {
 }
 
 export async function handleGetAllClientJobs(req, res, sheets) {
-  const { clientSheetId, tabName = "All", bypassCache } = req.body;
+  const { clientSheetId, tabName = "All", bypassCache, _forceJobsReadMode } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   if (tabName && tabName !== "All" && tabName !== "Confirmed" && tabName !== "Pipeline") {
     return res.status(400).json({ success: false, error: "Invalid tabName. Must be All, Confirmed, or Pipeline." });
   }
   try {
     const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
-    const cacheKey = `pulse:pma:jobs:${sheetIdClean}:${tabName || "All"}`;
     const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
+    const useRelationalReads =
+      _forceJobsReadMode === "relational"
+        ? true
+        : _forceJobsReadMode === "grid"
+          ? false
+          : (sbCtx?.jobsMode === "relational" && sbCtx?.jobsReadMode === "relational");
+    const cacheKey = _forceJobsReadMode
+      ? `pulse:pma:jobs:${sheetIdClean}:probe:${_forceJobsReadMode}:${tabName || "All"}`
+      : `pulse:pma:jobs:${sheetIdClean}:${tabName || "All"}`;
 
-    if (bypassCache && sbCtx?.clientName) {
+    if (bypassCache && !_forceJobsReadMode && sbCtx?.clientName) {
       invalidateMasterEngineCache(sbCtx.clientName, "client", tabName === "All" ? ["Confirmed", "Pipeline", "ConfCalcs", "PipeCalcs", "Outgoings"] : [tabName]);
       await invalidatePmaClientCache(sheetIdClean, sbCtx?.masterSheetId || null, ["jobs"]).catch(() => { });
     }
 
     const result = await resolvePortalCache({
       cacheKey,
-      bypassCache: Boolean(bypassCache),
+      bypassCache: Boolean(bypassCache || _forceJobsReadMode),
       l1TtlSecs: 120,
-      redisTtlSecs: 1800,
+      redisTtlSecs: _forceJobsReadMode ? 10 : 1800,
       isValidPayload: (c) => c && Array.isArray(c.jobs) && c.hasAccountingIntegration !== undefined,
       fetchFreshFn: async () => {
         const NOTE_COL_INDICES = [0, 41, 48, 55, 75, 82, 89];
@@ -1911,41 +1980,80 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           });
         };
 
+        let shared = null;
+        let relLookup = null;
+        let confRows = [];
+        let pipeRows = [];
         const initialConfNoteCap = 600;
         const initialPipeNoteCap = 300;
-        const initialNotesRanges = [];
-        if (tabName === "All" || !tabName || tabName === "Confirmed") {
-          initialNotesRanges.push(`Confirmed!A1:CL${initialConfNoteCap}`);
-        }
-        if (tabName === "All" || !tabName || tabName === "Pipeline") {
-          initialNotesRanges.push(`Pipeline!A1:CL${initialPipeNoteCap}`);
+        let usedRelationalReadPath = false;
+
+        if (useRelationalReads && sbCtx?.clientId) {
+          const [sharedKi, relBundle] = await Promise.all([
+            getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+              includePipeline: tabName !== "Confirmed",
+              bypassCache: Boolean(bypassCache),
+              keyInfoOnly: true,
+            }),
+            preloadClientRelationalJobsBundle(sbCtx, {
+              includeConfirmed: tabName !== "Pipeline",
+              includePipeline: tabName !== "Confirmed",
+            }),
+          ]);
+          shared = sharedKi;
+          if (relBundle?.tabHeaders?.Confirmed || relBundle?.tabHeaders?.Pipeline) {
+            usedRelationalReadPath = true;
+            relLookup = relBundle.relLookup;
+            if (tabName !== "Pipeline") {
+              const builtConf = buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { maxColLimit: 107 });
+              confRows = builtConf.rows;
+              notesMap.Confirmed = builtConf.notesByRowCol;
+            }
+            if (tabName !== "Confirmed") {
+              const builtPipe = buildRelationalFormattedTabRowsFromBundle(relBundle, "Pipeline", { maxColLimit: 107 });
+              pipeRows = builtPipe.rows;
+              notesMap.Pipeline = builtPipe.notesByRowCol;
+            }
+          }
         }
 
-        // Run values batchGet and cell notes fetch IN PARALLEL so there is no sequential round-trip waterfall
-        const [shared, relLookup] = await Promise.all([
-          getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
-            includePipeline: tabName !== "Confirmed",
-            bypassCache: Boolean(bypassCache),
-          }),
-          sbCtx?.jobsMode === "relational"
-            ? getClientRelationalJobsLookup(sbCtx).catch(() => null)
-            : Promise.resolve(null),
-          initialNotesRanges.length > 0
-            ? sheets.spreadsheets
-              .get({
-                spreadsheetId: sheetIdClean,
-                ranges: initialNotesRanges,
-                fields: "sheets(properties.title,data(startRow,rowData.values.note))",
-              })
-              .then(populateNotesFromResp)
-              .catch((err) => {
-                console.warn("⚠️ get_all_client_jobs: could not fetch cell notes:", err?.message);
-              })
-            : Promise.resolve(),
-        ]);
+        if (!usedRelationalReadPath) {
+          const initialNotesRanges = [];
+          if (tabName === "All" || !tabName || tabName === "Confirmed") {
+            initialNotesRanges.push(`Confirmed!A1:CL${initialConfNoteCap}`);
+          }
+          if (tabName === "All" || !tabName || tabName === "Pipeline") {
+            initialNotesRanges.push(`Pipeline!A1:CL${initialPipeNoteCap}`);
+          }
 
-        const confRows = tabName === "Pipeline" ? [] : (shared.confRows || []);
-        const pipeRows = tabName === "Confirmed" ? [] : (shared.pipeRows || []);
+          const [sharedRaw, fetchedRelLookup] = await Promise.all([
+            getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+              includePipeline: tabName !== "Confirmed",
+              bypassCache: Boolean(bypassCache),
+            }),
+            sbCtx?.jobsMode === "relational"
+              ? getClientRelationalJobsLookup(sbCtx).catch(() => null)
+              : Promise.resolve(null),
+            initialNotesRanges.length > 0
+              ? sheets.spreadsheets
+                .get({
+                  spreadsheetId: sheetIdClean,
+                  ranges: initialNotesRanges,
+                  fields: "sheets(properties.title,data(startRow,rowData.values.note))",
+                })
+                .then(populateNotesFromResp)
+                .catch((err) => {
+                  console.warn("⚠️ get_all_client_jobs: could not fetch cell notes:", err?.message);
+                })
+              : Promise.resolve(),
+          ]);
+
+          shared = sharedRaw;
+          relLookup = fetchedRelLookup;
+          confRows = tabName === "Pipeline" ? [] : (shared.confRows || []);
+          pipeRows = tabName === "Confirmed" ? [] : (shared.pipeRows || []);
+        }
+
         let productLines = [...(shared.productLines || [])];
         let leadSources = [...(shared.leadSources || [])];
         const accountingTool = shared.accountingTool || "None";
@@ -1956,35 +2064,37 @@ export async function handleGetAllClientJobs(req, res, sheets) {
         const standardChargeOutRate = shared.standardChargeOutRate || 0;
         const contractorDayRate = shared.contractorDayRate || 0;
 
-        // If active job rows exceed initial note cap, fetch only the remaining tail note rows
-        const getLastActiveRowCount = (rowsArr) => {
-          if (!Array.isArray(rowsArr)) return 0;
-          for (let i = rowsArr.length - 1; i >= 0; i--) {
-            const r = rowsArr[i];
-            if (r && (r[0] || r[1] || r[32] || r[41] || r[42] || r[48] || r[55] || r[75] || r[82] || r[89])) {
-              return i + 1;
+        if (!usedRelationalReadPath) {
+          // If active job rows exceed initial note cap, fetch only the remaining tail note rows
+          const getLastActiveRowCount = (rowsArr) => {
+            if (!Array.isArray(rowsArr)) return 0;
+            for (let i = rowsArr.length - 1; i >= 0; i--) {
+              const r = rowsArr[i];
+              if (r && (r[0] || r[1] || r[32] || r[41] || r[42] || r[48] || r[55] || r[75] || r[82] || r[89])) {
+                return i + 1;
+              }
             }
+            return 0;
+          };
+          const confNoteMaxRow = Math.min(getLastActiveRowCount(confRows) + 5, 2500);
+          const pipeNoteMaxRow = Math.min(getLastActiveRowCount(pipeRows) + 5, 1000);
+          const overflowNotesRanges = [];
+          if ((tabName === "All" || !tabName || tabName === "Confirmed") && confNoteMaxRow > initialConfNoteCap) {
+            overflowNotesRanges.push(`Confirmed!A${initialConfNoteCap + 1}:CL${confNoteMaxRow}`);
           }
-          return 0;
-        };
-        const confNoteMaxRow = Math.min(getLastActiveRowCount(confRows) + 5, 2500);
-        const pipeNoteMaxRow = Math.min(getLastActiveRowCount(pipeRows) + 5, 1000);
-        const overflowNotesRanges = [];
-        if ((tabName === "All" || !tabName || tabName === "Confirmed") && confNoteMaxRow > initialConfNoteCap) {
-          overflowNotesRanges.push(`Confirmed!A${initialConfNoteCap + 1}:CL${confNoteMaxRow}`);
-        }
-        if ((tabName === "All" || !tabName || tabName === "Pipeline") && pipeNoteMaxRow > initialPipeNoteCap) {
-          overflowNotesRanges.push(`Pipeline!A${initialPipeNoteCap + 1}:CL${pipeNoteMaxRow}`);
-        }
-        if (overflowNotesRanges.length > 0) {
-          try {
-            const overflowNotesResp = await sheets.spreadsheets.get({
-              spreadsheetId: sheetIdClean,
-              ranges: overflowNotesRanges,
-              fields: "sheets(properties.title,data(startRow,rowData.values.note))",
-            });
-            populateNotesFromResp(overflowNotesResp);
-          } catch (_) { }
+          if ((tabName === "All" || !tabName || tabName === "Pipeline") && pipeNoteMaxRow > initialPipeNoteCap) {
+            overflowNotesRanges.push(`Pipeline!A${initialPipeNoteCap + 1}:CL${pipeNoteMaxRow}`);
+          }
+          if (overflowNotesRanges.length > 0) {
+            try {
+              const overflowNotesResp = await sheets.spreadsheets.get({
+                spreadsheetId: sheetIdClean,
+                ranges: overflowNotesRanges,
+                fields: "sheets(properties.title,data(startRow,rowData.values.note))",
+              });
+              populateNotesFromResp(overflowNotesResp);
+            } catch (_) { }
+          }
         }
 
         const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
@@ -2233,6 +2343,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           crmDrives,
           clientMode: sbCtx?.clientMode || "sheet",
           jobsMode: sbCtx?.jobsMode || "grid",
+          jobsReadMode: usedRelationalReadPath ? "relational" : "grid",
           fetchedAt: new Date().toISOString(),
           hasAccountingIntegration,
           noEndDateRetainerMonths,

@@ -263,16 +263,23 @@ export function isCellInEditableBridgePosition(tabName, row0, col0, options = {}
     if (row0 === 299 || row0 === 303 || row0 === 304) {
       return col0 >= 0 && col0 <= 60;
     }
-    // Never write Making up CoS formula row (Row 111 -> idx 110) or Recharged expenses system rows (225–226)
-    if (row0 === 110 || row0 === 224 || row0 === 225) {
+    // Never write Making up CoS formula row (111 -> idx 110), summary/total formula rows (115-116, 120-123, 233-237), or Recharged expenses system rows (225-226)
+    if (
+      row0 === 110 ||
+      row0 === 114 ||
+      row0 === 115 ||
+      (row0 >= 119 && row0 <= 122) ||
+      row0 === 224 ||
+      row0 === 225 ||
+      (row0 >= 232 && row0 <= 236)
+    ) {
       return false;
     }
     const isAllowedRow =
       (row0 >= 12 && row0 <= 109) ||
       row0 === 111 ||
-      (row0 >= 114 && row0 <= 122) ||
-      (row0 >= 125 && row0 <= 223) ||
-      (row0 >= 229 && row0 <= 237);
+      row0 === 117 ||
+      (row0 >= 125 && row0 <= 223);
     const isAllowedCol =
       (col0 >= 0 && col0 <= 5) ||
       (col0 >= 6 && col0 <= 17) ||
@@ -302,8 +309,37 @@ export function isCellInEditableBridgePosition(tabName, row0, col0, options = {}
     return row0 >= 3 && row0 <= 52 && ((col0 >= 0 && col0 <= 8) || (col0 >= 11 && col0 <= 263));
   }
 
-  if (tabName === "Budget" || tabName === "NBtoFind") {
-    return row0 >= 1;
+  const isThreeYearMonthCol =
+    (col0 >= 6 && col0 <= 17) || (col0 >= 21 && col0 <= 32) || (col0 >= 36 && col0 <= 47);
+
+  if (tabName === "NBtoFind") {
+    if (col0 === 0 && (row0 === 8 || row0 === 11 || row0 === 20)) return true;
+    return isThreeYearMonthCol && (row0 === 2 || row0 === 4 || row0 === 9 || row0 === 24);
+  }
+
+  if (tabName === "Budget") {
+    if ((row0 >= 4 && row0 <= 8) || (row0 >= 12 && row0 <= 16)) {
+      return isThreeYearMonthCol;
+    }
+    if (row0 >= 58 && row0 <= 111) {
+      return (col0 >= 0 && col0 <= 4) || isThreeYearMonthCol;
+    }
+    if (row0 === 118) {
+      return col0 === 0 || col0 === 4 || isThreeYearMonthCol;
+    }
+    if (row0 >= 126 && row0 <= 140) {
+      return col0 === 0 || col0 === 4 || isThreeYearMonthCol;
+    }
+    if (row0 === 141) {
+      return col0 === 1;
+    }
+    if (row0 === 142) {
+      return isThreeYearMonthCol;
+    }
+    if (row0 >= 149 && row0 <= 250) {
+      return col0 === 0 || col0 === 4 || isThreeYearMonthCol;
+    }
+    return false;
   }
 
   return false;

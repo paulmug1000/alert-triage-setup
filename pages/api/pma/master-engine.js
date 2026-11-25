@@ -51,6 +51,8 @@ import {
   backfillAllClientsRelationalJobs,
   verifyRelationalJobsParity,
   setClientJobsMode,
+  verifyRelationalJobsReadParity,
+  setClientJobsReadMode,
 } from "../../../services/relationalJobsService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
@@ -336,6 +338,34 @@ export default async function handler(req, res) {
         category: "SYSTEM",
         action: "CLIENT_JOBS_MODE_CHANGED",
         summary: `Switched ${cleanClient} jobs engine mode to "${jobsMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "verify_relational_jobs_read_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const parityReport = await verifyRelationalJobsReadParity({
+        clientName: targetClientFilter,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_jobs_read_mode") {
+      const jobsReadMode = String(req.body?.jobsReadMode || "").trim().toLowerCase();
+      if (jobsReadMode !== "grid" && jobsReadMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid jobsReadMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientJobsReadMode(cleanClient, jobsReadMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_JOBS_READ_MODE_CHANGED",
+        summary: `Switched ${cleanClient} jobs read source to "${jobsReadMode}"`,
         details: updated,
         userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });

@@ -198,6 +198,25 @@ async function fetchAllRowsByClientId_(supabase, table, clientId, orderCol = "sh
   for (let from = 0; ; from += 1000) {
     let q = supabase.from(table).select("*").eq("client_id", clientId);
     if (orderCol) q = q.order(orderCol, { ascending: true });
+    q = q.order("id", { ascending: true });
+    const { data, error } = await q.range(from, from + 999);
+    if (error) throw new Error(`${table} query failed: ${error.message}`);
+    if (!Array.isArray(data) || data.length === 0) break;
+    all.push(...data);
+    if (data.length < 1000) break;
+  }
+  return all;
+}
+
+async function fetchAllSelectByClientId_(supabase, table, selectCols, clientId, extraFilters = {}) {
+  const all = [];
+  for (let from = 0; ; from += 1000) {
+    let q = supabase.from(table).select(selectCols).eq("client_id", clientId);
+    for (const [k, v] of Object.entries(extraFilters || {})) {
+      if (Array.isArray(v)) q = q.in(k, v);
+      else q = q.eq(k, v);
+    }
+    q = q.order("id", { ascending: true });
     const { data, error } = await q.range(from, from + 999);
     if (error) throw new Error(`${table} query failed: ${error.message}`);
     if (!Array.isArray(data) || data.length === 0) break;
@@ -1031,6 +1050,7 @@ export async function getPhase4MasterOverviewStats() {
       totalPlLines: 0,
       totalCrmDeals: 0,
       totalTimeEntries: 0,
+      totalConfigTabs: 0,
       linkedJobInvoices: 0,
       linkedJobExpenses: 0,
       linkedContractorEntries: 0,
@@ -1044,6 +1064,7 @@ export async function getPhase4MasterOverviewStats() {
     plCnt,
     crmCnt,
     timeCnt,
+    cfgCnt,
     linkJobInv,
     linkJobExp,
     linkContr,
@@ -1054,6 +1075,7 @@ export async function getPhase4MasterOverviewStats() {
     supabase.from("accounting_pl_lines").select("id", { count: "exact", head: true }),
     supabase.from("crm_deals_raw").select("id", { count: "exact", head: true }),
     supabase.from("time_entries_raw").select("id", { count: "exact", head: true }),
+    supabase.from("pulse_master_sync_configs").select("client_id", { count: "exact", head: true }),
     supabase.from("pulse_job_invoices").select("id", { count: "exact", head: true }).not("accounting_invoice_id", "is", null),
     supabase.from("pulse_job_expenses").select("id", { count: "exact", head: true }).not("accounting_direct_cost_id", "is", null),
     supabase.from("pulse_contractor_entries").select("id", { count: "exact", head: true }).not("accounting_direct_cost_id", "is", null),
@@ -1068,6 +1090,7 @@ export async function getPhase4MasterOverviewStats() {
     totalPlLines: plCnt.count || 0,
     totalCrmDeals: crmCnt.count || 0,
     totalTimeEntries: timeCnt.count || 0,
+    totalConfigTabs: cfgCnt.count || 0,
     linkedJobInvoices: linkJobInv.count || 0,
     linkedJobExpenses: linkJobExp.count || 0,
     linkedContractorEntries: linkContr.count || 0,
@@ -1080,60 +1103,35 @@ export async function getPhase4MasterOverviewStats() {
 // ============================================================================
 
 async function linkRelationalMasterForeignKeys_(supabase, clientId) {
-  const [invRes, dirRes, crmRes, timeRes, jobInvRes, jobExpRes, contrRes, jobsRes, empRes] =
+  const [invRows, dirRows, crmRows, timeRows, jobInvRows, jobExpRows, contrRows, jobsRows, empRows] =
     await Promise.all([
-      supabase
-        .from("accounting_invoices")
-        .select("id, invoice_number")
-        .eq("client_id", clientId)
-        .eq("record_kind", "invoice"),
-      supabase
-        .from("accounting_direct_costs")
-        .select("id, external_id")
-        .eq("client_id", clientId),
-      supabase
-        .from("crm_deals_raw")
-        .select("id, project_code, matched_job_id")
-        .eq("client_id", clientId),
-      supabase
-        .from("time_entries_raw")
-        .select("id, staff_name, employee_id")
-        .eq("client_id", clientId)
-        .in("entry_kind", ["staff_config", "staff_month"]),
-      supabase
-        .from("pulse_job_invoices")
-        .select("id, invoice_ref, accounting_invoice_id")
-        .eq("client_id", clientId),
-      supabase
-        .from("pulse_job_expenses")
-        .select("id, external_app_id, accounting_direct_cost_id")
-        .eq("client_id", clientId),
-      supabase
-        .from("pulse_contractor_entries")
-        .select("id, external_app_id, accounting_direct_cost_id")
-        .eq("client_id", clientId),
-      supabase
-        .from("pulse_jobs")
-        .select("id, project_code, tab_type")
-        .eq("client_id", clientId),
-      supabase
-        .from("pulse_employees")
-        .select("id, employee_name")
-        .eq("client_id", clientId),
+      fetchAllSelectByClientId_(supabase, "accounting_invoices", "id, invoice_number", clientId, {
+        record_kind: "invoice",
+      }),
+      fetchAllSelectByClientId_(supabase, "accounting_direct_costs", "id, external_id", clientId),
+      fetchAllSelectByClientId_(supabase, "crm_deals_raw", "id, project_code, matched_job_id", clientId),
+      fetchAllSelectByClientId_(supabase, "time_entries_raw", "id, staff_name, employee_id", clientId, {
+        entry_kind: ["staff_config", "staff_month"],
+      }),
+      fetchAllSelectByClientId_(supabase, "pulse_job_invoices", "id, invoice_ref, accounting_invoice_id", clientId),
+      fetchAllSelectByClientId_(supabase, "pulse_job_expenses", "id, external_app_id, accounting_direct_cost_id", clientId),
+      fetchAllSelectByClientId_(supabase, "pulse_contractor_entries", "id, external_app_id, accounting_direct_cost_id", clientId),
+      fetchAllSelectByClientId_(supabase, "pulse_jobs", "id, project_code, tab_type", clientId),
+      fetchAllSelectByClientId_(supabase, "pulse_employees", "id, employee_name", clientId),
     ]);
 
   const invByRef = new Map();
-  for (const r of invRes.data || []) {
+  for (const r of invRows) {
     const k = normKey_(r.invoice_number);
     if (k && !invByRef.has(k)) invByRef.set(k, r.id);
   }
   const dirByExt = new Map();
-  for (const r of dirRes.data || []) {
+  for (const r of dirRows) {
     const k = normKey_(r.external_id);
     if (k && !dirByExt.has(k)) dirByExt.set(k, r.id);
   }
   const jobByCode = new Map();
-  for (const j of jobsRes.data || []) {
+  for (const j of jobsRows) {
     const k = normKey_(j.project_code);
     if (!k) continue;
     // Prefer Confirmed over Pipeline if both exist with same code
@@ -1142,7 +1140,7 @@ async function linkRelationalMasterForeignKeys_(supabase, clientId) {
     }
   }
   const empByName = new Map();
-  for (const e of empRes.data || []) {
+  for (const e of empRows) {
     const k = normKey_(e.employee_name);
     if (k && !empByName.has(k)) empByName.set(k, e.id);
   }
@@ -1154,7 +1152,7 @@ async function linkRelationalMasterForeignKeys_(supabase, clientId) {
   let linkedTimeEntries = 0;
 
   const updatePromises = [];
-  for (const ji of jobInvRes.data || []) {
+  for (const ji of jobInvRows) {
     const targetId = invByRef.get(normKey_(ji.invoice_ref)) || null;
     if (targetId && ji.accounting_invoice_id !== targetId) {
       linkedJobInvoices++;
@@ -1168,7 +1166,7 @@ async function linkRelationalMasterForeignKeys_(supabase, clientId) {
       linkedJobInvoices++;
     }
   }
-  for (const je of jobExpRes.data || []) {
+  for (const je of jobExpRows) {
     const targetId = dirByExt.get(normKey_(je.external_app_id)) || null;
     if (targetId && je.accounting_direct_cost_id !== targetId) {
       linkedJobExpenses++;
@@ -1182,7 +1180,7 @@ async function linkRelationalMasterForeignKeys_(supabase, clientId) {
       linkedJobExpenses++;
     }
   }
-  for (const ce of contrRes.data || []) {
+  for (const ce of contrRows) {
     const targetId = dirByExt.get(normKey_(ce.external_app_id)) || null;
     if (targetId && ce.accounting_direct_cost_id !== targetId) {
       linkedContractorEntries++;
@@ -1196,7 +1194,7 @@ async function linkRelationalMasterForeignKeys_(supabase, clientId) {
       linkedContractorEntries++;
     }
   }
-  for (const cd of crmRes.data || []) {
+  for (const cd of crmRows) {
     const targetId = jobByCode.get(normKey_(cd.project_code)) || null;
     if (targetId !== (cd.matched_job_id || null)) {
       if (targetId) linkedCrmDeals++;
@@ -1207,7 +1205,7 @@ async function linkRelationalMasterForeignKeys_(supabase, clientId) {
       linkedCrmDeals++;
     }
   }
-  for (const te of timeRes.data || []) {
+  for (const te of timeRows) {
     const targetId = empByName.get(normKey_(te.staff_name)) || null;
     if (targetId !== (te.employee_id || null)) {
       if (targetId) linkedTimeEntries++;
@@ -1314,12 +1312,14 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       "client_id,record_kind,sheet_row_num"
     );
     const keepInvNums = new Set(parsedInv.rows.map((r) => r.sheet_row_num));
-    const existingInv = await supabase
-      .from("accounting_invoices")
-      .select("id, sheet_row_num")
-      .eq("client_id", ctx.clientId)
-      .eq("record_kind", "invoice");
-    const staleIds = (existingInv.data || [])
+    const existingInv = await fetchAllSelectByClientId_(
+      supabase,
+      "accounting_invoices",
+      "id, sheet_row_num",
+      ctx.clientId,
+      { record_kind: "invoice" }
+    );
+    const staleIds = existingInv
       .filter((r) => !keepInvNums.has(Number(r.sheet_row_num)))
       .map((r) => r.id);
     for (let i = 0; i < staleIds.length; i += 200) {
@@ -1341,12 +1341,14 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       "client_id,record_kind,sheet_row_num"
     );
     const keepRevNums = new Set(parsedRev.rows.map((r) => r.sheet_row_num));
-    const existingRev = await supabase
-      .from("accounting_invoices")
-      .select("id, sheet_row_num")
-      .eq("client_id", clientIdOrCtx_(ctx))
-      .eq("record_kind", "revenue_line");
-    const staleRevIds = (existingRev.data || [])
+    const existingRev = await fetchAllSelectByClientId_(
+      supabase,
+      "accounting_invoices",
+      "id, sheet_row_num",
+      clientIdOrCtx_(ctx),
+      { record_kind: "revenue_line" }
+    );
+    const staleRevIds = existingRev
       .filter((r) => !keepRevNums.has(Number(r.sheet_row_num)))
       .map((r) => r.id);
     for (let i = 0; i < staleRevIds.length; i += 200) {
@@ -1369,11 +1371,13 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       "client_id,sheet_row_num"
     );
     const keepDirNums = new Set(parsedDir.rows.map((r) => r.sheet_row_num));
-    const existingDir = await supabase
-      .from("accounting_direct_costs")
-      .select("id, sheet_row_num")
-      .eq("client_id", ctx.clientId);
-    const staleDirIds = (existingDir.data || [])
+    const existingDir = await fetchAllSelectByClientId_(
+      supabase,
+      "accounting_direct_costs",
+      "id, sheet_row_num",
+      ctx.clientId
+    );
+    const staleDirIds = existingDir
       .filter((r) => !keepDirNums.has(Number(r.sheet_row_num)))
       .map((r) => r.id);
     for (let i = 0; i < staleDirIds.length; i += 200) {
@@ -1403,11 +1407,13 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       "client_id,source_tab,sheet_row_num"
     );
     const keepPlKeys = new Set(allPlRows.map((r) => `${r.source_tab}::${r.sheet_row_num}`));
-    const existingPl = await supabase
-      .from("accounting_pl_lines")
-      .select("id, source_tab, sheet_row_num")
-      .eq("client_id", ctx.clientId);
-    const stalePlIds = (existingPl.data || [])
+    const existingPl = await fetchAllSelectByClientId_(
+      supabase,
+      "accounting_pl_lines",
+      "id, source_tab, sheet_row_num",
+      ctx.clientId
+    );
+    const stalePlIds = existingPl
       .filter((r) => !keepPlKeys.has(`${r.source_tab}::${r.sheet_row_num}`))
       .map((r) => r.id);
     for (let i = 0; i < stalePlIds.length; i += 200) {
@@ -1430,11 +1436,13 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       "client_id,sheet_row_num"
     );
     const keepCrmNums = new Set(parsedCrm.rows.map((r) => r.sheet_row_num));
-    const existingCrm = await supabase
-      .from("crm_deals_raw")
-      .select("id, sheet_row_num")
-      .eq("client_id", ctx.clientId);
-    const staleCrmIds = (existingCrm.data || [])
+    const existingCrm = await fetchAllSelectByClientId_(
+      supabase,
+      "crm_deals_raw",
+      "id, sheet_row_num",
+      ctx.clientId
+    );
+    const staleCrmIds = existingCrm
       .filter((r) => !keepCrmNums.has(Number(r.sheet_row_num)))
       .map((r) => r.id);
     for (let i = 0; i < staleCrmIds.length; i += 200) {
@@ -1458,11 +1466,13 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       "client_id,entry_kind,sheet_row_num"
     );
     const keepTimeKeys = new Set(parsedTime.rows.map((r) => `${r.entry_kind}::${r.sheet_row_num}`));
-    const existingTime = await supabase
-      .from("time_entries_raw")
-      .select("id, entry_kind, sheet_row_num")
-      .eq("client_id", ctx.clientId);
-    const staleTimeIds = (existingTime.data || [])
+    const existingTime = await fetchAllSelectByClientId_(
+      supabase,
+      "time_entries_raw",
+      "id, entry_kind, sheet_row_num",
+      ctx.clientId
+    );
+    const staleTimeIds = existingTime
       .filter((r) => !keepTimeKeys.has(`${r.entry_kind}::${r.sheet_row_num}`))
       .map((r) => r.id);
     for (let i = 0; i < staleTimeIds.length; i += 200) {
@@ -1491,7 +1501,18 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
     await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
   }
 
-  return { ...summary, ...fkLinks };
+  return {
+    ...summary,
+    ...fkLinks,
+    counts: {
+      invoices: summary.invoicesCount,
+      revenueLines: summary.revenueLinesCount,
+      directCosts: summary.directCostsCount,
+      plLines: summary.plLinesCount,
+      crmDeals: summary.crmDealsCount,
+      timeEntries: summary.timeEntriesCount,
+    },
+  };
 }
 
 function clientIdOrCtx_(ctx) {
@@ -1577,11 +1598,19 @@ export async function backfillAllClientsMasterIngestion() {
       results.push({ clientName: cl.client_name, error: err.message });
     }
   }
+  const succeededCount = results.filter((r) => !r.error).length;
   return {
     checkedAt: new Date().toISOString(),
     totalClients: results.length,
-    succeededCount: results.filter((r) => !r.error).length,
+    clientsProcessed: succeededCount,
+    succeededCount,
     errorCount: results.filter((r) => Boolean(r.error)).length,
+    invoicesCount: results.reduce((a, r) => a + (r.invoicesCount || 0), 0),
+    revenueLinesCount: results.reduce((a, r) => a + (r.revenueLinesCount || 0), 0),
+    directCostsCount: results.reduce((a, r) => a + (r.directCostsCount || 0), 0),
+    plLinesCount: results.reduce((a, r) => a + (r.plLinesCount || 0), 0),
+    crmDealsCount: results.reduce((a, r) => a + (r.crmDealsCount || 0), 0),
+    timeEntriesCount: results.reduce((a, r) => a + (r.timeEntriesCount || 0), 0),
     results,
   };
 }
@@ -1926,6 +1955,9 @@ export async function setClientMasterIngestionMode(clientName, mode) {
     .select("id, client_name, master_ingestion_mode, master_read_mode")
     .single();
   if (uErr) throw new Error(`Failed updating master_ingestion_mode: ${uErr.message}`);
+  invalidateMasterEngineCache(clientName, "master", ALL_PHASE4_MASTER_TABS, {
+    invalidateSheetContext: true,
+  });
   invalidateClientRelationalMasterCache(clientName);
   return upd;
 }
@@ -1959,7 +1991,9 @@ export async function setClientMasterReadMode(clientName, mode) {
     .select("id, client_name, master_ingestion_mode, master_read_mode")
     .single();
   if (uErr) throw new Error(`Failed updating master_read_mode: ${uErr.message}`);
-  invalidateMasterEngineCache(clientName, "master", ALL_PHASE4_MASTER_TABS);
+  invalidateMasterEngineCache(clientName, "master", ALL_PHASE4_MASTER_TABS, {
+    invalidateSheetContext: true,
+  });
   invalidateClientRelationalMasterCache(clientName);
   return upd;
 }

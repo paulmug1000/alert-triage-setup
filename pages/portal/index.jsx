@@ -229,6 +229,7 @@ export default function PortalPage({
   const inFlightPerfSheetIdRef = useRef(null);
   const inFlightCashSheetIdRef = useRef(null);
   const inFlightKeyDataSheetIdRef = useRef(null);
+  const keyDataReqSeqRef = useRef(0);
   const inFlightBudgetSheetIdRef = useRef(null);
 
   const fetchPayload = useCallback(async (client, bypassCache = false, isSilent = false) => {
@@ -447,6 +448,7 @@ export default function PortalPage({
     if (!client || !client.clientSheetId) return;
     if (client.clientSheetId !== activeClientSheetIdRef.current) return;
     if (!bypassCache && inFlightKeyDataSheetIdRef.current === client.clientSheetId) return;
+    const reqSeq = ++keyDataReqSeqRef.current;
     inFlightKeyDataSheetIdRef.current = client.clientSheetId;
     if (!isSilent) {
       setLoadingKeyData(true);
@@ -465,6 +467,7 @@ export default function PortalPage({
         throw jsonErr;
       }
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
+      if (reqSeq !== keyDataReqSeqRef.current) return;
       if (data.success && data.data) {
         setKeyData(data.data);
       } else if (!isSilent) {
@@ -472,17 +475,20 @@ export default function PortalPage({
       }
     } catch (err) {
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
+      if (reqSeq !== keyDataReqSeqRef.current) return;
       console.error("Key data fetch error:", err);
       if (!isSilent) {
         setKeyDataError(err.name === "AbortError" ? "Request timed out" : (err.message || "Failed to load key data"));
       }
     } finally {
       clearTimeout(timeoutId);
-      if (inFlightKeyDataSheetIdRef.current === client.clientSheetId) {
-        inFlightKeyDataSheetIdRef.current = null;
-      }
-      if (!isSilent) {
-        setLoadingKeyData(false);
+      if (reqSeq === keyDataReqSeqRef.current) {
+        if (inFlightKeyDataSheetIdRef.current === client.clientSheetId) {
+          inFlightKeyDataSheetIdRef.current = null;
+        }
+        if (!isSilent) {
+          setLoadingKeyData(false);
+        }
       }
     }
   }, []);

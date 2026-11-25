@@ -12,6 +12,14 @@ import {
   handleUpdateVariableRetainerMonth,
   handleSaveVariableRetainerSeries_,
 } from "../../../services/retainers.js";
+import { getToleranceValues } from "../../../services/sharedHelpers.js";
+import {
+  resolveMasterSheetIdForClient_,
+  calculateRevenueSplit,
+  generateAutoPlaceholderRef_,
+  isAutoInvoicePlaceholderRef_,
+  isAutoExpensePlaceholderId_,
+} from "../../../services/workspaces.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
 import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
@@ -21,6 +29,7 @@ import {
   canonicalizeExpenseStatus,
   formatInvoiceRefForSheet,
   toSheetDateFormat,
+  parseSheetDate,
   hasActiveCrmIntegration,
   isCrmDrivenTab,
   getCrmDisplayName,
@@ -1051,6 +1060,7 @@ export default async function handler(req, res) {
           );
         }
       }
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
       await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({
         success: true,
@@ -1082,6 +1092,188 @@ export default async function handler(req, res) {
         overrideRev: existingAeTag.overrideRev || Math.abs(editedRev - existingAeTag.baseRev) > 0.005,
         overrideDc: existingAeTag.overrideDc || Math.abs(editedDc - existingAeTag.baseDC) > 0.005,
       });
+    }
+
+    // Automatic placeholder generation & adjustment (100% verbatim with services/workspaces.js)
+    const isAutoInvItem = (inv) => isAutoInvoicePlaceholderRef_(inv?.ref);
+    const isAutoExpItem = (exp) => {
+      const id = String(exp?.appId || exp?.transactionId || "").trim();
+      const desc = String(exp?.desc || "").trim();
+      const st = String(exp?.status || "").trim().toLowerCase();
+      const isPaid = ["paid", "complete", "part-paid (paid)"].includes(st);
+      return !isPaid && (isAutoExpensePlaceholderId_(id) || (!id && /^placeholder/i.test(desc)));
+    };
+    let cachedTols = null;
+    const loadJobTolerances_ = async () => {
+      if (cachedTols) return cachedTols;
+      const masterId = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "");
+      cachedTols = masterId
+        ? await getToleranceValues(sheets, masterId)
+        : {
+          invoiceLogicMode: "50-50",
+          expenseLogicMode: "100 at start",
+          retainerInvoiceDay: 28,
+          retainerExpenseDay: 28,
+          defaultDaysToPay: 30,
+        };
+      return cachedTols;
+    };
+
+    if (!isRetainer) {
+      const nonAutoInvoices = validInvoices.filter((inv) => !isAutoInvItem(inv));
+      const existingAutoInvoices = validInvoices.filter((inv) => isAutoInvItem(inv));
+      const nonAutoInvoicesTotal = nonAutoInvoices.reduce((sum, inv) => sum + Math.max(0, parseMoneyVal(inv.amount)), 0);
+      const allocatedRechgdOnNonAuto = isTargetConfirmed
+        ? nonAutoInvoices.reduce((sum, inv) => sum + Math.max(0, parseMoneyVal(inv.ofWhichRechgd)), 0)
+        : 0;
+      const jobRevNum = Math.max(0, parseMoneyVal(job.revenue ?? job.jobRevenue));
+      const jobRechNum = isTargetConfirmed ? Math.max(0, parseMoneyVal(job.rechargedExpenses)) : 0;
+      const effectiveBillable = Math.round((jobRevNum + jobRechNum) * 100) / 100;
+      const remainingToInvoice = Math.max(0, Math.round((effectiveBillable - nonAutoInvoicesTotal) * 100) / 100);
+
+      if (remainingToInvoice > 0.01) {
+        const tols = await loadJobTolerances_();
+        const startDate = (job.startDate && parseSheetDate(job.startDate)) || new Date();
+        const endDate = (job.endDate && !isNoEndDateSentinel(job.endDate) && parseSheetDate(job.endDate)) || startDate;
+        const remainingRechgdToAllocate = isTargetConfirmed
+          ? Math.max(0, Math.min(remainingToInvoice, Math.round((jobRechNum - allocatedRechgdOnNonAuto) * 100) / 100))
+          : 0;
+        const remainingNonRechgd = Math.max(0, Math.round((remainingToInvoice - remainingRechgdToAllocate) * 100) / 100);
+        const allocations = remainingNonRechgd > 0
+          ? calculateRevenueSplit(
+            remainingNonRechgd,
+            tols?.invoiceLogicMode || "50-50",
+            startDate,
+            endDate,
+            tols?.retainerInvoiceDay || 28,
+            nonAutoInvoices.length
+          )
+          : [{ date: endDate || startDate, amt: 0 }];
+
+        if (remainingRechgdToAllocate > 0 && allocations.length > 0) {
+          allocations[allocations.length - 1].amt =
+            Math.round(((allocations[allocations.length - 1].amt || 0) + remainingRechgdToAllocate) * 100) / 100;
+        }
+
+        const now = new Date();
+        const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const targetFifth = new Date(now.getFullYear(), now.getMonth(), 5);
+        allocations.forEach((alloc) => {
+          if (alloc.date instanceof Date && !isNaN(alloc.date.getTime()) && alloc.date < currentMonthStart) {
+            alloc.date = targetFifth;
+          }
+        });
+
+        const generatedAutoInvoices = allocations.map((alloc, k) => {
+          const prevAuto = existingAutoInvoices[k] || null;
+          const autoRef = prevAuto?.ref ? String(prevAuto.ref).trim() : generateAutoPlaceholderRef_("PLACE-INV");
+          const parsedDays = parseInt(String(prevAuto?.days || "").replace(/[^\d-]/g, ""), 10);
+          const effectiveDays = !isNaN(parsedDays) && parsedDays > 0 && parsedDays <= 365
+            ? parsedDays
+            : (tols?.defaultDaysToPay || 30);
+          const isFinal = k === allocations.length - 1;
+          const rechVal = isTargetConfirmed && isFinal && remainingRechgdToAllocate > 0
+            ? String(remainingRechgdToAllocate)
+            : "";
+          const cmVal = isTargetConfirmed && isFinal && remainingRechgdToAllocate > 0 && prevAuto?.costMonth
+            ? String(prevAuto.costMonth)
+            : "";
+          return {
+            amount: String(alloc.amt),
+            ref: autoRef,
+            sendDate: toSheetDateFormat(alloc.date),
+            days: String(effectiveDays),
+            status: "",
+            ...(isTargetConfirmed ? { ofWhichRechgd: rechVal, costMonth: cmVal } : {}),
+          };
+        });
+        validInvoices.splice(0, validInvoices.length, ...nonAutoInvoices, ...generatedAutoInvoices);
+      } else {
+        validInvoices.splice(0, validInvoices.length, ...nonAutoInvoices);
+      }
+
+      const nonAutoExpenses = validExpenses.filter((exp) => !isAutoExpItem(exp));
+      const existingAutoExpenses = validExpenses.filter((exp) => isAutoExpItem(exp));
+      const nonAutoExpensesTotal = nonAutoExpenses.reduce((sum, exp) => sum + Math.max(0, parseMoneyVal(exp.amount)), 0);
+      const effectiveBudget = Math.max(0, parseMoneyVal(job.directCosts));
+      const remainingDC = Math.max(0, Math.round((effectiveBudget - nonAutoExpensesTotal) * 100) / 100);
+
+      if (remainingDC > 0.01) {
+        const tols = await loadJobTolerances_();
+        const startDate = (job.startDate && parseSheetDate(job.startDate)) || new Date();
+        const endDate = (job.endDate && !isNoEndDateSentinel(job.endDate) && parseSheetDate(job.endDate)) || startDate;
+        const allocations = calculateRevenueSplit(
+          remainingDC,
+          tols?.expenseLogicMode || "100 at start",
+          startDate,
+          endDate,
+          tols?.retainerExpenseDay || 28,
+          nonAutoExpenses.length
+        );
+
+        const now = new Date();
+        const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const targetFifth = new Date(now.getFullYear(), now.getMonth(), 5);
+        allocations.forEach((alloc) => {
+          if (alloc.date instanceof Date && !isNaN(alloc.date.getTime()) && alloc.date < currentMonthStart) {
+            alloc.date = targetFifth;
+          }
+        });
+
+        const generatedAutoExpenses = allocations.map((alloc, k) => {
+          const prevAuto = existingAutoExpenses[k] || null;
+          const prevAutoId = String(prevAuto?.appId || prevAuto?.transactionId || "").trim();
+          const autoId = prevAutoId && isAutoExpensePlaceholderId_(prevAutoId)
+            ? prevAutoId
+            : generateAutoPlaceholderRef_("PLACE-EXP");
+          const parsedDays = parseInt(String(prevAuto?.days || "").replace(/[^\d-]/g, ""), 10);
+          const effectiveDays = !isNaN(parsedDays) && parsedDays > 0 && parsedDays <= 365
+            ? parsedDays
+            : (tols?.defaultDaysToPay || 30);
+          const effectiveVat = prevAuto?.vat === "Yes" || prevAuto?.vat === "No" ? prevAuto.vat : (job.vat || "Yes");
+          return {
+            desc: prevAuto?.desc || "Placeholder Entry - Project Direct Cost",
+            amount: String(alloc.amt),
+            vat: effectiveVat,
+            recDate: toSheetDateFormat(alloc.date),
+            days: String(effectiveDays),
+            status: "",
+            appId: autoId,
+          };
+        });
+        validExpenses.splice(0, validExpenses.length, ...nonAutoExpenses, ...generatedAutoExpenses);
+      } else {
+        validExpenses.splice(0, validExpenses.length, ...nonAutoExpenses);
+      }
+    } else if (!isTargetConfirmed) {
+      // Pipeline Retainer: keep single monthly fee placeholder on parent slot 1 when no non-auto invoices exist
+      const nonAutoInvoices = validInvoices.filter((inv) => !isAutoInvItem(inv));
+      const existingAutoInvoices = validInvoices.filter((inv) => isAutoInvItem(inv));
+      const nonAutoInvoicesTotal = nonAutoInvoices.reduce((sum, inv) => sum + Math.max(0, parseMoneyVal(inv.amount)), 0);
+      const remainingToInvoice = Math.max(0, Math.round((Math.max(0, parseMoneyVal(job.revenue)) - nonAutoInvoicesTotal) * 100) / 100);
+
+      if (nonAutoInvoices.length === 0 && remainingToInvoice > 0.01) {
+        const tols = await loadJobTolerances_();
+        const startDate = (job.startDate && parseSheetDate(job.startDate)) || new Date();
+        const now = new Date();
+        const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const propDate = startDate < currentMonthStart ? new Date(now.getFullYear(), now.getMonth(), 5) : startDate;
+        const prevAuto = existingAutoInvoices[0] || null;
+        const autoRef = prevAuto?.ref ? String(prevAuto.ref).trim() : generateAutoPlaceholderRef_("PLACE-INV");
+        const parsedDays = parseInt(String(prevAuto?.days || "").replace(/[^\d-]/g, ""), 10);
+        const effectiveDays = !isNaN(parsedDays) && parsedDays > 0 && parsedDays <= 365
+          ? parsedDays
+          : (tols?.defaultDaysToPay || 30);
+        validInvoices.splice(0, validInvoices.length, {
+          amount: String(remainingToInvoice),
+          ref: autoRef,
+          sendDate: toSheetDateFormat(propDate),
+          days: String(effectiveDays),
+          status: "",
+        });
+      } else if (remainingToInvoice <= 0.01 && existingAutoInvoices.length > 0) {
+        validInvoices.splice(0, validInvoices.length, ...nonAutoInvoices);
+      }
     }
 
     // Canonical slot ordering for non-fixed-retainer jobs: [Real -> Manual placeholder -> Auto placeholder]
@@ -1602,7 +1794,9 @@ export default async function handler(req, res) {
       });
     }
 
-    // 9. INVALIDATE CACHES FOR THIS CLIENT AFTER ALL WRITES & RETAINER PROVISIONING COMPLETE
+    // 9. FLUSH RELATIONAL / FORMULA RECOMPUTES FIRST, THEN INVALIDATE CACHES
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+
     try {
       await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     } catch (cacheErr) {
@@ -1633,16 +1827,12 @@ export default async function handler(req, res) {
       directExpenses: validExpenses,
     }).catch(() => { });
 
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
-
     let savedJobUuid = relationalAnchor?.resolved && !isSheetChange ? relationalAnchor.jobUuid : null;
-    if (relationalAnchor?.isRelational) {
-      try {
-        const relLookup = await getClientRelationalJobsLookup(verifiedClientName || clientName || "");
-        const matched = relLookup?.jobsByTabAndRow?.get(`${sheetName.toLowerCase()}:${parentRow}`);
-        if (matched?.id) savedJobUuid = matched.id;
-      } catch (_) { }
-    }
+    try {
+      const relLookup = await getClientRelationalJobsLookup(verifiedClientName || clientName || "");
+      const matched = relLookup?.jobsByTabAndRow?.get(`${sheetName.toLowerCase()}:${parentRow}`);
+      if (matched?.id) savedJobUuid = matched.id;
+    } catch (_) { }
 
     return res.status(200).json({
       success: true,
@@ -1650,6 +1840,8 @@ export default async function handler(req, res) {
       ...(savedJobUuid ? { jobUuid: savedJobUuid } : {}),
       sheetName,
       childRowNumbers: actualChildRows,
+      ...(shouldProvisionRetainerSchedule ? {} : { invoices: validInvoices }),
+      directExpenses: validExpenses,
       backgroundProvisioning: false,
     });
   } catch (err) {

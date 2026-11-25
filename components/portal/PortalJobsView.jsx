@@ -614,12 +614,24 @@ export default function PortalJobsView({
   const baseVisibleJobs = useMemo(() => {
     if (!jobsData?.all) return null;
     const hasOptimistic = Object.keys(optimisticJobs).length > 0;
-    const baseList = hasOptimistic
-      ? jobsData.all.map((j) => {
+    let baseList = jobsData.all;
+    if (hasOptimistic) {
+      const seenKeys = new Set();
+      baseList = jobsData.all
+        .map((j) => {
           const key = j.id !== undefined ? j.id : (j.parentId !== undefined ? j.parentId : j.rowNumber);
-          return (key !== undefined && optimisticJobs[key]) ? { ...j, ...optimisticJobs[key] } : j;
+          if (key !== undefined) seenKeys.add(String(key));
+          const opt = key !== undefined ? optimisticJobs[key] : null;
+          if (opt?._deletedOptimistic) return null;
+          return opt ? { ...j, ...opt } : j;
         })
-      : jobsData.all;
+        .filter(Boolean);
+      for (const [optKey, optJob] of Object.entries(optimisticJobs)) {
+        if (optJob && !optJob._deletedOptimistic && !seenKeys.has(String(optKey))) {
+          baseList.push(optJob);
+        }
+      }
+    }
     const afterZeroFilter = showZeroPercentJobs ? baseList : baseList.filter((j) => !isZeroPercentPipelineJob(j));
 
     const grouped = [];
@@ -1633,13 +1645,28 @@ export default function PortalJobsView({
     const jobRecharged = Math.max(0, isNaN(parsedRech) ? 0 : parsedRech);
     const totalBillable = jobRevenue + jobRecharged;
 
-    const totalInvoices = (editingJob.invoices || []).reduce((acc, inv) => {
-      const amt = parseMoney(inv.amount);
-      return acc + (isNaN(amt) ? 0 : amt);
-    }, 0);
+    const isRetainerJob = String(editingJob?.projectRetainer || "").toLowerCase() === "retainer";
+    const isPortalAutoInv = (inv) => isPlaceholderInvoice(inv?.ref, inv?.status) && isAutoPlaceholder(inv?.ref);
+    const isPortalAutoExp = (exp) => {
+      const id = String(exp?.appId || exp?.transactionId || "").trim();
+      const desc = String(exp?.desc || "").trim();
+      const st = String(exp?.status || "").trim().toLowerCase();
+      const isPaid = ["paid", "complete", "part-paid (paid)"].includes(st);
+      return !isPaid && (/^(PLACE-EXP|PLACE-GAP|MANUAL-ENTRY|MANUAL-GAP|UNRECON-GAP)/i.test(id) || (!id && /^placeholder/i.test(desc)));
+    };
 
+    let nonAutoInvoicesTotal = 0;
+    let autoInvoicesTotal = 0;
+    (editingJob.invoices || []).forEach((inv) => {
+      const amt = parseMoney(inv.amount);
+      const safeAmt = isNaN(amt) ? 0 : amt;
+      if (isPortalAutoInv(inv)) autoInvoicesTotal += safeAmt;
+      else nonAutoInvoicesTotal += safeAmt;
+    });
+    const totalInvoices = nonAutoInvoicesTotal + autoInvoicesTotal;
+
+    let totalRechAllocated = 0;
     if (isConfirmedForRech) {
-      let totalRechAllocated = 0;
       for (let i = 0; i < (editingJob.invoices || []).length; i++) {
         const inv = editingJob.invoices[i];
         const invAmt = Math.max(0, parseMoney(inv.amount, thousandsSeparator) || 0);
@@ -1660,7 +1687,17 @@ export default function PortalJobsView({
           }
         }
       }
-      if ((jobRecharged > 0.001 || totalRechAllocated > 0.001) && Math.abs(totalRechAllocated - jobRecharged) > 0.01) {
+      const unallocRech = Math.max(0, jobRecharged - totalRechAllocated);
+      const canAttachUnallocRechToAuto =
+        !isRetainerJob &&
+        unallocRech > 0.001 &&
+        (totalBillable - nonAutoInvoicesTotal) >= (unallocRech - 0.01);
+      if (
+        totalRechAllocated > jobRecharged + 0.01 ||
+        ((jobRecharged > 0.001 || totalRechAllocated > 0.001) &&
+          Math.abs(totalRechAllocated - jobRecharged) > 0.01 &&
+          !canAttachUnallocRechToAuto)
+      ) {
         setSaveError(`Recharged amounts across invoices (${formatGBP(totalRechAllocated)}) must equal total recharged expenses (${formatGBP(jobRecharged)}) before saving.`);
         return;
       }
@@ -1668,27 +1705,31 @@ export default function PortalJobsView({
 
     const parsedDc = parseMoney(editingJob.directCosts);
     const jobDirectCosts = isNaN(parsedDc) ? 0 : parsedDc;
-    const totalExpenses = (editingJob.directExpenses || []).reduce((acc, exp) => {
+    let nonAutoExpensesTotal = 0;
+    let autoExpensesTotal = 0;
+    (editingJob.directExpenses || []).forEach((exp) => {
       const amt = parseMoney(exp.amount);
-      return acc + (isNaN(amt) ? 0 : amt);
-    }, 0);
+      const safeAmt = isNaN(amt) ? 0 : amt;
+      if (isPortalAutoExp(exp)) autoExpensesTotal += safeAmt;
+      else nonAutoExpensesTotal += safeAmt;
+    });
+    const totalExpenses = nonAutoExpensesTotal + autoExpensesTotal;
 
-    const isRetainerJob = String(editingJob?.projectRetainer || "").toLowerCase() === "retainer";
     const rawLikelihoodStr = String(editingJob?.likelihood || "").trim();
     const parsedLikelihoodNum = parseFloat(rawLikelihoodStr.replace(/[%,\s]/g, ""));
     const isLikelihood100 = !isNaN(parsedLikelihoodNum) && (parsedLikelihoodNum >= 100 || (!rawLikelihoodStr.includes("%") && rawLikelihoodStr === "1"));
     const isTargetConfirmedJob = String(editingJob?.type || "").toLowerCase() === "confirmed" || isLikelihood100;
 
-    // Over-allocation check (invoices) - skip for Retainers where parent revenue is the monthly fee
-    if (!isRetainerJob && totalInvoices > totalBillable + 0.01) {
+    // Over-allocation check (invoices) - skip for Retainers where parent revenue is the monthly fee; auto placeholders shrink on save
+    if (!isRetainerJob && nonAutoInvoicesTotal > totalBillable + 0.01) {
       const targetDesc = jobRecharged > 0 ? `total billable (${formatGBP(totalBillable)})` : `job revenue (${formatGBP(jobRevenue)})`;
-      setSaveError(`Total invoices (${formatGBP(totalInvoices)}) exceed ${targetDesc}. Please adjust the job revenue, recharged expenses, or your manual placeholders before saving.`);
+      setSaveError(`Total invoices (${formatGBP(nonAutoInvoicesTotal)}) exceed ${targetDesc}. Please adjust the job revenue, recharged expenses, or your manual placeholders before saving.`);
       return;
     }
 
-    // Over-allocation check (direct expenses)
-    if (!isRetainerJob && totalExpenses > jobDirectCosts + 0.01) {
-      setSaveError(`Total direct expenses (${formatGBP(totalExpenses)}) exceed job direct costs (${formatGBP(jobDirectCosts)}). Please adjust the job direct costs or your manual placeholders before saving.`);
+    // Over-allocation check (direct expenses) - auto placeholders shrink on save
+    if (!isRetainerJob && nonAutoExpensesTotal > jobDirectCosts + 0.01) {
+      setSaveError(`Total direct expenses (${formatGBP(nonAutoExpensesTotal)}) exceed job direct costs (${formatGBP(jobDirectCosts)}). Please adjust the job direct costs or your manual placeholders before saving.`);
       return;
     }
 
@@ -1800,23 +1841,35 @@ export default function PortalJobsView({
         throw new Error(resData.error || "Failed to save job");
       }
 
-      // Optimistically update local job state immediately so new value is visible with zero delay
+      // Optimistically update local job state immediately so new/promoted job is visible with zero delay
       const savedJob = { ...jobToSave };
       const parsedRev = parseMoney(savedJob.revenue);
       const parsedDc = parseMoney(savedJob.directCosts);
+      const targetType = isTargetConfirmedJob ? "Confirmed" : "Pipeline";
+      const canonicalId = resData.rowNumber ? `${targetType.toLowerCase()}-${resData.rowNumber}` : savedJob.id;
+      savedJob.id = canonicalId;
+      savedJob.type = targetType;
       savedJob.revNum = isNaN(parsedRev) ? 0 : parsedRev;
+      savedJob.costsNum = isNaN(parsedDc) ? 0 : parsedDc;
       savedJob.dcNum = isNaN(parsedDc) ? 0 : parsedDc;
+      const likPctNum = parseFloat(String(savedJob.likelihood || "").replace(/[%,\s]/g, "")) || 0;
+      savedJob.likelihoodNum = isTargetConfirmedJob ? 1 : (likPctNum / 100);
       if (resData.rowNumber) savedJob.rowNumber = resData.rowNumber;
       if (resData.jobUuid) savedJob.jobUuid = resData.jobUuid;
       if (resData.childRowNumbers) savedJob.childRowNumbers = resData.childRowNumbers;
+      if (Array.isArray(resData.invoices)) savedJob.invoices = resData.invoices;
+      if (Array.isArray(resData.directExpenses)) savedJob.directExpenses = resData.directExpenses;
 
       if (!jobToSave.isVariableRetainerSeries) {
-        const jobKey = savedJob.id !== undefined ? savedJob.id : (savedJob.parentId !== undefined ? savedJob.parentId : savedJob.rowNumber);
+        const jobKey = canonicalId !== undefined ? canonicalId : (savedJob.parentId !== undefined ? savedJob.parentId : savedJob.rowNumber);
         if (jobKey !== undefined) {
-          setOptimisticJobs((prev) => ({
-            ...prev,
-            [jobKey]: savedJob,
-          }));
+          setOptimisticJobs((prev) => {
+            const next = { ...prev, [jobKey]: savedJob };
+            if (jobToSave.id && jobToSave.id !== "new" && jobToSave.id !== jobKey) {
+              next[jobToSave.id] = { _deletedOptimistic: true };
+            }
+            return next;
+          });
         }
       }
 

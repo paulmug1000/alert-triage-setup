@@ -3854,7 +3854,7 @@ export async function insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobCl
   return targetRowNum;
 }
 
-function generateAutoPlaceholderRef_(prefix = "PLACE-INV") {
+export function generateAutoPlaceholderRef_(prefix = "PLACE-INV") {
   const ms = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const now = new Date();
   const dateStr = `${ms[now.getMonth()]}-${String(now.getFullYear()).slice(-2)}`;

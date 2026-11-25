@@ -443,6 +443,9 @@ function extractSlotsFromRow_(vRow, fRow, rowNotes, { tabName, rowOffset }) {
   return { invoices, expenses };
 }
 
+const ROLLUP_CALCS_COLS = [74, 106, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 155, 156, 157, 158, 159, 160, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262];
+const ROLLUP_CALCS_COL_SET = new Set(ROLLUP_CALCS_COLS);
+
 function captureNonSlotRowIntoJob_(vRow, fRow, rowNotes, job, { tabName, rowOffset, calcsRow = null, dateCellsMap = null, r0 = 0 }) {
   const revCalcStart = tabName === "Confirmed" ? 62 : 60;
   const captureCols = [];
@@ -471,7 +474,6 @@ function captureNonSlotRowIntoJob_(vRow, fRow, rowNotes, job, { tabName, rowOffs
   }
 
   // Capture Phase 2C rollup cells (`74`, `106`) from tab grid + `ConfCalcs`/`PipeCalcs` overrides
-  const ROLLUP_CALCS_COLS = [74, 106, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 155, 156, 157, 158, 159, 160, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262];
   const tabRollupCols = [74, 106];
   for (const c of tabRollupCols) {
     const tv = vRow[c];
@@ -483,31 +485,19 @@ function captureNonSlotRowIntoJob_(vRow, fRow, rowNotes, job, { tabName, rowOffs
     }
   }
 
-  if (Array.isArray(calcsRow) && calcsRow.length > 0) {
-    const calcsColsToCheck = new Set(ROLLUP_CALCS_COLS);
-    for (let c = 0; c <= 39; c++) calcsColsToCheck.add(c);
-    for (let c = 41; c < revCalcStart; c++) calcsColsToCheck.add(c);
-    for (let c = 75; c <= 95; c++) calcsColsToCheck.add(c);
-    calcsColsToCheck.add(107);
-
-    for (const c of calcsColsToCheck) {
+  if (
+    Array.isArray(calcsRow) &&
+    calcsRow.length > 0 &&
+    normalizeTextKey_(calcsRow[0]) === normalizeTextKey_(vRow[0]) &&
+    normalizeTextKey_(calcsRow[1]) === normalizeTextKey_(vRow[1])
+  ) {
+    for (const c of ROLLUP_CALCS_COLS) {
       const cv = calcsRow[c];
-      if (ROLLUP_CALCS_COLS.includes(c)) {
-        if (isNonEmptyCell_(cv)) {
-          if (!job.extra_fields._calcs) job.extra_fields._calcs = {};
-          if (!job.extra_fields._calcs.calcs) job.extra_fields._calcs.calcs = {};
-          if (!job.extra_fields._calcs.calcs[String(rowOffset)]) job.extra_fields._calcs.calcs[String(rowOffset)] = {};
-          job.extra_fields._calcs.calcs[String(rowOffset)][String(c)] = cv;
-        }
-      } else {
-        const tv = vRow[c] !== undefined && vRow[c] !== null ? vRow[c] : "";
-        const normCv = cv !== undefined && cv !== null ? cv : "";
-        if (normCv !== tv) {
-          if (!job.extra_fields._calcs) job.extra_fields._calcs = {};
-          if (!job.extra_fields._calcs.calcs) job.extra_fields._calcs.calcs = {};
-          if (!job.extra_fields._calcs.calcs[String(rowOffset)]) job.extra_fields._calcs.calcs[String(rowOffset)] = {};
-          job.extra_fields._calcs.calcs[String(rowOffset)][String(c)] = normCv;
-        }
+      if (isNonEmptyCell_(cv)) {
+        if (!job.extra_fields._calcs) job.extra_fields._calcs = {};
+        if (!job.extra_fields._calcs.calcs) job.extra_fields._calcs.calcs = {};
+        if (!job.extra_fields._calcs.calcs[String(rowOffset)]) job.extra_fields._calcs.calcs[String(rowOffset)] = {};
+        job.extra_fields._calcs.calcs[String(rowOffset)][String(c)] = cv;
       }
     }
   }
@@ -1328,7 +1318,7 @@ async function syncPulseNotesJobIdsForClient_(supabase, clientId) {
     }
   }
   if (updates.length > 0) {
-    await Promise.all(updates.map((p) => Promise.resolve(p).catch(() => {})));
+    await Promise.all(updates.map((p) => Promise.resolve(p).catch(() => { })));
   }
 }
 
@@ -2679,7 +2669,7 @@ export function buildRelationalFormattedTabRowsFromBundle(
         if (calcsRollups && typeof calcsRollups === "object") {
           for (const [ck, cv] of Object.entries(calcsRollups)) {
             const c = parseInt(ck, 10);
-            if (!Number.isInteger(c)) continue;
+            if (!Number.isInteger(c) || !ROLLUP_CALCS_COL_SET.has(c)) continue;
             if (Number.isInteger(maxColLimit) && c > maxColLimit) continue;
             rawRow[c] = cv;
           }

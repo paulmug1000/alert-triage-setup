@@ -1399,6 +1399,7 @@ export default function JobsView({
     crmTool,
     crmDrives,
     clientMode,
+    splitEnabled,
     jobsLastUpdatedAt,
     noEndDateRetainerMonths,
     loadJobsData
@@ -3758,6 +3759,7 @@ export default function JobsView({
           editSplit={jobsEditSplit}
           client={jobsClient}
           tabName={jobsEditSplit.tabName || jobsTab}
+          allowEnableSplit={splitEnabled}
           onClose={() => setJobsEditSplit(null)}
           onUpdateJobsData={(rNum, splitStr, updatedFields) => {
             setJobsData((prev) =>
@@ -3995,6 +3997,7 @@ export default function JobsView({
           productLines={productLines}
           leadSources={leadSources}
           existingClients={existingClients}
+          splitEnabled={splitEnabled}
           initialJobData={newJobModalInitialData}
           onClose={() => {
             setShowAddJobModal(false);
@@ -6125,53 +6128,55 @@ export default function JobsView({
                                             })()}
 
                                             {/* Uneven Revenue Split */}
-                                            <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                                <div>
-                                                  <div style={{ fontSize: "11px", fontWeight: "700", color: "#334155" }}>Revenue Split</div>
-                                                  <div style={{ fontSize: "11px", color: "#64748b" }}>
-                                                    {isRetainer
-                                                      ? "Even monthly (Retainer)"
-                                                      : String(unevenSplitVal).toLowerCase().startsWith("[split]")
-                                                        ? "Custom uneven split active"
-                                                        : "Even monthly distribution"}
+                                            {(splitEnabled || String(unevenSplitVal).toLowerCase().startsWith("[split]")) && (
+                                              <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                  <div>
+                                                    <div style={{ fontSize: "11px", fontWeight: "700", color: "#334155" }}>Revenue split</div>
+                                                    <div style={{ fontSize: "11px", color: "#64748b" }}>
+                                                      {isRetainer
+                                                        ? "Even monthly (Retainer)"
+                                                        : String(unevenSplitVal).toLowerCase().startsWith("[split]")
+                                                          ? "Custom uneven split active"
+                                                          : "Even monthly distribution"}
+                                                    </div>
                                                   </div>
+                                                  {!isRetainer && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => {
+                                                        const currentDraft = draftEdits[jobKey] || {};
+                                                        const mergedJobRow = {
+                                                          ...parentRow,
+                                                          ...currentDraft,
+                                                          startDate: currentDraft.startDate !== undefined ? currentDraft.startDate : parentRow.startDate,
+                                                          endDate: currentDraft.endDate !== undefined ? currentDraft.endDate : parentRow.endDate,
+                                                          revenue: currentDraft.revenue !== undefined ? currentDraft.revenue : parentRow.revenue,
+                                                          client: currentDraft.client !== undefined ? currentDraft.client : parentRow.client,
+                                                          jobName: currentDraft.jobName !== undefined ? currentDraft.jobName : parentRow.jobName,
+                                                          hasDraftDates: Boolean(currentDraft.startDate !== undefined || currentDraft.endDate !== undefined),
+                                                          hasDraftRevenue: Boolean(currentDraft.revenue !== undefined),
+                                                          jobKey
+                                                        };
+                                                        setJobsEditSplit({ jobRow: mergedJobRow, tabName });
+                                                      }}
+                                                      style={{
+                                                        padding: "4px 9px",
+                                                        borderRadius: "5px",
+                                                        border: "1px solid #cbd5e1",
+                                                        background: String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#0284c7" : "#ffffff",
+                                                        color: String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#ffffff" : "#0284c7",
+                                                        fontSize: "11px",
+                                                        fontWeight: "600",
+                                                        cursor: "pointer"
+                                                      }}
+                                                    >
+                                                      Configure split
+                                                    </button>
+                                                  )}
                                                 </div>
-                                                {!isRetainer && (
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                      const currentDraft = draftEdits[jobKey] || {};
-                                                      const mergedJobRow = {
-                                                        ...parentRow,
-                                                        ...currentDraft,
-                                                        startDate: currentDraft.startDate !== undefined ? currentDraft.startDate : parentRow.startDate,
-                                                        endDate: currentDraft.endDate !== undefined ? currentDraft.endDate : parentRow.endDate,
-                                                        revenue: currentDraft.revenue !== undefined ? currentDraft.revenue : parentRow.revenue,
-                                                        client: currentDraft.client !== undefined ? currentDraft.client : parentRow.client,
-                                                        jobName: currentDraft.jobName !== undefined ? currentDraft.jobName : parentRow.jobName,
-                                                        hasDraftDates: Boolean(currentDraft.startDate !== undefined || currentDraft.endDate !== undefined),
-                                                        hasDraftRevenue: Boolean(currentDraft.revenue !== undefined),
-                                                        jobKey
-                                                      };
-                                                      setJobsEditSplit({ jobRow: mergedJobRow, tabName });
-                                                    }}
-                                                    style={{
-                                                      padding: "4px 9px",
-                                                      borderRadius: "5px",
-                                                      border: "1px solid #cbd5e1",
-                                                      background: String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#0284c7" : "#ffffff",
-                                                      color: String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#ffffff" : "#0284c7",
-                                                      fontSize: "11px",
-                                                      fontWeight: "600",
-                                                      cursor: "pointer"
-                                                    }}
-                                                  >
-                                                    Configure Split
-                                                  </button>
-                                                )}
                                               </div>
-                                            </div>
+                                            )}
                                           </div>
                                         </div>
 
@@ -7458,7 +7463,7 @@ export default function JobsView({
                                   {showFields && <LegacyEditableCell value={r.prodLine} colLetter="AK" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
                                 </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", textAlign: "center", verticalAlign: "top" }}>
-                                  {showFields && !isRetainer && isParent && (
+                                  {showFields && !isRetainer && isParent && (splitEnabled || String(r.unevenSplit || "").toLowerCase().startsWith("[split]")) && (
                                     <button
                                       onClick={() => setJobsEditSplit({ jobRow: r, tabName: jobsTab })}
                                       style={{

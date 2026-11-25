@@ -335,7 +335,10 @@ export default async function handler(req, res) {
 
         let relLookup = relBundle?.relLookup || null;
         const usedRelationalJobReads = Boolean(
-          useRelationalJobReads && relBundle && (relBundle.tabHeaders?.Confirmed || relBundle.tabHeaders?.Pipeline)
+          useRelationalJobReads &&
+          relBundle &&
+          (!hasConfirmed || Boolean(relBundle.tabHeaders?.Confirmed)) &&
+          (!hasPipeline || Boolean(relBundle.tabHeaders?.Pipeline))
         );
         if (!usedRelationalJobReads && sbCtx?.jobsMode === "relational") {
           relLookup = await getClientRelationalJobsLookup(sbCtx).catch(() => null);

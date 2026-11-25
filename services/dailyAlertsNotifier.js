@@ -8,6 +8,7 @@ const PRECOMPUTED_KEY = "triage_precomputed";
 import { matchesClientName, stripRowInfo, ADMIN_ONLY_ALERT_TYPES, sanitizeSpreadsheetTerms } from "../utils/helpers.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getOpenClientNotesForDigest } from "./pulseNotesService.js";
+import { verifyBridgedClientsParity } from "./clientSheetBridgeService.js";
 
 /**
  * Format today's date in UK format: e.g. "Tuesday, 29 September"
@@ -671,5 +672,265 @@ export async function checkAndNotifyTabErrors({ sheets: providedSheets, automati
     checked: checkedCount,
     errorDetails,
     emailed,
+  };
+}
+
+function buildParityFingerprint_(row) {
+  if (row?.error) {
+    return `read_error:${String(row.error).slice(0, 120)}`;
+  }
+  const samples = Array.isArray(row?.sampleMismatches) ? row.sampleMismatches : [];
+  const parts = samples
+    .map((m) => `${m.tab || ""}:${m.cell || ""}:${m.rowLabel || ""}:${m.colLabel || ""}:${m.sheetValue}->${m.supabaseValue}`)
+    .sort();
+  return `${row?.dashboardMismatchCount || 0}:${row?.cashMismatchCount || 0}|${parts.join("|")}`.slice(0, 500);
+}
+
+function buildParityAlertHtml_({ flaggedClients, checkedAt, clientsChecked, appUrl }) {
+  const clientCards = flaggedClients
+    .map((c) => {
+      const counts = [];
+      if (c.dashboardMismatchCount > 0) counts.push(`Dashboard: ${c.dashboardMismatchCount}`);
+      if (c.cashMismatchCount > 0) counts.push(`Cashflow: ${c.cashMismatchCount}`);
+      if (c.error) counts.push(`Read error: ${c.error}`);
+
+      const rowsHtml = (c.sampleMismatches || [])
+        .slice(0, 10)
+        .map(
+          (m) => `
+          <tr>
+            <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#334155;">${escapeHtml(m.tab)}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#0f172a;font-weight:600;">${escapeHtml(m.rowLabel || m.cell)}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#475569;">${escapeHtml(m.colLabel || m.cell)}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#0f172a;text-align:right;">${escapeHtml(String(m.sheetValue ?? "—"))}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#b91c1c;text-align:right;font-weight:600;">${escapeHtml(String(m.supabaseValue ?? "—"))}</td>
+          </tr>`
+        )
+        .join("");
+
+      const tableHtml = rowsHtml
+        ? `
+          <table style="width:100%;border-collapse:collapse;margin-top:10px;">
+            <thead>
+              <tr style="background:#f8fafc;">
+                <th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Area</th>
+                <th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Metric</th>
+                <th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Period</th>
+                <th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Sheet</th>
+                <th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Pulse</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>`
+        : "";
+
+      const extraNote =
+        (c.totalMismatchCount || 0) > (c.sampleMismatches || []).length
+          ? `<div style="font-size:11px;color:#64748b;margin-top:6px;">Showing ${(c.sampleMismatches || []).length} of ${c.totalMismatchCount} detected cell differences.</div>`
+          : "";
+
+      return `
+        <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <strong style="font-size:15px;color:#111827;">${escapeHtml(c.clientName)}</strong>
+            <span style="background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:12px;padding:2px 9px;font-size:11px;font-weight:700;">
+              ${escapeHtml(counts.join(" · "))}
+            </span>
+          </div>
+          ${tableHtml}
+          ${extraNote}
+        </div>`;
+    })
+    .join("");
+
+  return `
+    <div style="font-family:'Kumbh Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:660px;margin:0 auto;background:#f9fafb;padding:24px;border-radius:10px;color:#1f2937;">
+      <div style="background:#1a1a2e;color:#ffffff;padding:18px 24px;border-radius:8px 8px 0 0;">
+        <div style="font-size:16px;font-weight:700;">Pulse parity check</div>
+        <div style="font-size:12px;color:#94a3b8;">Hourly dashboard and cashflow parity alert · ${escapeHtml(checkedAt)}</div>
+      </div>
+      <div style="background:#f3f4f6;padding:20px 24px;border:1px solid #e5e7eb;border-top:none;">
+        <p style="font-size:14px;color:#374151;line-height:1.5;margin-top:0;">
+          The hourly parity check scanned ${clientsChecked} active client${clientsChecked === 1 ? "" : "s"} and found new dashboard or cashflow disparities on ${flaggedClients.length} client${flaggedClients.length === 1 ? "" : "s"}.
+        </p>
+        ${clientCards}
+        <div style="text-align:center;margin:24px 0 10px 0;">
+          <a href="${appUrl}/pma" target="_blank" style="background:#0066cc;color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;padding:11px 24px;border-radius:6px;display:inline-block;">
+            Open Pulse Management Area
+          </a>
+        </div>
+      </div>
+    </div>`;
+}
+
+/**
+ * Runs the hourly Dashboard + Year0Data + Cashflow parity check across all active clients
+ * (both live Google Sheet bridge and pure-Supabase tenants) and emails Paul once per new disparity fingerprint.
+ */
+export async function checkAndNotifyClientParity({
+  recipientOverride,
+  dryRunEmail = false,
+  parityReportOverride = null,
+} = {}) {
+  const sb = getSupabaseAdmin();
+  const report = parityReportOverride || await verifyBridgedClientsParity({
+    includePureSupabase: true,
+    settleOnMismatch: true,
+  });
+
+  const nowIso = report?.checkedAt || new Date().toISOString();
+  let prevState = { clients: {}, transientErrors: {} };
+  if (sb) {
+    try {
+      const { data: cfgRow } = await sb
+        .from("system_config")
+        .select("value")
+        .eq("key", "client_parity_monitor_state")
+        .maybeSingle();
+      if (cfgRow?.value && typeof cfgRow.value === "object") {
+        prevState = {
+          ...cfgRow.value,
+          clients: { ...(cfgRow.value.clients || {}) },
+          transientErrors: { ...(cfgRow.value.transientErrors || {}) },
+        };
+      }
+    } catch (err) {
+      console.warn("[checkAndNotifyClientParity] Failed reading state:", err.message);
+    }
+  }
+
+  const nextClients = { ...(prevState.clients || {}) };
+  const nextTransientErrors = { ...(prevState.transientErrors || {}) };
+  const newlyFlagged = [];
+
+  for (const row of report?.results || []) {
+    const name = row?.clientName;
+    if (!name) continue;
+
+    if (row.error) {
+      const failCount = (Number(nextTransientErrors[name]) || 0) + 1;
+      nextTransientErrors[name] = failCount;
+      // Only notify on persistent read failures (2+ consecutive hourly runs) to avoid single transient API blips
+      if (failCount >= 2) {
+        const fp = buildParityFingerprint_(row);
+        if (nextClients[name]?.fingerprint !== fp) {
+          newlyFlagged.push(row);
+          nextClients[name] = {
+            fingerprint: fp,
+            notifiedAt: nowIso,
+            error: row.error,
+          };
+        }
+      }
+      continue;
+    }
+
+    delete nextTransientErrors[name];
+
+    if ((row.totalMismatchCount || 0) > 0) {
+      const fp = buildParityFingerprint_(row);
+      if (nextClients[name]?.fingerprint !== fp) {
+        newlyFlagged.push(row);
+        nextClients[name] = {
+          fingerprint: fp,
+          notifiedAt: nowIso,
+          totalMismatchCount: row.totalMismatchCount,
+          dashboardMismatchCount: row.dashboardMismatchCount,
+          cashMismatchCount: row.cashMismatchCount,
+          sampleMismatches: row.sampleMismatches || [],
+        };
+      }
+    } else if (nextClients[name]) {
+      delete nextClients[name];
+    }
+  }
+
+  if (sb && !dryRunEmail) {
+    try {
+      await sb.from("system_config").upsert({
+        key: "client_parity_monitor_state",
+        value: {
+          lastCheckedAt: nowIso,
+          clientsChecked: report?.clientsChecked || 0,
+          matchedClientsCount: report?.matchedClientsCount || 0,
+          mismatchClientsCount: report?.mismatchClientsCount || 0,
+          clients: nextClients,
+          transientErrors: nextTransientErrors,
+        },
+        description: "Hourly Dashboard and Cashflow parity monitor deduplication state",
+        updated_by: "System (Cron)",
+      });
+    } catch (err) {
+      console.warn("[checkAndNotifyClientParity] Failed persisting state:", err.message);
+    }
+  }
+
+  let emailed = false;
+  let emailSubject = "";
+  let emailHtml = "";
+  let emailText = "";
+
+  if (newlyFlagged.length > 0) {
+    const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
+    const emailPass = process.env.PMA_EMAIL_APP_PASSWORD;
+    const appUrl = process.env.APP_BASE_URL || "https://app.pulsedashboard.co.uk";
+    const recipient = recipientOverride || process.env.DAILY_ALERTS_RECIPIENT || "paul@gothrive.uk";
+
+    emailSubject = `Pulse parity check: disparities detected (${newlyFlagged.length} client${newlyFlagged.length === 1 ? "" : "s"})`;
+    emailHtml = buildParityAlertHtml_({
+      flaggedClients: newlyFlagged,
+      checkedAt: nowIso,
+      clientsChecked: report?.clientsChecked || 0,
+      appUrl,
+    });
+    emailText =
+      `Pulse parity check scanned ${report?.clientsChecked || 0} client(s) at ${nowIso} and detected disparities on ${newlyFlagged.length} client(s):\n\n` +
+      newlyFlagged
+        .map((c) => {
+          const header = `${c.clientName} (Dashboard: ${c.dashboardMismatchCount || 0}, Cashflow: ${c.cashMismatchCount || 0}${c.error ? `, Error: ${c.error}` : ""})`;
+          const lines = (c.sampleMismatches || [])
+            .slice(0, 10)
+            .map((m) => `  - ${m.tab} | ${m.rowLabel || m.cell} | ${m.colLabel || m.cell}: Sheet=${m.sheetValue} vs Pulse=${m.supabaseValue}`);
+          return [header, ...lines].join("\n");
+        })
+        .join("\n\n") +
+      `\n\nOpen Pulse Management Area: ${appUrl}/pma`;
+
+    if (!dryRunEmail && emailPass) {
+      const transporter = nodemailer.createTransport({
+        host: "smtp.gmail.com",
+        port: 465,
+        secure: true,
+        auth: { user: emailUser, pass: emailPass },
+      });
+      await transporter.sendMail({
+        from: `"Pulse" <${emailUser}>`,
+        to: recipient,
+        subject: emailSubject,
+        text: emailText,
+        html: emailHtml,
+      });
+      emailed = true;
+      console.log(`CRON: Sent parity alert "${emailSubject}" to ${recipient}`);
+      const sheets = await getSheetsClient().catch(() => null);
+      const acId = getCanonicalAcSheetId();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        user: "Pulse System",
+        action: "Parity Disparity Alert Sent",
+        summary: `${emailSubject}: ${newlyFlagged.map((c) => c.clientName).join(", ")}`,
+      }).catch(() => { });
+    }
+  }
+
+  return {
+    success: true,
+    ...report,
+    newlyFlaggedCount: newlyFlagged.length,
+    flaggedClients: newlyFlagged.map((c) => c.clientName),
+    emailed,
+    emailSubject,
+    emailHtml,
+    emailText,
   };
 }

@@ -35,6 +35,7 @@ import {
 import { isCashCellEditable } from "./cashEditService.js";
 import { redisClient } from "./redisClient.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
+import { verifyRelationalJobsParity } from "./relationalJobsService.js";
 import { isJobCostingStyle, toSheetDateFormat } from "../utils/helpers.js";
 
 export const BRIDGE_BIDIRECTIONAL_TABS = [
@@ -2426,11 +2427,15 @@ export async function pushSupabaseClientToSheet(clientName) {
 }
 
 function formatParityMonthHeader_(rawHdr, col0) {
-  if (typeof rawHdr === "number" && rawHdr >= 30000 && rawHdr <= 75000) {
-    const dStr = toSheetDateFormat(rawHdr);
-    const m = String(dStr || "").match(/^\d{1,2}-([A-Za-z]{3}-\d{2})$/);
-    if (m) return m[1];
-    if (dStr) return String(dStr);
+  const numHdr = typeof rawHdr === "number"
+    ? rawHdr
+    : (/^\d{5}(?:\.\d+)?$/.test(String(rawHdr ?? "").trim()) ? Number(rawHdr) : NaN);
+  if (Number.isFinite(numHdr) && numHdr >= 35000 && numHdr <= 70000) {
+    const dt = new Date(Math.round((numHdr - 25569) * 86400 * 1000));
+    if (!Number.isNaN(dt.getTime())) {
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${months[dt.getUTCMonth()]}-${String(dt.getUTCFullYear()).slice(-2)}`;
+    }
   }
   const s = String(rawHdr ?? "").replace(/\s+/g, " ").trim();
   if (s) return s.length > 18 ? `${s.slice(0, 16).trimEnd()}…` : s;
@@ -2448,11 +2453,13 @@ function extractParityRowLabel_(sRow = [], gRow = [], r0 = 0) {
   return `Row ${r0 + 1}`;
 }
 
+const SPREADSHEET_ERROR_TOKEN_RE = /^#(REF!|VALUE!|NAME\?|ERROR!|N\/A|NUM!|DIV\/0!)/i;
+
 function compareHeadlineTabGrid_(
   tabName,
   sheetVals = [],
   supaVals = [],
-  { maxRows = 45, maxCols = 20, headerRowIdx = 3, minDataRowIdx = 4 } = {}
+  { maxRows = 45, minColIdx = 2, maxCols = 20, headerRowIdx = 3, minDataRowIdx = 4, tolerance = 1.0 } = {}
 ) {
   const mismatches = [];
   const limitRows = Math.min(maxRows, Math.max(sheetVals.length, supaVals.length));
@@ -2464,9 +2471,24 @@ function compareHeadlineTabGrid_(
     const sR = Array.isArray(supaVals[r]) ? supaVals[r] : [];
     const rowLabel = extractParityRowLabel_(sR, gR, r);
 
-    for (let c = 2; c < maxCols; c++) {
+    for (let c = minColIdx; c < maxCols; c++) {
       const gV = gR[c] ?? "";
       const sV = sR[c] ?? "";
+      const strG = String(gV).trim();
+      const strS = String(sV).trim();
+
+      if (SPREADSHEET_ERROR_TOKEN_RE.test(strG) || SPREADSHEET_ERROR_TOKEN_RE.test(strS)) {
+        mismatches.push({
+          tab: tabName,
+          cell: `${colIdx0ToLetter(c)}${r + 1}`,
+          rowLabel,
+          colLabel: formatParityMonthHeader_(hdrRowSupa[c] ?? hdrRowSheet[c], c),
+          sheetValue: strG || "—",
+          supabaseValue: strS || "—",
+        });
+        continue;
+      }
+
       if ((gV === "" && sV === 0) || (gV === 0 && sV === "") || (gV === "" && sV === "")) {
         continue;
       }
@@ -2474,7 +2496,7 @@ function compareHeadlineTabGrid_(
       const nG = parseComparableNumber_(gV);
       const nS = parseComparableNumber_(sV);
       if (nG !== null && nS !== null) {
-        if (Math.abs(nG - nS) <= 1.0) continue;
+        if (Math.abs(nG - nS) <= tolerance) continue;
         mismatches.push({
           tab: tabName,
           cell: `${colIdx0ToLetter(c)}${r + 1}`,
@@ -2486,10 +2508,7 @@ function compareHeadlineTabGrid_(
         continue;
       }
 
-      const strG = String(gV).trim();
-      const strS = String(sV).trim();
       if (strG === strS) continue;
-      if (strG.startsWith("#") && strS.startsWith("#")) continue;
 
       mismatches.push({
         tab: tabName,
@@ -2504,11 +2523,148 @@ function compareHeadlineTabGrid_(
   return mismatches;
 }
 
+function scanPureSupabaseHeadlineTabs_(dashVals = [], year0Vals = [], cashVals = []) {
+  const dashDiffs = [];
+  const cashDiffs = [];
+
+  const scanErrorTokens = (tabName, grid, maxR, minC, maxC, hdrRowIdx, out) => {
+    const hdrRow = Array.isArray(grid[hdrRowIdx]) ? grid[hdrRowIdx] : [];
+    for (let r = 0; r < Math.min(maxR, grid.length); r++) {
+      const row = Array.isArray(grid[r]) ? grid[r] : [];
+      const rowLabel = extractParityRowLabel_(row, [], r);
+      for (let c = minC; c < maxC; c++) {
+        const s = String(row[c] ?? "").trim();
+        if (SPREADSHEET_ERROR_TOKEN_RE.test(s)) {
+          out.push({
+            tab: tabName,
+            cell: `${colIdx0ToLetter(c)}${r + 1}`,
+            rowLabel,
+            colLabel: formatParityMonthHeader_(hdrRow[c], c),
+            sheetValue: "No formula error",
+            supabaseValue: s,
+          });
+        }
+      }
+    }
+  };
+
+  scanErrorTokens("Dashboard", dashVals, 34, 6, 50, 0, dashDiffs);
+  scanErrorTokens("Year0Data", year0Vals, 34, 6, 20, 0, dashDiffs);
+  scanErrorTokens("Cash", cashVals, 76, 1, 37, 0, cashDiffs);
+
+  // Verify internal P&L identity equations on Dashboard
+  const findDashRow = (regex) => {
+    for (let r = 2; r < Math.min(34, dashVals.length); r++) {
+      const lbl = String(dashVals[r]?.[0] ?? "").trim();
+      if (regex.test(lbl)) return r;
+    }
+    return -1;
+  };
+  const rConf = findDashRow(/^confirmed\s+(revenue|income)/i);
+  const rPipe = findDashRow(/^pipeline\s+(revenue|income)/i);
+  const rNb = findDashRow(/^new business.*(revenue|income)/i);
+  const rTotRev = findDashRow(/^total\s+(revenue|income)/i);
+  const rTotCos = findDashRow(/^total\s+costs\s+of\s+sale/i);
+  const rGp = findDashRow(/^gross\s+profit$/i);
+  const rTotOh = findDashRow(/^total\s+overheads$/i);
+  const rOp = findDashRow(/^operating\s+profit$/i);
+
+  const dashHdr = Array.isArray(dashVals[0]) ? dashVals[0] : [];
+  for (let c = 6; c < 50; c++) {
+    if (c === 18 || c === 20 || c === 33 || c === 35 || c === 48) continue;
+    const nTotRev = rTotRev >= 0 ? parseComparableNumber_(dashVals[rTotRev]?.[c]) : null;
+    if (nTotRev === null) continue;
+    const colLabel = formatParityMonthHeader_(dashHdr[c], c);
+    if (rConf >= 0 && rPipe >= 0 && rNb >= 0) {
+      const sumRev =
+        (parseComparableNumber_(dashVals[rConf]?.[c]) || 0) +
+        (parseComparableNumber_(dashVals[rPipe]?.[c]) || 0) +
+        (parseComparableNumber_(dashVals[rNb]?.[c]) || 0);
+      if (Math.abs(nTotRev - sumRev) > 1.0) {
+        dashDiffs.push({
+          tab: "Dashboard",
+          cell: `${colIdx0ToLetter(c)}${rTotRev + 1}`,
+          rowLabel: extractParityRowLabel_(dashVals[rTotRev], [], rTotRev),
+          colLabel,
+          sheetValue: Math.round(sumRev * 100) / 100,
+          supabaseValue: Math.round(nTotRev * 100) / 100,
+        });
+      }
+    }
+    const nGp = rGp >= 0 ? parseComparableNumber_(dashVals[rGp]?.[c]) : null;
+    const nCos = rTotCos >= 0 ? parseComparableNumber_(dashVals[rTotCos]?.[c]) : null;
+    if (nGp !== null && nCos !== null && Math.abs(nGp - (nTotRev - nCos)) > 1.0) {
+      dashDiffs.push({
+        tab: "Dashboard",
+        cell: `${colIdx0ToLetter(c)}${rGp + 1}`,
+        rowLabel: extractParityRowLabel_(dashVals[rGp], [], rGp),
+        colLabel,
+        sheetValue: Math.round((nTotRev - nCos) * 100) / 100,
+        supabaseValue: Math.round(nGp * 100) / 100,
+      });
+    }
+    const nOp = rOp >= 0 ? parseComparableNumber_(dashVals[rOp]?.[c]) : null;
+    const nOh = rTotOh >= 0 ? parseComparableNumber_(dashVals[rTotOh]?.[c]) : null;
+    if (nOp !== null && nGp !== null && nOh !== null && Math.abs(nOp - (nGp - nOh)) > 1.0) {
+      dashDiffs.push({
+        tab: "Dashboard",
+        cell: `${colIdx0ToLetter(c)}${rOp + 1}`,
+        rowLabel: extractParityRowLabel_(dashVals[rOp], [], rOp),
+        colLabel,
+        sheetValue: Math.round((nGp - nOh) * 100) / 100,
+        supabaseValue: Math.round(nOp * 100) / 100,
+      });
+    }
+  }
+
+  // Verify Cash Closing balance === Opening balance + Net cash movement for each section
+  const findCashRowsByLabel = (regex) => {
+    const out = [];
+    for (let r = 0; r < Math.min(76, cashVals.length); r++) {
+      const lbl = String(cashVals[r]?.[0] ?? "").trim();
+      if (regex.test(lbl)) out.push(r);
+    }
+    return out;
+  };
+  const openRows = findCashRowsByLabel(/^opening\s+balance/i);
+  const netRows = findCashRowsByLabel(/^net\s+cash\s+movement/i);
+  const closeRows = findCashRowsByLabel(/^closing\s+balance/i);
+  const cashHdr = Array.isArray(cashVals[0]) ? cashVals[0] : [];
+  const sectionCount = Math.min(openRows.length, netRows.length, closeRows.length);
+  for (let s = 0; s < sectionCount; s++) {
+    const rOpen = openRows[s];
+    const rNet = netRows[s];
+    const rClose = closeRows[s];
+    for (let c = 1; c < 37; c++) {
+      const nOpen = parseComparableNumber_(cashVals[rOpen]?.[c]);
+      const nNet = parseComparableNumber_(cashVals[rNet]?.[c]);
+      const nClose = parseComparableNumber_(cashVals[rClose]?.[c]);
+      if (nOpen === null || nNet === null || nClose === null) continue;
+      if (Math.abs(nClose - (nOpen + nNet)) > 1.0) {
+        cashDiffs.push({
+          tab: "Cash",
+          cell: `${colIdx0ToLetter(c)}${rClose + 1}`,
+          rowLabel: extractParityRowLabel_(cashVals[rClose], [], rClose),
+          colLabel: formatParityMonthHeader_(cashHdr[c], c),
+          sheetValue: Math.round((nOpen + nNet) * 100) / 100,
+          supabaseValue: Math.round(nClose * 100) / 100,
+        });
+      }
+    }
+  }
+
+  return { dashDiffs, cashDiffs };
+}
+
 /**
- * Verifies live Google Sheet `Dashboard` and `Cash` parity against Supabase
- * across all bridged live clients (or a single specified client).
+ * Verifies live Google Sheet `Dashboard`, `Year0Data`, and `Cash` parity against Supabase
+ * across active bridged clients (and internal consistency for pure-Supabase clients when requested).
  */
-export async function verifyBridgedClientsParity({ clientName = null } = {}) {
+export async function verifyBridgedClientsParity({
+  clientName = null,
+  includePureSupabase = false,
+  settleOnMismatch = false,
+} = {}) {
   if (!isSupabaseConfigured()) throw new Error("Supabase is not configured.");
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase admin client unavailable.");
@@ -2520,9 +2676,7 @@ export async function verifyBridgedClientsParity({ clientName = null } = {}) {
 
   let query = supabase
     .from("clients")
-    .select("id, client_name, status, master_mode, client_mode, client_sheet_id, master_sheet_id, metadata")
-    .eq("status", "live")
-    .eq("client_mode", "supabase")
+    .select("id, client_name, status, master_mode, client_mode, jobs_mode, client_sheet_id, master_sheet_id, metadata")
     .order("client_name", { ascending: true });
 
   if (clientName) {
@@ -2533,12 +2687,12 @@ export async function verifyBridgedClientsParity({ clientName = null } = {}) {
   if (error) throw new Error(`Could not query clients: ${error.message}`);
 
   const targets = (rows || []).filter((c) => {
+    const effStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+    if (!c.client_name || ["inactive", "archived", "suspended"].includes(effStatus)) return false;
     const bMode = String(c.metadata?.sheet_bridge_mode || "off").toLowerCase();
-    return (
-      (bMode === "live" || bMode === "dry_run") &&
-      c.client_sheet_id &&
-      !isVirtualSupabaseSheetId(c.client_sheet_id)
-    );
+    const hasRealSheet = Boolean(c.client_sheet_id && !isVirtualSupabaseSheetId(c.client_sheet_id));
+    if ((bMode === "live" || bMode === "dry_run") && hasRealSheet) return true;
+    return Boolean(includePureSupabase);
   });
 
   const results = [];
@@ -2551,6 +2705,8 @@ export async function verifyBridgedClientsParity({ clientName = null } = {}) {
         const lastSynced = String(st.lastSyncedDriveVersion || "");
         const lastPulse = String(st.lastPulseWrittenVersion || "");
         const recentConflictCount = Number(st.recentLogs?.[0]?.conflictCount || 0);
+        const hasRealSheet = Boolean(c.client_sheet_id && !isVirtualSupabaseSheetId(c.client_sheet_id));
+        const isBridgedTarget = (bridgeMode === "live" || bridgeMode === "dry_run") && hasRealSheet;
         const ctx = {
           clientId: c.id,
           clientName: c.client_name,
@@ -2561,37 +2717,113 @@ export async function verifyBridgedClientsParity({ clientName = null } = {}) {
         };
 
         try {
-          const [driveMeta, sheetResp, supaDash, supaCash] = await Promise.all([
-            fetchDriveVersionMeta_(rawDrive, c.client_sheet_id).catch(() => null),
-            withRetry(() =>
-              rawSheets.spreadsheets.values.batchGet({
-                spreadsheetId: c.client_sheet_id,
-                ranges: ["Dashboard!A1:Z45", "Cash!A1:Z58"],
-                valueRenderOption: "UNFORMATTED_VALUE",
-              })
-            ),
-            getOrLoadVirtualTabGrid_(ctx, "client", "Dashboard", rawSheets, { valuesOnly: true }).catch(() => null),
-            getOrLoadVirtualTabGrid_(ctx, "client", "Cash", rawSheets, { valuesOnly: true }).catch(() => null),
-          ]);
+          if (!isBridgedTarget) {
+            const [supaDash, supaYear0, supaCash, relParity] = await Promise.all([
+              getOrLoadVirtualTabGrid_(ctx, "client", "Dashboard", rawSheets, { valuesOnly: true }).catch(() => null),
+              getOrLoadVirtualTabGrid_(ctx, "client", "Year0Data", rawSheets, { valuesOnly: true }).catch(() => null),
+              getOrLoadVirtualTabGrid_(ctx, "client", "Cash", rawSheets, { valuesOnly: true }).catch(() => null),
+              c.jobs_mode === "relational"
+                ? verifyRelationalJobsParity({ clientName: c.client_name, source: "db" }).catch(() => null)
+                : Promise.resolve(null),
+            ]);
 
-          const gDashVals = sheetResp?.data?.valueRanges?.[0]?.values || [];
-          const gCashVals = sheetResp?.data?.valueRanges?.[1]?.values || [];
-          const sDashVals = supaDash?.values_grid || [];
-          const sCashVals = supaCash?.values_grid || [];
+            const { dashDiffs, cashDiffs } = scanPureSupabaseHeadlineTabs_(
+              supaDash?.values_grid || [],
+              supaYear0?.values_grid || [],
+              supaCash?.values_grid || []
+            );
 
-          const dashDiffs = compareHeadlineTabGrid_("Dashboard", gDashVals, sDashVals, {
-            maxRows: 45,
-            maxCols: 20,
-            headerRowIdx: 3,
-            minDataRowIdx: 4,
-          });
-          const cashDiffs = compareHeadlineTabGrid_("Cash", gCashVals, sCashVals, {
-            maxRows: 58,
-            maxCols: 20,
-            headerRowIdx: 2,
-            minDataRowIdx: 3,
-          });
+            if (relParity && relParity.isParity === false) {
+              dashDiffs.push({
+                tab: "Relational jobs",
+                cell: "pulse_jobs",
+                rowLabel: "Relational job parity",
+                colLabel: "DB",
+                sheetValue: "0 mismatches",
+                supabaseValue: `${relParity.mismatchCount || 1} diff(s)`,
+              });
+            }
 
+            const totalMismatchCount = dashDiffs.length + cashDiffs.length;
+            return {
+              clientName: c.client_name,
+              bridgeMode: "pure_supabase",
+              driveVersion: "",
+              lastSyncedDriveVersion: "",
+              driveInSync: true,
+              lastError: String(st.lastError || ""),
+              lastSummary: String(st.lastSummary || ""),
+              recentConflictCount: 0,
+              dashboardMismatchCount: dashDiffs.length,
+              cashMismatchCount: cashDiffs.length,
+              totalMismatchCount,
+              sampleMismatches: [...dashDiffs.slice(0, 6), ...cashDiffs.slice(0, 6)].slice(0, 10),
+              error: null,
+            };
+          }
+
+          const fetchLivePair = async () => {
+            const [driveMeta, sheetResp, supaDash, supaYear0, supaCash] = await Promise.all([
+              fetchDriveVersionMeta_(rawDrive, c.client_sheet_id).catch(() => null),
+              withRetry(() =>
+                rawSheets.spreadsheets.values.batchGet({
+                  spreadsheetId: c.client_sheet_id,
+                  ranges: ["Dashboard!A1:AX34", "Year0Data!A1:T34", "Cash!A1:AK76"],
+                  valueRenderOption: "UNFORMATTED_VALUE",
+                })
+              ),
+              getOrLoadVirtualTabGrid_(ctx, "client", "Dashboard", rawSheets, { valuesOnly: true }).catch(() => null),
+              getOrLoadVirtualTabGrid_(ctx, "client", "Year0Data", rawSheets, { valuesOnly: true }).catch(() => null),
+              getOrLoadVirtualTabGrid_(ctx, "client", "Cash", rawSheets, { valuesOnly: true }).catch(() => null),
+            ]);
+
+            const gDashVals = sheetResp?.data?.valueRanges?.[0]?.values || [];
+            const gYear0Vals = sheetResp?.data?.valueRanges?.[1]?.values || [];
+            const gCashVals = sheetResp?.data?.valueRanges?.[2]?.values || [];
+            const sDashVals = supaDash?.values_grid || [];
+            const sYear0Vals = supaYear0?.values_grid || [];
+            const sCashVals = supaCash?.values_grid || [];
+
+            const mainDashDiffs = compareHeadlineTabGrid_("Dashboard", gDashVals, sDashVals, {
+              maxRows: 34,
+              minColIdx: 6,
+              maxCols: 50,
+              headerRowIdx: 0,
+              minDataRowIdx: 3,
+              tolerance: 0.5,
+            });
+            const y0Diffs = compareHeadlineTabGrid_("Year0Data", gYear0Vals, sYear0Vals, {
+              maxRows: 34,
+              minColIdx: 6,
+              maxCols: 20,
+              headerRowIdx: 0,
+              minDataRowIdx: 3,
+              tolerance: 0.5,
+            });
+            const cashDiffs = compareHeadlineTabGrid_("Cash", gCashVals, sCashVals, {
+              maxRows: 76,
+              minColIdx: 1,
+              maxCols: 37,
+              headerRowIdx: 0,
+              minDataRowIdx: 3,
+              tolerance: 0.5,
+            });
+
+            return {
+              driveMeta,
+              dashDiffs: [...mainDashDiffs, ...y0Diffs],
+              cashDiffs,
+            };
+          };
+
+          let pair = await fetchLivePair();
+          if (settleOnMismatch && (pair.dashDiffs.length + pair.cashDiffs.length) > 0) {
+            await new Promise((resolve) => setTimeout(resolve, 2500));
+            invalidateMasterEngineCache(c.client_name, "client", ["Dashboard", "Year0Data", "Cash"]);
+            pair = await fetchLivePair();
+          }
+
+          const { driveMeta, dashDiffs, cashDiffs } = pair;
           const liveVer = String(driveMeta?.version || "");
           const driveInSync = Boolean(!liveVer || liveVer === lastSynced || liveVer === lastPulse);
           const totalMismatchCount = dashDiffs.length + cashDiffs.length;

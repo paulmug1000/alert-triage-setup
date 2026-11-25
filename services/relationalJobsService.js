@@ -3235,7 +3235,7 @@ export async function verifyRelationalJobsReadParity({ clientName = null } = {})
 
       // Ensure _calcs & tabHeaders exist if not populated yet
       const bundle = await preloadClientRelationalJobsBundle(ctx, { includeConfirmed: true, includePipeline: true });
-      const hasHeaders = Boolean(bundle?.tabHeaders?.Confirmed);
+      const hasHeaders = Boolean(bundle?.tabHeaders?.Confirmed && bundle?.tabHeaders?.Pipeline);
       if (!hasHeaders) {
         await reconcileClientRelationalJobsFromGrids(ctx, ["Confirmed", "Pipeline"], { forceFullUpsert: true });
       }

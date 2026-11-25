@@ -4,6 +4,7 @@ import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
 import { invalidatePmaClientCache } from "../../../services/cacheService.js";
+import { checkAndNotifyClientParity } from "../../../services/dailyAlertsNotifier.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
 import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
 import {
@@ -304,6 +305,13 @@ export default async function handler(req, res) {
       const targetClientFilter = req.body?.allBridged ? null : cleanClient;
       const parityReport = await verifyBridgedClientsParity({ clientName: targetClientFilter });
       return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "run_parity_monitor_now") {
+      const report = await checkAndNotifyClientParity({
+        dryRunEmail: Boolean(req.body?.dryRunEmail),
+      });
+      return res.status(200).json({ success: true, report });
     }
 
     if (action === "backfill_relational_jobs") {

@@ -187,6 +187,7 @@ export default function JobDetailModal({
     : Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
   const [crmTool, setCrmTool] = useState(() => target?.crmTool || target?.client?.crmTool || null);
   const [crmDrives, setCrmDrives] = useState(() => target?.crmDrives || target?.client?.crmDrives || null);
+  const [splitEnabled, setSplitEnabled] = useState(() => Boolean(target?.splitEnabled ?? target?.client?.splitEnabled ?? false));
   const [noEndDateRetainerMonths, setNoEndDateRetainerMonths] = useState(18);
   const [hasAccountingIntegration, setHasAccountingIntegration] = useState(() => {
     return Boolean(
@@ -242,7 +243,16 @@ export default function JobDetailModal({
           if (!clientSheetId) {
             clientSheetId = matched.clientSheetId || matched.sheetId || null;
           }
-          client = { ...(matched || {}), ...(client || {}), clientSheetId, clientName: matched.clientName || trimmed };
+          const cleanClientObj = Object.fromEntries(
+            Object.entries(client || {}).filter(([, v]) => v !== undefined)
+          );
+          client = {
+            ...(matched || {}),
+            ...cleanClientObj,
+            clientSheetId,
+            clientName: matched.clientName || trimmed,
+            splitEnabled: client?.splitEnabled !== undefined ? client.splitEnabled : matched?.splitEnabled,
+          };
           break;
         }
       }
@@ -274,6 +284,11 @@ export default function JobDetailModal({
       setCrmDrives(target.crmDrives);
     } else if (resolvedClientInfo?.client?.crmDrives !== undefined) {
       setCrmDrives(resolvedClientInfo.client.crmDrives);
+    }
+    if (target?.splitEnabled !== undefined) {
+      setSplitEnabled(Boolean(target.splitEnabled));
+    } else if (resolvedClientInfo?.client?.splitEnabled !== undefined) {
+      setSplitEnabled(Boolean(resolvedClientInfo.client.splitEnabled));
     }
   }, [target, resolvedClientInfo]);
 
@@ -340,6 +355,7 @@ export default function JobDetailModal({
           if (data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
           if (data.crmTool) setCrmTool(data.crmTool);
           if (data.crmDrives) setCrmDrives(data.crmDrives);
+          if (data.splitEnabled !== undefined) setSplitEnabled(Boolean(data.splitEnabled));
           if (typeof data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(data.noEndDateRetainerMonths);
 
           const found = matchTargetJob(data.jobs, target);
@@ -1645,6 +1661,7 @@ export default function JobDetailModal({
           editSplit={jobsEditSplit}
           client={resolvedClientInfo.client || target.client}
           tabName={jobsEditSplit.tabName || tabName}
+          allowEnableSplit={splitEnabled}
           onClose={() => setJobsEditSplit(null)}
           onUpdateJobsData={(rNum, splitStr, updatedFields) => {
             hasSavedChangesRef.current = true;
@@ -2536,48 +2553,50 @@ export default function JobDetailModal({
                       })()}
 
                       {/* Revenue Split */}
-                      <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <div>
-                            <div style={{ fontSize: "11px", fontWeight: "700", color: "#334155" }}>Revenue split</div>
-                            <div style={{ fontSize: "11px", color: "#64748b" }}>
-                              {isRetainer
-                                ? "Even monthly (Retainer)"
-                                : String(unevenSplitVal).toLowerCase().startsWith("[split]")
-                                  ? "Custom uneven split active"
-                                  : "Even monthly distribution"}
+                      {(splitEnabled || String(unevenSplitVal).toLowerCase().startsWith("[split]")) && (
+                        <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <div>
+                              <div style={{ fontSize: "11px", fontWeight: "700", color: "#334155" }}>Revenue split</div>
+                              <div style={{ fontSize: "11px", color: "#64748b" }}>
+                                {isRetainer
+                                  ? "Even monthly (Retainer)"
+                                  : String(unevenSplitVal).toLowerCase().startsWith("[split]")
+                                    ? "Custom uneven split active"
+                                    : "Even monthly distribution"}
+                              </div>
                             </div>
+                            {!isRetainer && (
+                              <button
+                                type="button"
+                                disabled={isJobLocked}
+                                title={isJobLocked ? lockTooltip : undefined}
+                                onClick={() => {
+                                  if (isJobLocked) return;
+                                  const mergedJobRow = {
+                                    ...parentRow,
+                                    ...draftEdits,
+                                    startDate: draftEdits.startDate !== undefined ? draftEdits.startDate : parentRow.startDate,
+                                    endDate: draftEdits.endDate !== undefined ? draftEdits.endDate : parentRow.endDate,
+                                    revenue: draftEdits.revenue !== undefined ? draftEdits.revenue : parentRow.revenue,
+                                    client: draftEdits.client !== undefined ? draftEdits.client : parentRow.client,
+                                    jobName: draftEdits.jobName !== undefined ? draftEdits.jobName : parentRow.jobName,
+                                  };
+                                  setJobsEditSplit({ jobRow: mergedJobRow, tabName });
+                                }}
+                                style={{
+                                  padding: "4px 9px", borderRadius: "5px", border: "1px solid #cbd5e1",
+                                  background: isJobLocked ? "#f1f5f9" : (String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#0284c7" : "#ffffff"),
+                                  color: isJobLocked ? "#94a3b8" : (String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#ffffff" : "#0284c7"),
+                                  fontSize: "11px", fontWeight: "600", cursor: isJobLocked ? "not-allowed" : "pointer"
+                                }}
+                              >
+                                Configure split
+                              </button>
+                            )}
                           </div>
-                          {!isRetainer && (
-                            <button
-                              type="button"
-                              disabled={isJobLocked}
-                              title={isJobLocked ? lockTooltip : undefined}
-                              onClick={() => {
-                                if (isJobLocked) return;
-                                const mergedJobRow = {
-                                  ...parentRow,
-                                  ...draftEdits,
-                                  startDate: draftEdits.startDate !== undefined ? draftEdits.startDate : parentRow.startDate,
-                                  endDate: draftEdits.endDate !== undefined ? draftEdits.endDate : parentRow.endDate,
-                                  revenue: draftEdits.revenue !== undefined ? draftEdits.revenue : parentRow.revenue,
-                                  client: draftEdits.client !== undefined ? draftEdits.client : parentRow.client,
-                                  jobName: draftEdits.jobName !== undefined ? draftEdits.jobName : parentRow.jobName,
-                                };
-                                setJobsEditSplit({ jobRow: mergedJobRow, tabName });
-                              }}
-                              style={{
-                                padding: "4px 9px", borderRadius: "5px", border: "1px solid #cbd5e1",
-                                background: isJobLocked ? "#f1f5f9" : (String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#0284c7" : "#ffffff"),
-                                color: isJobLocked ? "#94a3b8" : (String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#ffffff" : "#0284c7"),
-                                fontSize: "11px", fontWeight: "600", cursor: isJobLocked ? "not-allowed" : "pointer"
-                              }}
-                            >
-                              Configure Split
-                            </button>
-                          )}
                         </div>
-                      </div>
+                      )}
                     </div>
                   </div>
 

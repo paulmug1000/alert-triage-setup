@@ -380,9 +380,10 @@ async function loadClientsArrayFromSupabaseFallback_() {
     if (!(await isSupabaseControlPlaneActive())) return null;
     const sb = getSupabaseAdmin();
     if (!sb) return null;
-    const [{ data: sbClients }, { data: kiRows }] = await Promise.all([
+    const [{ data: sbClients }, { data: kiRows }, { data: kiGridRows }] = await Promise.all([
       sb.from("clients").select("*").order("client_name", { ascending: true }),
       sb.from("tenant_key_info").select("client_name, normalized_key, revenue_or_income_mode, direct_costs_mode, accounting_tool, crm_tool, crm_drives, invoice_method"),
+      sb.from("master_sheet_grids").select("client_name, values_grid").eq("tab_name", "KeyInfo").eq("sheet_role", "client"),
     ]);
     if (!Array.isArray(sbClients) || sbClients.length === 0) return null;
     const kiByNorm = new Map();
@@ -390,6 +391,15 @@ async function loadClientsArrayFromSupabaseFallback_() {
     for (const k of kiRows || []) {
       if (k.normalized_key) kiByNorm.set(String(k.normalized_key).trim().toLowerCase(), k);
       if (k.client_name) kiByName.set(String(k.client_name).trim().toLowerCase(), k);
+    }
+    const kiGridD16ByName = new Map();
+    for (const g of kiGridRows || []) {
+      if (g.client_name && Array.isArray(g.values_grid)) {
+        const rawD16 = g.values_grid?.[15]?.[3];
+        if (rawD16 !== undefined && rawD16 !== null && String(rawD16).trim() !== "") {
+          kiGridD16ByName.set(String(g.client_name).trim().toLowerCase(), String(rawD16).trim());
+        }
+      }
     }
     const clientsArray = [];
     for (const c of sbClients) {
@@ -422,7 +432,12 @@ async function loadClientsArrayFromSupabaseFallback_() {
         scriptId: String(c.client_script_id || "").trim(),
         webAppUrl: String(c.master_deployment_url || c.web_app_url || c.metadata?.webAppUrl || "").trim(),
         hasWebAppUrl: Boolean(c.master_deployment_url || c.web_app_url || c.metadata?.webAppUrl) || c.master_mode === "supabase",
-        splitEnabled: Boolean(c.metadata?.splitEnabled || String(ki?.invoice_method || "").toLowerCase().includes("split")),
+        splitEnabled: (() => {
+          const d16Val = kiGridD16ByName.get(clientName.toLowerCase());
+          return d16Val !== undefined
+            ? d16Val.toLowerCase() === "yes"
+            : Boolean(c.metadata?.splitEnabled || String(ki?.invoice_method || "").toLowerCase().includes("split"));
+        })(),
         reconSheetUrl,
         reconSheetId,
         accountingTool,

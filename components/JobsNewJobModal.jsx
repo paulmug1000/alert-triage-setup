@@ -25,10 +25,12 @@ export default function JobsNewJobModal({
   productLines = [],
   leadSources = [],
   existingClients = [],
+  splitEnabled,
   initialJobData = null,
   onClose,
   onSuccess
 }) {
+  const effectiveSplitEnabled = splitEnabled !== undefined ? Boolean(splitEnabled) : Boolean(jobsClient?.splitEnabled);
   const auth = useAuth?.() || {};
   const isAdmin = Boolean(auth.user?.isAdmin || auth.user?.role === "Admin");
   // Format today's date as YYYY-MM-DD for native HTML date inputs
@@ -400,13 +402,13 @@ export default function JobsNewJobModal({
       return;
     }
 
-    if (enableSplit && isSplitError) {
+    if (effectiveSplitEnabled && enableSplit && isSplitError) {
       setError(splitErrorText || "Please resolve errors in the uneven revenue split section before saving.");
       return;
     }
 
     let splitStrResult = "";
-    if (enableSplit && splitMonths.length > 0 && projectRetainer === "Project") {
+    if (effectiveSplitEnabled && enableSplit && splitMonths.length > 0 && projectRetainer === "Project") {
       const curLocked = lockedMonthsRef.current || {};
       const vLocked = {};
       let lSum = 0;
@@ -1057,8 +1059,8 @@ export default function JobsNewJobModal({
               </div>
             </div>
 
-            {/* Uneven Revenue Split Checkbox & Section (Visible for Project jobs) */}
-            {projectRetainer === "Project" && (
+            {/* Uneven Revenue Split Checkbox & Section (Visible for Project jobs when split is enabled for client) */}
+            {projectRetainer === "Project" && effectiveSplitEnabled && (
               <div
                 style={{
                   padding: "14px",
@@ -1728,12 +1730,12 @@ export default function JobsNewJobModal({
             }}
           >
             <div style={{ fontSize: "12px", color: "#64748b" }}>
-              {(invoiceActiveCount > 0 || expenseActiveCount > 0 || enableSplit) && (
+              {(invoiceActiveCount > 0 || expenseActiveCount > 0 || (effectiveSplitEnabled && enableSplit)) && (
                 <span>
                   Including:{" "}
                   <strong>
                     {[
-                      enableSplit ? "custom revenue split" : null,
+                      effectiveSplitEnabled && enableSplit ? "custom revenue split" : null,
                       invoiceActiveCount > 0 ? `${invoiceActiveCount} invoice(s)` : null,
                       expenseActiveCount > 0 ? `${expenseActiveCount} expense(s)` : null,
                     ].filter(Boolean).join(", ")}

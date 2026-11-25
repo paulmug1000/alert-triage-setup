@@ -140,7 +140,7 @@ export function parseLikelihood(likelihoodVal, fallback = 0.5) {
 }
 
 export const PulseMath = {
-  calcMonthly(job, targetDate, valueType = "revenue", isIncomeMode = false, ignoreLikelihood = false) {
+  calcMonthly(job, targetDate, valueType = "revenue", isIncomeMode = false, ignoreLikelihood = false, splitEnabled = true) {
     if (!job || !targetDate) return 0;
     const eqStart = job.eqStartDate ? new Date(job.eqStartDate) : (job.startDate ? new Date(job.startDate) : null);
     const eqEnd = job.erEndDate ? new Date(job.erEndDate) : (job.endDate ? new Date(job.endDate) : null);
@@ -164,7 +164,7 @@ export const PulseMath = {
     if (!withinParentDates && !hasChildRetainers) return 0;
 
     // --- RESTORED SPLIT LOGIC ---
-    if (hasSplit && !isRetainer && job.splitStr) {
+    if (splitEnabled && hasSplit && !isRetainer && job.splitStr) {
       const splitStr = String(job.splitStr || "").trim();
       const monthNames = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
       const mStr = `${monthNames[targetMonth]}-${String(targetYear).slice(-2)}`;
@@ -341,7 +341,7 @@ export const DeepDiveEngine = {
     });
   },
 
-  getJobsForMonth(allJobs, targetDate, type, isIncomeMode = false, isScenarioView = false, scenariosConfig = null) {
+  getJobsForMonth(allJobs, targetDate, type, isIncomeMode = false, isScenarioView = false, scenariosConfig = null, splitEnabled = true) {
     let results = [];
     if (!allJobs || allJobs.length === 0) return results;
 
@@ -369,7 +369,7 @@ export const DeepDiveEngine = {
       if (type === "pipeRev" && effectiveType !== "pipeline") return;
 
       const valueType = type === "dirCosts" ? "directCosts" : "revenue";
-      const monthlyAmount = PulseMath.calcMonthly(job, targetDate, valueType, isIncomeMode, isAssumedConfirmed);
+      const monthlyAmount = PulseMath.calcMonthly(job, targetDate, valueType, isIncomeMode, isAssumedConfirmed, splitEnabled);
 
       if (Math.abs(monthlyAmount) >= 0.01) {
         let rawAmount = 0;
@@ -1699,6 +1699,10 @@ export function buildDeepDiveData({
     : String(rawDirectCostsMode).trim() === "Pass-through"
       ? "Pass-through"
       : "Contractors";
+  const effectiveSplitEnabled =
+    keyData?.splitEnabled !== undefined
+      ? Boolean(keyData.splitEnabled)
+      : (keyData?.formOptions?.splitEnabled !== undefined ? Boolean(keyData.formOptions.splitEnabled) : true);
 
   const calcNbDirectCosts = (startDateObj, numMonths) => {
     if (effectiveIncomeMode || !keyData?.nbtofind?.directCosts) return 0;
@@ -1742,10 +1746,10 @@ export function buildDeepDiveData({
 
     if (count > 1) {
       items = DeepDiveEngine.aggregatePeriods(effectiveDate, count, (d) =>
-        DeepDiveEngine.getJobsForMonth(allJobs, d, "confRev", effectiveIncomeMode, isScenarioView, scenariosConfig)
+        DeepDiveEngine.getJobsForMonth(allJobs, d, "confRev", effectiveIncomeMode, isScenarioView, scenariosConfig, effectiveSplitEnabled)
       );
     } else {
-      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "confRev", effectiveIncomeMode, isScenarioView, scenariosConfig);
+      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "confRev", effectiveIncomeMode, isScenarioView, scenariosConfig, effectiveSplitEnabled);
     }
 
     const totalJobs = items.reduce((s, i) => s + i.amount, 0);
@@ -1790,10 +1794,10 @@ export function buildDeepDiveData({
 
     if (count > 1) {
       items = DeepDiveEngine.aggregatePeriods(effectiveDate, count, (d) =>
-        DeepDiveEngine.getJobsForMonth(allJobs, d, "pipeRev", effectiveIncomeMode, isScenarioView, scenariosConfig)
+        DeepDiveEngine.getJobsForMonth(allJobs, d, "pipeRev", effectiveIncomeMode, isScenarioView, scenariosConfig, effectiveSplitEnabled)
       );
     } else {
-      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "pipeRev", effectiveIncomeMode, isScenarioView, scenariosConfig);
+      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "pipeRev", effectiveIncomeMode, isScenarioView, scenariosConfig, effectiveSplitEnabled);
     }
 
     const totalJobs = items.reduce((s, i) => s + i.amount, 0);
@@ -1992,10 +1996,10 @@ export function buildDeepDiveData({
       let jobDcItems = [];
       if (count > 1) {
         jobDcItems = DeepDiveEngine.aggregatePeriods(effectiveDate, count, (d) =>
-          DeepDiveEngine.getJobsForMonth(allJobs, d, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig)
+          DeepDiveEngine.getJobsForMonth(allJobs, d, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig, effectiveSplitEnabled)
         );
       } else {
-        jobDcItems = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig);
+        jobDcItems = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig, effectiveSplitEnabled);
       }
       jobDcItems.forEach((jItem) => {
         const amt = Math.round((jItem.amount || 0) * 100) / 100;
@@ -2216,10 +2220,10 @@ export function buildDeepDiveData({
 
     if (count > 1) {
       items = DeepDiveEngine.aggregatePeriods(effectiveDate, count, (d) =>
-        DeepDiveEngine.getJobsForMonth(allJobs, d, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig)
+        DeepDiveEngine.getJobsForMonth(allJobs, d, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig, effectiveSplitEnabled)
       );
     } else {
-      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig);
+      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig, effectiveSplitEnabled);
     }
 
     const nbDcAmt = calcNbDirectCosts(effectiveDate, count > 1 ? count : 1);
@@ -2945,6 +2949,7 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       : "Contractors";
   const isContractorsDirectMode = isRevMode && directCostsMode === "Contractors";
   const otherExpDelRowIdx = String(rows[12]?.label || "").toLowerCase().includes("other expenses") ? 12 : 13;
+  const effectiveSplitEnabled = scenariosConfig?.splitEnabled !== undefined ? Boolean(scenariosConfig.splitEnabled) : true;
 
   // Calculate New Business Direct Costs deduction array respecting monthly checkboxes (Revenue mode only)
   const nbDCDeduction = new Array(12).fill(0);
@@ -3009,8 +3014,8 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
 
         if (!monthDates[m]) return;
 
-        const jobRevMonthWeighted = PulseMath.calcMonthly(job, monthDates[m], "revenue", !isRevMode, false);
-        const jobDcMonthWeighted = PulseMath.calcMonthly(job, monthDates[m], "directCosts", !isRevMode, false);
+        const jobRevMonthWeighted = PulseMath.calcMonthly(job, monthDates[m], "revenue", !isRevMode, false, effectiveSplitEnabled);
+        const jobDcMonthWeighted = PulseMath.calcMonthly(job, monthDates[m], "directCosts", !isRevMode, false, effectiveSplitEnabled);
 
         if (isConfirmed || isUnchecked) {
           exactPipeRevDeduction += jobRevMonthWeighted;
@@ -3019,8 +3024,8 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
         }
 
         if (isConfirmed) {
-          const grossRevMonth = PulseMath.calcMonthly(job, monthDates[m], "revenue", !isRevMode, true);
-          const grossDcMonth = PulseMath.calcMonthly(job, monthDates[m], "directCosts", !isRevMode, true);
+          const grossRevMonth = PulseMath.calcMonthly(job, monthDates[m], "revenue", !isRevMode, true, effectiveSplitEnabled);
+          const grossDcMonth = PulseMath.calcMonthly(job, monthDates[m], "directCosts", !isRevMode, true, effectiveSplitEnabled);
           exactAssumedConfRev += grossRevMonth;
           if (isRevMode) {
             exactAssumedConfDCAdd += grossDcMonth - jobDcMonthWeighted;

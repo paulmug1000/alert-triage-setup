@@ -82,6 +82,15 @@ export function useJobs(initialClient = null) {
     }
     return "sheet";
   });
+  const [splitEnabled, setSplitEnabled] = useState(() => {
+    if (initialClient?.splitEnabled !== undefined) return Boolean(initialClient.splitEnabled);
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "jobs_All");
+      if (cached?.data?.splitEnabled !== undefined) return Boolean(cached.data.splitEnabled);
+    }
+    return false;
+  });
   const [jobsLastUpdatedAt, setJobsLastUpdatedAt] = useState(() => {
     if (initialClient?.clientSheetId) {
       const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
@@ -102,6 +111,7 @@ export function useJobs(initialClient = null) {
   useEffect(() => {
     if (jobsClient?.crmTool) setCrmTool(jobsClient.crmTool);
     if (jobsClient?.crmDrives) setCrmDrives(jobsClient.crmDrives);
+    if (jobsClient?.splitEnabled !== undefined) setSplitEnabled(Boolean(jobsClient.splitEnabled));
   }, [jobsClient]);
 
   const loadJobsData = useCallback(async (client, tabName = "All", bypassCache = false, silent = false) => {
@@ -109,6 +119,9 @@ export function useJobs(initialClient = null) {
 
     if (client.hasAccountingIntegration !== undefined) {
       setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+    }
+    if (client.splitEnabled !== undefined) {
+      setSplitEnabled(Boolean(client.splitEnabled));
     }
 
     const cacheKey = `jobs_${tabName}`;
@@ -128,6 +141,8 @@ export function useJobs(initialClient = null) {
       if (typeof cached.data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(cached.data.noEndDateRetainerMonths);
       if (cached.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(cached.data.hasAccountingIntegration));
       else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+      if (cached.data.splitEnabled !== undefined) setSplitEnabled(Boolean(cached.data.splitEnabled));
+      else if (client.splitEnabled !== undefined) setSplitEnabled(Boolean(client.splitEnabled));
       setJobsLastUpdatedAt(cached.timestamp || Date.now());
       setJobsLoading(false);
       // If cached data is fresh (< 120s), return immediately
@@ -154,6 +169,8 @@ export function useJobs(initialClient = null) {
             if (typeof fresh.data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(fresh.data.noEndDateRetainerMonths);
             if (fresh.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(fresh.data.hasAccountingIntegration));
             else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+            if (fresh.data.splitEnabled !== undefined) setSplitEnabled(Boolean(fresh.data.splitEnabled));
+            else if (client.splitEnabled !== undefined) setSplitEnabled(Boolean(client.splitEnabled));
             setJobsLastUpdatedAt(fresh.timestamp || Date.now());
             setJobsLoading(false);
             return;
@@ -200,6 +217,8 @@ export function useJobs(initialClient = null) {
         if (typeof data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(data.noEndDateRetainerMonths);
         if (data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
         else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+        if (data.splitEnabled !== undefined) setSplitEnabled(Boolean(data.splitEnabled));
+        else if (client.splitEnabled !== undefined) setSplitEnabled(Boolean(client.splitEnabled));
         setJobsLastUpdatedAt(Date.now());
         setCachedClientData(client.clientSheetId, cacheKey, data);
       }
@@ -227,6 +246,7 @@ export function useJobs(initialClient = null) {
     crmTool, setCrmTool,
     crmDrives, setCrmDrives,
     clientMode,
+    splitEnabled,
     jobsLastUpdatedAt,
     noEndDateRetainerMonths,
     loadJobsData

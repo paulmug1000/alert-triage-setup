@@ -3,8 +3,11 @@ import SplitMonthCard from "./SplitMonthCard";
 import { parseSplitString, formatSplitString } from "../services/splitHelper";
 import { parseVariableRetainerTag } from "../utils/helpers";
 
-export default function UnevenSplitModal({ editSplit, client, tabName, onClose, onUpdateJobsData }) {
+export default function UnevenSplitModal({ editSplit, client, tabName, allowEnableSplit, onClose, onUpdateJobsData }) {
   const { jobRow } = editSplit;
+  const canEnableSplit = allowEnableSplit !== undefined
+    ? Boolean(allowEnableSplit)
+    : (client?.splitEnabled !== undefined ? Boolean(client.splitEnabled) : true);
   const [isActive, setIsActive] = useState(String(jobRow.unevenSplit || "").toLowerCase().startsWith("[split]"));
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState("");
@@ -155,6 +158,10 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
     setSaving(true);
     setServerError("");
     try {
+      if (isActive && !canEnableSplit) {
+        setServerError("Uneven revenue splits are not enabled for this client.");
+        return;
+      }
       let splitStr = "";
       if (isActive) {
         const curLocked = lockedMonthsRef.current || {};
@@ -260,7 +267,7 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 600px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>Uneven Revenue Split</h3>
+          <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>Uneven revenue split</h3>
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
 
@@ -274,12 +281,20 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
           )}
         </div>
 
-        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "600", fontSize: "14px", marginBottom: "16px", cursor: "pointer" }}>
+        {!canEnableSplit && (
+          <div style={{ marginBottom: "14px", padding: "10px 12px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", fontSize: "12px", color: "#92400e" }}>
+            Uneven revenue splits are disabled for this client. {isActive ? "Uncheck and save to clear this split." : ""}
+          </div>
+        )}
+
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "600", fontSize: "14px", marginBottom: "16px", cursor: (!canEnableSplit && !isActive) ? "not-allowed" : "pointer" }}>
           <input
             type="checkbox"
             checked={isActive}
+            disabled={!canEnableSplit && !isActive}
             onChange={e => {
               const checked = e.target.checked;
+              if (checked && !canEnableSplit) return;
               setIsActive(checked);
               if (!checked) {
                 setLockedMonths({});

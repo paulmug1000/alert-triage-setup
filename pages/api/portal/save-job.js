@@ -604,6 +604,29 @@ export default async function handler(req, res) {
       });
     }
 
+    const incomingSplitStr = String(job.splitStr ?? job.unevenSplit ?? "").trim();
+    if (incomingSplitStr.toLowerCase().startsWith("[split]")) {
+      let splitAllowed = false;
+      try {
+        const kiSplitResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: clientSheetId,
+            range: "KeyInfo!D16",
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        );
+        splitAllowed = String(kiSplitResp.data?.values?.[0]?.[0] || "").trim().toLowerCase() === "yes";
+      } catch {
+        splitAllowed = false;
+      }
+      if (!splitAllowed) {
+        return res.status(400).json({
+          success: false,
+          error: "Uneven revenue splits are not enabled for this client.",
+        });
+      }
+    }
+
     // 1. Determine target sheet name and sheet metadata (including rowGroups to avoid a second metadata fetch later)
     const rawLikelihoodStr = String(job.likelihood || "").trim();
     const parsedLikelihoodNum = parseFloat(rawLikelihoodStr.replace(/[%,\s]/g, ""));

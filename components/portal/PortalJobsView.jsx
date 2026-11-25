@@ -2457,7 +2457,7 @@ export default function PortalJobsView({
                             Variable
                           </span>
                         )}
-                        {String(job.splitStr || "").trim().toLowerCase().startsWith("[split]") && (
+                        {Boolean(data?.formOptions?.splitEnabled ?? data?.splitEnabled ?? false) && String(job.splitStr || "").trim().toLowerCase().startsWith("[split]") && (
                           <span
                             style={{
                               marginLeft: "5px",

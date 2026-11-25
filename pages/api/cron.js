@@ -15,7 +15,7 @@ import { getCanonicalAcSheetId } from "../../services/userPermissions";
 import { runDailyAutoBackupSweep } from "../../services/supabaseBackupService";
 import { dispatchDueNativeMasterSyncs } from "../../services/masterSyncEngine";
 import { getSheetsClient } from "../../services/sheetsClient";
-import { sendDailyAlertsSummary, checkAndNotifyTabErrors } from "../../services/dailyAlertsNotifier";
+import { sendDailyAlertsSummary, checkAndNotifyTabErrors, checkAndNotifyClientParity } from "../../services/dailyAlertsNotifier";
 import { warmAllClientsPortalHomeCache } from "../../services/portalDataService";
 import { compactAlertMemory } from "../../services/alertMemory";
 import { resolveCanonicalOAuthHost } from "../../utils/helpers";
@@ -27,6 +27,7 @@ export const config = {
 
 const ACTIVITY_CRON_LAST_KEY = "pulse:activity_feed:last_cron_refresh";
 const TEN_MIN_HOUSEKEEPING_KEY = "pulse:cron:ten_min_housekeeping_last";
+const PARITY_MONITOR_CRON_LAST_KEY = "pulse:cron:parity_monitor_last";
 
 export default async function handler(req, res) {
   if (req.method !== "POST" && req.method !== "GET") {
@@ -202,6 +203,33 @@ export default async function handler(req, res) {
         }
       } catch (actErr) {
         console.warn("⚠️ CRON: Non-fatal error refreshing activity feed:", actErr.message);
+      }
+
+      // Run hourly Dashboard + Year0Data + Cashflow parity check across active clients
+      try {
+        if (!redisClient?.isOpen) await redisClient.connect().catch(() => { });
+        const forceParityCheck = Boolean(req.body?.forceParityCheck === true || req.query?.forceParityCheck === "true");
+        let shouldRunParityCheck = forceParityCheck;
+        if (!shouldRunParityCheck) {
+          if (redisClient?.isOpen) {
+            const parityLock = await redisClient.set(
+              PARITY_MONITOR_CRON_LAST_KEY,
+              new Date().toISOString(),
+              { NX: true, EX: 3300 }
+            ).catch(() => null);
+            shouldRunParityCheck = parityLock === "OK";
+          } else {
+            shouldRunParityCheck = true;
+          }
+        }
+        if (shouldRunParityCheck) {
+          const parityRes = await checkAndNotifyClientParity();
+          console.log(
+            `CRON: Parity monitor checked ${parityRes?.clientsChecked || 0} client(s) (mismatches=${parityRes?.mismatchClientsCount || 0}, emailed=${Boolean(parityRes?.emailed)}).`
+          );
+        }
+      } catch (parityErr) {
+        console.warn("⚠️ CRON: Non-fatal error in hourly parity monitor:", parityErr.message);
       }
 
       // Auto-provision monthly Recon tabs once per day on or after 20th of the month (UK time)

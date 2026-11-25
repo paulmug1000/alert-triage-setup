@@ -157,11 +157,18 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
     if (await isSupabaseControlPlaneActive()) {
       try {
         const sb = getSupabaseAdmin();
-        const [{ data: sbClients, error: sbErr }, { data: kiRows }, cmMap] = await Promise.all([
+        const [{ data: sbClients, error: sbErr }, { data: kiRows }, { data: kiGridRows }, cmMap] = await Promise.all([
           sb.from("clients").select("*").order("client_name", { ascending: true }),
           sb
             .from("tenant_key_info")
             .select("client_name, normalized_key, revenue_or_income_mode, direct_costs_mode, accounting_tool, crm_tool, crm_drives, invoice_method")
+            .then((r) => r)
+            .catch(() => ({ data: [] })),
+          sb
+            .from("master_sheet_grids")
+            .select("client_name, values_grid")
+            .eq("tab_name", "KeyInfo")
+            .eq("sheet_role", "client")
             .then((r) => r)
             .catch(() => ({ data: [] })),
           getClientManagerClientMap(sheets, acId),
@@ -172,6 +179,15 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
           for (const k of kiRows || []) {
             if (k.normalized_key) kiByNorm.set(String(k.normalized_key).trim().toLowerCase(), k);
             if (k.client_name) kiByName.set(String(k.client_name).trim().toLowerCase(), k);
+          }
+          const kiGridD16ByName = new Map();
+          for (const g of kiGridRows || []) {
+            if (g.client_name && Array.isArray(g.values_grid)) {
+              const rawD16 = g.values_grid?.[15]?.[3];
+              if (rawD16 !== undefined && rawD16 !== null && String(rawD16).trim() !== "") {
+                kiGridD16ByName.set(String(g.client_name).trim().toLowerCase(), String(rawD16).trim());
+              }
+            }
           }
           clientsArray = [];
           clientsObj = {};
@@ -200,7 +216,10 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
             const webAppUrl = String(c.master_deployment_url || c.web_app_url || c.metadata?.webAppUrl || "").trim();
             const hasWebAppUrl = Boolean(webAppUrl) || c.master_mode === "supabase";
             const invMethod = String(ki?.invoice_method || c.metadata?.invoiceMethod || "").trim();
-            const splitEnabled = Boolean(c.metadata?.splitEnabled || invMethod.toLowerCase().includes("split"));
+            const d16Val = kiGridD16ByName.get(clientName.toLowerCase());
+            const splitEnabled = d16Val !== undefined
+              ? d16Val.toLowerCase() === "yes"
+              : Boolean(c.metadata?.splitEnabled || invMethod.toLowerCase().includes("split"));
             const hasClientManager = cmMap.hasManager(clientName);
             const accountingTool = c.metadata?.accountingTool || ki?.accounting_tool || "None";
             const crmTool = c.metadata?.crmTool || ki?.crm_tool || "None";
@@ -268,7 +287,7 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
       const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
       const hasClientManager = cmMap.hasManager(clientName);
       clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, webAppUrl, hasWebAppUrl, splitEnabled, reconSheetUrl, reconSheetId, hasClientManager });
-      if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, webAppUrl, hasWebAppUrl, reconSheetUrl, reconSheetId, hasClientManager };
+      if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, webAppUrl, hasWebAppUrl, splitEnabled, reconSheetUrl, reconSheetId, hasClientManager };
     }
 
     if (redisClient?.isOpen) {
@@ -1283,6 +1302,7 @@ export async function getSharedClientConfirmedAndKeyInfo(
       "KeyInfo!Q8:Q9",
       "KeyInfo!D18",
       "KeyInfo!D11:D13",
+      "KeyInfo!D15:D16",
     ];
 
     let confRows = [];
@@ -1298,6 +1318,8 @@ export async function getSharedClientConfirmedAndKeyInfo(
     let jobCostingStyle = "Standard";
     let standardChargeOutRate = 0;
     let contractorDayRate = 0;
+    let splitMethod = "EvenByMonth";
+    let splitEnabled = false;
 
     const offset = keyInfoOnly ? 0 : (includePipeline ? 2 : 1);
 
@@ -1323,6 +1345,9 @@ export async function getSharedClientConfirmedAndKeyInfo(
       if (d11Data?.[0]?.[0]) jobCostingStyle = String(d11Data[0][0]).trim();
       if (d11Data?.[1]?.[0] !== undefined) standardChargeOutRate = parseFloat(String(d11Data[1][0]).replace(/[£$€,\s]/g, "")) || 0;
       if (d11Data?.[2]?.[0] !== undefined) contractorDayRate = parseFloat(String(d11Data[2][0]).replace(/[£$€,\s]/g, "")) || 0;
+      const d15Data = vRanges[offset + 8]?.values || [];
+      if (d15Data?.[0]?.[0]) splitMethod = String(d15Data[0][0]).trim();
+      splitEnabled = String(d15Data?.[1]?.[0] || "").trim().toLowerCase() === "yes";
     } catch (_) {
       if (!keyInfoOnly) {
         try {
@@ -1403,6 +1428,8 @@ export async function getSharedClientConfirmedAndKeyInfo(
       jobCostingStyle,
       standardChargeOutRate,
       contractorDayRate,
+      splitMethod,
+      splitEnabled,
     };
 
     memoryCache.set(sharedKey, sharedPayload, 120);
@@ -1451,8 +1478,17 @@ export async function handleGetDirectCostsJobs(req, res, sheets) {
             }),
             preloadClientRelationalJobsBundle(sbCtx, { includeConfirmed: true, includePipeline: false }),
           ]);
-          directCostsMode = sharedKi.directCostsMode || "Contractors";
-          rows = buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { maxColLimit: 107 }).rows;
+          if (relBundle?.tabHeaders?.Confirmed) {
+            directCostsMode = sharedKi.directCostsMode || "Contractors";
+            rows = buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { maxColLimit: 107 }).rows;
+          } else {
+            const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+              includePipeline: false,
+              bypassCache: Boolean(bypassCache),
+            });
+            rows = shared.confRows || [];
+            directCostsMode = shared.directCostsMode || "Contractors";
+          }
         } else {
           const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
             includePipeline: false,
@@ -1628,8 +1664,16 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
             }),
             preloadClientRelationalJobsBundle(sbCtx, { includeConfirmed: true, includePipeline: false }),
           ]);
-          shared = sharedKi;
-          rows = buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { maxColLimit: 107 }).rows;
+          if (relBundle?.tabHeaders?.Confirmed) {
+            shared = sharedKi;
+            rows = buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { maxColLimit: 107 }).rows;
+          } else {
+            shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+              includePipeline: false,
+              bypassCache: Boolean(bypassCache),
+            });
+            rows = shared.confRows || [];
+          }
         } else {
           shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
             includePipeline: false,
@@ -1954,7 +1998,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       bypassCache: Boolean(bypassCache || _forceJobsReadMode),
       l1TtlSecs: 120,
       redisTtlSecs: _forceJobsReadMode ? 10 : 1800,
-      isValidPayload: (c) => c && Array.isArray(c.jobs) && c.hasAccountingIntegration !== undefined,
+      isValidPayload: (c) => c && Array.isArray(c.jobs) && c.hasAccountingIntegration !== undefined && c.splitEnabled !== undefined,
       fetchFreshFn: async () => {
         const NOTE_COL_INDICES = [0, 41, 48, 55, 75, 82, 89];
         const notesMap = { Confirmed: {}, Pipeline: {} };
@@ -2001,7 +2045,12 @@ export async function handleGetAllClientJobs(req, res, sheets) {
             }),
           ]);
           shared = sharedKi;
-          if (relBundle?.tabHeaders?.Confirmed || relBundle?.tabHeaders?.Pipeline) {
+          const hasRequiredTabHeaders = Boolean(
+            relBundle &&
+            (tabName === "Pipeline" || Boolean(relBundle.tabHeaders?.Confirmed)) &&
+            (tabName === "Confirmed" || Boolean(relBundle.tabHeaders?.Pipeline))
+          );
+          if (hasRequiredTabHeaders) {
             usedRelationalReadPath = true;
             relLookup = relBundle.relLookup;
             if (tabName !== "Pipeline") {
@@ -2063,6 +2112,8 @@ export async function handleGetAllClientJobs(req, res, sheets) {
         const jobCostingStyle = shared.jobCostingStyle || "Standard";
         const standardChargeOutRate = shared.standardChargeOutRate || 0;
         const contractorDayRate = shared.contractorDayRate || 0;
+        const splitEnabled = Boolean(shared.splitEnabled);
+        const splitMethod = shared.splitMethod || "EvenByMonth";
 
         if (!usedRelationalReadPath) {
           // If active job rows exceed initial note cap, fetch only the remaining tail note rows
@@ -2351,6 +2402,8 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           jobCostingStyle: isJobCosting ? "JobCosting" : "Standard",
           standardChargeOutRate,
           contractorDayRate,
+          splitEnabled,
+          splitMethod,
         };
       },
     });
@@ -2437,6 +2490,21 @@ function resolveValidatedJobEditCoord_(tabName, { cellRef, colLetter, rowNum, fa
   };
 }
 
+async function isClientUnevenSplitEnabled_(sheets, sheetIdClean) {
+  try {
+    const resp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "KeyInfo!D16",
+        valueRenderOption: "FORMATTED_VALUE",
+      })
+    );
+    return String(resp.data?.values?.[0]?.[0] || "").trim().toLowerCase() === "yes";
+  } catch {
+    return false;
+  }
+}
+
 export async function handleUpdateJobField(req, res, sheets) {
   const { clientSheetId, tabName, cellRef, value, colLetter, rowNum, fieldName, endClientName, jobName, jobUuid, rowOffset = 0 } = req.body;
   if (!clientSheetId || !tabName || (!cellRef && !colLetter)) {
@@ -2473,6 +2541,16 @@ export async function handleUpdateJobField(req, res, sheets) {
       ? NO_END_DATE_SHEET_VALUE
       : (targetCol === "AN" ? normalizeLikelihoodInput(value) : value);
     const safeValue = sanitizeFormulaInput(normalizedVal);
+
+    if (targetCol === "AE" && String(safeValue || "").trim().toLowerCase().startsWith("[split]")) {
+      const splitAllowed = await isClientUnevenSplitEnabled_(sheets, sheetIdClean);
+      if (!splitAllowed) {
+        return res.status(400).json({
+          success: false,
+          error: "Uneven revenue splits are not enabled for this client.",
+        });
+      }
+    }
 
     // If Revenue (AG/I), Direct Costs (AH/K), Dates (AL/F, AM/G), or Type (AJ) change, synchronize placeholders or provision retainer rows
     let backgroundProvisioning = false;
@@ -2780,6 +2858,18 @@ export async function handleUpdateJobFields(req, res, sheets) {
 
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const hasSplitWrite = normalizedUpdates.some(
+      (u) => u._coord.colLetters === "AE" && String(u.value || "").trim().toLowerCase().startsWith("[split]")
+    );
+    if (hasSplitWrite) {
+      const splitAllowed = await isClientUnevenSplitEnabled_(sheets, sheetIdClean);
+      if (!splitAllowed) {
+        return res.status(400).json({
+          success: false,
+          error: "Uneven revenue splits are not enabled for this client.",
+        });
+      }
+    }
     if (jobUuid) {
       const anchor = await resolveAuthoritativeJobAnchor({
         spreadsheetId: sheetIdClean,
@@ -8489,6 +8579,15 @@ export async function handleAddNewJob(req, res, sheets) {
     if (jobData.unevenSplit || jobData.splitStr) {
       const splitVal = sanitizeFormulaInput(jobData.unevenSplit || jobData.splitStr || "");
       if (splitVal) {
+        if (String(splitVal).trim().toLowerCase().startsWith("[split]")) {
+          const splitAllowed = await isClientUnevenSplitEnabled_(sheets, sheetIdClean);
+          if (!splitAllowed) {
+            return res.status(400).json({
+              success: false,
+              error: "Uneven revenue splits are not enabled for this client.",
+            });
+          }
+        }
         updateData.push({ range: `${targetTab}!AE${targetRow}`, values: [[splitVal]] });
       }
     }

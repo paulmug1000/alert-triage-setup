@@ -18,6 +18,8 @@ import {
   assertTrustedOrigin,
   sanitizeSpreadsheetTerms,
   parseVariableRetainerTag,
+  resolveEditableJobSheetMeta,
+  isContiguousJobChildRow,
 } from "../../../utils/helpers.js";
 import { buildRetainerChildRowsWritePlan, createVariableRetainerSeries_ } from "../../../services/retainers.js";
 import { getToleranceValues } from "../../../services/sharedHelpers.js";
@@ -100,12 +102,8 @@ export default async function handler(req, res) {
       })
     );
     const sheetMetaList = metaResp.data?.sheets || [];
-    const pipelineSheetObj = sheetMetaList.find(
-      (s) => s.properties?.title === "Pipeline" || s.properties?.title === "PipeCalcs"
-    );
-    const confirmedSheetObj = sheetMetaList.find(
-      (s) => s.properties?.title === "Confirmed" || s.properties?.title === "ConfCalcs"
-    );
+    const pipelineSheetObj = resolveEditableJobSheetMeta(sheetMetaList, "pipeline");
+    const confirmedSheetObj = resolveEditableJobSheetMeta(sheetMetaList, "confirmed");
 
     if (!pipelineSheetObj || !confirmedSheetObj) {
       throw new Error("Could not find Pipeline or Confirmed sheets in the spreadsheet");
@@ -115,12 +113,22 @@ export default async function handler(req, res) {
     const confirmedSheetName = confirmedSheetObj.properties.title;
     const confirmedSheetId = confirmedSheetObj.properties.sheetId;
 
+    const anchorRowSet = new Set(
+      Array.isArray(relationalAnchor?.rowNums)
+        ? relationalAnchor.rowNums.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n >= 2)
+        : []
+    );
+    const fetchEndRow = Math.max(
+      pRow + 60,
+      ...(anchorRowSet.size > 0 ? Array.from(anchorRowSet) : [pRow])
+    );
+
     // 2. Read parent + potential child rows from Pipeline, Pipeline headers, and Confirmed rows in parallel
     const [pipelineWindowResp, confDataResp, pHeaderResp] = await Promise.all([
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetId,
-          range: `${pipelineSheetName}!A${pRow}:DH${pRow + 10}`,
+          range: `${pipelineSheetName}!A${pRow}:DH${fetchEndRow}`,
           valueRenderOption: "FORMULA",
         })
       ),
@@ -187,19 +195,28 @@ export default async function handler(req, res) {
     }
 
     // 3. Find child rows in Pipeline (from already-loaded window)
+    const allConfRows = confDataResp.data?.values || [];
+    const isJobCosting = isJobCostingStyle({ headers: allConfRows[0] });
+    const pipeIsJobCosting = isJobCostingStyle({ headers: pHeaderResp?.data?.values?.[0] || allConfRows[0] });
     const childRows = [];
     const childRowsData = [];
     const nextRows = pipelineWindowRows.slice(1);
 
     for (let i = 0; i < nextRows.length; i++) {
       const r = nextRows[i] || [];
-      const rClient = String(r[0] ?? "").trim();
-      const rJobName = String(r[1] ?? "").trim();
+      const candidateRowNum = pRow + 1 + i;
       if (
-        rClient.toLowerCase() === parentClient.toLowerCase() &&
-        rJobName.toLowerCase() === parentJobName.toLowerCase()
+        isContiguousJobChildRow({
+          row: r,
+          candidateRowNum,
+          parentClient,
+          parentJobName,
+          isConfirmedTab: false,
+          isJobCosting: pipeIsJobCosting,
+          anchorRowSet,
+        })
       ) {
-        childRows.push(pRow + 1 + i);
+        childRows.push(candidateRowNum);
         childRowsData.push(r);
       } else {
         break;
@@ -209,8 +226,6 @@ export default async function handler(req, res) {
     const totalRowsNeeded = 1 + childRows.length;
 
     // 4. Find last job row in Confirmed sheet
-    const allConfRows = confDataResp.data?.values || [];
-    const isJobCosting = isJobCostingStyle({ headers: allConfRows[0] });
     let lastJobRow = 1;
     for (let r = allConfRows.length - 1; r >= 0; r--) {
       const rowData = allConfRows[r] || [];
@@ -285,7 +300,8 @@ export default async function handler(req, res) {
           },
         })
       );
-      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => {});
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({
         success: true,
         confirmedRow: varRes.firstRowNum,
@@ -651,7 +667,10 @@ export default async function handler(req, res) {
       })
     );
 
-    // 9. Invalidate In-Memory and Redis caches across both Portal and PMA
+    // 9. Flush immediate recomputes BEFORE invalidating caches so Portal/PMA reads reflect the promoted job immediately
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+
+    // 10. Invalidate In-Memory and Redis caches across both Portal and PMA
     try {
       await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     } catch (cacheErr) {
@@ -691,7 +710,7 @@ export default async function handler(req, res) {
       oldJobKey: prevPipelineJobKey,
       newJobKey: movedJobKey,
       newJobLabel: buildJobNoteLabel({ client: parentClient, jobName: parentJobName }),
-    }).catch(() => {});
+    }).catch(() => { });
 
     await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
 

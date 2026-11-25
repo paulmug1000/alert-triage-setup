@@ -12,25 +12,15 @@ import {
   assertTrustedOrigin,
   sanitizeSpreadsheetTerms,
   parseVariableRetainerTag,
+  resolveEditableJobSheetMeta,
+  rowHasJobSlotData,
+  isContiguousJobChildRow,
 } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 import { resolveAuthoritativeJobAnchor } from "../../../services/relationalJobsService.js";
 
 function normalizeNameKey(val) {
   return String(val ?? "").trim().toLowerCase();
-}
-
-function rowHasAnySlotData_(row, isConfirmedTab) {
-  if (!Array.isArray(row)) return false;
-  const invEndCol = isConfirmedTab ? 61 : 59; // Confirmed AP:BJ (41..61), Pipeline AP:BH (41..59)
-  for (let c = 41; c <= invEndCol; c++) {
-    if (String(row[c] ?? "").trim() !== "") return true;
-  }
-  for (let c = 75; c <= 95; c++) {
-    // Direct expenses BX:CR (75..95); excludes separator col BW (74) and formula cols BK:BV (62..73)
-    if (String(row[c] ?? "").trim() !== "") return true;
-  }
-  return false;
 }
 
 export default async function handler(req, res) {
@@ -96,11 +86,7 @@ export default async function handler(req, res) {
       })
     );
     const sheetMetaList = metaResp.data?.sheets || [];
-    const targetSheetObj = requestedTab === "confirmed"
-      ? (sheetMetaList.find((s) => s.properties?.title === "Confirmed") ||
-        sheetMetaList.find((s) => s.properties?.title === "ConfCalcs"))
-      : (sheetMetaList.find((s) => s.properties?.title === "Pipeline") ||
-        sheetMetaList.find((s) => s.properties?.title === "PipeCalcs"));
+    const targetSheetObj = resolveEditableJobSheetMeta(sheetMetaList, requestedTab);
 
     if (!targetSheetObj) {
       throw new Error(`Could not find ${requestedTab === "confirmed" ? "Confirmed" : "Pipeline"} tab in spreadsheet`);
@@ -155,7 +141,7 @@ export default async function handler(req, res) {
             const isUnnamedChild =
               nxClient === "" &&
               nxJob === "" &&
-              rowHasAnySlotData_(nx, true);
+              rowHasJobSlotData(nx, true);
             if (
               (isNamedChild || isUnnamedChild) &&
               !String(nx[32] || "").trim() &&
@@ -353,7 +339,7 @@ export default async function handler(req, res) {
         : []
     );
     const fetchEndRow = Math.max(
-      parentRow + 30,
+      parentRow + 60,
       ...(anchorRowSet.size > 0 ? Array.from(anchorRowSet) : [parentRow])
     );
 
@@ -400,30 +386,21 @@ export default async function handler(req, res) {
 
     const rowsToClear = [parentRow];
     const nextRows = windowRows.slice(1);
+    const isConfirmedTab = expectedTabCanonical === "Confirmed";
     for (let i = 0; i < nextRows.length; i++) {
       const r = nextRows[i] || [];
       const candidateRowNum = parentRow + 1 + i;
-      const rClient = String(r[0] ?? "").trim();
-      const rJobName = String(r[1] ?? "").trim();
-      const isBlankIdentity = rClient === "" && rJobName === "";
-      const hasSlotContent = rowHasAnySlotData_(r, expectedTabCanonical === "Confirmed");
-      const isNamedSameJob =
-        !isBlankIdentity &&
-        normalizeNameKey(rClient) === normalizeNameKey(actualClient) &&
-        normalizeNameKey(rJobName) === normalizeNameKey(actualJobName);
-      const isUnnamedOverflowChild =
-        isBlankIdentity && (hasSlotContent || anchorRowSet.has(candidateRowNum));
-      if (!isNamedSameJob && !isUnnamedOverflowChild) break;
-
-      const rRev = String(r[32] ?? "").trim();
-      const rDc = String(r[33] ?? "").trim();
-      const rRech = expectedTabCanonical === "Confirmed" ? String(r[17] ?? "").trim() : "";
-      const rStart = String(r[37] ?? "").trim();
-      const isChildEmptyRevDc = isJobCosting && rRev.startsWith("=")
-        ? String(r[8] ?? "").trim() === "" && String(r[5] ?? "").trim() === "" && (rRech === "" || Math.abs(parseFloat(rRech.replace(/[£$€,\s]/g, "")) || 0) <= 0.001)
-        : rRev === "" && rDc === "" && rStart === "" && (rRech === "" || Math.abs(parseFloat(rRech.replace(/[£$€,\s]/g, "")) || 0) <= 0.001);
-
-      if (isChildEmptyRevDc) {
+      if (
+        isContiguousJobChildRow({
+          row: r,
+          candidateRowNum,
+          parentClient: actualClient,
+          parentJobName: actualJobName,
+          isConfirmedTab,
+          isJobCosting,
+          anchorRowSet,
+        })
+      ) {
         rowsToClear.push(candidateRowNum);
       } else {
         break;

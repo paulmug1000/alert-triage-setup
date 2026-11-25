@@ -216,6 +216,9 @@ export default async function handler(req, res) {
       })
     );
 
+    // Flush immediate recomputes BEFORE invalidating caches so subsequent reads see recalculated data
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => {});
+
     // Invalidate caches for this client across both Portal and PMA
     try {
       await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "expenses", "salaries", "views", "cash", "jobs"]);

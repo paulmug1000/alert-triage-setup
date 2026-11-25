@@ -3688,6 +3688,110 @@ export function isCashCellEditable(rowNum, colIdx) {
   return false;
 }
 
+/**
+ * Resolves the editable primary sheet metadata for Confirmed or Pipeline jobs,
+ * strictly preferring the canonical editable tab before formula-mirror tabs.
+ */
+export function resolveEditableJobSheetMeta(sheetMetaList, tabType) {
+  const list = Array.isArray(sheetMetaList) ? sheetMetaList : [];
+  const isConf = String(tabType || "").trim().toLowerCase() === "confirmed";
+  if (isConf) {
+    return (
+      list.find((s) => s?.properties?.title === "Confirmed") ||
+      list.find((s) => s?.properties?.title === "ConfCalcs") ||
+      null
+    );
+  }
+  return (
+    list.find((s) => s?.properties?.title === "Pipeline") ||
+    list.find((s) => s?.properties?.title === "PipeCalcs") ||
+    null
+  );
+}
+
+/**
+ * Checks whether a job row contains any non-empty invoice or direct expense slot cells,
+ * excluding separator columns (AO=40, BW=74) and formula columns (BK:BV=62..73).
+ */
+export function rowHasJobSlotData(row, isConfirmedTab = true) {
+  if (!Array.isArray(row)) return false;
+  const invEndCol = isConfirmedTab ? 61 : 59;
+  for (let c = 41; c <= invEndCol; c++) {
+    if (String(row[c] ?? "").trim() !== "") return true;
+  }
+  for (let c = 75; c <= 95; c++) {
+    if (String(row[c] ?? "").trim() !== "") return true;
+  }
+  return false;
+}
+
+/**
+ * Determines whether a candidate row directly beneath a parent job is a contiguous
+ * overflow/retainer child row (matching either parent identity or unnamed slot/anchor data)
+ * with blank job-level revenue/direct-cost/start-date fields.
+ */
+export function isContiguousJobChildRow({
+  row,
+  candidateRowNum = null,
+  parentClient = "",
+  parentJobName = "",
+  altParentClient = "",
+  altParentJobName = "",
+  isConfirmedTab = true,
+  isJobCosting = false,
+  anchorRowSet = null,
+  cols = null,
+}) {
+  if (!Array.isArray(row)) return false;
+  const clientIdx = cols?.client ?? 0;
+  const jobNameIdx = cols?.jobName ?? 1;
+  const revIdx = cols?.revenue ?? 32;
+  const dcIdx = cols?.directCosts ?? 33;
+  const startIdx = cols?.startDate ?? 37;
+  const jobRevIdx = cols?.jobRevenue ?? 8;
+  const jobStartIdx = cols?.jobStartDate ?? 5;
+  const rechIdx = 17;
+
+  const rClient = String(row[clientIdx] ?? "").trim();
+  const rJobName = String(row[jobNameIdx] ?? "").trim();
+  const isBlankIdentity = rClient === "" && rJobName === "";
+  const hasSlotContent = rowHasJobSlotData(row, isConfirmedTab);
+  const isAnchorChild = Boolean(
+    anchorRowSet && Number.isFinite(candidateRowNum) && anchorRowSet.has(candidateRowNum)
+  );
+  const norm = (v) => String(v ?? "").trim().toLowerCase();
+  const hasNonBlankIdentity = !isBlankIdentity;
+  const matchesPrimary =
+    hasNonBlankIdentity &&
+    norm(rClient) === norm(parentClient) &&
+    norm(rJobName) === norm(parentJobName);
+  const matchesAlt =
+    hasNonBlankIdentity &&
+    Boolean(altParentClient || altParentJobName) &&
+    norm(rClient) === norm(altParentClient || parentClient) &&
+    norm(rJobName) === norm(altParentJobName || parentJobName);
+
+  const isNamedSameJob = matchesPrimary || matchesAlt;
+  const isUnnamedOverflowChild = isBlankIdentity && (hasSlotContent || isAnchorChild);
+  if (!isNamedSameJob && !isUnnamedOverflowChild) return false;
+
+  const rRev = String(row[revIdx] ?? "").trim();
+  const rDc = String(row[dcIdx] ?? "").trim();
+  const rStart = String(row[startIdx] ?? "").trim();
+  const rRech = isConfirmedTab ? String(row[rechIdx] ?? "").trim() : "";
+  const rechEmptyOrZero =
+    rRech === "" || Math.abs(parseFloat(rRech.replace(/[£$€,\s]/g, "")) || 0) <= 0.001;
+
+  if (isJobCosting && rRev.startsWith("=")) {
+    return (
+      String(row[jobRevIdx] ?? "").trim() === "" &&
+      String(row[jobStartIdx] ?? "").trim() === "" &&
+      rechEmptyOrZero
+    );
+  }
+  return rRev === "" && rDc === "" && rStart === "" && rechEmptyOrZero;
+}
+
 
 
 

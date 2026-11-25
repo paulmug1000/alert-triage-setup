@@ -15,7 +15,9 @@ import {
   normalizeLikelihoodInput,
   formatLikelihood,
   assertTrustedOrigin,
-  sanitizeSpreadsheetTerms
+  sanitizeSpreadsheetTerms,
+  resolveEditableJobSheetMeta,
+  isContiguousJobChildRow,
 } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
 import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
@@ -95,12 +97,8 @@ export default async function handler(req, res) {
       })
     );
     const sheetMetaList = metaResp.data?.sheets || [];
-    const confirmedSheetObj = sheetMetaList.find(
-      (s) => s.properties?.title === "Confirmed" || s.properties?.title === "ConfCalcs"
-    );
-    const pipelineSheetObj = sheetMetaList.find(
-      (s) => s.properties?.title === "Pipeline" || s.properties?.title === "PipeCalcs"
-    );
+    const confirmedSheetObj = resolveEditableJobSheetMeta(sheetMetaList, "confirmed");
+    const pipelineSheetObj = resolveEditableJobSheetMeta(sheetMetaList, "pipeline");
 
     if (!confirmedSheetObj || !pipelineSheetObj) {
       throw new Error("Could not find Confirmed or Pipeline sheets in the spreadsheet");
@@ -111,12 +109,22 @@ export default async function handler(req, res) {
     const pipelineSheetName = pipelineSheetObj.properties.title;
     const pipelineSheetId = pipelineSheetObj.properties.sheetId;
 
+    const anchorRowSet = new Set(
+      Array.isArray(relationalAnchor?.rowNums)
+        ? relationalAnchor.rowNums.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n >= 2)
+        : []
+    );
+    const fetchEndRow = Math.max(
+      cRow + 60,
+      ...(anchorRowSet.size > 0 ? Array.from(anchorRowSet) : [cRow])
+    );
+
     // 2. Read parent + child rows from Confirmed and all Pipeline rows (A:AN) in parallel
     const [confWindowResp, pipelineDataResp] = await Promise.all([
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetId,
-          range: `${confirmedSheetName}!A${cRow}:CZ${cRow + 25}`,
+          range: `${confirmedSheetName}!A${cRow}:CZ${fetchEndRow}`,
           valueRenderOption: "FORMULA",
         })
       ),
@@ -140,19 +148,27 @@ export default async function handler(req, res) {
     }
 
     // 3. Find child rows in Confirmed (from already-loaded window)
+    const allPipelineRows = pipelineDataResp.data?.values || [];
+    const isJobCosting = isJobCostingStyle({ headers: allPipelineRows[0] });
     const confirmedChildRows = [];
     const confirmedChildRowsData = [];
     const nextRows = confWindowRows.slice(1);
 
     for (let i = 0; i < nextRows.length; i++) {
       const r = nextRows[i] || [];
-      const rClient = String(r[0] ?? "").trim();
-      const rJobName = String(r[1] ?? "").trim();
+      const candidateRowNum = cRow + 1 + i;
       if (
-        rClient.toLowerCase() === parentClient.toLowerCase() &&
-        rJobName.toLowerCase() === parentJobName.toLowerCase()
+        isContiguousJobChildRow({
+          row: r,
+          candidateRowNum,
+          parentClient,
+          parentJobName,
+          isConfirmedTab: true,
+          isJobCosting,
+          anchorRowSet,
+        })
       ) {
-        confirmedChildRows.push(cRow + 1 + i);
+        confirmedChildRows.push(candidateRowNum);
         confirmedChildRowsData.push(r);
       } else {
         break;
@@ -201,9 +217,6 @@ export default async function handler(req, res) {
     }
 
     // 4. Look for existing Pipeline row
-    const allPipelineRows = pipelineDataResp.data?.values || [];
-    const isJobCosting = isJobCostingStyle({ headers: allPipelineRows[0] });
-
     let pipelineRow = null;
     let isExistingJob = false;
 
@@ -581,7 +594,10 @@ export default async function handler(req, res) {
       }
     }
 
-    // 8. Invalidate In-Memory and Redis caches across both Portal and PMA
+    // 8. Flush immediate recomputes BEFORE invalidating caches so Portal/PMA reads reflect the demoted job immediately
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+
+    // 9. Invalidate In-Memory and Redis caches across both Portal and PMA
     try {
       await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     } catch (cacheErr) {

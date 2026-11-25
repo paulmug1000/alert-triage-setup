@@ -30,6 +30,7 @@ import {
   isFixedScheduleRetainer,
   parseVariableRetainerTag,
   formatVariableRetainerTag,
+  resolveEditableJobSheetMeta,
 } from "../utils/helpers.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, resolveClientSheetIdByClientName, resolveMasterSheetIdByClientName, assertSetupClientSheetBinding, unwrapSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
@@ -8174,9 +8175,7 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
       })(),
     ]);
     const allRows = resp.data.values || [];
-    const confirmedSheetMeta = (metaResp?.data?.sheets || []).find(
-      s => s.properties?.title === "Confirmed" || s.properties?.title === "ConfCalcs"
-    ) || null;
+    const confirmedSheetMeta = resolveEditableJobSheetMeta(metaResp?.data?.sheets || [], "confirmed");
 
     // Step 1: Find the last row with active job data
     let lastJobRow = startRow - 1;

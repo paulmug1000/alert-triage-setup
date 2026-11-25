@@ -48,6 +48,8 @@ import {
   formatVariableRetainerTag,
   isValidDateInputValue,
   validateDateRange,
+  resolveEditableJobSheetMeta,
+  isContiguousJobChildRow,
 } from "../../../utils/helpers.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
@@ -681,20 +683,14 @@ export default async function handler(req, res) {
       })
     );
     const sheetMetaList = metaResp.data?.sheets || [];
-    const existingTitles = new Set(sheetMetaList.map((s) => s.properties?.title));
-
-    let sheetName = "";
-    if (isTargetConfirmed) {
-      sheetName = existingTitles.has("Confirmed") ? "Confirmed" : existingTitles.has("ConfCalcs") ? "ConfCalcs" : "Confirmed";
-    } else {
-      sheetName = existingTitles.has("Pipeline") ? "Pipeline" : existingTitles.has("PipeCalcs") ? "PipeCalcs" : "Pipeline";
-    }
-
-    const targetSheetObj = sheetMetaList.find((s) => s.properties?.title === sheetName);
+    const requestedStatus = isTargetConfirmed ? "confirmed" : "pipeline";
+    const fallbackSheetName = isTargetConfirmed ? "Confirmed" : "Pipeline";
+    const targetSheetObj = resolveEditableJobSheetMeta(sheetMetaList, requestedStatus);
     if (!targetSheetObj) {
-      throw new Error(`Sheet "${sheetName}" not found in spreadsheet.`);
+      throw new Error(`Sheet "${fallbackSheetName}" not found in spreadsheet.`);
     }
-    const sheetId = targetSheetObj.properties?.sheetId;
+    const sheetName = targetSheetObj.properties.title;
+    const sheetId = targetSheetObj.properties.sheetId;
 
     // 2. Read headers of target sheet
     const headerResp = await withRetry(() =>
@@ -907,7 +903,7 @@ export default async function handler(req, res) {
       if (isNaN(baseRow) || !Array.isArray(rawChildren)) return [];
       const sorted = rawChildren
         .map((n) => parseInt(n, 10))
-        .filter((n) => !isNaN(n) && n > baseRow && n <= baseRow + 25)
+        .filter((n) => !isNaN(n) && n > baseRow && n <= baseRow + 120)
         .sort((a, b) => a - b);
       const valid = [];
       for (let i = 0; i < sorted.length; i++) {
@@ -985,7 +981,7 @@ export default async function handler(req, res) {
     } else {
       // Single combined read for existing parent row (FORMULA) + child row inspection window directly below parentRow
       try {
-        const checkCount = Math.max(10, existingChildRows.length);
+        const checkCount = Math.max(30, existingChildRows.length);
         const inspectResp = await withRetry(() =>
           sheets.spreadsheets.values.get({
             spreadsheetId: clientSheetId,
@@ -999,24 +995,34 @@ export default async function handler(req, res) {
           preloadedFormulaRowsByRowNum.set(parentRow + idx, windowRows[idx] || []);
         }
         const nextRows = windowRows.slice(1);
+        const explicitChildSet = new Set(existingChildRows);
         const verifiedChildren = [];
         for (let i = 0; i < nextRows.length; i++) {
           const r = nextRows[i] || [];
-          const rClient = String(r[cols.client] ?? "").trim();
-          const rJobName = String(r[cols.jobName] ?? "").trim();
+          const candidateRowNum = parentRow + 1 + i;
           const rRev = String(r[cols.revenue] ?? "").trim();
           const rDc = String(r[cols.directCosts] ?? "").trim();
-          const isExplicitChild = existingChildRows.includes(parentRow + 1 + i);
-          const isAutoMatchedChild =
-            rClient.toLowerCase() === String(job.client || "").toLowerCase() &&
-            rJobName.toLowerCase() === String(job.jobName || "").toLowerCase();
           const isChildEmptyRevDc =
             isJobCosting && rRev.startsWith("=")
               ? String(r[cols.jobRevenue] ?? "").trim() === "" &&
-              String(r[cols.jobStartDate] ?? "").trim() === ""
+                String(r[cols.jobStartDate] ?? "").trim() === ""
               : rRev === "" && rDc === "";
-          if ((isExplicitChild || isAutoMatchedChild) && isChildEmptyRevDc) {
-            verifiedChildren.push(parentRow + 1 + i);
+          const isMatched =
+            (explicitChildSet.has(candidateRowNum) && isChildEmptyRevDc) ||
+            isContiguousJobChildRow({
+              row: r,
+              candidateRowNum,
+              parentClient: existingParentRow?.[cols.client] ?? job.client ?? "",
+              parentJobName: existingParentRow?.[cols.jobName] ?? job.jobName ?? "",
+              altParentClient: job.client ?? "",
+              altParentJobName: job.jobName ?? "",
+              isConfirmedTab: isTargetConfirmed,
+              isJobCosting,
+              anchorRowSet: explicitChildSet,
+              cols,
+            });
+          if (isMatched) {
+            verifiedChildren.push(candidateRowNum);
           } else {
             break;
           }

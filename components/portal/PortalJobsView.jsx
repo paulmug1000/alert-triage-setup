@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import Spinner from "../Spinner";
+import DateInput from "../DateInput";
 import DeferredSearchInput from "../DeferredSearchInput";
 import { PortalTableSkeleton } from "../Skeleton";
 import SplitMonthCard from "../SplitMonthCard";
@@ -31,7 +32,11 @@ import {
   calculateRenewalDates,
   formatLikelihood,
   normalizeLikelihoodInput,
-  getRetainerRowMonthLabel
+  getRetainerRowMonthLabel,
+  isValidDateInputValue,
+  validateDateRange,
+  MIN_INPUT_MONTH,
+  MAX_INPUT_MONTH
 } from "../../utils/helpers";
 import { parseSplitString, formatSplitString, extractSplitMonths } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
@@ -161,6 +166,8 @@ export default function PortalJobsView({
   const [editingJob, setEditingJob] = useState(null); // null or job object
   const [isSaving, setIsSaving] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteJobPrompt, setDeleteJobPrompt] = useState(null); // null or job object pending delete confirmation
   const [saveError, setSaveError] = useState(null);
   const [underAllocationPrompt, setUnderAllocationPrompt] = useState(null); // null or { message }
   const [optimisticJobs, setOptimisticJobs] = useState({}); // { [key]: job }
@@ -622,7 +629,14 @@ export default function PortalJobsView({
           const key = j.id !== undefined ? j.id : (j.parentId !== undefined ? j.parentId : j.rowNumber);
           if (key !== undefined) seenKeys.add(String(key));
           const opt = key !== undefined ? optimisticJobs[key] : null;
-          if (opt?._deletedOptimistic) return null;
+          if (opt?._deletedOptimistic) {
+            const sameIdentity = !opt._deletedJobName || (
+              String(j.client || "").trim().toLowerCase() === opt._deletedClient &&
+              String(j.jobName || "").trim().toLowerCase() === opt._deletedJobName
+            );
+            if (sameIdentity) return null;
+            return j;
+          }
           return opt ? { ...j, ...opt } : j;
         })
         .filter(Boolean);
@@ -1219,7 +1233,9 @@ export default function PortalJobsView({
       propSuccFeePct: job?.propSuccFeePct || "",
       propSuccFeeRec: job?.propSuccFeeRec || "",
       invNo: job?.invNo || "",
-      endDate: hasNoEndDate ? "" : (job?.endDate || ""),
+      dateConfirmed: toInputDateFormat(job?.dateConfirmed),
+      startDate: toInputDateFormat(job?.startDate),
+      endDate: hasNoEndDate ? "" : toInputDateFormat(job?.endDate),
       noEndDate: hasNoEndDate,
       revenue: normalizeAmount(job?.revenue),
       directCosts: normalizeAmount(job?.directCosts),
@@ -1613,6 +1629,69 @@ export default function PortalJobsView({
     }
   };
 
+  const handleDeleteJob = async (targetJob) => {
+    if (isReadOnly || !targetJob?.rowNumber || isDeleting) return;
+    setIsDeleting(true);
+    setSaveError(null);
+    try {
+      const res = await fetch("/api/portal/delete-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientSheetId,
+          clientName,
+          tabName: targetJob.type || "Confirmed",
+          rowNumber: targetJob.rowNumber,
+          ...(targetJob.jobUuid ? { jobUuid: targetJob.jobUuid } : {}),
+          jobName: targetJob.jobName || "",
+          endClientName: targetJob.client || "",
+          isVariableRetainerSeries: Boolean(targetJob.isVariableRetainerSeries),
+          seriesName: targetJob.seriesName || targetJob.jobName || "",
+        }),
+      });
+      const resData = await res.json();
+      if (!resData.success) {
+        throw new Error(resData.error || "Failed to delete job");
+      }
+
+      setOptimisticJobs((prev) => {
+        const next = { ...prev };
+        if (targetJob.isVariableRetainerSeries && Array.isArray(targetJob.varSeriesMonths)) {
+          for (const m of targetJob.varSeriesMonths) {
+            const mKey = m.id !== undefined ? m.id : (m.parentId !== undefined ? m.parentId : m.rowNumber);
+            if (mKey !== undefined) {
+              next[mKey] = {
+                _deletedOptimistic: true,
+                _deletedClient: String(m.client || targetJob.client || "").trim().toLowerCase(),
+                _deletedJobName: String(m.jobName || "").trim().toLowerCase(),
+              };
+            }
+          }
+        }
+        const jobKey = targetJob.id !== undefined ? targetJob.id : (targetJob.parentId !== undefined ? targetJob.parentId : targetJob.rowNumber);
+        if (jobKey !== undefined) {
+          next[jobKey] = {
+            _deletedOptimistic: true,
+            _deletedClient: String(targetJob.client || "").trim().toLowerCase(),
+            _deletedJobName: String(targetJob.jobName || "").trim().toLowerCase(),
+          };
+        }
+        return next;
+      });
+
+      setDeleteJobPrompt(null);
+      setEditingJob(null);
+      setCustomModalHeading(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error("Delete job error:", err);
+      setDeleteJobPrompt(null);
+      setSaveError(err.message || "Failed to delete job.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const handleSaveJob = async (e, bypassUnderAllocationWarning = false) => {
     if (e && typeof e.preventDefault === "function") e.preventDefault();
     if (isReadOnly) return;
@@ -1629,6 +1708,45 @@ export default function PortalJobsView({
     if (isEditingCrmPipelineDeal && String(editingJob?.type || "").toLowerCase() === "confirmed") {
       setSaveError(`CRM pipeline deals cannot be manually promoted to confirmed. This must be updated directly in ${crmDisplayName}.`);
       return;
+    }
+
+    if (typeof document !== "undefined") {
+      const formEl = document.getElementById("job-modal-form");
+      const badDateInput = formEl && Array.from(formEl.querySelectorAll('input[type="date"]')).some((el) => el.validity?.badInput);
+      if (badDateInput) {
+        setSaveError("Please enter valid dates before saving.");
+        return;
+      }
+    }
+
+    const isRetainerSavingCheck = String(editingJob?.projectRetainer || "").toLowerCase() === "retainer";
+    const allowNoEndCheck = Boolean(isRetainerSavingCheck && (editingJob.noEndDate || isNoEndDateSentinel(editingJob.endDate)));
+    if (editingJob.dateConfirmed && !isValidDateInputValue(editingJob.dateConfirmed, { allowEmpty: false })) {
+      setSaveError("Please enter a valid confirmation date.");
+      return;
+    }
+    const jobDateRangeCheck = validateDateRange(editingJob.startDate, editingJob.endDate, {
+      allowNoEndDate: allowNoEndCheck,
+      requireStart: true,
+      requireEnd: !allowNoEndCheck,
+    });
+    if (!jobDateRangeCheck.valid) {
+      setSaveError(jobDateRangeCheck.error || "Please enter valid start and end dates.");
+      return;
+    }
+    for (let i = 0; i < (editingJob.invoices || []).length; i++) {
+      const sd = editingJob.invoices[i]?.sendDate;
+      if (sd && !isValidDateInputValue(sd, { allowEmpty: false })) {
+        setSaveError(`Please enter a valid sent date on invoice ${i + 1}.`);
+        return;
+      }
+    }
+    for (let i = 0; i < (editingJob.directExpenses || []).length; i++) {
+      const rd = editingJob.directExpenses[i]?.recDate;
+      if (rd && !isValidDateInputValue(rd, { allowEmpty: false })) {
+        setSaveError(`Please enter a valid received date on direct cost ${i + 1}.`);
+        return;
+      }
     }
 
     if (enableSplit && isSplitError) {
@@ -2201,7 +2319,7 @@ export default function PortalJobsView({
         </div>
       )}
 
-      {/* Filter and Search Bar */}
+      {/* Filter Bar (Confirmed / Pipeline selector pills) */}
       <div
         className="portal-filter-container"
         style={{
@@ -2248,7 +2366,7 @@ export default function PortalJobsView({
           ))}
         </div>
 
-        {/* Search & Sort */}
+        {/* Zero percent pipeline toggle */}
         <div className="portal-search-sort" style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
           <label
             style={{
@@ -2284,24 +2402,6 @@ export default function PortalJobsView({
             />
             <span>Show 0% jobs</span>
           </label>
-          <DeferredSearchInput
-            type="text"
-            placeholder="Search jobs or clients..."
-            value={searchTerm}
-            onChange={(e) => {
-              setSearchTerm(e.target.value);
-              setCurrentPage(1);
-            }}
-            showClearButton
-            spinnerColor="#0047AB"
-            style={{
-              padding: "4px 8px",
-              borderRadius: "6px",
-              border: "1px solid #cbd5e1",
-              fontSize: "12px",
-              width: "210px",
-            }}
-          />
         </div>
       </div>
 
@@ -2316,6 +2416,40 @@ export default function PortalJobsView({
           width: "100%",
         }}
       >
+        {/* Search bar directly above table, below Confirmed / Pipeline selector pills */}
+        <div
+          className="portal-jobs-search-bar"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "10px",
+            padding: "0.65rem 1rem",
+            background: "#ffffff",
+            borderBottom: "1px solid #e2e8f0",
+          }}
+        >
+          <DeferredSearchInput
+            type="text"
+            placeholder="Search jobs or clients..."
+            value={searchTerm}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              setCurrentPage(1);
+            }}
+            showClearButton
+            spinnerColor="#0047AB"
+            style={{
+              padding: "6px 10px",
+              borderRadius: "6px",
+              border: "1px solid #cbd5e1",
+              fontSize: "13px",
+              width: "100%",
+              maxWidth: "360px",
+            }}
+          />
+        </div>
         <div style={{ overflowX: "auto", width: "100%" }}>
           <table
             className="portal-data-table"
@@ -2631,7 +2765,7 @@ export default function PortalJobsView({
             padding: "1rem",
             overscrollBehavior: "contain",
           }}
-          onClick={() => !isSaving && !isConfirming && setEditingJob(null)}
+          onClick={() => !isSaving && !isConfirming && !isDeleting && setEditingJob(null)}
         >
           <div
             style={{
@@ -2721,7 +2855,7 @@ export default function PortalJobsView({
                     setEditingJob(null);
                     setCustomModalHeading(null);
                   }}
-                  disabled={isSaving || isConfirming}
+                  disabled={isSaving || isConfirming || isDeleting}
                   style={{
                     background: "transparent",
                     border: "none",
@@ -3097,8 +3231,8 @@ export default function PortalJobsView({
                             <label style={formLabelStyle}>
                               {editingJob.type === "Pipeline" ? "Date added" : "Date confirmed"}
                             </label>
-                            <input
-                              type="date"
+                            <DateInput
+                              outputFormat="iso"
                               disabled={isReadOnly || isEditingCrmDeal}
                               title={crmLockedTooltip}
                               value={editingJob.dateConfirmed || ""}
@@ -3277,8 +3411,8 @@ export default function PortalJobsView({
                         <label style={formLabelStyle}>
                           {editingJob.type === "Pipeline" ? "Date added" : "Date confirmed"}
                         </label>
-                        <input
-                          type="date"
+                        <DateInput
+                          outputFormat="iso"
                           disabled={isReadOnly || isEditingCrmDeal}
                           title={crmLockedTooltip}
                           value={editingJob.dateConfirmed || ""}
@@ -3294,8 +3428,8 @@ export default function PortalJobsView({
                   <div className="modal-form-row modal-form-row-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
                     <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Start Date *</label>
-                      <input
-                        type="date"
+                      <DateInput
+                        outputFormat="iso"
                         required
                         disabled={isReadOnly || isEditingCrmDeal || Boolean(editingJob.isVariableRetainerSeries)}
                         title={crmLockedTooltip}
@@ -3352,12 +3486,13 @@ export default function PortalJobsView({
                           }}
                         />
                       ) : (
-                        <input
-                          type="date"
+                        <DateInput
+                          outputFormat="iso"
                           required
                           disabled={isReadOnly || isEditingCrmDeal}
                           title={crmLockedTooltip}
                           value={editingJob.endDate || ""}
+                          min={editingJob.startDate || undefined}
                           onChange={(e) => setEditingJob({ ...editingJob, endDate: e.target.value, noEndDate: false })}
                           style={getCrmInputStyle(false)}
                         />
@@ -3461,6 +3596,8 @@ export default function PortalJobsView({
                             <label style={formLabelStyle}>Update base rates from</label>
                             <input
                               type="month"
+                              min={MIN_INPUT_MONTH}
+                              max={MAX_INPUT_MONTH}
                               disabled={isReadOnly}
                               value={editingJob.effectiveMonth || ""}
                               onChange={(e) => setEditingJob({ ...editingJob, effectiveMonth: e.target.value })}
@@ -4442,13 +4579,14 @@ export default function PortalJobsView({
                                         />
                                         <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                                           <label style={{ fontSize: "9.5px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>Sent:</label>
-                                          <input
-                                            type="date"
-                                            value={toInputDateFormat(inv.sendDate) || ""}
+                                          <DateInput
+                                            outputFormat="iso"
+                                            value={inv.sendDate || ""}
                                             onChange={(e) => updateInvoice(idx, "sendDate", e.target.value)}
                                             disabled={isReadOnly}
                                             style={{
                                               ...formInputStyle,
+                                              width: "auto",
                                               padding: "2px 4px",
                                               fontSize: "10px"
                                             }}
@@ -5426,13 +5564,14 @@ export default function PortalJobsView({
                                         />
                                         <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                                           <label style={{ fontSize: "9.5px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>Received date:</label>
-                                          <input
-                                            type="date"
-                                            value={toInputDateFormat(exp.recDate) || ""}
+                                          <DateInput
+                                            outputFormat="iso"
+                                            value={exp.recDate || ""}
                                             onChange={(e) => updateExpense(idx, "recDate", e.target.value)}
                                             disabled={isReadOnly}
                                             style={{
                                               ...formInputStyle,
+                                              width: "auto",
                                               padding: "2px 4px",
                                               fontSize: "10px"
                                             }}
@@ -5523,167 +5662,204 @@ export default function PortalJobsView({
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
+                gap: "12px",
+                flexWrap: "wrap",
                 zIndex: 10,
               }}
             >
-              {/* Left side: Confirm / Unconfirm button */}
-              <div>
-                {!isReadOnly && editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "pipeline" && !isEditingCrmPipelineDeal && (
-                  <button
-                    type="button"
-                    onClick={handleConfirmJob}
-                    disabled={isSaving || isConfirming}
-                    style={{
-                      background: "#16a34a",
-                      border: "none",
-                      color: "#ffffff",
-                      padding: "7px 16px",
-                      borderRadius: "6px",
-                      fontSize: "13px",
-                      fontWeight: 700,
-                      cursor: isConfirming ? "wait" : "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "6px",
-                      opacity: isConfirming ? 0.7 : 1,
-                      boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)",
-                    }}
-                  >
-                    {isConfirming ? <Spinner size={14} color="#ffffff" /> : null}
-                    <span>{isConfirming ? "Confirming..." : "Confirm job"}</span>
-                  </button>
-                )}
-
-                {!isReadOnly && editingJob.rowNumber && !editingJob.isVariableRetainerSeries && String(editingJob.type || "").toLowerCase() === "confirmed" && (() => {
-                  const hasActualInvoices = (editingJob.invoices || []).some(
-                    (inv) => Boolean(inv.ref && String(inv.ref).trim() !== "" && !isPlaceholderInvoice(inv.ref, inv.status))
+              {/* Left side: Confirm / Unconfirm, Duplicate, Renewal & Delete buttons on one horizontal row */}
+              {(() => {
+                const isExistingEditable = Boolean(!isReadOnly && editingJob.rowNumber);
+                const jobTypeLower = String(editingJob.type || "").toLowerCase();
+                const showConfirmBtn = isExistingEditable && jobTypeLower === "pipeline" && !isEditingCrmPipelineDeal;
+                const showUnconfirmBtn = isExistingEditable && !editingJob.isVariableRetainerSeries && jobTypeLower === "confirmed";
+                const hasActualInvoices = showUnconfirmBtn && (editingJob.invoices || []).some(
+                  (inv) => Boolean(inv.ref && String(inv.ref).trim() !== "" && !isPlaceholderInvoice(inv.ref, inv.status))
+                );
+                const hasActualExpenses = showUnconfirmBtn && (editingJob.directExpenses || []).some((exp) => {
+                  const hasData = Boolean(
+                    (exp.amount && Math.abs(parseFloat(String(exp.amount).replace(/[£$€,\s]/g, ""))) > 0) ||
+                    (exp.desc && String(exp.desc).trim() !== "") ||
+                    (exp.appId && String(exp.appId).trim() !== "")
                   );
-                  const hasActualExpenses = (editingJob.directExpenses || []).some((exp) => {
-                    const hasData = Boolean(
-                      (exp.amount && Math.abs(parseFloat(String(exp.amount).replace(/[£$€,\s]/g, ""))) > 0) ||
-                      (exp.desc && String(exp.desc).trim() !== "") ||
-                      (exp.appId && String(exp.appId).trim() !== "")
-                    );
-                    return hasData && !isPlaceholderExpense(exp.appId, exp.desc, exp.status);
-                  });
-                  const hasActualInvoicesOrExpenses = hasActualInvoices || hasActualExpenses;
+                  return hasData && !isPlaceholderExpense(exp.appId, exp.desc, exp.status);
+                });
+                const hasActualInvoicesOrExpenses = hasActualInvoices || hasActualExpenses;
+                const isBusy = isSaving || isConfirming || isDeleting;
+                const isRetainerJob = String(editingJob.projectRetainer || "").toLowerCase() === "retainer";
+                const hasNoEndDate = Boolean(editingJob.noEndDate || isNoEndDateSentinel(editingJob.endDate));
 
-                  return (
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "4px" }}>
-                      <button
-                        type="button"
-                        onClick={hasActualInvoicesOrExpenses ? undefined : handleUnconfirmJob}
-                        disabled={isSaving || isConfirming || hasActualInvoicesOrExpenses}
-                        style={{
-                          background: hasActualInvoicesOrExpenses ? "#f1f5f9" : "#fffbeb",
-                          border: `1px solid ${hasActualInvoicesOrExpenses ? "#cbd5e1" : "#f59e0b"}`,
-                          color: hasActualInvoicesOrExpenses ? "#94a3b8" : "#b45309",
-                          padding: "7px 16px",
-                          borderRadius: "6px",
-                          fontSize: "13px",
-                          fontWeight: 700,
-                          cursor: hasActualInvoicesOrExpenses ? "not-allowed" : (isConfirming ? "wait" : "pointer"),
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "6px",
-                          opacity: isConfirming ? 0.7 : 1,
-                        }}
-                        title={
-                          hasActualInvoicesOrExpenses
-                            ? "Cannot unconfirm a job that has actual invoices or expenses assigned to it. Reassign or remove them before moving this job back to the pipeline."
-                            : "Move job from confirmed back to pipeline"
-                        }
-                      >
-                        {isConfirming ? <Spinner size={14} color="#b45309" /> : null}
-                        <span>{isConfirming ? "Unconfirming..." : "Unconfirm job"}</span>
-                      </button>
-                      {hasActualInvoicesOrExpenses && (
-                        <span style={{ fontSize: "11px", color: "#64748b", maxWidth: "340px", lineHeight: "1.3" }}>
-                          Cannot be unconfirmed while actual invoices or expenses are assigned to this job.
-                        </span>
-                      )}
-                    </div>
-                  );
-                })()}
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "5px", flex: "1 1 auto", minWidth: 0 }}>
+                    {isExistingEditable && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                        {showConfirmBtn && (
+                          <button
+                            type="button"
+                            onClick={handleConfirmJob}
+                            disabled={isBusy}
+                            style={{
+                              background: "#16a34a",
+                              border: "none",
+                              color: "#ffffff",
+                              padding: "7px 14px",
+                              borderRadius: "6px",
+                              fontSize: "13px",
+                              fontWeight: 700,
+                              cursor: isConfirming ? "wait" : (isBusy ? "not-allowed" : "pointer"),
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              opacity: isConfirming ? 0.7 : 1,
+                              boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)",
+                            }}
+                          >
+                            {isConfirming ? <Spinner size={14} color="#ffffff" /> : null}
+                            <span>{isConfirming ? "Confirming..." : "Confirm job"}</span>
+                          </button>
+                        )}
 
-                {/* Duplicate job & Add renewal in pipeline buttons */}
-                {!isReadOnly && editingJob.rowNumber && (
-                  <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      onClick={() => handleDuplicateJobClick(editingJob)}
-                      disabled={isSaving || isConfirming}
-                      style={{
-                        background: "#ffffff",
-                        border: "1px solid #cbd5e1",
-                        color: "#334155",
-                        padding: "7px 14px",
-                        borderRadius: "6px",
-                        fontSize: "13px",
-                        fontWeight: 600,
-                        cursor: isSaving || isConfirming ? "not-allowed" : "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        transition: "all 0.15s ease",
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#ffffff"; }}
-                      title="Create a new job pre-populated with details from this job"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                      </svg>
-                      <span>Duplicate job</span>
-                    </button>
+                        {showUnconfirmBtn && (
+                          <button
+                            type="button"
+                            onClick={hasActualInvoicesOrExpenses ? undefined : handleUnconfirmJob}
+                            disabled={isBusy || hasActualInvoicesOrExpenses}
+                            style={{
+                              background: hasActualInvoicesOrExpenses ? "#f1f5f9" : "#fffbeb",
+                              border: `1px solid ${hasActualInvoicesOrExpenses ? "#cbd5e1" : "#f59e0b"}`,
+                              color: hasActualInvoicesOrExpenses ? "#94a3b8" : "#b45309",
+                              padding: "7px 14px",
+                              borderRadius: "6px",
+                              fontSize: "13px",
+                              fontWeight: 700,
+                              cursor: hasActualInvoicesOrExpenses ? "not-allowed" : (isConfirming ? "wait" : (isBusy ? "not-allowed" : "pointer")),
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              opacity: isConfirming ? 0.7 : 1,
+                            }}
+                            title={
+                              hasActualInvoicesOrExpenses
+                                ? "Cannot unconfirm a job that has actual invoices or expenses assigned to it. Reassign or remove them before moving this job back to the pipeline."
+                                : "Move job from confirmed back to pipeline"
+                            }
+                          >
+                            {isConfirming ? <Spinner size={14} color="#b45309" /> : null}
+                            <span>{isConfirming ? "Unconfirming..." : "Unconfirm job"}</span>
+                          </button>
+                        )}
 
-                    {String(editingJob.projectRetainer || "").toLowerCase() === "retainer" && (() => {
-                      const hasNoEndDate = Boolean(editingJob.noEndDate || isNoEndDateSentinel(editingJob.endDate));
-                      return (
                         <button
                           type="button"
-                          onClick={hasNoEndDate ? undefined : () => handleRenewalJobClick(editingJob)}
-                          disabled={isSaving || isConfirming || hasNoEndDate}
+                          onClick={() => handleDuplicateJobClick(editingJob)}
+                          disabled={isBusy}
                           style={{
-                            background: hasNoEndDate ? "#f8fafc" : "#ffffff",
-                            border: `1px solid ${hasNoEndDate ? "#e2e8f0" : "#cbd5e1"}`,
-                            color: hasNoEndDate ? "#94a3b8" : "#334155",
+                            background: "#ffffff",
+                            border: "1px solid #cbd5e1",
+                            color: "#334155",
                             padding: "7px 14px",
                             borderRadius: "6px",
                             fontSize: "13px",
                             fontWeight: 600,
-                            cursor: hasNoEndDate ? "not-allowed" : (isSaving || isConfirming ? "not-allowed" : "pointer"),
+                            cursor: isBusy ? "not-allowed" : "pointer",
                             display: "inline-flex",
                             alignItems: "center",
                             gap: "6px",
-                            opacity: hasNoEndDate ? 0.7 : 1,
                             transition: "all 0.15s ease",
                           }}
-                          onMouseEnter={(e) => { if (!hasNoEndDate) e.currentTarget.style.backgroundColor = "#f8fafc"; }}
-                          onMouseLeave={(e) => { if (!hasNoEndDate) e.currentTarget.style.backgroundColor = "#ffffff"; }}
-                          title={hasNoEndDate ? "Pipeline renewals can only be created for jobs that have an end date" : "Create a new pipeline job for a potential contract renewal"}
+                          onMouseEnter={(e) => { if (!isBusy) e.currentTarget.style.backgroundColor = "#f8fafc"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#ffffff"; }}
+                          title="Create a new job pre-populated with details from this job"
                         >
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                           </svg>
-                          <span>Add renewal in pipeline</span>
+                          <span>Duplicate job</span>
                         </button>
-                      );
-                    })()}
+
+                        {isRetainerJob && (
+                          <button
+                            type="button"
+                            onClick={hasNoEndDate ? undefined : () => handleRenewalJobClick(editingJob)}
+                            disabled={isBusy || hasNoEndDate}
+                            style={{
+                              background: hasNoEndDate ? "#f8fafc" : "#ffffff",
+                              border: `1px solid ${hasNoEndDate ? "#e2e8f0" : "#cbd5e1"}`,
+                              color: hasNoEndDate ? "#94a3b8" : "#334155",
+                              padding: "7px 14px",
+                              borderRadius: "6px",
+                              fontSize: "13px",
+                              fontWeight: 600,
+                              cursor: hasNoEndDate || isBusy ? "not-allowed" : "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              opacity: hasNoEndDate ? 0.7 : 1,
+                              transition: "all 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => { if (!hasNoEndDate && !isBusy) e.currentTarget.style.backgroundColor = "#f8fafc"; }}
+                            onMouseLeave={(e) => { if (!hasNoEndDate) e.currentTarget.style.backgroundColor = "#ffffff"; }}
+                            title={hasNoEndDate ? "Pipeline renewals can only be created for jobs that have an end date" : "Create a new pipeline job for a potential contract renewal"}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                            </svg>
+                            <span>Add renewal in pipeline</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => setDeleteJobPrompt(editingJob)}
+                          disabled={isBusy}
+                          style={{
+                            background: "#ffffff",
+                            border: "1px solid #fca5a5",
+                            color: "#dc2626",
+                            padding: "7px 14px",
+                            borderRadius: "6px",
+                            fontSize: "13px",
+                            fontWeight: 600,
+                            cursor: isBusy ? "not-allowed" : "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            transition: "all 0.15s ease",
+                          }}
+                          onMouseEnter={(e) => { if (!isBusy) e.currentTarget.style.backgroundColor = "#fef2f2"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#ffffff"; }}
+                          title="Delete this job from Pulse"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <polyline points="3 6 5 6 21 6" />
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                            <line x1="10" y1="11" x2="10" y2="17" />
+                            <line x1="14" y1="11" x2="14" y2="17" />
+                          </svg>
+                          <span>Delete job</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {showUnconfirmBtn && hasActualInvoicesOrExpenses && (
+                      <span style={{ fontSize: "11px", color: "#64748b", lineHeight: "1.3" }}>
+                        Cannot be unconfirmed while actual invoices or expenses are assigned to this job.
+                      </span>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
 
               {/* Right side: Cancel & Save buttons */}
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
                 <button
                   type="button"
                   onClick={() => {
                     setEditingJob(null);
                     setCustomModalHeading(null);
                   }}
-                  disabled={isSaving || isConfirming}
+                  disabled={isSaving || isConfirming || isDeleting}
                   style={{
                     background: "#ffffff",
                     border: "1px solid #cbd5e1",
@@ -5692,7 +5868,7 @@ export default function PortalJobsView({
                     borderRadius: "6px",
                     fontSize: "13px",
                     fontWeight: 600,
-                    cursor: "pointer",
+                    cursor: isSaving || isConfirming || isDeleting ? "not-allowed" : "pointer",
                   }}
                 >
                   {isReadOnly ? "Close" : "Cancel"}
@@ -5702,7 +5878,7 @@ export default function PortalJobsView({
                   <button
                     type="submit"
                     form="job-modal-form"
-                    disabled={isSaving || isConfirming}
+                    disabled={isSaving || isConfirming || isDeleting}
                     style={{
                       background: "#0047AB",
                       border: "none",
@@ -5711,7 +5887,7 @@ export default function PortalJobsView({
                       borderRadius: "6px",
                       fontSize: "13px",
                       fontWeight: 700,
-                      cursor: isSaving ? "wait" : "pointer",
+                      cursor: isSaving ? "wait" : (isConfirming || isDeleting ? "not-allowed" : "pointer"),
                       display: "flex",
                       alignItems: "center",
                       gap: "6px",
@@ -5727,6 +5903,168 @@ export default function PortalJobsView({
           </div>
         </div>
       )}
+
+      {/* Delete job confirmation modal */}
+      {deleteJobPrompt && (() => {
+        const realInvoices = (deleteJobPrompt.invoices || []).filter(
+          (inv) => Boolean(inv.ref && String(inv.ref).trim() !== "" && !isPlaceholderInvoice(inv.ref, inv.status))
+        );
+        const realExpenses = (deleteJobPrompt.directExpenses || []).filter((exp) => {
+          const hasData = Boolean(
+            (exp.amount && Math.abs(parseFloat(String(exp.amount).replace(/[£$€,\s]/g, ""))) > 0) ||
+            (exp.desc && String(exp.desc).trim() !== "") ||
+            (exp.appId && String(exp.appId).trim() !== "")
+          );
+          return hasData && !isPlaceholderExpense(exp.appId, exp.desc, exp.status);
+        });
+        const isVarSeriesBlocked = Boolean(deleteJobPrompt.isVariableRetainerSeries && (realInvoices.length > 0 || realExpenses.length > 0));
+        const isPromptCrm = isCrmDeal(deleteJobPrompt, crmTool, crmDrives);
+
+        return (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              backgroundColor: "rgba(15, 23, 42, 0.5)",
+              backdropFilter: "blur(2px)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 10003,
+              padding: "1rem",
+            }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !isDeleting) setDeleteJobPrompt(null);
+            }}
+          >
+            <div
+              style={{
+                background: "#ffffff",
+                borderRadius: "12px",
+                padding: "1.5rem",
+                maxWidth: "490px",
+                width: "100%",
+                boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 10px 10px -5px rgba(0, 0, 0, 0.05)",
+                border: "1px solid #e2e8f0",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "1rem" }}>
+                <div
+                  style={{
+                    width: "36px",
+                    height: "36px",
+                    borderRadius: "50%",
+                    backgroundColor: "#fee2e2",
+                    color: "#dc2626",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  </svg>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <h4 style={{ margin: "0 0 6px 0", fontSize: "16px", fontWeight: 700, color: "#991b1b" }}>
+                    Delete job
+                  </h4>
+                  <p style={{ margin: 0, fontSize: "13.5px", color: "#334155", lineHeight: "1.5" }}>
+                    Are you sure you want to delete <strong>&ldquo;{deleteJobPrompt.jobName || "this job"}&rdquo;</strong>?
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "10px 12px", marginBottom: "12px", fontSize: "12.5px" }}>
+                <div style={{ marginBottom: "4px" }}>
+                  <span style={{ color: "#7f1d1d", fontWeight: 600, display: "inline-block", width: "64px" }}>Client:</span>
+                  <strong style={{ color: "#1e293b" }}>{deleteJobPrompt.client || "—"}</strong>
+                </div>
+                <div>
+                  <span style={{ color: "#7f1d1d", fontWeight: 600, display: "inline-block", width: "64px" }}>Status:</span>
+                  <span style={{ fontWeight: 600, color: "#0f172a" }}>{deleteJobPrompt.type || "Confirmed"}</span>
+                </div>
+              </div>
+
+              {isVarSeriesBlocked ? (
+                <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px", padding: "10px 12px", marginBottom: "12px", fontSize: "12.5px", color: "#92400e", lineHeight: "1.45" }}>
+                  This variable retainer cannot be deleted because it has actual invoices or expenses assigned to it. Please reassign or remove them first.
+                </div>
+              ) : realInvoices.length > 0 && (
+                <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px", padding: "10px 12px", marginBottom: "12px", fontSize: "12.5px", color: "#92400e" }}>
+                  <div style={{ fontWeight: 700, marginBottom: "5px" }}>
+                    This job contains {realInvoices.length} active invoice{realInvoices.length > 1 ? "s" : ""}:
+                  </div>
+                  <ul style={{ margin: "0 0 6px 0", paddingLeft: "18px", fontSize: "12px", color: "#78350f" }}>
+                    {realInvoices.map((inv, idx) => (
+                      <li key={idx}>
+                        <strong>{inv.ref}</strong> — {inv.amount ? formatGBP(inv.amount) : `${currencySymbol}0.00`}
+                      </li>
+                    ))}
+                  </ul>
+                  <div style={{ fontSize: "12px", lineHeight: "1.45" }}>
+                    Deleting this job will unassign {realInvoices.length > 1 ? "these invoices" : "this invoice"} from it.
+                  </div>
+                </div>
+              )}
+
+              {isPromptCrm && (
+                <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px", padding: "10px 12px", marginBottom: "12px", fontSize: "12px", color: "#92400e", lineHeight: "1.45" }}>
+                  This job is syncing with {crmDisplayName}. Deleting it here will not remove it from {crmDisplayName}, so it may reappear on the next sync.
+                </div>
+              )}
+
+              <div style={{ fontSize: "12px", color: "#64748b", lineHeight: "1.45", marginBottom: "1.25rem" }}>
+                This job and its forecast entries will be permanently removed from Pulse. This action cannot be undone.
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                <button
+                  type="button"
+                  onClick={() => setDeleteJobPrompt(null)}
+                  disabled={isDeleting}
+                  style={{
+                    background: "#ffffff",
+                    border: "1px solid #cbd5e1",
+                    color: "#475569",
+                    padding: "7px 15px",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: isDeleting ? "not-allowed" : "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteJob(deleteJobPrompt)}
+                  disabled={isDeleting || isVarSeriesBlocked}
+                  style={{
+                    background: isVarSeriesBlocked ? "#f1f5f9" : "#dc2626",
+                    border: isVarSeriesBlocked ? "1px solid #cbd5e1" : "none",
+                    color: isVarSeriesBlocked ? "#94a3b8" : "#ffffff",
+                    padding: "7px 16px",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    cursor: isDeleting ? "wait" : (isVarSeriesBlocked ? "not-allowed" : "pointer"),
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    opacity: isDeleting ? 0.8 : 1,
+                  }}
+                >
+                  {isDeleting ? <Spinner size={13} color="#ffffff" /> : null}
+                  <span>{isDeleting ? "Deleting..." : "Delete job"}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Under-allocation confirmation prompt */}
       {underAllocationPrompt && (
@@ -6137,9 +6475,12 @@ export default function PortalJobsView({
             width: 100% !important;
             flex-wrap: wrap !important;
           }
-          .portal-search-sort input {
-            flex: 1 1 140px !important;
-            width: auto !important;
+          .portal-jobs-search-bar {
+            padding: 0.65rem 0.75rem !important;
+          }
+          .portal-jobs-search-bar input {
+            max-width: 100% !important;
+            width: 100% !important;
           }
         }
         @media (max-width: 768px) {

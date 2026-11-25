@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import DateInput from "./DateInput";
 import DeferredSearchInput from "./DeferredSearchInput";
 import Skeleton, { PmaSalariesSkeleton } from "./Skeleton";
 import CellNoteIndicator from "./CellNoteIndicator";
@@ -2119,8 +2120,8 @@ export default function SalariesView({
                   <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "4px" }}>
                     Start date
                   </label>
-                  <input
-                    type="date"
+                  <DateInput
+                    outputFormat="iso"
                     value={sheetDateToIso(editingEmployee.startDate)}
                     onChange={(e) => setEditingEmployee({ ...editingEmployee, startDate: isoToSheetDate(e.target.value) })}
                     style={{
@@ -2138,8 +2139,8 @@ export default function SalariesView({
                   <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "4px" }}>
                     End date
                   </label>
-                  <input
-                    type="date"
+                  <DateInput
+                    outputFormat="iso"
                     value={sheetDateToIso(editingEmployee.endDate)}
                     onChange={(e) => setEditingEmployee({ ...editingEmployee, endDate: isoToSheetDate(e.target.value) })}
                     style={{

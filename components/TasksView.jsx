@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import Spinner from "./Spinner";
+import DateInput from "./DateInput";
 import Skeleton, { PmaTasksSkeleton } from "./Skeleton";
 import TruncatedCode from "./TruncatedCode";
 import { useTasks } from "../contexts/TaskContext";
@@ -962,8 +963,8 @@ export default function TasksView({
                   <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "#475569", marginBottom: "4px" }}>
                     Date
                   </label>
-                  <input
-                    type="date"
+                  <DateInput
+                    outputFormat="iso"
                     value={bulkSnoozeDate}
                     min={new Date().toISOString().split("T")[0]}
                     onChange={e => setBulkSnoozeDate(e.target.value)}
@@ -1326,8 +1327,8 @@ export default function TasksView({
           <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
             <div>
               <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "3px" }}>Date</label>
-              <input type="date" min={todayStr} value={taskSnoozeDate} onChange={e => setTaskSnoozeDate(e.target.value)}
-                style={{ border: "1px solid #ddd", borderRadius: "4px", padding: "6px 10px", fontSize: "13px" }} />
+              <DateInput outputFormat="iso" min={todayStr} value={taskSnoozeDate} onChange={e => setTaskSnoozeDate(e.target.value)}
+                style={{ width: "auto", border: "1px solid #ddd", borderRadius: "4px", padding: "6px 10px", fontSize: "13px" }} />
             </div>
             <div>
               <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "3px" }}>Time</label>

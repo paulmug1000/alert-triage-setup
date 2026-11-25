@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import InvoiceCostMonthControl from "./InvoiceCostMonthControl";
 import { extractSplitMonths } from "../services/splitHelper";
 import Spinner from "./Spinner";
-import { stripCurrency, parseSheetDate, toSheetDateFormat, calculatePaymentDate } from "../utils/helpers";
+import { stripCurrency, parseSheetDate, toSheetDateFormat, calculatePaymentDate, validateDateRange } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
 import DateInput from "./DateInput";
 
@@ -141,8 +141,13 @@ export default function InvoicesNewJobModal({
       }
     }
     const isRetainerNoEnd = projectType === "Retainer" && noEndDate;
-    if (projectType === "Retainer" && !isRetainerNoEnd && !endDate) {
-      setError("Please enter an end date or tick 'No end date'");
+    const dateCheck = validateDateRange(startDate, endDate, {
+      allowNoEndDate: isRetainerNoEnd,
+      requireStart: false,
+      requireEnd: projectType === "Retainer" && !isRetainerNoEnd,
+    });
+    if (!dateCheck.valid) {
+      setError(dateCheck.error || "Please enter valid dates.");
       return;
     }
     setSaving(true);

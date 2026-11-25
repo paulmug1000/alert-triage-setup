@@ -1,5 +1,6 @@
 import React from "react";
 import Spinner from "./Spinner";
+import DateInput from "./DateInput";
 import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -291,12 +292,12 @@ export default function CreateTaskModal() {
             Snooze until (optional)
           </div>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-            <input
-              type="date"
+            <DateInput
+              outputFormat="iso"
               value={taskModalSnoozeDate}
               min={new Date().toISOString().split("T")[0]}
               onChange={e => setTaskModalSnoozeDate(e.target.value)}
-              style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", color: taskModalSnoozeDate ? "#333" : "#999" }}
+              style={{ width: "auto", fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", color: taskModalSnoozeDate ? "#333" : "#999" }}
             />
             {taskModalSnoozeDate && (
               <>

@@ -1,6 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
-import { isPlaceholderInvoice, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, getRetainerRowMonthLabel, stripCurrency } from "../utils/helpers";
+import DateInput from "./DateInput";
+import { isPlaceholderInvoice, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, getRetainerRowMonthLabel, stripCurrency, validateDateRange, MIN_INPUT_MONTH, MAX_INPUT_MONTH } from "../utils/helpers";
 
 // Converts a sheet-formatted date string like "15-Mar-26" (or a few other common
 // shapes) to ISO "YYYY-MM-DD" for use with a native <input type="date">.
@@ -191,10 +192,13 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
     const amountChanged = !hasRealInvoices && !isNaN(parsedWholeAmount) && parsedWholeAmount > 0 && Math.abs(parsedWholeAmount - originalRevenueNum) > 0.001;
 
     if (!jobName.trim()) { setError("Job name cannot be blank."); return; }
-    if (!startDate) { setError("Please enter a valid start date."); return; }
-    if (!noEndDate && !endDate) { setError("Please enter a valid end date or tick 'No end date'."); return; }
-    if (!noEndDate && startDate && endDate && startDate > endDate) {
-      setError("Start date cannot be after end date.");
+    const dateCheck = validateDateRange(startDate, endDate, {
+      allowNoEndDate: noEndDate,
+      requireStart: true,
+      requireEnd: !noEndDate,
+    });
+    if (!dateCheck.valid) {
+      setError(noEndDate ? "Please enter a valid start date." : (dateCheck.error || "Please enter valid dates."));
       return;
     }
     if (!hasRealInvoices && (!wholeRetainerAmount || isNaN(parsedWholeAmount) || parsedWholeAmount <= 0)) {
@@ -334,8 +338,15 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
     if (isNaN(parsedRev) || parsedRev <= 0) { setError("Base monthly revenue must be greater than zero."); return; }
     if (isNaN(parsedDc) || parsedDc < 0) { setError("Base monthly direct costs cannot be negative."); return; }
     if (parsedSendDay < 1 || parsedSendDay > 28) { setError("Invoice send day must be between 1 and 28."); return; }
-    if (!noEndDate && !endDate) { setError("Please enter a valid end date or tick 'No end date'."); return; }
-    if (!noEndDate && jobStartISO && endDate && endDate < jobStartISO) { setError("End date cannot be before start date."); return; }
+    const varDateCheck = validateDateRange(jobStartISO, endDate, {
+      allowNoEndDate: noEndDate,
+      requireStart: false,
+      requireEnd: !noEndDate,
+    });
+    if (!varDateCheck.valid) {
+      setError(varDateCheck.error || "Please enter a valid end date or tick 'No end date'.");
+      return;
+    }
 
     setSaving(true);
     try {
@@ -520,7 +531,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                       <div>
                         <label style={labelStyle}>Start date</label>
-                        <input type="date" style={{ ...inputStyle, background: "#f9fafb", color: "#64748b", cursor: "not-allowed" }} value={jobStartISO} disabled />
+                        <DateInput outputFormat="iso" style={{ ...inputStyle, background: "#f9fafb", color: "#64748b", cursor: "not-allowed" }} value={jobStartISO} disabled />
                       </div>
                       <div>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" }}>
@@ -533,7 +544,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
                         {noEndDate ? (
                           <input type="text" style={{ ...inputStyle, background: "#f8fafc", color: "#64748b", cursor: "not-allowed" }} value="No end date" disabled />
                         ) : (
-                          <input type="date" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={jobStartISO || undefined} />
+                          <DateInput outputFormat="iso" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={jobStartISO || undefined} />
                         )}
                       </div>
                     </div>
@@ -552,7 +563,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
                       </div>
                       <div>
                         <label style={labelStyle}>Update base rates from</label>
-                        <input type="month" style={inputStyle} value={varEffectiveMonth} onChange={e => setVarEffectiveMonth(e.target.value)} />
+                        <input type="month" min={MIN_INPUT_MONTH} max={MAX_INPUT_MONTH} style={inputStyle} value={varEffectiveMonth} onChange={e => setVarEffectiveMonth(e.target.value)} />
                       </div>
                       <div>
                         <label style={labelStyle}>Invoice send day (1–28)</label>
@@ -696,8 +707,8 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
               </div>
               <div>
                 <label style={labelStyle}>Start date</label>
-                <input
-                  type="date"
+                <DateInput
+                  outputFormat="iso"
                   style={{ ...inputStyle, ...(hasRealInvoices ? { background: "#f9fafb", color: "#888", cursor: "not-allowed" } : {}) }}
                   value={startDate}
                   onChange={e => setStartDate(e.target.value)}
@@ -731,7 +742,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
                     disabled
                   />
                 ) : (
-                  <input type="date" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
+                  <DateInput outputFormat="iso" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
                 )}
               </div>
             </div>
@@ -827,8 +838,8 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
                   style={inputStyle}
                   value={changeMonth}
                   onChange={e => setChangeMonth(e.target.value)}
-                  min={minSplitMonth || undefined}
-                  max={jobEndISO ? jobEndISO.slice(0, 7) : undefined}
+                  min={minSplitMonth || MIN_INPUT_MONTH}
+                  max={jobEndISO ? jobEndISO.slice(0, 7) : MAX_INPUT_MONTH}
                 />
                 {latestInvoicedMonthLabel && minSplitMonthLabel ? (
                   <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "5px", lineHeight: 1.4 }}>

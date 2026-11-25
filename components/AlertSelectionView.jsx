@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "./Spinner";
+import DateInput from "./DateInput";
 import TruncatedCode from "./TruncatedCode";
 import RetainerAlertResolutionModal from "./RetainerAlertResolutionModal";
 import RetainerSplitInvoiceModal from "./RetainerSplitInvoiceModal";
@@ -2348,10 +2349,10 @@ export default function AlertSelectionView({
                   <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
                     <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", marginBottom: "8px" }}>Snooze until (optional)</div>
                     <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-                      <input type="date" value={infoBulkTaskSnoozeDate}
+                      <DateInput outputFormat="iso" value={infoBulkTaskSnoozeDate}
                         min={new Date().toISOString().split("T")[0]}
                         onChange={e => setInfoBulkTaskSnoozeDate(e.target.value)}
-                        style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px" }} />
+                        style={{ width: "auto", fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px" }} />
                       {infoBulkTaskSnoozeDate && (
                         <>
                           <input type="time" value={infoBulkTaskSnoozeTime}
@@ -3360,12 +3361,13 @@ export default function AlertSelectionView({
                                               Adjust expected payment date:
                                             </label>
                                             <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                                              <input
-                                                type="date"
+                                              <DateInput
+                                                outputFormat="iso"
                                                 value={currentSelectedDate}
                                                 onChange={(e) => setPartPaidDates(prev => ({ ...prev, [alert.alertKey]: e.target.value }))}
                                                 disabled={isUpdating}
                                                 style={{
+                                                  width: "auto",
                                                   padding: "5px 8px",
                                                   borderRadius: "5px",
                                                   border: "1px solid #cbd5e1",
@@ -3459,12 +3461,12 @@ export default function AlertSelectionView({
                                               {isBusy ? "Saving..." : `Zero out for ${monthLabel || "month"}`}
                                             </button>
                                             <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                                              <input
-                                                type="date"
+                                              <DateInput
+                                                outputFormat="iso"
                                                 value={chosenStart}
                                                 onChange={(e) => setSalaryForecastStartDates(prev => ({ ...prev, [alert.alertKey]: e.target.value }))}
                                                 disabled={isBusy}
-                                                style={{ padding: "4px 6px", borderRadius: "5px", border: "1px solid #cbd5e1", fontSize: "12px", color: "#1e293b", backgroundColor: "#fff" }}
+                                                style={{ width: "auto", padding: "4px 6px", borderRadius: "5px", border: "1px solid #cbd5e1", fontSize: "12px", color: "#1e293b", backgroundColor: "#fff" }}
                                               />
                                               <button
                                                 type="button"
@@ -3689,10 +3691,10 @@ export default function AlertSelectionView({
               <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
                 <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", marginBottom: "8px" }}>Snooze until (optional)</div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-                  <input type="date" value={proactiveBulkTaskSnoozeDate}
+                  <DateInput outputFormat="iso" value={proactiveBulkTaskSnoozeDate}
                     min={new Date().toISOString().split("T")[0]}
                     onChange={e => setProactiveBulkTaskSnoozeDate(e.target.value)}
-                    style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px" }} />
+                    style={{ width: "auto", fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px" }} />
                   {proactiveBulkTaskSnoozeDate && (
                     <>
                       <input type="time" value={proactiveBulkTaskSnoozeTime}
@@ -3760,10 +3762,10 @@ export default function AlertSelectionView({
               <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
                 <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", marginBottom: "8px" }}>Snooze until (optional)</div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-                  <input type="date" value={bulkTaskSnoozeDate}
+                  <DateInput outputFormat="iso" value={bulkTaskSnoozeDate}
                     min={new Date().toISOString().split("T")[0]}
                     onChange={e => setBulkTaskSnoozeDate(e.target.value)}
-                    style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px" }} />
+                    style={{ width: "auto", fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px" }} />
                   {bulkTaskSnoozeDate && (
                     <>
                       <input type="time" value={bulkTaskSnoozeTime}

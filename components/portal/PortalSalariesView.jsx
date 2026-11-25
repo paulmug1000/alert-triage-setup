@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
+import DateInput from "../DateInput";
 import { PortalTableSkeleton } from "../Skeleton";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
@@ -835,13 +836,10 @@ export default function PortalSalariesView({
                               cIdx === 4 || cIdx === 5 ? (
                                 // Start date & End date calendar selector (ensures valid dates chosen, formatted as d-Mmm-yy)
                                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", width: "100%" }}>
-                                  <input
-                                    type="date"
-                                    value={toInputDateYMD(cellVal)}
-                                    onChange={(e) => {
-                                      const formatted = e.target.value ? formatToDMmmYy(e.target.value) : "";
-                                      handleCellChange(emp.sheetRow, cIdx, formatted);
-                                    }}
+                                  <DateInput
+                                    outputFormat="sheet"
+                                    value={cellVal || ""}
+                                    onChange={(e) => handleCellChange(emp.sheetRow, cIdx, e.target.value)}
                                     title={cellVal ? formatToDMmmYy(cellVal) : "Select date"}
                                     style={{
                                       ...inlineInputStyle,

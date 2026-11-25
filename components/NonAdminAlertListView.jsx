@@ -1,5 +1,6 @@
 import React from "react";
 import Spinner from "./Spinner";
+import DateInput from "./DateInput";
 import TruncatedCode from "./TruncatedCode";
 import { stripRowInfo, sanitizeSpreadsheetTerms, parseRetroactiveOutgoingsDetail, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat, isNoEndDateSentinel, formatJobEndDateDisplay } from "../utils/helpers";
 
@@ -1631,12 +1632,13 @@ export default function NonAdminAlertListView({
                                   Adjust expected payment date:
                                 </label>
                                 <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                                  <input
-                                    type="date"
+                                  <DateInput
+                                    outputFormat="iso"
                                     value={currentSelectedDate}
                                     onChange={(e) => setPartPaidDates(prev => ({ ...prev, [alert.alertKey]: e.target.value }))}
                                     disabled={isUpdating}
                                     style={{
+                                      width: "auto",
                                       padding: "5px 8px",
                                       borderRadius: "5px",
                                       border: "1px solid #cbd5e1",
@@ -1727,12 +1729,12 @@ export default function NonAdminAlertListView({
                                   {isBusy ? "Saving..." : `Zero out for ${monthLabel || "month"}`}
                                 </button>
                                 <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                                  <input
-                                    type="date"
+                                  <DateInput
+                                    outputFormat="iso"
                                     value={chosenStart}
                                     onChange={(e) => setSalaryForecastStartDates(prev => ({ ...prev, [alert.alertKey]: e.target.value }))}
                                     disabled={isBusy}
-                                    style={{ padding: "4px 6px", borderRadius: "5px", border: "1px solid #cbd5e1", fontSize: "12px", color: "#1e293b", backgroundColor: "#fff" }}
+                                    style={{ width: "auto", padding: "4px 6px", borderRadius: "5px", border: "1px solid #cbd5e1", fontSize: "12px", color: "#1e293b", backgroundColor: "#fff" }}
                                   />
                                   <button
                                     type="button"

@@ -46,6 +46,8 @@ import {
   isPlaceholderExpense,
   parseVariableRetainerTag,
   formatVariableRetainerTag,
+  isValidDateInputValue,
+  validateDateRange,
 } from "../../../utils/helpers.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
@@ -604,6 +606,37 @@ export default async function handler(req, res) {
         return await handleUpdateVariableRetainerBase(delegatedReq, safeRes, sheets);
       }
       return await handleUpdateVariableRetainerMonth(delegatedReq, safeRes, sheets);
+    }
+
+    // Server-side date validation across job dates, invoice sent dates, and expense received dates
+    const isRetainerPayload = String(job?.projectRetainer || "").trim().toLowerCase() === "retainer";
+    const allowNoEnd = Boolean(isRetainerPayload && (job?.noEndDate || isNoEndDateSentinel(job?.endDate)));
+    if (job?.dateConfirmed !== undefined && String(job.dateConfirmed).trim() !== "" && !isValidDateInputValue(job.dateConfirmed, { allowEmpty: false })) {
+      return res.status(400).json({ success: false, error: "Please enter a valid confirmation date." });
+    }
+    const rangeCheck = validateDateRange(job?.startDate, job?.endDate, {
+      allowNoEndDate: allowNoEnd,
+      requireStart: false,
+      requireEnd: false,
+    });
+    if (!rangeCheck.valid) {
+      return res.status(400).json({ success: false, error: rangeCheck.error || "Please enter valid start and end dates." });
+    }
+    if (Array.isArray(job?.invoices)) {
+      for (let i = 0; i < job.invoices.length; i++) {
+        const sd = job.invoices[i]?.sendDate;
+        if (sd !== undefined && String(sd).trim() !== "" && !isValidDateInputValue(sd, { allowEmpty: false })) {
+          return res.status(400).json({ success: false, error: `Please enter a valid sent date for invoice ${i + 1}.` });
+        }
+      }
+    }
+    if (Array.isArray(job?.directExpenses)) {
+      for (let i = 0; i < job.directExpenses.length; i++) {
+        const rd = job.directExpenses[i]?.recDate;
+        if (rd !== undefined && String(rd).trim() !== "" && !isValidDateInputValue(rd, { allowEmpty: false })) {
+          return res.status(400).json({ success: false, error: `Please enter a valid received date for direct expense ${i + 1}.` });
+        }
+      }
     }
 
     if (Boolean(job?.isVariableRetainerSeries)) {

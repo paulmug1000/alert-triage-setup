@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import dynamic from "next/dynamic";
 import Spinner from "./Spinner";
+import DateInput from "./DateInput";
 import Skeleton from "./Skeleton";
 import { useEoM } from "../hooks/useEoM";
 import { useTools } from "../hooks/useTools";
@@ -2577,12 +2578,12 @@ export default function ToolsView({
                                       {isBusy ? "Saving..." : `Zero out for ${f.result.targetMonthStr}`}
                                     </button>
                                     <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                                      <input
-                                        type="date"
+                                      <DateInput
+                                        outputFormat="iso"
                                         value={chosenStart}
                                         disabled={isBusy}
                                         onChange={e => setForecastStartDates(prev => ({ ...prev, [empKey]: e.target.value }))}
-                                        style={{ padding: "4px 6px", border: "1px solid #cbd5e1", borderRadius: "5px", fontSize: "12px", color: "#1e293b" }}
+                                        style={{ width: "auto", padding: "4px 6px", border: "1px solid #cbd5e1", borderRadius: "5px", fontSize: "12px", color: "#1e293b" }}
                                       />
                                       <button
                                         type="button"

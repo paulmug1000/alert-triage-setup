@@ -1739,17 +1739,111 @@ export function getCleanPLCategoryName(alertOrRaw) {
   return name.replace(/^["“]+|["”]+$/g, "").trim();
 }
 
+export const MIN_VALID_DATE_YEAR = 1900;
+export const MAX_VALID_DATE_YEAR = 2099;
+export const MIN_INPUT_DATE = "1900-01-01";
+export const MAX_INPUT_DATE = "2099-12-31";
+export const MIN_INPUT_MONTH = "1900-01";
+export const MAX_INPUT_MONTH = "2099-12";
+
+function buildValidatedDate_(yr, mIdx, day) {
+  if (!Number.isInteger(yr) || yr < MIN_VALID_DATE_YEAR || yr > MAX_VALID_DATE_YEAR) return null;
+  if (!Number.isInteger(mIdx) || mIdx < 0 || mIdx > 11) return null;
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  const d = new Date(yr, mIdx, day);
+  if (
+    isNaN(d.getTime()) ||
+    d.getFullYear() !== yr ||
+    d.getMonth() !== mIdx ||
+    d.getDate() !== day
+  ) {
+    return null;
+  }
+  return d;
+}
+
+/**
+ * Validates that a string is a strict YYYY-MM-DD calendar date within [minYear, maxYear].
+ */
+export function isValidCalendarIsoDate(str, { minYear = MIN_VALID_DATE_YEAR, maxYear = MAX_VALID_DATE_YEAR } = {}) {
+  if (typeof str !== "string") return false;
+  const match = str.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const yr = parseInt(match[1], 10);
+  const mo = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+  if (yr < minYear || yr > maxYear || mo < 1 || mo > 12 || day < 1 || day > 31) return false;
+  const d = new Date(yr, mo - 1, day);
+  return (
+    !isNaN(d.getTime()) &&
+    d.getFullYear() === yr &&
+    d.getMonth() === mo - 1 &&
+    d.getDate() === day
+  );
+}
+
+/**
+ * Checks whether a date input value (ISO, d-Mmm-yy, DD/MM/YYYY, or sentinel) is valid.
+ */
+export function isValidDateInputValue(val, { allowEmpty = true, minYear = MIN_VALID_DATE_YEAR, maxYear = MAX_VALID_DATE_YEAR } = {}) {
+  if (val === undefined || val === null || String(val).trim() === "") {
+    return allowEmpty;
+  }
+  if (isNoEndDateSentinel(val)) return true;
+  const d = parseSheetDate(val);
+  return Boolean(d && d.getFullYear() >= minYear && d.getFullYear() <= maxYear);
+}
+
+/**
+ * Validates start/end dates and ensures end date is not earlier than start date.
+ */
+export function validateDateRange(startVal, endVal, { allowNoEndDate = false, requireStart = false, requireEnd = false } = {}) {
+  const startEmpty = startVal === undefined || startVal === null || String(startVal).trim() === "";
+  const endIsSentinel = isNoEndDateSentinel(endVal);
+  const endEmpty = endVal === undefined || endVal === null || String(endVal).trim() === "";
+
+  if (requireStart && startEmpty) {
+    return { valid: false, error: "Please enter a valid start date." };
+  }
+  if (!startEmpty && !isValidDateInputValue(startVal, { allowEmpty: false })) {
+    return { valid: false, error: "Please enter a valid start date." };
+  }
+
+  if (!allowNoEndDate && !endIsSentinel) {
+    if (requireEnd && endEmpty) {
+      return { valid: false, error: "Please enter a valid end date." };
+    }
+    if (!endEmpty && !isValidDateInputValue(endVal, { allowEmpty: false })) {
+      return { valid: false, error: "Please enter a valid end date." };
+    }
+  }
+
+  if (!startEmpty && !endEmpty && !allowNoEndDate && !endIsSentinel) {
+    const startDate = parseSheetDate(startVal);
+    const endDate = parseSheetDate(endVal);
+    if (startDate && endDate && endDate.getTime() < startDate.getTime()) {
+      return { valid: false, error: "End date cannot be earlier than start date." };
+    }
+  }
+
+  return { valid: true };
+}
+
 /**
  * Parses any date format (ISO YYYY-MM-DD, d-Mmm-yy, DD/MM/YYYY, etc.) into a Date object.
  */
 export function parseSheetDate(dStr) {
   if (dStr === null || dStr === undefined || dStr === "") return null;
-  if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
+  if (dStr instanceof Date) {
+    if (isNaN(dStr.getTime())) return null;
+    const yr = dStr.getFullYear();
+    return yr >= MIN_VALID_DATE_YEAR && yr <= MAX_VALID_DATE_YEAR ? dStr : null;
+  }
 
   // 0. Google Sheets / Excel numeric serial date (e.g. 46326 for 31-Oct-2026)
   if (typeof dStr === "number" && Number.isFinite(dStr) && dStr > 20000 && dStr < 90000) {
     const utc = new Date(Math.round((dStr - 25569) * 86400 * 1000));
-    return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+    return buildValidatedDate_(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
   }
 
   const s = String(dStr).trim();
@@ -1759,7 +1853,7 @@ export function parseSheetDate(dStr) {
     const num = parseFloat(s);
     if (num > 20000 && num < 90000) {
       const utc = new Date(Math.round((num - 25569) * 86400 * 1000));
-      return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+      return buildValidatedDate_(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
     }
   }
 
@@ -1771,7 +1865,7 @@ export function parseSheetDate(dStr) {
     const yr = parseInt(isoMatch[1], 10);
     const mIdx = parseInt(isoMatch[2], 10) - 1;
     const day = parseInt(isoMatch[3], 10);
-    return new Date(yr, mIdx, day);
+    return buildValidatedDate_(yr, mIdx, day);
   }
 
   // 2. DD-Mon-YY or DD-Mon-YYYY (e.g. 15-Oct-26 or 1-Jan-2025)
@@ -1781,7 +1875,8 @@ export function parseSheetDate(dStr) {
     if (mIdx !== undefined) {
       let yr = parseInt(m[3], 10);
       if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
-      return new Date(yr, mIdx, parseInt(m[1], 10));
+      else if (m[3].length !== 4) return null;
+      return buildValidatedDate_(yr, mIdx, parseInt(m[1], 10));
     }
   }
 
@@ -1792,7 +1887,8 @@ export function parseSheetDate(dStr) {
     if (mIdx !== undefined) {
       let yr = parseInt(myMatch[2], 10);
       if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
-      return new Date(yr, mIdx, 1);
+      else if (myMatch[2].length !== 4) return null;
+      return buildValidatedDate_(yr, mIdx, 1);
     }
   }
 
@@ -1801,14 +1897,17 @@ export function parseSheetDate(dStr) {
   if (slashMatch) {
     let yr = parseInt(slashMatch[3], 10);
     if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
-    return new Date(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
+    else if (slashMatch[3].length !== 4) return null;
+    return buildValidatedDate_(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
   }
 
   // Prevent pure integer strings from being parsed by V8 as a year (e.g. new Date("46326") -> 1-Jan-46326)
   if (/^\d+$/.test(s)) return null;
 
   const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
+  if (isNaN(d.getTime())) return null;
+  const yr = d.getFullYear();
+  return yr >= MIN_VALID_DATE_YEAR && yr <= MAX_VALID_DATE_YEAR ? d : null;
 }
 
 /**
@@ -1819,9 +1918,10 @@ export function toInputDateFormat(dStr) {
   const d = parseSheetDate(dStr);
   if (!d) return "";
   const y = d.getFullYear();
+  if (y < MIN_VALID_DATE_YEAR || y > MAX_VALID_DATE_YEAR) return "";
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return `${String(y).padStart(4, "0")}-${m}-${day}`;
 }
 
 /**

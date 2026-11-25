@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Spinner from "../Spinner";
+import DateInput from "../DateInput";
 
 function formatMoney(val, currency = "GBP") {
   const num = Number(val) || 0;
@@ -888,8 +889,8 @@ export default function InitialInvoiceSetupModal({
                               />
                             </td>
                             <td style={{ padding: "7px 8px" }}>
-                              <input
-                                type="date"
+                              <DateInput
+                                outputFormat="iso"
                                 value={startVal}
                                 disabled={!checked}
                                 onChange={(e) =>
@@ -907,9 +908,10 @@ export default function InitialInvoiceSetupModal({
                               />
                             </td>
                             <td style={{ padding: "7px 8px" }}>
-                              <input
-                                type="date"
+                              <DateInput
+                                outputFormat="iso"
                                 value={endVal}
+                                min={startVal || undefined}
                                 disabled={!checked}
                                 onChange={(e) =>
                                   setEndDateOverrides((prev) => ({ ...prev, [inv.id]: e.target.value }))

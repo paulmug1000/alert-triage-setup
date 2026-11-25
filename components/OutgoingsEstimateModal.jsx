@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import Spinner from "./Spinner";
-import { toSheetDateFormat, toInputDateFormat } from "../utils/helpers";
+import { toSheetDateFormat, toInputDateFormat, isValidCalendarIsoDate, MIN_INPUT_DATE, MAX_INPUT_DATE } from "../utils/helpers";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -100,9 +100,13 @@ function CalendarDatePicker({ value, onChange, placeholder = "Select date" }) {
       <input
         ref={inputRef}
         type="date"
+        min={MIN_INPUT_DATE}
+        max={MAX_INPUT_DATE}
         value={isoVal}
         onChange={(e) => {
           const raw = e.target.value;
+          if (raw === "" && e.target.validity?.badInput) return;
+          if (raw && !isValidCalendarIsoDate(raw)) return;
           onChange(raw ? toSheetDateFormat(raw) : "");
         }}
         style={{

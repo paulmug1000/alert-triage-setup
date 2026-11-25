@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import Spinner from "../Spinner";
+import DateInput from "../DateInput";
 import PlaceholderPill, { isAutoPlaceholder } from "../PlaceholderPill";
-import { isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../../utils/helpers";
+import { isPlaceholderExpense, toSheetDateFormat, toInputDateFormat, isValidDateInputValue } from "../../utils/helpers";
 import PulseNoteTrigger from "./PulseNoteTrigger";
 import { usePulseNotes } from "../../contexts/PulseNotesContext";
 import { buildContractorBillNoteKey, buildContractorCellNoteKey } from "../../utils/pulseNotesKeys";
@@ -127,6 +128,15 @@ export default function ContractorExpenseModal({
     const parsedAmt = parseFloat(String(amount).replace(/[£$€,\s]/g, ""));
     if (isNaN(parsedAmt) || parsedAmt <= 0) {
       setError("Please enter a valid amount greater than 0.");
+      return;
+    }
+
+    if (recDate && !isValidDateInputValue(recDate, { allowEmpty: false })) {
+      setError("Please enter a valid received date.");
+      return;
+    }
+    if (payDate && !isValidDateInputValue(payDate, { allowEmpty: false })) {
+      setError("Please enter a valid pay date.");
       return;
     }
 
@@ -476,8 +486,8 @@ export default function ContractorExpenseModal({
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
             <div title={lockTooltip}>
               <label style={labelStyle}>Received date</label>
-              <input
-                type="date"
+              <DateInput
+                outputFormat="iso"
                 disabled={isFieldLocked || isSaving || isDeleting}
                 value={recDate}
                 onChange={(e) => setRecDate(e.target.value)}
@@ -489,8 +499,8 @@ export default function ContractorExpenseModal({
             </div>
             <div title={isPaid ? "Pay date is determined once a bill is marked as paid." : undefined}>
               <label style={labelStyle}>Pay date</label>
-              <input
-                type="date"
+              <DateInput
+                outputFormat="iso"
                 disabled={isPaid || isSaving || isDeleting}
                 value={payDate}
                 onChange={(e) => setPayDate(e.target.value)}

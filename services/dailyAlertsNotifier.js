@@ -9,6 +9,9 @@ import { matchesClientName, stripRowInfo, ADMIN_ONLY_ALERT_TYPES, sanitizeSpread
 import { logPmaActivity } from "./pmaLogger.js";
 import { getOpenClientNotesForDigest } from "./pulseNotesService.js";
 import { verifyBridgedClientsParity } from "./clientSheetBridgeService.js";
+import { verifyRelationalJobsParity, verifyRelationalJobsReadParity } from "./relationalJobsService.js";
+import { verifyRelationalInputsParity, verifyRelationalInputsReadParity } from "./relationalInputsService.js";
+import { flushPendingClientRecomputes } from "./masterEngineService.js";
 
 /**
  * Format today's date in UK format: e.g. "Tuesday, 29 September"
@@ -675,6 +678,202 @@ export async function checkAndNotifyTabErrors({ sheets: providedSheets, automati
   };
 }
 
+function formatParityCellSnippet_(val) {
+  if (val === undefined || val === null || val === "") return "blank";
+  if (typeof val === "number" && Number.isFinite(val)) {
+    return String(Math.round(val * 100) / 100);
+  }
+  if (typeof val === "object") {
+    try {
+      const s = JSON.stringify(val);
+      return s.length > 80 ? `${s.slice(0, 77)}...` : s;
+    } catch {
+      return String(val);
+    }
+  }
+  const s = String(val);
+  return s.length > 80 ? `${s.slice(0, 77)}...` : s;
+}
+
+function normalizeRelationalDbDiff_(suiteLabel, d = {}) {
+  const cellCoord =
+    d.cellKey ||
+    (Number.isInteger(d.r0) && Number.isInteger(d.c0) ? `R${d.r0 + 1}C${d.c0 + 1}` : d.kind || "table");
+  return {
+    tab: `${suiteLabel}${d.tabName ? ` (${d.tabName})` : ""}`,
+    cell: cellCoord,
+    rowLabel: d.kind ? `${d.kind} (${cellCoord})` : cellCoord,
+    colLabel: "Grid vs DB",
+    sheetValue: formatParityCellSnippet_(d.expected),
+    supabaseValue: formatParityCellSnippet_(d.actual),
+  };
+}
+
+function normalizeRelationalReadDiff_(suiteLabel, d = {}) {
+  const pathStr = String(d.path || "$");
+  const shortPath = pathStr.length > 56 ? `${pathStr.slice(0, 53)}...` : pathStr;
+  return {
+    tab: suiteLabel,
+    cell: shortPath,
+    rowLabel: shortPath,
+    colLabel: "Grid vs Relational API",
+    sheetValue: formatParityCellSnippet_(d.expected),
+    supabaseValue: formatParityCellSnippet_(d.actual),
+  };
+}
+
+function indexSuiteResultsByClient_(suiteReport) {
+  const map = new Map();
+  for (const r of suiteReport?.results || []) {
+    if (r?.clientName) map.set(r.clientName, r);
+  }
+  return map;
+}
+
+async function runFullActiveClientsParityCheck_() {
+  const [sheetReport, jobsDbRep, inputsDbRep, jobsReadRep, inputsReadRep] = await Promise.all([
+    verifyBridgedClientsParity({
+      includePureSupabase: true,
+      settleOnMismatch: true,
+      skipRelationalSummary: true,
+    }),
+    verifyRelationalJobsParity({ source: "db" }),
+    verifyRelationalInputsParity({ source: "db" }),
+    verifyRelationalJobsReadParity(),
+    verifyRelationalInputsReadParity(),
+  ]);
+
+  const jobsDbMap = indexSuiteResultsByClient_(jobsDbRep);
+  const inputsDbMap = indexSuiteResultsByClient_(inputsDbRep);
+  const jobsReadMap = indexSuiteResultsByClient_(jobsReadRep);
+  const inputsReadMap = indexSuiteResultsByClient_(inputsReadRep);
+
+  const activeNames = (sheetReport?.results || []).map((r) => r?.clientName).filter(Boolean);
+  const clientsNeedingSettle = [];
+  for (const name of activeNames) {
+    const jDb = jobsDbMap.get(name);
+    const iDb = inputsDbMap.get(name);
+    const jRead = jobsReadMap.get(name);
+    const iRead = inputsReadMap.get(name);
+    const hasRelIssue =
+      (jDb && (jDb.error || !jDb.matched)) ||
+      (iDb && (iDb.error || !iDb.matched)) ||
+      (jRead && (jRead.error || !jRead.matched)) ||
+      (iRead && (iRead.error || !iRead.matched));
+    if (hasRelIssue) {
+      clientsNeedingSettle.push(name);
+    }
+  }
+
+  if (clientsNeedingSettle.length > 0) {
+    await Promise.all(
+      clientsNeedingSettle.map((name) => flushPendingClientRecomputes(null, name).catch(() => {}))
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    for (const name of clientsNeedingSettle) {
+      const retries = [];
+      const jDb = jobsDbMap.get(name);
+      const iDb = inputsDbMap.get(name);
+      const jRead = jobsReadMap.get(name);
+      const iRead = inputsReadMap.get(name);
+
+      if (jDb && (jDb.error || !jDb.matched)) {
+        retries.push(
+          verifyRelationalJobsParity({ clientName: name, source: "db" })
+            .then((r) => { if (r?.results?.[0]) jobsDbMap.set(name, r.results[0]); })
+            .catch(() => {})
+        );
+      }
+      if (iDb && (iDb.error || !iDb.matched)) {
+        retries.push(
+          verifyRelationalInputsParity({ clientName: name, source: "db" })
+            .then((r) => { if (r?.results?.[0]) inputsDbMap.set(name, r.results[0]); })
+            .catch(() => {})
+        );
+      }
+      if (jRead && (jRead.error || !jRead.matched)) {
+        retries.push(
+          verifyRelationalJobsReadParity({ clientName: name })
+            .then((r) => { if (r?.results?.[0]) jobsReadMap.set(name, r.results[0]); })
+            .catch(() => {})
+        );
+      }
+      if (iRead && (iRead.error || !iRead.matched)) {
+        retries.push(
+          verifyRelationalInputsReadParity({ clientName: name })
+            .then((r) => { if (r?.results?.[0]) inputsReadMap.set(name, r.results[0]); })
+            .catch(() => {})
+        );
+      }
+      if (retries.length > 0) await Promise.all(retries);
+    }
+  }
+
+  const mergedResults = (sheetReport?.results || []).map((row) => {
+    const name = row?.clientName;
+    if (!name) return row;
+
+    const jDb = jobsDbMap.get(name) || null;
+    const iDb = inputsDbMap.get(name) || null;
+    const jRead = jobsReadMap.get(name) || null;
+    const iRead = inputsReadMap.get(name) || null;
+
+    const suites = [
+      { label: "Jobs DB", rec: jDb, isRead: false },
+      { label: "Inputs DB", rec: iDb, isRead: false },
+      { label: "Jobs API read", rec: jRead, isRead: true },
+      { label: "Inputs API read", rec: iRead, isRead: true },
+    ];
+
+    const relDiffs = [];
+    const relErrors = [];
+    let relationalMismatchCount = 0;
+
+    for (const s of suites) {
+      if (!s.rec) continue;
+      if (s.rec.error) {
+        relErrors.push(`${s.label}: ${s.rec.error}`);
+      } else if (!s.rec.matched) {
+        const count = s.rec.totalMismatchCount ?? s.rec.mismatchCount ?? (s.rec.sampleMismatches?.length || 1);
+        relationalMismatchCount += count;
+        for (const d of s.rec.sampleMismatches || []) {
+          relDiffs.push(s.isRead ? normalizeRelationalReadDiff_(s.label, d) : normalizeRelationalDbDiff_(s.label, d));
+        }
+      }
+    }
+
+    const combinedError = row.error || (relErrors.length > 0 ? relErrors.join("; ") : null);
+    const totalMismatchCount = (row.dashboardMismatchCount || 0) + (row.cashMismatchCount || 0) + relationalMismatchCount;
+    const sampleMismatches = [...(row.sampleMismatches || []).slice(0, 5), ...relDiffs.slice(0, 8)].slice(0, 12);
+
+    return {
+      ...row,
+      error: combinedError,
+      relationalMismatchCount,
+      relationalJobsDbMatched: jDb ? Boolean(jDb.matched && !jDb.error) : true,
+      relationalInputsDbMatched: iDb ? Boolean(iDb.matched && !iDb.error) : true,
+      relationalJobsReadMatched: jRead ? Boolean(jRead.matched && !jRead.error) : true,
+      relationalInputsReadMatched: iRead ? Boolean(iRead.matched && !iRead.error) : true,
+      totalMismatchCount,
+      sampleMismatches,
+    };
+  });
+
+  const errorClientsCount = mergedResults.filter((r) => Boolean(r.error || r.lastError)).length;
+  const mismatchClientsCount = mergedResults.filter((r) => !r.error && r.totalMismatchCount > 0).length;
+  const matchedClientsCount = mergedResults.filter((r) => !r.error && !r.lastError && r.totalMismatchCount === 0).length;
+
+  return {
+    ...sheetReport,
+    clientsChecked: mergedResults.length,
+    matchedClientsCount,
+    mismatchClientsCount,
+    errorClientsCount,
+    results: mergedResults,
+  };
+}
+
 function buildParityFingerprint_(row) {
   if (row?.error) {
     return `read_error:${String(row.error).slice(0, 120)}`;
@@ -683,7 +882,7 @@ function buildParityFingerprint_(row) {
   const parts = samples
     .map((m) => `${m.tab || ""}:${m.cell || ""}:${m.rowLabel || ""}:${m.colLabel || ""}:${m.sheetValue}->${m.supabaseValue}`)
     .sort();
-  return `${row?.dashboardMismatchCount || 0}:${row?.cashMismatchCount || 0}|${parts.join("|")}`.slice(0, 500);
+  return `${row?.dashboardMismatchCount || 0}:${row?.cashMismatchCount || 0}:${row?.relationalMismatchCount || 0}|${parts.join("|")}`.slice(0, 500);
 }
 
 function buildParityAlertHtml_({ flaggedClients, checkedAt, clientsChecked, appUrl }) {
@@ -692,6 +891,7 @@ function buildParityAlertHtml_({ flaggedClients, checkedAt, clientsChecked, appU
       const counts = [];
       if (c.dashboardMismatchCount > 0) counts.push(`Dashboard: ${c.dashboardMismatchCount}`);
       if (c.cashMismatchCount > 0) counts.push(`Cashflow: ${c.cashMismatchCount}`);
+      if (c.relationalMismatchCount > 0) counts.push(`Relational: ${c.relationalMismatchCount}`);
       if (c.error) counts.push(`Read error: ${c.error}`);
 
       const rowsHtml = (c.sampleMismatches || [])
@@ -715,9 +915,9 @@ function buildParityAlertHtml_({ flaggedClients, checkedAt, clientsChecked, appU
               <tr style="background:#f8fafc;">
                 <th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Area</th>
                 <th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Metric</th>
-                <th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Period</th>
-                <th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Sheet</th>
-                <th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Pulse</th>
+                <th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Period / scope</th>
+                <th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Expected</th>
+                <th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">Actual</th>
               </tr>
             </thead>
             <tbody>${rowsHtml}</tbody>
@@ -747,11 +947,11 @@ function buildParityAlertHtml_({ flaggedClients, checkedAt, clientsChecked, appU
     <div style="font-family:'Kumbh Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:660px;margin:0 auto;background:#f9fafb;padding:24px;border-radius:10px;color:#1f2937;">
       <div style="background:#1a1a2e;color:#ffffff;padding:18px 24px;border-radius:8px 8px 0 0;">
         <div style="font-size:16px;font-weight:700;">Pulse parity check</div>
-        <div style="font-size:12px;color:#94a3b8;">Hourly dashboard and cashflow parity alert · ${escapeHtml(checkedAt)}</div>
+        <div style="font-size:12px;color:#94a3b8;">Hourly sheet and relational parity alert · ${escapeHtml(checkedAt)}</div>
       </div>
       <div style="background:#f3f4f6;padding:20px 24px;border:1px solid #e5e7eb;border-top:none;">
         <p style="font-size:14px;color:#374151;line-height:1.5;margin-top:0;">
-          The hourly parity check scanned ${clientsChecked} active client${clientsChecked === 1 ? "" : "s"} and found new dashboard or cashflow disparities on ${flaggedClients.length} client${flaggedClients.length === 1 ? "" : "s"}.
+          The hourly parity check scanned ${clientsChecked} active client${clientsChecked === 1 ? "" : "s"} and found new sheet or relational disparities on ${flaggedClients.length} client${flaggedClients.length === 1 ? "" : "s"}.
         </p>
         ${clientCards}
         <div style="text-align:center;margin:24px 0 10px 0;">
@@ -764,7 +964,7 @@ function buildParityAlertHtml_({ flaggedClients, checkedAt, clientsChecked, appU
 }
 
 /**
- * Runs the hourly Dashboard + Year0Data + Cashflow parity check across all active clients
+ * Runs the hourly Dashboard + Year0Data + Cashflow + Relational DB/API read parity check across all active clients
  * (both live Google Sheet bridge and pure-Supabase tenants) and emails Paul once per new disparity fingerprint.
  */
 export async function checkAndNotifyClientParity({
@@ -773,10 +973,7 @@ export async function checkAndNotifyClientParity({
   parityReportOverride = null,
 } = {}) {
   const sb = getSupabaseAdmin();
-  const report = parityReportOverride || await verifyBridgedClientsParity({
-    includePureSupabase: true,
-    settleOnMismatch: true,
-  });
+  const report = parityReportOverride || await runFullActiveClientsParityCheck_();
 
   const nowIso = report?.checkedAt || new Date().toISOString();
   let prevState = { clients: {}, transientErrors: {} };
@@ -837,6 +1034,7 @@ export async function checkAndNotifyClientParity({
           totalMismatchCount: row.totalMismatchCount,
           dashboardMismatchCount: row.dashboardMismatchCount,
           cashMismatchCount: row.cashMismatchCount,
+          relationalMismatchCount: row.relationalMismatchCount || 0,
           sampleMismatches: row.sampleMismatches || [],
         };
       }
@@ -887,10 +1085,10 @@ export async function checkAndNotifyClientParity({
       `Pulse parity check scanned ${report?.clientsChecked || 0} client(s) at ${nowIso} and detected disparities on ${newlyFlagged.length} client(s):\n\n` +
       newlyFlagged
         .map((c) => {
-          const header = `${c.clientName} (Dashboard: ${c.dashboardMismatchCount || 0}, Cashflow: ${c.cashMismatchCount || 0}${c.error ? `, Error: ${c.error}` : ""})`;
+          const header = `${c.clientName} (Dashboard: ${c.dashboardMismatchCount || 0}, Cashflow: ${c.cashMismatchCount || 0}, Relational: ${c.relationalMismatchCount || 0}${c.error ? `, Error: ${c.error}` : ""})`;
           const lines = (c.sampleMismatches || [])
             .slice(0, 10)
-            .map((m) => `  - ${m.tab} | ${m.rowLabel || m.cell} | ${m.colLabel || m.cell}: Sheet=${m.sheetValue} vs Pulse=${m.supabaseValue}`);
+            .map((m) => `  - ${m.tab} | ${m.rowLabel || m.cell} | ${m.colLabel || m.cell}: Expected=${m.sheetValue} vs Actual=${m.supabaseValue}`);
           return [header, ...lines].join("\n");
         })
         .join("\n\n") +

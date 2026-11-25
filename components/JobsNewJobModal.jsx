@@ -12,7 +12,9 @@ import {
   canonicalizeExpenseStatus,
   calculatePaymentDate,
   formatCurrency,
-  normalizeLikelihoodInput
+  normalizeLikelihoodInput,
+  validateDateRange,
+  isValidDateInputValue
 } from "../utils/helpers";
 import {
   generateManualPlaceholderInvoiceRef,
@@ -393,13 +395,30 @@ export default function JobsNewJobModal({
       return;
     }
     const isRetainerNoEnd = projectRetainer === "Retainer" && noEndDate;
-    if (projectRetainer === "Retainer" && !isRetainerNoEnd && !endDate) {
-      setError("Please enter an end date or tick 'No end date'.");
+    const dateRangeCheck = validateDateRange(startDate, endDate, {
+      allowNoEndDate: isRetainerNoEnd,
+      requireStart: false,
+      requireEnd: projectRetainer === "Retainer" && !isRetainerNoEnd,
+    });
+    if (!dateRangeCheck.valid) {
+      setError(dateRangeCheck.error || "Please enter valid start and end dates.");
       return;
     }
-    if (!isRetainerNoEnd && startDate && endDate && endDate < startDate) {
-      setError("End date cannot be before start date.");
+    if (dateConfirmed && !isValidDateInputValue(dateConfirmed, { allowEmpty: false })) {
+      setError("Please enter a valid confirmation date.");
       return;
+    }
+    for (let i = 0; i < invoices.length; i++) {
+      if (invoices[i]?.sentDate && !isValidDateInputValue(invoices[i].sentDate, { allowEmpty: false })) {
+        setError(`Please enter a valid sent date for invoice ${i + 1}.`);
+        return;
+      }
+    }
+    for (let i = 0; i < expenses.length; i++) {
+      if (expenses[i]?.date && !isValidDateInputValue(expenses[i].date, { allowEmpty: false })) {
+        setError(`Please enter a valid date for direct expense ${i + 1}.`);
+        return;
+      }
     }
 
     if (effectiveSplitEnabled && enableSplit && isSplitError) {

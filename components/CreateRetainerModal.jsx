@@ -1,5 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
+import DateInput from "./DateInput";
+import { validateDateRange } from "../utils/helpers";
 
 export default function CreateRetainerModal({ clientName: agencyClientName, clientSheetId, masterSheetId, onClose, onCreated }) {
   const [endClientName, setEndClientName] = React.useState("");
@@ -30,9 +32,15 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
     if (!monthlyRevenue || isNaN(revenue) || revenue <= 0) { setError("Please enter a monthly revenue amount greater than zero."); return; }
     const directCosts = monthlyDirectCosts === "" ? 0 : parseFloat(monthlyDirectCosts);
     if (isNaN(directCosts) || directCosts < 0) { setError("Direct costs must be zero or a positive number."); return; }
-    if (!startDate) { setError("Please enter a start date."); return; }
-    if (!noEndDate && !endDate) { setError("Please enter an end date or tick 'No end date'."); return; }
-    if (!noEndDate && endDate && endDate < startDate) { setError("End date can't be before start date."); return; }
+    const dateCheck = validateDateRange(startDate, endDate, {
+      allowNoEndDate: noEndDate,
+      requireStart: true,
+      requireEnd: !noEndDate,
+    });
+    if (!dateCheck.valid) {
+      setError(noEndDate ? "Please enter a valid start date." : (dateCheck.error || "Please enter valid dates."));
+      return;
+    }
     let sendDay = null;
     if (invoiceSendDay !== "") {
       sendDay = parseInt(invoiceSendDay, 10);
@@ -180,7 +188,7 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                 <div>
                   <label style={labelStyle}>Start date</label>
-                  <input type="date" style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
+                  <DateInput outputFormat="iso" style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
                 </div>
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" }}>
@@ -203,7 +211,7 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
                       disabled
                     />
                   ) : (
-                    <input type="date" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
+                    <DateInput outputFormat="iso" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
                   )}
                 </div>
               </div>

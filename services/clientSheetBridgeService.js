@@ -36,6 +36,7 @@ import { isCashCellEditable } from "./cashEditService.js";
 import { redisClient } from "./redisClient.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { verifyRelationalJobsParity } from "./relationalJobsService.js";
+import { verifyRelationalInputsParity } from "./relationalInputsService.js";
 import { isJobCostingStyle, toSheetDateFormat } from "../utils/helpers.js";
 
 export const BRIDGE_BIDIRECTIONAL_TABS = [
@@ -2664,6 +2665,7 @@ export async function verifyBridgedClientsParity({
   clientName = null,
   includePureSupabase = false,
   settleOnMismatch = false,
+  skipRelationalSummary = false,
 } = {}) {
   if (!isSupabaseConfigured()) throw new Error("Supabase is not configured.");
   const supabase = getSupabaseAdmin();
@@ -2676,7 +2678,7 @@ export async function verifyBridgedClientsParity({
 
   let query = supabase
     .from("clients")
-    .select("id, client_name, status, master_mode, client_mode, jobs_mode, client_sheet_id, master_sheet_id, metadata")
+    .select("id, client_name, status, master_mode, client_mode, jobs_mode, inputs_mode, client_sheet_id, master_sheet_id, metadata")
     .order("client_name", { ascending: true });
 
   if (clientName) {
@@ -2718,12 +2720,17 @@ export async function verifyBridgedClientsParity({
 
         try {
           if (!isBridgedTarget) {
-            const [supaDash, supaYear0, supaCash, relParity] = await Promise.all([
+            const relJobsMode = String(c.jobs_mode || c.metadata?.jobs_mode || "grid").toLowerCase();
+            const relInputsMode = String(c.inputs_mode || c.metadata?.inputs_mode || "grid").toLowerCase();
+            const [supaDash, supaYear0, supaCash, relParity, relInputsParity] = await Promise.all([
               getOrLoadVirtualTabGrid_(ctx, "client", "Dashboard", rawSheets, { valuesOnly: true }).catch(() => null),
               getOrLoadVirtualTabGrid_(ctx, "client", "Year0Data", rawSheets, { valuesOnly: true }).catch(() => null),
               getOrLoadVirtualTabGrid_(ctx, "client", "Cash", rawSheets, { valuesOnly: true }).catch(() => null),
-              c.jobs_mode === "relational"
+              !skipRelationalSummary && relJobsMode === "relational"
                 ? verifyRelationalJobsParity({ clientName: c.client_name, source: "db" }).catch(() => null)
+                : Promise.resolve(null),
+              !skipRelationalSummary && relInputsMode === "relational"
+                ? verifyRelationalInputsParity({ clientName: c.client_name, source: "db" }).catch(() => null)
                 : Promise.resolve(null),
             ]);
 
@@ -2733,14 +2740,27 @@ export async function verifyBridgedClientsParity({
               supaCash?.values_grid || []
             );
 
-            if (relParity && relParity.isParity === false) {
+            const jobRec = relParity?.results?.[0];
+            if (jobRec && (jobRec.error || !jobRec.matched)) {
               dashDiffs.push({
                 tab: "Relational jobs",
                 cell: "pulse_jobs",
                 rowLabel: "Relational job parity",
                 colLabel: "DB",
                 sheetValue: "0 mismatches",
-                supabaseValue: `${relParity.mismatchCount || 1} diff(s)`,
+                supabaseValue: jobRec.error ? String(jobRec.error) : `${jobRec.totalMismatchCount || 1} diff(s)`,
+              });
+            }
+
+            const inRec = relInputsParity?.results?.[0];
+            if (inRec && (inRec.error || !inRec.matched)) {
+              dashDiffs.push({
+                tab: "Relational inputs",
+                cell: "pulse_inputs",
+                rowLabel: "Relational inputs parity",
+                colLabel: "DB",
+                sheetValue: "0 mismatches",
+                supabaseValue: inRec.error ? String(inRec.error) : `${inRec.totalMismatchCount || 1} diff(s)`,
               });
             }
 

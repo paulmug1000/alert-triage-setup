@@ -36,7 +36,10 @@ import {
   generateRenewalJobName,
   calculateRenewalDates,
   formatLikelihood,
-  normalizeLikelihoodInput
+  normalizeLikelihoodInput,
+  isValidCalendarIsoDate,
+  MIN_INPUT_DATE,
+  MAX_INPUT_DATE
 } from "../utils/helpers";
 import {
   getJobInvoiceItems,
@@ -136,9 +139,10 @@ export const toInputDateFormat = (dStr) => {
   const d = parseSheetDate(dStr);
   if (!d) return "";
   const y = d.getFullYear();
+  if (y < 1900 || y > 2099) return "";
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return `${String(y).padStart(4, "0")}-${m}-${day}`;
 };
 
 export const toSheetDateFormat = (dStr) => {
@@ -191,12 +195,22 @@ export const JobDateInput = ({
   title,
   disabled = false,
   readOnly = false,
+  min,
+  max,
   ...rest
 }) => {
   const inputRef = React.useRef(null);
   const isFocusedRef = React.useRef(false);
   const isCancelledRef = React.useRef(false);
   const isoValue = React.useMemo(() => toInputDateFormat(value), [value]);
+  const effectiveMin = React.useMemo(() => {
+    const parsed = min ? toInputDateFormat(min) : "";
+    return parsed && isValidCalendarIsoDate(parsed) ? parsed : MIN_INPUT_DATE;
+  }, [min]);
+  const effectiveMax = React.useMemo(() => {
+    const parsed = max ? toInputDateFormat(max) : "";
+    return parsed && isValidCalendarIsoDate(parsed) ? parsed : MAX_INPUT_DATE;
+  }, [max]);
 
   React.useEffect(() => {
     if (inputRef.current && !isFocusedRef.current) {
@@ -206,11 +220,15 @@ export const JobDateInput = ({
 
   const handleChange = (e) => {
     const newVal = e.target.value;
-    if (newVal && !/^0\d{3}-/.test(newVal)) {
+    if (newVal === "") {
+      if (!e.target.validity?.badInput) {
+        onChange("");
+      }
+      return;
+    }
+    if (isValidCalendarIsoDate(newVal)) {
       onChange(newVal);
     }
-    // If newVal is "" or a partial 4-digit year (< 1000), the user is in an intermediate state while typing in Chrome.
-    // We intentionally avoid updating state/DOM node mid-keystroke, preserving other segments.
   };
 
   const handleFocus = () => {
@@ -237,7 +255,13 @@ export const JobDateInput = ({
       return;
     }
 
-    const finalVal = e.target.value;
+    const finalVal = inputRef.current ? inputRef.current.value : e.target.value;
+    if (e.target.validity?.badInput || (finalVal && !isValidCalendarIsoDate(finalVal))) {
+      if (inputRef.current) {
+        inputRef.current.value = isoValue;
+      }
+      return;
+    }
     if (finalVal !== isoValue) {
       onChange(finalVal);
     }
@@ -256,6 +280,8 @@ export const JobDateInput = ({
     <input
       ref={inputRef}
       type="date"
+      min={effectiveMin}
+      max={effectiveMax}
       defaultValue={isoValue}
       onChange={handleChange}
       onFocus={handleFocus}

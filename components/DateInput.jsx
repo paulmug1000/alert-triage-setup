@@ -1,12 +1,17 @@
 import React from "react";
-import { toInputDateFormat, toSheetDateFormat } from "../utils/helpers";
+import {
+  toInputDateFormat,
+  toSheetDateFormat,
+  isValidCalendarIsoDate,
+  MIN_INPUT_DATE,
+  MAX_INPUT_DATE,
+} from "../utils/helpers";
 
 /**
- * Universal DateInput component for the PMA.
- * Renders a calendar picker (<input type="date">) so ONLY valid dates can be entered.
- * Handles dates seamlessly whether passed as "d-Mmm-yy" (e.g. "1-Jan-25", "15-Oct-26"),
- * ISO "YYYY-MM-DD", or other formats.
- * When a user selects a date, formats the value to "d-Mmm-yy" and invokes onChange.
+ * Universal DateInput component for Pulse and the PMA.
+ * Renders a calendar picker (<input type="date">) capped to 4-digit years (1900–2099)
+ * so ONLY valid calendar dates can be entered or committed.
+ * Supports `outputFormat="sheet"` (default, "d-Mmm-yy") or `outputFormat="iso"` ("YYYY-MM-DD").
  */
 export default function DateInput({
   value = "",
@@ -14,22 +19,34 @@ export default function DateInput({
   onBlur,
   onFocus,
   onKeyDown,
+  onInvalidDate,
+  outputFormat = "sheet",
   style = {},
   className = "",
   placeholder = "",
   disabled = false,
+  readOnly = false,
   min,
   max,
   id,
   name,
   required = false,
   title,
+  ...rest
 }) {
   const inputRef = React.useRef(null);
   const isFocusedRef = React.useRef(false);
   const isoValue = React.useMemo(() => toInputDateFormat(value), [value]);
-  const isoMin = React.useMemo(() => (min ? toInputDateFormat(min) : undefined), [min]);
-  const isoMax = React.useMemo(() => (max ? toInputDateFormat(max) : undefined), [max]);
+
+  const effectiveMin = React.useMemo(() => {
+    const parsed = min ? toInputDateFormat(min) : "";
+    return parsed && isValidCalendarIsoDate(parsed) ? parsed : MIN_INPUT_DATE;
+  }, [min]);
+
+  const effectiveMax = React.useMemo(() => {
+    const parsed = max ? toInputDateFormat(max) : "";
+    return parsed && isValidCalendarIsoDate(parsed) ? parsed : MAX_INPUT_DATE;
+  }, [max]);
 
   React.useEffect(() => {
     if (inputRef.current && !isFocusedRef.current) {
@@ -37,8 +54,13 @@ export default function DateInput({
     }
   }, [isoValue]);
 
+  const formatForOutput = (rawIso) => {
+    if (!rawIso) return "";
+    return outputFormat === "iso" ? rawIso : toSheetDateFormat(rawIso);
+  };
+
   const emitFormatted = (e, rawVal) => {
-    const formatted = rawVal ? toSheetDateFormat(rawVal) : "";
+    const formatted = formatForOutput(rawVal);
 
     const synthEvent = {
       ...e,
@@ -59,9 +81,14 @@ export default function DateInput({
 
   const handleChange = (e) => {
     const rawVal = e.target.value;
-    // While typing a 4-digit year in Chromium (e.g. "0002-11-01", "0020-11-01", "0202-11-01"),
-    // do not round-trip partial years (< 1000) through 2-digit sheet dates mid-keystroke.
-    if (rawVal && /^0\d{3}-/.test(rawVal)) {
+    if (rawVal === "") {
+      if (e.target.validity?.badInput) {
+        return;
+      }
+      emitFormatted(e, "");
+      return;
+    }
+    if (!isValidCalendarIsoDate(rawVal)) {
       return;
     }
     emitFormatted(e, rawVal);
@@ -74,14 +101,24 @@ export default function DateInput({
 
   const handleBlur = (e) => {
     isFocusedRef.current = false;
-    const rawVal = e.target.value;
-    const currentFormatted = value ? toSheetDateFormat(value) : "";
-    const nextFormatted = rawVal ? toSheetDateFormat(rawVal) : "";
+    const el = inputRef.current;
+    const rawVal = el ? el.value : e.target.value;
+    const isBadInput = Boolean(el?.validity?.badInput);
+
+    if (isBadInput || (rawVal && !isValidCalendarIsoDate(rawVal))) {
+      if (el) el.value = isoValue;
+      if (onInvalidDate) onInvalidDate(rawVal);
+      if (onBlur) onBlur(e);
+      return;
+    }
+
+    const currentFormatted = formatForOutput(isoValue);
+    const nextFormatted = formatForOutput(rawVal);
     if (nextFormatted !== currentFormatted) {
       emitFormatted(e, rawVal);
     }
-    if (inputRef.current) {
-      inputRef.current.value = rawVal ? toInputDateFormat(nextFormatted) : "";
+    if (el) {
+      el.value = rawVal || "";
     }
     if (onBlur) onBlur(e);
   };
@@ -93,17 +130,19 @@ export default function DateInput({
       id={id}
       name={name}
       disabled={disabled}
+      readOnly={readOnly}
       required={required}
       title={title}
       placeholder={placeholder}
-      min={isoMin}
-      max={isoMax}
+      min={effectiveMin}
+      max={effectiveMax}
       defaultValue={isoValue}
       onChange={handleChange}
       onBlur={handleBlur}
       onFocus={handleFocus}
       onKeyDown={onKeyDown}
       className={className}
+      {...rest}
       style={{
         width: "100%",
         padding: "7px 9px",

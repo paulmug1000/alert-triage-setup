@@ -307,22 +307,28 @@ export async function saveClientCashBankBreakdownMonth({
   }
 
   if (clRow?.id) {
-    await sb
-      .from("pulse_cash_bank_balances")
-      .upsert(
-        {
-          client_id: clRow.id,
-          client_name: clRow.client_name,
-          period_ym: cleanMonth,
-          source: entry.source,
-          basis: entry.basis,
-          total_balance: finalTotal,
-          accounts: cleanAccounts,
-          updated_by: entry.updatedBy,
-        },
-        { onConflict: "client_id,period_ym" }
-      )
-      .catch(() => { });
+    try {
+      const { error: relErr } = await sb
+        .from("pulse_cash_bank_balances")
+        .upsert(
+          {
+            client_id: clRow.id,
+            client_name: clRow.client_name,
+            period_ym: cleanMonth,
+            source: entry.source,
+            basis: entry.basis,
+            total_balance: finalTotal,
+            accounts: cleanAccounts,
+            updated_by: entry.updatedBy,
+          },
+          { onConflict: "client_id,period_ym" }
+        );
+      if (relErr) {
+        console.warn("[cashBankBreakdownService] Relational upsert warning:", relErr.message);
+      }
+    } catch (relEx) {
+      console.warn("[cashBankBreakdownService] Relational upsert exception:", relEx?.message);
+    }
   }
 
   return entry;

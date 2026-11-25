@@ -16,6 +16,11 @@ import {
   verifyRelationalMasterParity,
   verifyRelationalMasterReadParity,
 } from "./relationalMasterService.js";
+import {
+  checkPhase4ReconSchemaStatus,
+  verifyRelationalReconParity,
+  verifyRelationalReconReadParity,
+} from "./relationalReconService.js";
 import { flushPendingClientRecomputes } from "./masterEngineService.js";
 
 /**
@@ -736,10 +741,24 @@ function indexSuiteResultsByClient_(suiteReport) {
 }
 
 async function runFullActiveClientsParityCheck_() {
-  const phase4Schema = await checkPhase4MasterSchemaStatus().catch(() => ({ schemaReady: false }));
+  const [phase4Schema, phase4ReconSchema] = await Promise.all([
+    checkPhase4MasterSchemaStatus().catch(() => ({ schemaReady: false })),
+    checkPhase4ReconSchemaStatus().catch(() => ({ schemaReady: false })),
+  ]);
   const phase4Ready = Boolean(phase4Schema?.schemaReady);
+  const phase4ReconReady = Boolean(phase4ReconSchema?.schemaReady);
 
-  const [sheetReport, jobsDbRep, inputsDbRep, jobsReadRep, inputsReadRep, masterDbRep, masterReadRep] = await Promise.all([
+  const [
+    sheetReport,
+    jobsDbRep,
+    inputsDbRep,
+    jobsReadRep,
+    inputsReadRep,
+    masterDbRep,
+    masterReadRep,
+    reconDbRep,
+    reconReadRep,
+  ] = await Promise.all([
     verifyBridgedClientsParity({
       includePureSupabase: true,
       settleOnMismatch: true,
@@ -755,6 +774,12 @@ async function runFullActiveClientsParityCheck_() {
     phase4Ready
       ? verifyRelationalMasterReadParity({ source: "db", onlyReadEnabled: true }).catch(() => ({ results: [] }))
       : Promise.resolve({ results: [] }),
+    phase4ReconReady
+      ? verifyRelationalReconParity({ source: "db", onlyReconEnabled: true }).catch(() => ({ results: [] }))
+      : Promise.resolve({ results: [] }),
+    phase4ReconReady
+      ? verifyRelationalReconReadParity({ source: "db", onlyReadEnabled: true }).catch(() => ({ results: [] }))
+      : Promise.resolve({ results: [] }),
   ]);
 
   const jobsDbMap = indexSuiteResultsByClient_(jobsDbRep);
@@ -763,6 +788,8 @@ async function runFullActiveClientsParityCheck_() {
   const inputsReadMap = indexSuiteResultsByClient_(inputsReadRep);
   const masterDbMap = indexSuiteResultsByClient_(masterDbRep);
   const masterReadMap = indexSuiteResultsByClient_(masterReadRep);
+  const reconDbMap = indexSuiteResultsByClient_(reconDbRep);
+  const reconReadMap = indexSuiteResultsByClient_(reconReadRep);
 
   const activeNames = (sheetReport?.results || []).map((r) => r?.clientName).filter(Boolean);
   const clientsNeedingSettle = [];
@@ -773,13 +800,17 @@ async function runFullActiveClientsParityCheck_() {
     const iRead = inputsReadMap.get(name);
     const mDb = masterDbMap.get(name);
     const mRead = masterReadMap.get(name);
+    const rDb = reconDbMap.get(name);
+    const rRead = reconReadMap.get(name);
     const hasRelIssue =
       (jDb && (jDb.error || !jDb.matched)) ||
       (iDb && (iDb.error || !iDb.matched)) ||
       (jRead && (jRead.error || !jRead.matched)) ||
       (iRead && (iRead.error || !iRead.matched)) ||
       (mDb && (mDb.error || !mDb.matched)) ||
-      (mRead && (mRead.error || !mRead.matched));
+      (mRead && (mRead.error || !mRead.matched)) ||
+      (rDb && (rDb.error || !rDb.matched)) ||
+      (rRead && (rRead.error || !rRead.matched));
     if (hasRelIssue) {
       clientsNeedingSettle.push(name);
     }
@@ -787,7 +818,7 @@ async function runFullActiveClientsParityCheck_() {
 
   if (clientsNeedingSettle.length > 0) {
     await Promise.all(
-      clientsNeedingSettle.map((name) => flushPendingClientRecomputes(null, name).catch(() => {}))
+      clientsNeedingSettle.map((name) => flushPendingClientRecomputes(null, name).catch(() => { }))
     );
     await new Promise((resolve) => setTimeout(resolve, 2500));
 
@@ -799,47 +830,63 @@ async function runFullActiveClientsParityCheck_() {
       const iRead = inputsReadMap.get(name);
       const mDb = masterDbMap.get(name);
       const mRead = masterReadMap.get(name);
+      const rDb = reconDbMap.get(name);
+      const rRead = reconReadMap.get(name);
 
       if (jDb && (jDb.error || !jDb.matched)) {
         retries.push(
           verifyRelationalJobsParity({ clientName: name, source: "db" })
             .then((r) => { if (r?.results?.[0]) jobsDbMap.set(name, r.results[0]); })
-            .catch(() => {})
+            .catch(() => { })
         );
       }
       if (iDb && (iDb.error || !iDb.matched)) {
         retries.push(
           verifyRelationalInputsParity({ clientName: name, source: "db" })
             .then((r) => { if (r?.results?.[0]) inputsDbMap.set(name, r.results[0]); })
-            .catch(() => {})
+            .catch(() => { })
         );
       }
       if (jRead && (jRead.error || !jRead.matched)) {
         retries.push(
           verifyRelationalJobsReadParity({ clientName: name })
             .then((r) => { if (r?.results?.[0]) jobsReadMap.set(name, r.results[0]); })
-            .catch(() => {})
+            .catch(() => { })
         );
       }
       if (iRead && (iRead.error || !iRead.matched)) {
         retries.push(
           verifyRelationalInputsReadParity({ clientName: name })
             .then((r) => { if (r?.results?.[0]) inputsReadMap.set(name, r.results[0]); })
-            .catch(() => {})
+            .catch(() => { })
         );
       }
       if (mDb && (mDb.error || !mDb.matched)) {
         retries.push(
           verifyRelationalMasterParity({ clientName: name, source: "db", onlyIngestionEnabled: true })
             .then((r) => { if (r?.results?.[0]) masterDbMap.set(name, r.results[0]); })
-            .catch(() => {})
+            .catch(() => { })
         );
       }
       if (mRead && (mRead.error || !mRead.matched)) {
         retries.push(
           verifyRelationalMasterReadParity({ clientName: name, source: "db", onlyReadEnabled: true })
             .then((r) => { if (r?.results?.[0]) masterReadMap.set(name, r.results[0]); })
-            .catch(() => {})
+            .catch(() => { })
+        );
+      }
+      if (rDb && (rDb.error || !rDb.matched)) {
+        retries.push(
+          verifyRelationalReconParity({ clientName: name, source: "db", onlyReconEnabled: true })
+            .then((r) => { if (r?.results?.[0]) reconDbMap.set(name, r.results[0]); })
+            .catch(() => { })
+        );
+      }
+      if (rRead && (rRead.error || !rRead.matched)) {
+        retries.push(
+          verifyRelationalReconReadParity({ clientName: name, source: "db", onlyReadEnabled: true })
+            .then((r) => { if (r?.results?.[0]) reconReadMap.set(name, r.results[0]); })
+            .catch(() => { })
         );
       }
       if (retries.length > 0) await Promise.all(retries);
@@ -856,6 +903,8 @@ async function runFullActiveClientsParityCheck_() {
     const iRead = inputsReadMap.get(name) || null;
     const mDb = masterDbMap.get(name) || null;
     const mRead = masterReadMap.get(name) || null;
+    const rDb = reconDbMap.get(name) || null;
+    const rRead = reconReadMap.get(name) || null;
 
     const suites = [
       { label: "Jobs DB", rec: jDb, isRead: false },
@@ -864,6 +913,8 @@ async function runFullActiveClientsParityCheck_() {
       { label: "Inputs API read", rec: iRead, isRead: true },
       { label: "Master DB", rec: mDb, isRead: false },
       { label: "Master SQL read", rec: mRead, isRead: false },
+      { label: "Recon DB", rec: rDb, isRead: false },
+      { label: "Recon SQL read", rec: rRead, isRead: false },
     ];
 
     const relDiffs = [];
@@ -897,6 +948,8 @@ async function runFullActiveClientsParityCheck_() {
       relationalInputsReadMatched: iRead ? Boolean(iRead.matched && !iRead.error) : true,
       relationalMasterDbMatched: mDb ? Boolean(mDb.matched && !mDb.error) : true,
       relationalMasterReadMatched: mRead ? Boolean(mRead.matched && !mRead.error) : true,
+      relationalReconDbMatched: rDb ? Boolean(rDb.matched && !rDb.error) : true,
+      relationalReconReadMatched: rRead ? Boolean(rRead.matched && !rRead.error) : true,
       totalMismatchCount,
       sampleMismatches,
     };

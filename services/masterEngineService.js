@@ -46,11 +46,7 @@ const STAGE4_TABLES = [
   { name: "client_cash_balances", label: "Actual & forecast cash balances (Cash)" },
 ];
 
-const PAUSED_STAGE2_MIRROR_TABLES = new Set([
-  "bank_recon_periods",
-  "bank_recon_items",
-  "bank_recon_learning_map",
-]);
+const PAUSED_STAGE2_MIRROR_TABLES = new Set();
 
 export function shouldSyncNormalizedMirrorTables() {
   const v = String(process.env.PULSE_SYNC_NORMALIZED_MIRROR_TABLES || "").trim().toLowerCase();
@@ -438,7 +434,12 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
         try {
           let { data, error } = await supabase
             .from("clients")
-            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+          if (error && (String(error.message || "").includes("recon_mode") || String(error.message || "").includes("recon_read_mode"))) {
+            ({ data, error } = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"));
+          }
           if (error && (String(error.message || "").includes("master_ingestion_mode") || String(error.message || "").includes("master_read_mode"))) {
             ({ data, error } = await supabase
               .from("clients")
@@ -495,6 +496,12 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                   ? "relational"
                   : "grid",
                 masterReadMode: String(row.master_read_mode || row.metadata?.master_read_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
+                reconMode: String(row.recon_mode || row.metadata?.recon_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
+                reconReadMode: String(row.recon_read_mode || row.metadata?.recon_read_mode || "grid").trim().toLowerCase() === "relational"
                   ? "relational"
                   : "grid",
                 sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
@@ -1096,10 +1103,10 @@ async function getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi 
 export function recomputeReconTabFormulasSync_(grid) {
   if (!Array.isArray(grid) || grid.length < 3) return;
 
-  // 1. Recompute U3:X17 from bank transactions A3:Q200
+  // 1. Recompute U3:X17 from bank transactions A3:Q (unbounded rows)
   // Col I (index 8): OutAmount, Col J (index 9): InAmount, Col Q (index 16): Category
   const categoryTotals = new Map();
-  const maxTxRow = Math.min(grid.length, 200);
+  const maxTxRow = grid.length;
   for (let r = 2; r < maxTxRow; r++) {
     const row = grid[r] || [];
     const cat = String(row[16] || "").trim().toLowerCase();
@@ -1150,24 +1157,30 @@ export function recomputeReconTabFormulasSync_(grid) {
     grid[16] = row17;
   }
 
-  // 2. Recompute CZ3:DA60 from unreconciled items CD4:CN60
+  // 2. Recompute CP (col 93) & CZ3:DA from unreconciled items CD4:CN (unbounded rows)
   const da1Val = String(grid[0]?.[104] || "").trim().toLowerCase();
   const isQb = da1Val.includes("quick");
   const mult = isQb ? -1 : 1;
 
   const plCategorySums = new Map();
-  const maxUnrecRow = Math.min(grid.length, 60);
+  const maxUnrecRow = grid.length;
   for (let r = 3; r < maxUnrecRow; r++) {
     const row = grid[r] || [];
     const cat = String(row[90] || "").trim().toLowerCase();
-    if (!cat) continue;
-    const rawAmt = parseFloat(String(row[86] || "0").replace(/[£,\s]/g, "")) || 0;
+    const rawAmtStr = String(row[86] ?? "").trim();
+    if (!cat && !rawAmtStr) continue;
+    const rawAmt = parseFloat(rawAmtStr.replace(/[£,\s]/g, "")) || 0;
     const vatApplies = String(row[91] || "").trim().toLowerCase() === "yes";
     const cpVal = -(vatApplies ? rawAmt / 1.2 : rawAmt);
-    plCategorySums.set(cat, (plCategorySums.get(cat) || 0) + cpVal);
+    while (row.length < 94) row.push("");
+    row[93] = Math.round(cpVal * 100) / 100;
+    grid[r] = row;
+    if (cat) {
+      plCategorySums.set(cat, (plCategorySums.get(cat) || 0) + cpVal);
+    }
   }
 
-  for (let r = 2; r < Math.min(grid.length, 60); r++) {
+  for (let r = 2; r < Math.min(grid.length, 120); r++) {
     const row = grid[r] || [];
     const czCat = String(row[103] || "").trim();
     if (!czCat) continue;
@@ -2267,6 +2280,36 @@ async function syncPhase4MasterIngestionIfEnabled_(ctx, tabNames = []) {
   }
 }
 
+async function syncPhase4ReconIfEnabled_(ctx, tabNames = [], { deletedMonthKeys = [] } = {}) {
+  if (!ctx) return;
+  try {
+    const {
+      isManagedReconTab,
+      invalidateClientRelationalReconCache,
+      reconcileClientReconFromGrids,
+      deleteClientReconPeriod,
+    } = await import("./relationalReconService.js");
+    invalidateClientRelationalReconCache(ctx.clientName);
+    if (ctx.reconMode !== "relational") return;
+
+    const cleanDeleted = [...new Set((deletedMonthKeys || []).map((t) => String(t || "").trim()).filter(Boolean))];
+    for (const delTab of cleanDeleted) {
+      if (/^\d{4}$/.test(delTab)) {
+        await deleteClientReconPeriod(ctx, delTab).catch((err) =>
+          console.warn(`[masterEngineService] Phase 4C delete recon period warning (${ctx.clientName}/${delTab}):`, err?.message)
+        );
+      }
+    }
+
+    const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).map((t) => String(t || "").trim()).filter((t) => isManagedReconTab(t)))];
+    if (relevant.length > 0) {
+      await reconcileClientReconFromGrids(ctx, relevant);
+    }
+  } catch (err) {
+    console.warn(`[masterEngineService] Phase 4C relational recon reconciliation warning (${ctx.clientName}):`, err?.message);
+  }
+}
+
 async function recomputeAndPersistImmediateClientTabs_(
   ctx,
   targetTabNames,
@@ -3071,6 +3114,26 @@ export async function handleVirtualSheetsCall({
         console.warn(`[masterEngineService] Relational master read fallback for ${ctx.clientName}/${parsed.tabName}:`, relErr?.message);
         rec = null;
       }
+    } else if (
+      sheetRole === "recon" &&
+      ctx.reconReadMode === "relational" &&
+      !isFormulaReq
+    ) {
+      try {
+        const {
+          isManagedReconTab,
+          preloadClientRelationalReconBundle,
+          reconstructRelationalReconTabFromBundle,
+        } = await import("./relationalReconService.js");
+        if (isManagedReconTab(parsed.tabName)) {
+          const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
+          const reconstructed = reconstructRelationalReconTabFromBundle(bundle, parsed.tabName);
+          if (reconstructed) rec = reconstructed;
+        }
+      } catch (relErr) {
+        console.warn(`[masterEngineService] Relational recon read fallback for ${ctx.clientName}/${parsed.tabName}:`, relErr?.message);
+        rec = null;
+      }
     }
     if (!rec) {
       rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi, {
@@ -3248,6 +3311,25 @@ export async function handleVirtualSheetsCall({
           console.warn(`[masterEngineService] Relational master batchGet fallback for ${ctx.clientName}:`, relErr?.message);
         }
       }
+      if (sheetRole === "recon" && ctx.reconReadMode === "relational" && !isFormulaReq) {
+        try {
+          const {
+            isManagedReconTab,
+            preloadClientRelationalReconBundle,
+            reconstructRelationalReconTabFromBundle,
+          } = await import("./relationalReconService.js");
+          const managedTabs = uniqueTabs.filter((t) => isManagedReconTab(t));
+          if (managedTabs.length > 0) {
+            const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
+            for (const t of managedTabs) {
+              const reconstructed = reconstructRelationalReconTabFromBundle(bundle, t);
+              if (reconstructed) byTab.set(t, reconstructed);
+            }
+          }
+        } catch (relErr) {
+          console.warn(`[masterEngineService] Relational recon batchGet fallback for ${ctx.clientName}:`, relErr?.message);
+        }
+      }
       const uncachedTabs = [];
       const inFlightWaits = [];
       for (const t of uniqueTabs) {
@@ -3422,6 +3504,8 @@ export async function handleVirtualSheetsCall({
       }
       await syncPhase4MasterIngestionIfEnabled_(ctx, [parsed.tabName]);
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, [{ range: rangeStr, values: incomingValues }]);
+    } else if (sheetRole === "recon") {
+      await syncPhase4ReconIfEnabled_(ctx, [parsed.tabName]);
     } else if (sheetRole === "client") {
       if (isNonFormulaKeyInfoOnly) {
         await import("./cacheService.js")
@@ -3542,6 +3626,8 @@ export async function handleVirtualSheetsCall({
       }
       await syncPhase4MasterIngestionIfEnabled_(ctx, actuallyChangedTabs);
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, dataItems);
+    } else if (sheetRole === "recon" && actuallyChangedTabs.length > 0) {
+      await syncPhase4ReconIfEnabled_(ctx, actuallyChangedTabs);
     } else if (sheetRole === "client") {
       const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
       const hasWork = actuallyChangedTabs.length > 0 || (pendingSet && pendingSet.size > 0);
@@ -3632,7 +3718,9 @@ export async function handleVirtualSheetsCall({
       memoryOnly: isDeferredClientSave,
     });
 
-    if (sheetRole === "client") {
+    if (sheetRole === "recon") {
+      await syncPhase4ReconIfEnabled_(ctx, [parsed.tabName]);
+    } else if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
         queuePendingClientTabs_(ctx, [parsed.tabName], {
           isSkippedStep: true,
@@ -3720,6 +3808,8 @@ export async function handleVirtualSheetsCall({
         );
       }
       await syncPhase4MasterIngestionIfEnabled_(ctx, clearedMasterTabs);
+    } else if (sheetRole === "recon") {
+      await syncPhase4ReconIfEnabled_(ctx, [...byTabClears.keys()]);
     }
 
     return {
@@ -3801,57 +3891,104 @@ export async function handleVirtualSheetsCall({
           allTabs.push(r);
         }
       }
-    } else if (includeGridData && targetTabNames && targetTabNames.size > 0) {
-      const fieldsStr = String(params.fields || "");
-      const wantsAllProperties = !fieldsStr || fieldsStr.includes("properties");
-      const targetList = [...targetTabNames];
-      const [gridRes, metaRes] = await Promise.all([
-        supabase
-          .from("master_sheet_grids")
-          .select("tab_name, row_count, col_count, values_grid, notes_grid")
-          .eq("client_name", ctx.clientName)
-          .eq("sheet_role", sheetRole)
-          .in("tab_name", targetList),
-        wantsAllProperties
-          ? supabase
+    } else {
+      let reconResolvedFromSql = false;
+      if (sheetRole === "recon" && ctx.reconReadMode === "relational") {
+        try {
+          const {
+            isManagedReconTab,
+            preloadClientRelationalReconBundle,
+            reconstructRelationalReconTabFromBundle,
+          } = await import("./relationalReconService.js");
+          const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
+          const tabListMeta = Array.isArray(bundle?.config?.tab_list) ? bundle.config.tab_list : [];
+          if (bundle && (tabListMeta.length > 0 || bundle.periods.length > 0)) {
+            if (!includeGridData) {
+              if (tabListMeta.length > 0) {
+                allTabs = tabListMeta.map((t) => ({
+                  tab_name: t.tab_name,
+                  row_count: t.row_count || 0,
+                  col_count: t.col_count || 0,
+                }));
+                reconResolvedFromSql = true;
+              }
+            } else if (targetTabNames && targetTabNames.size > 0) {
+              const fieldsStr = String(params.fields || "");
+              const wantsAllProperties = !fieldsStr || fieldsStr.includes("properties");
+              const targetList = [...targetTabNames];
+              if (targetList.every((t) => isManagedReconTab(t))) {
+                const gridByTab = new Map();
+                for (const tName of targetList) {
+                  const reconstructed = reconstructRelationalReconTabFromBundle(bundle, tName);
+                  if (reconstructed) gridByTab.set(tName, reconstructed);
+                }
+                if (gridByTab.size === targetList.length) {
+                  if (wantsAllProperties && tabListMeta.length > 0) {
+                    allTabs = tabListMeta.map((m) => gridByTab.get(m.tab_name) || { ...m, formulas_grid: [] });
+                  } else {
+                    allTabs = [...gridByTab.values()];
+                  }
+                  reconResolvedFromSql = true;
+                }
+              }
+            } else if (tabListMeta.length > 0 && tabListMeta.every((t) => isManagedReconTab(t.tab_name))) {
+              allTabs = tabListMeta
+                .map((t) => reconstructRelationalReconTabFromBundle(bundle, t.tab_name))
+                .filter(Boolean);
+              reconResolvedFromSql = allTabs.length === tabListMeta.length;
+            }
+          }
+        } catch (relErr) {
+          console.warn(`[masterEngineService] Relational recon spreadsheets.get fallback for ${ctx.clientName}:`, relErr?.message);
+        }
+      }
+
+      if (!reconResolvedFromSql) {
+        if (includeGridData && targetTabNames && targetTabNames.size > 0) {
+          const fieldsStr = String(params.fields || "");
+          const wantsAllProperties = !fieldsStr || fieldsStr.includes("properties");
+          const targetList = [...targetTabNames];
+          const [gridRes, metaRes] = await Promise.all([
+            supabase
+              .from("master_sheet_grids")
+              .select("tab_name, row_count, col_count, values_grid, notes_grid")
+              .eq("client_name", ctx.clientName)
+              .eq("sheet_role", sheetRole)
+              .in("tab_name", targetList),
+            wantsAllProperties
+              ? supabase
+                .from("master_sheet_grids")
+                .select("tab_name, row_count, col_count")
+                .eq("client_name", ctx.clientName)
+                .eq("sheet_role", sheetRole)
+                .order("tab_name", { ascending: true })
+              : Promise.resolve({ data: [] }),
+          ]);
+          const gridByTab = new Map();
+          for (const r of gridRes.data || []) {
+            r.values_grid = compactGrid2D(r.values_grid || []);
+            r.formulas_grid = r.values_grid;
+            gridByTab.set(r.tab_name, r);
+          }
+          if (wantsAllProperties && Array.isArray(metaRes.data) && metaRes.data.length > 0) {
+            allTabs = metaRes.data.map((m) => gridByTab.get(m.tab_name) || { ...m, formulas_grid: [] });
+          } else {
+            allTabs = [...gridByTab.values()];
+          }
+        } else {
+          const selectCols = includeGridData
+            ? "tab_name, row_count, col_count, values_grid, notes_grid"
+            : "tab_name, row_count, col_count";
+          const { data: tabRows } = await supabase
             .from("master_sheet_grids")
-            .select("tab_name, row_count, col_count")
+            .select(selectCols)
             .eq("client_name", ctx.clientName)
             .eq("sheet_role", sheetRole)
-            .order("tab_name", { ascending: true })
-          : Promise.resolve({ data: [] }),
-      ]);
-      const gridByTab = new Map();
-      for (const r of gridRes.data || []) {
-        r.values_grid = compactGrid2D(r.values_grid || []);
-        r.formulas_grid = r.values_grid;
-        gridByTab.set(r.tab_name, r);
+            .order("tab_name", { ascending: true });
+          allTabs = (tabRows || []).map((r) => ({ ...r, formulas_grid: r.values_grid }));
+        }
       }
-      if (wantsAllProperties && Array.isArray(metaRes.data) && metaRes.data.length > 0) {
-        allTabs = metaRes.data.map((m) => gridByTab.get(m.tab_name) || { ...m, formulas_grid: [] });
-      } else {
-        allTabs = [...gridByTab.values()];
-      }
-      if (sheetRole === "recon") {
-        allTabs.sort((a, b) => {
-          const aIsMonth = /^\d{4}$/.test(a.tab_name);
-          const bIsMonth = /^\d{4}$/.test(b.tab_name);
-          if (aIsMonth && bIsMonth) return b.tab_name.localeCompare(a.tab_name);
-          if (aIsMonth !== bIsMonth) return aIsMonth ? -1 : 1;
-          return a.tab_name.localeCompare(b.tab_name);
-        });
-      }
-    } else {
-      const selectCols = includeGridData
-        ? "tab_name, row_count, col_count, values_grid, notes_grid"
-        : "tab_name, row_count, col_count";
-      const { data: tabRows } = await supabase
-        .from("master_sheet_grids")
-        .select(selectCols)
-        .eq("client_name", ctx.clientName)
-        .eq("sheet_role", sheetRole)
-        .order("tab_name", { ascending: true });
-      allTabs = (tabRows || []).map((r) => ({ ...r, formulas_grid: r.values_grid }));
+
       if (sheetRole === "recon") {
         allTabs.sort((a, b) => {
           const aIsMonth = /^\d{4}$/.test(a.tab_name);
@@ -4061,6 +4198,7 @@ export async function handleVirtualSheetsCall({
     const hasDataOrSheetUpdates = requests.some(
       (req) =>
         req.updateSheetProperties?.properties ||
+        req.deleteSheet?.sheetId !== undefined ||
         req.updateCells?.range ||
         isBgRepeatCell_(req) ||
         (req.moveDimension?.source && req.moveDimension.source.dimension === "ROWS") ||
@@ -4135,17 +4273,37 @@ export async function handleVirtualSheetsCall({
     const dirtyTargets = new Map();
     const valueChangedClientTabs = new Set();
     const noteOnlyClientTabs = new Set();
+    const renamedReconTabs = new Set();
+    const deletedReconTabs = new Set();
 
     for (const req of requests) {
       if (req.updateSheetProperties?.properties) {
         const props = req.updateSheetProperties.properties;
         const meta = metaBySheetId.get(props.sheetId);
         if (meta && props.title && props.title !== meta.tab_name) {
+          const oldTabName = meta.tab_name;
           await supabase
             .from("master_sheet_grids")
             .update({ tab_name: props.title })
             .eq("id", meta.id);
           meta.tab_name = props.title;
+          if (sheetRole === "recon") {
+            if (/^\d{4}$/.test(String(oldTabName || "").trim())) {
+              deletedReconTabs.add(oldTabName);
+            }
+            renamedReconTabs.add(props.title);
+          }
+        }
+      } else if (req.deleteSheet?.sheetId !== undefined) {
+        const meta = metaBySheetId.get(req.deleteSheet.sheetId);
+        if (meta) {
+          await supabase.from("master_sheet_grids").delete().eq("id", meta.id);
+          metaBySheetId.delete(req.deleteSheet.sheetId);
+          dirtyTargets.delete(meta.tab_name);
+          if (sheetRole === "recon") {
+            deletedReconTabs.add(meta.tab_name);
+            renamedReconTabs.add("PLAdds");
+          }
         }
       } else if (isBgRepeatCell_(req)) {
         const rng = req.repeatCell.range;
@@ -4456,6 +4614,13 @@ export async function handleVirtualSheetsCall({
             }
           })
           .catch(() => { });
+      }
+    } else if (sheetRole === "recon") {
+      const touchedReconTabs = [...new Set([...dirtyTargets.keys(), ...renamedReconTabs])];
+      if (touchedReconTabs.length > 0 || deletedReconTabs.size > 0) {
+        await syncPhase4ReconIfEnabled_(ctx, touchedReconTabs, {
+          deletedMonthKeys: [...deletedReconTabs],
+        });
       }
     }
 
@@ -6019,48 +6184,74 @@ export async function backfillNormalizedMirrorTablesFromVirtualGrids(clientName 
     }
   }
 
-  const learningPatterns = new Map();
-  for (const row of reconRes.data || []) {
-    if (!/^\d{4}$/.test(String(row.tab_name || "").trim())) continue;
-    const vGrid = Array.isArray(row.values_grid) ? row.values_grid : [];
-    await syncReconPeriodAndItemsFromGrid_(ctx, row.tab_name, vGrid);
-    summary.reconPeriodsCount++;
-    for (let r = 2; r < Math.min(vGrid.length, 200); r++) {
-      const cells = vGrid[r] || [];
-      const payee = String(cells[3] || cells[4] || "").trim().toLowerCase();
-      const cat = String(cells[16] || "").trim();
-      if (payee && cat && !cat.startsWith("#")) {
-        const key = `${payee}:::${cat}`;
-        learningPatterns.set(key, {
-          match_pattern: payee,
-          category: cat,
-          confidence_count: (learningPatterns.get(key)?.confidence_count || 0) + 1,
+  let usedPhase4ReconBackfill = false;
+  try {
+    const {
+      checkPhase4ReconSchemaStatus,
+      isManagedReconTab,
+      reconcileClientReconFromGrids,
+    } = await import("./relationalReconService.js");
+    const stRecon = await checkPhase4ReconSchemaStatus();
+    if (stRecon?.schemaReady) {
+      const reconTabNames = [...new Set((reconRes.data || []).map((r) => String(r.tab_name || "").trim()).filter((t) => isManagedReconTab(t)))];
+      if (reconTabNames.length > 0) {
+        const p4r = await reconcileClientReconFromGrids(ctx, reconTabNames, {
+          forceFullUpsert: true,
+          updateBackfillTimestamp: true,
         });
+        summary.reconPeriodsCount = p4r?.periodsCount ?? reconTabNames.filter((t) => /^\d{4}$/.test(t)).length;
+        summary.learningPatternsCount = p4r?.learningRulesCount ?? 0;
       }
+      usedPhase4ReconBackfill = true;
     }
+  } catch (err) {
+    console.warn(`[masterEngineService] Phase 4C relational recon backfill warning (${ctx.clientName}):`, err?.message);
   }
 
-  if (learningPatterns.size > 0) {
-    const dedupByPattern = new Map();
-    for (const item of learningPatterns.values()) {
-      const existing = dedupByPattern.get(item.match_pattern);
-      if (!existing || item.confidence_count > existing.confidence_count) {
-        dedupByPattern.set(item.match_pattern, {
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          match_pattern: item.match_pattern,
-          category: item.category,
-          confidence_count: item.confidence_count,
-          updated_at: new Date().toISOString(),
-        });
+  if (!usedPhase4ReconBackfill) {
+    const learningPatterns = new Map();
+    for (const row of reconRes.data || []) {
+      if (!/^\d{4}$/.test(String(row.tab_name || "").trim())) continue;
+      const vGrid = Array.isArray(row.values_grid) ? row.values_grid : [];
+      await syncReconPeriodAndItemsFromGrid_(ctx, row.tab_name, vGrid);
+      summary.reconPeriodsCount++;
+      for (let r = 2; r < Math.min(vGrid.length, 200); r++) {
+        const cells = vGrid[r] || [];
+        const payee = String(cells[3] || cells[4] || "").trim().toLowerCase();
+        const cat = String(cells[16] || "").trim();
+        if (payee && cat && !cat.startsWith("#")) {
+          const key = `${payee}:::${cat}`;
+          learningPatterns.set(key, {
+            match_pattern: payee,
+            category: cat,
+            confidence_count: (learningPatterns.get(key)?.confidence_count || 0) + 1,
+          });
+        }
       }
     }
-    const rows = [...dedupByPattern.values()];
-    await supabase.from("bank_recon_learning_map").delete().eq("client_name", ctx.clientName);
-    for (let i = 0; i < rows.length; i += 200) {
-      await supabase.from("bank_recon_learning_map").insert(rows.slice(i, i + 200));
+
+    if (learningPatterns.size > 0) {
+      const dedupByPattern = new Map();
+      for (const item of learningPatterns.values()) {
+        const existing = dedupByPattern.get(item.match_pattern);
+        if (!existing || item.confidence_count > existing.confidence_count) {
+          dedupByPattern.set(item.match_pattern, {
+            client_id: ctx.clientId,
+            client_name: ctx.clientName,
+            match_pattern: item.match_pattern,
+            category: item.category,
+            confidence_count: item.confidence_count,
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
+      const rows = [...dedupByPattern.values()];
+      await supabase.from("bank_recon_learning_map").delete().eq("client_name", ctx.clientName);
+      for (let i = 0; i < rows.length; i += 200) {
+        await supabase.from("bank_recon_learning_map").insert(rows.slice(i, i + 200));
+      }
+      summary.learningPatternsCount = rows.length;
     }
-    summary.learningPatternsCount = rows.length;
   }
 
   const clientMirrorSet = new Set(clientMirrorTabs);
@@ -6086,9 +6277,6 @@ export async function backfillNormalizedMirrorTablesFromVirtualGrids(clientName 
 }
 
 const ALL_PAUSED_MIRROR_TABLES = [
-  "bank_recon_periods",
-  "bank_recon_items",
-  "bank_recon_learning_map",
   "client_jobs",
   "client_outgoings",
   "client_salaries",
@@ -6181,6 +6369,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     phase2JobsStats,
     phase3InputsStats,
     phase4MasterStats,
+    phase4ReconStats,
   ] = await Promise.all([
     Promise.all(
       STAGE2_TABLES.map(async (t) => {
@@ -6204,9 +6393,15 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     (() =>
       supabase
         .from("clients")
-        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
         .order("client_name", { ascending: true })
         .then(async (res) => {
+          if (res.error && (String(res.error.message || "").includes("recon_mode") || String(res.error.message || "").includes("recon_read_mode"))) {
+            res = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+              .order("client_name", { ascending: true });
+          }
           if (res.error && (String(res.error.message || "").includes("master_ingestion_mode") || String(res.error.message || "").includes("master_read_mode"))) {
             res = await supabase
               .from("clients")
@@ -6277,6 +6472,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     import("./relationalMasterService.js")
       .then(({ getPhase4MasterOverviewStats }) =>
         getPhase4MasterOverviewStats()
+      )
+      .catch(() => null),
+    import("./relationalReconService.js")
+      .then(({ getPhase4ReconOverviewStats }) =>
+        getPhase4ReconOverviewStats()
       )
       .catch(() => null),
   ]);
@@ -6386,6 +6586,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         masterIngestionMode: String(c.master_ingestion_mode || c.metadata?.master_ingestion_mode || "grid").trim().toLowerCase(),
         masterReadMode: String(c.master_read_mode || c.metadata?.master_read_mode || "grid").trim().toLowerCase(),
         relationalMasterState: c.metadata?.relational_master_state || null,
+        reconMode: String(c.recon_mode || c.metadata?.recon_mode || "grid").trim().toLowerCase(),
+        reconReadMode: String(c.recon_read_mode || c.metadata?.recon_read_mode || "grid").trim().toLowerCase(),
+        relationalReconState: c.metadata?.relational_recon_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,
@@ -6416,6 +6619,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
   let phase4BackfilledCount = 0;
   let masterIngestionModeClientsCount = 0;
   let masterReadModeClientsCount = 0;
+  let phase4ReconBackfilledCount = 0;
+  let reconModeClientsCount = 0;
+  let reconReadModeClientsCount = 0;
   for (const c of clientsData || []) {
     if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
     if (String(c?.jobs_mode || c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
@@ -6426,6 +6632,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     if (c?.metadata?.relational_master_state?.lastBackfilledAt) phase4BackfilledCount++;
     if (String(c?.master_ingestion_mode || c?.metadata?.master_ingestion_mode || "").trim().toLowerCase() === "relational") masterIngestionModeClientsCount++;
     if (String(c?.master_read_mode || c?.metadata?.master_read_mode || "").trim().toLowerCase() === "relational") masterReadModeClientsCount++;
+    if (c?.metadata?.relational_recon_state?.lastBackfilledAt) phase4ReconBackfilledCount++;
+    if (String(c?.recon_mode || c?.metadata?.recon_mode || "").trim().toLowerCase() === "relational") reconModeClientsCount++;
+    if (String(c?.recon_read_mode || c?.metadata?.recon_read_mode || "").trim().toLowerCase() === "relational") reconReadModeClientsCount++;
   }
 
   return {
@@ -6496,6 +6705,26 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         backfilledClientsCount: phase4BackfilledCount,
         masterIngestionModeClientsCount,
         masterReadModeClientsCount,
+      },
+    phase4Recon: phase4ReconStats
+      ? {
+        ...phase4ReconStats,
+        backfilledClientsCount: phase4ReconBackfilledCount,
+        reconModeClientsCount,
+        reconReadModeClientsCount,
+      }
+      : {
+        schemaReady: false,
+        migrationSql: "",
+        totalPeriods: 0,
+        completedPeriods: 0,
+        totalReconciledItems: 0,
+        totalUnreconciledItems: 0,
+        totalLearningRules: 0,
+        totalReconConfigs: 0,
+        backfilledClientsCount: phase4ReconBackfilledCount,
+        reconModeClientsCount,
+        reconReadModeClientsCount,
       },
   };
 }
@@ -6674,6 +6903,7 @@ export async function getVirtualTabForInspector({
   includeNotes = false,
   trimTrailingEmptyRows = false,
   forceMasterSource = null,
+  forceReconSource = null,
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -6682,6 +6912,7 @@ export async function getVirtualTabForInspector({
   let error = null;
   let staleAgainstClientEdits = false;
   let usedRelationalMaster = false;
+  let usedRelationalRecon = false;
   if (sheetRole === "client") {
     const clientSelectCols = includeFormulas
       ? "sheet_role, tab_name, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
@@ -6785,6 +7016,44 @@ export async function getVirtualTabForInspector({
         console.warn(`[masterEngineService] Inspector relational master fallback for ${clientName}/${tabName}:`, relErr?.message);
       }
     }
+
+    if (sheetRole === "recon" && forceReconSource !== "grid") {
+      try {
+        const {
+          isManagedReconTab,
+          preloadClientRelationalReconBundle,
+          reconstructRelationalReconTabFromBundle,
+        } = await import("./relationalReconService.js");
+        if (isManagedReconTab(tabName)) {
+          const ctx = await resolveSupabaseSheetContext({ clientName });
+          const shouldUseRelationalRecon =
+            forceReconSource === "relational" || (ctx && ctx.reconReadMode === "relational");
+          if (shouldUseRelationalRecon && ctx) {
+            const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
+            const reconTabData = reconstructRelationalReconTabFromBundle(bundle, tabName);
+            if (reconTabData && Array.isArray(reconTabData.values_grid)) {
+              data = {
+                row_count: reconTabData.row_count || reconTabData.values_grid.length,
+                col_count: reconTabData.col_count || 0,
+                values_grid: reconTabData.values_grid,
+                formulas_grid: includeFormulas
+                  ? reconTabData.formulas_grid || reconTabData.values_grid
+                  : undefined,
+                notes_grid:
+                  reconTabData.notes_grid && Object.keys(reconTabData.notes_grid).length > 0
+                    ? reconTabData.notes_grid
+                    : data?.notes_grid || {},
+                updated_at: reconTabData.updated_at || data?.updated_at || new Date().toISOString(),
+              };
+              error = null;
+              usedRelationalRecon = true;
+            }
+          }
+        }
+      } catch (relErr) {
+        console.warn(`[masterEngineService] Inspector relational recon fallback for ${clientName}/${tabName}:`, relErr?.message);
+      }
+    }
   }
 
   if (error) throw new Error(error.message);
@@ -6801,7 +7070,7 @@ export async function getVirtualTabForInspector({
       ...(includeNotes ? { notesGrid: {} } : {}),
       staleAgainstClientEdits: false,
       updatedAt: null,
-      readSource: usedRelationalMaster ? "relational" : "grid",
+      readSource: usedRelationalMaster || usedRelationalRecon ? "relational" : "grid",
     };
   }
 
@@ -6869,7 +7138,7 @@ export async function getVirtualTabForInspector({
     ...(includeNotes ? { notesGrid: data.notes_grid || {} } : {}),
     staleAgainstClientEdits,
     updatedAt: data.updated_at,
-    readSource: usedRelationalMaster ? "relational" : "grid",
+    readSource: usedRelationalMaster || usedRelationalRecon ? "relational" : "grid",
   };
 }
 
@@ -6941,6 +7210,8 @@ export async function updateVirtualTabCellsFromInspector({
     if (sheets && masterMirrorRanges.length > 0) {
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, sheets, masterMirrorRanges);
     }
+  } else if (sheetRole === "recon") {
+    await syncPhase4ReconIfEnabled_(ctx, [tabName]);
   } else if (sheetRole === "client") {
     await recomputeClientFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
   }

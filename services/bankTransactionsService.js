@@ -1137,6 +1137,20 @@ export async function buildLearningMapFromReconSheet(reconSheetId, sheetsClient)
   if (!reconSheetId) return learningMap;
 
   try {
+    const { resolveSupabaseSheetContext } = await import("./masterEngineService.js");
+    const ctx = await resolveSupabaseSheetContext({ spreadsheetId: reconSheetId });
+    if (ctx && ctx.reconReadMode === "relational") {
+      try {
+        const { loadRelationalLearningMap } = await import("./relationalReconService.js");
+        const relMap = await loadRelationalLearningMap(ctx, { source: "db" });
+        if (relMap && relMap.size > 0) return relMap;
+      } catch (relErr) {
+        console.warn(`[bankTransactionsService] Relational learning map fallback (${ctx.clientName}):`, relErr?.message);
+      }
+    }
+  } catch (_) { }
+
+  try {
     const meta = await withRetry(() => sheetsClient.spreadsheets.get({
       spreadsheetId: reconSheetId,
       fields: "sheets.properties.title"

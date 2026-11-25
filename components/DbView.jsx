@@ -144,9 +144,12 @@ export default function DbView({
   const [relationalInputsReadParityReport, setRelationalInputsReadParityReport] = useState(null);
   const [relationalMasterParityReport, setRelationalMasterParityReport] = useState(null);
   const [relationalMasterReadParityReport, setRelationalMasterReadParityReport] = useState(null);
+  const [relationalReconParityReport, setRelationalReconParityReport] = useState(null);
+  const [relationalReconReadParityReport, setRelationalReconReadParityReport] = useState(null);
   const [copied0012Sql, setCopied0012Sql] = useState(false);
   const [copied0013Sql, setCopied0013Sql] = useState(false);
   const [copied0014Sql, setCopied0014Sql] = useState(false);
+  const [copied0015Sql, setCopied0015Sql] = useState(false);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -984,6 +987,146 @@ export default function DbView({
         return {
           type: "success",
           text: `Switched ${targetClient} Master read source to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleBackfillRelationalRecon = (allClients = false, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      allClients ? "backfill_recon_all" : `backfill_recon_${targetClient}`,
+      allClients
+        ? "Backfilling relational bank reconciliation tables across all clients..."
+        : `Backfilling relational bank reconciliation tables for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "backfill_relational_recon",
+            allClients,
+            clientName: targetClient,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 4C relational recon backfill failed.");
+        if (data.status) setStage2Data(data.status);
+        const s = data.summary || {};
+        return {
+          type: "success",
+          text: allClients
+            ? `Backfilled Phase 4C bank recon across ${s.clientsProcessed || 0} client(s) (${s.periodsCount || 0} periods, ${(s.reconciledItemsCount || 0) + (s.unreconciledItemsCount || 0)} items, ${s.learningRulesCount || 0} learning entries).`
+            : `Backfilled ${targetClient}: ${s.periodsCount ?? 0} periods, ${(s.reconciledItemsCount ?? 0) + (s.unreconciledItemsCount ?? 0)} items, ${s.learningRulesCount ?? 0} learning entries.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyRelationalReconParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_recon_parity",
+      "Checking 100% parity across all bank reconciliation period tabs, items, learning maps, and config tabs...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_recon_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 4C relational recon parity check failed.");
+        const r = data.parityReport || {};
+        setRelationalReconParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Checked ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientReconMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_recon_mode_${nextMode}`,
+      `Switching ${targetClient} bank recon write engine to ${nextMode === "relational" ? "relational SQL" : "virtual grid"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_recon_mode",
+            clientName: targetClient,
+            reconMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update bank recon write mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} bank recon write mode to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyRelationalReconReadParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_recon_read_parity",
+      "Verifying SQL bank recon period & learning map read parity...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_recon_read_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 4C bank recon SQL read parity check failed.");
+        const r = data.parityReport || {};
+        setRelationalReconReadParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Bank recon SQL read parity verified across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientReconReadMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_recon_read_mode_${nextMode}`,
+      `Switching ${targetClient} bank recon read source to ${nextMode === "relational" ? "relational SQL" : "virtual grid"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_recon_read_mode",
+            clientName: targetClient,
+            reconReadMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update bank recon read mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} bank recon read source to ${nextMode}.`,
         };
       }
     );
@@ -4707,6 +4850,380 @@ export default function DbView({
                       }}
                     >
                       {`${r.clientName}: ${r.matched ? `${r.invoicesCount || 0}i/${r.directCostsCount || 0}d/${r.plLinesCount || 0}p/${r.crmDealsCount || 0}c/${r.timeEntriesCount || 0}t (${r.source})` : r.error || `${r.totalMismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SECTION 4c: Relational bank reconciliation engine (Phase 4C) */}
+          <div style={cardStyle}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "12px",
+                flexWrap: "wrap",
+                marginBottom: "10px",
+              }}
+            >
+              <div>
+                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                  Relational bank reconciliation engine (Phase 4C)
+                </h2>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  SQL-native monthly reconciliation periods, bank transaction items, unreconciled items, auto-categorization learning maps, and recon configuration tables.
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: stage2Data?.phase4Recon?.schemaReady ? "#dcfce7" : "#fef3c7",
+                    color: stage2Data?.phase4Recon?.schemaReady ? "#166534" : "#92400e",
+                  }}
+                >
+                  {stage2Data?.phase4Recon?.schemaReady ? "Schema ready (0015)" : "Migration 0015 required"}
+                </span>
+                {stage2Data?.phase4Recon?.schemaReady && (
+                  <span
+                    style={{
+                      padding: "3px 9px",
+                      borderRadius: "999px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      background: "#eff6ff",
+                      color: "#1e40af",
+                    }}
+                  >
+                    {`${stage2Data.phase4Recon.reconModeClientsCount || 0} relational · ${stage2Data.phase4Recon.reconReadModeClientsCount || 0} SQL reads · ${stage2Data.phase4Recon.backfilledClientsCount || 0}/${allClients.length} backfilled`}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {!stage2Data?.phase4Recon?.schemaReady && stage2Data?.phase4Recon?.migrationSql && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                  fontSize: "12px",
+                  color: "#92400e",
+                }}
+              >
+                <span>
+                  Run migration 0015 in the Supabase SQL editor to upgrade bank_recon_periods, bank_recon_items, and bank_recon_learning_map and create pulse_recon_configs.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.clipboard) {
+                      navigator.clipboard.writeText(stage2Data.phase4Recon.migrationSql);
+                      setCopied0015Sql(true);
+                      setTimeout(() => setCopied0015Sql(false), 2500);
+                    }
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #f59e0b",
+                    background: "#ffffff",
+                    color: "#92400e",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copied0015Sql ? "Copied migration 0015 SQL" : "Copy migration 0015 SQL"}
+                </button>
+              </div>
+            )}
+
+            {stage2Data?.phase4Recon?.schemaReady && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                  gap: "8px",
+                  marginBottom: "12px",
+                }}
+              >
+                {[
+                  { label: "Recon periods", value: stage2Data.phase4Recon.totalPeriods || 0 },
+                  { label: "Completed periods", value: stage2Data.phase4Recon.completedPeriods || 0 },
+                  { label: "Bank transactions", value: stage2Data.phase4Recon.totalReconciledItems || 0 },
+                  { label: "Unreconciled items", value: stage2Data.phase4Recon.totalUnreconciledItems || 0 },
+                  { label: "Learning rules", value: stage2Data.phase4Recon.totalLearningRules || 0 },
+                  { label: "Recon configs", value: stage2Data.phase4Recon.totalReconConfigs || 0 },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                    }}
+                  >
+                    <div style={{ fontSize: "11px", color: "#64748b" }}>{stat.label}</div>
+                    <div style={{ fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                      {Number(stat.value).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                disabled={!stage2Data?.phase4Recon?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalRecon(false, activeClientName)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase4Recon?.schemaReady ? "#f3f4f6" : "#ffffff",
+                  color: !stage2Data?.phase4Recon?.schemaReady ? "#9ca3af" : "#1e293b",
+                  cursor: !stage2Data?.phase4Recon?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === `backfill_recon_${activeClientName}` && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill ${activeClientName}`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase4Recon?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalRecon(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase4Recon?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase4Recon?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase4Recon?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase4Recon?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "backfill_recon_all" && (
+                  <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill all clients (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyRelationalReconParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_recon_parity" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
+                <span>{`Verify recon parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase4Recon?.schemaReady || isBusy}
+                onClick={() =>
+                  handleSetClientReconMode(
+                    activeClientObj?.reconMode === "relational" ? "grid" : "relational",
+                    activeClientName
+                  )
+                }
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase4Recon?.schemaReady
+                    ? "#f3f4f6"
+                    : activeClientObj?.reconMode === "relational"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+                  borderColor: !stage2Data?.phase4Recon?.schemaReady
+                    ? "#cbd5e1"
+                    : activeClientObj?.reconMode === "relational"
+                      ? "#fecaca"
+                      : "#86efac",
+                  color: !stage2Data?.phase4Recon?.schemaReady
+                    ? "#9ca3af"
+                    : activeClientObj?.reconMode === "relational"
+                      ? "#b91c1c"
+                      : "#166534",
+                  cursor: !stage2Data?.phase4Recon?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.reconMode === "relational"
+                    ? `Revert ${activeClientName} to grid recon`
+                    : `Switch ${activeClientName} to relational recon`}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyRelationalReconReadParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_recon_read_parity" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Verify recon SQL read parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={
+                  !stage2Data?.phase4Recon?.schemaReady ||
+                  activeClientObj?.reconMode !== "relational" ||
+                  isBusy
+                }
+                onClick={() =>
+                  handleSetClientReconReadMode(
+                    activeClientObj?.reconReadMode === "relational" ? "grid" : "relational",
+                    activeClientName
+                  )
+                }
+                style={{
+                  ...actionBtnBase,
+                  background:
+                    !stage2Data?.phase4Recon?.schemaReady || activeClientObj?.reconMode !== "relational"
+                      ? "#f3f4f6"
+                      : activeClientObj?.reconReadMode === "relational"
+                        ? "#fef2f2"
+                        : "#eff6ff",
+                  borderColor:
+                    !stage2Data?.phase4Recon?.schemaReady || activeClientObj?.reconMode !== "relational"
+                      ? "#cbd5e1"
+                      : activeClientObj?.reconReadMode === "relational"
+                        ? "#fecaca"
+                        : "#93c5fd",
+                  color:
+                    !stage2Data?.phase4Recon?.schemaReady || activeClientObj?.reconMode !== "relational"
+                      ? "#9ca3af"
+                      : activeClientObj?.reconReadMode === "relational"
+                        ? "#b91c1c"
+                        : "#1e40af",
+                  cursor:
+                    !stage2Data?.phase4Recon?.schemaReady || activeClientObj?.reconMode !== "relational"
+                      ? "not-allowed"
+                      : isBusy
+                        ? "wait"
+                        : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.reconReadMode === "relational"
+                    ? `Revert ${activeClientName} to grid reads`
+                    : `Switch ${activeClientName} to SQL recon reads`}
+                </span>
+              </button>
+            </div>
+
+            {relationalReconReadParityReport && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${relationalReconReadParityReport.mismatchClientsCount > 0 || relationalReconReadParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Relational bank recon SQL read parity (${formatTimestamp(relationalReconReadParityReport.checkedAt)}) — ${relationalReconReadParityReport.matchedClientsCount || 0} of ${relationalReconReadParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setRelationalReconReadParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(relationalReconReadParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || (r.matched ? `100% match across ${r.periodsCount || 0} period tabs, learning map (${r.learningRulesCount || 0}), and config tabs (${r.source})` : JSON.stringify(r.sampleMismatches || []))}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `${r.periodsCount || 0}m / ${r.learningRulesCount || 0}l (${r.source})` : r.error || `${r.mismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {relationalReconParityReport && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${relationalReconParityReport.mismatchClientsCount > 0 || relationalReconParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Relational bank recon parity (${formatTimestamp(relationalReconParityReport.checkedAt)}) — ${relationalReconParityReport.matchedClientsCount || 0} of ${relationalReconParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setRelationalReconParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(relationalReconParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || `Periods: ${r.periodsCount}, Items: ${(r.reconciledItemsCount || 0) + (r.unreconciledItemsCount || 0)}, Learning: ${r.learningRulesCount} (${r.source})`}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `${r.periodsCount || 0}m/${(r.reconciledItemsCount || 0) + (r.unreconciledItemsCount || 0)}it/${r.learningRulesCount || 0}l (${r.source})` : r.error || `${r.totalMismatchCount || r.mismatchCount} diff(s)`}`}
                     </span>
                   ))}
                 </div>

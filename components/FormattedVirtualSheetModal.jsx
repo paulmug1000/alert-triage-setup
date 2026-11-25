@@ -25,6 +25,7 @@ function normalizeGridPayload(data) {
         ? data.notesGrid
         : {},
     updatedAt: data.updatedAt || null,
+    readSource: data.readSource || "grid",
   };
 }
 
@@ -68,6 +69,7 @@ export default function FormattedVirtualSheetModal({
     rawValuesGrid: [],
     notesGrid: {},
     updatedAt: null,
+    readSource: "grid",
   });
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -204,36 +206,36 @@ export default function FormattedVirtualSheetModal({
       try {
         const body = isSingle
           ? {
-              action: "update_cell",
-              clientName,
-              sheetRole,
-              tabName: activeTab,
-              rowIndex0: first.rowIndex0,
-              colIndex0: first.colIndex0,
-              value: first.value ?? "",
-              maxRows: getMaxRows ? getMaxRows(activeTab) : 1200,
-              maxCols: spec?.totalCols || 200,
-              includeFormulas: true,
-              includeRawValues: true,
-              includeNotes: true,
-              trimTrailingEmptyRows: true,
-              returnUpdatedGrid: true,
-            }
+            action: "update_cell",
+            clientName,
+            sheetRole,
+            tabName: activeTab,
+            rowIndex0: first.rowIndex0,
+            colIndex0: first.colIndex0,
+            value: first.value ?? "",
+            maxRows: getMaxRows ? getMaxRows(activeTab) : 1200,
+            maxCols: spec?.totalCols || 200,
+            includeFormulas: true,
+            includeRawValues: true,
+            includeNotes: true,
+            trimTrailingEmptyRows: true,
+            returnUpdatedGrid: true,
+          }
           : {
-              action: "update_cells",
-              clientName,
-              sheetRole,
-              tabName: activeTab,
-              updates,
-              rangeLabel,
-              maxRows: getMaxRows ? getMaxRows(activeTab) : 1200,
-              maxCols: spec?.totalCols || 200,
-              includeFormulas: true,
-              includeRawValues: true,
-              includeNotes: true,
-              trimTrailingEmptyRows: true,
-              returnUpdatedGrid: true,
-            };
+            action: "update_cells",
+            clientName,
+            sheetRole,
+            tabName: activeTab,
+            updates,
+            rangeLabel,
+            maxRows: getMaxRows ? getMaxRows(activeTab) : 1200,
+            maxCols: spec?.totalCols || 200,
+            includeFormulas: true,
+            includeRawValues: true,
+            includeNotes: true,
+            trimTrailingEmptyRows: true,
+            returnUpdatedGrid: true,
+          };
 
         const res = await fetch("/api/pma/master-engine", {
           method: "POST",
@@ -460,7 +462,7 @@ export default function FormattedVirtualSheetModal({
       const len = el.value.length;
       try {
         el.setSelectionRange(len, len);
-      } catch (_) {}
+      } catch (_) { }
     }
   }, [editingMode, editingCell]);
 
@@ -615,7 +617,7 @@ export default function FormattedVirtualSheetModal({
                   message: `Copied ${selectedCellCount} ${selectedCellCount === 1 ? "cell" : "cells"} to clipboard.`,
                 });
               },
-              () => {}
+              () => { }
             );
           }
         }
@@ -807,9 +809,8 @@ export default function FormattedVirtualSheetModal({
       const cellNote = gridData.notesGrid?.[`${r}:${c}`] || "";
       const formulaPreview =
         typeof formVal === "string" && formVal.startsWith("=") ? `\nFormula: ${formVal}` : "";
-      const cellTooltip = `${colIndexToLetter(c)}${r + 1}: ${formatted}${formulaPreview}${
-        cellNote ? `\nNote: ${cellNote}` : ""
-      }`;
+      const cellTooltip = `${colIndexToLetter(c)}${r + 1}: ${formatted}${formulaPreview}${cellNote ? `\nNote: ${cellNote}` : ""
+        }`;
 
       const TdTag = isHeaderRow ? "th" : "td";
       const borderRight = isLastFrozen
@@ -1246,7 +1247,7 @@ export default function FormattedVirtualSheetModal({
                     fontWeight: 600,
                   }}
                 >
-                  {badgeLabel}
+                  {gridData.readSource === "relational" ? "Relational SQL" : badgeLabel}
                 </span>
               </div>
               <p style={{ margin: "2px 0 0", fontSize: "11px", color: "#cbd5e1" }}>

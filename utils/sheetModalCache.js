@@ -46,6 +46,7 @@ function normalizeVirtualGridPayload(data) {
         ? data.notesGrid
         : {},
     updatedAt: data.updatedAt || null,
+    readSource: data.readSource || "grid",
   };
 }
 

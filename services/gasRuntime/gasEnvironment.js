@@ -2494,6 +2494,18 @@ export async function createGasEnvironment({
         }
         if (reconMutatedTabs.length > 0) {
           invalidateMasterEngineCache(ctx.clientName, "recon", reconMutatedTabs);
+          if (ctx.reconMode === "relational") {
+            const { isManagedReconTab, reconcileClientReconFromGrids } = await import("../relationalReconService.js");
+            const phase4ReconTabs = [...new Set(reconMutatedTabs.filter((t) => isManagedReconTab(t)))];
+            if (phase4ReconTabs.length > 0) {
+              await reconcileClientReconFromGrids(ctx, phase4ReconTabs).catch((err) => {
+                console.warn(
+                  `[gasEnvironment] Phase 4C relational recon sync warning for ${ctx.clientName}:`,
+                  err?.message
+                );
+              });
+            }
+          }
         }
       }
 

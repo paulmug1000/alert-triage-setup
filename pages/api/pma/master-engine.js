@@ -71,6 +71,14 @@ import {
   verifyRelationalMasterReadParity,
   setClientMasterReadMode,
 } from "../../../services/relationalMasterService.js";
+import {
+  backfillClientRecon,
+  backfillAllClientsRecon,
+  verifyRelationalReconParity,
+  setClientReconMode,
+  verifyRelationalReconReadParity,
+  setClientReconReadMode,
+} from "../../../services/relationalReconService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -542,6 +550,86 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, updated, status });
     }
 
+    if (action === "backfill_relational_recon") {
+      const sheets = await getSheetsClient();
+      const summary = req.body?.allClients
+        ? await backfillAllClientsRecon()
+        : await backfillClientRecon(cleanClient);
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: req.body?.allClients ? "ALL CLIENTS" : cleanClient,
+        category: "SYSTEM",
+        action: "RELATIONAL_RECON_BACKFILLED",
+        summary: req.body?.allClients
+          ? `Backfilled relational Bank Recon tables across ${summary.clientsProcessed || 0} client(s)`
+          : `Backfilled relational Bank Recon tables for ${cleanClient}`,
+        details: summary,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, summary, status });
+    }
+
+    if (action === "verify_relational_recon_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = req.body?.source || "auto";
+      const parityReport = await verifyRelationalReconParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_recon_mode") {
+      const reconMode = String(req.body?.reconMode || "").trim().toLowerCase();
+      if (reconMode !== "grid" && reconMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid reconMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientReconMode(cleanClient, reconMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_RECON_MODE_CHANGED",
+        summary: `Switched ${cleanClient} Bank Recon write engine to "${reconMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "verify_relational_recon_read_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = req.body?.source || "auto";
+      const parityReport = await verifyRelationalReconReadParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_recon_read_mode") {
+      const reconReadMode = String(req.body?.reconReadMode || "").trim().toLowerCase();
+      if (reconReadMode !== "grid" && reconReadMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid reconReadMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientReconReadMode(cleanClient, reconReadMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_RECON_READ_MODE_CHANGED",
+        summary: `Switched ${cleanClient} Bank Recon read source to "${reconReadMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
     if (action === "sync_sheet_bridge_outbound") {
       const sheets = await getSheetsClient();
       const syncSummary = await checkAndSyncClientSheetBridge(cleanClient, {
@@ -725,6 +813,7 @@ export default async function handler(req, res) {
         includeNotes: Boolean(req.body?.includeNotes),
         trimTrailingEmptyRows: Boolean(req.body?.trimTrailingEmptyRows),
         forceMasterSource: req.body?.forceMasterSource || null,
+        forceReconSource: req.body?.forceReconSource || null,
       });
       return res.status(200).json({ success: true, ...gridData });
     }

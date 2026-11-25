@@ -374,6 +374,11 @@ export function invalidateMasterEngineCache(clientName = null, sheetRole = null,
   if (options?.invalidateSheetContext || (!clientName && options?.invalidateSheetContext !== false)) {
     _sheetContextCache.expiresAt = 0;
   }
+  if (!sheetRole || sheetRole === "client") {
+    import("./relationalFinancialsService.js")
+      .then(({ invalidateClientRelationalFinancialsCache }) => invalidateClientRelationalFinancialsCache(clientName))
+      .catch(() => { });
+  }
   if (!clientName) {
     _gridMemoryCache.clear();
     return;
@@ -434,7 +439,12 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
         try {
           let { data, error } = await supabase
             .from("clients")
-            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+          if (error && (String(error.message || "").includes("financials_mode") || String(error.message || "").includes("financials_read_mode"))) {
+            ({ data, error } = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"));
+          }
           if (error && (String(error.message || "").includes("recon_mode") || String(error.message || "").includes("recon_read_mode"))) {
             ({ data, error } = await supabase
               .from("clients")
@@ -502,6 +512,12 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                   ? "relational"
                   : "grid",
                 reconReadMode: String(row.recon_read_mode || row.metadata?.recon_read_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
+                financialsMode: String(row.financials_mode || row.metadata?.financials_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
+                financialsReadMode: String(row.financials_read_mode || row.metadata?.financials_read_mode || "grid").trim().toLowerCase() === "relational"
                   ? "relational"
                   : "grid",
                 sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
@@ -1537,6 +1553,7 @@ async function mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, rangeU
       }
       if (updatedTabs.size > 0) {
         if (isNonFormulaKeyInfoOnlyUpdates_(clientDataUpdates)) {
+          await syncPhase5FinancialsIfEnabled_(ctx, ["KeyInfo"]);
           await import("./cacheService.js")
             .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
             .catch(() => { });
@@ -2240,6 +2257,35 @@ async function syncPhase3OperatingInputsIfEnabled_(ctx, tabNames = []) {
   }
 }
 
+const PHASE5_FINANCIAL_TAB_SET_ = new Set([
+  "Calcs",
+  "Year0Data",
+  "Performance",
+  "Dashboard",
+  "GPbyPL",
+  "VAT",
+  "Cash",
+  "ErrorCheck",
+  "KeyInfo",
+]);
+
+async function syncPhase5FinancialsIfEnabled_(ctx, tabNames = []) {
+  if (!ctx) return;
+  try {
+    const {
+      invalidateClientRelationalFinancialsCache,
+      reconcileClientFinancialsFromGrids,
+    } = await import("./relationalFinancialsService.js");
+    invalidateClientRelationalFinancialsCache(ctx.clientName);
+    if (ctx.financialsMode !== "relational") return;
+    const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => PHASE5_FINANCIAL_TAB_SET_.has(t)))];
+    if (relevant.length === 0) return;
+    await reconcileClientFinancialsFromGrids(ctx, relevant);
+  } catch (err) {
+    console.warn(`[masterEngineService] Phase 5 relational financials reconciliation warning (${ctx.clientName}):`, err?.message);
+  }
+}
+
 const PHASE4_MASTER_TAB_SET_ = new Set([
   "InvFromApp",
   "RevFromApp",
@@ -2518,6 +2564,7 @@ async function runSingleImmediateClientTabsPass_(
 
   await syncPhase2RelationalJobsIfEnabled_(ctx, allImmediateTabs);
   await syncPhase3OperatingInputsIfEnabled_(ctx, allImmediateTabs);
+  await syncPhase5FinancialsIfEnabled_(ctx, allImmediateTabs);
 
   let activeSourceSet = _activeRecomputeSourceTabsByClient.get(clientKey);
   if (!activeSourceSet) {
@@ -2989,6 +3036,7 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
   const phaseSyncTabs = [...new Set([...allUpdatedTabs, ...dirtyTabs])];
   await syncPhase2RelationalJobsIfEnabled_(ctx, phaseSyncTabs);
   await syncPhase3OperatingInputsIfEnabled_(ctx, phaseSyncTabs);
+  await syncPhase5FinancialsIfEnabled_(ctx, phaseSyncTabs);
 
   if (dirtyTabs.length > 0) {
     await import("./cacheService.js")
@@ -3134,6 +3182,29 @@ export async function handleVirtualSheetsCall({
         console.warn(`[masterEngineService] Relational recon read fallback for ${ctx.clientName}/${parsed.tabName}:`, relErr?.message);
         rec = null;
       }
+    } else if (
+      sheetRole === "client" &&
+      (params._forceFinancialsReadMode === "relational" ||
+        (params._forceFinancialsReadMode !== "grid" && ctx.financialsReadMode === "relational")) &&
+      PHASE5_FINANCIAL_TAB_SET_.has(parsed.tabName)
+    ) {
+      try {
+        const {
+          preloadClientRelationalFinancialsBundle,
+          reconstructRelationalFinancialTabFromBundle,
+        } = await import("./relationalFinancialsService.js");
+        const bundle = await preloadClientRelationalFinancialsBundle(ctx, {
+          source: "db",
+          includeFormulas: isFormulaReq,
+        });
+        const reconstructed = reconstructRelationalFinancialTabFromBundle(bundle, parsed.tabName, {
+          includeFormulas: isFormulaReq,
+        });
+        if (reconstructed) rec = reconstructed;
+      } catch (relErr) {
+        console.warn(`[masterEngineService] Relational financials read fallback for ${ctx.clientName}/${parsed.tabName}:`, relErr?.message);
+        rec = null;
+      }
     }
     if (!rec) {
       rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi, {
@@ -3195,9 +3266,36 @@ export async function handleVirtualSheetsCall({
     const byTab = new Map();
     if (sheetRole === "client") {
       const clientKeyLower = ctx.clientName.toLowerCase();
+      const useRelFinancialsBatch =
+        params._forceFinancialsReadMode === "relational" ||
+        (params._forceFinancialsReadMode !== "grid" && ctx.financialsReadMode === "relational");
+      const relFinTabs = useRelFinancialsBatch
+        ? uniqueTabs.filter((t) => PHASE5_FINANCIAL_TAB_SET_.has(t))
+        : [];
+      if (relFinTabs.length > 0) {
+        try {
+          const {
+            preloadClientRelationalFinancialsBundle,
+            reconstructRelationalFinancialTabFromBundle,
+          } = await import("./relationalFinancialsService.js");
+          const bundle = await preloadClientRelationalFinancialsBundle(ctx, {
+            source: "db",
+            includeFormulas: isFormulaReq,
+          });
+          for (const t of relFinTabs) {
+            const reconstructed = reconstructRelationalFinancialTabFromBundle(bundle, t, {
+              includeFormulas: isFormulaReq,
+            });
+            if (reconstructed) byTab.set(t, reconstructed);
+          }
+        } catch (relErr) {
+          console.warn(`[masterEngineService] Relational financials batchGet fallback for ${ctx.clientName}:`, relErr?.message);
+        }
+      }
       const uncachedTabs = [];
       const inFlightWaits = [];
       for (const t of uniqueTabs) {
+        if (byTab.has(t)) continue;
         const cKey = `${clientKeyLower}::client::${t}`;
         const cached = _gridMemoryCache.get(cKey);
         if (
@@ -3508,6 +3606,7 @@ export async function handleVirtualSheetsCall({
       await syncPhase4ReconIfEnabled_(ctx, [parsed.tabName]);
     } else if (sheetRole === "client") {
       if (isNonFormulaKeyInfoOnly) {
+        await syncPhase5FinancialsIfEnabled_(ctx, [parsed.tabName]);
         await import("./cacheService.js")
           .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
           .catch(() => { });
@@ -3633,6 +3732,7 @@ export async function handleVirtualSheetsCall({
       const hasWork = actuallyChangedTabs.length > 0 || (pendingSet && pendingSet.size > 0);
       if (isNonFormulaKeyInfoOnlyBatch && (!pendingSet || pendingSet.size === 0)) {
         if (actuallyChangedTabs.length > 0) {
+          await syncPhase5FinancialsIfEnabled_(ctx, actuallyChangedTabs);
           await import("./cacheService.js")
             .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
             .catch(() => { });
@@ -3861,13 +3961,36 @@ export async function handleVirtualSheetsCall({
         const fieldsStr = String(params.fields || "");
         const needFormulas = !fieldsStr || fieldsStr.includes("userEnteredValue");
         const needNotes = !fieldsStr || fieldsStr.includes("note") || fieldsStr.includes("effectiveFormat");
+        const useRelFinancialsGet =
+          params._forceFinancialsReadMode === "relational" ||
+          (params._forceFinancialsReadMode !== "grid" && ctx.financialsReadMode === "relational");
+        let relFinancialsBundle = null;
+        let reconstructFinancialsFn = null;
+        if (useRelFinancialsGet && [...targetTabNames].some((t) => PHASE5_FINANCIAL_TAB_SET_.has(t))) {
+          try {
+            const mod = await import("./relationalFinancialsService.js");
+            relFinancialsBundle = await mod.preloadClientRelationalFinancialsBundle(ctx, {
+              source: "db",
+              includeFormulas: needFormulas,
+            });
+            reconstructFinancialsFn = mod.reconstructRelationalFinancialTabFromBundle;
+          } catch (relErr) {
+            console.warn(`[masterEngineService] Relational financials spreadsheets.get fallback for ${ctx.clientName}:`, relErr?.message);
+          }
+        }
         const loadedTargetTabs = await Promise.all(
-          [...targetTabNames].map((tName) =>
-            getOrLoadVirtualTabGrid_(ctx, "client", tName, rawSheetsApi, {
+          [...targetTabNames].map((tName) => {
+            if (relFinancialsBundle && reconstructFinancialsFn && PHASE5_FINANCIAL_TAB_SET_.has(tName)) {
+              const reconstructed = reconstructFinancialsFn(relFinancialsBundle, tName, {
+                includeFormulas: needFormulas,
+              });
+              if (reconstructed) return reconstructed;
+            }
+            return getOrLoadVirtualTabGrid_(ctx, "client", tName, rawSheetsApi, {
               valuesOnly: !needFormulas,
               includeNotes: needNotes,
-            })
-          )
+            });
+          })
         );
         allTabs.push(...loadedTargetTabs);
       } else {
@@ -4592,6 +4715,7 @@ export async function handleVirtualSheetsCall({
         const noteTabsArr = [...noteOnlyClientTabs];
         await syncPhase2RelationalJobsIfEnabled_(ctx, noteTabsArr);
         await syncPhase3OperatingInputsIfEnabled_(ctx, noteTabsArr);
+        await syncPhase5FinancialsIfEnabled_(ctx, noteTabsArr);
         const noteGrids = {};
         for (const [tName, rec] of dirtyTargets.entries()) {
           noteGrids[tName] = {
@@ -6081,6 +6205,7 @@ export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") 
   );
   await syncPhase2RelationalJobsIfEnabled_(ctx, tabsToFetch);
   await syncPhase3OperatingInputsIfEnabled_(ctx, tabsToFetch);
+  await syncPhase5FinancialsIfEnabled_(ctx, tabsToFetch);
 
   await import("./clientSheetBridgeService.js")
     .then(({ seedSheetBridgeBaselineFromSheetSeed }) => seedSheetBridgeBaselineFromSheetSeed(ctx, grids))
@@ -6273,6 +6398,22 @@ export async function backfillNormalizedMirrorTablesFromVirtualGrids(clientName 
     summary.clientTabsBackfilled = clientTabNames.length;
   }
 
+  try {
+    const {
+      checkPhase5FinancialsSchemaStatus,
+      reconcileClientFinancialsFromGrids,
+    } = await import("./relationalFinancialsService.js");
+    const stFin = await checkPhase5FinancialsSchemaStatus();
+    if (stFin?.schemaReady) {
+      await reconcileClientFinancialsFromGrids(ctx, null, {
+        forceFullUpsert: true,
+        updateBackfillTimestamp: true,
+      });
+    }
+  } catch (err) {
+    console.warn(`[masterEngineService] Phase 5 relational financials backfill warning (${ctx.clientName}):`, err?.message);
+  }
+
   return summary;
 }
 
@@ -6370,6 +6511,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     phase3InputsStats,
     phase4MasterStats,
     phase4ReconStats,
+    phase5FinancialsStats,
   ] = await Promise.all([
     Promise.all(
       STAGE2_TABLES.map(async (t) => {
@@ -6393,9 +6535,15 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     (() =>
       supabase
         .from("clients")
-        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
         .order("client_name", { ascending: true })
         .then(async (res) => {
+          if (res.error && (String(res.error.message || "").includes("financials_mode") || String(res.error.message || "").includes("financials_read_mode"))) {
+            res = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+              .order("client_name", { ascending: true });
+          }
           if (res.error && (String(res.error.message || "").includes("recon_mode") || String(res.error.message || "").includes("recon_read_mode"))) {
             res = await supabase
               .from("clients")
@@ -6477,6 +6625,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     import("./relationalReconService.js")
       .then(({ getPhase4ReconOverviewStats }) =>
         getPhase4ReconOverviewStats()
+      )
+      .catch(() => null),
+    import("./relationalFinancialsService.js")
+      .then(({ getPhase5FinancialsOverviewStats }) =>
+        getPhase5FinancialsOverviewStats()
       )
       .catch(() => null),
   ]);
@@ -6589,6 +6742,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         reconMode: String(c.recon_mode || c.metadata?.recon_mode || "grid").trim().toLowerCase(),
         reconReadMode: String(c.recon_read_mode || c.metadata?.recon_read_mode || "grid").trim().toLowerCase(),
         relationalReconState: c.metadata?.relational_recon_state || null,
+        financialsMode: String(c.financials_mode || c.metadata?.financials_mode || "grid").trim().toLowerCase(),
+        financialsReadMode: String(c.financials_read_mode || c.metadata?.financials_read_mode || "grid").trim().toLowerCase(),
+        relationalFinancialsState: c.metadata?.relational_financials_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,
@@ -6622,6 +6778,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
   let phase4ReconBackfilledCount = 0;
   let reconModeClientsCount = 0;
   let reconReadModeClientsCount = 0;
+  let phase5BackfilledCount = 0;
+  let financialsModeClientsCount = 0;
+  let financialsReadModeClientsCount = 0;
   for (const c of clientsData || []) {
     if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
     if (String(c?.jobs_mode || c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
@@ -6635,6 +6794,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     if (c?.metadata?.relational_recon_state?.lastBackfilledAt) phase4ReconBackfilledCount++;
     if (String(c?.recon_mode || c?.metadata?.recon_mode || "").trim().toLowerCase() === "relational") reconModeClientsCount++;
     if (String(c?.recon_read_mode || c?.metadata?.recon_read_mode || "").trim().toLowerCase() === "relational") reconReadModeClientsCount++;
+    if (c?.metadata?.relational_financials_state?.lastBackfilledAt) phase5BackfilledCount++;
+    if (String(c?.financials_mode || c?.metadata?.financials_mode || "").trim().toLowerCase() === "relational") financialsModeClientsCount++;
+    if (String(c?.financials_read_mode || c?.metadata?.financials_read_mode || "").trim().toLowerCase() === "relational") financialsReadModeClientsCount++;
   }
 
   return {
@@ -6725,6 +6887,26 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         backfilledClientsCount: phase4ReconBackfilledCount,
         reconModeClientsCount,
         reconReadModeClientsCount,
+      },
+    phase5Financials: phase5FinancialsStats
+      ? {
+        ...phase5FinancialsStats,
+        backfilledClientsCount: phase5BackfilledCount,
+        financialsModeClientsCount,
+        financialsReadModeClientsCount,
+      }
+      : {
+        schemaReady: false,
+        migrationSql: "",
+        totalRollupMonths: 0,
+        totalYear0Lines: 0,
+        totalStatementLines: 0,
+        totalVatRows: 0,
+        totalCashflowLines: 0,
+        totalFinancialConfigs: 0,
+        backfilledClientsCount: phase5BackfilledCount,
+        financialsModeClientsCount,
+        financialsReadModeClientsCount,
       },
   };
 }
@@ -6904,6 +7086,7 @@ export async function getVirtualTabForInspector({
   trimTrailingEmptyRows = false,
   forceMasterSource = null,
   forceReconSource = null,
+  forceFinancialsSource = null,
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -6913,6 +7096,7 @@ export async function getVirtualTabForInspector({
   let staleAgainstClientEdits = false;
   let usedRelationalMaster = false;
   let usedRelationalRecon = false;
+  let usedRelationalFinancials = false;
   if (sheetRole === "client") {
     const clientSelectCols = includeFormulas
       ? "sheet_role, tab_name, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
@@ -6931,6 +7115,45 @@ export async function getVirtualTabForInspector({
       null;
     if (!error && data) {
       expandClientTabFromStorage_(data, tabName, { valuesOnly: !includeFormulas });
+    }
+    if (PHASE5_FINANCIAL_TAB_SET_.has(tabName) && forceFinancialsSource !== "grid") {
+      try {
+        const ctx = await resolveSupabaseSheetContext({ clientName });
+        const shouldUseRelationalFin =
+          forceFinancialsSource === "relational" || (ctx && ctx.financialsReadMode === "relational");
+        if (shouldUseRelationalFin && ctx) {
+          const {
+            preloadClientRelationalFinancialsBundle,
+            reconstructRelationalFinancialTabFromBundle,
+          } = await import("./relationalFinancialsService.js");
+          const bundle = await preloadClientRelationalFinancialsBundle(ctx, {
+            source: "db",
+            includeFormulas,
+          });
+          const finTabData = reconstructRelationalFinancialTabFromBundle(bundle, tabName, {
+            includeFormulas,
+          });
+          if (finTabData && Array.isArray(finTabData.values_grid)) {
+            data = {
+              row_count: finTabData.row_count || finTabData.values_grid.length,
+              col_count: finTabData.col_count || 0,
+              values_grid: finTabData.values_grid,
+              formulas_grid: includeFormulas
+                ? finTabData.formulas_grid || data?.formulas_grid || finTabData.values_grid
+                : undefined,
+              notes_grid:
+                finTabData.notes_grid && Object.keys(finTabData.notes_grid).length > 0
+                  ? finTabData.notes_grid
+                  : data?.notes_grid || {},
+              updated_at: finTabData.updated_at || data?.updated_at || new Date().toISOString(),
+            };
+            error = null;
+            usedRelationalFinancials = true;
+          }
+        }
+      } catch (relErr) {
+        console.warn(`[masterEngineService] Inspector relational financials fallback for ${clientName}/${tabName}:`, relErr?.message);
+      }
     }
   } else {
     const selectCols = includeFormulas
@@ -7070,7 +7293,7 @@ export async function getVirtualTabForInspector({
       ...(includeNotes ? { notesGrid: {} } : {}),
       staleAgainstClientEdits: false,
       updatedAt: null,
-      readSource: usedRelationalMaster || usedRelationalRecon ? "relational" : "grid",
+      readSource: usedRelationalMaster || usedRelationalRecon || usedRelationalFinancials ? "relational" : "grid",
     };
   }
 
@@ -7138,7 +7361,7 @@ export async function getVirtualTabForInspector({
     ...(includeNotes ? { notesGrid: data.notes_grid || {} } : {}),
     staleAgainstClientEdits,
     updatedAt: data.updated_at,
-    readSource: usedRelationalMaster || usedRelationalRecon ? "relational" : "grid",
+    readSource: usedRelationalMaster || usedRelationalRecon || usedRelationalFinancials ? "relational" : "grid",
   };
 }
 

@@ -146,10 +146,13 @@ export default function DbView({
   const [relationalMasterReadParityReport, setRelationalMasterReadParityReport] = useState(null);
   const [relationalReconParityReport, setRelationalReconParityReport] = useState(null);
   const [relationalReconReadParityReport, setRelationalReconReadParityReport] = useState(null);
+  const [relationalFinancialsParityReport, setRelationalFinancialsParityReport] = useState(null);
+  const [relationalFinancialsReadParityReport, setRelationalFinancialsReadParityReport] = useState(null);
   const [copied0012Sql, setCopied0012Sql] = useState(false);
   const [copied0013Sql, setCopied0013Sql] = useState(false);
   const [copied0014Sql, setCopied0014Sql] = useState(false);
   const [copied0015Sql, setCopied0015Sql] = useState(false);
+  const [copied0016Sql, setCopied0016Sql] = useState(false);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -1127,6 +1130,146 @@ export default function DbView({
         return {
           type: "success",
           text: `Switched ${targetClient} bank recon read source to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleBackfillRelationalFinancials = (allClients = false, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      allClients ? "backfill_financials_all" : `backfill_financials_${targetClient}`,
+      allClients
+        ? "Backfilling relational financial calculation tables across all clients..."
+        : `Backfilling relational financial calculation tables for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "backfill_relational_financials",
+            allClients,
+            clientName: targetClient,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 5 relational financials backfill failed.");
+        if (data.status) setStage2Data(data.status);
+        const s = data.summary || {};
+        return {
+          type: "success",
+          text: allClients
+            ? `Backfilled Phase 5 financials across ${s.clientsProcessed || 0} client(s) (${s.rollupMonthsCount || 0} rollups, ${s.year0LinesCount || 0} Year 0 lines, ${s.statementLinesCount || 0} statement lines, ${s.vatRowsCount || 0} VAT rows, ${s.cashflowLinesCount || 0} cash flow lines).`
+            : `Backfilled ${targetClient}: ${s.rollupMonthsCount ?? 0} rollups, ${s.statementLinesCount ?? 0} statement lines, ${s.cashflowLinesCount ?? 0} cash flow lines.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyRelationalFinancialsParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_financials_parity",
+      "Checking 100% parity across Calcs, Year0Data, Performance, Dashboard, GPbyPL, VAT, Cash, ErrorCheck, and KeyInfo...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_financials_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 5 financials parity check failed.");
+        const r = data.parityReport || {};
+        setRelationalFinancialsParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Checked ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientFinancialsMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_financials_mode_${nextMode}`,
+      `Switching ${targetClient} financial calculation write engine to ${nextMode === "relational" ? "relational SQL" : "virtual grid"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_financials_mode",
+            clientName: targetClient,
+            financialsMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update financial calculation write mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} financial calculation write mode to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyRelationalFinancialsReadParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_financials_read_parity",
+      "Verifying SQL financial slice and Portal Home / Performance payload parity...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_financials_read_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 5 financials SQL read parity check failed.");
+        const r = data.parityReport || {};
+        setRelationalFinancialsReadParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Financials SQL read parity verified across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientFinancialsReadMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_financials_read_mode_${nextMode}`,
+      `Switching ${targetClient} financial calculation read source to ${nextMode === "relational" ? "relational SQL" : "virtual grid"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_financials_read_mode",
+            clientName: targetClient,
+            financialsReadMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update financial calculation read mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} financial calculation read source to ${nextMode}.`,
         };
       }
     );
@@ -5224,6 +5367,382 @@ export default function DbView({
                       }}
                     >
                       {`${r.clientName}: ${r.matched ? `${r.periodsCount || 0}m/${(r.reconciledItemsCount || 0) + (r.unreconciledItemsCount || 0)}it/${r.learningRulesCount || 0}l (${r.source})` : r.error || `${r.totalMismatchCount || r.mismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SECTION 4d: Native financial calculation engine (Phase 5A + 5B + 5C) */}
+          <div style={cardStyle}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "12px",
+                flexWrap: "wrap",
+                marginBottom: "10px",
+              }}
+            >
+              <div>
+                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                  Native financial calculation engine (Phase 5A + 5B + 5C)
+                </h2>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  SQL-native monthly job rollups, Year 0 baselines, 3-year P&L and KPI statements, 36-month VAT schedules, and 36-month cash flow forecasts.
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: stage2Data?.phase5Financials?.schemaReady ? "#dcfce7" : "#fef3c7",
+                    color: stage2Data?.phase5Financials?.schemaReady ? "#166534" : "#92400e",
+                  }}
+                >
+                  {stage2Data?.phase5Financials?.schemaReady ? "Schema ready (0016)" : "Migration 0016 required"}
+                </span>
+                {stage2Data?.phase5Financials?.schemaReady && (
+                  <span
+                    style={{
+                      padding: "3px 9px",
+                      borderRadius: "999px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      background: "#eff6ff",
+                      color: "#1e40af",
+                    }}
+                  >
+                    {`${stage2Data.phase5Financials.financialsModeClientsCount || 0} relational · ${stage2Data.phase5Financials.financialsReadModeClientsCount || 0} SQL reads · ${stage2Data.phase5Financials.backfilledClientsCount || 0}/${allClients.length} backfilled`}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {!stage2Data?.phase5Financials?.schemaReady && stage2Data?.phase5Financials?.migrationSql && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                  fontSize: "12px",
+                  color: "#92400e",
+                }}
+              >
+                <span>
+                  Run migration 0016 in the Supabase SQL editor to create pulse_job_monthly_rollups, pulse_year0_lines, pulse_financial_statements, pulse_vat_schedules, pulse_cashflow_lines, and pulse_financial_configs.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.clipboard) {
+                      navigator.clipboard.writeText(stage2Data.phase5Financials.migrationSql);
+                      setCopied0016Sql(true);
+                      setTimeout(() => setCopied0016Sql(false), 2500);
+                    }
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #f59e0b",
+                    background: "#ffffff",
+                    color: "#92400e",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copied0016Sql ? "Copied migration 0016 SQL" : "Copy migration 0016 SQL"}
+                </button>
+              </div>
+            )}
+
+            {stage2Data?.phase5Financials?.schemaReady && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                  gap: "8px",
+                  marginBottom: "12px",
+                }}
+              >
+                {[
+                  { label: "Job rollups (5A)", value: stage2Data.phase5Financials.totalRollupMonths || 0 },
+                  { label: "Year 0 lines (5A)", value: stage2Data.phase5Financials.totalYear0Lines || 0 },
+                  { label: "Statements (5B)", value: stage2Data.phase5Financials.totalStatementLines || 0 },
+                  { label: "VAT rows (5C)", value: stage2Data.phase5Financials.totalVatRows || 0 },
+                  { label: "Cash flow rows (5C)", value: stage2Data.phase5Financials.totalCashflowLines || 0 },
+                  { label: "Financial configs", value: stage2Data.phase5Financials.totalFinancialConfigs || 0 },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                    }}
+                  >
+                    <div style={{ fontSize: "11px", color: "#64748b" }}>{stat.label}</div>
+                    <div style={{ fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                      {Number(stat.value).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                disabled={!stage2Data?.phase5Financials?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalFinancials(false, activeClientName)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase5Financials?.schemaReady ? "#f3f4f6" : "#ffffff",
+                  color: !stage2Data?.phase5Financials?.schemaReady ? "#9ca3af" : "#1e293b",
+                  cursor: !stage2Data?.phase5Financials?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === `backfill_financials_${activeClientName}` && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill ${activeClientName}`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase5Financials?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalFinancials(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase5Financials?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase5Financials?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase5Financials?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase5Financials?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "backfill_financials_all" && (
+                  <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill all clients (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyRelationalFinancialsParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_financials_parity" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Verify financials parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase5Financials?.schemaReady || isBusy}
+                onClick={() =>
+                  handleSetClientFinancialsMode(
+                    activeClientObj?.financialsMode === "relational" ? "grid" : "relational",
+                    activeClientName
+                  )
+                }
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase5Financials?.schemaReady
+                    ? "#f3f4f6"
+                    : activeClientObj?.financialsMode === "relational"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+                  borderColor: !stage2Data?.phase5Financials?.schemaReady
+                    ? "#cbd5e1"
+                    : activeClientObj?.financialsMode === "relational"
+                      ? "#fecaca"
+                      : "#86efac",
+                  color: !stage2Data?.phase5Financials?.schemaReady
+                    ? "#9ca3af"
+                    : activeClientObj?.financialsMode === "relational"
+                      ? "#b91c1c"
+                      : "#166534",
+                  cursor: !stage2Data?.phase5Financials?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.financialsMode === "relational"
+                    ? `Revert ${activeClientName} to grid financials`
+                    : `Switch ${activeClientName} to relational financials`}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyRelationalFinancialsReadParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_financials_read_parity" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Verify financials SQL read parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={
+                  !stage2Data?.phase5Financials?.schemaReady ||
+                  activeClientObj?.financialsMode !== "relational" ||
+                  isBusy
+                }
+                onClick={() =>
+                  handleSetClientFinancialsReadMode(
+                    activeClientObj?.financialsReadMode === "relational" ? "grid" : "relational",
+                    activeClientName
+                  )
+                }
+                style={{
+                  ...actionBtnBase,
+                  background:
+                    !stage2Data?.phase5Financials?.schemaReady || activeClientObj?.financialsMode !== "relational"
+                      ? "#f3f4f6"
+                      : activeClientObj?.financialsReadMode === "relational"
+                        ? "#fef2f2"
+                        : "#eff6ff",
+                  borderColor:
+                    !stage2Data?.phase5Financials?.schemaReady || activeClientObj?.financialsMode !== "relational"
+                      ? "#cbd5e1"
+                      : activeClientObj?.financialsReadMode === "relational"
+                        ? "#fecaca"
+                        : "#93c5fd",
+                  color:
+                    !stage2Data?.phase5Financials?.schemaReady || activeClientObj?.financialsMode !== "relational"
+                      ? "#9ca3af"
+                      : activeClientObj?.financialsReadMode === "relational"
+                        ? "#b91c1c"
+                        : "#1e40af",
+                  cursor:
+                    !stage2Data?.phase5Financials?.schemaReady || activeClientObj?.financialsMode !== "relational"
+                      ? "not-allowed"
+                      : isBusy
+                        ? "wait"
+                        : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.financialsReadMode === "relational"
+                    ? `Revert ${activeClientName} to grid reads`
+                    : `Switch ${activeClientName} to SQL financial reads`}
+                </span>
+              </button>
+            </div>
+
+            {relationalFinancialsReadParityReport && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${relationalFinancialsReadParityReport.mismatchClientsCount > 0 || relationalFinancialsReadParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Relational financials SQL & Portal read parity (${formatTimestamp(relationalFinancialsReadParityReport.checkedAt)}) — ${relationalFinancialsReadParityReport.matchedClientsCount || 0} of ${relationalFinancialsReadParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setRelationalFinancialsReadParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(relationalFinancialsReadParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || (r.matched ? `100% match across ${r.tabsChecked || 0} tabs, ${r.statementLinesCount || 0} statement lines, ${r.cashflowLinesCount || 0} cash flow lines & Portal payloads (${r.source})` : JSON.stringify(r.sampleMismatches || []))}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `${r.statementLinesCount || 0}s/${r.cashflowLinesCount || 0}cf (${r.source})` : r.error || `${r.mismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {relationalFinancialsParityReport && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${relationalFinancialsParityReport.mismatchClientsCount > 0 || relationalFinancialsParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Relational financial calculation parity (${formatTimestamp(relationalFinancialsParityReport.checkedAt)}) — ${relationalFinancialsParityReport.matchedClientsCount || 0} of ${relationalFinancialsParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setRelationalFinancialsParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(relationalFinancialsParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || `Rollups: ${r.rollupMonthsCount}, Year0: ${r.year0LinesCount}, Statements: ${r.statementLinesCount}, VAT: ${r.vatRowsCount}, Cash: ${r.cashflowLinesCount} (${r.source})`}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `${r.rollupMonthsCount || 0}r/${r.statementLinesCount || 0}s/${r.cashflowLinesCount || 0}cf (${r.source})` : r.error || `${r.totalMismatchCount || r.mismatchCount} diff(s)`}`}
                     </span>
                   ))}
                 </div>

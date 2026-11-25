@@ -79,6 +79,14 @@ import {
   verifyRelationalReconReadParity,
   setClientReconReadMode,
 } from "../../../services/relationalReconService.js";
+import {
+  backfillClientFinancials,
+  backfillAllClientsFinancials,
+  verifyRelationalFinancialsParity,
+  setClientFinancialsMode,
+  verifyRelationalFinancialsReadParity,
+  setClientFinancialsReadMode,
+} from "../../../services/relationalFinancialsService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -630,6 +638,86 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, updated, status });
     }
 
+    if (action === "backfill_relational_financials") {
+      const sheets = await getSheetsClient();
+      const summary = req.body?.allClients
+        ? await backfillAllClientsFinancials()
+        : await backfillClientFinancials(cleanClient);
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: req.body?.allClients ? "ALL CLIENTS" : cleanClient,
+        category: "SYSTEM",
+        action: "RELATIONAL_FINANCIALS_BACKFILLED",
+        summary: req.body?.allClients
+          ? `Backfilled relational financial engine tables across ${summary.clientsProcessed || 0} client(s)`
+          : `Backfilled relational financial engine tables for ${cleanClient}`,
+        details: summary,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, summary, status });
+    }
+
+    if (action === "verify_relational_financials_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = req.body?.source || "auto";
+      const parityReport = await verifyRelationalFinancialsParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_financials_mode") {
+      const financialsMode = String(req.body?.financialsMode || "").trim().toLowerCase();
+      if (financialsMode !== "grid" && financialsMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid financialsMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientFinancialsMode(cleanClient, financialsMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_FINANCIALS_MODE_CHANGED",
+        summary: `Switched ${cleanClient} financial calculation write mode to "${financialsMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "verify_relational_financials_read_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = req.body?.source || "auto";
+      const parityReport = await verifyRelationalFinancialsReadParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_financials_read_mode") {
+      const financialsReadMode = String(req.body?.financialsReadMode || "").trim().toLowerCase();
+      if (financialsReadMode !== "grid" && financialsReadMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid financialsReadMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientFinancialsReadMode(cleanClient, financialsReadMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_FINANCIALS_READ_MODE_CHANGED",
+        summary: `Switched ${cleanClient} financial calculation read source to "${financialsReadMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
     if (action === "sync_sheet_bridge_outbound") {
       const sheets = await getSheetsClient();
       const syncSummary = await checkAndSyncClientSheetBridge(cleanClient, {
@@ -814,6 +902,7 @@ export default async function handler(req, res) {
         trimTrailingEmptyRows: Boolean(req.body?.trimTrailingEmptyRows),
         forceMasterSource: req.body?.forceMasterSource || null,
         forceReconSource: req.body?.forceReconSource || null,
+        forceFinancialsSource: req.body?.forceFinancialsSource || null,
       });
       return res.status(200).json({ success: true, ...gridData });
     }

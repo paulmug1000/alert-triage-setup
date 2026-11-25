@@ -304,7 +304,7 @@ export function parseReconPeriodTab({
         is_resolved: false,
         metadata: {},
         raw_row: rawRec,
-        raw_cp: null,
+        raw_cp: { value: null },
         updated_at: nowIso,
       });
     }
@@ -353,7 +353,7 @@ export function parseReconPeriodTab({
           is_resolved: false,
           metadata: {},
           raw_row: rawUnrec,
-          raw_cp: rawCpVal !== undefined && rawCpVal !== "" && rawCpVal !== null ? rawCpVal : null,
+          raw_cp: { value: rawCpVal !== undefined && rawCpVal !== "" && rawCpVal !== null ? rawCpVal : null },
           updated_at: nowIso,
         });
       }
@@ -374,7 +374,7 @@ export function parseReconPeriodTab({
     row_count: grid.length,
     col_count: maxCols,
     raw_da1: rawDa1,
-    raw_cr2: rawCr2,
+    raw_cr2: { value: rawCr2 ?? null },
     period_frame: {
       hasDa1,
       headerRows,

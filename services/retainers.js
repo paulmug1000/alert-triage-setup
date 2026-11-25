@@ -22,6 +22,8 @@ import {
 import { getSessionUser } from "./authService.js";
 import { get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { preloadClientRelationalJobsBundle, buildRelationalFormattedTabRowsFromBundle } from "./relationalJobsService.js";
 import { redisClient, scanRedisKeys } from "./redisClient.js";
 
 const RET_MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -579,24 +581,47 @@ function resolveRetainerParentRow_(rows, parentRowNum, client, jobName) {
 }
 
 export async function handleGetRetainerJobs(req, res, sheets) {
-  const { clientSheetId, bypassCache } = req.body;
+  const { clientSheetId, bypassCache, _forceJobsReadMode } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
-    const cacheKey = `pulse:pma:retainer_jobs:${sheetIdClean}`;
+    const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
+    const useRelationalReads =
+      _forceJobsReadMode === "relational"
+        ? true
+        : _forceJobsReadMode === "grid"
+          ? false
+          : Boolean(sbCtx?.jobsMode === "relational" && sbCtx?.jobsReadMode === "relational");
+    const cacheKey = _forceJobsReadMode
+      ? `pulse:pma:retainer_jobs:${sheetIdClean}:probe:${_forceJobsReadMode}`
+      : `pulse:pma:retainer_jobs:${sheetIdClean}`;
 
     const result = await resolvePortalCache({
       cacheKey,
-      bypassCache: Boolean(bypassCache),
+      bypassCache: Boolean(bypassCache || _forceJobsReadMode),
       l1TtlSecs: 120,
-      redisTtlSecs: 86400,
+      redisTtlSecs: _forceJobsReadMode ? 10 : 86400,
       isValidPayload: (c) => c && Array.isArray(c.jobs),
       fetchFreshFn: async () => {
-        const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
-          includePipeline: false,
-          bypassCache: Boolean(bypassCache),
-        });
-        const rows = shared.confRows || [];
+        let rows = [];
+        let usedRelationalReadPath = false;
+        if (useRelationalReads && sbCtx?.clientId) {
+          const relBundle = await preloadClientRelationalJobsBundle(sbCtx, {
+            includeConfirmed: true,
+            includePipeline: false,
+          }).catch(() => null);
+          if (relBundle?.tabHeaders?.Confirmed && Object.keys(relBundle.tabHeaders.Confirmed).length > 0) {
+            rows = buildRelationalFormattedTabRowsFromBundle(relBundle, "Confirmed", { maxColLimit: 107 }).rows;
+            usedRelationalReadPath = true;
+          }
+        }
+        if (!usedRelationalReadPath) {
+          const shared = await getSharedClientConfirmedAndKeyInfo(sheets, sheetIdClean, {
+            includePipeline: false,
+            bypassCache: Boolean(bypassCache),
+          });
+          rows = shared.confRows || [];
+        }
         const retainerJobs = retFindRetainerJobs(rows, { onlyActiveOrRecentlyEnded: false });
 
         const todayStart = new Date();
@@ -716,7 +741,7 @@ export async function handleGetRetainerJobs(req, res, sheets) {
           return String(a.jobName || "").toLowerCase().localeCompare(String(b.jobName || "").toLowerCase());
         });
 
-        return { success: true, jobs };
+        return { success: true, jobs, jobsReadMode: usedRelationalReadPath ? "relational" : "grid" };
       },
     });
 

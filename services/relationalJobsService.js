@@ -3214,6 +3214,7 @@ export async function verifyRelationalJobsReadParity({ clientName = null } = {})
     handleGetInvoiceJobs,
     handleGetDirectCostsJobs,
   } = await import("./workspaces.js");
+  const { handleGetRetainerJobs } = await import("./retainers.js");
   const sheets = await getSheetsClient();
 
   const callHandler = async (fn, body) => {
@@ -3268,6 +3269,14 @@ export async function verifyRelationalJobsReadParity({ clientName = null } = {})
         const dd = findFirstJsonDiff_(dcGrid, dcRel, `pma.directCostJobs(all=${showAll})`);
         if (dd) mismatches.push(dd);
       }
+
+      // 2b. PMA Retainer jobs
+      const [retGrid, retRel] = await Promise.all([
+        callHandler(handleGetRetainerJobs, { clientSheetId: ctx.clientSheetId, bypassCache: true, _forceJobsReadMode: "grid" }),
+        callHandler(handleGetRetainerJobs, { clientSheetId: ctx.clientSheetId, bypassCache: true, _forceJobsReadMode: "relational" }),
+      ]);
+      const dr = findFirstJsonDiff_(retGrid, retRel, "pma.retainerJobs");
+      if (dr) mismatches.push(dr);
 
       // 3. Portal key-data Confirmed & Pipeline parsed job payloads (ConfCalcs / PipeCalcs)
       const [confGridRec, pipeGridRec] = await Promise.all([
@@ -3373,10 +3382,16 @@ export async function setClientJobsReadMode(clientName, jobsReadMode) {
     ...(cl.metadata && typeof cl.metadata === "object" ? cl.metadata : {}),
     jobs_read_mode: jobsReadMode,
   };
-  const { error: updErr } = await supabase
+  let { error: updErr } = await supabase
     .from("clients")
-    .update({ metadata: nextMeta })
+    .update({ jobs_read_mode: jobsReadMode, metadata: nextMeta })
     .eq("id", cl.id);
+  if (updErr && String(updErr.message || "").includes("jobs_read_mode")) {
+    ({ error: updErr } = await supabase
+      .from("clients")
+      .update({ metadata: nextMeta })
+      .eq("id", cl.id));
+  }
   if (updErr) throw new Error(`Failed updating jobs_read_mode: ${updErr.message}`);
 
   invalidateSheetContextCache();
@@ -3395,6 +3410,7 @@ export async function setClientJobsReadMode(clientName, jobsReadMode) {
           `pulse:pma:invoice_jobs:${cl.client_sheet_id}:active`,
           `pulse:pma:direct_costs_jobs:${cl.client_sheet_id}:all`,
           `pulse:pma:direct_costs_jobs:${cl.client_sheet_id}:active`,
+          `pulse:pma:retainer_jobs:${cl.client_sheet_id}`,
         ])
         .catch(() => { });
     }

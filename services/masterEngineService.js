@@ -443,7 +443,12 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
         try {
           let { data, error } = await supabase
             .from("clients")
-            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+          if (error && (String(error.message || "").includes("inputs_mode") || String(error.message || "").includes("jobs_read_mode"))) {
+            ({ data, error } = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"));
+          }
           if (error && String(error.message || "").includes("jobs_mode")) {
             ({ data, error } = await supabase
               .from("clients")
@@ -477,7 +482,13 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                 jobsMode: String(row.jobs_mode || row.metadata?.jobs_mode || "grid").trim().toLowerCase() === "relational"
                   ? "relational"
                   : "grid",
-                jobsReadMode: String(row.metadata?.jobs_read_mode || "grid").trim().toLowerCase() === "relational"
+                jobsReadMode: String(row.jobs_read_mode || row.metadata?.jobs_read_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
+                inputsMode: String(row.inputs_mode || row.metadata?.inputs_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
+                inputsReadMode: String(row.inputs_read_mode || row.metadata?.inputs_read_mode || "grid").trim().toLowerCase() === "relational"
                   ? "relational"
                   : "grid",
                 sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
@@ -2191,6 +2202,20 @@ async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
   }
 }
 
+const PHASE3_INPUT_TAB_SET_ = new Set(["Salaries", "Outgoings", "OutgNotes", "NBtoFind", "Budget", "Cash"]);
+
+async function syncPhase3OperatingInputsIfEnabled_(ctx, tabNames = []) {
+  if (!ctx || ctx.inputsMode !== "relational") return;
+  const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => PHASE3_INPUT_TAB_SET_.has(t)))];
+  if (relevant.length === 0) return;
+  try {
+    const { reconcileClientOperatingInputsFromGrids } = await import("./relationalInputsService.js");
+    await reconcileClientOperatingInputsFromGrids(ctx, relevant);
+  } catch (err) {
+    console.warn(`[masterEngineService] Phase 3 relational inputs reconciliation warning (${ctx.clientName}):`, err?.message);
+  }
+}
+
 async function recomputeAndPersistImmediateClientTabs_(
   ctx,
   targetTabNames,
@@ -2398,6 +2423,7 @@ async function runSingleImmediateClientTabsPass_(
   );
 
   await syncPhase2RelationalJobsIfEnabled_(ctx, allImmediateTabs);
+  await syncPhase3OperatingInputsIfEnabled_(ctx, allImmediateTabs);
 
   let activeSourceSet = _activeRecomputeSourceTabsByClient.get(clientKey);
   if (!activeSourceSet) {
@@ -2866,7 +2892,9 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
     )
   );
 
-  await syncPhase2RelationalJobsIfEnabled_(ctx, [...new Set([...allUpdatedTabs, ...dirtyTabs])]);
+  const phaseSyncTabs = [...new Set([...allUpdatedTabs, ...dirtyTabs])];
+  await syncPhase2RelationalJobsIfEnabled_(ctx, phaseSyncTabs);
+  await syncPhase3OperatingInputsIfEnabled_(ctx, phaseSyncTabs);
 
   if (dirtyTabs.length > 0) {
     await import("./cacheService.js")
@@ -4289,7 +4317,9 @@ export async function handleVirtualSheetsCall({
           );
         }
       } else if (noteOnlyClientTabs.size > 0) {
-        await syncPhase2RelationalJobsIfEnabled_(ctx, [...noteOnlyClientTabs]);
+        const noteTabsArr = [...noteOnlyClientTabs];
+        await syncPhase2RelationalJobsIfEnabled_(ctx, noteTabsArr);
+        await syncPhase3OperatingInputsIfEnabled_(ctx, noteTabsArr);
         const noteGrids = {};
         for (const [tName, rec] of dirtyTargets.entries()) {
           noteGrids[tName] = {
@@ -5691,12 +5721,14 @@ export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") 
   const existingTitles = new Set((metaResp.data.sheets || []).map((s) => s.properties.title));
   const tabsToFetch = CORE_CLIENT_TABS.filter((t) => existingTitles.has(t));
 
-  // Fetch cell notes across note-bearing tabs (Outgoings, Confirmed, Pipeline, Cash)
+  // Fetch cell notes across note-bearing tabs (Outgoings, Confirmed, Pipeline, Cash, Salaries, NBtoFind)
   const noteRangeSpecs = {
-    Outgoings: { range: "Outgoings!G13:AV112", startRow0: 12, startCol0: 6 },
+    Outgoings: { range: "Outgoings!G13:AV226", startRow0: 12, startCol0: 6 },
     Confirmed: { range: "Confirmed!AP2:CR500", startRow0: 1, startCol0: 41 },
     Pipeline: { range: "Pipeline!AP2:CR300", startRow0: 1, startCol0: 41 },
     Cash: { range: "Cash!B1:AK76", startRow0: 0, startCol0: 1 },
+    Salaries: { range: "Salaries!A4:I53", startRow0: 3, startCol0: 0 },
+    NBtoFind: { range: "NBtoFind!A1:AV25", startRow0: 0, startCol0: 0 },
   };
   const notesByTab = Object.create(null);
   const noteTabsPresent = Object.keys(noteRangeSpecs).filter((t) => existingTitles.has(t));
@@ -5768,6 +5800,8 @@ export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") 
   await syncStructuredClientTablesFromGrids_(ctx, grids, null, { force: true }).catch((e) =>
     console.warn("[masterEngineService] Stage 4 relational sync warning:", e.message)
   );
+  await syncPhase2RelationalJobsIfEnabled_(ctx, tabsToFetch);
+  await syncPhase3OperatingInputsIfEnabled_(ctx, tabsToFetch);
 
   await import("./clientSheetBridgeService.js")
     .then(({ seedSheetBridgeBaselineFromSheetSeed }) => seedSheetBridgeBaselineFromSheetSeed(ctx, grids))
@@ -6010,6 +6044,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     targetGridsResp,
     clockStatus,
     phase2JobsStats,
+    phase3InputsStats,
   ] = await Promise.all([
     Promise.all(
       STAGE2_TABLES.map(async (t) => {
@@ -6080,6 +6115,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     import("./relationalJobsService.js")
       .then(({ getPhase2RelationalOverviewStats }) =>
         getPhase2RelationalOverviewStats([])
+      )
+      .catch(() => null),
+    import("./relationalInputsService.js")
+      .then(({ getPhase3RelationalOverviewStats }) =>
+        getPhase3RelationalOverviewStats([])
       )
       .catch(() => null),
   ]);
@@ -6183,6 +6223,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         jobsMode: String(c.metadata?.jobs_mode || "grid").trim().toLowerCase(),
         jobsReadMode: String(c.metadata?.jobs_read_mode || "grid").trim().toLowerCase(),
         relationalJobsState: c.metadata?.relational_jobs_state || null,
+        inputsMode: String(c.metadata?.inputs_mode || "grid").trim().toLowerCase(),
+        inputsReadMode: String(c.metadata?.inputs_read_mode || "grid").trim().toLowerCase(),
+        relationalInputsState: c.metadata?.relational_inputs_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,
@@ -6207,10 +6250,16 @@ export async function getStage2Status(targetClientName = "APPTEST") {
   let backfilledClientsCount = 0;
   let relationalModeClientsCount = 0;
   let relationalReadModeClientsCount = 0;
+  let phase3BackfilledCount = 0;
+  let inputsModeClientsCount = 0;
+  let inputsReadModeClientsCount = 0;
   for (const c of clientsData || []) {
     if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
     if (String(c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
     if (String(c?.metadata?.jobs_read_mode || "").trim().toLowerCase() === "relational") relationalReadModeClientsCount++;
+    if (c?.metadata?.relational_inputs_state?.lastBackfilledAt) phase3BackfilledCount++;
+    if (String(c?.metadata?.inputs_mode || "").trim().toLowerCase() === "relational") inputsModeClientsCount++;
+    if (String(c?.metadata?.inputs_read_mode || "").trim().toLowerCase() === "relational") inputsReadModeClientsCount++;
   }
 
   return {
@@ -6240,6 +6289,27 @@ export async function getStage2Status(targetClientName = "APPTEST") {
           totalExpenses: 0,
           backfilledClientsCount,
           relationalModeClientsCount,
+        },
+    phase3Inputs: phase3InputsStats
+      ? {
+          ...phase3InputsStats,
+          backfilledClientsCount: phase3BackfilledCount,
+          inputsModeClientsCount,
+          inputsReadModeClientsCount,
+        }
+      : {
+          schemaReady: false,
+          migrationSql: "",
+          totalEmployees: 0,
+          totalOutgoingItems: 0,
+          totalContractorEntries: 0,
+          totalNbClients: 0,
+          totalBudgetItems: 0,
+          totalCashAdjustments: 0,
+          totalCashBankBalances: 0,
+          backfilledClientsCount: phase3BackfilledCount,
+          inputsModeClientsCount,
+          inputsReadModeClientsCount,
         },
   };
 }

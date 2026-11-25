@@ -55,6 +55,12 @@ import {
   verifyRelationalJobsReadParity,
   setClientJobsReadMode,
 } from "../../../services/relationalJobsService.js";
+import {
+  backfillClientOperatingInputs,
+  backfillAllClientsOperatingInputs,
+  verifyRelationalInputsParity,
+  setClientInputsMode,
+} from "../../../services/relationalInputsService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -374,6 +380,45 @@ export default async function handler(req, res) {
         category: "SYSTEM",
         action: "CLIENT_JOBS_READ_MODE_CHANGED",
         summary: `Switched ${cleanClient} jobs read source to "${jobsReadMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "backfill_relational_inputs") {
+      const allClients = Boolean(req.body?.allClients);
+      const summary = allClients
+        ? await backfillAllClientsOperatingInputs()
+        : await backfillClientOperatingInputs(cleanClient);
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, summary, status });
+    }
+
+    if (action === "verify_relational_inputs_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = String(req.body?.source || "auto").trim();
+      const parityReport = await verifyRelationalInputsParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_inputs_mode") {
+      const inputsMode = String(req.body?.inputsMode || "").trim().toLowerCase();
+      if (inputsMode !== "grid" && inputsMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid inputsMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientInputsMode(cleanClient, inputsMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_INPUTS_MODE_CHANGED",
+        summary: `Switched ${cleanClient} operating inputs engine mode to "${inputsMode}"`,
         details: updated,
         userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });

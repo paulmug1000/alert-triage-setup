@@ -140,7 +140,9 @@ export default function DbView({
   const [stage2Loading, setStage2Loading] = useState(true);
   const [parityReport, setParityReport] = useState(null);
   const [relationalParityReport, setRelationalParityReport] = useState(null);
+  const [relationalInputsParityReport, setRelationalInputsParityReport] = useState(null);
   const [copied0012Sql, setCopied0012Sql] = useState(false);
+  const [copied0013Sql, setCopied0013Sql] = useState(false);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -694,6 +696,96 @@ export default function DbView({
         return {
           type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
           text: `Read parity verified across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleBackfillRelationalInputs = (allClients = false, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    runTrackedOperation(
+      allClients ? "rel_inputs_backfill_all" : "rel_inputs_backfill_one",
+      allClients
+        ? "Backfilling relational operating inputs across all clients..."
+        : `Backfilling relational operating inputs for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "backfill_relational_inputs",
+            allClients,
+            clientName: targetClient,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Relational operating inputs backfill failed.");
+        if (data.status) setStage2Data(data.status);
+        const s = data.summary || {};
+        if (allClients) {
+          return {
+            type: s.errorCount > 0 ? "info" : "success",
+            text: `Backfilled ${s.succeededCount || 0} of ${s.totalClients || 0} client(s) into Phase 3 operating input tables${s.errorCount ? ` (${s.errorCount} error(s))` : ""}.`,
+          };
+        }
+        return {
+          type: "success",
+          text: `Backfilled ${targetClient}: ${s.employeesCount || 0} employees, ${s.outgoingItemsCount || 0} outgoing items, ${s.contractorEntriesCount || 0} contractor entries, ${s.budgetItemsCount || 0} budget lines, ${s.cashAdjustmentsCount || 0} cash adjustments.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyRelationalInputsParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_inputs_parity",
+      "Verifying relational operating inputs round-trip & DB parity across clients...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_inputs_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Relational operating inputs parity check failed.");
+        const r = data.parityReport || {};
+        setRelationalInputsParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Checked ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientInputsMode = (nextMode, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedClient;
+    runTrackedOperation(
+      `set_inputs_mode_${nextMode}`,
+      `Switching ${targetClient} operating inputs engine to ${nextMode === "relational" ? "relational SQL" : "virtual grid"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_inputs_mode",
+            clientName: targetClient,
+            inputsMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update client inputs mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} operating inputs mode to ${nextMode}.`,
         };
       }
     );
@@ -3679,6 +3771,266 @@ export default function DbView({
                       }}
                     >
                       {`${r.clientName}: ${r.matched ? `${r.confirmedJobsCount || 0}c/${r.pipelineJobsCount || 0}p (${r.source})` : r.error || `${r.totalMismatchCount} diffs`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SECTION 4.6: Phase 3 Relational Operating Inputs Engine */}
+          <div style={cardStyle}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "12px",
+                flexWrap: "wrap",
+                marginBottom: "10px",
+              }}
+            >
+              <div>
+                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                  Relational operating inputs engine (Phase 3)
+                </h2>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  Zero-cap UUID tables for salaries, outgoings, contractor OutgNotes blocks, NB to find, budgets, cash overrides, and per-bank balances.
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: stage2Data?.phase3Inputs?.schemaReady ? "#dcfce7" : "#fef3c7",
+                    color: stage2Data?.phase3Inputs?.schemaReady ? "#166534" : "#92400e",
+                  }}
+                >
+                  {stage2Data?.phase3Inputs?.schemaReady ? "Schema ready (0013)" : "Migration 0013 required"}
+                </span>
+                {stage2Data?.phase3Inputs?.schemaReady && (
+                  <span
+                    style={{
+                      padding: "3px 9px",
+                      borderRadius: "999px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      background: "#eff6ff",
+                      color: "#1e40af",
+                    }}
+                  >
+                    {`${stage2Data.phase3Inputs.inputsModeClientsCount || 0} relational · ${stage2Data.phase3Inputs.backfilledClientsCount || 0}/${allClients.length} backfilled`}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {!stage2Data?.phase3Inputs?.schemaReady && stage2Data?.phase3Inputs?.migrationSql && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                  fontSize: "12px",
+                  color: "#92400e",
+                }}
+              >
+                <span>
+                  Run migration 0013 in the Supabase SQL editor to create the 7 Phase 3 operating input tables and notes foreign keys.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.clipboard) {
+                      navigator.clipboard.writeText(stage2Data.phase3Inputs.migrationSql);
+                      setCopied0013Sql(true);
+                      setTimeout(() => setCopied0013Sql(false), 2500);
+                    }
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #f59e0b",
+                    background: "#ffffff",
+                    color: "#92400e",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copied0013Sql ? "Copied migration 0013 SQL" : "Copy migration 0013 SQL"}
+                </button>
+              </div>
+            )}
+
+            {stage2Data?.phase3Inputs?.schemaReady && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                  gap: "8px",
+                  marginBottom: "12px",
+                }}
+              >
+                {[
+                  { label: "Employees", value: stage2Data.phase3Inputs.totalEmployees || 0 },
+                  { label: "Outgoing items", value: stage2Data.phase3Inputs.totalOutgoingItems || 0 },
+                  { label: "Contractor entries", value: stage2Data.phase3Inputs.totalContractorEntries || 0 },
+                  { label: "Budget lines", value: stage2Data.phase3Inputs.totalBudgetItems || 0 },
+                  { label: "Cash adjustments", value: stage2Data.phase3Inputs.totalCashAdjustments || 0 },
+                  { label: "Bank balances", value: stage2Data.phase3Inputs.totalCashBankBalances || 0 },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                    }}
+                  >
+                    <div style={{ fontSize: "11px", color: "#64748b" }}>{stat.label}</div>
+                    <div style={{ fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                      {Number(stat.value).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                disabled={!stage2Data?.phase3Inputs?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalInputs(false, activeClientName)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase3Inputs?.schemaReady ? "#f3f4f6" : "#ffffff",
+                  color: !stage2Data?.phase3Inputs?.schemaReady ? "#9ca3af" : "#1e293b",
+                  cursor: !stage2Data?.phase3Inputs?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_inputs_backfill_one" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
+                <span>{`Backfill ${activeClientName}`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase3Inputs?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalInputs(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase3Inputs?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase3Inputs?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase3Inputs?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase3Inputs?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_inputs_backfill_all" && <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />}
+                <span>{`Backfill all clients (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyRelationalInputsParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_inputs_parity" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
+                <span>{`Verify inputs parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase3Inputs?.schemaReady || isBusy}
+                onClick={() =>
+                  handleSetClientInputsMode(
+                    activeClientObj?.inputsMode === "relational" ? "grid" : "relational",
+                    activeClientName
+                  )
+                }
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase3Inputs?.schemaReady
+                    ? "#f3f4f6"
+                    : activeClientObj?.inputsMode === "relational"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+                  borderColor: !stage2Data?.phase3Inputs?.schemaReady
+                    ? "#cbd5e1"
+                    : activeClientObj?.inputsMode === "relational"
+                      ? "#fecaca"
+                      : "#86efac",
+                  color: !stage2Data?.phase3Inputs?.schemaReady
+                    ? "#9ca3af"
+                    : activeClientObj?.inputsMode === "relational"
+                      ? "#b91c1c"
+                      : "#166534",
+                  cursor: !stage2Data?.phase3Inputs?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.inputsMode === "relational"
+                    ? `Revert ${activeClientName} to grid inputs`
+                    : `Switch ${activeClientName} to relational inputs`}
+                </span>
+              </button>
+            </div>
+
+            {relationalInputsParityReport && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${relationalInputsParityReport.mismatchClientsCount > 0 || relationalInputsParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Relational operating inputs parity (${formatTimestamp(relationalInputsParityReport.checkedAt)}) — ${relationalInputsParityReport.matchedClientsCount || 0} of ${relationalInputsParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setRelationalInputsParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(relationalInputsParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || `Employees: ${r.employeesCount}, Outgoings: ${r.outgoingItemsCount}, Entries: ${r.contractorEntriesCount}, Budget: ${r.budgetItemsCount}, Cash: ${r.cashAdjustmentsCount} (${r.source})`}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `${r.employeesCount || 0}e/${r.outgoingItemsCount || 0}o/${r.contractorEntriesCount || 0}n (${r.source})` : r.error || `${r.totalMismatchCount} diffs`}`}
                     </span>
                   ))}
                 </div>

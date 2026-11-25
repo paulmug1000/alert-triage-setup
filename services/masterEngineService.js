@@ -1631,13 +1631,13 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
   const watchedKeyInfoCells = [
     { range: "KeyInfo!E21", r: 20, c: 4 },
     { range: "KeyInfo!I29", r: 28, c: 8 },
-    { range: "KeyInfo!E2", r: 1, c: 4 },
-    { range: "KeyInfo!F2", r: 1, c: 5 },
-    { range: "KeyInfo!B4", r: 3, c: 1 },
-    { range: "KeyInfo!E6", r: 5, c: 4 },
-    { range: "KeyInfo!F6", r: 5, c: 5 },
-    { range: "KeyInfo!B7", r: 6, c: 1 },
-    { range: "KeyInfo!D9", r: 8, c: 3 },
+    { range: "KeyInfo!E2",  r: 1,  c: 4 },
+    { range: "KeyInfo!F2",  r: 1,  c: 5 },
+    { range: "KeyInfo!B4",  r: 3,  c: 1 },
+    { range: "KeyInfo!E6",  r: 5,  c: 4 },
+    { range: "KeyInfo!F6",  r: 5,  c: 5 },
+    { range: "KeyInfo!B7",  r: 6,  c: 1 },
+    { range: "KeyInfo!D9",  r: 8,  c: 3 },
   ];
   const prevKeyInfoVals = watchedKeyInfoCells.map((cell) => grids.KeyInfo?.[cell.r]?.[cell.c] ?? "");
 
@@ -1875,21 +1875,16 @@ export async function flushPendingClientRecomputes(rawSheetsApi = null, clientNa
  * formula recalculation runs in the background via Vercel waitUntil instead of blocking
  * interactive HTTP responses for ~40s.
  */
-const _inFlightImmediateClientFlushByClient = new Map();
-
 export async function flushImmediateAndScheduleBackgroundClientRecomputes(rawSheetsApi = null, clientName = null) {
   const keys = clientName
     ? [String(clientName).toLowerCase()]
     : [
       ...new Set([
         ..._unpersistedSkippedClientTabsByClient.keys(),
-        ..._inFlightImmediateClientFlushByClient.keys(),
         ..._pendingClientTabsByClient.keys(),
       ]),
     ];
   for (const key of keys) {
-    const inFlight = _inFlightImmediateClientFlushByClient.get(key);
-    const unpersistedSet = _unpersistedSkippedClientTabsByClient.get(key);
     const ctx = _pendingClientCtxByClient.get(key);
     if (!ctx) continue;
     const unpersistedSet = _unpersistedSkippedClientTabsByClient.get(key);
@@ -1897,5767 +1892,5720 @@ export async function flushImmediateAndScheduleBackgroundClientRecomputes(rawShe
       await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
         console.warn("[masterEngineService] Immediate client flush warning:", e.message)
       );
-      if (inFlight || (unpersistedSet && unpersistedSet.size > 0)) {
-        if (ctx) {
-          await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
-            console.warn("[masterEngineService] Immediate client flush warning:", e.message)
-          );
-        } else if (inFlight) {
-          await inFlight.catch(() => { });
-        }
-        continue;
-      }
-      const pendingSet = _pendingClientTabsByClient.get(key);
-      if (pendingSet && pendingSet.size > 0 && !_inFlightClientRecomputeByClient.has(key)) {
-        if (ctx && pendingSet && pendingSet.size > 0 && !_inFlightClientRecomputeByClient.has(key)) {
-          scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
-        }
-      }
+      continue;
     }
-
-    const DIRECT_INPUT_CLIENT_TABS = new Set([
-      "Confirmed",
-      "Pipeline",
-      "KeyInfo",
-      "Sessions",
-      "AppLog",
-      "Welcome",
-    ]);
-
-    const FULLY_SELF_CONTAINED_CLIENT_TABS = new Set([
-      "Confirmed",
-      "Pipeline",
-      "KeyInfo",
-      "Salaries",
-    ]);
-
-    function doesClientRangeNeedFormulaFlush_(parsed, clientName = "") {
-      if (!parsed || !parsed.tabName) return false;
-      const key = String(clientName || "").toLowerCase();
-      const unpersistedSkipped = key ? _unpersistedSkippedClientTabsByClient.get(key) : null;
-      if (unpersistedSkipped && unpersistedSkipped.has(parsed.tabName)) {
-        return true;
-      }
-      if (DIRECT_INPUT_CLIENT_TABS.has(parsed.tabName)) return false;
-
-      const sourceTabs = key ? _activeRecomputeSourceTabsByClient.get(key) : null;
-
-      if (parsed.tabName === "Salaries") {
-        // Salaries only depends on KeyInfo and itself, and is 100% evaluated immediately in Step 1
-        if (!sourceTabs || !sourceTabs.has("KeyInfo")) {
-          return false;
-        }
-        const sR = parsed.startRow0 ?? 0;
-        const eR = parsed.endRow0 ?? 999;
-        return eR >= 54 || sR >= 54;
-      }
-
-      if (parsed.tabName === "Outgoings") {
-        const sR = parsed.startRow0 ?? 0;
-        const eR = parsed.endRow0 ?? 999;
-        // Rows 225..226 in Col E (E225:E226) contain formulas (=E226 and =IF(KeyInfo!$D$21=..., 1, ...)),
-        // while Columns A..D contain static labels/dropdowns.
-        const touchesRechargedRows = sR <= 227 && eR >= 224;
-        if (parsed.endCol0 !== null && parsed.endCol0 !== undefined && parsed.endCol0 <= 4) {
-          return Boolean(
-            sR <= 225 &&
-            eR >= 224 &&
-            parsed.endCol0 >= 4 &&
-            (!sourceTabs || sourceTabs.has("KeyInfo") || sourceTabs.has("Outgoings"))
-          );
-        }
-        // In Outgoings, Rows 12..110 (direct costs), Rows 118..121 (Dividends in lieu of salary),
-        // and Rows 126..224 (Expenses) only depend on Outgoings and KeyInfo,
-        // which are already evaluated in Step 1.
-        // Rows 225..228 (Recharged expenses rows & Overheads subtotals) depend on Confirmed, KeyInfo & Performance.
-        // Rows 6..9 (Salaries/Performance), Row 111 (Making up CoS from Dashboard),
-        // and Rows 233+ (Bonus & Grand Total Overheads) depend on other tabs.
-        const touchesRow111 = sR <= 110 && eR >= 110;
-        const touchesBottomSummaries = eR >= 232 || sR >= 232;
-        const touchesStaffSummaries = sR <= 8 && eR >= 5 && Boolean(sourceTabs && (sourceTabs.has("Salaries") || sourceTabs.has("KeyInfo")));
-        const touchesRechargedDeps =
-          touchesRechargedRows &&
-          (!sourceTabs || sourceTabs.has("Confirmed") || sourceTabs.has("KeyInfo") || sourceTabs.has("Outgoings"));
-        return touchesRow111 || touchesBottomSummaries || touchesStaffSummaries || touchesRechargedDeps;
-      }
-
-      if (parsed.tabName === "NBtoFind") {
-        // When only NBtoFind was edited, all NBtoFind formulas were already evaluated in Step 1
-        if (sourceTabs && sourceTabs.size === 1 && sourceTabs.has("NBtoFind")) {
-          return false;
-        }
-        return true;
-      }
-
-      if (parsed.tabName === "Cash") {
-        // When only Cash was edited, all Cash formulas were already evaluated in Step 1
-        if (sourceTabs && sourceTabs.size === 1 && sourceTabs.has("Cash")) {
-          return false;
-        }
-        return true;
-      }
-
-      if (parsed.tabName === "Budget") {
-        if (sourceTabs && sourceTabs.size === 1 && sourceTabs.has("Budget")) {
-          return false;
-        }
-        return true;
-      }
-
-      return true;
+    const pendingSet = _pendingClientTabsByClient.get(key);
+    if (pendingSet && pendingSet.size > 0 && !_inFlightClientRecomputeByClient.has(key)) {
+      scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
     }
+  }
+}
 
-    function remapNotesGridRows_(notesGrid, mapRowFn) {
-      if (!notesGrid || typeof notesGrid !== "object") return Object.create(null);
-      const next = Object.create(null);
-      for (const [k, v] of Object.entries(notesGrid)) {
-        if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
-        if (k === "__bg_colors" && v && typeof v === "object") {
-          const remappedColors = Object.create(null);
-          for (const [ck, cv] of Object.entries(v)) {
-            if (ck === "__proto__" || ck === "constructor" || ck === "prototype") continue;
-            const cColon = ck.indexOf(":");
-            if (cColon < 0) continue;
-            const oldR0 = Number(ck.slice(0, cColon));
-            const cPart = ck.slice(cColon + 1);
-            if (!Number.isInteger(oldR0)) continue;
-            const newR0 = mapRowFn(oldR0);
-            if (newR0 >= 0) {
-              remappedColors[`${newR0}:${cPart}`] = cv;
-            }
-          }
-          next.__bg_colors = remappedColors;
-          continue;
-        }
-        if (k.startsWith("__")) {
-          next[k] = v;
-          continue;
-        }
-        const colonIdx = k.indexOf(":");
-        if (colonIdx < 0) continue;
-        const oldR0 = Number(k.slice(0, colonIdx));
-        const cPart = k.slice(colonIdx + 1);
+const DIRECT_INPUT_CLIENT_TABS = new Set([
+  "Confirmed",
+  "Pipeline",
+  "KeyInfo",
+  "Sessions",
+  "AppLog",
+  "Welcome",
+]);
+
+const FULLY_SELF_CONTAINED_CLIENT_TABS = new Set([
+  "Confirmed",
+  "Pipeline",
+  "KeyInfo",
+  "Salaries",
+]);
+
+function doesClientRangeNeedFormulaFlush_(parsed, clientName = "") {
+  if (!parsed || !parsed.tabName) return false;
+  const key = String(clientName || "").toLowerCase();
+  const unpersistedSkipped = key ? _unpersistedSkippedClientTabsByClient.get(key) : null;
+  if (unpersistedSkipped && unpersistedSkipped.has(parsed.tabName)) {
+    return true;
+  }
+  if (DIRECT_INPUT_CLIENT_TABS.has(parsed.tabName)) return false;
+
+  const sourceTabs = key ? _activeRecomputeSourceTabsByClient.get(key) : null;
+
+  if (parsed.tabName === "Salaries") {
+    // Salaries only depends on KeyInfo and itself, and is 100% evaluated immediately in Step 1
+    if (!sourceTabs || !sourceTabs.has("KeyInfo")) {
+      return false;
+    }
+    const sR = parsed.startRow0 ?? 0;
+    const eR = parsed.endRow0 ?? 999;
+    return eR >= 54 || sR >= 54;
+  }
+
+  if (parsed.tabName === "Outgoings") {
+    const sR = parsed.startRow0 ?? 0;
+    const eR = parsed.endRow0 ?? 999;
+    // Rows 225..226 in Col E (E225:E226) contain formulas (=E226 and =IF(KeyInfo!$D$21=..., 1, ...)),
+    // while Columns A..D contain static labels/dropdowns.
+    const touchesRechargedRows = sR <= 227 && eR >= 224;
+    if (parsed.endCol0 !== null && parsed.endCol0 !== undefined && parsed.endCol0 <= 4) {
+      return Boolean(
+        sR <= 225 &&
+        eR >= 224 &&
+        parsed.endCol0 >= 4 &&
+        (!sourceTabs || sourceTabs.has("KeyInfo") || sourceTabs.has("Outgoings"))
+      );
+    }
+    // In Outgoings, Rows 12..110 (direct costs), Rows 118..121 (Dividends in lieu of salary),
+    // and Rows 126..224 (Expenses) only depend on Outgoings and KeyInfo,
+    // which are already evaluated in Step 1.
+    // Rows 225..228 (Recharged expenses rows & Overheads subtotals) depend on Confirmed, KeyInfo & Performance.
+    // Rows 6..9 (Salaries/Performance), Row 111 (Making up CoS from Dashboard),
+    // and Rows 233+ (Bonus & Grand Total Overheads) depend on other tabs.
+    const touchesRow111 = sR <= 110 && eR >= 110;
+    const touchesBottomSummaries = eR >= 232 || sR >= 232;
+    const touchesStaffSummaries = sR <= 8 && eR >= 5 && Boolean(sourceTabs && (sourceTabs.has("Salaries") || sourceTabs.has("KeyInfo")));
+    const touchesRechargedDeps =
+      touchesRechargedRows &&
+      (!sourceTabs || sourceTabs.has("Confirmed") || sourceTabs.has("KeyInfo") || sourceTabs.has("Outgoings"));
+    return touchesRow111 || touchesBottomSummaries || touchesStaffSummaries || touchesRechargedDeps;
+  }
+
+  if (parsed.tabName === "NBtoFind") {
+    // When only NBtoFind was edited, all NBtoFind formulas were already evaluated in Step 1
+    if (sourceTabs && sourceTabs.size === 1 && sourceTabs.has("NBtoFind")) {
+      return false;
+    }
+    return true;
+  }
+
+  if (parsed.tabName === "Cash") {
+    // When only Cash was edited, all Cash formulas were already evaluated in Step 1
+    if (sourceTabs && sourceTabs.size === 1 && sourceTabs.has("Cash")) {
+      return false;
+    }
+    return true;
+  }
+
+  if (parsed.tabName === "Budget") {
+    if (sourceTabs && sourceTabs.size === 1 && sourceTabs.has("Budget")) {
+      return false;
+    }
+    return true;
+  }
+
+  return true;
+}
+
+function remapNotesGridRows_(notesGrid, mapRowFn) {
+  if (!notesGrid || typeof notesGrid !== "object") return Object.create(null);
+  const next = Object.create(null);
+  for (const [k, v] of Object.entries(notesGrid)) {
+    if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+    if (k === "__bg_colors" && v && typeof v === "object") {
+      const remappedColors = Object.create(null);
+      for (const [ck, cv] of Object.entries(v)) {
+        if (ck === "__proto__" || ck === "constructor" || ck === "prototype") continue;
+        const cColon = ck.indexOf(":");
+        if (cColon < 0) continue;
+        const oldR0 = Number(ck.slice(0, cColon));
+        const cPart = ck.slice(cColon + 1);
         if (!Number.isInteger(oldR0)) continue;
         const newR0 = mapRowFn(oldR0);
         if (newR0 >= 0) {
-          next[`${newR0}:${cPart}`] = v;
+          remappedColors[`${newR0}:${cPart}`] = cv;
         }
       }
-      return next;
+      next.__bg_colors = remappedColors;
+      continue;
     }
-
-    const _lastClientEditTimestampMap = new Map();
-
-    export function getLastClientEditTimestamp(clientName) {
-      if (!clientName) return 0;
-      return _lastClientEditTimestampMap.get(String(clientName).trim().toLowerCase()) || 0;
+    if (k.startsWith("__")) {
+      next[k] = v;
+      continue;
     }
+    const colonIdx = k.indexOf(":");
+    if (colonIdx < 0) continue;
+    const oldR0 = Number(k.slice(0, colonIdx));
+    const cPart = k.slice(colonIdx + 1);
+    if (!Number.isInteger(oldR0)) continue;
+    const newR0 = mapRowFn(oldR0);
+    if (newR0 >= 0) {
+      next[`${newR0}:${cPart}`] = v;
+    }
+  }
+  return next;
+}
 
-    function formulaRefsMissingSheetInMap_(f, currentTab, loadedMap) {
-      if (typeof f !== "string" || !f.includes("!")) return false;
-      const stripped = f.replace(/"(?:""|[^"])*"/g, "");
-      const hasTab = (name) =>
-        loadedMap instanceof Set ? loadedMap.has(name) : Boolean(loadedMap && loadedMap[name]);
-      const matches = stripped.matchAll(/(?:'([^']+)'|([A-Za-z0-9_]+))!/g);
-      for (const m of matches) {
-        const refTab = m[1] || m[2];
-        if (refTab && refTab !== currentTab && refTab !== "REF" && !hasTab(refTab)) {
-          return true;
+const _lastClientEditTimestampMap = new Map();
+
+export function getLastClientEditTimestamp(clientName) {
+  if (!clientName) return 0;
+  return _lastClientEditTimestampMap.get(String(clientName).trim().toLowerCase()) || 0;
+}
+
+function formulaRefsMissingSheetInMap_(f, currentTab, loadedMap) {
+  if (typeof f !== "string" || !f.includes("!")) return false;
+  const stripped = f.replace(/"(?:""|[^"])*"/g, "");
+  const hasTab = (name) =>
+    loadedMap instanceof Set ? loadedMap.has(name) : Boolean(loadedMap && loadedMap[name]);
+  const matches = stripped.matchAll(/(?:'([^']+)'|([A-Za-z0-9_]+))!/g);
+  for (const m of matches) {
+    const refTab = m[1] || m[2];
+    if (refTab && refTab !== currentTab && refTab !== "REF" && !hasTab(refTab)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const CORE_CLIENT_FORMULA_TABS_SET = new Set([
+  ...CORE_CLIENT_TABS,
+  "REF",
+  "AppData",
+  "FormCheck",
+]);
+
+async function loadReferencedReconGridsForClientFormulas_(ctx, formulaGrids, rawSheetsApi = null) {
+  const reconTabs = new Set();
+  const rx = /IMPORTRANGE\s*\(\s*(?:KeyInfo!)?\$?G\$?1\s*,\s*"([^"]+)"/gi;
+  for (const fGrid of formulaGrids || []) {
+    if (!Array.isArray(fGrid)) continue;
+    for (let r = 0; r < fGrid.length; r++) {
+      const row = fGrid[r];
+      if (!Array.isArray(row)) continue;
+      for (let c = 0; c < row.length; c++) {
+        const f = row[c];
+        if (typeof f !== "string" || !f.includes("!") || !/IMPORTRANGE/i.test(f)) continue;
+        rx.lastIndex = 0;
+        let m;
+        while ((m = rx.exec(f)) !== null) {
+          const refRange = m[1] || "";
+          const bang = refRange.indexOf("!");
+          if (bang > 0) {
+            const tabName = refRange.slice(0, bang).trim().replace(/^'|'$/g, "");
+            if (tabName) reconTabs.add(tabName);
+          }
         }
       }
+    }
+  }
+  if (reconTabs.size === 0) return null;
+  const out = Object.create(null);
+  await Promise.all(
+    [...reconTabs].map(async (tabName) => {
+      const rec = await getOrLoadVirtualTabGrid_(ctx, "recon", tabName, rawSheetsApi, {
+        valuesOnly: true,
+      }).catch(() => null);
+      if (rec && Array.isArray(rec.values_grid)) {
+        out[tabName] = { values: rec.values_grid };
+      }
+    })
+  );
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
+  if (!ctx || ctx.jobsMode !== "relational") return;
+  const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => t === "Confirmed" || t === "Pipeline"))];
+  if (relevant.length === 0) return;
+  try {
+    const { reconcileClientRelationalJobsFromGrids } = await import("./relationalJobsService.js");
+    await reconcileClientRelationalJobsFromGrids(ctx, relevant);
+  } catch (err) {
+    console.warn(`[masterEngineService] Phase 2 relational job reconciliation warning (${ctx.clientName}):`, err?.message);
+  }
+}
+
+async function recomputeAndPersistImmediateClientTabs_(
+  ctx,
+  targetTabNames,
+  rawSheetsApi = null,
+  { notesChangedTabs = new Set(), deferBackgroundRecompute = false } = {}
+) {
+  const clientKey = String(ctx.clientName || "").toLowerCase();
+  _lastClientEditTimestampMap.set(clientKey, Date.now());
+
+  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
+  const skippedSet = _unpersistedSkippedClientTabsByClient.get(clientKey);
+  const pendingNotesSet = _pendingNotesChangedTabsByClient.get(clientKey);
+
+  const allImmediateTabs = [
+    ...new Set([...(skippedSet ? [...skippedSet] : []), ...(Array.isArray(targetTabNames) ? targetTabNames : [])]),
+  ].filter((t) => t && !nonFormulaTabs.has(t));
+
+  if (skippedSet) skippedSet.clear();
+
+  const mergedNotesChanged = new Set([
+    ...(pendingNotesSet ? [...pendingNotesSet] : []),
+    ...(notesChangedTabs instanceof Set ? [...notesChangedTabs] : Array.isArray(notesChangedTabs) ? notesChangedTabs : []),
+  ]);
+  if (pendingNotesSet) pendingNotesSet.clear();
+
+  if (allImmediateTabs.length === 0) {
+    if (hasPendingOrInFlightClientRecompute_(clientKey)) {
+      scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
+    }
+    return;
+  }
+
+  const localGrids = Object.create(null);
+  const records = {};
+
+  // Always include KeyInfo in localGrids if cached (or load it if a tab besides Confirmed/Pipeline needs it)
+  const keyInfoCacheKey = `${clientKey}::client::KeyInfo`;
+  const keyInfoEntry = _gridMemoryCache.get(keyInfoCacheKey);
+  let keyInfoRec = keyInfoEntry && keyInfoEntry.expiresAt > Date.now() ? keyInfoEntry.record : null;
+  if (
+    !keyInfoRec &&
+    allImmediateTabs.some((t) => t !== "Confirmed" && t !== "Pipeline")
+  ) {
+    keyInfoRec = await getOrLoadVirtualTabGrid_(ctx, "client", "KeyInfo", rawSheetsApi, { valuesOnly: true });
+  }
+  if (keyInfoRec && !allImmediateTabs.includes("KeyInfo")) {
+    localGrids.KeyInfo = {
+      values: Array.isArray(keyInfoRec.values_grid) ? keyInfoRec.values_grid : [],
+      formulas: Array.isArray(keyInfoRec.formulas_grid) ? keyInfoRec.formulas_grid : [],
+      notes: keyInfoRec.notes_grid || {},
+    };
+  }
+
+  // If OutgNotes is updated, include cached Outgoings (with notes) so notes sync accurately
+  if (allImmediateTabs.includes("OutgNotes") && !allImmediateTabs.includes("Outgoings")) {
+    const outgEntry = _gridMemoryCache.get(`${clientKey}::client::Outgoings`);
+    const outgRec =
+      outgEntry && outgEntry.expiresAt > Date.now() && outgEntry.record?._notesLoaded !== false
+        ? outgEntry.record
+        : null;
+    if (outgRec) {
+      localGrids.Outgoings = {
+        values: Array.isArray(outgRec.values_grid) ? outgRec.values_grid : [],
+        formulas: Array.isArray(outgRec.formulas_grid) ? outgRec.formulas_grid : [],
+        notes: outgRec.notes_grid || {},
+      };
+    }
+  }
+
+  for (const tabName of allImmediateTabs) {
+    const cacheKey = `${clientKey}::client::${tabName}`;
+    const entry = _gridMemoryCache.get(cacheKey);
+    let rec =
+      entry && entry.expiresAt > Date.now() && !entry.record?._valuesOnlyLoaded
+        ? entry.record
+        : null;
+    if (!rec) {
+      rec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheetsApi);
+    }
+    if (!rec) continue;
+    records[tabName] = rec;
+    const origVals = Array.isArray(rec.values_grid) ? rec.values_grid : [];
+    const vGrid = origVals.map((r) => (Array.isArray(r) ? [...r] : []));
+    const fGrid =
+      Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0
+        ? rec.formulas_grid
+        : vGrid.map((r) => [...r]);
+    localGrids[tabName] = {
+      values: vGrid,
+      formulas: fGrid,
+      notes: rec.notes_grid || {},
+    };
+  }
+
+  // Wipe self-contained formula cells on each target tab so recalculateClientGrids computes fresh values
+  const preservedFormulaValues = new Map();
+  for (const tabName of allImmediateTabs) {
+    const entry = localGrids[tabName];
+    if (!entry) continue;
+    const { values: vGrid, formulas: fGrid } = entry;
+    const maxWipeR =
+      (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
+        fGrid.length > 350
+        ? Math.min(fGrid.length, findLastActiveClientJobRow_(vGrid, tabName.startsWith("Conf") ? 295 : 105) + 4)
+        : fGrid.length;
+    for (let r = 0; r < maxWipeR; r++) {
+      const rowF = fGrid[r] || [];
+      for (let c = 0; c < rowF.length; c++) {
+        const f = rowF[c];
+        if (typeof f === "string" && f.startsWith("=")) {
+          const curV = vGrid[r]?.[c];
+          if (typeof curV === "string" && curV.startsWith("#REF! (Array result was not expanded")) {
+            continue;
+          }
+          if (tabName === "DataForReport" && (c === 6 || r === 2)) {
+            continue;
+          }
+          const refsMissing = formulaRefsMissingSheetInMap_(f, tabName, localGrids);
+          const hasImportRange = /IMPORTRANGE\s*\(/i.test(f);
+          if (
+            (refsMissing || hasImportRange) &&
+            curV !== "" &&
+            curV !== null &&
+            curV !== undefined &&
+            !(typeof curV === "string" && curV.startsWith("#VALUE! (Cannot coerce 'Symbol("))
+          ) {
+            preservedFormulaValues.set(`${tabName}!${r},${c}`, curV);
+          }
+          if (refsMissing) {
+            continue;
+          }
+          if (vGrid[r]) vGrid[r][c] = "";
+        }
+      }
+    }
+  }
+
+  const reconGrids = localGrids.Cash?.formulas
+    ? await loadReferencedReconGridsForClientFormulas_(ctx, [localGrids.Cash.formulas], rawSheetsApi)
+    : null;
+
+  recalculateClientGrids(localGrids, {
+    changedTabs: allImmediateTabs,
+    onlyTabs: new Set(allImmediateTabs),
+    reconGrids,
+    preservedFormulaValues,
+  });
+
+  await Promise.all(
+    allImmediateTabs.map((t) => {
+      if (!localGrids[t]) return Promise.resolve();
+      const isFullySelfContained = FULLY_SELF_CONTAINED_CLIENT_TABS.has(t);
+      return saveVirtualTabGrid_(
+        ctx,
+        "client",
+        t,
+        localGrids[t].values,
+        localGrids[t].formulas,
+        records[t]?.notes_grid || {},
+        {
+          valuesOnly: !mergedNotesChanged.has(t),
+          markPersistedImmediate: isFullySelfContained,
+          markPersistedToDbImmediate: true,
+        }
+      );
+    })
+  );
+
+  await syncPhase2RelationalJobsIfEnabled_(ctx, allImmediateTabs);
+
+  let activeSourceSet = _activeRecomputeSourceTabsByClient.get(clientKey);
+  if (!activeSourceSet) {
+    activeSourceSet = new Set();
+    _activeRecomputeSourceTabsByClient.set(clientKey, activeSourceSet);
+  }
+  for (const t of allImmediateTabs) activeSourceSet.add(t);
+
+  if (
+    ctx.clientMode === "supabase" &&
+    !ctx._suppressBridgeOutbound &&
+    ctx.sheetBridgeMode &&
+    ctx.sheetBridgeMode !== "off"
+  ) {
+    try {
+      const { scheduleOutboundSheetBridgeSync } = await import("./clientSheetBridgeService.js");
+      scheduleOutboundSheetBridgeSync(ctx.clientName, allImmediateTabs);
+    } catch { }
+  }
+
+  queuePendingClientTabs_(ctx, allImmediateTabs);
+  if (!deferBackgroundRecompute) {
+    scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
+  }
+}
+
+async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, rawSheetsApi) {
+  const clientKey = String(ctx.clientName || "").toLowerCase();
+  _lastClientEditTimestampMap.set(clientKey, Date.now());
+  if (Array.isArray(updatedTabNames) && updatedTabNames.length > 0) {
+    queuePendingClientTabs_(ctx, updatedTabNames);
+  }
+  const skippedSet = _unpersistedSkippedClientTabsByClient.get(clientKey);
+  if (skippedSet && skippedSet.size > 0) {
+    queuePendingClientTabs_(ctx, [...skippedSet]);
+    skippedSet.clear();
+  }
+
+  while (_inFlightClientRecomputeByClient.has(clientKey)) {
+    await _inFlightClientRecomputeByClient.get(clientKey).catch(() => { });
+  }
+
+  const pendingSetCheck = _pendingClientTabsByClient.get(clientKey);
+  if (!pendingSetCheck || pendingSetCheck.size === 0) {
+    _activeRecomputeSourceTabsByClient.delete(clientKey);
+    return;
+  }
+
+  const runPassPromise = (async () => {
+    while (true) {
+      const pendingSet = _pendingClientTabsByClient.get(clientKey);
+      if (!pendingSet || pendingSet.size === 0) break;
+      const allUpdatedTabs = [...pendingSet];
+      pendingSet.clear();
+      await executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs, rawSheetsApi);
+    }
+  })();
+
+  _inFlightClientRecomputeByClient.set(clientKey, runPassPromise);
+  try {
+    await runPassPromise;
+  } finally {
+    if (_inFlightClientRecomputeByClient.get(clientKey) === runPassPromise) {
+      _inFlightClientRecomputeByClient.delete(clientKey);
+      if (!(_pendingClientTabsByClient.get(clientKey)?.size > 0)) {
+        _activeRecomputeSourceTabsByClient.delete(clientKey);
+      }
+    }
+  }
+}
+
+export async function recomputeClientFormulasForBridge(clientName, changedTabs = []) {
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx || ctx.clientMode !== "supabase") return;
+  const tabs = Array.isArray(changedTabs) && changedTabs.length > 0 ? changedTabs : ["Confirmed"];
+  await recomputeAndPersistImmediateClientTabs_(
+    { ...ctx, sheetRole: "client", _suppressBridgeOutbound: true },
+    tabs,
+    null
+  );
+}
+
+const CLIENT_TAB_DIRECT_DEPS = {
+  KeyInfo: [],
+  Confirmed: [],
+  Pipeline: [],
+  Salaries: ["KeyInfo"],
+  ConfCalcs: ["Confirmed", "KeyInfo"],
+  PipeCalcs: ["Pipeline", "KeyInfo"],
+  Calcs: ["ConfCalcs", "PipeCalcs", "KeyInfo"],
+  ErrorCheck: ["ConfCalcs", "PipeCalcs"],
+  RevenueConf: ["ConfCalcs", "KeyInfo"],
+  RevenuePipe: ["PipeCalcs", "KeyInfo"],
+  Budget: ["KeyInfo", "Performance"],
+  NBtoFind: ["KeyInfo", "Budget", "Dashboard"],
+  OutgNotes: ["Outgoings", "KeyInfo"],
+  Outgoings: ["KeyInfo", "Salaries", "Performance", "Dashboard", "Confirmed", "Monthly"],
+  Performance: ["KeyInfo", "Calcs", "NBtoFind", "Outgoings"],
+  Dashboard: ["Performance", "ErrorCheck", "KeyInfo", "Outgoings", "Calcs"],
+  Monthly: ["KeyInfo", "Dashboard", "Outgoings", "ConfCalcs", "PipeCalcs", "OutgNotes"],
+  VAT: ["KeyInfo", "Outgoings", "Calcs"],
+  Cash: ["KeyInfo", "Calcs", "Outgoings", "Performance", "VAT"],
+  GPbyPL: ["Performance", "Outgoings", "KeyInfo", "Dashboard", "Calcs"],
+  Year0Data: ["Performance", "KeyInfo", "ErrorCheck"],
+  InvoicesSent: ["Monthly"],
+  CashIncomingConf: ["Monthly"],
+  CashIncomingPipe: ["Monthly"],
+  ContrPayments: ["Monthly", "KeyInfo"],
+  Report: ["KeyInfo", "DataForReport", "Dashboard", "Cash"],
+  DataForReport: ["Report", "KeyInfo"],
+};
+
+async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs, rawSheetsApi) {
+  const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
+  const hasCalcRelevantChange = allUpdatedTabs.some((t) => !nonFormulaTabs.has(t));
+  if (!hasCalcRelevantChange) {
+    return;
+  }
+
+  const changedSet = new Set(allUpdatedTabs);
+  const unaffectedTabs = new Set();
+  if (!changedSet.has("KeyInfo")) {
+    unaffectedTabs.add("KeyInfo");
+    if (!changedSet.has("Salaries")) {
+      unaffectedTabs.add("Salaries");
+    }
+    if (!changedSet.has("Budget")) {
+      unaffectedTabs.add("Budget");
+    }
+    if (!changedSet.has("DataForReport") && !changedSet.has("Report")) {
+      unaffectedTabs.add("DataForReport");
+    }
+    if (!changedSet.has("Confirmed") && !changedSet.has("ConfCalcs") && !changedSet.has("RevenueConf")) {
+      unaffectedTabs.add("Confirmed");
+      unaffectedTabs.add("ConfCalcs");
+      unaffectedTabs.add("RevenueConf");
+      if (!changedSet.has("CashIncomingConf")) unaffectedTabs.add("CashIncomingConf");
+      if (!changedSet.has("InvoicesSent")) unaffectedTabs.add("InvoicesSent");
+    }
+    if (!changedSet.has("Pipeline") && !changedSet.has("PipeCalcs") && !changedSet.has("RevenuePipe")) {
+      unaffectedTabs.add("Pipeline");
+      unaffectedTabs.add("PipeCalcs");
+      unaffectedTabs.add("RevenuePipe");
+      if (!changedSet.has("CashIncomingPipe")) unaffectedTabs.add("CashIncomingPipe");
+    }
+    if (
+      unaffectedTabs.has("ConfCalcs") &&
+      unaffectedTabs.has("PipeCalcs") &&
+      !changedSet.has("Calcs") &&
+      !changedSet.has("ErrorCheck")
+    ) {
+      unaffectedTabs.add("Calcs");
+      unaffectedTabs.add("ErrorCheck");
+      if (
+        unaffectedTabs.has("Budget") &&
+        !changedSet.has("NBtoFind") &&
+        !changedSet.has("Dashboard")
+      ) {
+        unaffectedTabs.add("NBtoFind");
+      }
+      if (
+        unaffectedTabs.has("Salaries") &&
+        unaffectedTabs.has("NBtoFind") &&
+        !changedSet.has("Outgoings") &&
+        !changedSet.has("OutgNotes") &&
+        !changedSet.has("Monthly") &&
+        !changedSet.has("Performance") &&
+        !changedSet.has("Dashboard")
+      ) {
+        unaffectedTabs.add("Outgoings");
+        unaffectedTabs.add("OutgNotes");
+        unaffectedTabs.add("Monthly");
+        unaffectedTabs.add("Performance");
+        unaffectedTabs.add("Dashboard");
+        if (!changedSet.has("ContrPayments")) unaffectedTabs.add("ContrPayments");
+        if (!changedSet.has("Year0Data")) unaffectedTabs.add("Year0Data");
+        if (!changedSet.has("VAT")) unaffectedTabs.add("VAT");
+        if (!changedSet.has("GPbyPL")) unaffectedTabs.add("GPbyPL");
+      }
+    }
+  }
+
+  function isMonthlyColUnaffected_(c) {
+    if (!unaffectedTabs.has("KeyInfo")) return false;
+    if (c >= 175 && c <= 185 && unaffectedTabs.has("OutgNotes")) return true;
+    if ((c === 10 || (c >= 41 && c <= 57) || (c >= 83 && c <= 105)) && unaffectedTabs.has("PipeCalcs")) return true;
+    if (
+      (c === 2 ||
+        (c >= 17 && c <= 39) ||
+        (c >= 59 && c <= 81) ||
+        (c >= 107 && c <= 130) ||
+        (c >= 142 && c <= 167)) &&
+      unaffectedTabs.has("ConfCalcs")
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  // Record per-tab write revisions at pass start to prevent overwriting concurrent user edits
+  const startRevByTab = {};
+  for (const t of CORE_CLIENT_TABS) {
+    startRevByTab[t] = getTabWriteRevision_(ctx.clientName, "client", t);
+  }
+
+  const supabase = getSupabaseAdmin();
+  const recordsByTab = {};
+  const prevSnapshots = {};
+  const grids = Object.create(null);
+  const preservedFormulaValues = new Map();
+  const alreadyEvaluatedTabs = new Set();
+  const wasPersistedToDbImmediate = new Set();
+
+  // Compute exact set of unaffected tabs actually read by any affected tab
+  const neededUnaffectedDeps = new Set();
+  for (const tabName of CORE_CLIENT_TABS) {
+    if (nonFormulaTabs.has(tabName) || unaffectedTabs.has(tabName)) continue;
+    const deps = CLIENT_TAB_DIRECT_DEPS[tabName] || [];
+    for (const d of deps) {
+      if (tabName === "Monthly") {
+        if (d === "ConfCalcs" && unaffectedTabs.has("ConfCalcs") && isMonthlyColUnaffected_(2)) continue;
+        if (d === "PipeCalcs" && unaffectedTabs.has("PipeCalcs") && isMonthlyColUnaffected_(10)) continue;
+        if (d === "OutgNotes" && unaffectedTabs.has("OutgNotes") && isMonthlyColUnaffected_(175)) continue;
+      }
+      neededUnaffectedDeps.add(d);
+    }
+  }
+
+  // 1. Check in-memory cache first; batch-load only affected tabs + needed direct dependencies
+  const missingAffectedTabs = [];
+  const missingUnaffectedTabs = [];
+  const missingUnaffectedWithNotesTabs = [];
+  for (const tabName of CORE_CLIENT_TABS) {
+    if (nonFormulaTabs.has(tabName)) continue;
+    const cacheKey = `${clientKey}::client::${tabName}`;
+    const cached = _gridMemoryCache.get(cacheKey);
+    const isUnneededUnaffected = unaffectedTabs.has(tabName) && !neededUnaffectedDeps.has(tabName);
+    const isUnaffected = unaffectedTabs.has(tabName);
+    const requiresNotes = isUnaffected && tabName === "Outgoings" && !unaffectedTabs.has("OutgNotes");
+    if (
+      cached &&
+      cached.expiresAt > Date.now() &&
+      doesCachedClientRecordSatisfy_(cached.record, { valuesOnly: isUnaffected, includeNotes: requiresNotes })
+    ) {
+      recordsByTab[tabName] = cached.record;
+      if (cached.record._persistedImmediate) {
+        cached.record._persistedImmediate = false;
+        alreadyEvaluatedTabs.add(tabName);
+      }
+      if (cached.record._persistedToDbImmediate) {
+        cached.record._persistedToDbImmediate = false;
+        wasPersistedToDbImmediate.add(tabName);
+      }
+    } else if (isUnneededUnaffected) {
+      recordsByTab[tabName] = { values_grid: [], formulas_grid: [], notes_grid: {}, _skippedFetch: true };
+    } else if (requiresNotes) {
+      missingUnaffectedWithNotesTabs.push(tabName);
+    } else if (isUnaffected) {
+      missingUnaffectedTabs.push(tabName);
+    } else {
+      missingAffectedTabs.push(tabName);
+    }
+  }
+
+  if (
+    (missingAffectedTabs.length > 0 || missingUnaffectedTabs.length > 0 || missingUnaffectedWithNotesTabs.length > 0) &&
+    supabase
+  ) {
+    const dbRole = _useClientRoleFallback ? "master" : "client";
+    const queries = [];
+    if (missingAffectedTabs.length > 0) {
+      const targetNames = _useClientRoleFallback
+        ? missingAffectedTabs.map((t) => `Client::${t}`)
+        : missingAffectedTabs;
+      const CHUNK_SIZE = 5;
+      for (let i = 0; i < targetNames.length; i += CHUNK_SIZE) {
+        const chunk = targetNames.slice(i, i + CHUNK_SIZE);
+        queries.push(
+          supabase
+            .from("master_sheet_grids")
+            .select("id, client_id, client_name, sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count")
+            .eq("client_name", ctx.clientName)
+            .eq("sheet_role", dbRole)
+            .in("tab_name", chunk)
+            .then(({ data }) => ({ rows: data || [], valuesOnly: false, includeNotes: true }))
+        );
+      }
+    }
+    if (missingUnaffectedWithNotesTabs.length > 0) {
+      const targetNames = _useClientRoleFallback
+        ? missingUnaffectedWithNotesTabs.map((t) => `Client::${t}`)
+        : missingUnaffectedWithNotesTabs;
+      queries.push(
+        supabase
+          .from("master_sheet_grids")
+          .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
+          .eq("client_name", ctx.clientName)
+          .eq("sheet_role", dbRole)
+          .in("tab_name", targetNames)
+          .then(({ data }) => ({ rows: data || [], valuesOnly: true, includeNotes: true }))
+      );
+    }
+    if (missingUnaffectedTabs.length > 0) {
+      const targetNames = _useClientRoleFallback
+        ? missingUnaffectedTabs.map((t) => `Client::${t}`)
+        : missingUnaffectedTabs;
+      queries.push(
+        supabase
+          .from("master_sheet_grids")
+          .select("id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count")
+          .eq("client_name", ctx.clientName)
+          .eq("sheet_role", dbRole)
+          .in("tab_name", targetNames)
+          .then(({ data }) => ({ rows: data || [], valuesOnly: true, includeNotes: false }))
+      );
+    }
+    const queryResults = await Promise.all(queries);
+    for (const { rows, valuesOnly, includeNotes } of queryResults) {
+      for (const r of rows) {
+        const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
+        if (!recordsByTab[cleanTab]) {
+          expandClientTabFromStorage_(r, cleanTab, { valuesOnly });
+          r._valuesOnlyLoaded = valuesOnly;
+          r._notesLoaded = !valuesOnly || includeNotes;
+          recordsByTab[cleanTab] = r;
+          const existing = _gridMemoryCache.get(`${clientKey}::client::${cleanTab}`);
+          if (shouldStoreClientRecordInCache_(existing, { valuesOnly, includeNotes })) {
+            setGridMemoryCache_(`${clientKey}::client::${cleanTab}`, r);
+          }
+        }
+      }
+    }
+  }
+
+  for (const tabName of CORE_CLIENT_TABS) {
+    if (nonFormulaTabs.has(tabName)) continue;
+    let rec = recordsByTab[tabName];
+    if (rec && rec._skippedFetch) {
+      continue;
+    }
+    if (!rec) {
+      const isUnaff = unaffectedTabs.has(tabName);
+      rec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheetsApi, {
+        valuesOnly: isUnaff,
+        includeNotes: isUnaff && tabName === "Outgoings" && !unaffectedTabs.has("OutgNotes"),
+      });
+      recordsByTab[tabName] = rec;
+    }
+    const origVals = Array.isArray(rec.values_grid) ? rec.values_grid : [];
+    const isUnaffected = unaffectedTabs.has(tabName) || alreadyEvaluatedTabs.has(tabName);
+
+    if (isUnaffected) {
+      grids[tabName] = {
+        values: origVals,
+        formulas: rec.formulas_grid || [],
+        notes: rec.notes_grid || {},
+      };
+      continue;
+    }
+
+    prevSnapshots[tabName] = snapshotClientValuesForDiff_(tabName, origVals);
+
+    const vGrid = origVals.map((r) => (Array.isArray(r) ? [...r] : []));
+    const fGrid =
+      Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0
+        ? rec.formulas_grid
+        : vGrid.map((r) => [...r]);
+
+    // Wipe formula cell values (except blocked spill #REF! and DataForReport external IMPORTRANGE cols/rows)
+    // so recalculateClientGrids computes fresh values across all dependent tabs
+    const maxWipeR =
+      (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
+        fGrid.length > 350
+        ? Math.min(fGrid.length, findLastActiveClientJobRow_(vGrid, tabName.startsWith("Conf") ? 295 : 105) + 4)
+        : fGrid.length;
+    for (let r = 0; r < maxWipeR; r++) {
+      const rowF = fGrid[r] || [];
+      for (let c = 0; c < rowF.length; c++) {
+        const f = rowF[c];
+        if (typeof f === "string" && f.startsWith("=")) {
+          if (tabName === "Monthly" && isMonthlyColUnaffected_(c)) {
+            continue;
+          }
+          const curV = vGrid[r]?.[c];
+          if (typeof curV === "string" && curV.startsWith("#REF! (Array result was not expanded")) {
+            continue;
+          }
+          if (tabName === "DataForReport" && (c === 6 || r === 2)) {
+            continue;
+          }
+          const refsNonCore = formulaRefsMissingSheetInMap_(f, tabName, CORE_CLIENT_FORMULA_TABS_SET);
+          const hasImportRange = /IMPORTRANGE\s*\(/i.test(f);
+          if (
+            (refsNonCore || hasImportRange) &&
+            curV !== "" &&
+            curV !== null &&
+            curV !== undefined &&
+            !(typeof curV === "string" && curV.startsWith("#VALUE! (Cannot coerce 'Symbol("))
+          ) {
+            preservedFormulaValues.set(`${tabName}!${r},${c}`, curV);
+          }
+          if (refsNonCore) {
+            continue;
+          }
+          if (tabName === "Calcs" && curV !== "" && curV !== undefined && curV !== null) {
+            const refsPipe = f.includes("PipeCalcs");
+            const refsConf = f.includes("ConfCalcs");
+            if (refsPipe && !refsConf && unaffectedTabs.has("PipeCalcs")) continue;
+            if (refsConf && !refsPipe && unaffectedTabs.has("ConfCalcs")) continue;
+          }
+          if (vGrid[r]) vGrid[r][c] = "";
+        }
+      }
+    }
+
+    grids[tabName] = {
+      values: vGrid,
+      formulas: fGrid,
+      notes: rec.notes_grid || {},
+    };
+  }
+
+  const reconGrids =
+    grids.Cash?.formulas && !unaffectedTabs.has("Cash")
+      ? await loadReferencedReconGridsForClientFormulas_(ctx, [grids.Cash.formulas], rawSheetsApi)
+      : null;
+
+  recalculateClientGrids(grids, {
+    changedTabs: allUpdatedTabs,
+    unaffectedTabs,
+    alreadyEvaluatedTabs,
+    reconGrids,
+    preservedFormulaValues,
+  });
+
+  // 2. Persist any unpersisted updated tabs plus any downstream tabs whose evaluated values changed
+  //    (guarding against overwriting any tab mutated concurrently during this pass)
+  const concurrentUpdatedTabs = [];
+  const dirtyTabs = CORE_CLIENT_TABS.filter((t) => {
+    if (nonFormulaTabs.has(t) || unaffectedTabs.has(t) || alreadyEvaluatedTabs.has(t) || !grids[t]?.values?.length) {
       return false;
     }
+    if (getTabWriteRevision_(ctx.clientName, "client", t) !== startRevByTab[t]) {
+      concurrentUpdatedTabs.push(t);
+      return false;
+    }
+    if (changedSet.has(t) && !wasPersistedToDbImmediate.has(t)) return true;
+    return snapshotClientValuesForDiff_(t, grids[t].values) !== prevSnapshots[t];
+  });
 
-    const CORE_CLIENT_FORMULA_TABS_SET = new Set([
-      ...CORE_CLIENT_TABS,
-      "REF",
-      "AppData",
-      "FormCheck",
-    ]);
+  if (concurrentUpdatedTabs.length > 0) {
+    queuePendingClientTabs_(ctx, concurrentUpdatedTabs);
+  }
 
-    async function loadReferencedReconGridsForClientFormulas_(ctx, formulaGrids, rawSheetsApi = null) {
-      const reconTabs = new Set();
-      const rx = /IMPORTRANGE\s*\(\s*(?:KeyInfo!)?\$?G\$?1\s*,\s*"([^"]+)"/gi;
-      for (const fGrid of formulaGrids || []) {
-        if (!Array.isArray(fGrid)) continue;
-        for (let r = 0; r < fGrid.length; r++) {
-          const row = fGrid[r];
-          if (!Array.isArray(row)) continue;
-          for (let c = 0; c < row.length; c++) {
-            const f = row[c];
-            if (typeof f !== "string" || !f.includes("!") || !/IMPORTRANGE/i.test(f)) continue;
-            rx.lastIndex = 0;
-            let m;
-            while ((m = rx.exec(f)) !== null) {
-              const refRange = m[1] || "";
-              const bang = refRange.indexOf("!");
-              if (bang > 0) {
-                const tabName = refRange.slice(0, bang).trim().replace(/^'|'$/g, "");
-                if (tabName) reconTabs.add(tabName);
-              }
-            }
-          }
-        }
-      }
-      if (reconTabs.size === 0) return null;
-      const out = Object.create(null);
-      await Promise.all(
-        [...reconTabs].map(async (tabName) => {
-          const rec = await getOrLoadVirtualTabGrid_(ctx, "recon", tabName, rawSheetsApi, {
-            valuesOnly: true,
-          }).catch(() => null);
-          if (rec && Array.isArray(rec.values_grid)) {
-            out[tabName] = { values: rec.values_grid };
-          }
+  await Promise.all(
+    dirtyTabs.map((t) =>
+      saveVirtualTabGrid_(
+        ctx,
+        "client",
+        t,
+        grids[t].values,
+        grids[t].formulas,
+        recordsByTab[t]?.notes_grid || {},
+        { valuesOnly: !changedSet.has(t) || wasPersistedToDbImmediate.has(t) }
+      )
+    )
+  );
+
+  await syncPhase2RelationalJobsIfEnabled_(ctx, [...new Set([...allUpdatedTabs, ...dirtyTabs])]);
+
+  if (dirtyTabs.length > 0) {
+    await import("./cacheService.js")
+      .then(({ invalidatePmaClientCache }) =>
+        invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId)
+      )
+      .catch(() => { });
+    if (ctx.clientSheetId) {
+      const resolveCachedOrMemVals = async (tab) => {
+        if (Array.isArray(grids[tab]?.values) && grids[tab].values.length > 0) return grids[tab].values;
+        const memRec = _gridMemoryCache.get(`${clientKey}::client::${tab}`)?.record;
+        if (Array.isArray(memRec?.values_grid) && memRec.values_grid.length > 0) return memRec.values_grid;
+        const loaded = await getOrLoadVirtualTabGrid_(ctx, "client", tab, rawSheetsApi, { valuesOnly: true });
+        return Array.isArray(loaded?.values_grid) ? loaded.values_grid : [];
+      };
+      Promise.all([
+        resolveCachedOrMemVals("KeyInfo"),
+        resolveCachedOrMemVals("Dashboard"),
+        resolveCachedOrMemVals("Year0Data"),
+      ])
+        .then(async ([keyInfoValues, dashboardValues, year0Values]) => {
+          if (!dashboardValues.length) return;
+          const { warmPortalHomeFromVirtualGrids } = await import("./portalDataService.js");
+          await warmPortalHomeFromVirtualGrids({
+            clientSheetId: ctx.clientSheetId,
+            clientName: ctx.clientName,
+            keyInfoValues,
+            dashboardValues,
+            year0Values,
+          });
         })
-      );
-      return Object.keys(out).length > 0 ? out : null;
+        .catch(() => { });
     }
+  }
 
-    async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
-      if (!ctx || ctx.jobsMode !== "relational") return;
-      const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => t === "Confirmed" || t === "Pipeline"))];
-      if (relevant.length === 0) return;
-      try {
-        const { reconcileClientRelationalJobsFromGrids } = await import("./relationalJobsService.js");
-        await reconcileClientRelationalJobsFromGrids(ctx, relevant);
-      } catch (err) {
-        console.warn(`[masterEngineService] Phase 2 relational job reconciliation warning (${ctx.clientName}):`, err?.message);
-      }
+  // Refresh memory cache TTL for all loaded tabs of this client so consecutive operations stay warm
+  const refreshedExpiry = Date.now() + GRID_CACHE_TTL_MS;
+  for (const tabName of CORE_CLIENT_TABS) {
+    const cacheKey = `${clientKey}::client::${tabName}`;
+    const entry = _gridMemoryCache.get(cacheKey);
+    if (entry) {
+      entry.expiresAt = refreshedExpiry;
     }
+  }
 
-    async function recomputeAndPersistImmediateClientTabs_(
-      ctx,
-      targetTabNames,
-      rawSheetsApi = null,
-      { notesChangedTabs = new Set(), deferBackgroundRecompute = false } = {}
+  // Sync Stage 4 normalized mirror tables only when explicitly enabled (paused by default)
+  if (shouldSyncNormalizedMirrorTables()) {
+    const changedTabList = [...new Set([...allUpdatedTabs, ...dirtyTabs])];
+    syncStructuredClientTablesFromGrids_(ctx, grids, changedTabList).catch((e) =>
+      console.warn("[masterEngineService] Stage 4 relational sync warning:", e.message)
+    );
+  }
+
+  if (ctx.clientMode === "supabase" && ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+    const bridgeTabs = [...new Set([...allUpdatedTabs, ...dirtyTabs])];
+    if (bridgeTabs.length > 0) {
+      import("./clientSheetBridgeService.js")
+        .then(({ scheduleOutboundSheetBridgeSync }) =>
+          scheduleOutboundSheetBridgeSync(ctx.clientName, bridgeTabs)
+        )
+        .catch(() => { });
+    }
+  }
+}
+
+/**
+ * Intercepts Google Sheets v4 API calls from sheetsClient.js when a client's
+ * master_mode === 'supabase' (for Master/Recon) or client_mode === 'supabase' (for Client Sheet).
+ */
+export async function handleVirtualSheetsCall({
+  namespace,
+  method,
+  params,
+  ctx,
+  rawSheetsApi,
+}) {
+  const supabase = getSupabaseAdmin();
+  const sheetRole = ctx.sheetRole; // 'master' | 'recon' | 'client'
+  const spreadsheetId = params?.spreadsheetId || "";
+
+  // 1. values.get
+  if (namespace === "values" && method === "get") {
+    const rangeStr = params.range || "KeyInfo!A1:Z100";
+    const parsed = parseA1Range(rangeStr);
+    if (sheetRole === "client" && ctx.sheetBridgeMode === "live") {
+      await import("./clientSheetBridgeService.js")
+        .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
+        .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
+    }
+    if (
+      sheetRole === "client" &&
+      params.valueRenderOption !== "FORMULA" &&
+      doesClientRangeNeedFormulaFlush_(parsed, ctx.clientName)
     ) {
-      const clientKey = String(ctx.clientName || "").toLowerCase();
-      if (Array.isArray(targetTabNames) && targetTabNames.length > 0) {
-        queuePendingClientTabs_(ctx, targetTabNames, { isSkippedStep: true, notesChangedTabs });
-      } else {
-        _pendingClientCtxByClient.set(clientKey, ctx);
-        if (notesChangedTabs) {
-          queuePendingClientTabs_(ctx, [], { notesChangedTabs });
-        }
-      }
-
-      if (_inFlightImmediateClientFlushByClient.has(clientKey)) {
-        return _inFlightImmediateClientFlushByClient.get(clientKey);
-      }
-
-      const runLoop = (async () => {
-        while (true) {
-          const skippedSet = _unpersistedSkippedClientTabsByClient.get(clientKey);
-          if (!skippedSet || skippedSet.size === 0) break;
-          await runSingleImmediateClientTabsPass_(ctx, [], rawSheetsApi, { deferBackgroundRecompute });
-        }
-      })();
-
-      _inFlightImmediateClientFlushByClient.set(clientKey, runLoop);
-      try {
-        await runLoop;
-      } finally {
-        if (_inFlightImmediateClientFlushByClient.get(clientKey) === runLoop) {
-          _inFlightImmediateClientFlushByClient.delete(clientKey);
-        }
+      if (hasPendingOrInFlightClientRecompute_(ctx.clientName)) {
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Read-barrier formula recompute warning:", e.message)
+        );
       }
     }
-
-    async function runSingleImmediateClientTabsPass_(
-      ctx,
-      targetTabNames,
-      rawSheetsApi = null,
-      { notesChangedTabs = new Set(), deferBackgroundRecompute = false } = {}
-    ) {
-      const clientKey = String(ctx.clientName || "").toLowerCase();
-      _lastClientEditTimestampMap.set(clientKey, Date.now());
-
-      const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
-      const skippedSet = _unpersistedSkippedClientTabsByClient.get(clientKey);
-      const pendingNotesSet = _pendingNotesChangedTabsByClient.get(clientKey);
-
-      const allImmediateTabs = [
-        ...new Set([...(skippedSet ? [...skippedSet] : []), ...(Array.isArray(targetTabNames) ? targetTabNames : [])]),
-      ].filter((t) => t && !nonFormulaTabs.has(t));
-
-      if (skippedSet) skippedSet.clear();
-
-      const mergedNotesChanged = new Set([
-        ...(pendingNotesSet ? [...pendingNotesSet] : []),
-        ...(notesChangedTabs instanceof Set ? [...notesChangedTabs] : Array.isArray(notesChangedTabs) ? notesChangedTabs : []),
-      ]);
-      if (pendingNotesSet) pendingNotesSet.clear();
-
-      if (allImmediateTabs.length === 0) {
-        if (hasPendingOrInFlightClientRecompute_(clientKey)) {
-          scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
-        }
-        return;
-      }
-
-      const localGrids = Object.create(null);
-      const records = {};
-
-      // Always include KeyInfo in localGrids if cached (or load it if a tab besides Confirmed/Pipeline needs it)
-      const keyInfoCacheKey = `${clientKey}::client::KeyInfo`;
-      const keyInfoEntry = _gridMemoryCache.get(keyInfoCacheKey);
-      let keyInfoRec = keyInfoEntry && keyInfoEntry.expiresAt > Date.now() ? keyInfoEntry.record : null;
-      if (
-        !keyInfoRec &&
-        allImmediateTabs.some((t) => t !== "Confirmed" && t !== "Pipeline")
-      ) {
-        keyInfoRec = await getOrLoadVirtualTabGrid_(ctx, "client", "KeyInfo", rawSheetsApi, { valuesOnly: true });
-      }
-      if (keyInfoRec && !allImmediateTabs.includes("KeyInfo")) {
-        localGrids.KeyInfo = {
-          values: Array.isArray(keyInfoRec.values_grid) ? keyInfoRec.values_grid : [],
-          formulas: Array.isArray(keyInfoRec.formulas_grid) ? keyInfoRec.formulas_grid : [],
-          notes: keyInfoRec.notes_grid || {},
-        };
-      }
-
-      // If OutgNotes is updated, include cached Outgoings (with notes) so notes sync accurately
-      if (allImmediateTabs.includes("OutgNotes") && !allImmediateTabs.includes("Outgoings")) {
-        const outgEntry = _gridMemoryCache.get(`${clientKey}::client::Outgoings`);
-        const outgRec =
-          outgEntry && outgEntry.expiresAt > Date.now() && outgEntry.record?._notesLoaded !== false
-            ? outgEntry.record
-            : null;
-        if (outgRec) {
-          localGrids.Outgoings = {
-            values: Array.isArray(outgRec.values_grid) ? outgRec.values_grid : [],
-            formulas: Array.isArray(outgRec.formulas_grid) ? outgRec.formulas_grid : [],
-            notes: outgRec.notes_grid || {},
-          };
-        }
-      }
-
-      for (const tabName of allImmediateTabs) {
-        const cacheKey = `${clientKey}::client::${tabName}`;
-        const entry = _gridMemoryCache.get(cacheKey);
-        let rec =
-          entry && entry.expiresAt > Date.now() && !entry.record?._valuesOnlyLoaded
-            ? entry.record
-            : null;
-        if (!rec) {
-          rec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheetsApi);
-        }
-        if (!rec) continue;
-        records[tabName] = rec;
-        const origVals = Array.isArray(rec.values_grid) ? rec.values_grid : [];
-        const vGrid = origVals.map((r) => (Array.isArray(r) ? [...r] : []));
-        const fGrid =
-          Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0
-            ? rec.formulas_grid
-            : vGrid.map((r) => [...r]);
-        localGrids[tabName] = {
-          values: vGrid,
-          formulas: fGrid,
-          notes: rec.notes_grid || {},
-        };
-      }
-
-      // Wipe self-contained formula cells on each target tab so recalculateClientGrids computes fresh values
-      const preservedFormulaValues = new Map();
-      for (const tabName of allImmediateTabs) {
-        const entry = localGrids[tabName];
-        if (!entry) continue;
-        const { values: vGrid, formulas: fGrid } = entry;
-        const maxWipeR =
-          (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
-            fGrid.length > 350
-            ? Math.min(fGrid.length, findLastActiveClientJobRow_(vGrid, tabName.startsWith("Conf") ? 295 : 105) + 4)
-            : fGrid.length;
-        for (let r = 0; r < maxWipeR; r++) {
-          const rowF = fGrid[r] || [];
-          for (let c = 0; c < rowF.length; c++) {
-            const f = rowF[c];
-            if (typeof f === "string" && f.startsWith("=")) {
-              const curV = vGrid[r]?.[c];
-              if (typeof curV === "string" && curV.startsWith("#REF! (Array result was not expanded")) {
-                continue;
-              }
-              if (tabName === "DataForReport" && (c === 6 || r === 2)) {
-                continue;
-              }
-              const refsMissing = formulaRefsMissingSheetInMap_(f, tabName, localGrids);
-              const hasImportRange = /IMPORTRANGE\s*\(/i.test(f);
-              if (
-                (refsMissing || hasImportRange) &&
-                curV !== "" &&
-                curV !== null &&
-                curV !== undefined &&
-                !(typeof curV === "string" && curV.startsWith("#VALUE! (Cannot coerce 'Symbol("))
-              ) {
-                preservedFormulaValues.set(`${tabName}!${r},${c}`, curV);
-              }
-              if (refsMissing) {
-                continue;
-              }
-              if (vGrid[r]) vGrid[r][c] = "";
-            }
-          }
-        }
-      }
-
-      const reconGrids = localGrids.Cash?.formulas
-        ? await loadReferencedReconGridsForClientFormulas_(ctx, [localGrids.Cash.formulas], rawSheetsApi)
-        : null;
-
-      recalculateClientGrids(localGrids, {
-        changedTabs: allImmediateTabs,
-        onlyTabs: new Set(allImmediateTabs),
-        reconGrids,
-        preservedFormulaValues,
-      });
-
-      await Promise.all(
-        allImmediateTabs.map((t) => {
-          if (!localGrids[t]) return Promise.resolve();
-          const isFullySelfContained = FULLY_SELF_CONTAINED_CLIENT_TABS.has(t);
-          return saveVirtualTabGrid_(
-            ctx,
-            "client",
-            t,
-            localGrids[t].values,
-            localGrids[t].formulas,
-            records[t]?.notes_grid || {},
-            {
-              valuesOnly: !mergedNotesChanged.has(t),
-              markPersistedImmediate: isFullySelfContained,
-              markPersistedToDbImmediate: true,
-            }
-          );
-        })
-      );
-
-      await syncPhase2RelationalJobsIfEnabled_(ctx, allImmediateTabs);
-
-      let activeSourceSet = _activeRecomputeSourceTabsByClient.get(clientKey);
-      if (!activeSourceSet) {
-        activeSourceSet = new Set();
-        _activeRecomputeSourceTabsByClient.set(clientKey, activeSourceSet);
-      }
-      for (const t of allImmediateTabs) activeSourceSet.add(t);
-
-      if (
-        ctx.clientMode === "supabase" &&
-        !ctx._suppressBridgeOutbound &&
-        ctx.sheetBridgeMode &&
-        ctx.sheetBridgeMode !== "off"
-      ) {
-        try {
-          const { scheduleOutboundSheetBridgeSync } = await import("./clientSheetBridgeService.js");
-          scheduleOutboundSheetBridgeSync(ctx.clientName, allImmediateTabs);
-        } catch { }
-      }
-
-      queuePendingClientTabs_(ctx, allImmediateTabs);
-      if (!deferBackgroundRecompute) {
-        scheduleBackgroundClientRecompute_(ctx, rawSheetsApi);
-      }
-    }
-
-    async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, rawSheetsApi) {
-      const clientKey = String(ctx.clientName || "").toLowerCase();
-      _lastClientEditTimestampMap.set(clientKey, Date.now());
-      if (Array.isArray(updatedTabNames) && updatedTabNames.length > 0) {
-        queuePendingClientTabs_(ctx, updatedTabNames);
-      }
-      const skippedSet = _unpersistedSkippedClientTabsByClient.get(clientKey);
-      if (skippedSet && skippedSet.size > 0) {
-        queuePendingClientTabs_(ctx, [...skippedSet]);
-        skippedSet.clear();
-      }
-
-      while (_inFlightClientRecomputeByClient.has(clientKey)) {
-        await _inFlightClientRecomputeByClient.get(clientKey).catch(() => { });
-      }
-
-      const pendingSetCheck = _pendingClientTabsByClient.get(clientKey);
-      if (!pendingSetCheck || pendingSetCheck.size === 0) {
-        _activeRecomputeSourceTabsByClient.delete(clientKey);
-        return;
-      }
-
-      const runPassPromise = (async () => {
-        while (true) {
-          const pendingSet = _pendingClientTabsByClient.get(clientKey);
-          if (!pendingSet || pendingSet.size === 0) break;
-          const allUpdatedTabs = [...pendingSet];
-          pendingSet.clear();
-          await executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs, rawSheetsApi);
-        }
-      })();
-
-      _inFlightClientRecomputeByClient.set(clientKey, runPassPromise);
-      try {
-        await runPassPromise;
-      } finally {
-        if (_inFlightClientRecomputeByClient.get(clientKey) === runPassPromise) {
-          _inFlightClientRecomputeByClient.delete(clientKey);
-          if (!(_pendingClientTabsByClient.get(clientKey)?.size > 0)) {
-            _activeRecomputeSourceTabsByClient.delete(clientKey);
-          }
-        }
-      }
-    }
-
-    export async function recomputeClientFormulasForBridge(clientName, changedTabs = []) {
-      const ctx = await resolveSupabaseSheetContext({ clientName });
-      if (!ctx || ctx.clientMode !== "supabase") return;
-      const tabs = Array.isArray(changedTabs) && changedTabs.length > 0 ? changedTabs : ["Confirmed"];
-      await recomputeAndPersistImmediateClientTabs_(
-        { ...ctx, sheetRole: "client", _suppressBridgeOutbound: true },
-        tabs,
-        null
-      );
-    }
-
-    const CLIENT_TAB_DIRECT_DEPS = {
-      KeyInfo: [],
-      Confirmed: [],
-      Pipeline: [],
-      Salaries: ["KeyInfo"],
-      ConfCalcs: ["Confirmed", "KeyInfo"],
-      PipeCalcs: ["Pipeline", "KeyInfo"],
-      Calcs: ["ConfCalcs", "PipeCalcs", "KeyInfo"],
-      ErrorCheck: ["ConfCalcs", "PipeCalcs"],
-      RevenueConf: ["ConfCalcs", "KeyInfo"],
-      RevenuePipe: ["PipeCalcs", "KeyInfo"],
-      Budget: ["KeyInfo", "Performance"],
-      NBtoFind: ["KeyInfo", "Budget", "Dashboard"],
-      OutgNotes: ["Outgoings", "KeyInfo"],
-      Outgoings: ["KeyInfo", "Salaries", "Performance", "Dashboard", "Confirmed", "Monthly"],
-      Performance: ["KeyInfo", "Calcs", "NBtoFind", "Outgoings"],
-      Dashboard: ["Performance", "ErrorCheck", "KeyInfo", "Outgoings", "Calcs"],
-      Monthly: ["KeyInfo", "Dashboard", "Outgoings", "ConfCalcs", "PipeCalcs", "OutgNotes"],
-      VAT: ["KeyInfo", "Outgoings", "Calcs"],
-      Cash: ["KeyInfo", "Calcs", "Outgoings", "Performance", "VAT"],
-      GPbyPL: ["Performance", "Outgoings", "KeyInfo", "Dashboard", "Calcs"],
-      Year0Data: ["Performance", "KeyInfo", "ErrorCheck"],
-      InvoicesSent: ["Monthly"],
-      CashIncomingConf: ["Monthly"],
-      CashIncomingPipe: ["Monthly"],
-      ContrPayments: ["Monthly", "KeyInfo"],
-      Report: ["KeyInfo", "DataForReport", "Dashboard", "Cash"],
-      DataForReport: ["Report", "KeyInfo"],
+    const isUnformatted = params.valueRenderOption === "UNFORMATTED_VALUE";
+    const isFormulaReq = params.valueRenderOption === "FORMULA";
+    const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi, {
+      valuesOnly: sheetRole === "client" && !isFormulaReq,
+      includeNotes: false,
+    });
+    const isFormula =
+      isFormulaReq && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0;
+    const sourceGrid = isFormula ? rec.formulas_grid : rec.values_grid || [];
+    const sliced = sliceGrid2D_(sourceGrid, parsed);
+    const values =
+      isFormula || isUnformatted
+        ? sliced
+        : formatGridForDisplay(
+          sheetRole,
+          parsed.tabName,
+          sliced,
+          parsed.startRow0 ?? 0,
+          parsed.startCol0 ?? 0,
+          rec.values_grid || [],
+          rec.notes_grid || {}
+        );
+    return {
+      status: 200,
+      data: {
+        range: rangeStr,
+        majorDimension: "ROWS",
+        values,
+      },
     };
+  }
 
-    async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs, rawSheetsApi) {
-      const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
-      const hasCalcRelevantChange = allUpdatedTabs.some((t) => !nonFormulaTabs.has(t));
-      if (!hasCalcRelevantChange) {
-        return;
+  // 2. values.batchGet
+  if (namespace === "values" && method === "batchGet") {
+    const ranges = Array.isArray(params.ranges) ? params.ranges : [params.ranges].filter(Boolean);
+    const parsedList = ranges.map((r) => ({ raw: r, parsed: parseA1Range(r) }));
+    if (sheetRole === "client" && ctx.sheetBridgeMode === "live") {
+      await import("./clientSheetBridgeService.js")
+        .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
+        .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
+    }
+    if (
+      sheetRole === "client" &&
+      params.valueRenderOption !== "FORMULA" &&
+      parsedList.some((p) => doesClientRangeNeedFormulaFlush_(p.parsed, ctx.clientName))
+    ) {
+      if (hasPendingOrInFlightClientRecompute_(ctx.clientName)) {
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Read-barrier formula recompute warning:", e.message)
+        );
       }
+    }
+    const uniqueTabs = [...new Set(parsedList.map((p) => p.parsed.tabName))];
 
-      const changedSet = new Set(allUpdatedTabs);
-      const unaffectedTabs = new Set();
-      if (!changedSet.has("KeyInfo")) {
-        unaffectedTabs.add("KeyInfo");
-        if (!changedSet.has("Salaries")) {
-          unaffectedTabs.add("Salaries");
-        }
-        if (!changedSet.has("Budget")) {
-          unaffectedTabs.add("Budget");
-        }
-        if (!changedSet.has("DataForReport") && !changedSet.has("Report")) {
-          unaffectedTabs.add("DataForReport");
-        }
-        if (!changedSet.has("Confirmed") && !changedSet.has("ConfCalcs") && !changedSet.has("RevenueConf")) {
-          unaffectedTabs.add("Confirmed");
-          unaffectedTabs.add("ConfCalcs");
-          unaffectedTabs.add("RevenueConf");
-          if (!changedSet.has("CashIncomingConf")) unaffectedTabs.add("CashIncomingConf");
-          if (!changedSet.has("InvoicesSent")) unaffectedTabs.add("InvoicesSent");
-        }
-        if (!changedSet.has("Pipeline") && !changedSet.has("PipeCalcs") && !changedSet.has("RevenuePipe")) {
-          unaffectedTabs.add("Pipeline");
-          unaffectedTabs.add("PipeCalcs");
-          unaffectedTabs.add("RevenuePipe");
-          if (!changedSet.has("CashIncomingPipe")) unaffectedTabs.add("CashIncomingPipe");
-        }
-        if (
-          unaffectedTabs.has("ConfCalcs") &&
-          unaffectedTabs.has("PipeCalcs") &&
-          !changedSet.has("Calcs") &&
-          !changedSet.has("ErrorCheck")
-        ) {
-          unaffectedTabs.add("Calcs");
-          unaffectedTabs.add("ErrorCheck");
-          if (
-            unaffectedTabs.has("Budget") &&
-            !changedSet.has("NBtoFind") &&
-            !changedSet.has("Dashboard")
-          ) {
-            unaffectedTabs.add("NBtoFind");
-          }
-          if (
-            unaffectedTabs.has("Salaries") &&
-            unaffectedTabs.has("NBtoFind") &&
-            !changedSet.has("Outgoings") &&
-            !changedSet.has("OutgNotes") &&
-            !changedSet.has("Monthly") &&
-            !changedSet.has("Performance") &&
-            !changedSet.has("Dashboard")
-          ) {
-            unaffectedTabs.add("Outgoings");
-            unaffectedTabs.add("OutgNotes");
-            unaffectedTabs.add("Monthly");
-            unaffectedTabs.add("Performance");
-            unaffectedTabs.add("Dashboard");
-            if (!changedSet.has("ContrPayments")) unaffectedTabs.add("ContrPayments");
-            if (!changedSet.has("Year0Data")) unaffectedTabs.add("Year0Data");
-            if (!changedSet.has("VAT")) unaffectedTabs.add("VAT");
-            if (!changedSet.has("GPbyPL")) unaffectedTabs.add("GPbyPL");
-          }
-        }
-      }
-
-      function isMonthlyColUnaffected_(c) {
-        if (!unaffectedTabs.has("KeyInfo")) return false;
-        if (c >= 175 && c <= 185 && unaffectedTabs.has("OutgNotes")) return true;
-        if ((c === 10 || (c >= 41 && c <= 57) || (c >= 83 && c <= 105)) && unaffectedTabs.has("PipeCalcs")) return true;
-        if (
-          (c === 2 ||
-            (c >= 17 && c <= 39) ||
-            (c >= 59 && c <= 81) ||
-            (c >= 107 && c <= 130) ||
-            (c >= 142 && c <= 167)) &&
-          unaffectedTabs.has("ConfCalcs")
-        ) {
-          return true;
-        }
-        return false;
-      }
-
-      // Record per-tab write revisions at pass start to prevent overwriting concurrent user edits
-      const startRevByTab = {};
-      for (const t of CORE_CLIENT_TABS) {
-        startRevByTab[t] = getTabWriteRevision_(ctx.clientName, "client", t);
-      }
-
-      const supabase = getSupabaseAdmin();
-      const recordsByTab = {};
-      const prevSnapshots = {};
-      const grids = Object.create(null);
-      const preservedFormulaValues = new Map();
-      const alreadyEvaluatedTabs = new Set();
-      const wasPersistedToDbImmediate = new Set();
-
-      // Compute exact set of unaffected tabs actually read by any affected tab
-      const neededUnaffectedDeps = new Set();
-      for (const tabName of CORE_CLIENT_TABS) {
-        if (nonFormulaTabs.has(tabName) || unaffectedTabs.has(tabName)) continue;
-        const deps = CLIENT_TAB_DIRECT_DEPS[tabName] || [];
-        for (const d of deps) {
-          if (tabName === "Monthly") {
-            if (d === "ConfCalcs" && unaffectedTabs.has("ConfCalcs") && isMonthlyColUnaffected_(2)) continue;
-            if (d === "PipeCalcs" && unaffectedTabs.has("PipeCalcs") && isMonthlyColUnaffected_(10)) continue;
-            if (d === "OutgNotes" && unaffectedTabs.has("OutgNotes") && isMonthlyColUnaffected_(175)) continue;
-          }
-          neededUnaffectedDeps.add(d);
-        }
-      }
-
-      // 1. Check in-memory cache first; batch-load only affected tabs + needed direct dependencies
-      const missingAffectedTabs = [];
-      const missingUnaffectedTabs = [];
-      const missingUnaffectedWithNotesTabs = [];
-      for (const tabName of CORE_CLIENT_TABS) {
-        if (nonFormulaTabs.has(tabName)) continue;
-        const cacheKey = `${clientKey}::client::${tabName}`;
-        const cached = _gridMemoryCache.get(cacheKey);
-        const isUnneededUnaffected = unaffectedTabs.has(tabName) && !neededUnaffectedDeps.has(tabName);
-        const isUnaffected = unaffectedTabs.has(tabName);
-        const requiresNotes = isUnaffected && tabName === "Outgoings" && !unaffectedTabs.has("OutgNotes");
+    const isFormulaReq = params.valueRenderOption === "FORMULA";
+    const isUnformattedReq = params.valueRenderOption === "UNFORMATTED_VALUE";
+    const useValuesOnly = !isFormulaReq;
+    const byTab = new Map();
+    if (sheetRole === "client") {
+      const clientKeyLower = ctx.clientName.toLowerCase();
+      const uncachedTabs = [];
+      const inFlightWaits = [];
+      for (const t of uniqueTabs) {
+        const cKey = `${clientKeyLower}::client::${t}`;
+        const cached = _gridMemoryCache.get(cKey);
         if (
           cached &&
           cached.expiresAt > Date.now() &&
-          doesCachedClientRecordSatisfy_(cached.record, { valuesOnly: isUnaffected, includeNotes: requiresNotes })
+          doesCachedClientRecordSatisfy_(cached.record, { valuesOnly: useValuesOnly, includeNotes: false })
         ) {
-          recordsByTab[tabName] = cached.record;
-          if (cached.record._persistedImmediate) {
-            cached.record._persistedImmediate = false;
-            alreadyEvaluatedTabs.add(tabName);
-          }
-          if (cached.record._persistedToDbImmediate) {
-            cached.record._persistedToDbImmediate = false;
-            wasPersistedToDbImmediate.add(tabName);
-          }
-        } else if (isUnneededUnaffected) {
-          recordsByTab[tabName] = { values_grid: [], formulas_grid: [], notes_grid: {}, _skippedFetch: true };
-        } else if (requiresNotes) {
-          missingUnaffectedWithNotesTabs.push(tabName);
-        } else if (isUnaffected) {
-          missingUnaffectedTabs.push(tabName);
+          byTab.set(t, cached.record);
         } else {
-          missingAffectedTabs.push(tabName);
-        }
-      }
-
-      if (
-        (missingAffectedTabs.length > 0 || missingUnaffectedTabs.length > 0 || missingUnaffectedWithNotesTabs.length > 0) &&
-        supabase
-      ) {
-        const dbRole = _useClientRoleFallback ? "master" : "client";
-        const queries = [];
-        if (missingAffectedTabs.length > 0) {
-          const targetNames = _useClientRoleFallback
-            ? missingAffectedTabs.map((t) => `Client::${t}`)
-            : missingAffectedTabs;
-          const CHUNK_SIZE = 5;
-          for (let i = 0; i < targetNames.length; i += CHUNK_SIZE) {
-            const chunk = targetNames.slice(i, i + CHUNK_SIZE);
-            queries.push(
-              supabase
-                .from("master_sheet_grids")
-                .select("id, client_id, client_name, sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count")
-                .eq("client_name", ctx.clientName)
-                .eq("sheet_role", dbRole)
-                .in("tab_name", chunk)
-                .then(({ data }) => ({ rows: data || [], valuesOnly: false, includeNotes: true }))
+          const inflight =
+            _inFlightGridLoads.get(cKey) ||
+            (useValuesOnly ? _inFlightGridLoads.get(`${cKey}::vn`) || _inFlightGridLoads.get(`${cKey}::vo`) : null);
+          if (inflight) {
+            inFlightWaits.push(
+              inflight.then((rec) => {
+                if (rec) byTab.set(t, rec);
+              })
             );
+          } else {
+            uncachedTabs.push(t);
           }
         }
-        if (missingUnaffectedWithNotesTabs.length > 0) {
-          const targetNames = _useClientRoleFallback
-            ? missingUnaffectedWithNotesTabs.map((t) => `Client::${t}`)
-            : missingUnaffectedWithNotesTabs;
-          queries.push(
-            supabase
-              .from("master_sheet_grids")
-              .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
-              .eq("client_name", ctx.clientName)
-              .eq("sheet_role", dbRole)
-              .in("tab_name", targetNames)
-              .then(({ data }) => ({ rows: data || [], valuesOnly: true, includeNotes: true }))
-          );
-        }
-        if (missingUnaffectedTabs.length > 0) {
-          const targetNames = _useClientRoleFallback
-            ? missingUnaffectedTabs.map((t) => `Client::${t}`)
-            : missingUnaffectedTabs;
-          queries.push(
-            supabase
-              .from("master_sheet_grids")
-              .select("id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count")
-              .eq("client_name", ctx.clientName)
-              .eq("sheet_role", dbRole)
-              .in("tab_name", targetNames)
-              .then(({ data }) => ({ rows: data || [], valuesOnly: true, includeNotes: false }))
-          );
-        }
-        const queryResults = await Promise.all(queries);
-        for (const { rows, valuesOnly, includeNotes } of queryResults) {
-          for (const r of rows) {
+      }
+      if (uncachedTabs.length > 0 && supabase) {
+        const dbRole = _useClientRoleFallback ? "master" : "client";
+        const targetNames = _useClientRoleFallback
+          ? uncachedTabs.map((t) => `Client::${t}`)
+          : uncachedTabs;
+        const selectCols = useValuesOnly
+          ? "id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count, updated_at"
+          : "id, client_id, client_name, sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count, updated_at";
+        const flightSuffix = useValuesOnly ? "::vo" : "";
+        const batchPromise = (async () => {
+          const { data: rows } = await supabase
+            .from("master_sheet_grids")
+            .select(selectCols)
+            .eq("client_name", ctx.clientName)
+            .eq("sheet_role", dbRole)
+            .in("tab_name", targetNames);
+          const loadedMap = new Map();
+          for (const r of rows || []) {
             const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
-            if (!recordsByTab[cleanTab]) {
-              expandClientTabFromStorage_(r, cleanTab, { valuesOnly });
-              r._valuesOnlyLoaded = valuesOnly;
-              r._notesLoaded = !valuesOnly || includeNotes;
-              recordsByTab[cleanTab] = r;
-              const existing = _gridMemoryCache.get(`${clientKey}::client::${cleanTab}`);
-              if (shouldStoreClientRecordInCache_(existing, { valuesOnly, includeNotes })) {
-                setGridMemoryCache_(`${clientKey}::client::${cleanTab}`, r);
-              }
+            expandClientTabFromStorage_(r, cleanTab, { valuesOnly: useValuesOnly });
+            r._valuesOnlyLoaded = useValuesOnly;
+            r._notesLoaded = !useValuesOnly;
+            loadedMap.set(cleanTab, r);
+            byTab.set(cleanTab, r);
+            const existing = _gridMemoryCache.get(`${clientKeyLower}::client::${cleanTab}`);
+            if (shouldStoreClientRecordInCache_(existing, { valuesOnly: useValuesOnly, includeNotes: false })) {
+              setGridMemoryCache_(`${clientKeyLower}::client::${cleanTab}`, r);
             }
+          }
+          return loadedMap;
+        })();
+        for (const t of uncachedTabs) {
+          const fKey = `${clientKeyLower}::client::${t}${flightSuffix}`;
+          _inFlightGridLoads.set(
+            fKey,
+            batchPromise.then((m) => m.get(t) || null)
+          );
+        }
+        try {
+          await batchPromise;
+        } finally {
+          for (const t of uncachedTabs) {
+            const fKey = `${clientKeyLower}::client::${t}${flightSuffix}`;
+            _inFlightGridLoads.delete(fKey);
           }
         }
       }
-
-      for (const tabName of CORE_CLIENT_TABS) {
-        if (nonFormulaTabs.has(tabName)) continue;
-        let rec = recordsByTab[tabName];
-        if (rec && rec._skippedFetch) {
-          continue;
-        }
-        if (!rec) {
-          const isUnaff = unaffectedTabs.has(tabName);
-          rec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheetsApi, {
-            valuesOnly: isUnaff,
-            includeNotes: isUnaff && tabName === "Outgoings" && !unaffectedTabs.has("OutgNotes"),
-          });
-          recordsByTab[tabName] = rec;
-        }
-        const origVals = Array.isArray(rec.values_grid) ? rec.values_grid : [];
-        const isUnaffected = unaffectedTabs.has(tabName) || alreadyEvaluatedTabs.has(tabName);
-
-        if (isUnaffected) {
-          grids[tabName] = {
-            values: origVals,
-            formulas: rec.formulas_grid || [],
-            notes: rec.notes_grid || {},
-          };
-          continue;
-        }
-
-        prevSnapshots[tabName] = snapshotClientValuesForDiff_(tabName, origVals);
-
-        const vGrid = origVals.map((r) => (Array.isArray(r) ? [...r] : []));
-        const fGrid =
-          Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0
-            ? rec.formulas_grid
-            : vGrid.map((r) => [...r]);
-
-        // Wipe formula cell values (except blocked spill #REF! and DataForReport external IMPORTRANGE cols/rows)
-        // so recalculateClientGrids computes fresh values across all dependent tabs
-        const maxWipeR =
-          (tabName === "Confirmed" || tabName === "ConfCalcs" || tabName === "Pipeline" || tabName === "PipeCalcs") &&
-            fGrid.length > 350
-            ? Math.min(fGrid.length, findLastActiveClientJobRow_(vGrid, tabName.startsWith("Conf") ? 295 : 105) + 4)
-            : fGrid.length;
-        for (let r = 0; r < maxWipeR; r++) {
-          const rowF = fGrid[r] || [];
-          for (let c = 0; c < rowF.length; c++) {
-            const f = rowF[c];
-            if (typeof f === "string" && f.startsWith("=")) {
-              if (tabName === "Monthly" && isMonthlyColUnaffected_(c)) {
-                continue;
-              }
-              const curV = vGrid[r]?.[c];
-              if (typeof curV === "string" && curV.startsWith("#REF! (Array result was not expanded")) {
-                continue;
-              }
-              if (tabName === "DataForReport" && (c === 6 || r === 2)) {
-                continue;
-              }
-              const refsNonCore = formulaRefsMissingSheetInMap_(f, tabName, CORE_CLIENT_FORMULA_TABS_SET);
-              const hasImportRange = /IMPORTRANGE\s*\(/i.test(f);
-              if (
-                (refsNonCore || hasImportRange) &&
-                curV !== "" &&
-                curV !== null &&
-                curV !== undefined &&
-                !(typeof curV === "string" && curV.startsWith("#VALUE! (Cannot coerce 'Symbol("))
-              ) {
-                preservedFormulaValues.set(`${tabName}!${r},${c}`, curV);
-              }
-              if (refsNonCore) {
-                continue;
-              }
-              if (tabName === "Calcs" && curV !== "" && curV !== undefined && curV !== null) {
-                const refsPipe = f.includes("PipeCalcs");
-                const refsConf = f.includes("ConfCalcs");
-                if (refsPipe && !refsConf && unaffectedTabs.has("PipeCalcs")) continue;
-                if (refsConf && !refsPipe && unaffectedTabs.has("ConfCalcs")) continue;
-              }
-              if (vGrid[r]) vGrid[r][c] = "";
-            }
-          }
-        }
-
-        grids[tabName] = {
-          values: vGrid,
-          formulas: fGrid,
-          notes: rec.notes_grid || {},
-        };
+      if (inFlightWaits.length > 0) {
+        await Promise.all(inFlightWaits);
       }
-
-      const reconGrids =
-        grids.Cash?.formulas && !unaffectedTabs.has("Cash")
-          ? await loadReferencedReconGridsForClientFormulas_(ctx, [grids.Cash.formulas], rawSheetsApi)
-          : null;
-
-      recalculateClientGrids(grids, {
-        changedTabs: allUpdatedTabs,
-        unaffectedTabs,
-        alreadyEvaluatedTabs,
-        reconGrids,
-        preservedFormulaValues,
-      });
-
-      // 2. Persist any unpersisted updated tabs plus any downstream tabs whose evaluated values changed
-      //    (guarding against overwriting any tab mutated concurrently during this pass)
-      const concurrentUpdatedTabs = [];
-      const dirtyTabs = CORE_CLIENT_TABS.filter((t) => {
-        if (nonFormulaTabs.has(t) || unaffectedTabs.has(t) || alreadyEvaluatedTabs.has(t) || !grids[t]?.values?.length) {
-          return false;
-        }
-        if (getTabWriteRevision_(ctx.clientName, "client", t) !== startRevByTab[t]) {
-          concurrentUpdatedTabs.push(t);
-          return false;
-        }
-        if (changedSet.has(t) && !wasPersistedToDbImmediate.has(t)) return true;
-        return snapshotClientValuesForDiff_(t, grids[t].values) !== prevSnapshots[t];
-      });
-
-      if (concurrentUpdatedTabs.length > 0) {
-        queuePendingClientTabs_(ctx, concurrentUpdatedTabs);
-      }
-
-      await Promise.all(
-        dirtyTabs.map((t) =>
-          saveVirtualTabGrid_(
-            ctx,
-            "client",
-            t,
-            grids[t].values,
-            grids[t].formulas,
-            recordsByTab[t]?.notes_grid || {},
-            { valuesOnly: !changedSet.has(t) || wasPersistedToDbImmediate.has(t) }
-          )
-        )
-      );
-
-      await syncPhase2RelationalJobsIfEnabled_(ctx, [...new Set([...allUpdatedTabs, ...dirtyTabs])]);
-
-      if (dirtyTabs.length > 0) {
-        await import("./cacheService.js")
-          .then(({ invalidatePmaClientCache }) =>
-            invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId)
-          )
-          .catch(() => { });
-        if (ctx.clientSheetId) {
-          const resolveCachedOrMemVals = async (tab) => {
-            if (Array.isArray(grids[tab]?.values) && grids[tab].values.length > 0) return grids[tab].values;
-            const memRec = _gridMemoryCache.get(`${clientKey}::client::${tab}`)?.record;
-            if (Array.isArray(memRec?.values_grid) && memRec.values_grid.length > 0) return memRec.values_grid;
-            const loaded = await getOrLoadVirtualTabGrid_(ctx, "client", tab, rawSheetsApi, { valuesOnly: true });
-            return Array.isArray(loaded?.values_grid) ? loaded.values_grid : [];
-          };
-          Promise.all([
-            resolveCachedOrMemVals("KeyInfo"),
-            resolveCachedOrMemVals("Dashboard"),
-            resolveCachedOrMemVals("Year0Data"),
-          ])
-            .then(async ([keyInfoValues, dashboardValues, year0Values]) => {
-              if (!dashboardValues.length) return;
-              const { warmPortalHomeFromVirtualGrids } = await import("./portalDataService.js");
-              await warmPortalHomeFromVirtualGrids({
-                clientSheetId: ctx.clientSheetId,
-                clientName: ctx.clientName,
-                keyInfoValues,
-                dashboardValues,
-                year0Values,
-              });
-            })
-            .catch(() => { });
-        }
-      }
-
-      // Refresh memory cache TTL for all loaded tabs of this client so consecutive operations stay warm
-      const refreshedExpiry = Date.now() + GRID_CACHE_TTL_MS;
-      for (const tabName of CORE_CLIENT_TABS) {
-        const cacheKey = `${clientKey}::client::${tabName}`;
-        const entry = _gridMemoryCache.get(cacheKey);
-        if (entry) {
-          entry.expiresAt = refreshedExpiry;
-        }
-      }
-
-      // Sync Stage 4 normalized mirror tables only when explicitly enabled (paused by default)
-      if (shouldSyncNormalizedMirrorTables()) {
-        const changedTabList = [...new Set([...allUpdatedTabs, ...dirtyTabs])];
-        syncStructuredClientTablesFromGrids_(ctx, grids, changedTabList).catch((e) =>
-          console.warn("[masterEngineService] Stage 4 relational sync warning:", e.message)
+      const remainingTabs = uniqueTabs.filter((t) => !byTab.has(t));
+      for (let i = 0; i < remainingTabs.length; i += 3) {
+        const chunk = remainingTabs.slice(i, i + 3);
+        await Promise.all(
+          chunk.map(async (tabName) => {
+            const rec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheetsApi, {
+              valuesOnly: useValuesOnly,
+              includeNotes: false,
+            });
+            byTab.set(tabName, rec);
+          })
         );
       }
-
-      if (ctx.clientMode === "supabase" && ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
-        const bridgeTabs = [...new Set([...allUpdatedTabs, ...dirtyTabs])];
-        if (bridgeTabs.length > 0) {
-          import("./clientSheetBridgeService.js")
-            .then(({ scheduleOutboundSheetBridgeSync }) =>
-              scheduleOutboundSheetBridgeSync(ctx.clientName, bridgeTabs)
-            )
-            .catch(() => { });
+    } else {
+      const clientKeyLower = ctx.clientName.toLowerCase();
+      const uncachedTabs = [];
+      const inFlightWaits = [];
+      for (const t of uniqueTabs) {
+        const cKey = `${clientKeyLower}::${sheetRole}::${t}`;
+        const cached = _gridMemoryCache.get(cKey);
+        if (cached && cached.expiresAt > Date.now()) {
+          byTab.set(t, cached.record);
+        } else {
+          const inflight = _inFlightGridLoads.get(cKey) || _inFlightGridLoads.get(`${cKey}::vo`);
+          if (inflight) {
+            inFlightWaits.push(
+              inflight.then((rec) => {
+                if (rec) byTab.set(t, rec);
+              })
+            );
+          } else {
+            uncachedTabs.push(t);
+          }
         }
+      }
+      if (uncachedTabs.length > 0 && supabase) {
+        const batchPromise = (async () => {
+          const { data: rows } = await supabase
+            .from("master_sheet_grids")
+            .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count, updated_at")
+            .eq("client_name", ctx.clientName)
+            .eq("sheet_role", sheetRole)
+            .in("tab_name", uncachedTabs);
+          const loadedMap = new Map();
+          for (const r of rows || []) {
+            r.values_grid = compactGrid2D(r.values_grid || []);
+            r.formulas_grid = r.values_grid;
+            loadedMap.set(r.tab_name, r);
+            byTab.set(r.tab_name, r);
+            setGridMemoryCache_(`${clientKeyLower}::${sheetRole}::${r.tab_name}`, r);
+          }
+          return loadedMap;
+        })();
+        for (const t of uncachedTabs) {
+          const fKey = `${clientKeyLower}::${sheetRole}::${t}`;
+          _inFlightGridLoads.set(
+            fKey,
+            batchPromise.then((m) => m.get(t) || null)
+          );
+        }
+        try {
+          await batchPromise;
+        } finally {
+          for (const t of uncachedTabs) {
+            _inFlightGridLoads.delete(`${clientKeyLower}::${sheetRole}::${t}`);
+          }
+        }
+      }
+      if (inFlightWaits.length > 0) {
+        await Promise.all(inFlightWaits);
       }
     }
 
-    /**
-     * Intercepts Google Sheets v4 API calls from sheetsClient.js when a client's
-     * master_mode === 'supabase' (for Master/Recon) or client_mode === 'supabase' (for Client Sheet).
-     */
-    export async function handleVirtualSheetsCall({
-      namespace,
-      method,
-      params,
-      ctx,
-      rawSheetsApi,
-    }) {
-      const supabase = getSupabaseAdmin();
-      const sheetRole = ctx.sheetRole; // 'master' | 'recon' | 'client'
-      const spreadsheetId = params?.spreadsheetId || "";
+    const valueRanges = [];
+    for (const item of parsedList) {
+      let rec = byTab.get(item.parsed.tabName);
+      if (!rec) {
+        rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, item.parsed.tabName, rawSheetsApi);
+        byTab.set(item.parsed.tabName, rec);
+      }
+      const isFormula =
+        isFormulaReq && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0;
+      const sourceGrid = isFormula ? rec.formulas_grid : rec.values_grid || [];
+      const sliced = sliceGrid2D_(sourceGrid, item.parsed);
+      const values =
+        isFormula || isUnformattedReq
+          ? sliced
+          : formatGridForDisplay(
+            sheetRole,
+            item.parsed.tabName,
+            sliced,
+            item.parsed.startRow0 ?? 0,
+            item.parsed.startCol0 ?? 0,
+            rec.values_grid || [],
+            rec.notes_grid || {}
+          );
+      valueRanges.push({
+        range: item.raw,
+        majorDimension: "ROWS",
+        values,
+      });
+    }
 
-      // 1. values.get
-      if (namespace === "values" && method === "get") {
-        const rangeStr = params.range || "KeyInfo!A1:Z100";
-        const parsed = parseA1Range(rangeStr);
-        if (sheetRole === "client" && ctx.sheetBridgeMode === "live") {
-          await import("./clientSheetBridgeService.js")
-            .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
-            .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
-        }
-        if (
-          sheetRole === "client" &&
-          params.valueRenderOption !== "FORMULA" &&
-          doesClientRangeNeedFormulaFlush_(parsed, ctx.clientName)
-        ) {
-          if (hasPendingOrInFlightClientRecompute_(ctx.clientName)) {
+    return {
+      status: 200,
+      data: {
+        spreadsheetId,
+        valueRanges,
+      },
+    };
+  }
+
+  // 3. values.update
+  if (namespace === "values" && method === "update") {
+    const rangeStr = params.range || "KeyInfo!A1";
+    const incomingValues = params.requestBody?.values || params.resource?.values || [];
+    const valueInputOption = params.valueInputOption || params.requestBody?.valueInputOption || "USER_ENTERED";
+    const parsed = parseA1Range(rangeStr);
+    const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
+    const prevValSnap =
+      sheetRole === "client" ? snapshotClientValuesForDiff_(parsed.tabName, rec.values_grid) : null;
+    const prevFormSnap =
+      sheetRole === "client"
+        ? snapshotClientValuesForDiff_(parsed.tabName, rec.formulas_grid || rec.values_grid)
+        : null;
+    const prevFormulasGrid = sheetRole === "client" ? rec.formulas_grid || rec.values_grid : null;
+    const updatedValues = applyWriteToGrid2D_(rec.values_grid || [], parsed, incomingValues, {
+      sheetRole,
+      tabName: parsed.tabName,
+      valueInputOption,
+      notesGrid: rec.notes_grid,
+      isFormulaGrid: false,
+    });
+    const updatedFormulas = applyWriteToGrid2D_(rec.formulas_grid || rec.values_grid || [], parsed, incomingValues, {
+      sheetRole,
+      tabName: parsed.tabName,
+      valueInputOption,
+      notesGrid: rec.notes_grid,
+      isFormulaGrid: true,
+    });
+    if (
+      prevValSnap !== null &&
+      snapshotClientValuesForDiff_(parsed.tabName, updatedValues) === prevValSnap &&
+      snapshotClientValuesForDiff_(parsed.tabName, updatedFormulas) === prevFormSnap
+    ) {
+      if (sheetRole === "client" && !params._skipFormulaRecompute) {
+        const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
+        if (pendingSet && pendingSet.size > 0) {
+          if (params._syncFormulaRecompute) {
             await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Read-barrier formula recompute warning:", e.message)
+              console.warn("[masterEngineService] Client formula recompute warning:", e.message)
+            );
+          } else {
+            await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
+              console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
             );
           }
         }
-        const isUnformatted = params.valueRenderOption === "UNFORMATTED_VALUE";
-        const isFormulaReq = params.valueRenderOption === "FORMULA";
-        const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi, {
-          valuesOnly: sheetRole === "client" && !isFormulaReq,
-          includeNotes: false,
+      }
+      return {
+        status: 200,
+        data: {
+          spreadsheetId,
+          updatedRange: rangeStr,
+          updatedRows: incomingValues.length,
+        },
+      };
+    }
+    const formulasChanged =
+      sheetRole === "client" ? hasFormulaCellsChanged_(prevFormulasGrid, updatedFormulas) : false;
+    const isNonFormulaKeyInfoOnly = isNonFormulaKeyInfoOnlyUpdates_([{ parsed }]);
+    bumpTabWriteRevision_(ctx.clientName, sheetRole, parsed.tabName);
+    const isDeferredClientSave =
+      sheetRole === "client" &&
+      !isNonFormulaKeyInfoOnly &&
+      !["Sessions", "AppLog", "Welcome"].includes(parsed.tabName);
+    await saveVirtualTabGrid_(ctx, sheetRole, parsed.tabName, updatedValues, updatedFormulas, rec.notes_grid, {
+      memoryOnly: isDeferredClientSave,
+    });
+
+    if (sheetRole === "master") {
+      if (!params._skipMasterFormulaRecompute && !isNonFormulaKeyInfoOnly) {
+        await recomputeMasterFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Formula recompute warning:", e.message)
+        );
+      }
+      await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, [{ range: rangeStr, values: incomingValues }]);
+    } else if (sheetRole === "client") {
+      if (isNonFormulaKeyInfoOnly) {
+        await import("./cacheService.js")
+          .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
+          .catch(() => { });
+        if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+          import("./clientSheetBridgeService.js")
+            .then(({ scheduleOutboundSheetBridgeSync }) =>
+              scheduleOutboundSheetBridgeSync(ctx.clientName, [parsed.tabName])
+            )
+            .catch(() => { });
+        }
+      } else if (params._skipFormulaRecompute) {
+        queuePendingClientTabs_(ctx, [parsed.tabName], {
+          isSkippedStep: true,
+          notesChangedTabs: formulasChanged ? [parsed.tabName] : null,
         });
-        const isFormula =
-          isFormulaReq && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0;
-        const sourceGrid = isFormula ? rec.formulas_grid : rec.values_grid || [];
-        const sliced = sliceGrid2D_(sourceGrid, parsed);
-        const values =
-          isFormula || isUnformatted
-            ? sliced
-            : formatGridForDisplay(
-              sheetRole,
-              parsed.tabName,
-              sliced,
-              parsed.startRow0 ?? 0,
-              parsed.startCol0 ?? 0,
-              rec.values_grid || [],
-              rec.notes_grid || {}
-            );
-        return {
-          status: 200,
-          data: {
-            range: rangeStr,
-            majorDimension: "ROWS",
-            values,
-          },
-        };
+      } else if (params._syncFormulaRecompute) {
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Client formula recompute warning:", e.message)
+        );
+      } else {
+        await recomputeAndPersistImmediateClientTabs_(ctx, [parsed.tabName], rawSheetsApi, {
+          notesChangedTabs: formulasChanged ? new Set([parsed.tabName]) : new Set(),
+          deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
+        }).catch((e) =>
+          console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
+        );
       }
+    }
 
-      // 2. values.batchGet
-      if (namespace === "values" && method === "batchGet") {
-        const ranges = Array.isArray(params.ranges) ? params.ranges : [params.ranges].filter(Boolean);
-        const parsedList = ranges.map((r) => ({ raw: r, parsed: parseA1Range(r) }));
-        if (sheetRole === "client" && ctx.sheetBridgeMode === "live") {
-          await import("./clientSheetBridgeService.js")
-            .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
-            .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
-        }
-        if (
-          sheetRole === "client" &&
-          params.valueRenderOption !== "FORMULA" &&
-          parsedList.some((p) => doesClientRangeNeedFormulaFlush_(p.parsed, ctx.clientName))
-        ) {
-          if (hasPendingOrInFlightClientRecompute_(ctx.clientName)) {
-            await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Read-barrier formula recompute warning:", e.message)
-            );
-          }
-        }
-        const uniqueTabs = [...new Set(parsedList.map((p) => p.parsed.tabName))];
+    return {
+      status: 200,
+      data: {
+        spreadsheetId,
+        updatedRange: rangeStr,
+        updatedRows: incomingValues.length,
+      },
+    };
+  }
 
-        const isFormulaReq = params.valueRenderOption === "FORMULA";
-        const isUnformattedReq = params.valueRenderOption === "UNFORMATTED_VALUE";
-        const useValuesOnly = !isFormulaReq;
-        const byTab = new Map();
-        if (sheetRole === "client") {
-          const clientKeyLower = ctx.clientName.toLowerCase();
-          const uncachedTabs = [];
-          const inFlightWaits = [];
-          for (const t of uniqueTabs) {
-            const cKey = `${clientKeyLower}::client::${t}`;
-            const cached = _gridMemoryCache.get(cKey);
-            if (
-              cached &&
-              cached.expiresAt > Date.now() &&
-              doesCachedClientRecordSatisfy_(cached.record, { valuesOnly: useValuesOnly, includeNotes: false })
-            ) {
-              byTab.set(t, cached.record);
-            } else {
-              const inflight =
-                _inFlightGridLoads.get(cKey) ||
-                (useValuesOnly ? _inFlightGridLoads.get(`${cKey}::vn`) || _inFlightGridLoads.get(`${cKey}::vo`) : null);
-              if (inflight) {
-                inFlightWaits.push(
-                  inflight.then((rec) => {
-                    if (rec) byTab.set(t, rec);
-                  })
-                );
-              } else {
-                uncachedTabs.push(t);
-              }
-            }
-          }
-          if (uncachedTabs.length > 0 && supabase) {
-            const dbRole = _useClientRoleFallback ? "master" : "client";
-            const targetNames = _useClientRoleFallback
-              ? uncachedTabs.map((t) => `Client::${t}`)
-              : uncachedTabs;
-            const selectCols = useValuesOnly
-              ? "id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count, updated_at"
-              : "id, client_id, client_name, sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count, updated_at";
-            const flightSuffix = useValuesOnly ? "::vo" : "";
-            const batchPromise = (async () => {
-              const { data: rows } = await supabase
-                .from("master_sheet_grids")
-                .select(selectCols)
-                .eq("client_name", ctx.clientName)
-                .eq("sheet_role", dbRole)
-                .in("tab_name", targetNames);
-              const loadedMap = new Map();
-              for (const r of rows || []) {
-                const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
-                expandClientTabFromStorage_(r, cleanTab, { valuesOnly: useValuesOnly });
-                r._valuesOnlyLoaded = useValuesOnly;
-                r._notesLoaded = !useValuesOnly;
-                loadedMap.set(cleanTab, r);
-                byTab.set(cleanTab, r);
-                const existing = _gridMemoryCache.get(`${clientKeyLower}::client::${cleanTab}`);
-                if (shouldStoreClientRecordInCache_(existing, { valuesOnly: useValuesOnly, includeNotes: false })) {
-                  setGridMemoryCache_(`${clientKeyLower}::client::${cleanTab}`, r);
-                }
-              }
-              return loadedMap;
-            })();
-            for (const t of uncachedTabs) {
-              const fKey = `${clientKeyLower}::client::${t}${flightSuffix}`;
-              _inFlightGridLoads.set(
-                fKey,
-                batchPromise.then((m) => m.get(t) || null)
-              );
-            }
-            try {
-              await batchPromise;
-            } finally {
-              for (const t of uncachedTabs) {
-                const fKey = `${clientKeyLower}::client::${t}${flightSuffix}`;
-                _inFlightGridLoads.delete(fKey);
-              }
-            }
-          }
-          if (inFlightWaits.length > 0) {
-            await Promise.all(inFlightWaits);
-          }
-          const remainingTabs = uniqueTabs.filter((t) => !byTab.has(t));
-          for (let i = 0; i < remainingTabs.length; i += 3) {
-            const chunk = remainingTabs.slice(i, i + 3);
-            await Promise.all(
-              chunk.map(async (tabName) => {
-                const rec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheetsApi, {
-                  valuesOnly: useValuesOnly,
-                  includeNotes: false,
-                });
-                byTab.set(tabName, rec);
-              })
-            );
-          }
-        } else {
-          const clientKeyLower = ctx.clientName.toLowerCase();
-          const uncachedTabs = [];
-          const inFlightWaits = [];
-          for (const t of uniqueTabs) {
-            const cKey = `${clientKeyLower}::${sheetRole}::${t}`;
-            const cached = _gridMemoryCache.get(cKey);
-            if (cached && cached.expiresAt > Date.now()) {
-              byTab.set(t, cached.record);
-            } else {
-              const inflight = _inFlightGridLoads.get(cKey) || _inFlightGridLoads.get(`${cKey}::vo`);
-              if (inflight) {
-                inFlightWaits.push(
-                  inflight.then((rec) => {
-                    if (rec) byTab.set(t, rec);
-                  })
-                );
-              } else {
-                uncachedTabs.push(t);
-              }
-            }
-          }
-          if (uncachedTabs.length > 0 && supabase) {
-            const batchPromise = (async () => {
-              const { data: rows } = await supabase
-                .from("master_sheet_grids")
-                .select("id, client_id, client_name, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count, updated_at")
-                .eq("client_name", ctx.clientName)
-                .eq("sheet_role", sheetRole)
-                .in("tab_name", uncachedTabs);
-              const loadedMap = new Map();
-              for (const r of rows || []) {
-                r.values_grid = compactGrid2D(r.values_grid || []);
-                r.formulas_grid = r.values_grid;
-                loadedMap.set(r.tab_name, r);
-                byTab.set(r.tab_name, r);
-                setGridMemoryCache_(`${clientKeyLower}::${sheetRole}::${r.tab_name}`, r);
-              }
-              return loadedMap;
-            })();
-            for (const t of uncachedTabs) {
-              const fKey = `${clientKeyLower}::${sheetRole}::${t}`;
-              _inFlightGridLoads.set(
-                fKey,
-                batchPromise.then((m) => m.get(t) || null)
-              );
-            }
-            try {
-              await batchPromise;
-            } finally {
-              for (const t of uncachedTabs) {
-                _inFlightGridLoads.delete(`${clientKeyLower}::${sheetRole}::${t}`);
-              }
-            }
-          }
-          if (inFlightWaits.length > 0) {
-            await Promise.all(inFlightWaits);
-          }
-        }
+  // 4. values.batchUpdate
+  if (namespace === "values" && method === "batchUpdate") {
+    const dataItems = params.requestBody?.data || params.resource?.data || [];
+    const valueInputOption =
+      params.valueInputOption || params.requestBody?.valueInputOption || params.resource?.valueInputOption || "USER_ENTERED";
+    const byTabUpdates = new Map();
+    for (const d of dataItems) {
+      if (!d || !d.range) continue;
+      const parsed = parseA1Range(d.range);
+      if (!byTabUpdates.has(parsed.tabName)) byTabUpdates.set(parsed.tabName, []);
+      byTabUpdates.get(parsed.tabName).push({ parsed, values: d.values || [], rawRange: d.range });
+    }
 
-        const valueRanges = [];
-        for (const item of parsedList) {
-          let rec = byTab.get(item.parsed.tabName);
-          if (!rec) {
-            rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, item.parsed.tabName, rawSheetsApi);
-            byTab.set(item.parsed.tabName, rec);
-          }
-          const isFormula =
-            isFormulaReq && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0;
-          const sourceGrid = isFormula ? rec.formulas_grid : rec.values_grid || [];
-          const sliced = sliceGrid2D_(sourceGrid, item.parsed);
-          const values =
-            isFormula || isUnformattedReq
-              ? sliced
-              : formatGridForDisplay(
-                sheetRole,
-                item.parsed.tabName,
-                sliced,
-                item.parsed.startRow0 ?? 0,
-                item.parsed.startCol0 ?? 0,
-                rec.values_grid || [],
-                rec.notes_grid || {}
-              );
-          valueRanges.push({
-            range: item.raw,
-            majorDimension: "ROWS",
-            values,
-          });
-        }
-
-        return {
-          status: 200,
-          data: {
-            spreadsheetId,
-            valueRanges,
-          },
-        };
-      }
-
-      // 3. values.update
-      if (namespace === "values" && method === "update") {
-        const rangeStr = params.range || "KeyInfo!A1";
-        const incomingValues = params.requestBody?.values || params.resource?.values || [];
-        const valueInputOption = params.valueInputOption || params.requestBody?.valueInputOption || "USER_ENTERED";
-        const parsed = parseA1Range(rangeStr);
-        const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
-        const prevValSnap =
-          sheetRole === "client" ? snapshotClientValuesForDiff_(parsed.tabName, rec.values_grid) : null;
-        const prevFormSnap =
-          sheetRole === "client"
-            ? snapshotClientValuesForDiff_(parsed.tabName, rec.formulas_grid || rec.values_grid)
-            : null;
-        const prevFormulasGrid = sheetRole === "client" ? rec.formulas_grid || rec.values_grid : null;
-        const updatedValues = applyWriteToGrid2D_(rec.values_grid || [], parsed, incomingValues, {
+    const actuallyChangedTabs = [];
+    const formulasChangedTabs = new Set();
+    const tabEntries = [...byTabUpdates.entries()];
+    const allBatchUpdates = [];
+    for (const [, updates] of tabEntries) allBatchUpdates.push(...updates);
+    const isNonFormulaKeyInfoOnlyBatch = isNonFormulaKeyInfoOnlyUpdates_(allBatchUpdates);
+    const preloadedRecs = await Promise.all(
+      tabEntries.map(([tabName]) => getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi))
+    );
+    for (let idx = 0; idx < tabEntries.length; idx++) {
+      const [tabName, updates] = tabEntries[idx];
+      const rec = preloadedRecs[idx];
+      const prevValSnap =
+        sheetRole === "client" ? snapshotClientValuesForDiff_(tabName, rec.values_grid) : null;
+      const prevFormSnap =
+        sheetRole === "client"
+          ? snapshotClientValuesForDiff_(tabName, rec.formulas_grid || rec.values_grid)
+          : null;
+      const prevFormulasGrid = sheetRole === "client" ? rec.formulas_grid || rec.values_grid : null;
+      let nextVals = rec.values_grid || [];
+      let nextForms = rec.formulas_grid || rec.values_grid || [];
+      for (const u of updates) {
+        nextVals = applyWriteToGrid2D_(nextVals, u.parsed, u.values, {
           sheetRole,
-          tabName: parsed.tabName,
+          tabName,
           valueInputOption,
           notesGrid: rec.notes_grid,
           isFormulaGrid: false,
         });
-        const updatedFormulas = applyWriteToGrid2D_(rec.formulas_grid || rec.values_grid || [], parsed, incomingValues, {
+        nextForms = applyWriteToGrid2D_(nextForms, u.parsed, u.values, {
           sheetRole,
-          tabName: parsed.tabName,
+          tabName,
           valueInputOption,
           notesGrid: rec.notes_grid,
           isFormulaGrid: true,
         });
-        if (
-          prevValSnap !== null &&
-          snapshotClientValuesForDiff_(parsed.tabName, updatedValues) === prevValSnap &&
-          snapshotClientValuesForDiff_(parsed.tabName, updatedFormulas) === prevFormSnap
-        ) {
-          if (sheetRole === "client" && !params._skipFormulaRecompute) {
-            const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
-            if (pendingSet && pendingSet.size > 0) {
-              if (params._syncFormulaRecompute) {
-                await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
-                  console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-                );
-              } else {
-                await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
-                  console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-                );
-              }
-            }
-          }
-          return {
-            status: 200,
-            data: {
-              spreadsheetId,
-              updatedRange: rangeStr,
-              updatedRows: incomingValues.length,
-            },
-          };
-        }
-        const formulasChanged =
-          sheetRole === "client" ? hasFormulaCellsChanged_(prevFormulasGrid, updatedFormulas) : false;
-        const isNonFormulaKeyInfoOnly = isNonFormulaKeyInfoOnlyUpdates_([{ parsed }]);
-        bumpTabWriteRevision_(ctx.clientName, sheetRole, parsed.tabName);
-        const isDeferredClientSave =
-          sheetRole === "client" &&
-          !isNonFormulaKeyInfoOnly &&
-          !["Sessions", "AppLog", "Welcome"].includes(parsed.tabName);
-        await saveVirtualTabGrid_(ctx, sheetRole, parsed.tabName, updatedValues, updatedFormulas, rec.notes_grid, {
-          memoryOnly: isDeferredClientSave,
-        });
-
-        if (sheetRole === "master") {
-          if (!params._skipMasterFormulaRecompute && !isNonFormulaKeyInfoOnly) {
-            await recomputeMasterFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Formula recompute warning:", e.message)
-            );
-          }
-          await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, [{ range: rangeStr, values: incomingValues }]);
-        } else if (sheetRole === "client") {
-          if (isNonFormulaKeyInfoOnly) {
-            await import("./cacheService.js")
-              .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
-              .catch(() => { });
-            if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
-              import("./clientSheetBridgeService.js")
-                .then(({ scheduleOutboundSheetBridgeSync }) =>
-                  scheduleOutboundSheetBridgeSync(ctx.clientName, [parsed.tabName])
-                )
-                .catch(() => { });
-            }
-          } else if (params._skipFormulaRecompute) {
-            queuePendingClientTabs_(ctx, [parsed.tabName], {
-              isSkippedStep: true,
-              notesChangedTabs: formulasChanged ? [parsed.tabName] : null,
-            });
-          } else if (params._syncFormulaRecompute) {
-            await recomputeClientFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-            );
-          } else {
-            await recomputeAndPersistImmediateClientTabs_(ctx, [parsed.tabName], rawSheetsApi, {
-              notesChangedTabs: formulasChanged ? new Set([parsed.tabName]) : new Set(),
-              deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
-            }).catch((e) =>
-              console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-            );
-          }
-        }
-
-        return {
-          status: 200,
-          data: {
-            spreadsheetId,
-            updatedRange: rangeStr,
-            updatedRows: incomingValues.length,
-          },
-        };
       }
+      if (
+        prevValSnap !== null &&
+        snapshotClientValuesForDiff_(tabName, nextVals) === prevValSnap &&
+        snapshotClientValuesForDiff_(tabName, nextForms) === prevFormSnap
+      ) {
+        continue;
+      }
+      bumpTabWriteRevision_(ctx.clientName, sheetRole, tabName);
+      if (sheetRole === "client" && hasFormulaCellsChanged_(prevFormulasGrid, nextForms)) {
+        formulasChangedTabs.add(tabName);
+      }
+      actuallyChangedTabs.push(tabName);
+      const isDeferredClientSave =
+        sheetRole === "client" &&
+        !isNonFormulaKeyInfoOnlyBatch &&
+        !["Sessions", "AppLog", "Welcome"].includes(tabName);
+      await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid, {
+        memoryOnly: isDeferredClientSave,
+      });
+    }
 
-      // 4. values.batchUpdate
-      if (namespace === "values" && method === "batchUpdate") {
-        const dataItems = params.requestBody?.data || params.resource?.data || [];
-        const valueInputOption =
-          params.valueInputOption || params.requestBody?.valueInputOption || params.resource?.valueInputOption || "USER_ENTERED";
-        const byTabUpdates = new Map();
-        for (const d of dataItems) {
-          if (!d || !d.range) continue;
-          const parsed = parseA1Range(d.range);
-          if (!byTabUpdates.has(parsed.tabName)) byTabUpdates.set(parsed.tabName, []);
-          byTabUpdates.get(parsed.tabName).push({ parsed, values: d.values || [], rawRange: d.range });
-        }
-
-        const actuallyChangedTabs = [];
-        const formulasChangedTabs = new Set();
-        const tabEntries = [...byTabUpdates.entries()];
-        const allBatchUpdates = [];
-        for (const [, updates] of tabEntries) allBatchUpdates.push(...updates);
-        const isNonFormulaKeyInfoOnlyBatch = isNonFormulaKeyInfoOnlyUpdates_(allBatchUpdates);
-        const preloadedRecs = await Promise.all(
-          tabEntries.map(([tabName]) => getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi))
+    if (sheetRole === "master" && actuallyChangedTabs.length > 0) {
+      if (!params._skipMasterFormulaRecompute && !isNonFormulaKeyInfoOnlyBatch) {
+        await recomputeMasterFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Formula recompute warning:", e.message)
         );
-        for (let idx = 0; idx < tabEntries.length; idx++) {
-          const [tabName, updates] = tabEntries[idx];
-          const rec = preloadedRecs[idx];
-          const prevValSnap =
-            sheetRole === "client" ? snapshotClientValuesForDiff_(tabName, rec.values_grid) : null;
-          const prevFormSnap =
-            sheetRole === "client"
-              ? snapshotClientValuesForDiff_(tabName, rec.formulas_grid || rec.values_grid)
-              : null;
-          const prevFormulasGrid = sheetRole === "client" ? rec.formulas_grid || rec.values_grid : null;
-          let nextVals = rec.values_grid || [];
-          let nextForms = rec.formulas_grid || rec.values_grid || [];
-          for (const u of updates) {
-            nextVals = applyWriteToGrid2D_(nextVals, u.parsed, u.values, {
-              sheetRole,
-              tabName,
-              valueInputOption,
-              notesGrid: rec.notes_grid,
-              isFormulaGrid: false,
-            });
-            nextForms = applyWriteToGrid2D_(nextForms, u.parsed, u.values, {
-              sheetRole,
-              tabName,
-              valueInputOption,
-              notesGrid: rec.notes_grid,
-              isFormulaGrid: true,
-            });
-          }
-          if (
-            prevValSnap !== null &&
-            snapshotClientValuesForDiff_(tabName, nextVals) === prevValSnap &&
-            snapshotClientValuesForDiff_(tabName, nextForms) === prevFormSnap
-          ) {
-            continue;
-          }
-          bumpTabWriteRevision_(ctx.clientName, sheetRole, tabName);
-          if (sheetRole === "client" && hasFormulaCellsChanged_(prevFormulasGrid, nextForms)) {
-            formulasChangedTabs.add(tabName);
-          }
-          actuallyChangedTabs.push(tabName);
-          const isDeferredClientSave =
-            sheetRole === "client" &&
-            !isNonFormulaKeyInfoOnlyBatch &&
-            !["Sessions", "AppLog", "Welcome"].includes(tabName);
-          await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid, {
-            memoryOnly: isDeferredClientSave,
-          });
-        }
-
-        if (sheetRole === "master" && actuallyChangedTabs.length > 0) {
-          if (!params._skipMasterFormulaRecompute && !isNonFormulaKeyInfoOnlyBatch) {
-            await recomputeMasterFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Formula recompute warning:", e.message)
-            );
-          }
-          await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, dataItems);
-        } else if (sheetRole === "client") {
-          const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
-          const hasWork = actuallyChangedTabs.length > 0 || (pendingSet && pendingSet.size > 0);
-          if (isNonFormulaKeyInfoOnlyBatch && (!pendingSet || pendingSet.size === 0)) {
-            if (actuallyChangedTabs.length > 0) {
-              await import("./cacheService.js")
-                .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
-                .catch(() => { });
-              if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
-                import("./clientSheetBridgeService.js")
-                  .then(({ scheduleOutboundSheetBridgeSync }) =>
-                    scheduleOutboundSheetBridgeSync(ctx.clientName, actuallyChangedTabs)
-                  )
-                  .catch(() => { });
-              }
-            }
-          } else if (params._skipFormulaRecompute) {
-            if (actuallyChangedTabs.length > 0) {
-              queuePendingClientTabs_(ctx, actuallyChangedTabs, {
-                isSkippedStep: true,
-                notesChangedTabs: [...formulasChangedTabs],
-              });
-            }
-          } else if (hasWork) {
-            if (params._syncFormulaRecompute) {
-              await recomputeClientFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
-                console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-              );
-            } else {
-              await recomputeAndPersistImmediateClientTabs_(ctx, actuallyChangedTabs, rawSheetsApi, {
-                notesChangedTabs: formulasChangedTabs,
-                deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
-              }).catch((e) =>
-                console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-              );
-            }
-          }
-        }
-
-        return {
-          status: 200,
-          data: {
-            spreadsheetId,
-            totalUpdatedRanges: dataItems.length,
-          },
-        };
       }
-
-      // 5. values.append
-      if (namespace === "values" && method === "append") {
-        const rangeStr = params.range || "AutoLog!A:D";
-        const incomingValues = params.requestBody?.values || params.resource?.values || [];
-        if (!Array.isArray(incomingValues) || incomingValues.length > 50000) {
-          throw new Error("values.append payload exceeds maximum row limit (50,000).");
-        }
-        for (const row of incomingValues) {
-          if (Array.isArray(row) && row.length > 600) {
-            throw new Error("values.append payload exceeds maximum column limit (600).");
-          }
-        }
-        const valueInputOption = params.valueInputOption || "USER_ENTERED";
-        const parsed = parseA1Range(rangeStr);
-        const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
-        const baseRow0 = Array.isArray(rec.values_grid) ? rec.values_grid.length : 0;
-        if (baseRow0 + incomingValues.length > 50000) {
-          throw new Error(`values.append would exceed maximum tab row limit (50,000) for "${parsed.tabName}".`);
-        }
-        const normRows = incomingValues.map((row, rIdx) =>
-          (Array.isArray(row) ? row : [row]).map((v, cIdx) =>
-            normalizeCellForStorage(
-              sheetRole,
-              parsed.tabName,
-              baseRow0 + rIdx,
-              (parsed.startCol0 ?? 0) + cIdx,
-              v,
-              valueInputOption,
-              rec.values_grid,
-              rec.notes_grid
-            )
-          )
-        );
-        const nextVals = Array.isArray(rec.values_grid) ? [...rec.values_grid, ...normRows] : [...normRows];
-        const nextForms = Array.isArray(rec.formulas_grid) ? [...rec.formulas_grid, ...incomingValues] : [...incomingValues];
-        bumpTabWriteRevision_(ctx.clientName, sheetRole, parsed.tabName);
-        const isDeferredClientSave =
-          sheetRole === "client" && !["Sessions", "AppLog", "Welcome"].includes(parsed.tabName);
-        await saveVirtualTabGrid_(ctx, sheetRole, parsed.tabName, nextVals, nextForms, rec.notes_grid, {
-          memoryOnly: isDeferredClientSave,
-        });
-
-        if (sheetRole === "client") {
-          if (params._skipFormulaRecompute) {
-            queuePendingClientTabs_(ctx, [parsed.tabName], {
-              isSkippedStep: true,
-              notesChangedTabs: [parsed.tabName],
-            });
-          } else if (params._syncFormulaRecompute) {
-            await recomputeClientFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-            );
-          } else {
-            await recomputeAndPersistImmediateClientTabs_(ctx, [parsed.tabName], rawSheetsApi, {
-              notesChangedTabs: new Set([parsed.tabName]),
-            }).catch((e) =>
-              console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-            );
-          }
-        }
-
-        return {
-          status: 200,
-          data: {
-            spreadsheetId,
-            updates: { updatedRange: rangeStr, updatedRows: incomingValues.length },
-          },
-        };
-      }
-
-      // 6. values.clear & values.batchClear
-      if (namespace === "values" && (method === "clear" || method === "batchClear")) {
-        const ranges =
-          method === "clear"
-            ? [params.range].filter(Boolean)
-            : params.requestBody?.ranges || params.resource?.ranges || [];
-        const byTabClears = new Map();
-        for (const r of ranges) {
-          const parsed = parseA1Range(r);
-          if (!byTabClears.has(parsed.tabName)) byTabClears.set(parsed.tabName, []);
-          byTabClears.get(parsed.tabName).push(parsed);
-        }
-
-        const formulasChangedTabs = new Set();
-        for (const [tabName, clears] of byTabClears.entries()) {
-          const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi);
-          const prevFormulasGrid = sheetRole === "client" ? rec.formulas_grid || rec.values_grid : null;
-          let nextVals = rec.values_grid || [];
-          let nextForms = rec.formulas_grid || rec.values_grid || [];
-          for (const c of clears) {
-            nextVals = clearRangeInGrid2D_(nextVals, c);
-            nextForms = clearRangeInGrid2D_(nextForms, c);
-          }
-          if (sheetRole === "client" && hasFormulaCellsChanged_(prevFormulasGrid, nextForms)) {
-            formulasChangedTabs.add(tabName);
-          }
-          bumpTabWriteRevision_(ctx.clientName, sheetRole, tabName);
-          const isDeferredClientSave =
-            Boolean(params._skipFormulaRecompute) ||
-            (sheetRole === "client" && !["Sessions", "AppLog", "Welcome"].includes(tabName));
-          await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid, {
-            memoryOnly: isDeferredClientSave,
-          });
-        }
-
-        if (sheetRole === "client") {
-          if (params._skipFormulaRecompute) {
-            queuePendingClientTabs_(ctx, [...byTabClears.keys()], {
-              isSkippedStep: true,
-              notesChangedTabs: [...formulasChangedTabs],
-            });
-          } else if (params._syncFormulaRecompute) {
-            await recomputeClientFormulasAfterVirtualWrite_(ctx, [...byTabClears.keys()], rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-            );
-          } else {
-            await recomputeAndPersistImmediateClientTabs_(ctx, [...byTabClears.keys()], rawSheetsApi, {
-              notesChangedTabs: formulasChangedTabs,
-            }).catch((e) =>
-              console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-            );
-          }
-        }
-
-        return {
-          status: 200,
-          data: { spreadsheetId, clearedRanges: ranges },
-        };
-      }
-
-      // 7. spreadsheets.get
-      if (namespace === "spreadsheets" && method === "get") {
-        const requestedRanges = Array.isArray(params.ranges) ? params.ranges : params.ranges ? [params.ranges] : [];
-        const includeGridData = Boolean(params.includeGridData || requestedRanges.length > 0);
-        if (sheetRole === "client" && includeGridData && ctx.sheetBridgeMode === "live") {
-          await import("./clientSheetBridgeService.js")
-            .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
-            .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
-        }
-        if (
-          sheetRole === "client" &&
-          includeGridData &&
-          (requestedRanges.length === 0 || requestedRanges.some((r) => doesClientRangeNeedFormulaFlush_(parseA1Range(r), ctx.clientName)))
-        ) {
-          if (hasPendingOrInFlightClientRecompute_(ctx.clientName)) {
-            await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Read-barrier formula recompute warning:", e.message)
-            );
-          }
-        }
-        const targetTabNames =
-          requestedRanges.length > 0 ? new Set(requestedRanges.map((r) => parseA1Range(r).tabName)) : null;
-
-        let allTabs = [];
-        if (sheetRole === "client") {
-          if (!includeGridData) {
-            const { data: tabRows } = await supabase
-              .from("master_sheet_grids")
-              .select("tab_name, sheet_role, row_count, col_count")
-              .eq("client_name", ctx.clientName)
-              .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
-              .order("tab_name", { ascending: true });
-            const seen = new Set();
-            for (const r of tabRows || []) {
-              const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
-              if (seen.has(cleanTab)) continue;
-              seen.add(cleanTab);
-              allTabs.push({ ...r, tab_name: cleanTab, sheet_role: "client" });
-            }
-          } else if (targetTabNames && targetTabNames.size > 0) {
-            const fieldsStr = String(params.fields || "");
-            const needFormulas = !fieldsStr || fieldsStr.includes("userEnteredValue");
-            const needNotes = !fieldsStr || fieldsStr.includes("note") || fieldsStr.includes("effectiveFormat");
-            const loadedTargetTabs = await Promise.all(
-              [...targetTabNames].map((tName) =>
-                getOrLoadVirtualTabGrid_(ctx, "client", tName, rawSheetsApi, {
-                  valuesOnly: !needFormulas,
-                  includeNotes: needNotes,
-                })
-              )
-            );
-            allTabs.push(...loadedTargetTabs);
-          } else {
-            const fieldsStr = String(params.fields || "");
-            const needFormulas = !fieldsStr || fieldsStr.includes("userEnteredValue");
-            const selectCols = needFormulas
-              ? "tab_name, sheet_role, row_count, col_count, values_grid, formulas_grid, notes_grid"
-              : "tab_name, sheet_role, row_count, col_count, values_grid, notes_grid";
-            const { data: tabRows } = await supabase
-              .from("master_sheet_grids")
-              .select(selectCols)
-              .eq("client_name", ctx.clientName)
-              .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
-              .order("tab_name", { ascending: true });
-            const seen = new Set();
-            for (const r of tabRows || []) {
-              const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
-              if (seen.has(cleanTab)) continue;
-              seen.add(cleanTab);
-              expandClientTabFromStorage_(r, cleanTab, { valuesOnly: !needFormulas });
-              allTabs.push(r);
-            }
-          }
-        } else if (includeGridData && targetTabNames && targetTabNames.size > 0) {
-          const fieldsStr = String(params.fields || "");
-          const wantsAllProperties = !fieldsStr || fieldsStr.includes("properties");
-          const targetList = [...targetTabNames];
-          const [gridRes, metaRes] = await Promise.all([
-            supabase
-              .from("master_sheet_grids")
-              .select("tab_name, row_count, col_count, values_grid, notes_grid")
-              .eq("client_name", ctx.clientName)
-              .eq("sheet_role", sheetRole)
-              .in("tab_name", targetList),
-            wantsAllProperties
-              ? supabase
-                .from("master_sheet_grids")
-                .select("tab_name, row_count, col_count")
-                .eq("client_name", ctx.clientName)
-                .eq("sheet_role", sheetRole)
-                .order("tab_name", { ascending: true })
-              : Promise.resolve({ data: [] }),
-          ]);
-          const gridByTab = new Map();
-          for (const r of gridRes.data || []) {
-            r.values_grid = compactGrid2D(r.values_grid || []);
-            r.formulas_grid = r.values_grid;
-            gridByTab.set(r.tab_name, r);
-          }
-          if (wantsAllProperties && Array.isArray(metaRes.data) && metaRes.data.length > 0) {
-            allTabs = metaRes.data.map((m) => gridByTab.get(m.tab_name) || { ...m, formulas_grid: [] });
-          } else {
-            allTabs = [...gridByTab.values()];
-          }
-          if (sheetRole === "recon") {
-            allTabs.sort((a, b) => {
-              const aIsMonth = /^\d{4}$/.test(a.tab_name);
-              const bIsMonth = /^\d{4}$/.test(b.tab_name);
-              if (aIsMonth && bIsMonth) return b.tab_name.localeCompare(a.tab_name);
-              if (aIsMonth !== bIsMonth) return aIsMonth ? -1 : 1;
-              return a.tab_name.localeCompare(b.tab_name);
-            });
-          }
-        } else {
-          const selectCols = includeGridData
-            ? "tab_name, row_count, col_count, values_grid, notes_grid"
-            : "tab_name, row_count, col_count";
-          const { data: tabRows } = await supabase
-            .from("master_sheet_grids")
-            .select(selectCols)
-            .eq("client_name", ctx.clientName)
-            .eq("sheet_role", sheetRole)
-            .order("tab_name", { ascending: true });
-          allTabs = (tabRows || []).map((r) => ({ ...r, formulas_grid: r.values_grid }));
-          if (sheetRole === "recon") {
-            allTabs.sort((a, b) => {
-              const aIsMonth = /^\d{4}$/.test(a.tab_name);
-              const bIsMonth = /^\d{4}$/.test(b.tab_name);
-              if (aIsMonth && bIsMonth) return b.tab_name.localeCompare(a.tab_name);
-              if (aIsMonth !== bIsMonth) return aIsMonth ? -1 : 1;
-              return a.tab_name.localeCompare(b.tab_name);
-            });
-          }
-        }
-
-        const sheetsPayload = allTabs.map((t, idx) => {
-          const sId = hashTabNameToSheetId_(t.tab_name);
-          const sheetObj = {
-            properties: {
-              sheetId: sId,
-              title: t.tab_name,
-              index: idx,
-              gridProperties: {
-                rowCount: Math.max(1000, t.row_count || 0),
-                columnCount: Math.max(50, t.col_count || 0),
-              },
-            },
-          };
-
-          if (includeGridData) {
-            const matchingRanges =
-              requestedRanges.length > 0
-                ? requestedRanges.map((r) => parseA1Range(r, t.tab_name)).filter((p) => p.tabName === t.tab_name)
-                : [{ tabName: t.tab_name, startRow0: 0, endRow0: (t.row_count || 1) - 1, startCol0: 0, endCol0: (t.col_count || 1) - 1 }];
-
-            if (matchingRanges.length > 0) {
-              const fieldsStr = String(params.fields || "");
-              const isNotesOnlyReq =
-                fieldsStr.includes("note") &&
-                !fieldsStr.includes("formattedValue") &&
-                !fieldsStr.includes("effectiveValue") &&
-                !fieldsStr.includes("userEnteredValue") &&
-                !fieldsStr.includes("effectiveFormat");
-
-              sheetObj.data = matchingRanges.map((mr) => {
-                const mrStartR = mr.startRow0 ?? 0;
-                const mrStartC = mr.startCol0 ?? 0;
-                let maxNoteRowCount = 0;
-                const noteMaxColCountByRow = new Map();
-                if (t.notes_grid && typeof t.notes_grid === "object") {
-                  for (const nKey of Object.keys(t.notes_grid)) {
-                    if (nKey.startsWith("__") || !t.notes_grid[nKey]) continue;
-                    const colonIdx = nKey.indexOf(":");
-                    if (colonIdx <= 0) continue;
-                    const nr = parseInt(nKey.slice(0, colonIdx), 10);
-                    const nc = parseInt(nKey.slice(colonIdx + 1), 10);
-                    if (Number.isNaN(nr) || Number.isNaN(nc)) continue;
-                    if (
-                      nr >= mrStartR &&
-                      (mr.endRow0 == null || nr <= mr.endRow0) &&
-                      nc >= mrStartC &&
-                      (mr.endCol0 == null || nc <= mr.endCol0)
-                    ) {
-                      const rOffset = nr - mrStartR;
-                      const cCount = nc - mrStartC + 1;
-                      if (rOffset + 1 > maxNoteRowCount) maxNoteRowCount = rOffset + 1;
-                      if (cCount > (noteMaxColCountByRow.get(rOffset) || 0)) {
-                        noteMaxColCountByRow.set(rOffset, cCount);
-                      }
-                    }
-                  }
-                }
-
-                if (isNotesOnlyReq) {
-                  const rowData = [];
-                  for (let rOffset = 0; rOffset < maxNoteRowCount; rOffset++) {
-                    const colCount = noteMaxColCountByRow.get(rOffset) || 0;
-                    if (colCount === 0) {
-                      rowData.push({ values: [] });
-                      continue;
-                    }
-                    const absR = mrStartR + rOffset;
-                    const values = [];
-                    for (let cOffset = 0; cOffset < colCount; cOffset++) {
-                      const absC = mrStartC + cOffset;
-                      const noteStr = t.notes_grid?.[`${absR}:${absC}`] || "";
-                      values.push(noteStr ? { note: noteStr } : {});
-                    }
-                    rowData.push({ values });
-                  }
-                  return {
-                    startRow: mrStartR,
-                    startColumn: mrStartC,
-                    rowData,
-                  };
-                }
-
-                const slicedVals = sliceGrid2D_(t.values_grid || [], mr);
-                const slicedForms = sliceGrid2D_(t.formulas_grid || t.values_grid || [], mr);
-                const rowCount = Math.max(
-                  slicedVals.length,
-                  slicedForms.length,
-                  maxNoteRowCount,
-                  t.tab_name === "Cash" && mr.endRow0 != null ? Math.min(76, mr.endRow0 + 1) - mrStartR : 0
-                );
-                const rowData = [];
-                for (let rOffset = 0; rOffset < rowCount; rOffset++) {
-                  const absR = mrStartR + rOffset;
-                  const rArr = slicedVals[rOffset] || [];
-                  const fArr = slicedForms[rOffset] || [];
-                  const colCount = Math.max(
-                    rArr.length,
-                    fArr.length,
-                    noteMaxColCountByRow.get(rOffset) || 0,
-                    t.tab_name === "Cash" && mr.endCol0 != null ? Math.min(37, mr.endCol0 + 1) - mrStartC : 0
-                  );
-                  const values = [];
-                  for (let cOffset = 0; cOffset < colCount; cOffset++) {
-                    const absC = (mr.startCol0 ?? 0) + cOffset;
-                    const cellVal = rArr[cOffset];
-                    const strVal = cellVal == null ? "" : String(cellVal);
-                    const dispVal = formatCellForDisplay(
-                      sheetRole,
-                      t.tab_name,
-                      absR,
-                      absC,
-                      cellVal,
-                      t.values_grid,
-                      t.notes_grid
-                    );
-                    const formVal = fArr[cOffset] == null ? strVal : String(fArr[cOffset]);
-                    const numClean = typeof cellVal === "number" ? cellVal : parseFloat(strVal.replace(/[£$€,\s]/g, ""));
-                    const isNumeric =
-                      typeof cellVal === "number" ||
-                      (strVal !== "" && !isNaN(numClean) && /^[-+]?[£$€]?\s*[\d,]+(\.\d+)?%?$/.test(strVal.trim()));
-                    const noteKey = `${absR}:${absC}`;
-                    const noteStr = t.notes_grid?.[noteKey] || "";
-                    const baseEffFmt =
-                      t.tab_name === "Cash"
-                        ? getCashEffectiveFormat_(absR, absC)
-                        : { backgroundColor: { red: 1, green: 1, blue: 1 } };
-                    const savedBg = t.notes_grid?.__bg_colors?.[`${absR}:${absC}`];
-                    const effFmt = savedBg ? { ...baseEffFmt, backgroundColor: savedBg } : baseEffFmt;
-                    const cellObj = {
-                      effectiveValue: isNumeric ? { numberValue: numClean } : { stringValue: strVal },
-                      userEnteredValue: formVal.startsWith("=")
-                        ? { formulaValue: formVal }
-                        : isNumeric
-                          ? { numberValue: numClean }
-                          : { stringValue: strVal },
-                      note: noteStr,
-                      effectiveFormat: effFmt,
-                    };
-                    if (dispVal !== "") {
-                      cellObj.formattedValue = dispVal;
-                    }
-                    values.push(cellObj);
-                  }
-                  rowData.push({ values });
-                }
-                return {
-                  startRow: mr.startRow0 ?? 0,
-                  startColumn: mr.startCol0 ?? 0,
-                  rowData,
-                };
-              });
-            }
-          }
-          return sheetObj;
-        });
-
-        if (targetTabNames && targetTabNames.size > 0) {
-          const filteredSheets = sheetsPayload.filter((s) => targetTabNames.has(s.properties.title));
-          return {
-            status: 200,
-            data: {
-              spreadsheetId,
-              properties: { title: `${ctx.clientName} (${sheetRole})` },
-              sheets: filteredSheets.length > 0 ? filteredSheets : sheetsPayload,
-            },
-          };
-        }
-
-        return {
-          status: 200,
-          data: {
-            spreadsheetId,
-            properties: { title: `${ctx.clientName} (${sheetRole})` },
-            sheets: sheetsPayload,
-          },
-        };
-      }
-
-      // 8. spreadsheets.batchUpdate (handles updateSheetProperties, updateCells, repeatCell backgroundColor, moveDimension, insertDimension, deleteDimension)
-      if (namespace === "spreadsheets" && method === "batchUpdate") {
-        const requests = params.requestBody?.requests || params.resource?.requests || [];
-        const isBgRepeatCell_ = (req) => {
-          const rng = req?.repeatCell?.range;
-          if (!rng || !String(req?.repeatCell?.fields || "").includes("backgroundColor")) return false;
-          const rCount = Math.max(
-            0,
-            Number(rng.endRowIndex ?? Number(rng.startRowIndex ?? 0) + 1) - Number(rng.startRowIndex ?? 0)
-          );
-          const cCount = Math.max(
-            0,
-            Number(rng.endColumnIndex ?? Number(rng.startColumnIndex ?? 0) + 1) - Number(rng.startColumnIndex ?? 0)
-          );
-          return rCount > 0 && cCount > 0 && rCount * cCount <= 500;
-        };
-        const hasDataOrSheetUpdates = requests.some(
-          (req) =>
-            req.updateSheetProperties?.properties ||
-            req.updateCells?.range ||
-            isBgRepeatCell_(req) ||
-            (req.moveDimension?.source && req.moveDimension.source.dimension === "ROWS") ||
-            (req.insertDimension?.range && req.insertDimension.range.dimension === "ROWS") ||
-            (req.deleteDimension?.range && req.deleteDimension.range.dimension === "ROWS")
-        );
-        if (!hasDataOrSheetUpdates) {
-          // Visual-only operations (row grouping, hiddenByUser, repeatCell formatting) require zero DB queries
-          // and must NOT prematurely flush pending formula recomputes in the middle of a multi-step operation
-          // unless explicitly requested via _flushPendingRecompute.
-          if (sheetRole === "client" && params._flushPendingRecompute) {
-            const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
-            if (pendingSet && pendingSet.size > 0) {
-              if (params._syncFormulaRecompute) {
-                await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
-                  console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-                );
-              } else {
-                await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
-                  console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-                );
-              }
-            }
-          }
-          return {
-            status: 200,
-            data: { spreadsheetId, replies: requests.map(() => ({})) },
-          };
-        }
-
-        let tabMetaRows = [];
-        if (sheetRole === "client") {
-          const { data: rows } = await supabase
-            .from("master_sheet_grids")
-            .select("id, tab_name, sheet_role")
-            .eq("client_name", ctx.clientName)
-            .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
-            .order("tab_name", { ascending: true });
-          const seen = new Set();
-          for (const r of rows || []) {
-            const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
-            if (seen.has(cleanTab)) continue;
-            seen.add(cleanTab);
-            tabMetaRows.push({ id: r.id, tab_name: cleanTab, sheet_role: "client" });
-          }
-        } else {
-          const { data: rows } = await supabase
-            .from("master_sheet_grids")
-            .select("id, tab_name, sheet_role")
-            .eq("client_name", ctx.clientName)
-            .eq("sheet_role", sheetRole)
-            .order("tab_name", { ascending: true });
-          tabMetaRows = rows || [];
-        }
-
-        const metaBySheetId = new Map();
-        tabMetaRows.forEach((t) => {
-          metaBySheetId.set(hashTabNameToSheetId_(t.tab_name), t);
-        });
-
-        const loadedTargetBySheetId = new Map();
-        const getTargetTabRecord = async (sId) => {
-          if (loadedTargetBySheetId.has(sId)) return loadedTargetBySheetId.get(sId);
-          const meta = metaBySheetId.get(sId);
-          if (!meta) return null;
-          const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, meta.tab_name, rawSheetsApi);
-          rec.id = meta.id;
-          loadedTargetBySheetId.set(sId, rec);
-          return rec;
-        };
-
-        const dirtyTargets = new Map();
-        const valueChangedClientTabs = new Set();
-        const noteOnlyClientTabs = new Set();
-
-        for (const req of requests) {
-          if (req.updateSheetProperties?.properties) {
-            const props = req.updateSheetProperties.properties;
-            const meta = metaBySheetId.get(props.sheetId);
-            if (meta && props.title && props.title !== meta.tab_name) {
-              await supabase
-                .from("master_sheet_grids")
-                .update({ tab_name: props.title })
-                .eq("id", meta.id);
-              meta.tab_name = props.title;
-            }
-          } else if (isBgRepeatCell_(req)) {
-            const rng = req.repeatCell.range;
-            const target = await getTargetTabRecord(rng.sheetId);
-            if (target) {
-              const sR = Math.max(0, Number(rng.startRowIndex ?? 0));
-              const eR = Math.max(sR + 1, Number(rng.endRowIndex ?? sR + 1));
-              const sC = Math.max(0, Number(rng.startColumnIndex ?? 0));
-              const eC = Math.max(sC + 1, Number(rng.endColumnIndex ?? sC + 1));
-              const nextNotes = { ...(target.notes_grid || {}) };
-              const bgColors = { ...(nextNotes.__bg_colors || {}) };
-              const bg =
-                req.repeatCell?.cell?.userEnteredFormat?.backgroundColor ||
-                req.repeatCell?.cell?.effectiveFormat?.backgroundColor ||
-                null;
-              for (let r = sR; r < eR; r++) {
-                for (let c = sC; c < eC; c++) {
-                  const key = `${r}:${c}`;
-                  if (bg) bgColors[key] = bg;
-                  else delete bgColors[key];
-                }
-              }
-              nextNotes.__bg_colors = bgColors;
-              target.notes_grid = nextNotes;
-              dirtyTargets.set(target.tab_name, target);
-              if (sheetRole === "client") {
-                if (target.tab_name === "Outgoings") {
-                  valueChangedClientTabs.add(target.tab_name);
-                } else {
-                  noteOnlyClientTabs.add(target.tab_name);
-                }
-              }
-            }
-          } else if (req.updateCells?.range) {
-            const rng = req.updateCells.range;
-            const target = await getTargetTabRecord(rng.sheetId);
-            if (target && Array.isArray(req.updateCells.rows)) {
-              const fieldsStr = String(req.updateCells.fields || "");
-              const isNoteOnly = fieldsStr.includes("note") && !fieldsStr.includes("userEnteredValue");
-              const nextNotes = { ...(target.notes_grid || {}) };
-              const sR = rng.startRowIndex ?? 0;
-              const sC = rng.startColumnIndex ?? 0;
-
-              req.updateCells.rows.forEach((r, rOff) => {
-                (r.values || []).forEach((v, cOff) => {
-                  if (v.note !== undefined) {
-                    const key = `${sR + rOff}:${sC + cOff}`;
-                    if (v.note) nextNotes[key] = String(v.note);
-                    else delete nextNotes[key];
-                  }
-                });
-              });
-
-              if (isNoteOnly) {
-                target.notes_grid = nextNotes;
-                dirtyTargets.set(target.tab_name, target);
-                if (sheetRole === "client") {
-                  if (target.tab_name === "Outgoings") {
-                    valueChangedClientTabs.add(target.tab_name);
-                  } else {
-                    noteOnlyClientTabs.add(target.tab_name);
-                  }
-                }
-              } else {
-                const incoming = req.updateCells.rows.map((r) =>
-                  (r.values || []).map((v) => {
-                    const uev = v.userEnteredValue || {};
-                    return uev.stringValue ?? uev.numberValue ?? uev.boolValue ?? uev.formulaValue ?? "";
-                  })
-                );
-                const parsed = {
-                  tabName: target.tab_name,
-                  startRow0: sR,
-                  startCol0: sC,
-                };
-                const nextVals = applyWriteToGrid2D_(target.values_grid || [], parsed, incoming, {
-                  sheetRole,
-                  tabName: target.tab_name,
-                  notesGrid: nextNotes,
-                  isFormulaGrid: false,
-                });
-                const nextForms = applyWriteToGrid2D_(target.formulas_grid || target.values_grid || [], parsed, incoming, {
-                  sheetRole,
-                  tabName: target.tab_name,
-                  notesGrid: nextNotes,
-                  isFormulaGrid: true,
-                });
-                target.values_grid = nextVals;
-                target.formulas_grid = nextForms;
-                target.notes_grid = nextNotes;
-                dirtyTargets.set(target.tab_name, target);
-                if (sheetRole === "client") valueChangedClientTabs.add(target.tab_name);
-              }
-            }
-          } else if (req.moveDimension?.source && req.moveDimension.source.dimension === "ROWS") {
-            const src = req.moveDimension.source;
-            const target = await getTargetTabRecord(src.sheetId);
-            if (target) {
-              const s = Math.max(0, Number(src.startIndex ?? 0));
-              const e = Math.max(s, Number(src.endIndex ?? s + 1));
-              const count = e - s;
-              const d = Math.max(0, Number(req.moveDimension.destinationIndex ?? 0));
-              const nextVals = (target.values_grid || []).map((r) => (Array.isArray(r) ? [...r] : []));
-              const nextForms = (target.formulas_grid || target.values_grid || []).map((r, r0) => ({
-                oldR1: r0 + 1,
-                cells: Array.isArray(r) ? [...r] : [],
-              }));
-              if (count > 0 && s < nextVals.length && d !== s) {
-                const movedV = nextVals.splice(s, count);
-                const movedF = nextForms.splice(s, count);
-                const insertAt = d <= s ? d : Math.max(0, d - count);
-                nextVals.splice(insertAt, 0, ...movedV);
-                nextForms.splice(insertAt, 0, ...movedF);
-                const finalForms = nextForms.map((fObj, newR0) => {
-                  const newR1 = newR0 + 1;
-                  if (fObj.oldR1 === newR1) return fObj.cells;
-                  const re = new RegExp(`(?<![A-Za-z0-9_$'!])(\\$?[A-Za-z]{1,3})${fObj.oldR1}(?![0-9(])`, "g");
-                  return fObj.cells.map((cell) =>
-                    typeof cell === "string" && cell.startsWith("=")
-                      ? cell.replace(re, (m, colPart) => (/^PL$/i.test(colPart) ? m : `${colPart}${newR1}`))
-                      : cell
-                  );
-                });
-                target.values_grid = nextVals;
-                target.formulas_grid = finalForms;
-                target.notes_grid = remapNotesGridRows_(target.notes_grid, (oldR0) => {
-                  if (oldR0 >= s && oldR0 < s + count) return insertAt + (oldR0 - s);
-                  if (s < insertAt && oldR0 >= s + count && oldR0 < insertAt + count) return oldR0 - count;
-                  if (insertAt < s && oldR0 >= insertAt && oldR0 < s) return oldR0 + count;
-                  return oldR0;
-                });
-                dirtyTargets.set(target.tab_name, target);
-                if (sheetRole === "client") valueChangedClientTabs.add(target.tab_name);
-              }
-            }
-          } else if (req.insertDimension?.range && req.insertDimension.range.dimension === "ROWS") {
-            const rng = req.insertDimension.range;
-            const target = await getTargetTabRecord(rng.sheetId);
-            if (target) {
-              const s = Math.max(0, Number(rng.startIndex ?? 0));
-              const e = Math.max(s, Number(rng.endIndex ?? s + 1));
-              const count = e - s;
-              if (count > 0) {
-                if (s > 50000 || s + count > 50000 || (target.values_grid || []).length + count > 50000) {
-                  throw new Error(`insertDimension exceeds maximum virtual sheet row limit (50000)`);
-                }
-                const nextVals = (target.values_grid || []).map((r) => (Array.isArray(r) ? [...r] : []));
-                const nextForms = (target.formulas_grid || target.values_grid || []).map((r, r0) => ({
-                  oldR1: r0 + 1,
-                  cells: Array.isArray(r) ? [...r] : [],
-                }));
-                while (nextVals.length < s) nextVals.push([]);
-                while (nextForms.length < s) nextForms.push({ oldR1: nextForms.length + 1, cells: [] });
-
-                const inherit = Boolean(req.insertDimension.inheritFromBefore) && s > 0;
-                const tplFormCells = inherit && nextForms[s - 1]
-                  ? nextForms[s - 1].cells.map((c) => (typeof c === "string" && c.startsWith("=") ? c : ""))
-                  : [];
-                const tplOldR1 = inherit ? s : -1;
-
-                const insertedV = Array.from({ length: count }, () => []);
-                const insertedF = Array.from({ length: count }, () => ({
-                  oldR1: tplOldR1,
-                  cells: [...tplFormCells],
-                }));
-                nextVals.splice(s, 0, ...insertedV);
-                nextForms.splice(s, 0, ...insertedF);
-
-                const finalForms = nextForms.map((fObj, newR0) => {
-                  const newR1 = newR0 + 1;
-                  if (fObj.oldR1 <= 0 || fObj.oldR1 === newR1) return fObj.cells;
-                  const re = new RegExp(`(?<![A-Za-z0-9_$'!])(\\$?[A-Za-z]{1,3})${fObj.oldR1}(?![0-9(])`, "g");
-                  return fObj.cells.map((cell) =>
-                    typeof cell === "string" && cell.startsWith("=")
-                      ? cell.replace(re, (m, colPart) => (/^PL$/i.test(colPart) ? m : `${colPart}${newR1}`))
-                      : cell
-                  );
-                });
-                target.values_grid = nextVals;
-                target.formulas_grid = finalForms;
-                target.notes_grid = remapNotesGridRows_(target.notes_grid, (oldR0) =>
-                  oldR0 >= s ? oldR0 + count : oldR0
-                );
-                dirtyTargets.set(target.tab_name, target);
-                if (sheetRole === "client") valueChangedClientTabs.add(target.tab_name);
-              }
-            }
-          } else if (req.deleteDimension?.range && req.deleteDimension.range.dimension === "ROWS") {
-            const rng = req.deleteDimension.range;
-            const target = await getTargetTabRecord(rng.sheetId);
-            if (target) {
-              const s = Math.max(0, Number(rng.startIndex ?? 0));
-              const e = Math.max(s, Number(rng.endIndex ?? s + 1));
-              const count = e - s;
-              const nextVals = (target.values_grid || []).map((r) => (Array.isArray(r) ? [...r] : []));
-              const nextForms = (target.formulas_grid || target.values_grid || []).map((r, r0) => ({
-                oldR1: r0 + 1,
-                cells: Array.isArray(r) ? [...r] : [],
-              }));
-              if (count > 0 && s < nextVals.length) {
-                nextVals.splice(s, count);
-                nextForms.splice(s, count);
-                const finalForms = nextForms.map((fObj, newR0) => {
-                  const newR1 = newR0 + 1;
-                  if (fObj.oldR1 === newR1) return fObj.cells;
-                  const re = new RegExp(`(?<![A-Za-z0-9_$'!])(\\$?[A-Za-z]{1,3})${fObj.oldR1}(?![0-9(])`, "g");
-                  return fObj.cells.map((cell) =>
-                    typeof cell === "string" && cell.startsWith("=")
-                      ? cell.replace(re, (m, colPart) => (/^PL$/i.test(colPart) ? m : `${colPart}${newR1}`))
-                      : cell
-                  );
-                });
-                target.values_grid = nextVals;
-                target.formulas_grid = finalForms;
-                target.notes_grid = remapNotesGridRows_(target.notes_grid, (oldR0) => {
-                  if (oldR0 >= s && oldR0 < s + count) return -1;
-                  if (oldR0 >= s + count) return oldR0 - count;
-                  return oldR0;
-                });
-                dirtyTargets.set(target.tab_name, target);
-                if (sheetRole === "client") valueChangedClientTabs.add(target.tab_name);
-              }
-            }
-          }
-        }
-
-        const pendingClientSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
-        const willRunClientFormulaRecompute =
-          sheetRole === "client" &&
-          !params._skipFormulaRecompute &&
-          (valueChangedClientTabs.size > 0 || (pendingClientSet && pendingClientSet.size > 0));
-
-        for (const [tabName, target] of dirtyTargets.entries()) {
-          bumpTabWriteRevision_(ctx.clientName, sheetRole, tabName);
-          const isDeferredClientSave =
-            sheetRole === "client" &&
-            !["Sessions", "AppLog", "Welcome"].includes(tabName) &&
-            (Boolean(params._skipFormulaRecompute) || willRunClientFormulaRecompute);
-          await saveVirtualTabGrid_(
-            ctx,
-            sheetRole,
-            tabName,
-            target.values_grid || [],
-            target.formulas_grid || [],
-            target.notes_grid || {},
-            { memoryOnly: isDeferredClientSave }
-          );
-        }
-
-        if (sheetRole === "client") {
-          if (params._skipFormulaRecompute) {
-            if (valueChangedClientTabs.size > 0 || dirtyTargets.size > 0) {
-              queuePendingClientTabs_(ctx, [...valueChangedClientTabs, ...dirtyTargets.keys()], {
-                isSkippedStep: true,
-                notesChangedTabs: [...dirtyTargets.keys()],
-              });
-            }
-          } else if (willRunClientFormulaRecompute) {
-            if (params._syncFormulaRecompute) {
-              await recomputeClientFormulasAfterVirtualWrite_(
-                ctx,
-                [...valueChangedClientTabs, ...dirtyTargets.keys()],
-                rawSheetsApi
-              ).catch((e) =>
-                console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-              );
-            } else {
-              await recomputeAndPersistImmediateClientTabs_(
-                ctx,
-                [...valueChangedClientTabs, ...dirtyTargets.keys()],
-                rawSheetsApi,
-                {
-                  notesChangedTabs: new Set(dirtyTargets.keys()),
-                  deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
-                }
-              ).catch((e) =>
-                console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-              );
-            }
-          } else if (noteOnlyClientTabs.size > 0) {
-            await syncPhase2RelationalJobsIfEnabled_(ctx, [...noteOnlyClientTabs]);
-            const noteGrids = {};
-            for (const [tName, rec] of dirtyTargets.entries()) {
-              noteGrids[tName] = {
-                values: rec.values_grid || [],
-                formulas: rec.formulas_grid || [],
-                notes: rec.notes_grid || {},
-              };
-            }
-            syncStructuredClientTablesFromGrids_(ctx, noteGrids, [...noteOnlyClientTabs]).catch((e) =>
-              console.warn("[masterEngineService] Stage 4 relational note sync warning:", e.message)
-            );
-          }
-
+      await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, dataItems);
+    } else if (sheetRole === "client") {
+      const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
+      const hasWork = actuallyChangedTabs.length > 0 || (pendingSet && pendingSet.size > 0);
+      if (isNonFormulaKeyInfoOnlyBatch && (!pendingSet || pendingSet.size === 0)) {
+        if (actuallyChangedTabs.length > 0) {
+          await import("./cacheService.js")
+            .then(({ invalidatePmaClientCache }) => invalidatePmaClientCache(ctx.clientSheetId, ctx.masterSheetId))
+            .catch(() => { });
           if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
             import("./clientSheetBridgeService.js")
-              .then(({ recordBridgeStructuralRequests, scheduleOutboundSheetBridgeSync }) => {
-                recordBridgeStructuralRequests(ctx.clientName, requests, metaBySheetId);
-                if (dirtyTargets.size > 0) {
-                  scheduleOutboundSheetBridgeSync(ctx.clientName, [...dirtyTargets.keys()]);
-                }
-              })
+              .then(({ scheduleOutboundSheetBridgeSync }) =>
+                scheduleOutboundSheetBridgeSync(ctx.clientName, actuallyChangedTabs)
+              )
               .catch(() => { });
           }
         }
-
-        return {
-          status: 200,
-          data: { spreadsheetId, replies: requests.map(() => ({})) },
-        };
-      }
-
-      // 9. spreadsheets.sheets.copyTo (used by reconTabService when duplicating Template -> YYMM)
-      if (namespace === "sheets" && method === "copyTo") {
-        let sourceTabName = "Template";
-        if (params.sheetId !== undefined && params.sheetId !== null && supabase) {
-          const { data: metaTabs } = await supabase
-            .from("master_sheet_grids")
-            .select("tab_name")
-            .eq("client_name", ctx.clientName)
-            .eq("sheet_role", sheetRole);
-          const matchedTab = (metaTabs || []).find(
-            (t) => hashTabNameToSheetId_(t.tab_name) === Number(params.sheetId)
-          );
-          if (matchedTab?.tab_name) {
-            sourceTabName = matchedTab.tab_name;
-          }
+      } else if (params._skipFormulaRecompute) {
+        if (actuallyChangedTabs.length > 0) {
+          queuePendingClientTabs_(ctx, actuallyChangedTabs, {
+            isSkippedStep: true,
+            notesChangedTabs: [...formulasChangedTabs],
+          });
         }
-        const sourceRec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, sourceTabName, rawSheetsApi);
-        const tempTitle = `Copy of ${sourceTabName} ${Date.now().toString().slice(-4)}`;
-        await saveVirtualTabGrid_(
-          ctx,
+      } else if (hasWork) {
+        if (params._syncFormulaRecompute) {
+          await recomputeClientFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
+            console.warn("[masterEngineService] Client formula recompute warning:", e.message)
+          );
+        } else {
+          await recomputeAndPersistImmediateClientTabs_(ctx, actuallyChangedTabs, rawSheetsApi, {
+            notesChangedTabs: formulasChangedTabs,
+            deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
+          }).catch((e) =>
+            console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
+          );
+        }
+      }
+    }
+
+    return {
+      status: 200,
+      data: {
+        spreadsheetId,
+        totalUpdatedRanges: dataItems.length,
+      },
+    };
+  }
+
+  // 5. values.append
+  if (namespace === "values" && method === "append") {
+    const rangeStr = params.range || "AutoLog!A:D";
+    const incomingValues = params.requestBody?.values || params.resource?.values || [];
+    if (!Array.isArray(incomingValues) || incomingValues.length > 50000) {
+      throw new Error("values.append payload exceeds maximum row limit (50,000).");
+    }
+    for (const row of incomingValues) {
+      if (Array.isArray(row) && row.length > 600) {
+        throw new Error("values.append payload exceeds maximum column limit (600).");
+      }
+    }
+    const valueInputOption = params.valueInputOption || "USER_ENTERED";
+    const parsed = parseA1Range(rangeStr);
+    const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
+    const baseRow0 = Array.isArray(rec.values_grid) ? rec.values_grid.length : 0;
+    if (baseRow0 + incomingValues.length > 50000) {
+      throw new Error(`values.append would exceed maximum tab row limit (50,000) for "${parsed.tabName}".`);
+    }
+    const normRows = incomingValues.map((row, rIdx) =>
+      (Array.isArray(row) ? row : [row]).map((v, cIdx) =>
+        normalizeCellForStorage(
           sheetRole,
-          tempTitle,
-          sourceRec.values_grid || [],
-          sourceRec.formulas_grid || [],
-          sourceRec.notes_grid || {}
+          parsed.tabName,
+          baseRow0 + rIdx,
+          (parsed.startCol0 ?? 0) + cIdx,
+          v,
+          valueInputOption,
+          rec.values_grid,
+          rec.notes_grid
+        )
+      )
+    );
+    const nextVals = Array.isArray(rec.values_grid) ? [...rec.values_grid, ...normRows] : [...normRows];
+    const nextForms = Array.isArray(rec.formulas_grid) ? [...rec.formulas_grid, ...incomingValues] : [...incomingValues];
+    bumpTabWriteRevision_(ctx.clientName, sheetRole, parsed.tabName);
+    const isDeferredClientSave =
+      sheetRole === "client" && !["Sessions", "AppLog", "Welcome"].includes(parsed.tabName);
+    await saveVirtualTabGrid_(ctx, sheetRole, parsed.tabName, nextVals, nextForms, rec.notes_grid, {
+      memoryOnly: isDeferredClientSave,
+    });
+
+    if (sheetRole === "client") {
+      if (params._skipFormulaRecompute) {
+        queuePendingClientTabs_(ctx, [parsed.tabName], {
+          isSkippedStep: true,
+          notesChangedTabs: [parsed.tabName],
+        });
+      } else if (params._syncFormulaRecompute) {
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Client formula recompute warning:", e.message)
         );
+      } else {
+        await recomputeAndPersistImmediateClientTabs_(ctx, [parsed.tabName], rawSheetsApi, {
+          notesChangedTabs: new Set([parsed.tabName]),
+        }).catch((e) =>
+          console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
+        );
+      }
+    }
+
+    return {
+      status: 200,
+      data: {
+        spreadsheetId,
+        updates: { updatedRange: rangeStr, updatedRows: incomingValues.length },
+      },
+    };
+  }
+
+  // 6. values.clear & values.batchClear
+  if (namespace === "values" && (method === "clear" || method === "batchClear")) {
+    const ranges =
+      method === "clear"
+        ? [params.range].filter(Boolean)
+        : params.requestBody?.ranges || params.resource?.ranges || [];
+    const byTabClears = new Map();
+    for (const r of ranges) {
+      const parsed = parseA1Range(r);
+      if (!byTabClears.has(parsed.tabName)) byTabClears.set(parsed.tabName, []);
+      byTabClears.get(parsed.tabName).push(parsed);
+    }
+
+    const formulasChangedTabs = new Set();
+    for (const [tabName, clears] of byTabClears.entries()) {
+      const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi);
+      const prevFormulasGrid = sheetRole === "client" ? rec.formulas_grid || rec.values_grid : null;
+      let nextVals = rec.values_grid || [];
+      let nextForms = rec.formulas_grid || rec.values_grid || [];
+      for (const c of clears) {
+        nextVals = clearRangeInGrid2D_(nextVals, c);
+        nextForms = clearRangeInGrid2D_(nextForms, c);
+      }
+      if (sheetRole === "client" && hasFormulaCellsChanged_(prevFormulasGrid, nextForms)) {
+        formulasChangedTabs.add(tabName);
+      }
+      bumpTabWriteRevision_(ctx.clientName, sheetRole, tabName);
+      const isDeferredClientSave =
+        Boolean(params._skipFormulaRecompute) ||
+        (sheetRole === "client" && !["Sessions", "AppLog", "Welcome"].includes(tabName));
+      await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid, {
+        memoryOnly: isDeferredClientSave,
+      });
+    }
+
+    if (sheetRole === "client") {
+      if (params._skipFormulaRecompute) {
+        queuePendingClientTabs_(ctx, [...byTabClears.keys()], {
+          isSkippedStep: true,
+          notesChangedTabs: [...formulasChangedTabs],
+        });
+      } else if (params._syncFormulaRecompute) {
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [...byTabClears.keys()], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Client formula recompute warning:", e.message)
+        );
+      } else {
+        await recomputeAndPersistImmediateClientTabs_(ctx, [...byTabClears.keys()], rawSheetsApi, {
+          notesChangedTabs: formulasChangedTabs,
+        }).catch((e) =>
+          console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
+        );
+      }
+    }
+
+    return {
+      status: 200,
+      data: { spreadsheetId, clearedRanges: ranges },
+    };
+  }
+
+  // 7. spreadsheets.get
+  if (namespace === "spreadsheets" && method === "get") {
+    const requestedRanges = Array.isArray(params.ranges) ? params.ranges : params.ranges ? [params.ranges] : [];
+    const includeGridData = Boolean(params.includeGridData || requestedRanges.length > 0);
+    if (sheetRole === "client" && includeGridData && ctx.sheetBridgeMode === "live") {
+      await import("./clientSheetBridgeService.js")
+        .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
+        .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
+    }
+    if (
+      sheetRole === "client" &&
+      includeGridData &&
+      (requestedRanges.length === 0 || requestedRanges.some((r) => doesClientRangeNeedFormulaFlush_(parseA1Range(r), ctx.clientName)))
+    ) {
+      if (hasPendingOrInFlightClientRecompute_(ctx.clientName)) {
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Read-barrier formula recompute warning:", e.message)
+        );
+      }
+    }
+    const targetTabNames =
+      requestedRanges.length > 0 ? new Set(requestedRanges.map((r) => parseA1Range(r).tabName)) : null;
+
+    let allTabs = [];
+    if (sheetRole === "client") {
+      if (!includeGridData) {
         const { data: tabRows } = await supabase
           .from("master_sheet_grids")
-          .select("tab_name")
+          .select("tab_name, sheet_role, row_count, col_count")
+          .eq("client_name", ctx.clientName)
+          .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
+          .order("tab_name", { ascending: true });
+        const seen = new Set();
+        for (const r of tabRows || []) {
+          const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
+          if (seen.has(cleanTab)) continue;
+          seen.add(cleanTab);
+          allTabs.push({ ...r, tab_name: cleanTab, sheet_role: "client" });
+        }
+      } else if (targetTabNames && targetTabNames.size > 0) {
+        const fieldsStr = String(params.fields || "");
+        const needFormulas = !fieldsStr || fieldsStr.includes("userEnteredValue");
+        const needNotes = !fieldsStr || fieldsStr.includes("note") || fieldsStr.includes("effectiveFormat");
+        const loadedTargetTabs = await Promise.all(
+          [...targetTabNames].map((tName) =>
+            getOrLoadVirtualTabGrid_(ctx, "client", tName, rawSheetsApi, {
+              valuesOnly: !needFormulas,
+              includeNotes: needNotes,
+            })
+          )
+        );
+        allTabs.push(...loadedTargetTabs);
+      } else {
+        const fieldsStr = String(params.fields || "");
+        const needFormulas = !fieldsStr || fieldsStr.includes("userEnteredValue");
+        const selectCols = needFormulas
+          ? "tab_name, sheet_role, row_count, col_count, values_grid, formulas_grid, notes_grid"
+          : "tab_name, sheet_role, row_count, col_count, values_grid, notes_grid";
+        const { data: tabRows } = await supabase
+          .from("master_sheet_grids")
+          .select(selectCols)
+          .eq("client_name", ctx.clientName)
+          .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
+          .order("tab_name", { ascending: true });
+        const seen = new Set();
+        for (const r of tabRows || []) {
+          const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
+          if (seen.has(cleanTab)) continue;
+          seen.add(cleanTab);
+          expandClientTabFromStorage_(r, cleanTab, { valuesOnly: !needFormulas });
+          allTabs.push(r);
+        }
+      }
+    } else if (includeGridData && targetTabNames && targetTabNames.size > 0) {
+      const fieldsStr = String(params.fields || "");
+      const wantsAllProperties = !fieldsStr || fieldsStr.includes("properties");
+      const targetList = [...targetTabNames];
+      const [gridRes, metaRes] = await Promise.all([
+        supabase
+          .from("master_sheet_grids")
+          .select("tab_name, row_count, col_count, values_grid, notes_grid")
           .eq("client_name", ctx.clientName)
           .eq("sheet_role", sheetRole)
-          .order("tab_name", { ascending: true });
-        const idx = (tabRows || []).findIndex((t) => t.tab_name === tempTitle);
-        const newSheetId = hashTabNameToSheetId_(tempTitle);
-        return {
-          status: 200,
-          data: {
-            sheetId: newSheetId,
-            title: tempTitle,
-            index: idx >= 0 ? idx : 0,
-          },
-        };
+          .in("tab_name", targetList),
+        wantsAllProperties
+          ? supabase
+            .from("master_sheet_grids")
+            .select("tab_name, row_count, col_count")
+            .eq("client_name", ctx.clientName)
+            .eq("sheet_role", sheetRole)
+            .order("tab_name", { ascending: true })
+          : Promise.resolve({ data: [] }),
+      ]);
+      const gridByTab = new Map();
+      for (const r of gridRes.data || []) {
+        r.values_grid = compactGrid2D(r.values_grid || []);
+        r.formulas_grid = r.values_grid;
+        gridByTab.set(r.tab_name, r);
       }
-
-      return { status: 200, data: {} };
-    }
-
-    /**
-     * Extracts structured settings from a KeyInfo 2D grid and upserts public.tenant_key_info
-     */
-    async function syncStructuredKeyInfoFromGrid_(ctx, keyInfoGrid) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase || !Array.isArray(keyInfoGrid)) return;
-
-      const cell = (r1, cLetter) => {
-        const r0 = r1 - 1;
-        const c0 = colLetterToIdx0(cLetter);
-        return String(keyInfoGrid[r0]?.[c0] ?? "").trim();
-      };
-
-      const rangeCol = (cLetter, startR1, endR1) => {
-        const c0 = colLetterToIdx0(cLetter);
-        const out = [];
-        for (let r = startR1 - 1; r <= endR1 - 1; r++) {
-          const v = String(keyInfoGrid[r]?.[c0] ?? "").trim();
-          if (v) out.push(v);
-        }
-        return out;
-      };
-
-      const nonCashAccounts = [];
-      for (let r = 22; r <= 27; r++) {
-        const name = String(keyInfoGrid[r]?.[colLetterToIdx0("H")] ?? "").trim();
-        const accId = String(keyInfoGrid[r]?.[colLetterToIdx0("I")] ?? "").trim();
-        if (name && !name.toLowerCase().includes("non-cash") && !name.endsWith(":")) {
-          nonCashAccounts.push({ name, id: accId });
-        }
+      if (wantsAllProperties && Array.isArray(metaRes.data) && metaRes.data.length > 0) {
+        allTabs = metaRes.data.map((m) => gridByTab.get(m.tab_name) || { ...m, formulas_grid: [] });
+      } else {
+        allTabs = [...gridByTab.values()];
       }
-
-      const overheadMappings = [];
-      for (let r = 1; r < Math.min(keyInfoGrid.length, 210); r++) {
-        const plCat = String(keyInfoGrid[r]?.[colLetterToIdx0("AZ")] ?? "").trim();
-        const outCat = String(keyInfoGrid[r]?.[colLetterToIdx0("BA")] ?? "").trim();
-        if (plCat || outCat) {
-          overheadMappings.push({ row: r + 1, plCategory: plCat, outgoingsCategory: outCat });
-        }
-      }
-
-      const payload = {
-        client_id: ctx.clientId,
-        client_name: ctx.clientName,
-        normalized_key: ctx.normalizedKey || normalizeClientKey_(ctx.clientName),
-        fy_start_date: formatCellForDisplay("master", "KeyInfo", 1, 1, keyInfoGrid[1]?.[1], keyInfoGrid),
-        revenue_or_income_mode: cell(15, "B") || "Revenue",
-        direct_costs_mode: cell(8, "D") || "Contractors",
-        accounting_tool: cell(4, "Q") || "None",
-        crm_tool: cell(8, "Q") || "None",
-        crm_drives: cell(9, "Q") || "NA",
-        primary_currency: cell(17, "B") || "GBP",
-        currency_symbol: cell(4, "D") || "£",
-        invoice_method: cell(8, "F") || "Whole",
-        contractor_categories: rangeCol("AT", 4, 22),
-        passthrough_categories: rangeCol("AT", 24, 40),
-        tracked_bank_accounts: rangeCol("H", 12, 21).filter(
-          (n) => !n.toLowerCase().includes("non-cash") && !n.endsWith(":")
-        ),
-        tracked_non_cash_accounts: nonCashAccounts,
-        overhead_mappings: overheadMappings,
-        product_lines: rangeCol("B", 23, 37),
-        lead_sources: [...rangeCol("G", 32, 60), ...rangeCol("G", 63, 72)],
-        updated_at: new Date().toISOString(),
-      };
-
-      await supabase.from("tenant_key_info").upsert(payload, { onConflict: "client_id" });
-    }
-
-    function parseNumericVal_(val) {
-      if (typeof val === "number") return isNaN(val) ? 0 : val;
-      if (val == null || val === "") return 0;
-      const s = String(val).trim();
-      const isParen = /^\(.*\)$/.test(s);
-      const cleaned = s.replace(/[()£$€,\s]/g, "");
-      const num = parseFloat(cleaned);
-      if (isNaN(num)) return 0;
-      return isParen ? -Math.abs(num) : num;
-    }
-
-    /**
-     * Extracts structured Bank Recon period summary and items from a Recon YYMM grid
-     */
-    async function syncReconPeriodAndItemsFromGrid_(ctx, monthKey, grid) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase || !Array.isArray(grid) || !/^\d{4}$/.test(monthKey)) return;
-
-      const yy = monthKey.slice(0, 2);
-      const mm = monthKey.slice(2, 4);
-      const isoMonth = `20${yy}-${mm}`;
-
-      const da1Raw = String(grid[0]?.[colLetterToIdx0("DA")] ?? "").trim();
-      const accountingPlatform = da1Raw.toLowerCase().includes("quick") ? "Quickbooks" : "Xero";
-      const cr2Raw = grid[1]?.[colLetterToIdx0("CR")];
-      const isComplete = Boolean(cr2Raw === true || String(cr2Raw ?? "").trim().toUpperCase() === "TRUE");
-
-      // Totals in U3:X16 (rows 2..15, cols 20..23)
-      const actualsSummary = {};
-      for (let r = 2; r <= 15; r++) {
-        const label = String(grid[r]?.[20] ?? "").trim();
-        if (!label || label.toLowerCase() === "total") continue;
-        actualsSummary[label] = {
-          out: String(grid[r]?.[21] ?? ""),
-          in: String(grid[r]?.[22] ?? ""),
-          net: parseNumericVal_(grid[r]?.[23]),
-          formattedNet: String(grid[r]?.[23] ?? "£0.00"),
-        };
-      }
-
-      await supabase.from("bank_recon_periods").upsert(
-        {
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          month_key: monthKey,
-          iso_month: isoMonth,
-          accounting_platform: accountingPlatform,
-          is_complete: isComplete,
-          actuals_summary: actualsSummary,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "client_name,month_key" }
-      );
-
-      // Extract reconciled bank transactions (A3:Q200 -> rows 2..199) and unreconciled items (CD4:CN60 -> rows 3..59, cols 81..91)
-      const itemsToInsert = [];
-      for (let r = 2; r < Math.min(grid.length, 200); r++) {
-        const row = grid[r] || [];
-        const txnDate = formatCellForDisplay("recon", monthKey, r, 1, row[1] || row[0], grid);
-        const accountName = String(row[2] || "").trim();
-        const payee = String(row[3] || row[4] || "").trim();
-        const particulars = String(row[4] || "").trim();
-        const ref = String(row[6] || row[5] || "").trim();
-        const outAmt = parseNumericVal_(row[8]);
-        const inAmt = parseNumericVal_(row[9]);
-        const category = String(row[16] || "").trim();
-        if (!txnDate && !payee && !outAmt && !inAmt) continue;
-        itemsToInsert.push({
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          month_key: monthKey,
-          item_type: "reconciled",
-          row_index: r + 1,
-          is_reconciled: true,
-          txn_date: txnDate,
-          account_name: accountName,
-          payee,
-          particulars,
-          reference: ref,
-          out_amount: outAmt,
-          in_amount: inAmt,
-          net_amount: inAmt - outAmt,
-          vat_amount: 0,
-          category,
+      if (sheetRole === "recon") {
+        allTabs.sort((a, b) => {
+          const aIsMonth = /^\d{4}$/.test(a.tab_name);
+          const bIsMonth = /^\d{4}$/.test(b.tab_name);
+          if (aIsMonth && bIsMonth) return b.tab_name.localeCompare(a.tab_name);
+          if (aIsMonth !== bIsMonth) return aIsMonth ? -1 : 1;
+          return a.tab_name.localeCompare(b.tab_name);
         });
       }
-
-      const colCD = colLetterToIdx0("CD"); // 81
-      for (let r = 3; r < Math.min(grid.length, 60); r++) {
-        const row = grid[r] || [];
-        const dateVal = row[colCD + 2] ?? row[colCD]; // CF for Xero, CD for QB
-        const txnDate = formatCellForDisplay("recon", monthKey, r, colCD + 2, dateVal, grid);
-        const payee = String(row[colCD + 3] || "").trim(); // CG
-        const particulars = String(row[colCD + 4] || "").trim(); // CH
-        const rawAmt = parseNumericVal_(row[colCD + 5]); // CI
-        const cat = String(row[colCD + 9] || "").trim(); // CM
-        const vatApplies = String(row[colCD + 10] || "No").trim(); // CN
-        const vatAmt = vatApplies.toLowerCase() === "yes" ? Math.round(Math.abs(rawAmt) * (20 / 120) * 100) / 100 : 0;
-        const netAmt = Math.round((Math.abs(rawAmt) - vatAmt) * 100) / 100;
-        if (!txnDate && !payee && !rawAmt) continue;
-        itemsToInsert.push({
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          month_key: monthKey,
-          item_type: "unreconciled",
-          row_index: r + 1,
-          is_reconciled: false,
-          txn_date: txnDate,
-          account_name: "",
-          payee,
-          particulars,
-          reference: "",
-          out_amount: rawAmt < 0 ? Math.abs(rawAmt) : 0,
-          in_amount: rawAmt > 0 ? rawAmt : 0,
-          net_amount: netAmt,
-          vat_amount: vatAmt,
-          category: cat,
-          vat_applies: vatApplies,
-          is_excluded: false,
-        });
-      }
-
-      await supabase
-        .from("bank_recon_items")
-        .delete()
+    } else {
+      const selectCols = includeGridData
+        ? "tab_name, row_count, col_count, values_grid, notes_grid"
+        : "tab_name, row_count, col_count";
+      const { data: tabRows } = await supabase
+        .from("master_sheet_grids")
+        .select(selectCols)
         .eq("client_name", ctx.clientName)
-        .eq("month_key", monthKey);
-
-      if (itemsToInsert.length > 0) {
-        for (let i = 0; i < itemsToInsert.length; i += 200) {
-          await supabase.from("bank_recon_items").insert(itemsToInsert.slice(i, i + 200));
-        }
-      }
-    }
-
-    /**
-     * Full 1-click migration of a client's Master Sheet & Recon Sheet into Supabase Stage 2 tables
-     */
-    export async function migrateClientMasterAndReconToSupabase(sheets, clientName = "APPTEST") {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      invalidateMasterEngineCache(clientName, null, null, { invalidateSheetContext: true });
-      const ctx = await resolveSupabaseSheetContext({ clientName });
-      if (!ctx) throw new Error(`Client "${clientName}" not found in Supabase clients registry.`);
-      if (isVirtualSupabaseSheetId(ctx.masterSheetId) && isVirtualSupabaseSheetId(ctx.reconSheetId)) {
-        throw new Error(`Client "${clientName}" was provisioned directly in Supabase and has no Google Master or Recon sheets to sync from.`);
-      }
-
-      const summary = {
-        clientName: ctx.clientName,
-        masterTabsSynced: 0,
-        reconTabsSynced: 0,
-        invoicesCount: 0,
-        directCostsCount: 0,
-        plLinesCount: 0,
-        crmDealsCount: 0,
-        timeEntriesCount: 0,
-        reconPeriodsCount: 0,
-        reconItemsCount: 0,
-        learningPatternsCount: 0,
-      };
-
-      // 1. Fetch Master Sheet metadata & tabs (bypassing virtual router so we read live legacy sheet)
-      if (ctx.masterSheetId && !isVirtualSupabaseSheetId(ctx.masterSheetId)) {
-        const masterMeta = await sheets.spreadsheets.get({
-          spreadsheetId: ctx.masterSheetId,
-          fields: "sheets.properties.title",
-          _bypassSupabaseVirtualSheet: true,
-        });
-        const existingMasterTabs = new Set((masterMeta.data.sheets || []).map((s) => s.properties.title));
-        const orderedCore = CORE_MASTER_TABS.filter((t) => existingMasterTabs.has(t));
-        const extraTabs = [...existingMasterTabs].filter(
-          (t) => !CORE_MASTER_TABS.includes(t) && t !== "GasExecLogs" && t !== "GasScriptProps"
-        );
-        const tabsToPull = [...orderedCore, ...extraTabs];
-
-        let migratedInvMode = "Whole";
-
-        for (let i = 0; i < tabsToPull.length; i += 6) {
-          const chunk = tabsToPull.slice(i, i + 6);
-          const ranges = chunk.map((t) => `'${t}'`);
-          const [valBatch, formBatch] = await Promise.all([
-            sheets.spreadsheets.values.batchGet({
-              spreadsheetId: ctx.masterSheetId,
-              ranges,
-              valueRenderOption: "UNFORMATTED_VALUE",
-              _bypassSupabaseVirtualSheet: true,
-            }),
-            sheets.spreadsheets.values
-              .batchGet({
-                spreadsheetId: ctx.masterSheetId,
-                ranges,
-                valueRenderOption: "FORMULA",
-                _bypassSupabaseVirtualSheet: true,
-              })
-              .catch(() => ({ data: { valueRanges: [] } })),
-          ]);
-
-          const vList = valBatch.data.valueRanges || [];
-          const fList = formBatch.data.valueRanges || [];
-
-          for (let j = 0; j < chunk.length; j++) {
-            const tabName = chunk[j];
-            const vGrid = vList[j]?.values || [];
-            const fGrid = fList[j]?.values || vGrid;
-            await saveVirtualTabGrid_(ctx, "master", tabName, vGrid, fGrid, {});
-            summary.masterTabsSynced++;
-
-            if (tabName === "KeyInfo") {
-              const rawMode = String(vGrid[7]?.[6] || "Whole").trim();
-              if (rawMode) migratedInvMode = rawMode;
-            } else if (tabName === "DataChgAlert") {
-              const invFreq = String(vGrid[1]?.[24] || "").trim();
-              const crmFreq = String(vGrid[2]?.[24] || "").trim();
-              const expFreq = String(vGrid[3]?.[24] || "").trim();
-              try {
-                await supabase
-                  .from("sync_schedules")
-                  .update({
-                    inv_freq: invFreq || "Not Used",
-                    crm_freq: crmFreq || "Not Used",
-                    exp_freq: expFreq || "Not Used",
-                    updated_at: new Date().toISOString(),
-                  })
-                  .eq("client_name", ctx.clientName);
-              } catch (_) {
-                // ignore non-critical sync_schedules update warning
-              }
-            } else if (tabName === "InvFromApp") {
-              summary.invoicesCount = await syncInvoicesTableFromGrid_(ctx, vGrid);
-            } else if (tabName === "JnlsFromApp") {
-              summary.directCostsCount = await syncDirectCostsTableFromGrid_(ctx, vGrid);
-            } else if (tabName === "PLFromApp") {
-              summary.plLinesCount = await syncPLLinesTableFromGrid_(ctx, vGrid);
-            } else if (tabName === "DataFromCRM") {
-              summary.crmDealsCount = await syncCrmDealsTableFromGrid_(ctx, vGrid);
-            } else if (tabName === "TimeComp") {
-              summary.timeEntriesCount = await syncTimeEntriesTableFromGrid_(ctx, vGrid);
-            }
-          }
-        }
-
-        // Seed GasScriptProps if not already initialized so the very first scheduled sync uses the Delta Update Engine cleanly
-        const { data: existingProps } = await supabase
-          .from("master_sheet_grids")
-          .select("values_grid")
-          .eq("client_id", ctx.clientId)
-          .eq("sheet_role", "master")
-          .eq("tab_name", "GasScriptProps")
-          .maybeSingle();
-
-        if (!existingProps?.values_grid || existingProps.values_grid.length < 2) {
-          const seedGrid = [
-            ["Key", "Value", "UpdatedAt"],
-            ["INV_LAST_IMPORT_MODE", migratedInvMode || "Whole", new Date().toISOString()],
-            ["EXP_LAST_IMPORT_MODE", "Whole", new Date().toISOString()],
-          ];
-          await saveVirtualTabGrid_(ctx, "master", "GasScriptProps", seedGrid, seedGrid, {});
-        }
-      }
-
-      // 2. Fetch Recon Sheet metadata & tabs
-      if (ctx.reconSheetId && !isVirtualSupabaseSheetId(ctx.reconSheetId)) {
-        const reconMeta = await sheets.spreadsheets.get({
-          spreadsheetId: ctx.reconSheetId,
-          fields: "sheets.properties.title",
-          _bypassSupabaseVirtualSheet: true,
-        });
-        const allReconTabs = (reconMeta.data.sheets || [])
-          .map((s) => s.properties.title)
-          .filter((t) => Boolean(t));
-
-        const learningPatterns = new Map();
-
-        for (let i = 0; i < allReconTabs.length; i += 5) {
-          const chunk = allReconTabs.slice(i, i + 5);
-          const ranges = chunk.map((t) => `'${t}'`);
-          const [valBatch, formBatch] = await Promise.all([
-            sheets.spreadsheets.values.batchGet({
-              spreadsheetId: ctx.reconSheetId,
-              ranges,
-              valueRenderOption: "UNFORMATTED_VALUE",
-              _bypassSupabaseVirtualSheet: true,
-            }),
-            sheets.spreadsheets.values
-              .batchGet({
-                spreadsheetId: ctx.reconSheetId,
-                ranges,
-                valueRenderOption: "FORMULA",
-                _bypassSupabaseVirtualSheet: true,
-              })
-              .catch(() => ({ data: { valueRanges: [] } })),
-          ]);
-
-          const vList = valBatch.data.valueRanges || [];
-          const fList = formBatch.data.valueRanges || [];
-
-          for (let j = 0; j < chunk.length; j++) {
-            const tabName = chunk[j];
-            const vGrid = vList[j]?.values || [];
-            const fGrid = fList[j]?.values || vGrid;
-            await saveVirtualTabGrid_(ctx, "recon", tabName, vGrid, fGrid, {}, { syncNormalizedMirrors: true });
-            summary.reconTabsSynced++;
-
-            if (/^\d{4}$/.test(tabName)) {
-              summary.reconPeriodsCount++;
-              for (let r = 2; r < Math.min(vGrid.length, 200); r++) {
-                const row = vGrid[r] || [];
-                const payee = String(row[3] || row[4] || "").trim().toLowerCase();
-                const cat = String(row[16] || "").trim();
-                if (payee && cat && !cat.startsWith("#")) {
-                  const key = `${payee}:::${cat}`;
-                  learningPatterns.set(key, {
-                    match_pattern: payee,
-                    category: cat,
-                    confidence_count: (learningPatterns.get(key)?.confidence_count || 0) + 1,
-                  });
-                }
-              }
-            }
-          }
-        }
-
-        const { count: itemCnt } = await supabase
-          .from("bank_recon_items")
-          .select("*", { count: "exact", head: true })
-          .eq("client_name", ctx.clientName);
-        summary.reconItemsCount = itemCnt || 0;
-
-        if (learningPatterns.size > 0) {
-          const dedupByPattern = new Map();
-          for (const item of learningPatterns.values()) {
-            const existing = dedupByPattern.get(item.match_pattern);
-            if (!existing || item.confidence_count > existing.confidence_count) {
-              dedupByPattern.set(item.match_pattern, {
-                client_id: ctx.clientId,
-                client_name: ctx.clientName,
-                match_pattern: item.match_pattern,
-                category: item.category,
-                confidence_count: item.confidence_count,
-                updated_at: new Date().toISOString(),
-              });
-            }
-          }
-          const rows = [...dedupByPattern.values()];
-          await supabase.from("bank_recon_learning_map").delete().eq("client_name", ctx.clientName);
-          for (let i = 0; i < rows.length; i += 200) {
-            await supabase.from("bank_recon_learning_map").insert(rows.slice(i, i + 200));
-          }
-          summary.learningPatternsCount = rows.length;
-        }
-      }
-
-      invalidateMasterEngineCache(ctx.clientName);
-      return summary;
-    }
-
-    async function syncInvoicesTableFromGrid_(ctx, grid) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase || !Array.isArray(grid)) return 0;
-
-      const rows = [];
-      for (let r = 1; r < grid.length; r++) {
-        const row = grid[r] || [];
-        const issueDate = String(row[0] || "").trim();
-        const invNo = String(row[1] || "").trim();
-        const contactName = String(row[2] || "").trim();
-        const desc = String(row[3] || "").trim();
-        const accCode = String(row[4] || "").trim();
-        const taxType = String(row[5] || "").trim();
-        const tracking = String(row[6] || "").trim();
-        const net = parseNumericVal_(row[7]);
-        const tax = parseNumericVal_(row[8]);
-        const gross = parseNumericVal_(row[9]);
-        const status = String(row[10] || "").trim();
-        const invType = String(row[11] || "ACCREC").trim();
-        const extId = String(row[12] || "").trim();
-        const paidDate = String(row[13] || "").trim();
-        const curr = String(row[14] || "GBP").trim();
-        const amtDue = parseNumericVal_(row[15]);
-        const amtPaid = parseNumericVal_(row[16]);
-
-        if (!invNo && !contactName && !extId && !net && !gross) continue;
-        rows.push({
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          external_id: extId || `row_${r + 1}`,
-          invoice_number: invNo,
-          contact_name: contactName,
-          description: desc,
-          account_code: accCode,
-          tax_type: taxType,
-          tracking_category: tracking,
-          issue_date: issueDate,
-          fully_paid_date: paidDate,
-          status,
-          invoice_type: invType,
-          sub_total: net,
-          tax_total: tax,
-          total: gross,
-          amount_due: amtDue,
-          amount_paid: amtPaid,
-          currency_code: curr || "GBP",
-          raw_row: row,
-          synced_at: new Date().toISOString(),
+        .eq("sheet_role", sheetRole)
+        .order("tab_name", { ascending: true });
+      allTabs = (tabRows || []).map((r) => ({ ...r, formulas_grid: r.values_grid }));
+      if (sheetRole === "recon") {
+        allTabs.sort((a, b) => {
+          const aIsMonth = /^\d{4}$/.test(a.tab_name);
+          const bIsMonth = /^\d{4}$/.test(b.tab_name);
+          if (aIsMonth && bIsMonth) return b.tab_name.localeCompare(a.tab_name);
+          if (aIsMonth !== bIsMonth) return aIsMonth ? -1 : 1;
+          return a.tab_name.localeCompare(b.tab_name);
         });
       }
-
-      await supabase.from("accounting_invoices").delete().eq("client_name", ctx.clientName);
-      for (let i = 0; i < rows.length; i += 200) {
-        await supabase.from("accounting_invoices").insert(rows.slice(i, i + 200));
-      }
-      return rows.length;
     }
 
-    async function syncDirectCostsTableFromGrid_(ctx, grid) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase || !Array.isArray(grid)) return 0;
-
-      const rows = [];
-      for (let r = 1; r < grid.length; r++) {
-        const row = grid[r] || [];
-        const txnDate = String(row[0] || "").trim();
-        const supplier = String(row[1] || "").trim();
-        const net = parseNumericVal_(row[2]);
-        const vat = parseNumericVal_(row[3]);
-        const gross = parseNumericVal_(row[4]);
-        const ref = String(row[5] || "").trim();
-        const accName = String(row[6] || "").trim();
-        const status = String(row[7] || "").trim();
-        const extId = String(row[8] || "").trim();
-        const paidDate = String(row[9] || "").trim();
-        const curr = String(row[10] || "GBP").trim();
-        const currRate = parseNumericVal_(row[11]) || 1;
-        const amtDue = parseNumericVal_(row[12]);
-        const amtPaid = parseNumericVal_(row[13]);
-        const dueDate = String(row[14] || "").trim();
-
-        if (!supplier && !extId && !net && !gross) continue;
-        rows.push({
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          external_id: extId || `jnl_${r + 1}`,
-          cost_type: "contractor",
-          supplier_name: supplier,
-          description: supplier,
-          account_name: accName,
-          txn_date: txnDate,
-          due_date: dueDate,
-          paid_date: paidDate,
-          net_amount: net,
-          vat_amount: vat,
-          gross_amount: gross,
-          amount_due: amtDue,
-          amount_paid: amtPaid,
-          status,
-          reference: ref,
-          currency_code: curr || "GBP",
-          currency_rate: currRate,
-          raw_row: row,
-          synced_at: new Date().toISOString(),
-        });
-      }
-
-      await supabase.from("accounting_direct_costs").delete().eq("client_name", ctx.clientName);
-      for (let i = 0; i < rows.length; i += 200) {
-        await supabase.from("accounting_direct_costs").insert(rows.slice(i, i + 200));
-      }
-      return rows.length;
-    }
-
-    async function syncPLLinesTableFromGrid_(ctx, grid) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase || !Array.isArray(grid) || grid.length < 2) return 0;
-
-      // Locate header row with month dates
-      let headerRowIdx = 0;
-      for (let r = 0; r < Math.min(grid.length, 10); r++) {
-        const nonEmpty = (grid[r] || []).filter((c) => String(c || "").trim() !== "");
-        if (nonEmpty.length >= 3) {
-          headerRowIdx = r;
-          break;
-        }
-      }
-      const headers = grid[headerRowIdx] || [];
-      const rows = [];
-
-      for (let r = headerRowIdx + 1; r < grid.length; r++) {
-        const row = grid[r] || [];
-        const accountName = String(row[0] || "").trim();
-        if (!accountName || accountName.toLowerCase().startsWith("total")) continue;
-        for (let c = 1; c < headers.length; c++) {
-          const mHeader = String(headers[c] || "").trim();
-          if (!mHeader) continue;
-          const amt = parseNumericVal_(row[c]);
-          if (amt === 0 && !row[c]) continue;
-          rows.push({
-            client_id: ctx.clientId,
-            client_name: ctx.clientName,
-            month_date: mHeader,
-            section: "overheads",
-            account_name: accountName,
-            basis: "accrual",
-            net_amount: amt,
-            vat_amount: 0,
-            synced_at: new Date().toISOString(),
-          });
-        }
-      }
-
-      await supabase.from("accounting_pl_lines").delete().eq("client_name", ctx.clientName);
-      const dedup = new Map();
-      for (const item of rows) {
-        dedup.set(`${item.month_date}:::${item.account_name}:::${item.basis}`, item);
-      }
-      const uniqueRows = [...dedup.values()];
-      for (let i = 0; i < uniqueRows.length; i += 200) {
-        await supabase.from("accounting_pl_lines").insert(uniqueRows.slice(i, i + 200));
-      }
-      return uniqueRows.length;
-    }
-
-    async function syncCrmDealsTableFromGrid_(ctx, grid) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase || !Array.isArray(grid) || grid.length < 2) return 0;
-
-      const headers = (grid[0] || []).map((h, i) => String(h || `Col_${i + 1}`).trim());
-      const rows = [];
-      for (let r = 1; r < grid.length; r++) {
-        const row = grid[r] || [];
-        if (row.every((c) => !String(c || "").trim())) continue;
-        const rawObj = {};
-        headers.forEach((h, i) => {
-          if (row[i] !== undefined && row[i] !== "") rawObj[h] = row[i];
-        });
-        const extId = String(row[0] || `crm_row_${r + 1}`).trim();
-        const dealName = String(row[1] || row[2] || "").trim();
-        const companyName = String(row[2] || row[1] || "").trim();
-        rows.push({
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          external_id: extId,
-          deal_name: dealName,
-          company_name: companyName,
-          raw_payload: rawObj,
-          synced_at: new Date().toISOString(),
-        });
-      }
-
-      await supabase.from("crm_deals_raw").delete().eq("client_name", ctx.clientName);
-      const dedup = new Map();
-      for (const item of rows) dedup.set(item.external_id, item);
-      const uniqueRows = [...dedup.values()];
-      for (let i = 0; i < uniqueRows.length; i += 200) {
-        await supabase.from("crm_deals_raw").insert(uniqueRows.slice(i, i + 200));
-      }
-      return uniqueRows.length;
-    }
-
-    async function syncTimeEntriesTableFromGrid_(ctx, grid) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase || !Array.isArray(grid) || grid.length < 12) return 0;
-
-      const monthHeaders = grid[3] || []; // Row 4 (0-idx 3)
-      const rows = [];
-      for (let r = 11; r < Math.min(grid.length, 62); r++) {
-        const row = grid[r] || [];
-        const staffName = String(row[0] || "").trim();
-        if (!staffName) continue;
-        for (let c = 1; c < monthHeaders.length; c++) {
-          const mLabel = String(monthHeaders[c] || "").trim();
-          if (!mLabel) continue;
-          const hrs = parseNumericVal_(row[c]);
-          if (!hrs) continue;
-          rows.push({
-            client_id: ctx.clientId,
-            client_name: ctx.clientName,
-            month_date: mLabel,
-            staff_name: staffName,
-            client_label: "",
-            job_label: "Total utilization",
-            hours_logged: hrs,
-            synced_at: new Date().toISOString(),
-          });
-        }
-      }
-
-      await supabase.from("time_entries_raw").delete().eq("client_name", ctx.clientName);
-      const dedup = new Map();
-      for (const item of rows) dedup.set(`${item.month_date}:::${item.staff_name}:::${item.job_label}`, item);
-      const uniqueRows = [...dedup.values()];
-      for (let i = 0; i < uniqueRows.length; i += 200) {
-        await supabase.from("time_entries_raw").insert(uniqueRows.slice(i, i + 200));
-      }
-      return uniqueRows.length;
-    }
-
-    /**
-     * Materializes all IMPORTRANGE links on a client's Client Sheet (e.g. APPTEST)
-     * by replacing IMPORTRANGE wrapper formulas with local self-contained formulas/values
-     * from the Master Sheet (stored in Supabase), while backing up the original IMPORTRANGEs.
-     */
-    export async function materializeClientSheetFromMaster(sheets, clientName = "APPTEST") {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      const ctx = await resolveSupabaseSheetContext({ clientName });
-      if (!ctx || !ctx.clientSheetId || !ctx.masterSheetId) {
-        throw new Error(`Client "${clientName}" is missing clientSheetId or masterSheetId.`);
-      }
-      if (isVirtualSupabaseSheetId(ctx.clientSheetId)) {
-        throw new Error(`Client "${clientName}" was provisioned in Supabase without a Google Client Sheet.`);
-      }
-      if (isVirtualSupabaseSheetId(ctx.masterSheetId)) {
-        throw new Error(`Client "${clientName}" has no Google Master Sheet; its Client Sheet IMPORTRANGEs are already materialized.`);
-      }
-
-      // Check which tabs actually exist on both the Client Sheet and Master Sheet
-      const [clientMeta, masterMeta, { data: existingKi }] = await Promise.all([
-        sheets.spreadsheets.get({
-          spreadsheetId: ctx.clientSheetId,
-          fields: "sheets.properties.title",
-          _bypassSupabaseVirtualSheet: true,
-        }),
-        sheets.spreadsheets.get({
-          spreadsheetId: ctx.masterSheetId,
-          fields: "sheets.properties.title",
-          _bypassSupabaseVirtualSheet: true,
-        }),
-        supabase
-          .from("tenant_key_info")
-          .select("client_importrange_backup")
-          .eq("client_id", ctx.clientId)
-          .maybeSingle(),
-      ]);
-
-      const clientTabs = new Set((clientMeta.data.sheets || []).map((s) => s.properties.title));
-      const masterTabs = new Set((masterMeta.data.sheets || []).map((s) => s.properties.title));
-
-      // Known IMPORTRANGE locations on Client Sheets that pull from Master Sheet ($D$1 / $E$1)
-      const targets = [];
-      if (clientTabs.has("KeyInfo") && masterTabs.has("KeyInfo")) {
-        targets.push(
-          {
-            id: "keyinfo_header",
-            clientRange: "KeyInfo!A1:B1",
-            masterRange: "KeyInfo!A1:B1",
-            mode: "VALUES_ONLY",
+    const sheetsPayload = allTabs.map((t, idx) => {
+      const sId = hashTabNameToSheetId_(t.tab_name);
+      const sheetObj = {
+        properties: {
+          sheetId: sId,
+          title: t.tab_name,
+          index: idx,
+          gridProperties: {
+            rowCount: Math.max(1000, t.row_count || 0),
+            columnCount: Math.max(50, t.col_count || 0),
           },
-          {
-            id: "keyinfo_body",
-            clientRange: "KeyInfo!A2:AZ150",
-            masterRange: "KeyInfo!A2:AZ150",
-            mode: "FORMULAS_NO_EXTERNAL",
-          }
-        );
-      }
+        },
+      };
 
-      if (clientTabs.has("Welcome") && masterTabs.has("Welcome")) {
-        targets.push({
-          id: "welcome_block",
-          clientRange: "Welcome!B3:D26",
-          masterRange: "Welcome!B3:D26",
-          mode: "VALUES_ONLY",
-        });
-      }
+      if (includeGridData) {
+        const matchingRanges =
+          requestedRanges.length > 0
+            ? requestedRanges.map((r) => parseA1Range(r, t.tab_name)).filter((p) => p.tabName === t.tab_name)
+            : [{ tabName: t.tab_name, startRow0: 0, endRow0: (t.row_count || 1) - 1, startCol0: 0, endCol0: (t.col_count || 1) - 1 }];
 
-      // Check if YrCalcs!A1 on Client Sheet has an IMPORTRANGE pointing to Master Sheet (e.g. OrinYrCalcs!A1:JH8)
-      if (clientTabs.has("YrCalcs")) {
-        let yrFormula = String(existingKi?.client_importrange_backup?.yrcalcs_block?.originalFormula || "");
-        if (!yrFormula) {
-          const yrAnchorResp = await sheets.spreadsheets.values
-            .get({
-              spreadsheetId: ctx.clientSheetId,
-              range: "YrCalcs!A1",
-              valueRenderOption: "FORMULA",
-              _bypassSupabaseVirtualSheet: true,
-            })
-            .catch(() => null);
-          yrFormula = String(yrAnchorResp?.data?.values?.[0]?.[0] || "");
+        if (matchingRanges.length > 0) {
+          const fieldsStr = String(params.fields || "");
+          const isNotesOnlyReq =
+            fieldsStr.includes("note") &&
+            !fieldsStr.includes("formattedValue") &&
+            !fieldsStr.includes("effectiveValue") &&
+            !fieldsStr.includes("userEnteredValue") &&
+            !fieldsStr.includes("effectiveFormat");
+
+          sheetObj.data = matchingRanges.map((mr) => {
+            const mrStartR = mr.startRow0 ?? 0;
+            const mrStartC = mr.startCol0 ?? 0;
+            let maxNoteRowCount = 0;
+            const noteMaxColCountByRow = new Map();
+            if (t.notes_grid && typeof t.notes_grid === "object") {
+              for (const nKey of Object.keys(t.notes_grid)) {
+                if (nKey.startsWith("__") || !t.notes_grid[nKey]) continue;
+                const colonIdx = nKey.indexOf(":");
+                if (colonIdx <= 0) continue;
+                const nr = parseInt(nKey.slice(0, colonIdx), 10);
+                const nc = parseInt(nKey.slice(colonIdx + 1), 10);
+                if (Number.isNaN(nr) || Number.isNaN(nc)) continue;
+                if (
+                  nr >= mrStartR &&
+                  (mr.endRow0 == null || nr <= mr.endRow0) &&
+                  nc >= mrStartC &&
+                  (mr.endCol0 == null || nc <= mr.endCol0)
+                ) {
+                  const rOffset = nr - mrStartR;
+                  const cCount = nc - mrStartC + 1;
+                  if (rOffset + 1 > maxNoteRowCount) maxNoteRowCount = rOffset + 1;
+                  if (cCount > (noteMaxColCountByRow.get(rOffset) || 0)) {
+                    noteMaxColCountByRow.set(rOffset, cCount);
+                  }
+                }
+              }
+            }
+
+            if (isNotesOnlyReq) {
+              const rowData = [];
+              for (let rOffset = 0; rOffset < maxNoteRowCount; rOffset++) {
+                const colCount = noteMaxColCountByRow.get(rOffset) || 0;
+                if (colCount === 0) {
+                  rowData.push({ values: [] });
+                  continue;
+                }
+                const absR = mrStartR + rOffset;
+                const values = [];
+                for (let cOffset = 0; cOffset < colCount; cOffset++) {
+                  const absC = mrStartC + cOffset;
+                  const noteStr = t.notes_grid?.[`${absR}:${absC}`] || "";
+                  values.push(noteStr ? { note: noteStr } : {});
+                }
+                rowData.push({ values });
+              }
+              return {
+                startRow: mrStartR,
+                startColumn: mrStartC,
+                rowData,
+              };
+            }
+
+            const slicedVals = sliceGrid2D_(t.values_grid || [], mr);
+            const slicedForms = sliceGrid2D_(t.formulas_grid || t.values_grid || [], mr);
+            const rowCount = Math.max(
+              slicedVals.length,
+              slicedForms.length,
+              maxNoteRowCount,
+              t.tab_name === "Cash" && mr.endRow0 != null ? Math.min(76, mr.endRow0 + 1) - mrStartR : 0
+            );
+            const rowData = [];
+            for (let rOffset = 0; rOffset < rowCount; rOffset++) {
+              const absR = mrStartR + rOffset;
+              const rArr = slicedVals[rOffset] || [];
+              const fArr = slicedForms[rOffset] || [];
+              const colCount = Math.max(
+                rArr.length,
+                fArr.length,
+                noteMaxColCountByRow.get(rOffset) || 0,
+                t.tab_name === "Cash" && mr.endCol0 != null ? Math.min(37, mr.endCol0 + 1) - mrStartC : 0
+              );
+              const values = [];
+              for (let cOffset = 0; cOffset < colCount; cOffset++) {
+                const absC = (mr.startCol0 ?? 0) + cOffset;
+                const cellVal = rArr[cOffset];
+                const strVal = cellVal == null ? "" : String(cellVal);
+                const dispVal = formatCellForDisplay(
+                  sheetRole,
+                  t.tab_name,
+                  absR,
+                  absC,
+                  cellVal,
+                  t.values_grid,
+                  t.notes_grid
+                );
+                const formVal = fArr[cOffset] == null ? strVal : String(fArr[cOffset]);
+                const numClean = typeof cellVal === "number" ? cellVal : parseFloat(strVal.replace(/[£$€,\s]/g, ""));
+                const isNumeric =
+                  typeof cellVal === "number" ||
+                  (strVal !== "" && !isNaN(numClean) && /^[-+]?[£$€]?\s*[\d,]+(\.\d+)?%?$/.test(strVal.trim()));
+                const noteKey = `${absR}:${absC}`;
+                const noteStr = t.notes_grid?.[noteKey] || "";
+                const baseEffFmt =
+                  t.tab_name === "Cash"
+                    ? getCashEffectiveFormat_(absR, absC)
+                    : { backgroundColor: { red: 1, green: 1, blue: 1 } };
+                const savedBg = t.notes_grid?.__bg_colors?.[`${absR}:${absC}`];
+                const effFmt = savedBg ? { ...baseEffFmt, backgroundColor: savedBg } : baseEffFmt;
+                const cellObj = {
+                  effectiveValue: isNumeric ? { numberValue: numClean } : { stringValue: strVal },
+                  userEnteredValue: formVal.startsWith("=")
+                    ? { formulaValue: formVal }
+                    : isNumeric
+                      ? { numberValue: numClean }
+                      : { stringValue: strVal },
+                  note: noteStr,
+                  effectiveFormat: effFmt,
+                };
+                if (dispVal !== "") {
+                  cellObj.formattedValue = dispVal;
+                }
+                values.push(cellObj);
+              }
+              rowData.push({ values });
+            }
+            return {
+              startRow: mr.startRow0 ?? 0,
+              startColumn: mr.startCol0 ?? 0,
+              rowData,
+            };
+          });
         }
-        if (/importrange/i.test(yrFormula)) {
-          const rangeMatch = yrFormula.match(/["']([^"'!]+)!([A-Za-z0-9:$]+)["']/);
-          if (rangeMatch) {
-            const srcTab = rangeMatch[1].replace(/^'|'$/g, "");
-            const srcCoords = rangeMatch[2].replace(/\$/g, "");
-            if (masterTabs.has(srcTab)) {
-              targets.push({
-                id: "yrcalcs_block",
-                clientRange: `YrCalcs!${srcCoords}`,
-                masterRange: `${srcTab}!${srcCoords}`,
-                mode: "FORMULAS_NO_EXTERNAL",
-              });
+      }
+      return sheetObj;
+    });
+
+    if (targetTabNames && targetTabNames.size > 0) {
+      const filteredSheets = sheetsPayload.filter((s) => targetTabNames.has(s.properties.title));
+      return {
+        status: 200,
+        data: {
+          spreadsheetId,
+          properties: { title: `${ctx.clientName} (${sheetRole})` },
+          sheets: filteredSheets.length > 0 ? filteredSheets : sheetsPayload,
+        },
+      };
+    }
+
+    return {
+      status: 200,
+      data: {
+        spreadsheetId,
+        properties: { title: `${ctx.clientName} (${sheetRole})` },
+        sheets: sheetsPayload,
+      },
+    };
+  }
+
+  // 8. spreadsheets.batchUpdate (handles updateSheetProperties, updateCells, repeatCell backgroundColor, moveDimension, insertDimension, deleteDimension)
+  if (namespace === "spreadsheets" && method === "batchUpdate") {
+    const requests = params.requestBody?.requests || params.resource?.requests || [];
+    const isBgRepeatCell_ = (req) => {
+      const rng = req?.repeatCell?.range;
+      if (!rng || !String(req?.repeatCell?.fields || "").includes("backgroundColor")) return false;
+      const rCount = Math.max(
+        0,
+        Number(rng.endRowIndex ?? Number(rng.startRowIndex ?? 0) + 1) - Number(rng.startRowIndex ?? 0)
+      );
+      const cCount = Math.max(
+        0,
+        Number(rng.endColumnIndex ?? Number(rng.startColumnIndex ?? 0) + 1) - Number(rng.startColumnIndex ?? 0)
+      );
+      return rCount > 0 && cCount > 0 && rCount * cCount <= 500;
+    };
+    const hasDataOrSheetUpdates = requests.some(
+      (req) =>
+        req.updateSheetProperties?.properties ||
+        req.updateCells?.range ||
+        isBgRepeatCell_(req) ||
+        (req.moveDimension?.source && req.moveDimension.source.dimension === "ROWS") ||
+        (req.insertDimension?.range && req.insertDimension.range.dimension === "ROWS") ||
+        (req.deleteDimension?.range && req.deleteDimension.range.dimension === "ROWS")
+    );
+    if (!hasDataOrSheetUpdates) {
+      // Visual-only operations (row grouping, hiddenByUser, repeatCell formatting) require zero DB queries
+      // and must NOT prematurely flush pending formula recomputes in the middle of a multi-step operation
+      // unless explicitly requested via _flushPendingRecompute.
+      if (sheetRole === "client" && params._flushPendingRecompute) {
+        const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
+        if (pendingSet && pendingSet.size > 0) {
+          if (params._syncFormulaRecompute) {
+            await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
+              console.warn("[masterEngineService] Client formula recompute warning:", e.message)
+            );
+          } else {
+            await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
+              console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
+            );
+          }
+        }
+      }
+      return {
+        status: 200,
+        data: { spreadsheetId, replies: requests.map(() => ({})) },
+      };
+    }
+
+    let tabMetaRows = [];
+    if (sheetRole === "client") {
+      const { data: rows } = await supabase
+        .from("master_sheet_grids")
+        .select("id, tab_name, sheet_role")
+        .eq("client_name", ctx.clientName)
+        .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
+        .order("tab_name", { ascending: true });
+      const seen = new Set();
+      for (const r of rows || []) {
+        const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
+        if (seen.has(cleanTab)) continue;
+        seen.add(cleanTab);
+        tabMetaRows.push({ id: r.id, tab_name: cleanTab, sheet_role: "client" });
+      }
+    } else {
+      const { data: rows } = await supabase
+        .from("master_sheet_grids")
+        .select("id, tab_name, sheet_role")
+        .eq("client_name", ctx.clientName)
+        .eq("sheet_role", sheetRole)
+        .order("tab_name", { ascending: true });
+      tabMetaRows = rows || [];
+    }
+
+    const metaBySheetId = new Map();
+    tabMetaRows.forEach((t) => {
+      metaBySheetId.set(hashTabNameToSheetId_(t.tab_name), t);
+    });
+
+    const loadedTargetBySheetId = new Map();
+    const getTargetTabRecord = async (sId) => {
+      if (loadedTargetBySheetId.has(sId)) return loadedTargetBySheetId.get(sId);
+      const meta = metaBySheetId.get(sId);
+      if (!meta) return null;
+      const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, meta.tab_name, rawSheetsApi);
+      rec.id = meta.id;
+      loadedTargetBySheetId.set(sId, rec);
+      return rec;
+    };
+
+    const dirtyTargets = new Map();
+    const valueChangedClientTabs = new Set();
+    const noteOnlyClientTabs = new Set();
+
+    for (const req of requests) {
+      if (req.updateSheetProperties?.properties) {
+        const props = req.updateSheetProperties.properties;
+        const meta = metaBySheetId.get(props.sheetId);
+        if (meta && props.title && props.title !== meta.tab_name) {
+          await supabase
+            .from("master_sheet_grids")
+            .update({ tab_name: props.title })
+            .eq("id", meta.id);
+          meta.tab_name = props.title;
+        }
+      } else if (isBgRepeatCell_(req)) {
+        const rng = req.repeatCell.range;
+        const target = await getTargetTabRecord(rng.sheetId);
+        if (target) {
+          const sR = Math.max(0, Number(rng.startRowIndex ?? 0));
+          const eR = Math.max(sR + 1, Number(rng.endRowIndex ?? sR + 1));
+          const sC = Math.max(0, Number(rng.startColumnIndex ?? 0));
+          const eC = Math.max(sC + 1, Number(rng.endColumnIndex ?? sC + 1));
+          const nextNotes = { ...(target.notes_grid || {}) };
+          const bgColors = { ...(nextNotes.__bg_colors || {}) };
+          const bg =
+            req.repeatCell?.cell?.userEnteredFormat?.backgroundColor ||
+            req.repeatCell?.cell?.effectiveFormat?.backgroundColor ||
+            null;
+          for (let r = sR; r < eR; r++) {
+            for (let c = sC; c < eC; c++) {
+              const key = `${r}:${c}`;
+              if (bg) bgColors[key] = bg;
+              else delete bgColors[key];
             }
           }
-        }
-      }
-
-      if (targets.length === 0) {
-        throw new Error(`No matching IMPORTRANGE target tabs found on ${clientName} Client Sheet.`);
-      }
-
-      // 1. Read existing Client Sheet formulas at those target anchor cells for backup
-      const anchorRanges = targets.map((t) => {
-        const tab = t.clientRange.split("!")[0];
-        const startCoord = t.clientRange.split("!")[1].split(":")[0];
-        return `${tab}!${startCoord}`;
-      });
-
-      const existingAnchorsResp = await sheets.spreadsheets.values.batchGet({
-        spreadsheetId: ctx.clientSheetId,
-        ranges: anchorRanges,
-        valueRenderOption: "FORMULA",
-        _bypassSupabaseVirtualSheet: true,
-      });
-
-      const backupMap = {};
-      (existingAnchorsResp.data.valueRanges || []).forEach((vr, idx) => {
-        const t = targets[idx];
-        const formulaCell = vr.values?.[0]?.[0] || "";
-        backupMap[t.id] = {
-          clientRange: t.clientRange,
-          anchorRange: anchorRanges[idx],
-          originalFormula: formulaCell,
-        };
-      });
-
-      const hasExistingImportrangeBackup =
-        existingKi?.client_importrange_backup &&
-        Object.values(existingKi.client_importrange_backup).some((b) =>
-          /importrange/i.test(String(b?.originalFormula || ""))
-        );
-
-      const finalBackupToSave = hasExistingImportrangeBackup
-        ? { ...backupMap, ...existingKi.client_importrange_backup }
-        : backupMap;
-
-      // 2. Fetch both FORMATTED_VALUE and FORMULA from Master Sheet for all targets
-      const masterRanges = targets.map((t) => t.masterRange);
-      const [masterValResp, masterFormResp] = await Promise.all([
-        sheets.spreadsheets.values.batchGet({
-          spreadsheetId: ctx.masterSheetId,
-          ranges: masterRanges,
-          valueRenderOption: "FORMATTED_VALUE",
-          _bypassSupabaseVirtualSheet: true,
-        }),
-        sheets.spreadsheets.values.batchGet({
-          spreadsheetId: ctx.masterSheetId,
-          ranges: masterRanges,
-          valueRenderOption: "FORMULA",
-          _bypassSupabaseVirtualSheet: true,
-        }),
-      ]);
-
-      const batchWriteData = [];
-      for (let i = 0; i < targets.length; i++) {
-        const t = targets[i];
-        const vals = masterValResp.data.valueRanges?.[i]?.values || [];
-        const forms = masterFormResp.data.valueRanges?.[i]?.values || [];
-
-        const maxR = Math.max(vals.length, forms.length);
-        const mergedRows = [];
-        for (let r = 0; r < maxR; r++) {
-          const vRow = vals[r] || [];
-          const fRow = forms[r] || [];
-          const maxC = Math.max(vRow.length, fRow.length);
-          const outRow = [];
-          for (let c = 0; c < maxC; c++) {
-            const fCell = fRow[c];
-            const vCell = vRow[c] ?? "";
-            if (t.mode === "VALUES_ONLY") {
-              outRow.push(vCell);
+          nextNotes.__bg_colors = bgColors;
+          target.notes_grid = nextNotes;
+          dirtyTargets.set(target.tab_name, target);
+          if (sheetRole === "client") {
+            if (target.tab_name === "Outgoings") {
+              valueChangedClientTabs.add(target.tab_name);
             } else {
-              // If formula contains IMPORTRANGE or references a Master-only tab (e.g. CRMList!, PLFromApp!), fall back to evaluated value
-              if (
-                typeof fCell === "string" &&
-                /\b(importrange|CRMList!|PLFromApp!|Year0PLFromApp!|PLComp!|InvComp!|DirComp!|CRMComp!|DataFromCRM!)/i.test(fCell)
-              ) {
-                outRow.push(vCell);
-              } else if (typeof fCell === "string" && fCell.startsWith("=")) {
-                outRow.push(fCell);
+              noteOnlyClientTabs.add(target.tab_name);
+            }
+          }
+        }
+      } else if (req.updateCells?.range) {
+        const rng = req.updateCells.range;
+        const target = await getTargetTabRecord(rng.sheetId);
+        if (target && Array.isArray(req.updateCells.rows)) {
+          const fieldsStr = String(req.updateCells.fields || "");
+          const isNoteOnly = fieldsStr.includes("note") && !fieldsStr.includes("userEnteredValue");
+          const nextNotes = { ...(target.notes_grid || {}) };
+          const sR = rng.startRowIndex ?? 0;
+          const sC = rng.startColumnIndex ?? 0;
+
+          req.updateCells.rows.forEach((r, rOff) => {
+            (r.values || []).forEach((v, cOff) => {
+              if (v.note !== undefined) {
+                const key = `${sR + rOff}:${sC + cOff}`;
+                if (v.note) nextNotes[key] = String(v.note);
+                else delete nextNotes[key];
+              }
+            });
+          });
+
+          if (isNoteOnly) {
+            target.notes_grid = nextNotes;
+            dirtyTargets.set(target.tab_name, target);
+            if (sheetRole === "client") {
+              if (target.tab_name === "Outgoings") {
+                valueChangedClientTabs.add(target.tab_name);
               } else {
-                outRow.push(vCell !== "" && vCell !== undefined ? vCell : fCell !== undefined ? fCell : "");
+                noteOnlyClientTabs.add(target.tab_name);
               }
             }
-          }
-          mergedRows.push(outRow);
-        }
-
-        // For KeyInfo!A2:AZ150, expand the 3 template IMPORTRANGE blocks (R2, G32, A77) using their evaluated values
-        if (t.id === "keyinfo_body") {
-          for (let r = 0; r < mergedRows.length; r++) {
-            const vRow = vals[r] || [];
-            for (let c = 0; c < Math.max(mergedRows[r].length, vRow.length); c++) {
-              if (mergedRows[r][c] === undefined || mergedRows[r][c] === "") {
-                if (vRow[c] !== undefined && vRow[c] !== "") {
-                  mergedRows[r][c] = vRow[c];
-                }
-              }
-            }
-          }
-        }
-
-        batchWriteData.push({
-          range: t.clientRange,
-          values: mergedRows,
-        });
-      }
-
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: ctx.clientSheetId,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: batchWriteData,
-        },
-        _bypassSupabaseVirtualSheet: true,
-      });
-
-      await supabase
-        .from("tenant_key_info")
-        .update({
-          client_importrange_backup: finalBackupToSave,
-          client_materialized_at: new Date().toISOString(),
-        })
-        .eq("client_id", ctx.clientId);
-
-      return {
-        success: true,
-        clientName: ctx.clientName,
-        materializedRangesCount: batchWriteData.length,
-        materializedAt: new Date().toISOString(),
-      };
-    }
-
-    /**
-     * Restores the original IMPORTRANGE formulas onto a client's Client Sheet (1-click rollback)
-     */
-    export async function restoreClientSheetImportranges(sheets, clientName = "APPTEST") {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      const ctx = await resolveSupabaseSheetContext({ clientName });
-      if (!ctx || !ctx.clientSheetId) throw new Error(`Client "${clientName}" not found.`);
-      if (isVirtualSupabaseSheetId(ctx.clientSheetId) || isVirtualSupabaseSheetId(ctx.masterSheetId)) {
-        throw new Error(`Cannot restore IMPORTRANGEs because "${clientName}" does not have both Google Client and Google Master sheets.`);
-      }
-
-      const { data: ki } = await supabase
-        .from("tenant_key_info")
-        .select("client_importrange_backup")
-        .eq("client_id", ctx.clientId)
-        .maybeSingle();
-
-      const backup = ki?.client_importrange_backup || {};
-      const entries = Object.values(backup).filter((b) => b && b.clientRange && b.originalFormula);
-      if (entries.length === 0) {
-        throw new Error(`No backed-up IMPORTRANGE formulas found for ${clientName}.`);
-      }
-
-      // 1. Clear the materialized ranges first so IMPORTRANGE can spill without #REF!
-      await sheets.spreadsheets.values.batchClear({
-        spreadsheetId: ctx.clientSheetId,
-        requestBody: {
-          ranges: entries.map((e) => e.clientRange),
-        },
-        _bypassSupabaseVirtualSheet: true,
-      });
-
-      // 2. Write back the anchor IMPORTRANGE formulas
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: ctx.clientSheetId,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: entries.map((e) => ({
-            range: e.anchorRange,
-            values: [[e.originalFormula]],
-          })),
-        },
-        _bypassSupabaseVirtualSheet: true,
-      });
-
-      await supabase
-        .from("tenant_key_info")
-        .update({ client_materialized_at: null })
-        .eq("client_id", ctx.clientId);
-
-      return {
-        success: true,
-        clientName: ctx.clientName,
-        restoredRangesCount: entries.length,
-      };
-    }
-
-    /**
-     * Switches a client's master_mode between 'sheet' and 'supabase'
-     */
-    export async function setClientMasterMode(clientName, masterMode) {
-      const cleanMode = masterMode === "supabase" ? "supabase" : "sheet";
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      if (cleanMode === "sheet") {
-        const { data: cur } = await supabase
-          .from("clients")
-          .select("master_sheet_id")
-          .eq("client_name", clientName)
-          .maybeSingle();
-        if (!cur?.master_sheet_id || isVirtualSupabaseSheetId(cur.master_sheet_id)) {
-          throw new Error(`Cannot switch "${clientName}" Master & Recon to Google Sheets because no Google Master Sheet was provisioned for this client.`);
-        }
-      }
-
-      const { data, error } = await supabase
-        .from("clients")
-        .update({ master_mode: cleanMode, updated_at: new Date().toISOString() })
-        .eq("client_name", clientName)
-        .select("id, client_name, master_mode, client_mode")
-        .maybeSingle();
-
-      if (error) throw new Error(error.message);
-      _sheetContextCache.expiresAt = 0;
-      return data;
-    }
-
-    /**
-     * Switches a client's client_mode between 'sheet' and 'supabase'
-     */
-    export async function setClientMode(clientName, clientMode) {
-      const cleanMode = clientMode === "supabase" ? "supabase" : "sheet";
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      let resetMetadataPatch = null;
-      if (cleanMode === "sheet") {
-        const { data: cur } = await supabase
-          .from("clients")
-          .select("client_sheet_id, metadata")
-          .eq("client_name", clientName)
-          .maybeSingle();
-        if (!cur?.client_sheet_id || isVirtualSupabaseSheetId(cur.client_sheet_id)) {
-          throw new Error(`Cannot switch "${clientName}" Client Portal to Google Sheets because no Google Client Sheet was provisioned for this client.`);
-        }
-        resetMetadataPatch = {
-          ...(cur?.metadata && typeof cur.metadata === "object" ? cur.metadata : {}),
-          sheet_bridge_mode: "off",
-        };
-      }
-
-      const { data, error } = await supabase
-        .from("clients")
-        .update({
-          client_mode: cleanMode,
-          ...(resetMetadataPatch ? { metadata: resetMetadataPatch } : {}),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("client_name", clientName)
-        .select("id, client_name, master_mode, client_mode")
-        .maybeSingle();
-
-      if (error) throw new Error(error.message);
-      _sheetContextCache.expiresAt = 0;
-      return data;
-    }
-
-    /**
-     * Synchronizes the 5 Stage 4 structured relational tables (client_jobs, client_outgoings,
-     * client_salaries, client_budgets_and_targets, client_cash_balances) when those tables exist in Supabase.
-     */
-    let _stage4TablesVerified = false;
-    const _inFlightStage4SyncByClient = new Map();
-
-    async function syncStructuredClientTablesFromGrids_(ctx, grids, changedTabs = null, options = {}) {
-      if (!options?.force && !shouldSyncNormalizedMirrorTables()) return;
-      const clientKey = String(ctx?.clientName || "").trim().toLowerCase();
-      if (!clientKey) {
-        return syncStructuredClientTablesFromGridsImpl_(ctx, grids, changedTabs, options);
-      }
-      const prev = _inFlightStage4SyncByClient.get(clientKey) || Promise.resolve();
-      const next = prev
-        .catch(() => { })
-        .then(() => syncStructuredClientTablesFromGridsImpl_(ctx, grids, changedTabs, options));
-      _inFlightStage4SyncByClient.set(clientKey, next);
-      try {
-        await next;
-      } finally {
-        if (_inFlightStage4SyncByClient.get(clientKey) === next) {
-          _inFlightStage4SyncByClient.delete(clientKey);
-        }
-      }
-    }
-
-    async function syncStructuredClientTablesFromGridsImpl_(ctx, grids, changedTabs = null, options = {}) {
-      if (!options?.force && !shouldSyncNormalizedMirrorTables()) return;
-      const supabase = getSupabaseAdmin();
-      if (!supabase || !grids) return;
-      const tabSet = changedTabs ? new Set(changedTabs) : null;
-
-      if (!_stage4TablesVerified) {
-        // Quick probe once per process to see if Stage 4 tables exist in Supabase
-        const { error: probeErr } = await supabase.from("client_jobs").select("id").limit(1);
-        if (probeErr) return; // 0004_stage4_client_sheet_engine.sql not applied yet
-        _stage4TablesVerified = true;
-      }
-
-      const nowIso = new Date().toISOString();
-
-      // 1. client_jobs (Confirmed & Pipeline)
-      for (const [tabName, tabType] of [
-        ["Confirmed", "confirmed"],
-        ["Pipeline", "pipeline"],
-      ]) {
-        if (tabSet && !tabSet.has(tabName)) continue;
-        const vGrid = grids[tabName]?.values;
-        if (!Array.isArray(vGrid) || vGrid.length === 0) continue;
-        const maxRow = findLastActiveClientJobRow_(vGrid, 1);
-        const jobRows = [];
-        for (let r = 1; r <= maxRow && r < vGrid.length; r++) {
-          const row = vGrid[r] || [];
-          const cName = String(row[0] ?? "").trim();
-          const jName = String(row[1] ?? "").trim();
-          const totalVal = parseNumericVal_(row[32]);
-          if (!cName && !jName && !totalVal) continue;
-          jobRows.push({
-            client_id: ctx.clientId,
-            client_name: ctx.clientName,
-            tab_type: tabType,
-            row_index: r + 1,
-            sort_order: r,
-            customer_name: cName,
-            job_name: jName,
-            project_code: String(row[2] ?? "").trim(),
-            date_confirmed: formatCellForDisplay("client", tabName, r, 3, row[3], vGrid),
-            lead_source: String(row[5] ?? "").trim(),
-            job_type: String(row[35] ?? "Project").trim(),
-            product_line: String(row[6] ?? "").trim(),
-            start_date: formatCellForDisplay("client", tabName, r, 37, row[37], vGrid),
-            end_date: formatCellForDisplay("client", tabName, r, 38, row[38], vGrid),
-            likelihood_pct: parseNumericVal_(row[39] ?? 1),
-            total_revenue: totalVal,
-            total_direct_costs: parseNumericVal_(row[33]),
-            raw_row: row.slice(0, 108),
-            updated_at: nowIso,
-          });
-        }
-        const { error: delErr } = await supabase
-          .from("client_jobs")
-          .delete()
-          .eq("client_name", ctx.clientName)
-          .eq("tab_type", tabType);
-        if (delErr) {
-          console.warn(`[masterEngineService] client_jobs delete error (${ctx.clientName}/${tabType}):`, delErr.message);
-        }
-        for (let i = 0; i < jobRows.length; i += 200) {
-          const { error: insErr } = await supabase.from("client_jobs").insert(jobRows.slice(i, i + 200));
-          if (insErr) {
-            console.warn(`[masterEngineService] client_jobs insert error (${ctx.clientName}/${tabType}):`, insErr.message);
-          }
-        }
-      }
-
-      // 2. client_outgoings (Outgoings)
-      if (!tabSet || tabSet.has("Outgoings")) {
-        const outGrid = grids.Outgoings?.values;
-        if (Array.isArray(outGrid) && outGrid.length > 0) {
-          const outNotes = grids.Outgoings?.notes || {};
-          const mHeaders = (outGrid[0] || []).slice(6, 48).map((v, i) => formatCellForDisplay("client", "Outgoings", 0, 6 + i, v, outGrid));
-          const outRows = [];
-          for (let r = 11; r < Math.min(outGrid.length, 310); r++) {
-            const row = outGrid[r] || [];
-            const catName = String(row[0] ?? "").trim();
-            if (!catName) continue;
-            const monthlyAmounts = {};
-            const monthlyNotes = {};
-            for (let c = 6; c <= 47; c++) {
-              const mKey = mHeaders[c - 6] || `Col_${c}`;
-              const v = row[c];
-              if (v !== "" && v !== null && v !== undefined) monthlyAmounts[mKey] = parseNumericVal_(v);
-              const nk = `${r}:${c}`;
-              if (outNotes[nk]) monthlyNotes[mKey] = outNotes[nk];
-            }
-            outRows.push({
-              client_id: ctx.clientId,
-              client_name: ctx.clientName,
-              section: r < 110 ? "contractor" : r < 120 ? "cos_topup" : "expense",
-              row_index: r + 1,
-              label: catName,
-              vat_applicable: String(row[1] ?? "No").trim(),
-              invoice_status: String(row[2] ?? "").trim(),
-              pay_status: String(row[3] ?? "").trim(),
-              delivery_pct: parseNumericVal_(row[4]),
-              likelihood_pct: parseNumericVal_(row[5] ?? 1),
-              monthly_values: monthlyAmounts,
-              cell_notes: monthlyNotes,
-              raw_row: row.slice(0, 50),
-              updated_at: nowIso,
+          } else {
+            const incoming = req.updateCells.rows.map((r) =>
+              (r.values || []).map((v) => {
+                const uev = v.userEnteredValue || {};
+                return uev.stringValue ?? uev.numberValue ?? uev.boolValue ?? uev.formulaValue ?? "";
+              })
+            );
+            const parsed = {
+              tabName: target.tab_name,
+              startRow0: sR,
+              startCol0: sC,
+            };
+            const nextVals = applyWriteToGrid2D_(target.values_grid || [], parsed, incoming, {
+              sheetRole,
+              tabName: target.tab_name,
+              notesGrid: nextNotes,
+              isFormulaGrid: false,
             });
-          }
-          const { error: delOutErr } = await supabase.from("client_outgoings").delete().eq("client_name", ctx.clientName);
-          if (delOutErr) {
-            console.warn(`[masterEngineService] client_outgoings delete error (${ctx.clientName}):`, delOutErr.message);
-          }
-          for (let i = 0; i < outRows.length; i += 200) {
-            const { error: insOutErr } = await supabase.from("client_outgoings").insert(outRows.slice(i, i + 200));
-            if (insOutErr) {
-              console.warn(`[masterEngineService] client_outgoings insert error (${ctx.clientName}):`, insOutErr.message);
-            }
-          }
-        }
-      }
-
-      // 3. client_salaries (Salaries)
-      if (!tabSet || tabSet.has("Salaries")) {
-        const salGrid = grids.Salaries?.values;
-        if (Array.isArray(salGrid) && salGrid.length > 0) {
-          const salRows = [];
-          for (let r = 3; r < Math.min(salGrid.length, 65); r++) {
-            const row = salGrid[r] || [];
-            const sName = String(row[0] ?? "").trim();
-            const sRole = String(row[1] ?? "").trim();
-            const annual = parseNumericVal_(row[2]);
-            if (!sName && !sRole && !annual) continue;
-            salRows.push({
-              client_id: ctx.clientId,
-              client_name: ctx.clientName,
-              row_index: r + 1,
-              sort_order: r,
-              employee_name: sName,
-              role_title: sRole,
-              fte_salary: annual,
-              fte_fraction: parseNumericVal_(row[3] ?? 1),
-              start_date: formatCellForDisplay("client", "Salaries", r, 4, row[4], salGrid),
-              end_date: formatCellForDisplay("client", "Salaries", r, 5, row[5], salGrid),
-              delivery_pct: parseNumericVal_(row[6]),
-              student_loan_plan: String(row[7] ?? "None").trim(),
-              pension_opt_in: String(row[8] ?? "Yes").trim(),
-              raw_row: row.slice(0, 270),
-              updated_at: nowIso,
+            const nextForms = applyWriteToGrid2D_(target.formulas_grid || target.values_grid || [], parsed, incoming, {
+              sheetRole,
+              tabName: target.tab_name,
+              notesGrid: nextNotes,
+              isFormulaGrid: true,
             });
+            target.values_grid = nextVals;
+            target.formulas_grid = nextForms;
+            target.notes_grid = nextNotes;
+            dirtyTargets.set(target.tab_name, target);
+            if (sheetRole === "client") valueChangedClientTabs.add(target.tab_name);
           }
-          const { error: delSalErr } = await supabase.from("client_salaries").delete().eq("client_name", ctx.clientName);
-          if (delSalErr) {
-            console.warn(`[masterEngineService] client_salaries delete error (${ctx.clientName}):`, delSalErr.message);
+        }
+      } else if (req.moveDimension?.source && req.moveDimension.source.dimension === "ROWS") {
+        const src = req.moveDimension.source;
+        const target = await getTargetTabRecord(src.sheetId);
+        if (target) {
+          const s = Math.max(0, Number(src.startIndex ?? 0));
+          const e = Math.max(s, Number(src.endIndex ?? s + 1));
+          const count = e - s;
+          const d = Math.max(0, Number(req.moveDimension.destinationIndex ?? 0));
+          const nextVals = (target.values_grid || []).map((r) => (Array.isArray(r) ? [...r] : []));
+          const nextForms = (target.formulas_grid || target.values_grid || []).map((r, r0) => ({
+            oldR1: r0 + 1,
+            cells: Array.isArray(r) ? [...r] : [],
+          }));
+          if (count > 0 && s < nextVals.length && d !== s) {
+            const movedV = nextVals.splice(s, count);
+            const movedF = nextForms.splice(s, count);
+            const insertAt = d <= s ? d : Math.max(0, d - count);
+            nextVals.splice(insertAt, 0, ...movedV);
+            nextForms.splice(insertAt, 0, ...movedF);
+            const finalForms = nextForms.map((fObj, newR0) => {
+              const newR1 = newR0 + 1;
+              if (fObj.oldR1 === newR1) return fObj.cells;
+              const re = new RegExp(`(?<![A-Za-z0-9_$'!])(\\$?[A-Za-z]{1,3})${fObj.oldR1}(?![0-9(])`, "g");
+              return fObj.cells.map((cell) =>
+                typeof cell === "string" && cell.startsWith("=")
+                  ? cell.replace(re, (m, colPart) => (/^PL$/i.test(colPart) ? m : `${colPart}${newR1}`))
+                  : cell
+              );
+            });
+            target.values_grid = nextVals;
+            target.formulas_grid = finalForms;
+            target.notes_grid = remapNotesGridRows_(target.notes_grid, (oldR0) => {
+              if (oldR0 >= s && oldR0 < s + count) return insertAt + (oldR0 - s);
+              if (s < insertAt && oldR0 >= s + count && oldR0 < insertAt + count) return oldR0 - count;
+              if (insertAt < s && oldR0 >= insertAt && oldR0 < s) return oldR0 + count;
+              return oldR0;
+            });
+            dirtyTargets.set(target.tab_name, target);
+            if (sheetRole === "client") valueChangedClientTabs.add(target.tab_name);
           }
-          if (salRows.length > 0) {
-            const { error: insSalErr } = await supabase.from("client_salaries").insert(salRows);
-            if (insSalErr) {
-              console.warn(`[masterEngineService] client_salaries insert error (${ctx.clientName}):`, insSalErr.message);
+        }
+      } else if (req.insertDimension?.range && req.insertDimension.range.dimension === "ROWS") {
+        const rng = req.insertDimension.range;
+        const target = await getTargetTabRecord(rng.sheetId);
+        if (target) {
+          const s = Math.max(0, Number(rng.startIndex ?? 0));
+          const e = Math.max(s, Number(rng.endIndex ?? s + 1));
+          const count = e - s;
+          if (count > 0) {
+            if (s > 50000 || s + count > 50000 || (target.values_grid || []).length + count > 50000) {
+              throw new Error(`insertDimension exceeds maximum virtual sheet row limit (50000)`);
             }
+            const nextVals = (target.values_grid || []).map((r) => (Array.isArray(r) ? [...r] : []));
+            const nextForms = (target.formulas_grid || target.values_grid || []).map((r, r0) => ({
+              oldR1: r0 + 1,
+              cells: Array.isArray(r) ? [...r] : [],
+            }));
+            while (nextVals.length < s) nextVals.push([]);
+            while (nextForms.length < s) nextForms.push({ oldR1: nextForms.length + 1, cells: [] });
+
+            const inherit = Boolean(req.insertDimension.inheritFromBefore) && s > 0;
+            const tplFormCells = inherit && nextForms[s - 1]
+              ? nextForms[s - 1].cells.map((c) => (typeof c === "string" && c.startsWith("=") ? c : ""))
+              : [];
+            const tplOldR1 = inherit ? s : -1;
+
+            const insertedV = Array.from({ length: count }, () => []);
+            const insertedF = Array.from({ length: count }, () => ({
+              oldR1: tplOldR1,
+              cells: [...tplFormCells],
+            }));
+            nextVals.splice(s, 0, ...insertedV);
+            nextForms.splice(s, 0, ...insertedF);
+
+            const finalForms = nextForms.map((fObj, newR0) => {
+              const newR1 = newR0 + 1;
+              if (fObj.oldR1 <= 0 || fObj.oldR1 === newR1) return fObj.cells;
+              const re = new RegExp(`(?<![A-Za-z0-9_$'!])(\\$?[A-Za-z]{1,3})${fObj.oldR1}(?![0-9(])`, "g");
+              return fObj.cells.map((cell) =>
+                typeof cell === "string" && cell.startsWith("=")
+                  ? cell.replace(re, (m, colPart) => (/^PL$/i.test(colPart) ? m : `${colPart}${newR1}`))
+                  : cell
+              );
+            });
+            target.values_grid = nextVals;
+            target.formulas_grid = finalForms;
+            target.notes_grid = remapNotesGridRows_(target.notes_grid, (oldR0) =>
+              oldR0 >= s ? oldR0 + count : oldR0
+            );
+            dirtyTargets.set(target.tab_name, target);
+            if (sheetRole === "client") valueChangedClientTabs.add(target.tab_name);
           }
         }
-      }
-
-      // 4. client_budgets_and_targets (Budget & NBtoFind)
-      for (const [tabName, modelType] of [
-        ["Budget", "budget"],
-        ["NBtoFind", "nb_to_find"],
-      ]) {
-        if (tabSet && !tabSet.has(tabName)) continue;
-        const bGrid = grids[tabName]?.values;
-        if (!Array.isArray(bGrid) || bGrid.length === 0) continue;
-        const bRows = [];
-        for (let r = 1; r < Math.min(bGrid.length, 260); r++) {
-          const row = bGrid[r] || [];
-          const lbl = String(row[0] ?? "").trim();
-          if (!lbl) continue;
-          bRows.push({
-            client_id: ctx.clientId,
-            client_name: ctx.clientName,
-            model_type: modelType,
-            row_index: r + 1,
-            line_key: `R${r + 1}`,
-            label: lbl,
-            raw_row: row.slice(0, 60),
-            updated_at: nowIso,
-          });
-        }
-        const { error: delBudErr } = await supabase
-          .from("client_budgets_and_targets")
-          .delete()
-          .eq("client_name", ctx.clientName)
-          .eq("model_type", modelType);
-        if (delBudErr) {
-          console.warn(`[masterEngineService] client_budgets_and_targets delete error (${ctx.clientName}/${modelType}):`, delBudErr.message);
-        }
-        for (let i = 0; i < bRows.length; i += 200) {
-          const { error: insBudErr } = await supabase.from("client_budgets_and_targets").insert(bRows.slice(i, i + 200));
-          if (insBudErr) {
-            console.warn(`[masterEngineService] client_budgets_and_targets insert error (${ctx.clientName}/${modelType}):`, insBudErr.message);
-          }
-        }
-      }
-
-      // 5. client_cash_balances (Cash)
-      if ((!tabSet || tabSet.has("Cash")) && Array.isArray(grids.Cash?.values) && grids.Cash.values.length > 0) {
-        const cashGrid = grids.Cash.values;
-        const cashRow0 = cashGrid[0] || [];
-        const cashRows = [];
-        for (let c = 1; c < cashRow0.length; c++) {
-          const mDate = formatCellForDisplay("client", "Cash", 0, c, cashRow0[c], cashGrid);
-          if (!mDate) continue;
-          cashRows.push({
-            client_id: ctx.clientId,
-            client_name: ctx.clientName,
-            month_date: mDate,
-            col_index: c + 1,
-            account_balances: {
-              opening_balance: parseNumericVal_(cashGrid[3]?.[c]),
-              forecast_closing_balance: parseNumericVal_(cashGrid[33]?.[c]),
-              actual_closing_balance:
-                cashGrid[35]?.[c] !== "" && cashGrid[35]?.[c] !== undefined ? parseNumericVal_(cashGrid[35]?.[c]) : null,
-            },
-            adjustments: {},
-            updated_at: nowIso,
-          });
-        }
-        const { error: delCashErr } = await supabase.from("client_cash_balances").delete().eq("client_name", ctx.clientName);
-        if (delCashErr) {
-          console.warn(`[masterEngineService] client_cash_balances delete error (${ctx.clientName}):`, delCashErr.message);
-        }
-        if (cashRows.length > 0) {
-          const { error: insCashErr } = await supabase.from("client_cash_balances").insert(cashRows);
-          if (insCashErr) {
-            console.warn(`[masterEngineService] client_cash_balances insert error (${ctx.clientName}):`, insCashErr.message);
+      } else if (req.deleteDimension?.range && req.deleteDimension.range.dimension === "ROWS") {
+        const rng = req.deleteDimension.range;
+        const target = await getTargetTabRecord(rng.sheetId);
+        if (target) {
+          const s = Math.max(0, Number(rng.startIndex ?? 0));
+          const e = Math.max(s, Number(rng.endIndex ?? s + 1));
+          const count = e - s;
+          const nextVals = (target.values_grid || []).map((r) => (Array.isArray(r) ? [...r] : []));
+          const nextForms = (target.formulas_grid || target.values_grid || []).map((r, r0) => ({
+            oldR1: r0 + 1,
+            cells: Array.isArray(r) ? [...r] : [],
+          }));
+          if (count > 0 && s < nextVals.length) {
+            nextVals.splice(s, count);
+            nextForms.splice(s, count);
+            const finalForms = nextForms.map((fObj, newR0) => {
+              const newR1 = newR0 + 1;
+              if (fObj.oldR1 === newR1) return fObj.cells;
+              const re = new RegExp(`(?<![A-Za-z0-9_$'!])(\\$?[A-Za-z]{1,3})${fObj.oldR1}(?![0-9(])`, "g");
+              return fObj.cells.map((cell) =>
+                typeof cell === "string" && cell.startsWith("=")
+                  ? cell.replace(re, (m, colPart) => (/^PL$/i.test(colPart) ? m : `${colPart}${newR1}`))
+                  : cell
+              );
+            });
+            target.values_grid = nextVals;
+            target.formulas_grid = finalForms;
+            target.notes_grid = remapNotesGridRows_(target.notes_grid, (oldR0) => {
+              if (oldR0 >= s && oldR0 < s + count) return -1;
+              if (oldR0 >= s + count) return oldR0 - count;
+              return oldR0;
+            });
+            dirtyTargets.set(target.tab_name, target);
+            if (sheetRole === "client") valueChangedClientTabs.add(target.tab_name);
           }
         }
       }
     }
 
-    /**
-     * Full 1-click seeding of a client's Client Sheet (all 31 core tabs + Outgoings notes)
-     * into Supabase Stage 4 virtual grids & structured relational tables.
-     */
-    export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
+    const pendingClientSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
+    const willRunClientFormulaRecompute =
+      sheetRole === "client" &&
+      !params._skipFormulaRecompute &&
+      (valueChangedClientTabs.size > 0 || (pendingClientSet && pendingClientSet.size > 0));
 
-      invalidateMasterEngineCache(clientName, null, null, { invalidateSheetContext: true });
-      const ctx = await resolveSupabaseSheetContext({ clientName });
-      if (!ctx || !ctx.clientSheetId) {
-        throw new Error(`Client "${clientName}" not found or missing clientSheetId.`);
-      }
-      if (isVirtualSupabaseSheetId(ctx.clientSheetId)) {
-        throw new Error(`Client "${clientName}" was provisioned directly in Supabase and has no Google Client Sheet to sync from.`);
-      }
+    for (const [tabName, target] of dirtyTargets.entries()) {
+      bumpTabWriteRevision_(ctx.clientName, sheetRole, tabName);
+      const isDeferredClientSave =
+        sheetRole === "client" &&
+        !["Sessions", "AppLog", "Welcome"].includes(tabName) &&
+        (Boolean(params._skipFormulaRecompute) || willRunClientFormulaRecompute);
+      await saveVirtualTabGrid_(
+        ctx,
+        sheetRole,
+        tabName,
+        target.values_grid || [],
+        target.formulas_grid || [],
+        target.notes_grid || {},
+        { memoryOnly: isDeferredClientSave }
+      );
+    }
 
-      const metaResp = await sheets.spreadsheets.get({
-        spreadsheetId: ctx.clientSheetId,
-        fields: "sheets(properties(sheetId,title))",
-        _bypassSupabaseVirtualSheet: true,
-      });
-      const existingTitles = new Set((metaResp.data.sheets || []).map((s) => s.properties.title));
-      const tabsToFetch = CORE_CLIENT_TABS.filter((t) => existingTitles.has(t));
-
-      // Fetch cell notes across note-bearing tabs (Outgoings, Confirmed, Pipeline, Cash)
-      const noteRangeSpecs = {
-        Outgoings: { range: "Outgoings!G13:AV112", startRow0: 12, startCol0: 6 },
-        Confirmed: { range: "Confirmed!AP2:CR500", startRow0: 1, startCol0: 41 },
-        Pipeline: { range: "Pipeline!AP2:CR300", startRow0: 1, startCol0: 41 },
-        Cash: { range: "Cash!B1:AK76", startRow0: 0, startCol0: 1 },
-      };
-      const notesByTab = Object.create(null);
-      const noteTabsPresent = Object.keys(noteRangeSpecs).filter((t) => existingTitles.has(t));
-      if (noteTabsPresent.length > 0) {
-        try {
-          const notesResp = await sheets.spreadsheets.get({
-            spreadsheetId: ctx.clientSheetId,
-            ranges: noteTabsPresent.map((t) => noteRangeSpecs[t].range),
-            fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
-            _bypassSupabaseVirtualSheet: true,
+    if (sheetRole === "client") {
+      if (params._skipFormulaRecompute) {
+        if (valueChangedClientTabs.size > 0 || dirtyTargets.size > 0) {
+          queuePendingClientTabs_(ctx, [...valueChangedClientTabs, ...dirtyTargets.keys()], {
+            isSkippedStep: true,
+            notesChangedTabs: [...dirtyTargets.keys()],
           });
-          for (const sheetObj of notesResp?.data?.sheets || []) {
-            const tName = sheetObj?.properties?.title;
-            const cfg = noteRangeSpecs[tName];
-            if (!tName || !cfg) continue;
-            const gridData = sheetObj?.data?.[0];
-            const sR = Number(gridData?.startRow ?? cfg.startRow0);
-            const sC = Number(gridData?.startColumn ?? cfg.startCol0);
-            const tabNotes = Object.create(null);
-            (gridData?.rowData || []).forEach((rObj, rOff) => {
-              (rObj?.values || []).forEach((vObj, cOff) => {
-                if (vObj?.note) {
-                  tabNotes[`${sR + rOff}:${sC + cOff}`] = String(vObj.note);
-                }
-              });
-            });
-            notesByTab[tName] = tabNotes;
-          }
-        } catch (e) {
-          console.warn(`[masterEngineService] Client Sheet notes fetch warning (${clientName}):`, e.message);
         }
+      } else if (willRunClientFormulaRecompute) {
+        if (params._syncFormulaRecompute) {
+          await recomputeClientFormulasAfterVirtualWrite_(
+            ctx,
+            [...valueChangedClientTabs, ...dirtyTargets.keys()],
+            rawSheetsApi
+          ).catch((e) =>
+            console.warn("[masterEngineService] Client formula recompute warning:", e.message)
+          );
+        } else {
+          await recomputeAndPersistImmediateClientTabs_(
+            ctx,
+            [...valueChangedClientTabs, ...dirtyTargets.keys()],
+            rawSheetsApi,
+            {
+              notesChangedTabs: new Set(dirtyTargets.keys()),
+              deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
+            }
+          ).catch((e) =>
+            console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
+          );
+        }
+      } else if (noteOnlyClientTabs.size > 0) {
+        await syncPhase2RelationalJobsIfEnabled_(ctx, [...noteOnlyClientTabs]);
+        const noteGrids = {};
+        for (const [tName, rec] of dirtyTargets.entries()) {
+          noteGrids[tName] = {
+            values: rec.values_grid || [],
+            formulas: rec.formulas_grid || [],
+            notes: rec.notes_grid || {},
+          };
+        }
+        syncStructuredClientTablesFromGrids_(ctx, noteGrids, [...noteOnlyClientTabs]).catch((e) =>
+          console.warn("[masterEngineService] Stage 4 relational note sync warning:", e.message)
+        );
       }
-      const outNotesMap = notesByTab.Outgoings || {};
 
-      const grids = Object.create(null);
-      const chunkSize = 8;
-      for (let i = 0; i < tabsToFetch.length; i += chunkSize) {
-        const batch = tabsToFetch.slice(i, i + chunkSize);
-        const ranges = batch.map((t) => `'${t}'`);
-        const [valResp, formResp] = await Promise.all([
-          sheets.spreadsheets.values.batchGet({
-            spreadsheetId: ctx.clientSheetId,
-            ranges,
-            valueRenderOption: "UNFORMATTED_VALUE",
-            _bypassSupabaseVirtualSheet: true,
-          }),
-          sheets.spreadsheets.values.batchGet({
-            spreadsheetId: ctx.clientSheetId,
+      if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
+        import("./clientSheetBridgeService.js")
+          .then(({ recordBridgeStructuralRequests, scheduleOutboundSheetBridgeSync }) => {
+            recordBridgeStructuralRequests(ctx.clientName, requests, metaBySheetId);
+            if (dirtyTargets.size > 0) {
+              scheduleOutboundSheetBridgeSync(ctx.clientName, [...dirtyTargets.keys()]);
+            }
+          })
+          .catch(() => { });
+      }
+    }
+
+    return {
+      status: 200,
+      data: { spreadsheetId, replies: requests.map(() => ({})) },
+    };
+  }
+
+  // 9. spreadsheets.sheets.copyTo (used by reconTabService when duplicating Template -> YYMM)
+  if (namespace === "sheets" && method === "copyTo") {
+    let sourceTabName = "Template";
+    if (params.sheetId !== undefined && params.sheetId !== null && supabase) {
+      const { data: metaTabs } = await supabase
+        .from("master_sheet_grids")
+        .select("tab_name")
+        .eq("client_name", ctx.clientName)
+        .eq("sheet_role", sheetRole);
+      const matchedTab = (metaTabs || []).find(
+        (t) => hashTabNameToSheetId_(t.tab_name) === Number(params.sheetId)
+      );
+      if (matchedTab?.tab_name) {
+        sourceTabName = matchedTab.tab_name;
+      }
+    }
+    const sourceRec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, sourceTabName, rawSheetsApi);
+    const tempTitle = `Copy of ${sourceTabName} ${Date.now().toString().slice(-4)}`;
+    await saveVirtualTabGrid_(
+      ctx,
+      sheetRole,
+      tempTitle,
+      sourceRec.values_grid || [],
+      sourceRec.formulas_grid || [],
+      sourceRec.notes_grid || {}
+    );
+    const { data: tabRows } = await supabase
+      .from("master_sheet_grids")
+      .select("tab_name")
+      .eq("client_name", ctx.clientName)
+      .eq("sheet_role", sheetRole)
+      .order("tab_name", { ascending: true });
+    const idx = (tabRows || []).findIndex((t) => t.tab_name === tempTitle);
+    const newSheetId = hashTabNameToSheetId_(tempTitle);
+    return {
+      status: 200,
+      data: {
+        sheetId: newSheetId,
+        title: tempTitle,
+        index: idx >= 0 ? idx : 0,
+      },
+    };
+  }
+
+  return { status: 200, data: {} };
+}
+
+/**
+ * Extracts structured settings from a KeyInfo 2D grid and upserts public.tenant_key_info
+ */
+async function syncStructuredKeyInfoFromGrid_(ctx, keyInfoGrid) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !Array.isArray(keyInfoGrid)) return;
+
+  const cell = (r1, cLetter) => {
+    const r0 = r1 - 1;
+    const c0 = colLetterToIdx0(cLetter);
+    return String(keyInfoGrid[r0]?.[c0] ?? "").trim();
+  };
+
+  const rangeCol = (cLetter, startR1, endR1) => {
+    const c0 = colLetterToIdx0(cLetter);
+    const out = [];
+    for (let r = startR1 - 1; r <= endR1 - 1; r++) {
+      const v = String(keyInfoGrid[r]?.[c0] ?? "").trim();
+      if (v) out.push(v);
+    }
+    return out;
+  };
+
+  const nonCashAccounts = [];
+  for (let r = 22; r <= 27; r++) {
+    const name = String(keyInfoGrid[r]?.[colLetterToIdx0("H")] ?? "").trim();
+    const accId = String(keyInfoGrid[r]?.[colLetterToIdx0("I")] ?? "").trim();
+    if (name && !name.toLowerCase().includes("non-cash") && !name.endsWith(":")) {
+      nonCashAccounts.push({ name, id: accId });
+    }
+  }
+
+  const overheadMappings = [];
+  for (let r = 1; r < Math.min(keyInfoGrid.length, 210); r++) {
+    const plCat = String(keyInfoGrid[r]?.[colLetterToIdx0("AZ")] ?? "").trim();
+    const outCat = String(keyInfoGrid[r]?.[colLetterToIdx0("BA")] ?? "").trim();
+    if (plCat || outCat) {
+      overheadMappings.push({ row: r + 1, plCategory: plCat, outgoingsCategory: outCat });
+    }
+  }
+
+  const payload = {
+    client_id: ctx.clientId,
+    client_name: ctx.clientName,
+    normalized_key: ctx.normalizedKey || normalizeClientKey_(ctx.clientName),
+    fy_start_date: formatCellForDisplay("master", "KeyInfo", 1, 1, keyInfoGrid[1]?.[1], keyInfoGrid),
+    revenue_or_income_mode: cell(15, "B") || "Revenue",
+    direct_costs_mode: cell(8, "D") || "Contractors",
+    accounting_tool: cell(4, "Q") || "None",
+    crm_tool: cell(8, "Q") || "None",
+    crm_drives: cell(9, "Q") || "NA",
+    primary_currency: cell(17, "B") || "GBP",
+    currency_symbol: cell(4, "D") || "£",
+    invoice_method: cell(8, "F") || "Whole",
+    contractor_categories: rangeCol("AT", 4, 22),
+    passthrough_categories: rangeCol("AT", 24, 40),
+    tracked_bank_accounts: rangeCol("H", 12, 21).filter(
+      (n) => !n.toLowerCase().includes("non-cash") && !n.endsWith(":")
+    ),
+    tracked_non_cash_accounts: nonCashAccounts,
+    overhead_mappings: overheadMappings,
+    product_lines: rangeCol("B", 23, 37),
+    lead_sources: [...rangeCol("G", 32, 60), ...rangeCol("G", 63, 72)],
+    updated_at: new Date().toISOString(),
+  };
+
+  await supabase.from("tenant_key_info").upsert(payload, { onConflict: "client_id" });
+}
+
+function parseNumericVal_(val) {
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  if (val == null || val === "") return 0;
+  const s = String(val).trim();
+  const isParen = /^\(.*\)$/.test(s);
+  const cleaned = s.replace(/[()£$€,\s]/g, "");
+  const num = parseFloat(cleaned);
+  if (isNaN(num)) return 0;
+  return isParen ? -Math.abs(num) : num;
+}
+
+/**
+ * Extracts structured Bank Recon period summary and items from a Recon YYMM grid
+ */
+async function syncReconPeriodAndItemsFromGrid_(ctx, monthKey, grid) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !Array.isArray(grid) || !/^\d{4}$/.test(monthKey)) return;
+
+  const yy = monthKey.slice(0, 2);
+  const mm = monthKey.slice(2, 4);
+  const isoMonth = `20${yy}-${mm}`;
+
+  const da1Raw = String(grid[0]?.[colLetterToIdx0("DA")] ?? "").trim();
+  const accountingPlatform = da1Raw.toLowerCase().includes("quick") ? "Quickbooks" : "Xero";
+  const cr2Raw = grid[1]?.[colLetterToIdx0("CR")];
+  const isComplete = Boolean(cr2Raw === true || String(cr2Raw ?? "").trim().toUpperCase() === "TRUE");
+
+  // Totals in U3:X16 (rows 2..15, cols 20..23)
+  const actualsSummary = {};
+  for (let r = 2; r <= 15; r++) {
+    const label = String(grid[r]?.[20] ?? "").trim();
+    if (!label || label.toLowerCase() === "total") continue;
+    actualsSummary[label] = {
+      out: String(grid[r]?.[21] ?? ""),
+      in: String(grid[r]?.[22] ?? ""),
+      net: parseNumericVal_(grid[r]?.[23]),
+      formattedNet: String(grid[r]?.[23] ?? "£0.00"),
+    };
+  }
+
+  await supabase.from("bank_recon_periods").upsert(
+    {
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      month_key: monthKey,
+      iso_month: isoMonth,
+      accounting_platform: accountingPlatform,
+      is_complete: isComplete,
+      actuals_summary: actualsSummary,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "client_name,month_key" }
+  );
+
+  // Extract reconciled bank transactions (A3:Q200 -> rows 2..199) and unreconciled items (CD4:CN60 -> rows 3..59, cols 81..91)
+  const itemsToInsert = [];
+  for (let r = 2; r < Math.min(grid.length, 200); r++) {
+    const row = grid[r] || [];
+    const txnDate = formatCellForDisplay("recon", monthKey, r, 1, row[1] || row[0], grid);
+    const accountName = String(row[2] || "").trim();
+    const payee = String(row[3] || row[4] || "").trim();
+    const particulars = String(row[4] || "").trim();
+    const ref = String(row[6] || row[5] || "").trim();
+    const outAmt = parseNumericVal_(row[8]);
+    const inAmt = parseNumericVal_(row[9]);
+    const category = String(row[16] || "").trim();
+    if (!txnDate && !payee && !outAmt && !inAmt) continue;
+    itemsToInsert.push({
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      month_key: monthKey,
+      item_type: "reconciled",
+      row_index: r + 1,
+      is_reconciled: true,
+      txn_date: txnDate,
+      account_name: accountName,
+      payee,
+      particulars,
+      reference: ref,
+      out_amount: outAmt,
+      in_amount: inAmt,
+      net_amount: inAmt - outAmt,
+      vat_amount: 0,
+      category,
+    });
+  }
+
+  const colCD = colLetterToIdx0("CD"); // 81
+  for (let r = 3; r < Math.min(grid.length, 60); r++) {
+    const row = grid[r] || [];
+    const dateVal = row[colCD + 2] ?? row[colCD]; // CF for Xero, CD for QB
+    const txnDate = formatCellForDisplay("recon", monthKey, r, colCD + 2, dateVal, grid);
+    const payee = String(row[colCD + 3] || "").trim(); // CG
+    const particulars = String(row[colCD + 4] || "").trim(); // CH
+    const rawAmt = parseNumericVal_(row[colCD + 5]); // CI
+    const cat = String(row[colCD + 9] || "").trim(); // CM
+    const vatApplies = String(row[colCD + 10] || "No").trim(); // CN
+    const vatAmt = vatApplies.toLowerCase() === "yes" ? Math.round(Math.abs(rawAmt) * (20 / 120) * 100) / 100 : 0;
+    const netAmt = Math.round((Math.abs(rawAmt) - vatAmt) * 100) / 100;
+    if (!txnDate && !payee && !rawAmt) continue;
+    itemsToInsert.push({
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      month_key: monthKey,
+      item_type: "unreconciled",
+      row_index: r + 1,
+      is_reconciled: false,
+      txn_date: txnDate,
+      account_name: "",
+      payee,
+      particulars,
+      reference: "",
+      out_amount: rawAmt < 0 ? Math.abs(rawAmt) : 0,
+      in_amount: rawAmt > 0 ? rawAmt : 0,
+      net_amount: netAmt,
+      vat_amount: vatAmt,
+      category: cat,
+      vat_applies: vatApplies,
+      is_excluded: false,
+    });
+  }
+
+  await supabase
+    .from("bank_recon_items")
+    .delete()
+    .eq("client_name", ctx.clientName)
+    .eq("month_key", monthKey);
+
+  if (itemsToInsert.length > 0) {
+    for (let i = 0; i < itemsToInsert.length; i += 200) {
+      await supabase.from("bank_recon_items").insert(itemsToInsert.slice(i, i + 200));
+    }
+  }
+}
+
+/**
+ * Full 1-click migration of a client's Master Sheet & Recon Sheet into Supabase Stage 2 tables
+ */
+export async function migrateClientMasterAndReconToSupabase(sheets, clientName = "APPTEST") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  invalidateMasterEngineCache(clientName, null, null, { invalidateSheetContext: true });
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx) throw new Error(`Client "${clientName}" not found in Supabase clients registry.`);
+  if (isVirtualSupabaseSheetId(ctx.masterSheetId) && isVirtualSupabaseSheetId(ctx.reconSheetId)) {
+    throw new Error(`Client "${clientName}" was provisioned directly in Supabase and has no Google Master or Recon sheets to sync from.`);
+  }
+
+  const summary = {
+    clientName: ctx.clientName,
+    masterTabsSynced: 0,
+    reconTabsSynced: 0,
+    invoicesCount: 0,
+    directCostsCount: 0,
+    plLinesCount: 0,
+    crmDealsCount: 0,
+    timeEntriesCount: 0,
+    reconPeriodsCount: 0,
+    reconItemsCount: 0,
+    learningPatternsCount: 0,
+  };
+
+  // 1. Fetch Master Sheet metadata & tabs (bypassing virtual router so we read live legacy sheet)
+  if (ctx.masterSheetId && !isVirtualSupabaseSheetId(ctx.masterSheetId)) {
+    const masterMeta = await sheets.spreadsheets.get({
+      spreadsheetId: ctx.masterSheetId,
+      fields: "sheets.properties.title",
+      _bypassSupabaseVirtualSheet: true,
+    });
+    const existingMasterTabs = new Set((masterMeta.data.sheets || []).map((s) => s.properties.title));
+    const orderedCore = CORE_MASTER_TABS.filter((t) => existingMasterTabs.has(t));
+    const extraTabs = [...existingMasterTabs].filter(
+      (t) => !CORE_MASTER_TABS.includes(t) && t !== "GasExecLogs" && t !== "GasScriptProps"
+    );
+    const tabsToPull = [...orderedCore, ...extraTabs];
+
+    let migratedInvMode = "Whole";
+
+    for (let i = 0; i < tabsToPull.length; i += 6) {
+      const chunk = tabsToPull.slice(i, i + 6);
+      const ranges = chunk.map((t) => `'${t}'`);
+      const [valBatch, formBatch] = await Promise.all([
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: ctx.masterSheetId,
+          ranges,
+          valueRenderOption: "UNFORMATTED_VALUE",
+          _bypassSupabaseVirtualSheet: true,
+        }),
+        sheets.spreadsheets.values
+          .batchGet({
+            spreadsheetId: ctx.masterSheetId,
             ranges,
             valueRenderOption: "FORMULA",
             _bypassSupabaseVirtualSheet: true,
-          }),
-        ]);
-
-        for (let j = 0; j < batch.length; j++) {
-          const tabName = batch[j];
-          const valuesGrid = valResp.data.valueRanges?.[j]?.values || [];
-          const formulasGrid = formResp.data.valueRanges?.[j]?.values || valuesGrid;
-          const notesGrid = notesByTab[tabName] || {};
-          grids[tabName] = {
-            values: valuesGrid,
-            formulas: formulasGrid,
-            notes: notesGrid,
-          };
-          await saveVirtualTabGrid_(ctx, "client", tabName, valuesGrid, formulasGrid, notesGrid);
-        }
-      }
-
-      await syncStructuredClientTablesFromGrids_(ctx, grids, null, { force: true }).catch((e) =>
-        console.warn("[masterEngineService] Stage 4 relational sync warning:", e.message)
-      );
-
-      await import("./clientSheetBridgeService.js")
-        .then(({ seedSheetBridgeBaselineFromSheetSeed }) => seedSheetBridgeBaselineFromSheetSeed(ctx, grids))
-        .catch((e) => console.warn("[masterEngineService] Sheet bridge baseline seed warning:", e.message));
-
-      invalidateMasterEngineCache(ctx.clientName);
-
-      return {
-        success: true,
-        clientName: ctx.clientName,
-        clientSheetId: ctx.clientSheetId,
-        masterSheetId: ctx.masterSheetId,
-        clientTabsSynced: tabsToFetch.length,
-        outgoingsNotesCount: Object.keys(outNotesMap).length,
-        usedRoleFallback: _useClientRoleFallback,
-      };
-    }
-
-    /**
-     * Manually backfills the 13 normalised workbook mirror tables (Stage 2 raw mirrors &
-     * Stage 4 client tables) directly from live virtual grids in `master_sheet_grids`.
-     */
-    export async function backfillNormalizedMirrorTablesFromVirtualGrids(clientName = "APPTEST") {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      const ctx = await resolveSupabaseSheetContext({ clientName });
-      if (!ctx) throw new Error(`Client "${clientName}" not found in Supabase clients registry.`);
-
-      const masterSourceTabs = ["InvFromApp", "JnlsFromApp", "PLFromApp", "DataFromCRM", "TimeComp"];
-      const clientMirrorTabs = ["Confirmed", "Pipeline", "Outgoings", "Salaries", "Budget", "NBtoFind", "Cash"];
-
-      const [masterRes, reconRes, clientRes] = await Promise.all([
-        supabase
-          .from("master_sheet_grids")
-          .select("tab_name, values_grid")
-          .eq("client_name", ctx.clientName)
-          .eq("sheet_role", "master")
-          .in("tab_name", masterSourceTabs),
-        supabase
-          .from("master_sheet_grids")
-          .select("tab_name, values_grid")
-          .eq("client_name", ctx.clientName)
-          .eq("sheet_role", "recon"),
-        supabase
-          .from("master_sheet_grids")
-          .select("tab_name, sheet_role, values_grid, notes_grid, row_count, col_count")
-          .eq("client_name", ctx.clientName)
-          .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)"),
-      ]);
-
-      if (masterRes.error) throw new Error(`Master grid read failed: ${masterRes.error.message}`);
-      if (reconRes.error) throw new Error(`Recon grid read failed: ${reconRes.error.message}`);
-      if (clientRes.error) throw new Error(`Client grid read failed: ${clientRes.error.message}`);
-
-      const summary = {
-        success: true,
-        clientName: ctx.clientName,
-        invoicesCount: 0,
-        directCostsCount: 0,
-        plLinesCount: 0,
-        crmDealsCount: 0,
-        timeEntriesCount: 0,
-        reconPeriodsCount: 0,
-        learningPatternsCount: 0,
-        clientTabsBackfilled: 0,
-      };
-
-      for (const row of masterRes.data || []) {
-        const vGrid = Array.isArray(row.values_grid) ? row.values_grid : [];
-        if (row.tab_name === "InvFromApp") summary.invoicesCount = await syncInvoicesTableFromGrid_(ctx, vGrid);
-        else if (row.tab_name === "JnlsFromApp") summary.directCostsCount = await syncDirectCostsTableFromGrid_(ctx, vGrid);
-        else if (row.tab_name === "PLFromApp") summary.plLinesCount = await syncPLLinesTableFromGrid_(ctx, vGrid);
-        else if (row.tab_name === "DataFromCRM") summary.crmDealsCount = await syncCrmDealsTableFromGrid_(ctx, vGrid);
-        else if (row.tab_name === "TimeComp") summary.timeEntriesCount = await syncTimeEntriesTableFromGrid_(ctx, vGrid);
-      }
-
-      const learningPatterns = new Map();
-      for (const row of reconRes.data || []) {
-        if (!/^\d{4}$/.test(String(row.tab_name || "").trim())) continue;
-        const vGrid = Array.isArray(row.values_grid) ? row.values_grid : [];
-        await syncReconPeriodAndItemsFromGrid_(ctx, row.tab_name, vGrid);
-        summary.reconPeriodsCount++;
-        for (let r = 2; r < Math.min(vGrid.length, 200); r++) {
-          const cells = vGrid[r] || [];
-          const payee = String(cells[3] || cells[4] || "").trim().toLowerCase();
-          const cat = String(cells[16] || "").trim();
-          if (payee && cat && !cat.startsWith("#")) {
-            const key = `${payee}:::${cat}`;
-            learningPatterns.set(key, {
-              match_pattern: payee,
-              category: cat,
-              confidence_count: (learningPatterns.get(key)?.confidence_count || 0) + 1,
-            });
-          }
-        }
-      }
-
-      if (learningPatterns.size > 0) {
-        const dedupByPattern = new Map();
-        for (const item of learningPatterns.values()) {
-          const existing = dedupByPattern.get(item.match_pattern);
-          if (!existing || item.confidence_count > existing.confidence_count) {
-            dedupByPattern.set(item.match_pattern, {
-              client_id: ctx.clientId,
-              client_name: ctx.clientName,
-              match_pattern: item.match_pattern,
-              category: item.category,
-              confidence_count: item.confidence_count,
-              updated_at: new Date().toISOString(),
-            });
-          }
-        }
-        const rows = [...dedupByPattern.values()];
-        await supabase.from("bank_recon_learning_map").delete().eq("client_name", ctx.clientName);
-        for (let i = 0; i < rows.length; i += 200) {
-          await supabase.from("bank_recon_learning_map").insert(rows.slice(i, i + 200));
-        }
-        summary.learningPatternsCount = rows.length;
-      }
-
-      const clientMirrorSet = new Set(clientMirrorTabs);
-      const clientGrids = {};
-      for (const row of clientRes.data || []) {
-        const cleanTab = String(row.tab_name || "").startsWith("Client::")
-          ? row.tab_name.slice(8)
-          : row.tab_name;
-        if (!clientMirrorSet.has(cleanTab) || clientGrids[cleanTab]) continue;
-        expandClientTabFromStorage_(row, cleanTab, { valuesOnly: true });
-        clientGrids[cleanTab] = {
-          values: row.values_grid || [],
-          notes: cleanTab === "Outgoings" ? row.notes_grid || {} : {},
-        };
-      }
-      const clientTabNames = Object.keys(clientGrids);
-      if (clientTabNames.length > 0) {
-        await syncStructuredClientTablesFromGrids_(ctx, clientGrids, clientTabNames, { force: true });
-        summary.clientTabsBackfilled = clientTabNames.length;
-      }
-
-      return summary;
-    }
-
-    const ALL_PAUSED_MIRROR_TABLES = [
-      "accounting_invoices",
-      "accounting_direct_costs",
-      "accounting_pl_lines",
-      "crm_deals_raw",
-      "time_entries_raw",
-      "bank_recon_periods",
-      "bank_recon_items",
-      "bank_recon_learning_map",
-      "client_jobs",
-      "client_outgoings",
-      "client_salaries",
-      "client_budgets_and_targets",
-      "client_cash_balances",
-      "pma_tasks",
-    ];
-
-    /**
-     * Clears stale historical rows from the 14 write-only SQL mirror tables
-     * when normalized mirror syncing is paused (`PULSE_SYNC_NORMALIZED_MIRROR_TABLES=false`).
-     */
-    export async function clearPausedNormalizedMirrorTables({ force = false } = {}) {
-      if (shouldSyncNormalizedMirrorTables() && !force) {
-        throw new Error(
-          "Normalized SQL mirror table sync is currently enabled; disable PULSE_SYNC_NORMALIZED_MIRROR_TABLES before clearing mirror tables."
-        );
-      }
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      const deletedByTable = {};
-      let totalDeleted = 0;
-
-      for (const tbl of ALL_PAUSED_MIRROR_TABLES) {
-        const { count, error } = await supabase
-          .from(tbl)
-          .delete({ count: "exact" })
-          .not("id", "is", null);
-        if (error) {
-          throw new Error(`Failed clearing ${tbl}: ${error.message}`);
-        }
-        const n = count || 0;
-        deletedByTable[tbl] = n;
-        totalDeleted += n;
-      }
-
-      return {
-        success: true,
-        totalDeleted,
-        deletedByTable,
-      };
-    }
-
-    let _verifiedStage2SchemaReady = false;
-    let _cachedSqlFiles = null;
-
-    function readCachedMigrationSqlFiles_() {
-      if (_cachedSqlFiles) return _cachedSqlFiles;
-      let migrationSql = "";
-      let clockMigrationSql = "";
-      try {
-        const sqlPath = path.join(process.cwd(), "supabase", "migrations", "0002_stage2_master_and_recon.sql");
-        if (fs.existsSync(sqlPath)) {
-          migrationSql = fs.readFileSync(sqlPath, "utf8");
-        }
-      } catch {
-        // ignore
-      }
-      try {
-        const clockSqlPath = path.join(process.cwd(), "supabase", "migrations", "0003_supabase_30m_cron_clock.sql");
-        if (fs.existsSync(clockSqlPath)) {
-          clockMigrationSql = fs.readFileSync(clockSqlPath, "utf8");
-        }
-      } catch {
-        // ignore
-      }
-      _cachedSqlFiles = { migrationSql, clockMigrationSql };
-      return _cachedSqlFiles;
-    }
-
-    /**
-     * Returns Stage 2 table counts, client master_mode / client_mode status, and virtual tabs for PMA DB & Workbook Inspector
-     */
-    export async function getStage2Status(targetClientName = "APPTEST") {
-      if (!isSupabaseConfigured()) {
-        return { configured: false, schemaReady: false, tables: [], clients: [] };
-      }
-      const supabase = getSupabaseAdmin();
-
-      const [
-        tableResults,
-        clientsResp,
-        allKiResp,
-        allGridsResp,
-        allSchedsResp,
-        allIntsResp,
-        targetGridsResp,
-        clockStatus,
-        phase2JobsStats,
-      ] = await Promise.all([
-        Promise.all(
-          STAGE2_TABLES.map(async (t) => {
-            if (_verifiedStage2SchemaReady && !shouldSyncNormalizedMirrorTables() && PAUSED_STAGE2_MIRROR_TABLES.has(t.name)) {
-              return { ...t, exists: true, count: 0, mirrorPaused: true };
-            }
-            try {
-              const { count, error } = await supabase
-                .from(t.name)
-                .select("client_name", { count: "exact", head: true })
-                .eq("client_name", targetClientName);
-              if (error) {
-                return { ...t, exists: false, count: 0, error: error.message };
-              }
-              return { ...t, exists: true, count: count ?? 0 };
-            } catch (err) {
-              return { ...t, exists: false, count: 0, error: err.message };
-            }
           })
-        ),
-        supabase
-          .from("clients")
-          .select("id, client_name, normalized_key, status, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
-          .order("client_name", { ascending: true }),
-        supabase
-          .from("tenant_key_info")
-          .select("client_name, accounting_tool, crm_tool, crm_drives, client_materialized_at, updated_at")
-          .then((r) => r)
-          .catch(() => ({ data: [] })),
-        (async () => {
-          try {
-            const all = [];
-            for (let from = 0; ; from += 1000) {
-              const { data, error } = await supabase
-                .from("master_sheet_grids")
-                .select("client_name, sheet_role, tab_name, updated_at")
-                .order("client_name", { ascending: true })
-                .order("sheet_role", { ascending: true })
-                .order("tab_name", { ascending: true })
-                .range(from, from + 999);
-              if (error || !Array.isArray(data) || data.length === 0) break;
-              all.push(...data);
-              if (data.length < 1000) break;
-            }
-            return { data: all };
-          } catch {
-            return { data: [] };
-          }
-        })(),
-        supabase
-          .from("sync_schedules")
-          .select("client_name, inv_freq, crm_freq, exp_freq, last_inv_run, last_crm_run, last_exp_run")
-          .then((r) => r)
-          .catch(() => ({ data: [] })),
-        supabase
-          .from("tenant_integrations")
-          .select("client_id, tool, status")
-          .then((r) => r)
-          .catch(() => ({ data: [] })),
-        supabase
-          .from("master_sheet_grids")
-          .select("sheet_role, tab_name, row_count, col_count, updated_at")
-          .eq("client_name", targetClientName)
-          .order("tab_name", { ascending: true })
-          .then((r) => r)
-          .catch(() => ({ data: [] })),
-        getSupabaseClockStatusAndSyncConfig().catch(() => null),
-        import("./relationalJobsService.js")
-          .then(({ getPhase2RelationalOverviewStats }) =>
-            getPhase2RelationalOverviewStats([])
-          )
-          .catch(() => null),
+          .catch(() => ({ data: { valueRanges: [] } })),
       ]);
 
-      const schemaReady = _verifiedStage2SchemaReady || tableResults.every((t) => t.exists);
-      if (schemaReady) _verifiedStage2SchemaReady = true;
+      const vList = valBatch.data.valueRanges || [];
+      const fList = formBatch.data.valueRanges || [];
 
-      const clientsData = clientsResp?.data || [];
-      let keyInfoMeta = null;
-      let availableTabs = { master: [], recon: [], client: [] };
-      let enrichedClients = clientsData;
+      for (let j = 0; j < chunk.length; j++) {
+        const tabName = chunk[j];
+        const vGrid = vList[j]?.values || [];
+        const fGrid = fList[j]?.values || vGrid;
+        await saveVirtualTabGrid_(ctx, "master", tabName, vGrid, fGrid, {});
+        summary.masterTabsSynced++;
 
-      if (schemaReady) {
-        const allKi = allKiResp?.data || [];
-        const allGrids = allGridsResp?.data || [];
-        const allScheds = allSchedsResp?.data || [];
-        const allInts = allIntsResp?.data || [];
-        const targetGrids = targetGridsResp?.data || [];
-
-        const kiByClient = new Map();
-        for (const k of allKi || []) {
-          kiByClient.set(String(k.client_name || "").trim().toUpperCase(), k);
-        }
-
-        const schedByClient = new Map();
-        for (const s of allScheds || []) {
-          schedByClient.set(String(s.client_name || "").trim().toUpperCase(), s);
-        }
-
-        const intsByClientId = new Map();
-        for (const row of allInts || []) {
-          if (!row.client_id || row.status === "disconnected") continue;
-          if (!intsByClientId.has(row.client_id)) intsByClientId.set(row.client_id, []);
-          intsByClientId.get(row.client_id).push(String(row.tool || "").trim());
-        }
-
-        const gridStatsByClient = new Map();
-        for (const g of allGrids || []) {
-          const cKey = String(g.client_name || "").trim().toUpperCase();
-          if (!gridStatsByClient.has(cKey)) {
-            gridStatsByClient.set(cKey, {
-              masterTabCount: 0,
-              reconTabCount: 0,
-              clientTabCount: 0,
-              hasExecLogs: false,
-              lastUpdatedAt: null,
-            });
+        if (tabName === "KeyInfo") {
+          const rawMode = String(vGrid[7]?.[6] || "Whole").trim();
+          if (rawMode) migratedInvMode = rawMode;
+        } else if (tabName === "DataChgAlert") {
+          const invFreq = String(vGrid[1]?.[24] || "").trim();
+          const crmFreq = String(vGrid[2]?.[24] || "").trim();
+          const expFreq = String(vGrid[3]?.[24] || "").trim();
+          try {
+            await supabase
+              .from("sync_schedules")
+              .update({
+                inv_freq: invFreq || "Not Used",
+                crm_freq: crmFreq || "Not Used",
+                exp_freq: expFreq || "Not Used",
+                updated_at: new Date().toISOString(),
+              })
+              .eq("client_name", ctx.clientName);
+          } catch (_) {
+            // ignore non-critical sync_schedules update warning
           }
-          const st = gridStatsByClient.get(cKey);
-          if (g.sheet_role === "recon") {
-            st.reconTabCount++;
-          } else if (g.sheet_role === "client" || String(g.tab_name || "").startsWith("Client::")) {
-            st.clientTabCount++;
-          } else if (g.tab_name === "GasExecLogs") {
-            st.hasExecLogs = true;
-          } else if (g.tab_name !== "GasScriptProps" && g.tab_name !== "SheetBridgeBaseline") {
-            st.masterTabCount++;
-          }
-          if (g.updated_at && (!st.lastUpdatedAt || g.updated_at > st.lastUpdatedAt)) {
-            st.lastUpdatedAt = g.updated_at;
-          }
+        } else if (tabName === "InvFromApp") {
+          summary.invoicesCount = await syncInvoicesTableFromGrid_(ctx, vGrid);
+        } else if (tabName === "JnlsFromApp") {
+          summary.directCostsCount = await syncDirectCostsTableFromGrid_(ctx, vGrid);
+        } else if (tabName === "PLFromApp") {
+          summary.plLinesCount = await syncPLLinesTableFromGrid_(ctx, vGrid);
+        } else if (tabName === "DataFromCRM") {
+          summary.crmDealsCount = await syncCrmDealsTableFromGrid_(ctx, vGrid);
+        } else if (tabName === "TimeComp") {
+          summary.timeEntriesCount = await syncTimeEntriesTableFromGrid_(ctx, vGrid);
         }
-
-        keyInfoMeta = kiByClient.get(String(targetClientName || "").trim().toUpperCase()) || null;
-        for (const g of targetGrids || []) {
-          if (g.sheet_role === "recon") {
-            availableTabs.recon.push(g);
-          } else if (g.sheet_role === "client" || String(g.tab_name || "").startsWith("Client::")) {
-            availableTabs.client.push({
-              ...g,
-              sheet_role: "client",
-              tab_name: String(g.tab_name || "").startsWith("Client::") ? g.tab_name.slice(8) : g.tab_name,
-            });
-          } else if (g.tab_name !== "GasExecLogs" && g.tab_name !== "GasScriptProps" && g.tab_name !== "SheetBridgeBaseline") {
-            availableTabs.master.push(g);
-          }
-        }
-
-        enrichedClients = (clientsData || []).map((c) => {
-          const cKey = String(c.client_name || "").trim().toUpperCase();
-          const ki = kiByClient.get(cKey) || null;
-          const sc = schedByClient.get(cKey) || null;
-          const vaultTools = intsByClientId.get(c.id) || [];
-          const fallbackAcc = vaultTools.find((t) => /^(xero|quickbooks|qbo)$/i.test(t)) || "";
-          const fallbackCrm =
-            vaultTools.find((t) => /^(capsule|pipedrive|hubspot|monday|clickup|close)$/i.test(t)) || "";
-          const gs = gridStatsByClient.get(cKey) || {
-            masterTabCount: 0,
-            reconTabCount: 0,
-            clientTabCount: 0,
-            hasExecLogs: false,
-            lastUpdatedAt: null,
-          };
-          return {
-            ...c,
-            hasRealClientSheet: Boolean(c.client_sheet_id && !isVirtualSupabaseSheetId(c.client_sheet_id)),
-            hasRealMasterSheet: Boolean(c.master_sheet_id && !isVirtualSupabaseSheetId(c.master_sheet_id)),
-            hasRealReconSheet: Boolean(c.recon_sheet_id && !isVirtualSupabaseSheetId(c.recon_sheet_id)),
-            sheetBridgeMode: String(c.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
-            sheetBridgeState: c.metadata?.sheet_bridge_state || null,
-            jobsMode: String(c.metadata?.jobs_mode || "grid").trim().toLowerCase(),
-            relationalJobsState: c.metadata?.relational_jobs_state || null,
-            masterTabCount: gs.masterTabCount,
-            reconTabCount: gs.reconTabCount,
-            clientTabCount: gs.clientTabCount,
-            hasExecLogs: gs.hasExecLogs,
-            lastGridUpdatedAt: gs.lastUpdatedAt,
-            materializedAt: ki?.client_materialized_at || null,
-            accountingTool: ki?.accounting_tool || fallbackAcc,
-            crmTool: ki?.crm_tool || fallbackCrm,
-            crmDrives: ki?.crm_drives || "",
-            invFreq: sc?.inv_freq || "",
-            crmFreq: sc?.crm_freq || "",
-            expFreq: sc?.exp_freq || "",
-            invLastRun: sc?.last_inv_run || null,
-            crmLastRun: sc?.last_crm_run || null,
-            expLastRun: sc?.last_exp_run || null,
-          };
-        });
       }
-
-      const { migrationSql, clockMigrationSql } = readCachedMigrationSqlFiles_();
-
-      let backfilledClientsCount = 0;
-      let relationalModeClientsCount = 0;
-      for (const c of clientsData || []) {
-        if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
-        if (String(c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
-      }
-
-      return {
-        configured: true,
-        schemaReady,
-        targetClientName,
-        tables: tableResults,
-        keyInfoMeta,
-        availableTabs,
-        clients: enrichedClients,
-        migrationSql,
-        clockMigrationSql,
-        clockStatus,
-        phase2Jobs: phase2JobsStats
-          ? {
-            ...phase2JobsStats,
-            backfilledClientsCount,
-            relationalModeClientsCount,
-          }
-          : {
-            schemaReady: false,
-            migrationSql: "",
-            totalJobs: 0,
-            totalSeries: 0,
-            totalInvoices: 0,
-            totalExpenses: 0,
-            backfilledClientsCount,
-            relationalModeClientsCount,
-          },
-      };
     }
 
-    /**
-     * Ensures the Supabase 30-minute clock config row exists in public.system_config
-     * and queries pg_cron status via public.get_pulse_30m_clock_status().
-     */
-    export async function getSupabaseClockStatusAndSyncConfig(updatedBy = "System") {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) return null;
+    // Seed GasScriptProps if not already initialized so the very first scheduled sync uses the Delta Update Engine cleanly
+    const { data: existingProps } = await supabase
+      .from("master_sheet_grids")
+      .select("values_grid")
+      .eq("client_id", ctx.clientId)
+      .eq("sheet_role", "master")
+      .eq("tab_name", "GasScriptProps")
+      .maybeSingle();
 
-      const cronSecret = String(process.env.CRON_SECRET || "").trim();
-      const bypassToken = String(
-        process.env.VERCEL_BYPASS_TOKEN || process.env.VERCEL_AUTOMATION_BYPASS_SECRET || ""
-      ).trim();
-      const defaultUrl = "https://app.pulsedashboard.co.uk/api/cron";
-
-      const { data: cfgRow } = await supabase
-        .from("system_config")
-        .select("*")
-        .eq("key", "supabase_cron_clock")
-        .maybeSingle();
-
-      let cfgVal = cfgRow?.value && typeof cfgRow.value === "object" ? { ...cfgRow.value } : null;
-
-      let rpcSecretsSynced = false;
-      if (cronSecret || bypassToken) {
-        try {
-          const { data: rpcSecRes, error: rpcSecErr } = await supabase.rpc("sync_pulse_clock_secrets", {
-            p_target_url: cfgVal?.targetUrl || defaultUrl,
-            p_cron_secret: cronSecret,
-            p_bypass_token: bypassToken,
-          });
-          if (!rpcSecErr && rpcSecRes?.success) {
-            rpcSecretsSynced = true;
-          }
-        } catch {
-          // Migration 0010 not installed yet
-        }
-      }
-
-      const needsSeedOrRefresh =
-        !cfgVal ||
-        !cfgVal.targetUrl ||
-        Boolean(cfgVal.cronSecret || cfgVal.bypassToken);
-
-      if (needsSeedOrRefresh) {
-        cfgVal = {
-          ...(cfgVal || {}),
-          enabled: cfgVal?.enabled !== undefined ? Boolean(cfgVal.enabled) : true,
-          targetUrl: cfgVal?.targetUrl || defaultUrl,
-          hasSecretConfigured: Boolean(cronSecret || rpcSecretsSynced),
-          updatedAt: new Date().toISOString(),
-        };
-        delete cfgVal.cronSecret;
-        delete cfgVal.bypassToken;
-        await supabase.from("system_config").upsert({
-          key: "supabase_cron_clock",
-          value: cfgVal,
-          description: "Supabase pg_cron 30-minute wake-up clock configuration and telemetry",
-          updated_by: updatedBy,
-        });
-      }
-
-      let rpcStatus = null;
-      try {
-        const { data: rpcData, error: rpcErr } = await supabase.rpc("get_pulse_30m_clock_status");
-        if (!rpcErr && rpcData) {
-          rpcStatus = rpcData;
-        }
-      } catch {
-        // RPC not installed yet until 0003_supabase_30m_cron_clock.sql is run
-      }
-
-      const rpcReady = Boolean(rpcStatus && rpcStatus.pgCronInstalled && rpcStatus.pgNetInstalled);
-      const jobActive = Boolean(rpcStatus?.jobActive);
-      const enabled = cfgVal?.enabled !== false;
-
-      return {
-        rpcReady,
-        pgCronInstalled: Boolean(rpcStatus?.pgCronInstalled),
-        pgNetInstalled: Boolean(rpcStatus?.pgNetInstalled),
-        jobScheduled: Boolean(rpcStatus?.jobScheduled),
-        jobActive,
-        schedule: rpcStatus?.schedule || "*/30 * * * *",
-        enabled,
-        activeAndRunning: Boolean(rpcReady && jobActive && enabled),
-        targetUrl: cfgVal?.targetUrl || defaultUrl,
-        hasSecretConfigured: Boolean(rpcSecretsSynced || cfgVal?.hasSecretConfigured || cfgVal?.cronSecret),
-        lastTriggeredAt: cfgVal?.lastTriggeredAt || null,
-        lastTriggerSource: cfgVal?.lastTriggerSource || null,
-        lastWebhookReceivedAt: cfgVal?.lastWebhookReceivedAt || null,
-        lastWebhookSource: cfgVal?.lastWebhookSource || null,
-      };
+    if (!existingProps?.values_grid || existingProps.values_grid.length < 2) {
+      const seedGrid = [
+        ["Key", "Value", "UpdatedAt"],
+        ["INV_LAST_IMPORT_MODE", migratedInvMode || "Whole", new Date().toISOString()],
+        ["EXP_LAST_IMPORT_MODE", "Whole", new Date().toISOString()],
+      ];
+      await saveVirtualTabGrid_(ctx, "master", "GasScriptProps", seedGrid, seedGrid, {});
     }
+  }
 
-    /**
-     * Enables or pauses the Supabase 30-minute clock in public.system_config.
-     */
-    export async function setSupabaseClockEnabled(enabled, updatedBy = "Admin") {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
+  // 2. Fetch Recon Sheet metadata & tabs
+  if (ctx.reconSheetId && !isVirtualSupabaseSheetId(ctx.reconSheetId)) {
+    const reconMeta = await sheets.spreadsheets.get({
+      spreadsheetId: ctx.reconSheetId,
+      fields: "sheets.properties.title",
+      _bypassSupabaseVirtualSheet: true,
+    });
+    const allReconTabs = (reconMeta.data.sheets || [])
+      .map((s) => s.properties.title)
+      .filter((t) => Boolean(t));
 
-      await getSupabaseClockStatusAndSyncConfig(updatedBy);
-      const { data: cfgRow } = await supabase
-        .from("system_config")
-        .select("*")
-        .eq("key", "supabase_cron_clock")
-        .maybeSingle();
+    const learningPatterns = new Map();
 
-      const nextVal = {
-        ...(cfgRow?.value || {}),
-        enabled: Boolean(enabled),
-        updatedAt: new Date().toISOString(),
-      };
+    for (let i = 0; i < allReconTabs.length; i += 5) {
+      const chunk = allReconTabs.slice(i, i + 5);
+      const ranges = chunk.map((t) => `'${t}'`);
+      const [valBatch, formBatch] = await Promise.all([
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: ctx.reconSheetId,
+          ranges,
+          valueRenderOption: "UNFORMATTED_VALUE",
+          _bypassSupabaseVirtualSheet: true,
+        }),
+        sheets.spreadsheets.values
+          .batchGet({
+            spreadsheetId: ctx.reconSheetId,
+            ranges,
+            valueRenderOption: "FORMULA",
+            _bypassSupabaseVirtualSheet: true,
+          })
+          .catch(() => ({ data: { valueRanges: [] } })),
+      ]);
 
-      await supabase.from("system_config").upsert({
-        key: "supabase_cron_clock",
-        value: nextVal,
-        description: "Supabase pg_cron 30-minute wake-up clock configuration and telemetry",
-        updated_by: updatedBy,
-      });
+      const vList = valBatch.data.valueRanges || [];
+      const fList = formBatch.data.valueRanges || [];
 
-      return getSupabaseClockStatusAndSyncConfig(updatedBy);
-    }
+      for (let j = 0; j < chunk.length; j++) {
+        const tabName = chunk[j];
+        const vGrid = vList[j]?.values || [];
+        const fGrid = fList[j]?.values || vGrid;
+        await saveVirtualTabGrid_(ctx, "recon", tabName, vGrid, fGrid, {}, { syncNormalizedMirrors: true });
+        summary.reconTabsSynced++;
 
-    /**
-     * Manually triggers public.run_pulse_30m_clock(true) inside Supabase via RPC.
-     */
-    export async function triggerSupabaseClockNow(updatedBy = "Admin") {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      await getSupabaseClockStatusAndSyncConfig(updatedBy);
-      const { data, error } = await supabase.rpc("run_pulse_30m_clock", { p_force: true });
-      if (error) {
-        throw new Error(
-          error.message.includes("run_pulse_30m_clock")
-            ? "Supabase function public.run_pulse_30m_clock() is not installed yet. Copy and run the 0003_supabase_30m_cron_clock.sql script in the Supabase SQL Editor first."
-            : error.message
-        );
-      }
-      return data;
-    }
-
-    /**
-     * Updates the cron schedule for pulse-30m-wakeup-clock in Supabase via set_pulse_clock_schedule RPC.
-     */
-    export async function setSupabaseClockSchedule(newSchedule = "*/10 * * * *", updatedBy = "Admin") {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      const { data, error } = await supabase.rpc("set_pulse_clock_schedule", { p_schedule: newSchedule });
-      if (error) {
-        throw new Error(
-          error.message.includes("set_pulse_clock_schedule")
-            ? "Supabase function public.set_pulse_clock_schedule() is not installed yet. Copy and run the 0005_update_cron_frequency_to_10m.sql migration in the Supabase SQL Editor first."
-            : error.message
-        );
-      }
-      return getSupabaseClockStatusAndSyncConfig(updatedBy);
-    }
-
-    /**
-     * Fetches a virtual tab grid for the Admin Workbook Inspector
-     */
-    export async function getVirtualTabForInspector({
-      clientName = "APPTEST",
-      sheetRole = "master",
-      tabName = "KeyInfo",
-      maxRows = 300,
-      maxCols = 500,
-      includeFormulas = true,
-      includeRawValues = false,
-      includeNotes = false,
-      trimTrailingEmptyRows = false,
-    }) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      let data = null;
-      let error = null;
-      let staleAgainstClientEdits = false;
-      if (sheetRole === "client") {
-        const clientSelectCols = includeFormulas
-          ? "sheet_role, tab_name, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
-          : "sheet_role, tab_name, row_count, col_count, values_grid, notes_grid, updated_at";
-        const res = await supabase
-          .from("master_sheet_grids")
-          .select(clientSelectCols)
-          .eq("client_name", clientName)
-          .in("sheet_role", ["client", "master"])
-          .in("tab_name", [String(tabName), `Client::${String(tabName)}`]);
-        error = res.error;
-        const rows = Array.isArray(res.data) ? res.data : [];
-        data =
-          rows.find((r) => r.sheet_role === "client" && r.tab_name === String(tabName)) ||
-          rows.find((r) => r.sheet_role === "master" && r.tab_name === `Client::${String(tabName)}`) ||
-          null;
-        if (!error && data) {
-          expandClientTabFromStorage_(data, tabName, { valuesOnly: !includeFormulas });
-        }
-      } else {
-        const selectCols = includeFormulas
-          ? "row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
-          : "row_count, col_count, values_grid, notes_grid, updated_at";
-        const isComparisonTab =
-          sheetRole === "master" &&
-          (tabName === "InvComp" || tabName === "DirComp" || tabName === "CRMComp");
-        const [res, clientEditRes] = await Promise.all([
-          supabase
-            .from("master_sheet_grids")
-            .select(selectCols)
-            .eq("client_name", clientName)
-            .eq("sheet_role", sheetRole)
-            .eq("tab_name", tabName)
-            .maybeSingle(),
-          isComparisonTab
-            ? supabase
-              .from("master_sheet_grids")
-              .select("updated_at")
-              .eq("client_name", clientName)
-              .in("tab_name", [
-                "Confirmed",
-                "Pipeline",
-                "Outgoings",
-                "Client::Confirmed",
-                "Client::Pipeline",
-                "Client::Outgoings",
-              ])
-              .order("updated_at", { ascending: false })
-              .limit(1)
-            : Promise.resolve({ data: null, error: null }),
-        ]);
-        data = res.data;
-        error = res.error;
-        try {
-          if (
-            isComparisonTab &&
-            !clientEditRes?.error &&
-            Array.isArray(clientEditRes?.data) &&
-            clientEditRes.data[0]?.updated_at &&
-            data?.updated_at
-          ) {
-            const latestClientMs = Date.parse(clientEditRes.data[0].updated_at);
-            const masterUpdatedMs = Date.parse(data.updated_at);
-            staleAgainstClientEdits = Boolean(
-              Number.isFinite(latestClientMs) &&
-              Number.isFinite(masterUpdatedMs) &&
-              latestClientMs > masterUpdatedMs + 2000
-            );
-          }
-        } catch (_) {
-          staleAgainstClientEdits = false;
-        }
-      }
-
-      if (error) throw new Error(error.message);
-      if (!data) {
-        return {
-          clientName,
-          sheetRole,
-          tabName,
-          rowCount: 0,
-          colCount: 0,
-          valuesGrid: [],
-          ...(includeFormulas ? { formulasGrid: [] } : {}),
-          ...(includeRawValues ? { rawValuesGrid: [] } : {}),
-          ...(includeNotes ? { notesGrid: {} } : {}),
-          staleAgainstClientEdits: false,
-          updatedAt: null,
-        };
-      }
-
-      const allVals = data.values_grid || [];
-      let effectiveMaxRows = maxRows;
-      if (trimTrailingEmptyRows) {
-        if (sheetRole === "client" && (tabName === "Confirmed" || tabName === "Pipeline")) {
-          effectiveMaxRows = Math.min(maxRows, Math.max(30, findLastActiveClientJobRow_(allVals, 25) + 15));
-        } else {
-          const scanLimit = Math.min(allVals.length, maxRows);
-          let lastMeaningfulRow = 20;
-          for (let r = scanLimit - 1; r >= 5; r--) {
-            const row = allVals[r];
-            if (!Array.isArray(row)) continue;
-            let hasContent = false;
-            for (let c = 0; c < row.length; c++) {
-              const v = row[c];
-              if (v !== null && v !== undefined && v !== false) {
-                const s = String(v).trim();
-                if (s !== "" && s.toUpperCase() !== "FALSE") {
-                  hasContent = true;
-                  break;
-                }
-              }
+        if (/^\d{4}$/.test(tabName)) {
+          summary.reconPeriodsCount++;
+          for (let r = 2; r < Math.min(vGrid.length, 200); r++) {
+            const row = vGrid[r] || [];
+            const payee = String(row[3] || row[4] || "").trim().toLowerCase();
+            const cat = String(row[16] || "").trim();
+            if (payee && cat && !cat.startsWith("#")) {
+              const key = `${payee}:::${cat}`;
+              learningPatterns.set(key, {
+                match_pattern: payee,
+                category: cat,
+                confidence_count: (learningPatterns.get(key)?.confidence_count || 0) + 1,
+              });
             }
-            if (hasContent) {
-              lastMeaningfulRow = r;
+          }
+        }
+      }
+    }
+
+    const { count: itemCnt } = await supabase
+      .from("bank_recon_items")
+      .select("*", { count: "exact", head: true })
+      .eq("client_name", ctx.clientName);
+    summary.reconItemsCount = itemCnt || 0;
+
+    if (learningPatterns.size > 0) {
+      const dedupByPattern = new Map();
+      for (const item of learningPatterns.values()) {
+        const existing = dedupByPattern.get(item.match_pattern);
+        if (!existing || item.confidence_count > existing.confidence_count) {
+          dedupByPattern.set(item.match_pattern, {
+            client_id: ctx.clientId,
+            client_name: ctx.clientName,
+            match_pattern: item.match_pattern,
+            category: item.category,
+            confidence_count: item.confidence_count,
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
+      const rows = [...dedupByPattern.values()];
+      await supabase.from("bank_recon_learning_map").delete().eq("client_name", ctx.clientName);
+      for (let i = 0; i < rows.length; i += 200) {
+        await supabase.from("bank_recon_learning_map").insert(rows.slice(i, i + 200));
+      }
+      summary.learningPatternsCount = rows.length;
+    }
+  }
+
+  invalidateMasterEngineCache(ctx.clientName);
+  return summary;
+}
+
+async function syncInvoicesTableFromGrid_(ctx, grid) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !Array.isArray(grid)) return 0;
+
+  const rows = [];
+  for (let r = 1; r < grid.length; r++) {
+    const row = grid[r] || [];
+    const issueDate = String(row[0] || "").trim();
+    const invNo = String(row[1] || "").trim();
+    const contactName = String(row[2] || "").trim();
+    const desc = String(row[3] || "").trim();
+    const accCode = String(row[4] || "").trim();
+    const taxType = String(row[5] || "").trim();
+    const tracking = String(row[6] || "").trim();
+    const net = parseNumericVal_(row[7]);
+    const tax = parseNumericVal_(row[8]);
+    const gross = parseNumericVal_(row[9]);
+    const status = String(row[10] || "").trim();
+    const invType = String(row[11] || "ACCREC").trim();
+    const extId = String(row[12] || "").trim();
+    const paidDate = String(row[13] || "").trim();
+    const curr = String(row[14] || "GBP").trim();
+    const amtDue = parseNumericVal_(row[15]);
+    const amtPaid = parseNumericVal_(row[16]);
+
+    if (!invNo && !contactName && !extId && !net && !gross) continue;
+    rows.push({
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      external_id: extId || `row_${r + 1}`,
+      invoice_number: invNo,
+      contact_name: contactName,
+      description: desc,
+      account_code: accCode,
+      tax_type: taxType,
+      tracking_category: tracking,
+      issue_date: issueDate,
+      fully_paid_date: paidDate,
+      status,
+      invoice_type: invType,
+      sub_total: net,
+      tax_total: tax,
+      total: gross,
+      amount_due: amtDue,
+      amount_paid: amtPaid,
+      currency_code: curr || "GBP",
+      raw_row: row,
+      synced_at: new Date().toISOString(),
+    });
+  }
+
+  await supabase.from("accounting_invoices").delete().eq("client_name", ctx.clientName);
+  for (let i = 0; i < rows.length; i += 200) {
+    await supabase.from("accounting_invoices").insert(rows.slice(i, i + 200));
+  }
+  return rows.length;
+}
+
+async function syncDirectCostsTableFromGrid_(ctx, grid) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !Array.isArray(grid)) return 0;
+
+  const rows = [];
+  for (let r = 1; r < grid.length; r++) {
+    const row = grid[r] || [];
+    const txnDate = String(row[0] || "").trim();
+    const supplier = String(row[1] || "").trim();
+    const net = parseNumericVal_(row[2]);
+    const vat = parseNumericVal_(row[3]);
+    const gross = parseNumericVal_(row[4]);
+    const ref = String(row[5] || "").trim();
+    const accName = String(row[6] || "").trim();
+    const status = String(row[7] || "").trim();
+    const extId = String(row[8] || "").trim();
+    const paidDate = String(row[9] || "").trim();
+    const curr = String(row[10] || "GBP").trim();
+    const currRate = parseNumericVal_(row[11]) || 1;
+    const amtDue = parseNumericVal_(row[12]);
+    const amtPaid = parseNumericVal_(row[13]);
+    const dueDate = String(row[14] || "").trim();
+
+    if (!supplier && !extId && !net && !gross) continue;
+    rows.push({
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      external_id: extId || `jnl_${r + 1}`,
+      cost_type: "contractor",
+      supplier_name: supplier,
+      description: supplier,
+      account_name: accName,
+      txn_date: txnDate,
+      due_date: dueDate,
+      paid_date: paidDate,
+      net_amount: net,
+      vat_amount: vat,
+      gross_amount: gross,
+      amount_due: amtDue,
+      amount_paid: amtPaid,
+      status,
+      reference: ref,
+      currency_code: curr || "GBP",
+      currency_rate: currRate,
+      raw_row: row,
+      synced_at: new Date().toISOString(),
+    });
+  }
+
+  await supabase.from("accounting_direct_costs").delete().eq("client_name", ctx.clientName);
+  for (let i = 0; i < rows.length; i += 200) {
+    await supabase.from("accounting_direct_costs").insert(rows.slice(i, i + 200));
+  }
+  return rows.length;
+}
+
+async function syncPLLinesTableFromGrid_(ctx, grid) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !Array.isArray(grid) || grid.length < 2) return 0;
+
+  // Locate header row with month dates
+  let headerRowIdx = 0;
+  for (let r = 0; r < Math.min(grid.length, 10); r++) {
+    const nonEmpty = (grid[r] || []).filter((c) => String(c || "").trim() !== "");
+    if (nonEmpty.length >= 3) {
+      headerRowIdx = r;
+      break;
+    }
+  }
+  const headers = grid[headerRowIdx] || [];
+  const rows = [];
+
+  for (let r = headerRowIdx + 1; r < grid.length; r++) {
+    const row = grid[r] || [];
+    const accountName = String(row[0] || "").trim();
+    if (!accountName || accountName.toLowerCase().startsWith("total")) continue;
+    for (let c = 1; c < headers.length; c++) {
+      const mHeader = String(headers[c] || "").trim();
+      if (!mHeader) continue;
+      const amt = parseNumericVal_(row[c]);
+      if (amt === 0 && !row[c]) continue;
+      rows.push({
+        client_id: ctx.clientId,
+        client_name: ctx.clientName,
+        month_date: mHeader,
+        section: "overheads",
+        account_name: accountName,
+        basis: "accrual",
+        net_amount: amt,
+        vat_amount: 0,
+        synced_at: new Date().toISOString(),
+      });
+    }
+  }
+
+  await supabase.from("accounting_pl_lines").delete().eq("client_name", ctx.clientName);
+  const dedup = new Map();
+  for (const item of rows) {
+    dedup.set(`${item.month_date}:::${item.account_name}:::${item.basis}`, item);
+  }
+  const uniqueRows = [...dedup.values()];
+  for (let i = 0; i < uniqueRows.length; i += 200) {
+    await supabase.from("accounting_pl_lines").insert(uniqueRows.slice(i, i + 200));
+  }
+  return uniqueRows.length;
+}
+
+async function syncCrmDealsTableFromGrid_(ctx, grid) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !Array.isArray(grid) || grid.length < 2) return 0;
+
+  const headers = (grid[0] || []).map((h, i) => String(h || `Col_${i + 1}`).trim());
+  const rows = [];
+  for (let r = 1; r < grid.length; r++) {
+    const row = grid[r] || [];
+    if (row.every((c) => !String(c || "").trim())) continue;
+    const rawObj = {};
+    headers.forEach((h, i) => {
+      if (row[i] !== undefined && row[i] !== "") rawObj[h] = row[i];
+    });
+    const extId = String(row[0] || `crm_row_${r + 1}`).trim();
+    const dealName = String(row[1] || row[2] || "").trim();
+    const companyName = String(row[2] || row[1] || "").trim();
+    rows.push({
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      external_id: extId,
+      deal_name: dealName,
+      company_name: companyName,
+      raw_payload: rawObj,
+      synced_at: new Date().toISOString(),
+    });
+  }
+
+  await supabase.from("crm_deals_raw").delete().eq("client_name", ctx.clientName);
+  const dedup = new Map();
+  for (const item of rows) dedup.set(item.external_id, item);
+  const uniqueRows = [...dedup.values()];
+  for (let i = 0; i < uniqueRows.length; i += 200) {
+    await supabase.from("crm_deals_raw").insert(uniqueRows.slice(i, i + 200));
+  }
+  return uniqueRows.length;
+}
+
+async function syncTimeEntriesTableFromGrid_(ctx, grid) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !Array.isArray(grid) || grid.length < 12) return 0;
+
+  const monthHeaders = grid[3] || []; // Row 4 (0-idx 3)
+  const rows = [];
+  for (let r = 11; r < Math.min(grid.length, 62); r++) {
+    const row = grid[r] || [];
+    const staffName = String(row[0] || "").trim();
+    if (!staffName) continue;
+    for (let c = 1; c < monthHeaders.length; c++) {
+      const mLabel = String(monthHeaders[c] || "").trim();
+      if (!mLabel) continue;
+      const hrs = parseNumericVal_(row[c]);
+      if (!hrs) continue;
+      rows.push({
+        client_id: ctx.clientId,
+        client_name: ctx.clientName,
+        month_date: mLabel,
+        staff_name: staffName,
+        client_label: "",
+        job_label: "Total utilization",
+        hours_logged: hrs,
+        synced_at: new Date().toISOString(),
+      });
+    }
+  }
+
+  await supabase.from("time_entries_raw").delete().eq("client_name", ctx.clientName);
+  const dedup = new Map();
+  for (const item of rows) dedup.set(`${item.month_date}:::${item.staff_name}:::${item.job_label}`, item);
+  const uniqueRows = [...dedup.values()];
+  for (let i = 0; i < uniqueRows.length; i += 200) {
+    await supabase.from("time_entries_raw").insert(uniqueRows.slice(i, i + 200));
+  }
+  return uniqueRows.length;
+}
+
+/**
+ * Materializes all IMPORTRANGE links on a client's Client Sheet (e.g. APPTEST)
+ * by replacing IMPORTRANGE wrapper formulas with local self-contained formulas/values
+ * from the Master Sheet (stored in Supabase), while backing up the original IMPORTRANGEs.
+ */
+export async function materializeClientSheetFromMaster(sheets, clientName = "APPTEST") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx || !ctx.clientSheetId || !ctx.masterSheetId) {
+    throw new Error(`Client "${clientName}" is missing clientSheetId or masterSheetId.`);
+  }
+  if (isVirtualSupabaseSheetId(ctx.clientSheetId)) {
+    throw new Error(`Client "${clientName}" was provisioned in Supabase without a Google Client Sheet.`);
+  }
+  if (isVirtualSupabaseSheetId(ctx.masterSheetId)) {
+    throw new Error(`Client "${clientName}" has no Google Master Sheet; its Client Sheet IMPORTRANGEs are already materialized.`);
+  }
+
+  // Check which tabs actually exist on both the Client Sheet and Master Sheet
+  const [clientMeta, masterMeta, { data: existingKi }] = await Promise.all([
+    sheets.spreadsheets.get({
+      spreadsheetId: ctx.clientSheetId,
+      fields: "sheets.properties.title",
+      _bypassSupabaseVirtualSheet: true,
+    }),
+    sheets.spreadsheets.get({
+      spreadsheetId: ctx.masterSheetId,
+      fields: "sheets.properties.title",
+      _bypassSupabaseVirtualSheet: true,
+    }),
+    supabase
+      .from("tenant_key_info")
+      .select("client_importrange_backup")
+      .eq("client_id", ctx.clientId)
+      .maybeSingle(),
+  ]);
+
+  const clientTabs = new Set((clientMeta.data.sheets || []).map((s) => s.properties.title));
+  const masterTabs = new Set((masterMeta.data.sheets || []).map((s) => s.properties.title));
+
+  // Known IMPORTRANGE locations on Client Sheets that pull from Master Sheet ($D$1 / $E$1)
+  const targets = [];
+  if (clientTabs.has("KeyInfo") && masterTabs.has("KeyInfo")) {
+    targets.push(
+      {
+        id: "keyinfo_header",
+        clientRange: "KeyInfo!A1:B1",
+        masterRange: "KeyInfo!A1:B1",
+        mode: "VALUES_ONLY",
+      },
+      {
+        id: "keyinfo_body",
+        clientRange: "KeyInfo!A2:AZ150",
+        masterRange: "KeyInfo!A2:AZ150",
+        mode: "FORMULAS_NO_EXTERNAL",
+      }
+    );
+  }
+
+  if (clientTabs.has("Welcome") && masterTabs.has("Welcome")) {
+    targets.push({
+      id: "welcome_block",
+      clientRange: "Welcome!B3:D26",
+      masterRange: "Welcome!B3:D26",
+      mode: "VALUES_ONLY",
+    });
+  }
+
+  // Check if YrCalcs!A1 on Client Sheet has an IMPORTRANGE pointing to Master Sheet (e.g. OrinYrCalcs!A1:JH8)
+  if (clientTabs.has("YrCalcs")) {
+    let yrFormula = String(existingKi?.client_importrange_backup?.yrcalcs_block?.originalFormula || "");
+    if (!yrFormula) {
+      const yrAnchorResp = await sheets.spreadsheets.values
+        .get({
+          spreadsheetId: ctx.clientSheetId,
+          range: "YrCalcs!A1",
+          valueRenderOption: "FORMULA",
+          _bypassSupabaseVirtualSheet: true,
+        })
+        .catch(() => null);
+      yrFormula = String(yrAnchorResp?.data?.values?.[0]?.[0] || "");
+    }
+    if (/importrange/i.test(yrFormula)) {
+      const rangeMatch = yrFormula.match(/["']([^"'!]+)!([A-Za-z0-9:$]+)["']/);
+      if (rangeMatch) {
+        const srcTab = rangeMatch[1].replace(/^'|'$/g, "");
+        const srcCoords = rangeMatch[2].replace(/\$/g, "");
+        if (masterTabs.has(srcTab)) {
+          targets.push({
+            id: "yrcalcs_block",
+            clientRange: `YrCalcs!${srcCoords}`,
+            masterRange: `${srcTab}!${srcCoords}`,
+            mode: "FORMULAS_NO_EXTERNAL",
+          });
+        }
+      }
+    }
+  }
+
+  if (targets.length === 0) {
+    throw new Error(`No matching IMPORTRANGE target tabs found on ${clientName} Client Sheet.`);
+  }
+
+  // 1. Read existing Client Sheet formulas at those target anchor cells for backup
+  const anchorRanges = targets.map((t) => {
+    const tab = t.clientRange.split("!")[0];
+    const startCoord = t.clientRange.split("!")[1].split(":")[0];
+    return `${tab}!${startCoord}`;
+  });
+
+  const existingAnchorsResp = await sheets.spreadsheets.values.batchGet({
+    spreadsheetId: ctx.clientSheetId,
+    ranges: anchorRanges,
+    valueRenderOption: "FORMULA",
+    _bypassSupabaseVirtualSheet: true,
+  });
+
+  const backupMap = {};
+  (existingAnchorsResp.data.valueRanges || []).forEach((vr, idx) => {
+    const t = targets[idx];
+    const formulaCell = vr.values?.[0]?.[0] || "";
+    backupMap[t.id] = {
+      clientRange: t.clientRange,
+      anchorRange: anchorRanges[idx],
+      originalFormula: formulaCell,
+    };
+  });
+
+  const hasExistingImportrangeBackup =
+    existingKi?.client_importrange_backup &&
+    Object.values(existingKi.client_importrange_backup).some((b) =>
+      /importrange/i.test(String(b?.originalFormula || ""))
+    );
+
+  const finalBackupToSave = hasExistingImportrangeBackup
+    ? { ...backupMap, ...existingKi.client_importrange_backup }
+    : backupMap;
+
+  // 2. Fetch both FORMATTED_VALUE and FORMULA from Master Sheet for all targets
+  const masterRanges = targets.map((t) => t.masterRange);
+  const [masterValResp, masterFormResp] = await Promise.all([
+    sheets.spreadsheets.values.batchGet({
+      spreadsheetId: ctx.masterSheetId,
+      ranges: masterRanges,
+      valueRenderOption: "FORMATTED_VALUE",
+      _bypassSupabaseVirtualSheet: true,
+    }),
+    sheets.spreadsheets.values.batchGet({
+      spreadsheetId: ctx.masterSheetId,
+      ranges: masterRanges,
+      valueRenderOption: "FORMULA",
+      _bypassSupabaseVirtualSheet: true,
+    }),
+  ]);
+
+  const batchWriteData = [];
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    const vals = masterValResp.data.valueRanges?.[i]?.values || [];
+    const forms = masterFormResp.data.valueRanges?.[i]?.values || [];
+
+    const maxR = Math.max(vals.length, forms.length);
+    const mergedRows = [];
+    for (let r = 0; r < maxR; r++) {
+      const vRow = vals[r] || [];
+      const fRow = forms[r] || [];
+      const maxC = Math.max(vRow.length, fRow.length);
+      const outRow = [];
+      for (let c = 0; c < maxC; c++) {
+        const fCell = fRow[c];
+        const vCell = vRow[c] ?? "";
+        if (t.mode === "VALUES_ONLY") {
+          outRow.push(vCell);
+        } else {
+          // If formula contains IMPORTRANGE or references a Master-only tab (e.g. CRMList!, PLFromApp!), fall back to evaluated value
+          if (
+            typeof fCell === "string" &&
+            /\b(importrange|CRMList!|PLFromApp!|Year0PLFromApp!|PLComp!|InvComp!|DirComp!|CRMComp!|DataFromCRM!)/i.test(fCell)
+          ) {
+            outRow.push(vCell);
+          } else if (typeof fCell === "string" && fCell.startsWith("=")) {
+            outRow.push(fCell);
+          } else {
+            outRow.push(vCell !== "" && vCell !== undefined ? vCell : fCell !== undefined ? fCell : "");
+          }
+        }
+      }
+      mergedRows.push(outRow);
+    }
+
+    // For KeyInfo!A2:AZ150, expand the 3 template IMPORTRANGE blocks (R2, G32, A77) using their evaluated values
+    if (t.id === "keyinfo_body") {
+      for (let r = 0; r < mergedRows.length; r++) {
+        const vRow = vals[r] || [];
+        for (let c = 0; c < Math.max(mergedRows[r].length, vRow.length); c++) {
+          if (mergedRows[r][c] === undefined || mergedRows[r][c] === "") {
+            if (vRow[c] !== undefined && vRow[c] !== "") {
+              mergedRows[r][c] = vRow[c];
+            }
+          }
+        }
+      }
+    }
+
+    batchWriteData.push({
+      range: t.clientRange,
+      values: mergedRows,
+    });
+  }
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: ctx.clientSheetId,
+    requestBody: {
+      valueInputOption: "USER_ENTERED",
+      data: batchWriteData,
+    },
+    _bypassSupabaseVirtualSheet: true,
+  });
+
+  await supabase
+    .from("tenant_key_info")
+    .update({
+      client_importrange_backup: finalBackupToSave,
+      client_materialized_at: new Date().toISOString(),
+    })
+    .eq("client_id", ctx.clientId);
+
+  return {
+    success: true,
+    clientName: ctx.clientName,
+    materializedRangesCount: batchWriteData.length,
+    materializedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Restores the original IMPORTRANGE formulas onto a client's Client Sheet (1-click rollback)
+ */
+export async function restoreClientSheetImportranges(sheets, clientName = "APPTEST") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx || !ctx.clientSheetId) throw new Error(`Client "${clientName}" not found.`);
+  if (isVirtualSupabaseSheetId(ctx.clientSheetId) || isVirtualSupabaseSheetId(ctx.masterSheetId)) {
+    throw new Error(`Cannot restore IMPORTRANGEs because "${clientName}" does not have both Google Client and Google Master sheets.`);
+  }
+
+  const { data: ki } = await supabase
+    .from("tenant_key_info")
+    .select("client_importrange_backup")
+    .eq("client_id", ctx.clientId)
+    .maybeSingle();
+
+  const backup = ki?.client_importrange_backup || {};
+  const entries = Object.values(backup).filter((b) => b && b.clientRange && b.originalFormula);
+  if (entries.length === 0) {
+    throw new Error(`No backed-up IMPORTRANGE formulas found for ${clientName}.`);
+  }
+
+  // 1. Clear the materialized ranges first so IMPORTRANGE can spill without #REF!
+  await sheets.spreadsheets.values.batchClear({
+    spreadsheetId: ctx.clientSheetId,
+    requestBody: {
+      ranges: entries.map((e) => e.clientRange),
+    },
+    _bypassSupabaseVirtualSheet: true,
+  });
+
+  // 2. Write back the anchor IMPORTRANGE formulas
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: ctx.clientSheetId,
+    requestBody: {
+      valueInputOption: "USER_ENTERED",
+      data: entries.map((e) => ({
+        range: e.anchorRange,
+        values: [[e.originalFormula]],
+      })),
+    },
+    _bypassSupabaseVirtualSheet: true,
+  });
+
+  await supabase
+    .from("tenant_key_info")
+    .update({ client_materialized_at: null })
+    .eq("client_id", ctx.clientId);
+
+  return {
+    success: true,
+    clientName: ctx.clientName,
+    restoredRangesCount: entries.length,
+  };
+}
+
+/**
+ * Switches a client's master_mode between 'sheet' and 'supabase'
+ */
+export async function setClientMasterMode(clientName, masterMode) {
+  const cleanMode = masterMode === "supabase" ? "supabase" : "sheet";
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  if (cleanMode === "sheet") {
+    const { data: cur } = await supabase
+      .from("clients")
+      .select("master_sheet_id")
+      .eq("client_name", clientName)
+      .maybeSingle();
+    if (!cur?.master_sheet_id || isVirtualSupabaseSheetId(cur.master_sheet_id)) {
+      throw new Error(`Cannot switch "${clientName}" Master & Recon to Google Sheets because no Google Master Sheet was provisioned for this client.`);
+    }
+  }
+
+  const { data, error } = await supabase
+    .from("clients")
+    .update({ master_mode: cleanMode, updated_at: new Date().toISOString() })
+    .eq("client_name", clientName)
+    .select("id, client_name, master_mode, client_mode")
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  _sheetContextCache.expiresAt = 0;
+  return data;
+}
+
+/**
+ * Switches a client's client_mode between 'sheet' and 'supabase'
+ */
+export async function setClientMode(clientName, clientMode) {
+  const cleanMode = clientMode === "supabase" ? "supabase" : "sheet";
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  let resetMetadataPatch = null;
+  if (cleanMode === "sheet") {
+    const { data: cur } = await supabase
+      .from("clients")
+      .select("client_sheet_id, metadata")
+      .eq("client_name", clientName)
+      .maybeSingle();
+    if (!cur?.client_sheet_id || isVirtualSupabaseSheetId(cur.client_sheet_id)) {
+      throw new Error(`Cannot switch "${clientName}" Client Portal to Google Sheets because no Google Client Sheet was provisioned for this client.`);
+    }
+    resetMetadataPatch = {
+      ...(cur?.metadata && typeof cur.metadata === "object" ? cur.metadata : {}),
+      sheet_bridge_mode: "off",
+    };
+  }
+
+  const { data, error } = await supabase
+    .from("clients")
+    .update({
+      client_mode: cleanMode,
+      ...(resetMetadataPatch ? { metadata: resetMetadataPatch } : {}),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("client_name", clientName)
+    .select("id, client_name, master_mode, client_mode")
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  _sheetContextCache.expiresAt = 0;
+  return data;
+}
+
+/**
+ * Synchronizes the 5 Stage 4 structured relational tables (client_jobs, client_outgoings,
+ * client_salaries, client_budgets_and_targets, client_cash_balances) when those tables exist in Supabase.
+ */
+let _stage4TablesVerified = false;
+const _inFlightStage4SyncByClient = new Map();
+
+async function syncStructuredClientTablesFromGrids_(ctx, grids, changedTabs = null, options = {}) {
+  if (!options?.force && !shouldSyncNormalizedMirrorTables()) return;
+  const clientKey = String(ctx?.clientName || "").trim().toLowerCase();
+  if (!clientKey) {
+    return syncStructuredClientTablesFromGridsImpl_(ctx, grids, changedTabs, options);
+  }
+  const prev = _inFlightStage4SyncByClient.get(clientKey) || Promise.resolve();
+  const next = prev
+    .catch(() => { })
+    .then(() => syncStructuredClientTablesFromGridsImpl_(ctx, grids, changedTabs, options));
+  _inFlightStage4SyncByClient.set(clientKey, next);
+  try {
+    await next;
+  } finally {
+    if (_inFlightStage4SyncByClient.get(clientKey) === next) {
+      _inFlightStage4SyncByClient.delete(clientKey);
+    }
+  }
+}
+
+async function syncStructuredClientTablesFromGridsImpl_(ctx, grids, changedTabs = null, options = {}) {
+  if (!options?.force && !shouldSyncNormalizedMirrorTables()) return;
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !grids) return;
+  const tabSet = changedTabs ? new Set(changedTabs) : null;
+
+  if (!_stage4TablesVerified) {
+    // Quick probe once per process to see if Stage 4 tables exist in Supabase
+    const { error: probeErr } = await supabase.from("client_jobs").select("id").limit(1);
+    if (probeErr) return; // 0004_stage4_client_sheet_engine.sql not applied yet
+    _stage4TablesVerified = true;
+  }
+
+  const nowIso = new Date().toISOString();
+
+  // 1. client_jobs (Confirmed & Pipeline)
+  for (const [tabName, tabType] of [
+    ["Confirmed", "confirmed"],
+    ["Pipeline", "pipeline"],
+  ]) {
+    if (tabSet && !tabSet.has(tabName)) continue;
+    const vGrid = grids[tabName]?.values;
+    if (!Array.isArray(vGrid) || vGrid.length === 0) continue;
+    const maxRow = findLastActiveClientJobRow_(vGrid, 1);
+    const jobRows = [];
+    for (let r = 1; r <= maxRow && r < vGrid.length; r++) {
+      const row = vGrid[r] || [];
+      const cName = String(row[0] ?? "").trim();
+      const jName = String(row[1] ?? "").trim();
+      const totalVal = parseNumericVal_(row[32]);
+      if (!cName && !jName && !totalVal) continue;
+      jobRows.push({
+        client_id: ctx.clientId,
+        client_name: ctx.clientName,
+        tab_type: tabType,
+        row_index: r + 1,
+        sort_order: r,
+        customer_name: cName,
+        job_name: jName,
+        project_code: String(row[2] ?? "").trim(),
+        date_confirmed: formatCellForDisplay("client", tabName, r, 3, row[3], vGrid),
+        lead_source: String(row[5] ?? "").trim(),
+        job_type: String(row[35] ?? "Project").trim(),
+        product_line: String(row[6] ?? "").trim(),
+        start_date: formatCellForDisplay("client", tabName, r, 37, row[37], vGrid),
+        end_date: formatCellForDisplay("client", tabName, r, 38, row[38], vGrid),
+        likelihood_pct: parseNumericVal_(row[39] ?? 1),
+        total_revenue: totalVal,
+        total_direct_costs: parseNumericVal_(row[33]),
+        raw_row: row.slice(0, 108),
+        updated_at: nowIso,
+      });
+    }
+    const { error: delErr } = await supabase
+      .from("client_jobs")
+      .delete()
+      .eq("client_name", ctx.clientName)
+      .eq("tab_type", tabType);
+    if (delErr) {
+      console.warn(`[masterEngineService] client_jobs delete error (${ctx.clientName}/${tabType}):`, delErr.message);
+    }
+    for (let i = 0; i < jobRows.length; i += 200) {
+      const { error: insErr } = await supabase.from("client_jobs").insert(jobRows.slice(i, i + 200));
+      if (insErr) {
+        console.warn(`[masterEngineService] client_jobs insert error (${ctx.clientName}/${tabType}):`, insErr.message);
+      }
+    }
+  }
+
+  // 2. client_outgoings (Outgoings)
+  if (!tabSet || tabSet.has("Outgoings")) {
+    const outGrid = grids.Outgoings?.values;
+    if (Array.isArray(outGrid) && outGrid.length > 0) {
+      const outNotes = grids.Outgoings?.notes || {};
+      const mHeaders = (outGrid[0] || []).slice(6, 48).map((v, i) => formatCellForDisplay("client", "Outgoings", 0, 6 + i, v, outGrid));
+      const outRows = [];
+      for (let r = 11; r < Math.min(outGrid.length, 310); r++) {
+        const row = outGrid[r] || [];
+        const catName = String(row[0] ?? "").trim();
+        if (!catName) continue;
+        const monthlyAmounts = {};
+        const monthlyNotes = {};
+        for (let c = 6; c <= 47; c++) {
+          const mKey = mHeaders[c - 6] || `Col_${c}`;
+          const v = row[c];
+          if (v !== "" && v !== null && v !== undefined) monthlyAmounts[mKey] = parseNumericVal_(v);
+          const nk = `${r}:${c}`;
+          if (outNotes[nk]) monthlyNotes[mKey] = outNotes[nk];
+        }
+        outRows.push({
+          client_id: ctx.clientId,
+          client_name: ctx.clientName,
+          section: r < 110 ? "contractor" : r < 120 ? "cos_topup" : "expense",
+          row_index: r + 1,
+          label: catName,
+          vat_applicable: String(row[1] ?? "No").trim(),
+          invoice_status: String(row[2] ?? "").trim(),
+          pay_status: String(row[3] ?? "").trim(),
+          delivery_pct: parseNumericVal_(row[4]),
+          likelihood_pct: parseNumericVal_(row[5] ?? 1),
+          monthly_values: monthlyAmounts,
+          cell_notes: monthlyNotes,
+          raw_row: row.slice(0, 50),
+          updated_at: nowIso,
+        });
+      }
+      const { error: delOutErr } = await supabase.from("client_outgoings").delete().eq("client_name", ctx.clientName);
+      if (delOutErr) {
+        console.warn(`[masterEngineService] client_outgoings delete error (${ctx.clientName}):`, delOutErr.message);
+      }
+      for (let i = 0; i < outRows.length; i += 200) {
+        const { error: insOutErr } = await supabase.from("client_outgoings").insert(outRows.slice(i, i + 200));
+        if (insOutErr) {
+          console.warn(`[masterEngineService] client_outgoings insert error (${ctx.clientName}):`, insOutErr.message);
+        }
+      }
+    }
+  }
+
+  // 3. client_salaries (Salaries)
+  if (!tabSet || tabSet.has("Salaries")) {
+    const salGrid = grids.Salaries?.values;
+    if (Array.isArray(salGrid) && salGrid.length > 0) {
+      const salRows = [];
+      for (let r = 3; r < Math.min(salGrid.length, 65); r++) {
+        const row = salGrid[r] || [];
+        const sName = String(row[0] ?? "").trim();
+        const sRole = String(row[1] ?? "").trim();
+        const annual = parseNumericVal_(row[2]);
+        if (!sName && !sRole && !annual) continue;
+        salRows.push({
+          client_id: ctx.clientId,
+          client_name: ctx.clientName,
+          row_index: r + 1,
+          sort_order: r,
+          employee_name: sName,
+          role_title: sRole,
+          fte_salary: annual,
+          fte_fraction: parseNumericVal_(row[3] ?? 1),
+          start_date: formatCellForDisplay("client", "Salaries", r, 4, row[4], salGrid),
+          end_date: formatCellForDisplay("client", "Salaries", r, 5, row[5], salGrid),
+          delivery_pct: parseNumericVal_(row[6]),
+          student_loan_plan: String(row[7] ?? "None").trim(),
+          pension_opt_in: String(row[8] ?? "Yes").trim(),
+          raw_row: row.slice(0, 270),
+          updated_at: nowIso,
+        });
+      }
+      const { error: delSalErr } = await supabase.from("client_salaries").delete().eq("client_name", ctx.clientName);
+      if (delSalErr) {
+        console.warn(`[masterEngineService] client_salaries delete error (${ctx.clientName}):`, delSalErr.message);
+      }
+      if (salRows.length > 0) {
+        const { error: insSalErr } = await supabase.from("client_salaries").insert(salRows);
+        if (insSalErr) {
+          console.warn(`[masterEngineService] client_salaries insert error (${ctx.clientName}):`, insSalErr.message);
+        }
+      }
+    }
+  }
+
+  // 4. client_budgets_and_targets (Budget & NBtoFind)
+  for (const [tabName, modelType] of [
+    ["Budget", "budget"],
+    ["NBtoFind", "nb_to_find"],
+  ]) {
+    if (tabSet && !tabSet.has(tabName)) continue;
+    const bGrid = grids[tabName]?.values;
+    if (!Array.isArray(bGrid) || bGrid.length === 0) continue;
+    const bRows = [];
+    for (let r = 1; r < Math.min(bGrid.length, 260); r++) {
+      const row = bGrid[r] || [];
+      const lbl = String(row[0] ?? "").trim();
+      if (!lbl) continue;
+      bRows.push({
+        client_id: ctx.clientId,
+        client_name: ctx.clientName,
+        model_type: modelType,
+        row_index: r + 1,
+        line_key: `R${r + 1}`,
+        label: lbl,
+        raw_row: row.slice(0, 60),
+        updated_at: nowIso,
+      });
+    }
+    const { error: delBudErr } = await supabase
+      .from("client_budgets_and_targets")
+      .delete()
+      .eq("client_name", ctx.clientName)
+      .eq("model_type", modelType);
+    if (delBudErr) {
+      console.warn(`[masterEngineService] client_budgets_and_targets delete error (${ctx.clientName}/${modelType}):`, delBudErr.message);
+    }
+    for (let i = 0; i < bRows.length; i += 200) {
+      const { error: insBudErr } = await supabase.from("client_budgets_and_targets").insert(bRows.slice(i, i + 200));
+      if (insBudErr) {
+        console.warn(`[masterEngineService] client_budgets_and_targets insert error (${ctx.clientName}/${modelType}):`, insBudErr.message);
+      }
+    }
+  }
+
+  // 5. client_cash_balances (Cash)
+  if ((!tabSet || tabSet.has("Cash")) && Array.isArray(grids.Cash?.values) && grids.Cash.values.length > 0) {
+    const cashGrid = grids.Cash.values;
+    const cashRow0 = cashGrid[0] || [];
+    const cashRows = [];
+    for (let c = 1; c < cashRow0.length; c++) {
+      const mDate = formatCellForDisplay("client", "Cash", 0, c, cashRow0[c], cashGrid);
+      if (!mDate) continue;
+      cashRows.push({
+        client_id: ctx.clientId,
+        client_name: ctx.clientName,
+        month_date: mDate,
+        col_index: c + 1,
+        account_balances: {
+          opening_balance: parseNumericVal_(cashGrid[3]?.[c]),
+          forecast_closing_balance: parseNumericVal_(cashGrid[33]?.[c]),
+          actual_closing_balance:
+            cashGrid[35]?.[c] !== "" && cashGrid[35]?.[c] !== undefined ? parseNumericVal_(cashGrid[35]?.[c]) : null,
+        },
+        adjustments: {},
+        updated_at: nowIso,
+      });
+    }
+    const { error: delCashErr } = await supabase.from("client_cash_balances").delete().eq("client_name", ctx.clientName);
+    if (delCashErr) {
+      console.warn(`[masterEngineService] client_cash_balances delete error (${ctx.clientName}):`, delCashErr.message);
+    }
+    if (cashRows.length > 0) {
+      const { error: insCashErr } = await supabase.from("client_cash_balances").insert(cashRows);
+      if (insCashErr) {
+        console.warn(`[masterEngineService] client_cash_balances insert error (${ctx.clientName}):`, insCashErr.message);
+      }
+    }
+  }
+}
+
+/**
+ * Full 1-click seeding of a client's Client Sheet (all 31 core tabs + Outgoings notes)
+ * into Supabase Stage 4 virtual grids & structured relational tables.
+ */
+export async function seedClientSheetToSupabase(sheets, clientName = "APPTEST") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  invalidateMasterEngineCache(clientName, null, null, { invalidateSheetContext: true });
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx || !ctx.clientSheetId) {
+    throw new Error(`Client "${clientName}" not found or missing clientSheetId.`);
+  }
+  if (isVirtualSupabaseSheetId(ctx.clientSheetId)) {
+    throw new Error(`Client "${clientName}" was provisioned directly in Supabase and has no Google Client Sheet to sync from.`);
+  }
+
+  const metaResp = await sheets.spreadsheets.get({
+    spreadsheetId: ctx.clientSheetId,
+    fields: "sheets(properties(sheetId,title))",
+    _bypassSupabaseVirtualSheet: true,
+  });
+  const existingTitles = new Set((metaResp.data.sheets || []).map((s) => s.properties.title));
+  const tabsToFetch = CORE_CLIENT_TABS.filter((t) => existingTitles.has(t));
+
+  // Fetch cell notes across note-bearing tabs (Outgoings, Confirmed, Pipeline, Cash)
+  const noteRangeSpecs = {
+    Outgoings: { range: "Outgoings!G13:AV112", startRow0: 12, startCol0: 6 },
+    Confirmed: { range: "Confirmed!AP2:CR500", startRow0: 1, startCol0: 41 },
+    Pipeline: { range: "Pipeline!AP2:CR300", startRow0: 1, startCol0: 41 },
+    Cash: { range: "Cash!B1:AK76", startRow0: 0, startCol0: 1 },
+  };
+  const notesByTab = Object.create(null);
+  const noteTabsPresent = Object.keys(noteRangeSpecs).filter((t) => existingTitles.has(t));
+  if (noteTabsPresent.length > 0) {
+    try {
+      const notesResp = await sheets.spreadsheets.get({
+        spreadsheetId: ctx.clientSheetId,
+        ranges: noteTabsPresent.map((t) => noteRangeSpecs[t].range),
+        fields: "sheets(properties.title,data(startRow,startColumn,rowData.values.note))",
+        _bypassSupabaseVirtualSheet: true,
+      });
+      for (const sheetObj of notesResp?.data?.sheets || []) {
+        const tName = sheetObj?.properties?.title;
+        const cfg = noteRangeSpecs[tName];
+        if (!tName || !cfg) continue;
+        const gridData = sheetObj?.data?.[0];
+        const sR = Number(gridData?.startRow ?? cfg.startRow0);
+        const sC = Number(gridData?.startColumn ?? cfg.startCol0);
+        const tabNotes = Object.create(null);
+        (gridData?.rowData || []).forEach((rObj, rOff) => {
+          (rObj?.values || []).forEach((vObj, cOff) => {
+            if (vObj?.note) {
+              tabNotes[`${sR + rOff}:${sC + cOff}`] = String(vObj.note);
+            }
+          });
+        });
+        notesByTab[tName] = tabNotes;
+      }
+    } catch (e) {
+      console.warn(`[masterEngineService] Client Sheet notes fetch warning (${clientName}):`, e.message);
+    }
+  }
+  const outNotesMap = notesByTab.Outgoings || {};
+
+  const grids = Object.create(null);
+  const chunkSize = 8;
+  for (let i = 0; i < tabsToFetch.length; i += chunkSize) {
+    const batch = tabsToFetch.slice(i, i + chunkSize);
+    const ranges = batch.map((t) => `'${t}'`);
+    const [valResp, formResp] = await Promise.all([
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: ctx.clientSheetId,
+        ranges,
+        valueRenderOption: "UNFORMATTED_VALUE",
+        _bypassSupabaseVirtualSheet: true,
+      }),
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: ctx.clientSheetId,
+        ranges,
+        valueRenderOption: "FORMULA",
+        _bypassSupabaseVirtualSheet: true,
+      }),
+    ]);
+
+    for (let j = 0; j < batch.length; j++) {
+      const tabName = batch[j];
+      const valuesGrid = valResp.data.valueRanges?.[j]?.values || [];
+      const formulasGrid = formResp.data.valueRanges?.[j]?.values || valuesGrid;
+      const notesGrid = notesByTab[tabName] || {};
+      grids[tabName] = {
+        values: valuesGrid,
+        formulas: formulasGrid,
+        notes: notesGrid,
+      };
+      await saveVirtualTabGrid_(ctx, "client", tabName, valuesGrid, formulasGrid, notesGrid);
+    }
+  }
+
+  await syncStructuredClientTablesFromGrids_(ctx, grids, null, { force: true }).catch((e) =>
+    console.warn("[masterEngineService] Stage 4 relational sync warning:", e.message)
+  );
+
+  await import("./clientSheetBridgeService.js")
+    .then(({ seedSheetBridgeBaselineFromSheetSeed }) => seedSheetBridgeBaselineFromSheetSeed(ctx, grids))
+    .catch((e) => console.warn("[masterEngineService] Sheet bridge baseline seed warning:", e.message));
+
+  invalidateMasterEngineCache(ctx.clientName);
+
+  return {
+    success: true,
+    clientName: ctx.clientName,
+    clientSheetId: ctx.clientSheetId,
+    masterSheetId: ctx.masterSheetId,
+    clientTabsSynced: tabsToFetch.length,
+    outgoingsNotesCount: Object.keys(outNotesMap).length,
+    usedRoleFallback: _useClientRoleFallback,
+  };
+}
+
+/**
+ * Manually backfills the 13 normalised workbook mirror tables (Stage 2 raw mirrors &
+ * Stage 4 client tables) directly from live virtual grids in `master_sheet_grids`.
+ */
+export async function backfillNormalizedMirrorTablesFromVirtualGrids(clientName = "APPTEST") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx) throw new Error(`Client "${clientName}" not found in Supabase clients registry.`);
+
+  const masterSourceTabs = ["InvFromApp", "JnlsFromApp", "PLFromApp", "DataFromCRM", "TimeComp"];
+  const clientMirrorTabs = ["Confirmed", "Pipeline", "Outgoings", "Salaries", "Budget", "NBtoFind", "Cash"];
+
+  const [masterRes, reconRes, clientRes] = await Promise.all([
+    supabase
+      .from("master_sheet_grids")
+      .select("tab_name, values_grid")
+      .eq("client_name", ctx.clientName)
+      .eq("sheet_role", "master")
+      .in("tab_name", masterSourceTabs),
+    supabase
+      .from("master_sheet_grids")
+      .select("tab_name, values_grid")
+      .eq("client_name", ctx.clientName)
+      .eq("sheet_role", "recon"),
+    supabase
+      .from("master_sheet_grids")
+      .select("tab_name, sheet_role, values_grid, notes_grid, row_count, col_count")
+      .eq("client_name", ctx.clientName)
+      .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)"),
+  ]);
+
+  if (masterRes.error) throw new Error(`Master grid read failed: ${masterRes.error.message}`);
+  if (reconRes.error) throw new Error(`Recon grid read failed: ${reconRes.error.message}`);
+  if (clientRes.error) throw new Error(`Client grid read failed: ${clientRes.error.message}`);
+
+  const summary = {
+    success: true,
+    clientName: ctx.clientName,
+    invoicesCount: 0,
+    directCostsCount: 0,
+    plLinesCount: 0,
+    crmDealsCount: 0,
+    timeEntriesCount: 0,
+    reconPeriodsCount: 0,
+    learningPatternsCount: 0,
+    clientTabsBackfilled: 0,
+  };
+
+  for (const row of masterRes.data || []) {
+    const vGrid = Array.isArray(row.values_grid) ? row.values_grid : [];
+    if (row.tab_name === "InvFromApp") summary.invoicesCount = await syncInvoicesTableFromGrid_(ctx, vGrid);
+    else if (row.tab_name === "JnlsFromApp") summary.directCostsCount = await syncDirectCostsTableFromGrid_(ctx, vGrid);
+    else if (row.tab_name === "PLFromApp") summary.plLinesCount = await syncPLLinesTableFromGrid_(ctx, vGrid);
+    else if (row.tab_name === "DataFromCRM") summary.crmDealsCount = await syncCrmDealsTableFromGrid_(ctx, vGrid);
+    else if (row.tab_name === "TimeComp") summary.timeEntriesCount = await syncTimeEntriesTableFromGrid_(ctx, vGrid);
+  }
+
+  const learningPatterns = new Map();
+  for (const row of reconRes.data || []) {
+    if (!/^\d{4}$/.test(String(row.tab_name || "").trim())) continue;
+    const vGrid = Array.isArray(row.values_grid) ? row.values_grid : [];
+    await syncReconPeriodAndItemsFromGrid_(ctx, row.tab_name, vGrid);
+    summary.reconPeriodsCount++;
+    for (let r = 2; r < Math.min(vGrid.length, 200); r++) {
+      const cells = vGrid[r] || [];
+      const payee = String(cells[3] || cells[4] || "").trim().toLowerCase();
+      const cat = String(cells[16] || "").trim();
+      if (payee && cat && !cat.startsWith("#")) {
+        const key = `${payee}:::${cat}`;
+        learningPatterns.set(key, {
+          match_pattern: payee,
+          category: cat,
+          confidence_count: (learningPatterns.get(key)?.confidence_count || 0) + 1,
+        });
+      }
+    }
+  }
+
+  if (learningPatterns.size > 0) {
+    const dedupByPattern = new Map();
+    for (const item of learningPatterns.values()) {
+      const existing = dedupByPattern.get(item.match_pattern);
+      if (!existing || item.confidence_count > existing.confidence_count) {
+        dedupByPattern.set(item.match_pattern, {
+          client_id: ctx.clientId,
+          client_name: ctx.clientName,
+          match_pattern: item.match_pattern,
+          category: item.category,
+          confidence_count: item.confidence_count,
+          updated_at: new Date().toISOString(),
+        });
+      }
+    }
+    const rows = [...dedupByPattern.values()];
+    await supabase.from("bank_recon_learning_map").delete().eq("client_name", ctx.clientName);
+    for (let i = 0; i < rows.length; i += 200) {
+      await supabase.from("bank_recon_learning_map").insert(rows.slice(i, i + 200));
+    }
+    summary.learningPatternsCount = rows.length;
+  }
+
+  const clientMirrorSet = new Set(clientMirrorTabs);
+  const clientGrids = {};
+  for (const row of clientRes.data || []) {
+    const cleanTab = String(row.tab_name || "").startsWith("Client::")
+      ? row.tab_name.slice(8)
+      : row.tab_name;
+    if (!clientMirrorSet.has(cleanTab) || clientGrids[cleanTab]) continue;
+    expandClientTabFromStorage_(row, cleanTab, { valuesOnly: true });
+    clientGrids[cleanTab] = {
+      values: row.values_grid || [],
+      notes: cleanTab === "Outgoings" ? row.notes_grid || {} : {},
+    };
+  }
+  const clientTabNames = Object.keys(clientGrids);
+  if (clientTabNames.length > 0) {
+    await syncStructuredClientTablesFromGrids_(ctx, clientGrids, clientTabNames, { force: true });
+    summary.clientTabsBackfilled = clientTabNames.length;
+  }
+
+  return summary;
+}
+
+const ALL_PAUSED_MIRROR_TABLES = [
+  "accounting_invoices",
+  "accounting_direct_costs",
+  "accounting_pl_lines",
+  "crm_deals_raw",
+  "time_entries_raw",
+  "bank_recon_periods",
+  "bank_recon_items",
+  "bank_recon_learning_map",
+  "client_jobs",
+  "client_outgoings",
+  "client_salaries",
+  "client_budgets_and_targets",
+  "client_cash_balances",
+  "pma_tasks",
+];
+
+/**
+ * Clears stale historical rows from the 14 write-only SQL mirror tables
+ * when normalized mirror syncing is paused (`PULSE_SYNC_NORMALIZED_MIRROR_TABLES=false`).
+ */
+export async function clearPausedNormalizedMirrorTables({ force = false } = {}) {
+  if (shouldSyncNormalizedMirrorTables() && !force) {
+    throw new Error(
+      "Normalized SQL mirror table sync is currently enabled; disable PULSE_SYNC_NORMALIZED_MIRROR_TABLES before clearing mirror tables."
+    );
+  }
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const deletedByTable = {};
+  let totalDeleted = 0;
+
+  for (const tbl of ALL_PAUSED_MIRROR_TABLES) {
+    const { count, error } = await supabase
+      .from(tbl)
+      .delete({ count: "exact" })
+      .not("id", "is", null);
+    if (error) {
+      throw new Error(`Failed clearing ${tbl}: ${error.message}`);
+    }
+    const n = count || 0;
+    deletedByTable[tbl] = n;
+    totalDeleted += n;
+  }
+
+  return {
+    success: true,
+    totalDeleted,
+    deletedByTable,
+  };
+}
+
+let _verifiedStage2SchemaReady = false;
+let _cachedSqlFiles = null;
+
+function readCachedMigrationSqlFiles_() {
+  if (_cachedSqlFiles) return _cachedSqlFiles;
+  let migrationSql = "";
+  let clockMigrationSql = "";
+  try {
+    const sqlPath = path.join(process.cwd(), "supabase", "migrations", "0002_stage2_master_and_recon.sql");
+    if (fs.existsSync(sqlPath)) {
+      migrationSql = fs.readFileSync(sqlPath, "utf8");
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const clockSqlPath = path.join(process.cwd(), "supabase", "migrations", "0003_supabase_30m_cron_clock.sql");
+    if (fs.existsSync(clockSqlPath)) {
+      clockMigrationSql = fs.readFileSync(clockSqlPath, "utf8");
+    }
+  } catch {
+    // ignore
+  }
+  _cachedSqlFiles = { migrationSql, clockMigrationSql };
+  return _cachedSqlFiles;
+}
+
+/**
+ * Returns Stage 2 table counts, client master_mode / client_mode status, and virtual tabs for PMA DB & Workbook Inspector
+ */
+export async function getStage2Status(targetClientName = "APPTEST") {
+  if (!isSupabaseConfigured()) {
+    return { configured: false, schemaReady: false, tables: [], clients: [] };
+  }
+  const supabase = getSupabaseAdmin();
+
+  const [
+    tableResults,
+    clientsResp,
+    allKiResp,
+    allGridsResp,
+    allSchedsResp,
+    allIntsResp,
+    targetGridsResp,
+    clockStatus,
+    phase2JobsStats,
+  ] = await Promise.all([
+    Promise.all(
+      STAGE2_TABLES.map(async (t) => {
+        if (_verifiedStage2SchemaReady && !shouldSyncNormalizedMirrorTables() && PAUSED_STAGE2_MIRROR_TABLES.has(t.name)) {
+          return { ...t, exists: true, count: 0, mirrorPaused: true };
+        }
+        try {
+          const { count, error } = await supabase
+            .from(t.name)
+            .select("client_name", { count: "exact", head: true })
+            .eq("client_name", targetClientName);
+          if (error) {
+            return { ...t, exists: false, count: 0, error: error.message };
+          }
+          return { ...t, exists: true, count: count ?? 0 };
+        } catch (err) {
+          return { ...t, exists: false, count: 0, error: err.message };
+        }
+      })
+    ),
+    supabase
+      .from("clients")
+      .select("id, client_name, normalized_key, status, master_mode, client_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+      .order("client_name", { ascending: true }),
+    supabase
+      .from("tenant_key_info")
+      .select("client_name, accounting_tool, crm_tool, crm_drives, client_materialized_at, updated_at")
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
+    (async () => {
+      try {
+        const all = [];
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await supabase
+            .from("master_sheet_grids")
+            .select("client_name, sheet_role, tab_name, updated_at")
+            .order("client_name", { ascending: true })
+            .order("sheet_role", { ascending: true })
+            .order("tab_name", { ascending: true })
+            .range(from, from + 999);
+          if (error || !Array.isArray(data) || data.length === 0) break;
+          all.push(...data);
+          if (data.length < 1000) break;
+        }
+        return { data: all };
+      } catch {
+        return { data: [] };
+      }
+    })(),
+    supabase
+      .from("sync_schedules")
+      .select("client_name, inv_freq, crm_freq, exp_freq, last_inv_run, last_crm_run, last_exp_run")
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
+    supabase
+      .from("tenant_integrations")
+      .select("client_id, tool, status")
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
+    supabase
+      .from("master_sheet_grids")
+      .select("sheet_role, tab_name, row_count, col_count, updated_at")
+      .eq("client_name", targetClientName)
+      .order("tab_name", { ascending: true })
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
+    getSupabaseClockStatusAndSyncConfig().catch(() => null),
+    import("./relationalJobsService.js")
+      .then(({ getPhase2RelationalOverviewStats }) =>
+        getPhase2RelationalOverviewStats([])
+      )
+      .catch(() => null),
+  ]);
+
+  const schemaReady = _verifiedStage2SchemaReady || tableResults.every((t) => t.exists);
+  if (schemaReady) _verifiedStage2SchemaReady = true;
+
+  const clientsData = clientsResp?.data || [];
+  let keyInfoMeta = null;
+  let availableTabs = { master: [], recon: [], client: [] };
+  let enrichedClients = clientsData;
+
+  if (schemaReady) {
+    const allKi = allKiResp?.data || [];
+    const allGrids = allGridsResp?.data || [];
+    const allScheds = allSchedsResp?.data || [];
+    const allInts = allIntsResp?.data || [];
+    const targetGrids = targetGridsResp?.data || [];
+
+    const kiByClient = new Map();
+    for (const k of allKi || []) {
+      kiByClient.set(String(k.client_name || "").trim().toUpperCase(), k);
+    }
+
+    const schedByClient = new Map();
+    for (const s of allScheds || []) {
+      schedByClient.set(String(s.client_name || "").trim().toUpperCase(), s);
+    }
+
+    const intsByClientId = new Map();
+    for (const row of allInts || []) {
+      if (!row.client_id || row.status === "disconnected") continue;
+      if (!intsByClientId.has(row.client_id)) intsByClientId.set(row.client_id, []);
+      intsByClientId.get(row.client_id).push(String(row.tool || "").trim());
+    }
+
+    const gridStatsByClient = new Map();
+    for (const g of allGrids || []) {
+      const cKey = String(g.client_name || "").trim().toUpperCase();
+      if (!gridStatsByClient.has(cKey)) {
+        gridStatsByClient.set(cKey, {
+          masterTabCount: 0,
+          reconTabCount: 0,
+          clientTabCount: 0,
+          hasExecLogs: false,
+          lastUpdatedAt: null,
+        });
+      }
+      const st = gridStatsByClient.get(cKey);
+      if (g.sheet_role === "recon") {
+        st.reconTabCount++;
+      } else if (g.sheet_role === "client" || String(g.tab_name || "").startsWith("Client::")) {
+        st.clientTabCount++;
+      } else if (g.tab_name === "GasExecLogs") {
+        st.hasExecLogs = true;
+      } else if (g.tab_name !== "GasScriptProps" && g.tab_name !== "SheetBridgeBaseline") {
+        st.masterTabCount++;
+      }
+      if (g.updated_at && (!st.lastUpdatedAt || g.updated_at > st.lastUpdatedAt)) {
+        st.lastUpdatedAt = g.updated_at;
+      }
+    }
+
+    keyInfoMeta = kiByClient.get(String(targetClientName || "").trim().toUpperCase()) || null;
+    for (const g of targetGrids || []) {
+      if (g.sheet_role === "recon") {
+        availableTabs.recon.push(g);
+      } else if (g.sheet_role === "client" || String(g.tab_name || "").startsWith("Client::")) {
+        availableTabs.client.push({
+          ...g,
+          sheet_role: "client",
+          tab_name: String(g.tab_name || "").startsWith("Client::") ? g.tab_name.slice(8) : g.tab_name,
+        });
+      } else if (g.tab_name !== "GasExecLogs" && g.tab_name !== "GasScriptProps" && g.tab_name !== "SheetBridgeBaseline") {
+        availableTabs.master.push(g);
+      }
+    }
+
+    enrichedClients = (clientsData || []).map((c) => {
+      const cKey = String(c.client_name || "").trim().toUpperCase();
+      const ki = kiByClient.get(cKey) || null;
+      const sc = schedByClient.get(cKey) || null;
+      const vaultTools = intsByClientId.get(c.id) || [];
+      const fallbackAcc = vaultTools.find((t) => /^(xero|quickbooks|qbo)$/i.test(t)) || "";
+      const fallbackCrm =
+        vaultTools.find((t) => /^(capsule|pipedrive|hubspot|monday|clickup|close)$/i.test(t)) || "";
+      const gs = gridStatsByClient.get(cKey) || {
+        masterTabCount: 0,
+        reconTabCount: 0,
+        clientTabCount: 0,
+        hasExecLogs: false,
+        lastUpdatedAt: null,
+      };
+      return {
+        ...c,
+        hasRealClientSheet: Boolean(c.client_sheet_id && !isVirtualSupabaseSheetId(c.client_sheet_id)),
+        hasRealMasterSheet: Boolean(c.master_sheet_id && !isVirtualSupabaseSheetId(c.master_sheet_id)),
+        hasRealReconSheet: Boolean(c.recon_sheet_id && !isVirtualSupabaseSheetId(c.recon_sheet_id)),
+        sheetBridgeMode: String(c.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
+        sheetBridgeState: c.metadata?.sheet_bridge_state || null,
+        jobsMode: String(c.metadata?.jobs_mode || "grid").trim().toLowerCase(),
+        relationalJobsState: c.metadata?.relational_jobs_state || null,
+        masterTabCount: gs.masterTabCount,
+        reconTabCount: gs.reconTabCount,
+        clientTabCount: gs.clientTabCount,
+        hasExecLogs: gs.hasExecLogs,
+        lastGridUpdatedAt: gs.lastUpdatedAt,
+        materializedAt: ki?.client_materialized_at || null,
+        accountingTool: ki?.accounting_tool || fallbackAcc,
+        crmTool: ki?.crm_tool || fallbackCrm,
+        crmDrives: ki?.crm_drives || "",
+        invFreq: sc?.inv_freq || "",
+        crmFreq: sc?.crm_freq || "",
+        expFreq: sc?.exp_freq || "",
+        invLastRun: sc?.last_inv_run || null,
+        crmLastRun: sc?.last_crm_run || null,
+        expLastRun: sc?.last_exp_run || null,
+      };
+    });
+  }
+
+  const { migrationSql, clockMigrationSql } = readCachedMigrationSqlFiles_();
+
+  let backfilledClientsCount = 0;
+  let relationalModeClientsCount = 0;
+  for (const c of clientsData || []) {
+    if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
+    if (String(c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
+  }
+
+  return {
+    configured: true,
+    schemaReady,
+    targetClientName,
+    tables: tableResults,
+    keyInfoMeta,
+    availableTabs,
+    clients: enrichedClients,
+    migrationSql,
+    clockMigrationSql,
+    clockStatus,
+    phase2Jobs: phase2JobsStats
+      ? {
+          ...phase2JobsStats,
+          backfilledClientsCount,
+          relationalModeClientsCount,
+        }
+      : {
+          schemaReady: false,
+          migrationSql: "",
+          totalJobs: 0,
+          totalSeries: 0,
+          totalInvoices: 0,
+          totalExpenses: 0,
+          backfilledClientsCount,
+          relationalModeClientsCount,
+        },
+  };
+}
+
+/**
+ * Ensures the Supabase 30-minute clock config row exists in public.system_config
+ * and queries pg_cron status via public.get_pulse_30m_clock_status().
+ */
+export async function getSupabaseClockStatusAndSyncConfig(updatedBy = "System") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+
+  const cronSecret = String(process.env.CRON_SECRET || "").trim();
+  const bypassToken = String(
+    process.env.VERCEL_BYPASS_TOKEN || process.env.VERCEL_AUTOMATION_BYPASS_SECRET || ""
+  ).trim();
+  const defaultUrl = "https://app.pulsedashboard.co.uk/api/cron";
+
+  const { data: cfgRow } = await supabase
+    .from("system_config")
+    .select("*")
+    .eq("key", "supabase_cron_clock")
+    .maybeSingle();
+
+  let cfgVal = cfgRow?.value && typeof cfgRow.value === "object" ? { ...cfgRow.value } : null;
+
+  let rpcSecretsSynced = false;
+  if (cronSecret || bypassToken) {
+    try {
+      const { data: rpcSecRes, error: rpcSecErr } = await supabase.rpc("sync_pulse_clock_secrets", {
+        p_target_url: cfgVal?.targetUrl || defaultUrl,
+        p_cron_secret: cronSecret,
+        p_bypass_token: bypassToken,
+      });
+      if (!rpcSecErr && rpcSecRes?.success) {
+        rpcSecretsSynced = true;
+      }
+    } catch {
+      // Migration 0010 not installed yet
+    }
+  }
+
+  const needsSeedOrRefresh =
+    !cfgVal ||
+    !cfgVal.targetUrl ||
+    Boolean(cfgVal.cronSecret || cfgVal.bypassToken);
+
+  if (needsSeedOrRefresh) {
+    cfgVal = {
+      ...(cfgVal || {}),
+      enabled: cfgVal?.enabled !== undefined ? Boolean(cfgVal.enabled) : true,
+      targetUrl: cfgVal?.targetUrl || defaultUrl,
+      hasSecretConfigured: Boolean(cronSecret || rpcSecretsSynced),
+      updatedAt: new Date().toISOString(),
+    };
+    delete cfgVal.cronSecret;
+    delete cfgVal.bypassToken;
+    await supabase.from("system_config").upsert({
+      key: "supabase_cron_clock",
+      value: cfgVal,
+      description: "Supabase pg_cron 30-minute wake-up clock configuration and telemetry",
+      updated_by: updatedBy,
+    });
+  }
+
+  let rpcStatus = null;
+  try {
+    const { data: rpcData, error: rpcErr } = await supabase.rpc("get_pulse_30m_clock_status");
+    if (!rpcErr && rpcData) {
+      rpcStatus = rpcData;
+    }
+  } catch {
+    // RPC not installed yet until 0003_supabase_30m_cron_clock.sql is run
+  }
+
+  const rpcReady = Boolean(rpcStatus && rpcStatus.pgCronInstalled && rpcStatus.pgNetInstalled);
+  const jobActive = Boolean(rpcStatus?.jobActive);
+  const enabled = cfgVal?.enabled !== false;
+
+  return {
+    rpcReady,
+    pgCronInstalled: Boolean(rpcStatus?.pgCronInstalled),
+    pgNetInstalled: Boolean(rpcStatus?.pgNetInstalled),
+    jobScheduled: Boolean(rpcStatus?.jobScheduled),
+    jobActive,
+    schedule: rpcStatus?.schedule || "*/30 * * * *",
+    enabled,
+    activeAndRunning: Boolean(rpcReady && jobActive && enabled),
+    targetUrl: cfgVal?.targetUrl || defaultUrl,
+    hasSecretConfigured: Boolean(rpcSecretsSynced || cfgVal?.hasSecretConfigured || cfgVal?.cronSecret),
+    lastTriggeredAt: cfgVal?.lastTriggeredAt || null,
+    lastTriggerSource: cfgVal?.lastTriggerSource || null,
+    lastWebhookReceivedAt: cfgVal?.lastWebhookReceivedAt || null,
+    lastWebhookSource: cfgVal?.lastWebhookSource || null,
+  };
+}
+
+/**
+ * Enables or pauses the Supabase 30-minute clock in public.system_config.
+ */
+export async function setSupabaseClockEnabled(enabled, updatedBy = "Admin") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  await getSupabaseClockStatusAndSyncConfig(updatedBy);
+  const { data: cfgRow } = await supabase
+    .from("system_config")
+    .select("*")
+    .eq("key", "supabase_cron_clock")
+    .maybeSingle();
+
+  const nextVal = {
+    ...(cfgRow?.value || {}),
+    enabled: Boolean(enabled),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await supabase.from("system_config").upsert({
+    key: "supabase_cron_clock",
+    value: nextVal,
+    description: "Supabase pg_cron 30-minute wake-up clock configuration and telemetry",
+    updated_by: updatedBy,
+  });
+
+  return getSupabaseClockStatusAndSyncConfig(updatedBy);
+}
+
+/**
+ * Manually triggers public.run_pulse_30m_clock(true) inside Supabase via RPC.
+ */
+export async function triggerSupabaseClockNow(updatedBy = "Admin") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  await getSupabaseClockStatusAndSyncConfig(updatedBy);
+  const { data, error } = await supabase.rpc("run_pulse_30m_clock", { p_force: true });
+  if (error) {
+    throw new Error(
+      error.message.includes("run_pulse_30m_clock")
+        ? "Supabase function public.run_pulse_30m_clock() is not installed yet. Copy and run the 0003_supabase_30m_cron_clock.sql script in the Supabase SQL Editor first."
+        : error.message
+    );
+  }
+  return data;
+}
+
+/**
+ * Updates the cron schedule for pulse-30m-wakeup-clock in Supabase via set_pulse_clock_schedule RPC.
+ */
+export async function setSupabaseClockSchedule(newSchedule = "*/10 * * * *", updatedBy = "Admin") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const { data, error } = await supabase.rpc("set_pulse_clock_schedule", { p_schedule: newSchedule });
+  if (error) {
+    throw new Error(
+      error.message.includes("set_pulse_clock_schedule")
+        ? "Supabase function public.set_pulse_clock_schedule() is not installed yet. Copy and run the 0005_update_cron_frequency_to_10m.sql migration in the Supabase SQL Editor first."
+        : error.message
+    );
+  }
+  return getSupabaseClockStatusAndSyncConfig(updatedBy);
+}
+
+/**
+ * Fetches a virtual tab grid for the Admin Workbook Inspector
+ */
+export async function getVirtualTabForInspector({
+  clientName = "APPTEST",
+  sheetRole = "master",
+  tabName = "KeyInfo",
+  maxRows = 300,
+  maxCols = 500,
+  includeFormulas = true,
+  includeRawValues = false,
+  includeNotes = false,
+  trimTrailingEmptyRows = false,
+}) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  let data = null;
+  let error = null;
+  let staleAgainstClientEdits = false;
+  if (sheetRole === "client") {
+    const clientSelectCols = includeFormulas
+      ? "sheet_role, tab_name, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
+      : "sheet_role, tab_name, row_count, col_count, values_grid, notes_grid, updated_at";
+    const res = await supabase
+      .from("master_sheet_grids")
+      .select(clientSelectCols)
+      .eq("client_name", clientName)
+      .in("sheet_role", ["client", "master"])
+      .in("tab_name", [String(tabName), `Client::${String(tabName)}`]);
+    error = res.error;
+    const rows = Array.isArray(res.data) ? res.data : [];
+    data =
+      rows.find((r) => r.sheet_role === "client" && r.tab_name === String(tabName)) ||
+      rows.find((r) => r.sheet_role === "master" && r.tab_name === `Client::${String(tabName)}`) ||
+      null;
+    if (!error && data) {
+      expandClientTabFromStorage_(data, tabName, { valuesOnly: !includeFormulas });
+    }
+  } else {
+    const selectCols = includeFormulas
+      ? "row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
+      : "row_count, col_count, values_grid, notes_grid, updated_at";
+    const isComparisonTab =
+      sheetRole === "master" &&
+      (tabName === "InvComp" || tabName === "DirComp" || tabName === "CRMComp");
+    const [res, clientEditRes] = await Promise.all([
+      supabase
+        .from("master_sheet_grids")
+        .select(selectCols)
+        .eq("client_name", clientName)
+        .eq("sheet_role", sheetRole)
+        .eq("tab_name", tabName)
+        .maybeSingle(),
+      isComparisonTab
+        ? supabase
+          .from("master_sheet_grids")
+          .select("updated_at")
+          .eq("client_name", clientName)
+          .in("tab_name", [
+            "Confirmed",
+            "Pipeline",
+            "Outgoings",
+            "Client::Confirmed",
+            "Client::Pipeline",
+            "Client::Outgoings",
+          ])
+          .order("updated_at", { ascending: false })
+          .limit(1)
+        : Promise.resolve({ data: null, error: null }),
+    ]);
+    data = res.data;
+    error = res.error;
+    try {
+      if (
+        isComparisonTab &&
+        !clientEditRes?.error &&
+        Array.isArray(clientEditRes?.data) &&
+        clientEditRes.data[0]?.updated_at &&
+        data?.updated_at
+      ) {
+        const latestClientMs = Date.parse(clientEditRes.data[0].updated_at);
+        const masterUpdatedMs = Date.parse(data.updated_at);
+        staleAgainstClientEdits = Boolean(
+          Number.isFinite(latestClientMs) &&
+          Number.isFinite(masterUpdatedMs) &&
+          latestClientMs > masterUpdatedMs + 2000
+        );
+      }
+    } catch (_) {
+      staleAgainstClientEdits = false;
+    }
+  }
+
+  if (error) throw new Error(error.message);
+  if (!data) {
+    return {
+      clientName,
+      sheetRole,
+      tabName,
+      rowCount: 0,
+      colCount: 0,
+      valuesGrid: [],
+      ...(includeFormulas ? { formulasGrid: [] } : {}),
+      ...(includeRawValues ? { rawValuesGrid: [] } : {}),
+      ...(includeNotes ? { notesGrid: {} } : {}),
+      staleAgainstClientEdits: false,
+      updatedAt: null,
+    };
+  }
+
+  const allVals = data.values_grid || [];
+  let effectiveMaxRows = maxRows;
+  if (trimTrailingEmptyRows) {
+    if (sheetRole === "client" && (tabName === "Confirmed" || tabName === "Pipeline")) {
+      effectiveMaxRows = Math.min(maxRows, Math.max(30, findLastActiveClientJobRow_(allVals, 25) + 15));
+    } else {
+      const scanLimit = Math.min(allVals.length, maxRows);
+      let lastMeaningfulRow = 20;
+      for (let r = scanLimit - 1; r >= 5; r--) {
+        const row = allVals[r];
+        if (!Array.isArray(row)) continue;
+        let hasContent = false;
+        for (let c = 0; c < row.length; c++) {
+          const v = row[c];
+          if (v !== null && v !== undefined && v !== false) {
+            const s = String(v).trim();
+            if (s !== "" && s.toUpperCase() !== "FALSE") {
+              hasContent = true;
               break;
             }
           }
-          effectiveMaxRows = Math.min(maxRows, Math.max(26, lastMeaningfulRow + 6));
+        }
+        if (hasContent) {
+          lastMeaningfulRow = r;
+          break;
         }
       }
+      effectiveMaxRows = Math.min(maxRows, Math.max(26, lastMeaningfulRow + 6));
+    }
+  }
 
-      const rawSlice = allVals
-        .slice(0, effectiveMaxRows)
-        .map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []));
-      const vGrid =
-        tabName === "GasExecLogs"
-          ? rawSlice
-          : formatGridForDisplay(
-            sheetRole,
-            tabName,
-            rawSlice,
-            0,
-            0,
-            allVals,
-            data.notes_grid || {}
-          );
-      const fGrid = includeFormulas
-        ? (data.formulas_grid || allVals)
-          .slice(0, effectiveMaxRows)
-          .map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []))
-        : null;
-
-      return {
-        clientName,
+  const rawSlice = allVals
+    .slice(0, effectiveMaxRows)
+    .map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []));
+  const vGrid =
+    tabName === "GasExecLogs"
+      ? rawSlice
+      : formatGridForDisplay(
         sheetRole,
         tabName,
-        rowCount: data.row_count || allVals.length,
-        colCount: data.col_count || 0,
-        valuesGrid: vGrid,
-        ...(includeFormulas ? { formulasGrid: fGrid } : {}),
-        ...(includeRawValues ? { rawValuesGrid: rawSlice } : {}),
-        ...(includeNotes ? { notesGrid: data.notes_grid || {} } : {}),
-        staleAgainstClientEdits,
-        updatedAt: data.updated_at,
-      };
+        rawSlice,
+        0,
+        0,
+        allVals,
+        data.notes_grid || {}
+      );
+  const fGrid = includeFormulas
+    ? (data.formulas_grid || allVals)
+      .slice(0, effectiveMaxRows)
+      .map((r) => (Array.isArray(r) ? r.slice(0, maxCols) : []))
+    : null;
+
+  return {
+    clientName,
+    sheetRole,
+    tabName,
+    rowCount: data.row_count || allVals.length,
+    colCount: data.col_count || 0,
+    valuesGrid: vGrid,
+    ...(includeFormulas ? { formulasGrid: fGrid } : {}),
+    ...(includeRawValues ? { rawValuesGrid: rawSlice } : {}),
+    ...(includeNotes ? { notesGrid: data.notes_grid || {} } : {}),
+    staleAgainstClientEdits,
+    updatedAt: data.updated_at,
+  };
+}
+
+/**
+ * Updates one or more cells inside a virtual tab from the inspector/modal in a single batch
+ * (with one save, one formula recompute pass, and optional Master->Client mirroring).
+ */
+export async function updateVirtualTabCellsFromInspector({
+  sheets,
+  clientName = "APPTEST",
+  sheetRole = "master",
+  tabName = "KeyInfo",
+  updates = [],
+}) {
+  if (!Array.isArray(updates) || updates.length === 0) {
+    throw new Error("At least one cell update is required.");
+  }
+
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx) throw new Error(`Client "${clientName}" not found.`);
+
+  const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, null);
+  const nextVals = Array.isArray(rec.values_grid) ? rec.values_grid.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
+  const baseForms = rec.formulas_grid || rec.values_grid || [];
+  const nextForms = Array.isArray(baseForms) ? baseForms.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
+
+  const coords = [];
+  const masterMirrorRanges = [];
+  for (const item of updates) {
+    const r = Number(item?.rowIndex0);
+    const c = Number(item?.colIndex0);
+    if (!Number.isInteger(r) || r < 0 || r >= 50000) {
+      throw new Error(`Virtual sheet write row out of bounds (${item?.rowIndex0} in ${tabName})`);
     }
-
-    /**
-     * Updates one or more cells inside a virtual tab from the inspector/modal in a single batch
-     * (with one save, one formula recompute pass, and optional Master->Client mirroring).
-     */
-    export async function updateVirtualTabCellsFromInspector({
-      sheets,
-      clientName = "APPTEST",
-      sheetRole = "master",
-      tabName = "KeyInfo",
-      updates = [],
-    }) {
-      if (!Array.isArray(updates) || updates.length === 0) {
-        throw new Error("At least one cell update is required.");
-      }
-
-      const ctx = await resolveSupabaseSheetContext({ clientName });
-      if (!ctx) throw new Error(`Client "${clientName}" not found.`);
-
-      const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, null);
-      const nextVals = Array.isArray(rec.values_grid) ? rec.values_grid.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
-      const baseForms = rec.formulas_grid || rec.values_grid || [];
-      const nextForms = Array.isArray(baseForms) ? baseForms.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
-
-      const coords = [];
-      const masterMirrorRanges = [];
-      for (const item of updates) {
-        const r = Number(item?.rowIndex0);
-        const c = Number(item?.colIndex0);
-        if (!Number.isInteger(r) || r < 0 || r >= 50000) {
-          throw new Error(`Virtual sheet write row out of bounds (${item?.rowIndex0} in ${tabName})`);
-        }
-        if (!Number.isInteger(c) || c < 0 || c >= 600) {
-          throw new Error(`Virtual sheet write column out of bounds (${item?.colIndex0} in ${tabName})`);
-        }
-        const rawVal = item?.value ?? "";
-        while (nextVals.length <= r) nextVals.push([]);
-        while (nextVals[r].length <= c) nextVals[r].push("");
-        while (nextForms.length <= r) nextForms.push([]);
-        while (nextForms[r].length <= c) nextForms[r].push("");
-
-        nextVals[r][c] = normalizeCellForStorage(
-          sheetRole,
-          tabName,
-          r,
-          c,
-          rawVal,
-          "USER_ENTERED",
-          nextVals,
-          rec.notes_grid
-        );
-        nextForms[r][c] = rawVal === null || rawVal === undefined ? "" : rawVal;
-
-        const colLetter = colIdx0ToLetter(c);
-        const coord = `${colLetter}${r + 1}`;
-        coords.push(coord);
-        if (sheetRole === "master") {
-          masterMirrorRanges.push({ range: `${tabName}!${coord}`, values: [[rawVal]] });
-        }
-      }
-
-      await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid);
-
-      if (sheetRole === "master") {
-        await recomputeMasterFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
-        if (sheets && masterMirrorRanges.length > 0) {
-          await mirrorMasterWriteToClientSheetIfNeeded_(ctx, sheets, masterMirrorRanges);
-        }
-      } else if (sheetRole === "client") {
-        await recomputeClientFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
-      }
-
-      return {
-        success: true,
-        clientName,
-        sheetRole,
-        tabName,
-        cellCoord: coords[0],
-        updatedCoords: coords,
-        updatedCount: coords.length,
-        value: updates.length === 1 ? updates[0]?.value ?? "" : undefined,
-        clientSheetId: ctx.clientSheetId || "",
-        masterSheetId: ctx.masterSheetId || "",
-      };
+    if (!Number.isInteger(c) || c < 0 || c >= 600) {
+      throw new Error(`Virtual sheet write column out of bounds (${item?.colIndex0} in ${tabName})`);
     }
+    const rawVal = item?.value ?? "";
+    while (nextVals.length <= r) nextVals.push([]);
+    while (nextVals[r].length <= c) nextVals[r].push("");
+    while (nextForms.length <= r) nextForms.push([]);
+    while (nextForms[r].length <= c) nextForms[r].push("");
 
-    /**
-     * Updates a cell inside a virtual tab from the Admin Workbook Inspector (and mirrors to Client Sheet if KeyInfo/Budget)
-     */
-    export async function updateVirtualTabCellFromInspector({
-      sheets,
-      clientName = "APPTEST",
-      sheetRole = "master",
-      tabName = "KeyInfo",
-      rowIndex0,
-      colIndex0,
-      value,
-    }) {
-      return updateVirtualTabCellsFromInspector({
-        sheets,
-        clientName,
-        sheetRole,
-        tabName,
-        updates: [{ rowIndex0, colIndex0, value }],
-      });
+    nextVals[r][c] = normalizeCellForStorage(
+      sheetRole,
+      tabName,
+      r,
+      c,
+      rawVal,
+      "USER_ENTERED",
+      nextVals,
+      rec.notes_grid
+    );
+    nextForms[r][c] = rawVal === null || rawVal === undefined ? "" : rawVal;
+
+    const colLetter = colIdx0ToLetter(c);
+    const coord = `${colLetter}${r + 1}`;
+    coords.push(coord);
+    if (sheetRole === "master") {
+      masterMirrorRanges.push({ range: `${tabName}!${coord}`, values: [[rawVal]] });
     }
+  }
 
-    const TEMPLATE_SNAPSHOT_META_KEY = "template_snapshot_meta";
-    const TEMPLATE_SNAPSHOT_PREFIX = "template_snapshot::";
-    const LEGACY_MONOLITHIC_SNAPSHOT_KEYS = [
-      "template_snapshot_master",
-      "template_snapshot_recon",
-      "template_snapshot_client",
-    ];
+  await saveVirtualTabGrid_(ctx, sheetRole, tabName, nextVals, nextForms, rec.notes_grid);
 
-    function formatSupabaseErrMsg_(msg) {
-      const s = String(msg || "Unknown Supabase error");
-      if (/<!DOCTYPE|<html/i.test(s)) {
-        const titleMatch = s.match(/<title>([^<]+)<\/title>/i);
-        return titleMatch ? titleMatch[1].trim() : "Upstream Supabase/Cloudflare HTTP error";
-      }
-      return s;
+  if (sheetRole === "master") {
+    await recomputeMasterFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
+    if (sheets && masterMirrorRanges.length > 0) {
+      await mirrorMasterWriteToClientSheetIfNeeded_(ctx, sheets, masterMirrorRanges);
     }
+  } else if (sheetRole === "client") {
+    await recomputeClientFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
+  }
 
-    function cloneGrid2D_(grid) {
-      return Array.isArray(grid) ? grid.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
+  return {
+    success: true,
+    clientName,
+    sheetRole,
+    tabName,
+    cellCoord: coords[0],
+    updatedCoords: coords,
+    updatedCount: coords.length,
+    value: updates.length === 1 ? updates[0]?.value ?? "" : undefined,
+    clientSheetId: ctx.clientSheetId || "",
+    masterSheetId: ctx.masterSheetId || "",
+  };
+}
+
+/**
+ * Updates a cell inside a virtual tab from the Admin Workbook Inspector (and mirrors to Client Sheet if KeyInfo/Budget)
+ */
+export async function updateVirtualTabCellFromInspector({
+  sheets,
+  clientName = "APPTEST",
+  sheetRole = "master",
+  tabName = "KeyInfo",
+  rowIndex0,
+  colIndex0,
+  value,
+}) {
+  return updateVirtualTabCellsFromInspector({
+    sheets,
+    clientName,
+    sheetRole,
+    tabName,
+    updates: [{ rowIndex0, colIndex0, value }],
+  });
+}
+
+const TEMPLATE_SNAPSHOT_META_KEY = "template_snapshot_meta";
+const TEMPLATE_SNAPSHOT_PREFIX = "template_snapshot::";
+const LEGACY_MONOLITHIC_SNAPSHOT_KEYS = [
+  "template_snapshot_master",
+  "template_snapshot_recon",
+  "template_snapshot_client",
+];
+
+function formatSupabaseErrMsg_(msg) {
+  const s = String(msg || "Unknown Supabase error");
+  if (/<!DOCTYPE|<html/i.test(s)) {
+    const titleMatch = s.match(/<title>([^<]+)<\/title>/i);
+    return titleMatch ? titleMatch[1].trim() : "Upstream Supabase/Cloudflare HTTP error";
+  }
+  return s;
+}
+
+function cloneGrid2D_(grid) {
+  return Array.isArray(grid) ? grid.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
+}
+
+async function runTemplateRead_(label, spreadsheetId, fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (String(err?.message || "").toLowerCase().includes("permission") || err?.code === 403 || err?.status === 403) {
+      throw new Error(
+        `Permission denied reading ${label} (${spreadsheetId}). Please ensure this Google Sheet is shared as Viewer/Editor with the backend service accounts.`
+      );
     }
+    throw err;
+  }
+}
 
-    async function runTemplateRead_(label, spreadsheetId, fn) {
-      try {
-        return await fn();
-      } catch (err) {
-        if (String(err?.message || "").toLowerCase().includes("permission") || err?.code === 403 || err?.status === 403) {
-          throw new Error(
-            `Permission denied reading ${label} (${spreadsheetId}). Please ensure this Google Sheet is shared as Viewer/Editor with the backend service accounts.`
-          );
-        }
-        throw err;
-      }
-    }
-
-    function buildCompactSnapshotRows_(role, snap, updatedBy = "System") {
-      if (!snap || !Array.isArray(snap.tabs)) return [];
-      const rows = [];
-      for (const t of snap.tabs) {
-        const key = `${TEMPLATE_SNAPSHOT_PREFIX}${role}::${t.tabName}`;
-        if (role === "client") {
-          const maxCols = Math.max(
-            (t.valuesGrid || []).reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0),
-            (t.formulasGrid || []).reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0)
-          );
-          const { storedValues, storedFormulas, storedNotes, totalRows } = compactClientTabForStorage_(
-            t.tabName,
-            t.valuesGrid,
-            t.formulasGrid,
-            {}
-          );
-          rows.push({
-            key,
-            value: {
-              templateId: snap.templateId,
-              tabName: t.tabName,
-              values_grid: storedValues,
-              formulas_grid: storedFormulas,
-              notes_grid: storedNotes,
-              row_count: totalRows,
-              col_count: maxCols,
-              syncedAt: snap.syncedAt,
-            },
-            description: `Client template snapshot tab: ${t.tabName}`,
-            updated_by: updatedBy,
-          });
-        } else {
-          const isMasterCalcs = role === "master" && (t.tabName === "ConfCalcs" || t.tabName === "PipeCalcs");
-          const compactVals = isMasterCalcs
-            ? trimMasterCalcsGrid_(t.valuesGrid || [])
-            : compactGrid2D(t.valuesGrid || []);
-          const rawForms = isMasterCalcs
-            ? (t.formulasGrid || t.valuesGrid || []).slice(0, compactVals.length)
-            : (t.formulasGrid || t.valuesGrid || []);
-          const compactForms = compactFormulasGrid2D_(rawForms);
-          rows.push({
-            key,
-            value: {
-              templateId: snap.templateId,
-              tabName: t.tabName,
-              values_grid: compactVals,
-              compact_formulas: compactForms,
-              ...(t.formattedGrid ? { formatted_grid: compactGrid2D(t.formattedGrid) } : {}),
-              syncedAt: snap.syncedAt,
-            },
-            description: `${role} template snapshot tab: ${t.tabName}`,
-            updated_by: updatedBy,
-          });
-        }
-      }
-      return rows;
-    }
-
-    async function saveTemplateSnapshotRows_(supabase, role, snap, updatedBy = "System") {
-      if (!supabase || !snap) return;
-      const rows = buildCompactSnapshotRows_(role, snap, updatedBy);
-      // Save 1-3 tabs per upsert to stay well below Cloudflare/PostgREST payload limits
-      for (let i = 0; i < rows.length; i += 2) {
-        const chunk = rows.slice(i, i + 2);
-        const { error } = await supabase.from("system_config").upsert(chunk);
-        if (error) {
-          // Fallback: save individually if 2 tabs together were large
-          if (chunk.length > 1) {
-            for (const single of chunk) {
-              const { error: singleErr } = await supabase.from("system_config").upsert(single);
-              if (singleErr) {
-                throw new Error(`Failed to save ${single.key}: ${formatSupabaseErrMsg_(singleErr.message)}`);
-              }
-            }
-          } else {
-            throw new Error(`Failed to save ${chunk[0].key}: ${formatSupabaseErrMsg_(error.message)}`);
-          }
-        }
-      }
-    }
-
-    async function loadRoleSnapshotFromSystemConfig_(supabase, role, expectedTemplateId, meta = null) {
-      if (!supabase || !expectedTemplateId) return null;
-      try {
-        const prefix = `${TEMPLATE_SNAPSHOT_PREFIX}${role}::`;
-        const orderedNames =
-          role === "master"
-            ? meta?.masterTabs
-            : role === "recon"
-              ? meta?.reconTabs
-              : meta?.clientTabs;
-
-        let rows = [];
-        if (Array.isArray(orderedNames) && orderedNames.length > 0) {
-          const keys = orderedNames.map((n) => `${prefix}${n}`);
-          for (let i = 0; i < keys.length; i += 8) {
-            const chunkKeys = keys.slice(i, i + 8);
-            const { data, error } = await supabase
-              .from("system_config")
-              .select("key, value")
-              .in("key", chunkKeys);
-            if (error) return null;
-            if (Array.isArray(data)) rows.push(...data);
-          }
-        } else {
-          const { data, error } = await supabase
-            .from("system_config")
-            .select("key, value")
-            .like("key", `${prefix}%`);
-          if (error) return null;
-          if (Array.isArray(data)) rows = data;
-        }
-        if (rows.length === 0) return null;
-
-        const matching = rows.filter((r) => r?.value?.templateId === expectedTemplateId);
-        if (matching.length === 0) return null;
-
-        // If meta lists expected tab count, ensure snapshot is complete
-        const expectedCount =
-          role === "master"
-            ? Number(meta?.masterTabCount || 0)
-            : role === "recon"
-              ? Number(meta?.reconTabCount || 0)
-              : Number(meta?.clientTabCount || 0);
-        if (expectedCount > 0 && matching.length < expectedCount) {
-          return null;
-        }
-
-        const orderIdx = Array.isArray(orderedNames)
-          ? new Map(orderedNames.map((n, idx) => [n, idx]))
-          : null;
-
-        const tabs = matching
-          .map((r) => {
-            const val = r.value;
-            const tabName = val.tabName || r.key.slice(prefix.length);
-            if (role === "client") {
-              const expanded = expandClientTabFromStorage_({ ...val }, tabName);
-              return {
-                tabName,
-                valuesGrid: expanded.values_grid || [],
-                formulasGrid: expanded.formulas_grid || expanded.values_grid || [],
-              };
-            }
-            const valuesGrid = val.values_grid || [];
-            const formulasGrid = Array.isArray(val.compact_formulas)
-              ? expandFormulasGrid2D_(val.compact_formulas, valuesGrid)
-              : (val.formulasGrid || valuesGrid);
-            return {
-              tabName,
-              valuesGrid,
-              formulasGrid,
-              ...(val.formatted_grid ? { formattedGrid: val.formatted_grid } : {}),
-            };
-          })
-          .sort((a, b) => {
-            if (!orderIdx) return 0;
-            return (orderIdx.get(a.tabName) ?? 9999) - (orderIdx.get(b.tabName) ?? 9999);
-          });
-
-        return {
-          templateId: expectedTemplateId,
-          tabs,
-          ...(role === "client"
-            ? {
-              outNotesMap: meta?.clientOutNotesMap || {},
-              anchorFormulas: meta?.clientAnchorFormulas || {},
-            }
-            : {}),
-          syncedAt: matching[0]?.value?.syncedAt || meta?.syncedAt || "",
-        };
-      } catch (err) {
-        console.warn(`[loadRoleSnapshotFromSystemConfig_] ${role} warning:`, err.message);
-        return null;
-      }
-    }
-
-    async function saveTemplateMeta_(supabase, meta, updatedBy = "System") {
-      if (!supabase) return;
-      const { error } = await supabase.from("system_config").upsert({
-        key: TEMPLATE_SNAPSHOT_META_KEY,
-        value: meta,
-        description: "Metadata for Supabase provisioning template snapshots",
+function buildCompactSnapshotRows_(role, snap, updatedBy = "System") {
+  if (!snap || !Array.isArray(snap.tabs)) return [];
+  const rows = [];
+  for (const t of snap.tabs) {
+    const key = `${TEMPLATE_SNAPSHOT_PREFIX}${role}::${t.tabName}`;
+    if (role === "client") {
+      const maxCols = Math.max(
+        (t.valuesGrid || []).reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0),
+        (t.formulasGrid || []).reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0)
+      );
+      const { storedValues, storedFormulas, storedNotes, totalRows } = compactClientTabForStorage_(
+        t.tabName,
+        t.valuesGrid,
+        t.formulasGrid,
+        {}
+      );
+      rows.push({
+        key,
+        value: {
+          templateId: snap.templateId,
+          tabName: t.tabName,
+          values_grid: storedValues,
+          formulas_grid: storedFormulas,
+          notes_grid: storedNotes,
+          row_count: totalRows,
+          col_count: maxCols,
+          syncedAt: snap.syncedAt,
+        },
+        description: `Client template snapshot tab: ${t.tabName}`,
         updated_by: updatedBy,
       });
-      if (error) {
-        throw new Error(`Failed to save ${TEMPLATE_SNAPSHOT_META_KEY}: ${formatSupabaseErrMsg_(error.message)}`);
+    } else {
+      const isMasterCalcs = role === "master" && (t.tabName === "ConfCalcs" || t.tabName === "PipeCalcs");
+      const compactVals = isMasterCalcs
+        ? trimMasterCalcsGrid_(t.valuesGrid || [])
+        : compactGrid2D(t.valuesGrid || []);
+      const rawForms = isMasterCalcs
+        ? (t.formulasGrid || t.valuesGrid || []).slice(0, compactVals.length)
+        : (t.formulasGrid || t.valuesGrid || []);
+      const compactForms = compactFormulasGrid2D_(rawForms);
+      rows.push({
+        key,
+        value: {
+          templateId: snap.templateId,
+          tabName: t.tabName,
+          values_grid: compactVals,
+          compact_formulas: compactForms,
+          ...(t.formattedGrid ? { formatted_grid: compactGrid2D(t.formattedGrid) } : {}),
+          syncedAt: snap.syncedAt,
+        },
+        description: `${role} template snapshot tab: ${t.tabName}`,
+        updated_by: updatedBy,
+      });
+    }
+  }
+  return rows;
+}
+
+async function saveTemplateSnapshotRows_(supabase, role, snap, updatedBy = "System") {
+  if (!supabase || !snap) return;
+  const rows = buildCompactSnapshotRows_(role, snap, updatedBy);
+  // Save 1-3 tabs per upsert to stay well below Cloudflare/PostgREST payload limits
+  for (let i = 0; i < rows.length; i += 2) {
+    const chunk = rows.slice(i, i + 2);
+    const { error } = await supabase.from("system_config").upsert(chunk);
+    if (error) {
+      // Fallback: save individually if 2 tabs together were large
+      if (chunk.length > 1) {
+        for (const single of chunk) {
+          const { error: singleErr } = await supabase.from("system_config").upsert(single);
+          if (singleErr) {
+            throw new Error(`Failed to save ${single.key}: ${formatSupabaseErrMsg_(singleErr.message)}`);
+          }
+        }
+      } else {
+        throw new Error(`Failed to save ${chunk[0].key}: ${formatSupabaseErrMsg_(error.message)}`);
       }
     }
+  }
+}
 
-    async function fetchMasterTemplateSnapshotFromSheets_(sheets, masterTemplateId) {
-      if (!sheets) throw new Error("Google Sheets client is required to read Master template.");
-      const masterMeta = await runTemplateRead_("Master template", masterTemplateId, () =>
-        sheets.spreadsheets.get({
-          spreadsheetId: masterTemplateId,
-          fields: "sheets.properties.title",
-          _bypassSupabaseVirtualSheet: true,
-          _usePrimaryAccount: true,
-        })
-      );
-      const existingMasterTabs = new Set((masterMeta.data.sheets || []).map((s) => s.properties.title));
-      const orderedCore = CORE_MASTER_TABS.filter((t) => existingMasterTabs.has(t));
-      const extraTabs = [...existingMasterTabs].filter(
-        (t) => !CORE_MASTER_TABS.includes(t) && t !== "GasExecLogs" && t !== "GasScriptProps"
-      );
-      const tabsToPull = [...orderedCore, ...extraTabs];
-      const tabs = [];
+async function loadRoleSnapshotFromSystemConfig_(supabase, role, expectedTemplateId, meta = null) {
+  if (!supabase || !expectedTemplateId) return null;
+  try {
+    const prefix = `${TEMPLATE_SNAPSHOT_PREFIX}${role}::`;
+    const orderedNames =
+      role === "master"
+        ? meta?.masterTabs
+        : role === "recon"
+          ? meta?.reconTabs
+          : meta?.clientTabs;
 
-      for (let i = 0; i < tabsToPull.length; i += 6) {
-        const chunk = tabsToPull.slice(i, i + 6);
-        const ranges = chunk.map((t) => `'${t}'`);
-        const needsFormatted = chunk.filter((t) => t === "KeyInfo" || t === "Welcome" || /yrcalcs/i.test(t));
-
-        const [valBatch, formBatch, dispBatch] = await Promise.all([
-          sheets.spreadsheets.values.batchGet({
-            spreadsheetId: masterTemplateId,
-            ranges,
-            valueRenderOption: "UNFORMATTED_VALUE",
-            _bypassSupabaseVirtualSheet: true,
-            _usePrimaryAccount: true,
-          }),
-          sheets.spreadsheets.values
-            .batchGet({
-              spreadsheetId: masterTemplateId,
-              ranges,
-              valueRenderOption: "FORMULA",
-              _bypassSupabaseVirtualSheet: true,
-              _usePrimaryAccount: true,
-            })
-            .catch(() => ({ data: { valueRanges: [] } })),
-          needsFormatted.length > 0
-            ? sheets.spreadsheets.values
-              .batchGet({
-                spreadsheetId: masterTemplateId,
-                ranges: needsFormatted.map((t) => `'${t}'`),
-                valueRenderOption: "FORMATTED_VALUE",
-                _bypassSupabaseVirtualSheet: true,
-                _usePrimaryAccount: true,
-              })
-              .catch(() => ({ data: { valueRanges: [] } }))
-            : Promise.resolve({ data: { valueRanges: [] } }),
-        ]);
-
-        const vList = valBatch.data.valueRanges || [];
-        const fList = formBatch.data.valueRanges || [];
-        const dList = dispBatch.data.valueRanges || [];
-
-        for (let j = 0; j < chunk.length; j++) {
-          const tabName = chunk[j];
-          const rawV = vList[j]?.values || [];
-          const isMasterCalcs = tabName === "ConfCalcs" || tabName === "PipeCalcs";
-          const vGrid = isMasterCalcs ? trimMasterCalcsGrid_(rawV) : compactGrid2D(rawV);
-          const rawF = fList[j]?.values || rawV;
-          const fGrid = isMasterCalcs ? compactGrid2D(rawF.slice(0, vGrid.length)) : compactGrid2D(rawF);
-          const dispIdx = needsFormatted.indexOf(tabName);
-          const formattedGrid = dispIdx !== -1 && dList[dispIdx]?.values ? compactGrid2D(dList[dispIdx].values) : null;
-          tabs.push({
-            tabName,
-            valuesGrid: vGrid,
-            formulasGrid: fGrid,
-            ...(formattedGrid ? { formattedGrid } : {}),
-          });
-        }
-      }
-
-      return {
-        templateId: masterTemplateId,
-        tabs,
-        syncedAt: new Date().toISOString(),
-      };
-    }
-
-    async function fetchReconTemplateSnapshotFromSheets_(sheets, reconTemplateId) {
-      if (!sheets) throw new Error("Google Sheets client is required to read Recon template.");
-      const reconMeta = await runTemplateRead_("Recon template", reconTemplateId, () =>
-        sheets.spreadsheets.get({
-          spreadsheetId: reconTemplateId,
-          fields: "sheets.properties.title",
-          _bypassSupabaseVirtualSheet: true,
-          _usePrimaryAccount: true,
-        })
-      );
-      const allReconTabs = (reconMeta.data.sheets || [])
-        .map((s) => s.properties.title)
-        .filter((t) => Boolean(t));
-      const tabs = [];
-
-      for (let i = 0; i < allReconTabs.length; i += 5) {
-        const chunk = allReconTabs.slice(i, i + 5);
-        const ranges = chunk.map((t) => `'${t}'`);
-        const [valBatch, formBatch] = await Promise.all([
-          sheets.spreadsheets.values.batchGet({
-            spreadsheetId: reconTemplateId,
-            ranges,
-            valueRenderOption: "UNFORMATTED_VALUE",
-            _bypassSupabaseVirtualSheet: true,
-            _usePrimaryAccount: true,
-          }),
-          sheets.spreadsheets.values
-            .batchGet({
-              spreadsheetId: reconTemplateId,
-              ranges,
-              valueRenderOption: "FORMULA",
-              _bypassSupabaseVirtualSheet: true,
-              _usePrimaryAccount: true,
-            })
-            .catch(() => ({ data: { valueRanges: [] } })),
-        ]);
-
-        const vList = valBatch.data.valueRanges || [];
-        const fList = formBatch.data.valueRanges || [];
-
-        for (let j = 0; j < chunk.length; j++) {
-          const tabName = chunk[j];
-          const vGrid = compactGrid2D(vList[j]?.values || []);
-          const fGrid = compactGrid2D(fList[j]?.values || vGrid);
-          tabs.push({
-            tabName,
-            valuesGrid: vGrid,
-            formulasGrid: fGrid,
-          });
-        }
-      }
-
-      return {
-        templateId: reconTemplateId,
-        tabs,
-        syncedAt: new Date().toISOString(),
-      };
-    }
-
-    async function fetchClientTemplateSnapshotFromSheets_(sheets, clientTemplateId) {
-      if (!sheets) throw new Error("Google Sheets client is required to read Client template.");
-      const metaResp = await runTemplateRead_("Client template", clientTemplateId, () =>
-        sheets.spreadsheets.get({
-          spreadsheetId: clientTemplateId,
-          fields: "sheets(properties(sheetId,title))",
-          _bypassSupabaseVirtualSheet: true,
-          _usePrimaryAccount: true,
-        })
-      );
-      const existingTitles = new Set((metaResp.data.sheets || []).map((s) => s.properties.title));
-      const tabsToFetch = CORE_CLIENT_TABS.filter((t) => existingTitles.has(t));
-
-      const outNotesMap = {};
-      if (existingTitles.has("Outgoings")) {
-        try {
-          const notesResp = await sheets.spreadsheets.get({
-            spreadsheetId: clientTemplateId,
-            ranges: ["Outgoings!G13:AV111"],
-            fields: "sheets.data.rowData.values.note",
-            _bypassSupabaseVirtualSheet: true,
-            _usePrimaryAccount: true,
-          });
-          const rowData = notesResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
-          rowData.forEach((rObj, rOff) => {
-            (rObj.values || []).forEach((vObj, cOff) => {
-              if (vObj?.note) {
-                outNotesMap[`${12 + rOff}:${6 + cOff}`] = String(vObj.note);
-              }
-            });
-          });
-        } catch (e) {
-          console.warn("[fetchClientTemplateSnapshotFromSheets_] Outgoings notes warning:", e.message);
-        }
-      }
-
-      const tabs = [];
-      for (let i = 0; i < tabsToFetch.length; i += 8) {
-        const batch = tabsToFetch.slice(i, i + 8);
-        const ranges = batch.map((t) => `'${t}'`);
-        const [valResp, formResp] = await Promise.all([
-          sheets.spreadsheets.values.batchGet({
-            spreadsheetId: clientTemplateId,
-            ranges,
-            valueRenderOption: "UNFORMATTED_VALUE",
-            _bypassSupabaseVirtualSheet: true,
-            _usePrimaryAccount: true,
-          }),
-          sheets.spreadsheets.values.batchGet({
-            spreadsheetId: clientTemplateId,
-            ranges,
-            valueRenderOption: "FORMULA",
-            _bypassSupabaseVirtualSheet: true,
-            _usePrimaryAccount: true,
-          }),
-        ]);
-
-        for (let j = 0; j < batch.length; j++) {
-          const tabName = batch[j];
-          const vGrid = compactGrid2D(valResp.data.valueRanges?.[j]?.values || []);
-          const fGrid = compactGrid2D(formResp.data.valueRanges?.[j]?.values || vGrid);
-          tabs.push({
-            tabName,
-            valuesGrid: vGrid,
-            formulasGrid: fGrid,
-          });
-        }
-      }
-
-      const findFormulaCell = (tabName, r0, c0) => {
-        const rec = tabs.find((t) => t.tabName === tabName);
-        return String(rec?.formulasGrid?.[r0]?.[c0] || "");
-      };
-
-      const anchorFormulas = {
-        "KeyInfo!A1": findFormulaCell("KeyInfo", 0, 0),
-        "KeyInfo!A2": findFormulaCell("KeyInfo", 1, 0),
-        "Welcome!B3": findFormulaCell("Welcome", 2, 1),
-        "YrCalcs!A1": findFormulaCell("YrCalcs", 0, 0),
-      };
-
-      return {
-        templateId: clientTemplateId,
-        tabs,
-        outNotesMap,
-        anchorFormulas,
-        syncedAt: new Date().toISOString(),
-      };
-    }
-
-    /**
-     * Returns metadata about the currently stored provisioning template snapshots in Supabase `system_config`.
-     */
-    export async function getProvisioningTemplateSnapshotsMeta() {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) return null;
-      try {
-        const { data } = await supabase
+    let rows = [];
+    if (Array.isArray(orderedNames) && orderedNames.length > 0) {
+      const keys = orderedNames.map((n) => `${prefix}${n}`);
+      for (let i = 0; i < keys.length; i += 8) {
+        const chunkKeys = keys.slice(i, i + 8);
+        const { data, error } = await supabase
           .from("system_config")
-          .select("value")
-          .eq("key", TEMPLATE_SNAPSHOT_META_KEY)
-          .maybeSingle();
-        return data?.value || null;
-      } catch {
-        return null;
+          .select("key, value")
+          .in("key", chunkKeys);
+        if (error) return null;
+        if (Array.isArray(data)) rows.push(...data);
       }
+    } else {
+      const { data, error } = await supabase
+        .from("system_config")
+        .select("key, value")
+        .like("key", `${prefix}%`);
+      if (error) return null;
+      if (Array.isArray(data)) rows = data;
+    }
+    if (rows.length === 0) return null;
+
+    const matching = rows.filter((r) => r?.value?.templateId === expectedTemplateId);
+    if (matching.length === 0) return null;
+
+    // If meta lists expected tab count, ensure snapshot is complete
+    const expectedCount =
+      role === "master"
+        ? Number(meta?.masterTabCount || 0)
+        : role === "recon"
+          ? Number(meta?.reconTabCount || 0)
+          : Number(meta?.clientTabCount || 0);
+    if (expectedCount > 0 && matching.length < expectedCount) {
+      return null;
     }
 
-    /**
-     * Fetches all 3 provisioning templates (Master, Recon, Client) from Google Sheets and stores
-     * compacted snapshots in Supabase `system_config` so Supabase-only onboarding makes zero Google Sheets API calls.
-     */
-    export async function syncProvisioningTemplateSnapshots(
-      sheets,
-      { clientTemplateId = "", masterTemplateId = "", reconTemplateId = "", userEmail = "Admin" } = {}
-    ) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-      if (!sheets) throw new Error("Google Sheets client is required to sync templates.");
+    const orderIdx = Array.isArray(orderedNames)
+      ? new Map(orderedNames.map((n, idx) => [n, idx]))
+      : null;
 
-      let cId = extractSheetIdFromUrl(clientTemplateId) || String(clientTemplateId || "").trim();
-      let mId = extractSheetIdFromUrl(masterTemplateId) || String(masterTemplateId || "").trim();
-      let rId = extractSheetIdFromUrl(reconTemplateId) || String(reconTemplateId || "").trim();
-
-      if (!cId || !mId || !rId) {
-        const { data: cfgRow } = await supabase
-          .from("system_config")
-          .select("value")
-          .eq("key", "client_provisioning_templates")
-          .maybeSingle();
-        const val = cfgRow?.value || {};
-        cId = cId || extractSheetIdFromUrl(val.clientTemplateId || val.clientTemplateUrl) || String(val.clientTemplateId || "").trim();
-        mId = mId || extractSheetIdFromUrl(val.masterTemplateId || val.masterTemplateUrl) || String(val.masterTemplateId || "").trim();
-        rId = rId || extractSheetIdFromUrl(val.reconTemplateId || val.reconTemplateUrl) || String(val.reconTemplateId || "").trim();
-      }
-
-      if (!cId || !mId || !rId) {
-        throw new Error("Missing Client, Master, or Recon template IDs in Provisioning template IDs.");
-      }
-
-      const [masterSnap, reconSnap, clientSnap] = await Promise.all([
-        fetchMasterTemplateSnapshotFromSheets_(sheets, mId),
-        fetchReconTemplateSnapshotFromSheets_(sheets, rId),
-        fetchClientTemplateSnapshotFromSheets_(sheets, cId),
-      ]);
-
-      // Clean up any legacy monolithic snapshot keys if present
-      try {
-        await supabase.from("system_config").delete().in("key", LEGACY_MONOLITHIC_SNAPSHOT_KEYS);
-      } catch (_) { }
-
-      // Save per-tab compacted snapshots sequentially in small chunks to avoid Cloudflare 520 / PostgREST payload limits
-      await saveTemplateSnapshotRows_(supabase, "master", masterSnap, userEmail);
-      await saveTemplateSnapshotRows_(supabase, "recon", reconSnap, userEmail);
-      await saveTemplateSnapshotRows_(supabase, "client", clientSnap, userEmail);
-
-      const syncedAt = new Date().toISOString();
-      const meta = {
-        syncedAt,
-        syncedBy: userEmail || "Admin",
-        clientTemplateId: cId,
-        masterTemplateId: mId,
-        reconTemplateId: rId,
-        clientTabCount: clientSnap.tabs.length,
-        masterTabCount: masterSnap.tabs.length,
-        reconTabCount: reconSnap.tabs.length,
-        masterTabs: masterSnap.tabs.map((t) => t.tabName),
-        reconTabs: reconSnap.tabs.map((t) => t.tabName),
-        clientTabs: clientSnap.tabs.map((t) => t.tabName),
-        clientOutNotesMap: clientSnap.outNotesMap || {},
-        clientAnchorFormulas: clientSnap.anchorFormulas || {},
-      };
-
-      await saveTemplateMeta_(supabase, meta, userEmail);
-
-      return { success: true, meta };
-    }
-
-    /**
-     * Seeds virtual Supabase workbooks directly from Supabase template snapshots (falling back to Google Sheet
-     * templates only if no matching snapshot exists yet, and warming the snapshot on fallback),
-     * and materializes Client Google Sheet IMPORTRANGEs when Client is Google Sheets and Master is Supabase.
-     */
-    export async function seedNewClientTemplatesToSupabase(
-      sheets,
-      {
-        clientId,
-        clientName,
-        normalizedKey,
-        clientMode = "supabase",
-        masterMode = "supabase",
-        clientSheetId = "",
-        clientUrl = "",
-        masterSheetId = "",
-        masterUrl = "",
-        reconSheetId = "",
-        reconUrl = "",
-        accountingTool = "None",
-        crmTool = "None",
-        crmDrives = "NA",
-        clientTemplateId = "",
-        masterTemplateId = "",
-        reconTemplateId = "",
-      }
-    ) {
-      const supabase = getSupabaseAdmin();
-      if (!supabase) throw new Error("Supabase is not configured.");
-
-      _sheetContextCache.expiresAt = 0;
-      invalidateMasterEngineCache(clientName);
-
-      const ctx = {
-        clientId,
-        clientName,
-        normalizedKey,
-        masterMode,
-        clientMode,
-        clientSheetId,
-        masterSheetId,
-        reconSheetId,
-      };
-
-      const clientRef = clientUrl || clientSheetId;
-      const masterRef = masterUrl || masterSheetId;
-      const reconRef = reconUrl || reconSheetId;
-
-      const patchMasterKeyInfoOverrides = (grid) => {
-        let g = patchGridCell_(grid, 0, 1, clientName); // B1
-        g = patchGridCell_(g, 0, 2, clientRef); // C1
-        g = patchGridCell_(g, 0, 3, masterRef); // D1
-        g = patchGridCell_(g, 0, 6, reconRef); // G1
-        g = patchGridCell_(g, 3, 16, accountingTool || "None"); // Q4
-        g = patchGridCell_(g, 7, 16, crmTool || "None"); // Q8
-        g = patchGridCell_(g, 8, 16, crmDrives || "NA"); // Q9
-        return g;
-      };
-
-      // Load any needed snapshots from Supabase first (zero Google Sheets API calls when present)
-      const needsMasterSnapshot = masterMode === "supabase";
-      const needsReconSnapshot = masterMode === "supabase";
-      const needsClientSnapshot = clientMode === "supabase";
-
-      const existingMeta = (await getProvisioningTemplateSnapshotsMeta()) || {};
-
-      let [masterSnap, reconSnap, clientSnap] = await Promise.all([
-        needsMasterSnapshot ? loadRoleSnapshotFromSystemConfig_(supabase, "master", masterTemplateId, existingMeta) : Promise.resolve(null),
-        needsReconSnapshot ? loadRoleSnapshotFromSystemConfig_(supabase, "recon", reconTemplateId, existingMeta) : Promise.resolve(null),
-        needsClientSnapshot ? loadRoleSnapshotFromSystemConfig_(supabase, "client", clientTemplateId, existingMeta) : Promise.resolve(null),
-      ]);
-
-      // Self-warming fallback: if any required snapshot isn't cached in Supabase yet, fetch from Google Sheets once and persist it
-      let snapshotWarmed = false;
-      if (needsMasterSnapshot && !masterSnap && masterTemplateId) {
-        masterSnap = await fetchMasterTemplateSnapshotFromSheets_(sheets, masterTemplateId);
-        await saveTemplateSnapshotRows_(supabase, "master", masterSnap, "System (Auto-Warm)").catch(() => { });
-        snapshotWarmed = true;
-      }
-      if (needsReconSnapshot && !reconSnap && reconTemplateId) {
-        reconSnap = await fetchReconTemplateSnapshotFromSheets_(sheets, reconTemplateId);
-        await saveTemplateSnapshotRows_(supabase, "recon", reconSnap, "System (Auto-Warm)").catch(() => { });
-        snapshotWarmed = true;
-      }
-      if (needsClientSnapshot && !clientSnap && clientTemplateId) {
-        clientSnap = await fetchClientTemplateSnapshotFromSheets_(sheets, clientTemplateId);
-        await saveTemplateSnapshotRows_(supabase, "client", clientSnap, "System (Auto-Warm)").catch(() => { });
-        snapshotWarmed = true;
-      }
-      if (snapshotWarmed) {
-        await saveTemplateMeta_(
-          supabase,
-          {
-            ...existingMeta,
-            syncedAt: new Date().toISOString(),
-            syncedBy: "System (Auto-Warm)",
-            clientTemplateId: clientSnap?.templateId || existingMeta.clientTemplateId || clientTemplateId,
-            masterTemplateId: masterSnap?.templateId || existingMeta.masterTemplateId || masterTemplateId,
-            reconTemplateId: reconSnap?.templateId || existingMeta.reconTemplateId || reconTemplateId,
-            clientTabCount: clientSnap?.tabs?.length || existingMeta.clientTabCount || 0,
-            masterTabCount: masterSnap?.tabs?.length || existingMeta.masterTabCount || 0,
-            reconTabCount: reconSnap?.tabs?.length || existingMeta.reconTabCount || 0,
-            ...(masterSnap ? { masterTabs: masterSnap.tabs.map((t) => t.tabName) } : {}),
-            ...(reconSnap ? { reconTabs: reconSnap.tabs.map((t) => t.tabName) } : {}),
-            ...(clientSnap
-              ? {
-                clientTabs: clientSnap.tabs.map((t) => t.tabName),
-                clientOutNotesMap: clientSnap.outNotesMap || {},
-                clientAnchorFormulas: clientSnap.anchorFormulas || {},
-              }
-              : {}),
-          },
-          "System (Auto-Warm)"
-        ).catch(() => { });
-      }
-
-      // 1. Seed Master & Recon virtual grids from snapshots if masterMode === 'supabase'
-      if (masterMode === "supabase") {
-        if (masterSnap) {
-          let templateInvMode = "Whole";
-          for (const tabRec of masterSnap.tabs) {
-            const tabName = tabRec.tabName;
-            let vGrid = cloneGrid2D_(tabRec.valuesGrid);
-            let fGrid = cloneGrid2D_(tabRec.formulasGrid || tabRec.valuesGrid);
-
-            if (tabName === "KeyInfo") {
-              vGrid = patchMasterKeyInfoOverrides(vGrid);
-              fGrid = patchMasterKeyInfoOverrides(fGrid);
-              const rawMode = String(vGrid[7]?.[6] || "Whole").trim();
-              if (rawMode) templateInvMode = rawMode;
-              await syncStructuredKeyInfoFromGrid_(ctx, vGrid).catch((e) =>
-                console.warn("[seedNewClientTemplatesToSupabase] tenant_key_info sync warning:", e.message)
-              );
-            } else if (tabName === "DataChgAlert") {
-              const invFreq = String(vGrid[1]?.[24] || "").trim();
-              const crmFreq = String(vGrid[2]?.[24] || "").trim();
-              const expFreq = String(vGrid[3]?.[24] || "").trim();
-              try {
-                await supabase
-                  .from("sync_schedules")
-                  .upsert(
-                    {
-                      client_id: clientId,
-                      client_name: clientName,
-                      inv_freq: invFreq || "Not Used",
-                      crm_freq: crmFreq || "Not Used",
-                      exp_freq: expFreq || "Not Used",
-                      updated_at: new Date().toISOString(),
-                    },
-                    { onConflict: "client_name" }
-                  );
-              } catch (_) {
-                // ignore non-critical sync_schedules seed warning
-              }
-            }
-
-            await saveVirtualTabGrid_(ctx, "master", tabName, vGrid, fGrid, {});
-          }
-
-          const seedProps = [
-            ["Key", "Value", "UpdatedAt"],
-            ["INV_LAST_IMPORT_MODE", templateInvMode || "Whole", new Date().toISOString()],
-            ["EXP_LAST_IMPORT_MODE", "Whole", new Date().toISOString()],
-          ];
-          await saveVirtualTabGrid_(ctx, "master", "GasScriptProps", seedProps, seedProps, {});
-        }
-
-        if (reconSnap) {
-          for (const tabRec of reconSnap.tabs) {
-            const tabName = tabRec.tabName;
-            let vGrid = cloneGrid2D_(tabRec.valuesGrid);
-            let fGrid = cloneGrid2D_(tabRec.formulasGrid || tabRec.valuesGrid);
-            if (tabName === "KeyInfo") {
-              vGrid = patchGridCell_(patchGridCell_(vGrid, 0, 2, clientRef), 0, 3, masterRef);
-              fGrid = patchGridCell_(patchGridCell_(fGrid, 0, 2, clientRef), 0, 3, masterRef);
-            }
-            await saveVirtualTabGrid_(ctx, "recon", tabName, vGrid, fGrid, {});
-          }
-        }
-      }
-
-      // Helper to resolve Master -> Client materialized target ranges (KeyInfo, Welcome, YrCalcs)
-      // Uses in-memory masterSnap when masterMode === 'supabase' (ZERO Google Sheets API calls).
-      const buildMaterializedRangesFromMaster = async ({ useMasterSnapshot, sourceMasterId, applyOverrides, clientSourceId, useClientSnapshot }) => {
-        let masterTabsSet = new Set();
-        let masterTabMap = null;
-
-        if (useMasterSnapshot && masterSnap) {
-          masterTabMap = new Map(masterSnap.tabs.map((t) => [t.tabName, t]));
-          masterTabsSet = new Set(masterSnap.tabs.map((t) => t.tabName));
-        } else if (sourceMasterId) {
-          const srcMasterMeta = await sheets.spreadsheets.get({
-            spreadsheetId: sourceMasterId,
-            fields: "sheets.properties.title",
-            _bypassSupabaseVirtualSheet: true,
-            _usePrimaryAccount: true,
-          });
-          masterTabsSet = new Set((srcMasterMeta.data.sheets || []).map((s) => s.properties.title));
-        }
-
-        let clientTabsSet = new Set();
-        let yrFormula = "";
-        let existingClientAnchors = null;
-
-        if (useClientSnapshot && clientSnap) {
-          clientTabsSet = new Set(clientSnap.tabs.map((t) => t.tabName));
-          yrFormula = String(clientSnap.anchorFormulas?.["YrCalcs!A1"] || "");
-          existingClientAnchors = clientSnap.anchorFormulas || {};
-        } else if (clientSourceId) {
-          const srcClientMeta = await sheets.spreadsheets.get({
-            spreadsheetId: clientSourceId,
-            fields: "sheets.properties.title",
-            _bypassSupabaseVirtualSheet: true,
-            _usePrimaryAccount: true,
-          });
-          clientTabsSet = new Set((srcClientMeta.data.sheets || []).map((s) => s.properties.title));
-          if (clientTabsSet.has("YrCalcs")) {
-            const yrAnchorResp = await sheets.spreadsheets.values
-              .get({
-                spreadsheetId: clientSourceId,
-                range: "YrCalcs!A1",
-                valueRenderOption: "FORMULA",
-                _bypassSupabaseVirtualSheet: true,
-                _usePrimaryAccount: true,
-              })
-              .catch(() => null);
-            yrFormula = String(yrAnchorResp?.data?.values?.[0]?.[0] || "");
-          }
-        }
-
-        const targets = [];
-        if (clientTabsSet.has("KeyInfo") && masterTabsSet.has("KeyInfo")) {
-          targets.push(
-            { id: "keyinfo_header", clientRange: "KeyInfo!A1:B1", masterRange: "KeyInfo!A1:B1", mode: "VALUES_ONLY" },
-            { id: "keyinfo_body", clientRange: "KeyInfo!A2:AZ150", masterRange: "KeyInfo!A2:AZ150", mode: "FORMULAS_NO_EXTERNAL" }
-          );
-        }
-        if (clientTabsSet.has("Welcome") && masterTabsSet.has("Welcome")) {
-          targets.push({ id: "welcome_block", clientRange: "Welcome!B3:D26", masterRange: "Welcome!B3:D26", mode: "VALUES_ONLY" });
-        }
-        if (clientTabsSet.has("YrCalcs") && /importrange/i.test(yrFormula)) {
-          const rangeMatch = yrFormula.match(/["']([^"'!]+)!([A-Za-z0-9:$]+)["']/);
-          if (rangeMatch) {
-            const srcTab = rangeMatch[1].replace(/^'|'$/g, "");
-            const srcCoords = rangeMatch[2].replace(/\$/g, "");
-            if (masterTabsSet.has(srcTab)) {
-              targets.push({
-                id: "yrcalcs_block",
-                clientRange: `YrCalcs!${srcCoords}`,
-                masterRange: `${srcTab}!${srcCoords}`,
-                mode: "FORMULAS_NO_EXTERNAL",
-              });
-            }
-          }
-        }
-
-        if (targets.length === 0) return { targets: [], batchWriteData: [], backupMap: {} };
-
-        const anchorRanges = targets.map((t) => {
-          const tab = t.clientRange.split("!")[0];
-          const startCoord = t.clientRange.split("!")[1].split(":")[0];
-          return `${tab}!${startCoord}`;
-        });
-
-        const backupMap = {};
-        if (existingClientAnchors) {
-          targets.forEach((t, idx) => {
-            backupMap[t.id] = {
-              clientRange: t.clientRange,
-              anchorRange: anchorRanges[idx],
-              originalFormula: existingClientAnchors[anchorRanges[idx]] || "",
-            };
-          });
-        } else if (clientSourceId) {
-          const existingAnchorsResp = await sheets.spreadsheets.values.batchGet({
-            spreadsheetId: clientSourceId,
-            ranges: anchorRanges,
-            valueRenderOption: "FORMULA",
-            _bypassSupabaseVirtualSheet: true,
-            _usePrimaryAccount: true,
-          });
-          (existingAnchorsResp.data.valueRanges || []).forEach((vr, idx) => {
-            const t = targets[idx];
-            backupMap[t.id] = {
-              clientRange: t.clientRange,
-              anchorRange: anchorRanges[idx],
-              originalFormula: vr.values?.[0]?.[0] || "",
-            };
-          });
-        }
-
-        let masterValueRanges = [];
-        let masterFormulaRanges = [];
-        if (masterTabMap) {
-          masterValueRanges = targets.map((t) => {
-            const parsed = parseA1Range(t.masterRange);
-            const rec = masterTabMap.get(parsed.tabName);
-            const srcGrid = rec?.formattedGrid || rec?.valuesGrid || [];
-            return { values: sliceGrid2D_(srcGrid, parsed) };
-          });
-          masterFormulaRanges = targets.map((t) => {
-            const parsed = parseA1Range(t.masterRange);
-            const rec = masterTabMap.get(parsed.tabName);
-            const srcGrid = rec?.formulasGrid || rec?.valuesGrid || [];
-            return { values: sliceGrid2D_(srcGrid, parsed) };
-          });
-        } else {
-          const [masterValResp, masterFormResp] = await Promise.all([
-            sheets.spreadsheets.values.batchGet({
-              spreadsheetId: sourceMasterId,
-              ranges: targets.map((t) => t.masterRange),
-              valueRenderOption: "FORMATTED_VALUE",
-              _bypassSupabaseVirtualSheet: true,
-              _usePrimaryAccount: true,
-            }),
-            sheets.spreadsheets.values.batchGet({
-              spreadsheetId: sourceMasterId,
-              ranges: targets.map((t) => t.masterRange),
-              valueRenderOption: "FORMULA",
-              _bypassSupabaseVirtualSheet: true,
-              _usePrimaryAccount: true,
-            }),
-          ]);
-          masterValueRanges = masterValResp.data.valueRanges || [];
-          masterFormulaRanges = masterFormResp.data.valueRanges || [];
-        }
-
-        const batchWriteData = [];
-        for (let i = 0; i < targets.length; i++) {
-          const t = targets[i];
-          const vals = masterValueRanges[i]?.values || [];
-          const forms = masterFormulaRanges[i]?.values || [];
-          const maxR = Math.max(vals.length, forms.length);
-          const mergedRows = [];
-
-          for (let r = 0; r < maxR; r++) {
-            const vRow = vals[r] || [];
-            const fRow = forms[r] || [];
-            const maxC = Math.max(vRow.length, fRow.length);
-            const outRow = [];
-            for (let c = 0; c < maxC; c++) {
-              const fCell = fRow[c];
-              const vCell = vRow[c] ?? "";
-              if (t.mode === "VALUES_ONLY") {
-                outRow.push(vCell);
-              } else if (
-                typeof fCell === "string" &&
-                /\b(importrange|CRMList!|PLFromApp!|Year0PLFromApp!|PLComp!|InvComp!|DirComp!|CRMComp!|DataFromCRM!)/i.test(fCell)
-              ) {
-                outRow.push(vCell);
-              } else if (typeof fCell === "string" && fCell.startsWith("=")) {
-                outRow.push(fCell);
-              } else {
-                outRow.push(vCell !== "" && vCell !== undefined ? vCell : fCell !== undefined ? fCell : "");
-              }
-            }
-            mergedRows.push(outRow);
-          }
-
-          if (t.id === "keyinfo_body") {
-            for (let r = 0; r < mergedRows.length; r++) {
-              const vRow = vals[r] || [];
-              for (let c = 0; c < Math.max(mergedRows[r].length, vRow.length); c++) {
-                if ((mergedRows[r][c] === undefined || mergedRows[r][c] === "") && vRow[c] !== undefined && vRow[c] !== "") {
-                  mergedRows[r][c] = vRow[c];
-                }
-              }
-            }
-            if (applyOverrides) {
-              // Rows in KeyInfo!A2:AZ150 start at sheet row 2 (r=0 -> row 2; Q4 -> r=2, Q8 -> r=6, Q9 -> r=7)
-              while (mergedRows.length <= 7) mergedRows.push([]);
-              for (const [rIdx, val] of [[2, accountingTool || "None"], [6, crmTool || "None"], [7, crmDrives || "NA"]]) {
-                while (mergedRows[rIdx].length <= 16) mergedRows[rIdx].push("");
-                mergedRows[rIdx][16] = val;
-              }
-            }
-          } else if (t.id === "keyinfo_header" && applyOverrides) {
-            while (mergedRows.length < 1) mergedRows.push([]);
-            while (mergedRows[0].length < 2) mergedRows[0].push("");
-            mergedRows[0][1] = clientName;
-          }
-
-          batchWriteData.push({ range: t.clientRange, values: mergedRows });
-        }
-
-        return { targets, batchWriteData, backupMap };
-      };
-
-      // 2. If Client is Google Sheets and Master is Supabase, materialize the Client Google Sheet from Master snapshot
-      if (clientMode === "sheet" && masterMode === "supabase" && clientSheetId && !isVirtualSupabaseSheetId(clientSheetId)) {
-        try {
-          const { batchWriteData, backupMap } = await buildMaterializedRangesFromMaster({
-            useMasterSnapshot: Boolean(masterSnap),
-            sourceMasterId: masterTemplateId,
-            applyOverrides: true,
-            clientSourceId: clientSheetId,
-            useClientSnapshot: false,
-          });
-          if (batchWriteData.length > 0) {
-            await sheets.spreadsheets.values.batchUpdate({
-              spreadsheetId: clientSheetId,
-              requestBody: {
-                valueInputOption: "USER_ENTERED",
-                data: batchWriteData,
-              },
-              _bypassSupabaseVirtualSheet: true,
-            });
-            await supabase
-              .from("tenant_key_info")
-              .update({
-                client_importrange_backup: backupMap,
-                client_materialized_at: new Date().toISOString(),
-              })
-              .eq("client_id", clientId);
-          }
-        } catch (matErr) {
-          console.warn("[seedNewClientTemplatesToSupabase] Client sheet materialization warning:", matErr.message);
-        }
-      }
-
-      // 3. Seed Client virtual grids from Supabase snapshot if clientMode === 'supabase'
-      if (clientMode === "supabase" && clientSnap) {
-        const useMasterSnap = masterMode === "supabase" && Boolean(masterSnap);
-        const sourceMasterId = masterMode === "sheet" && masterSheetId && !isVirtualSupabaseSheetId(masterSheetId)
-          ? masterSheetId
-          : masterTemplateId;
-
-        let materializedRanges = [];
-        if (useMasterSnap || sourceMasterId) {
-          try {
-            const res = await buildMaterializedRangesFromMaster({
-              useMasterSnapshot: useMasterSnap,
-              sourceMasterId,
-              applyOverrides: masterMode === "supabase",
-              clientSourceId: clientTemplateId,
-              useClientSnapshot: true,
-            });
-            materializedRanges = res.batchWriteData || [];
-            if (masterMode === "supabase" && Object.keys(res.backupMap || {}).length > 0) {
-              await supabase
-                .from("tenant_key_info")
-                .update({
-                  client_importrange_backup: res.backupMap,
-                  client_materialized_at: new Date().toISOString(),
-                })
-                .eq("client_id", clientId);
-            }
-          } catch (e) {
-            console.warn("[seedNewClientTemplatesToSupabase] Virtual client materialize warning:", e.message);
-          }
-        }
-
-        const outNotesMap = clientSnap.outNotesMap || {};
-        const grids = Object.create(null);
-
-        for (const tabRec of clientSnap.tabs) {
-          const tabName = tabRec.tabName;
-          let valuesGrid = cloneGrid2D_(tabRec.valuesGrid);
-          let formulasGrid = cloneGrid2D_(tabRec.formulasGrid || tabRec.valuesGrid);
-          const notesGrid = tabName === "Outgoings" ? outNotesMap : {};
-
-          for (const mat of materializedRanges) {
-            const parsedMat = parseA1Range(mat.range, tabName);
-            if (parsedMat.tabName === tabName) {
-              valuesGrid = applyWriteToGrid2D_(valuesGrid, parsedMat, mat.values, {
-                sheetRole: "client",
-                tabName,
-                valueInputOption: "USER_ENTERED",
-                notesGrid,
-                isFormulaGrid: false,
-              });
-              formulasGrid = applyWriteToGrid2D_(formulasGrid, parsedMat, mat.values, {
-                sheetRole: "client",
-                tabName,
-                valueInputOption: "USER_ENTERED",
-                notesGrid,
-                isFormulaGrid: true,
-              });
-            }
-          }
-
-          if (tabName === "KeyInfo") {
-            valuesGrid = patchGridCell_(patchGridCell_(valuesGrid, 0, 2, clientRef), 0, 3, masterRef);
-            formulasGrid = patchGridCell_(patchGridCell_(formulasGrid, 0, 2, clientRef), 0, 3, masterRef);
-          }
-
-          grids[tabName] = {
-            values: valuesGrid,
-            formulas: formulasGrid,
-            notes: notesGrid,
+    const tabs = matching
+      .map((r) => {
+        const val = r.value;
+        const tabName = val.tabName || r.key.slice(prefix.length);
+        if (role === "client") {
+          const expanded = expandClientTabFromStorage_({ ...val }, tabName);
+          return {
+            tabName,
+            valuesGrid: expanded.values_grid || [],
+            formulasGrid: expanded.formulas_grid || expanded.values_grid || [],
           };
-          await saveVirtualTabGrid_(ctx, "client", tabName, valuesGrid, formulasGrid, notesGrid);
+        }
+        const valuesGrid = val.values_grid || [];
+        const formulasGrid = Array.isArray(val.compact_formulas)
+          ? expandFormulasGrid2D_(val.compact_formulas, valuesGrid)
+          : (val.formulasGrid || valuesGrid);
+        return {
+          tabName,
+          valuesGrid,
+          formulasGrid,
+          ...(val.formatted_grid ? { formattedGrid: val.formatted_grid } : {}),
+        };
+      })
+      .sort((a, b) => {
+        if (!orderIdx) return 0;
+        return (orderIdx.get(a.tabName) ?? 9999) - (orderIdx.get(b.tabName) ?? 9999);
+      });
+
+    return {
+      templateId: expectedTemplateId,
+      tabs,
+      ...(role === "client"
+        ? {
+          outNotesMap: meta?.clientOutNotesMap || {},
+          anchorFormulas: meta?.clientAnchorFormulas || {},
+        }
+        : {}),
+      syncedAt: matching[0]?.value?.syncedAt || meta?.syncedAt || "",
+    };
+  } catch (err) {
+    console.warn(`[loadRoleSnapshotFromSystemConfig_] ${role} warning:`, err.message);
+    return null;
+  }
+}
+
+async function saveTemplateMeta_(supabase, meta, updatedBy = "System") {
+  if (!supabase) return;
+  const { error } = await supabase.from("system_config").upsert({
+    key: TEMPLATE_SNAPSHOT_META_KEY,
+    value: meta,
+    description: "Metadata for Supabase provisioning template snapshots",
+    updated_by: updatedBy,
+  });
+  if (error) {
+    throw new Error(`Failed to save ${TEMPLATE_SNAPSHOT_META_KEY}: ${formatSupabaseErrMsg_(error.message)}`);
+  }
+}
+
+async function fetchMasterTemplateSnapshotFromSheets_(sheets, masterTemplateId) {
+  if (!sheets) throw new Error("Google Sheets client is required to read Master template.");
+  const masterMeta = await runTemplateRead_("Master template", masterTemplateId, () =>
+    sheets.spreadsheets.get({
+      spreadsheetId: masterTemplateId,
+      fields: "sheets.properties.title",
+      _bypassSupabaseVirtualSheet: true,
+      _usePrimaryAccount: true,
+    })
+  );
+  const existingMasterTabs = new Set((masterMeta.data.sheets || []).map((s) => s.properties.title));
+  const orderedCore = CORE_MASTER_TABS.filter((t) => existingMasterTabs.has(t));
+  const extraTabs = [...existingMasterTabs].filter(
+    (t) => !CORE_MASTER_TABS.includes(t) && t !== "GasExecLogs" && t !== "GasScriptProps"
+  );
+  const tabsToPull = [...orderedCore, ...extraTabs];
+  const tabs = [];
+
+  for (let i = 0; i < tabsToPull.length; i += 6) {
+    const chunk = tabsToPull.slice(i, i + 6);
+    const ranges = chunk.map((t) => `'${t}'`);
+    const needsFormatted = chunk.filter((t) => t === "KeyInfo" || t === "Welcome" || /yrcalcs/i.test(t));
+
+    const [valBatch, formBatch, dispBatch] = await Promise.all([
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: masterTemplateId,
+        ranges,
+        valueRenderOption: "UNFORMATTED_VALUE",
+        _bypassSupabaseVirtualSheet: true,
+        _usePrimaryAccount: true,
+      }),
+      sheets.spreadsheets.values
+        .batchGet({
+          spreadsheetId: masterTemplateId,
+          ranges,
+          valueRenderOption: "FORMULA",
+          _bypassSupabaseVirtualSheet: true,
+          _usePrimaryAccount: true,
+        })
+        .catch(() => ({ data: { valueRanges: [] } })),
+      needsFormatted.length > 0
+        ? sheets.spreadsheets.values
+          .batchGet({
+            spreadsheetId: masterTemplateId,
+            ranges: needsFormatted.map((t) => `'${t}'`),
+            valueRenderOption: "FORMATTED_VALUE",
+            _bypassSupabaseVirtualSheet: true,
+            _usePrimaryAccount: true,
+          })
+          .catch(() => ({ data: { valueRanges: [] } }))
+        : Promise.resolve({ data: { valueRanges: [] } }),
+    ]);
+
+    const vList = valBatch.data.valueRanges || [];
+    const fList = formBatch.data.valueRanges || [];
+    const dList = dispBatch.data.valueRanges || [];
+
+    for (let j = 0; j < chunk.length; j++) {
+      const tabName = chunk[j];
+      const rawV = vList[j]?.values || [];
+      const isMasterCalcs = tabName === "ConfCalcs" || tabName === "PipeCalcs";
+      const vGrid = isMasterCalcs ? trimMasterCalcsGrid_(rawV) : compactGrid2D(rawV);
+      const rawF = fList[j]?.values || rawV;
+      const fGrid = isMasterCalcs ? compactGrid2D(rawF.slice(0, vGrid.length)) : compactGrid2D(rawF);
+      const dispIdx = needsFormatted.indexOf(tabName);
+      const formattedGrid = dispIdx !== -1 && dList[dispIdx]?.values ? compactGrid2D(dList[dispIdx].values) : null;
+      tabs.push({
+        tabName,
+        valuesGrid: vGrid,
+        formulasGrid: fGrid,
+        ...(formattedGrid ? { formattedGrid } : {}),
+      });
+    }
+  }
+
+  return {
+    templateId: masterTemplateId,
+    tabs,
+    syncedAt: new Date().toISOString(),
+  };
+}
+
+async function fetchReconTemplateSnapshotFromSheets_(sheets, reconTemplateId) {
+  if (!sheets) throw new Error("Google Sheets client is required to read Recon template.");
+  const reconMeta = await runTemplateRead_("Recon template", reconTemplateId, () =>
+    sheets.spreadsheets.get({
+      spreadsheetId: reconTemplateId,
+      fields: "sheets.properties.title",
+      _bypassSupabaseVirtualSheet: true,
+      _usePrimaryAccount: true,
+    })
+  );
+  const allReconTabs = (reconMeta.data.sheets || [])
+    .map((s) => s.properties.title)
+    .filter((t) => Boolean(t));
+  const tabs = [];
+
+  for (let i = 0; i < allReconTabs.length; i += 5) {
+    const chunk = allReconTabs.slice(i, i + 5);
+    const ranges = chunk.map((t) => `'${t}'`);
+    const [valBatch, formBatch] = await Promise.all([
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: reconTemplateId,
+        ranges,
+        valueRenderOption: "UNFORMATTED_VALUE",
+        _bypassSupabaseVirtualSheet: true,
+        _usePrimaryAccount: true,
+      }),
+      sheets.spreadsheets.values
+        .batchGet({
+          spreadsheetId: reconTemplateId,
+          ranges,
+          valueRenderOption: "FORMULA",
+          _bypassSupabaseVirtualSheet: true,
+          _usePrimaryAccount: true,
+        })
+        .catch(() => ({ data: { valueRanges: [] } })),
+    ]);
+
+    const vList = valBatch.data.valueRanges || [];
+    const fList = formBatch.data.valueRanges || [];
+
+    for (let j = 0; j < chunk.length; j++) {
+      const tabName = chunk[j];
+      const vGrid = compactGrid2D(vList[j]?.values || []);
+      const fGrid = compactGrid2D(fList[j]?.values || vGrid);
+      tabs.push({
+        tabName,
+        valuesGrid: vGrid,
+        formulasGrid: fGrid,
+      });
+    }
+  }
+
+  return {
+    templateId: reconTemplateId,
+    tabs,
+    syncedAt: new Date().toISOString(),
+  };
+}
+
+async function fetchClientTemplateSnapshotFromSheets_(sheets, clientTemplateId) {
+  if (!sheets) throw new Error("Google Sheets client is required to read Client template.");
+  const metaResp = await runTemplateRead_("Client template", clientTemplateId, () =>
+    sheets.spreadsheets.get({
+      spreadsheetId: clientTemplateId,
+      fields: "sheets(properties(sheetId,title))",
+      _bypassSupabaseVirtualSheet: true,
+      _usePrimaryAccount: true,
+    })
+  );
+  const existingTitles = new Set((metaResp.data.sheets || []).map((s) => s.properties.title));
+  const tabsToFetch = CORE_CLIENT_TABS.filter((t) => existingTitles.has(t));
+
+  const outNotesMap = {};
+  if (existingTitles.has("Outgoings")) {
+    try {
+      const notesResp = await sheets.spreadsheets.get({
+        spreadsheetId: clientTemplateId,
+        ranges: ["Outgoings!G13:AV111"],
+        fields: "sheets.data.rowData.values.note",
+        _bypassSupabaseVirtualSheet: true,
+        _usePrimaryAccount: true,
+      });
+      const rowData = notesResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
+      rowData.forEach((rObj, rOff) => {
+        (rObj.values || []).forEach((vObj, cOff) => {
+          if (vObj?.note) {
+            outNotesMap[`${12 + rOff}:${6 + cOff}`] = String(vObj.note);
+          }
+        });
+      });
+    } catch (e) {
+      console.warn("[fetchClientTemplateSnapshotFromSheets_] Outgoings notes warning:", e.message);
+    }
+  }
+
+  const tabs = [];
+  for (let i = 0; i < tabsToFetch.length; i += 8) {
+    const batch = tabsToFetch.slice(i, i + 8);
+    const ranges = batch.map((t) => `'${t}'`);
+    const [valResp, formResp] = await Promise.all([
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientTemplateId,
+        ranges,
+        valueRenderOption: "UNFORMATTED_VALUE",
+        _bypassSupabaseVirtualSheet: true,
+        _usePrimaryAccount: true,
+      }),
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientTemplateId,
+        ranges,
+        valueRenderOption: "FORMULA",
+        _bypassSupabaseVirtualSheet: true,
+        _usePrimaryAccount: true,
+      }),
+    ]);
+
+    for (let j = 0; j < batch.length; j++) {
+      const tabName = batch[j];
+      const vGrid = compactGrid2D(valResp.data.valueRanges?.[j]?.values || []);
+      const fGrid = compactGrid2D(formResp.data.valueRanges?.[j]?.values || vGrid);
+      tabs.push({
+        tabName,
+        valuesGrid: vGrid,
+        formulasGrid: fGrid,
+      });
+    }
+  }
+
+  const findFormulaCell = (tabName, r0, c0) => {
+    const rec = tabs.find((t) => t.tabName === tabName);
+    return String(rec?.formulasGrid?.[r0]?.[c0] || "");
+  };
+
+  const anchorFormulas = {
+    "KeyInfo!A1": findFormulaCell("KeyInfo", 0, 0),
+    "KeyInfo!A2": findFormulaCell("KeyInfo", 1, 0),
+    "Welcome!B3": findFormulaCell("Welcome", 2, 1),
+    "YrCalcs!A1": findFormulaCell("YrCalcs", 0, 0),
+  };
+
+  return {
+    templateId: clientTemplateId,
+    tabs,
+    outNotesMap,
+    anchorFormulas,
+    syncedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Returns metadata about the currently stored provisioning template snapshots in Supabase `system_config`.
+ */
+export async function getProvisioningTemplateSnapshotsMeta() {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  try {
+    const { data } = await supabase
+      .from("system_config")
+      .select("value")
+      .eq("key", TEMPLATE_SNAPSHOT_META_KEY)
+      .maybeSingle();
+    return data?.value || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetches all 3 provisioning templates (Master, Recon, Client) from Google Sheets and stores
+ * compacted snapshots in Supabase `system_config` so Supabase-only onboarding makes zero Google Sheets API calls.
+ */
+export async function syncProvisioningTemplateSnapshots(
+  sheets,
+  { clientTemplateId = "", masterTemplateId = "", reconTemplateId = "", userEmail = "Admin" } = {}
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!sheets) throw new Error("Google Sheets client is required to sync templates.");
+
+  let cId = extractSheetIdFromUrl(clientTemplateId) || String(clientTemplateId || "").trim();
+  let mId = extractSheetIdFromUrl(masterTemplateId) || String(masterTemplateId || "").trim();
+  let rId = extractSheetIdFromUrl(reconTemplateId) || String(reconTemplateId || "").trim();
+
+  if (!cId || !mId || !rId) {
+    const { data: cfgRow } = await supabase
+      .from("system_config")
+      .select("value")
+      .eq("key", "client_provisioning_templates")
+      .maybeSingle();
+    const val = cfgRow?.value || {};
+    cId = cId || extractSheetIdFromUrl(val.clientTemplateId || val.clientTemplateUrl) || String(val.clientTemplateId || "").trim();
+    mId = mId || extractSheetIdFromUrl(val.masterTemplateId || val.masterTemplateUrl) || String(val.masterTemplateId || "").trim();
+    rId = rId || extractSheetIdFromUrl(val.reconTemplateId || val.reconTemplateUrl) || String(val.reconTemplateId || "").trim();
+  }
+
+  if (!cId || !mId || !rId) {
+    throw new Error("Missing Client, Master, or Recon template IDs in Provisioning template IDs.");
+  }
+
+  const [masterSnap, reconSnap, clientSnap] = await Promise.all([
+    fetchMasterTemplateSnapshotFromSheets_(sheets, mId),
+    fetchReconTemplateSnapshotFromSheets_(sheets, rId),
+    fetchClientTemplateSnapshotFromSheets_(sheets, cId),
+  ]);
+
+  // Clean up any legacy monolithic snapshot keys if present
+  try {
+    await supabase.from("system_config").delete().in("key", LEGACY_MONOLITHIC_SNAPSHOT_KEYS);
+  } catch (_) { }
+
+  // Save per-tab compacted snapshots sequentially in small chunks to avoid Cloudflare 520 / PostgREST payload limits
+  await saveTemplateSnapshotRows_(supabase, "master", masterSnap, userEmail);
+  await saveTemplateSnapshotRows_(supabase, "recon", reconSnap, userEmail);
+  await saveTemplateSnapshotRows_(supabase, "client", clientSnap, userEmail);
+
+  const syncedAt = new Date().toISOString();
+  const meta = {
+    syncedAt,
+    syncedBy: userEmail || "Admin",
+    clientTemplateId: cId,
+    masterTemplateId: mId,
+    reconTemplateId: rId,
+    clientTabCount: clientSnap.tabs.length,
+    masterTabCount: masterSnap.tabs.length,
+    reconTabCount: reconSnap.tabs.length,
+    masterTabs: masterSnap.tabs.map((t) => t.tabName),
+    reconTabs: reconSnap.tabs.map((t) => t.tabName),
+    clientTabs: clientSnap.tabs.map((t) => t.tabName),
+    clientOutNotesMap: clientSnap.outNotesMap || {},
+    clientAnchorFormulas: clientSnap.anchorFormulas || {},
+  };
+
+  await saveTemplateMeta_(supabase, meta, userEmail);
+
+  return { success: true, meta };
+}
+
+/**
+ * Seeds virtual Supabase workbooks directly from Supabase template snapshots (falling back to Google Sheet
+ * templates only if no matching snapshot exists yet, and warming the snapshot on fallback),
+ * and materializes Client Google Sheet IMPORTRANGEs when Client is Google Sheets and Master is Supabase.
+ */
+export async function seedNewClientTemplatesToSupabase(
+  sheets,
+  {
+    clientId,
+    clientName,
+    normalizedKey,
+    clientMode = "supabase",
+    masterMode = "supabase",
+    clientSheetId = "",
+    clientUrl = "",
+    masterSheetId = "",
+    masterUrl = "",
+    reconSheetId = "",
+    reconUrl = "",
+    accountingTool = "None",
+    crmTool = "None",
+    crmDrives = "NA",
+    clientTemplateId = "",
+    masterTemplateId = "",
+    reconTemplateId = "",
+  }
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  _sheetContextCache.expiresAt = 0;
+  invalidateMasterEngineCache(clientName);
+
+  const ctx = {
+    clientId,
+    clientName,
+    normalizedKey,
+    masterMode,
+    clientMode,
+    clientSheetId,
+    masterSheetId,
+    reconSheetId,
+  };
+
+  const clientRef = clientUrl || clientSheetId;
+  const masterRef = masterUrl || masterSheetId;
+  const reconRef = reconUrl || reconSheetId;
+
+  const patchMasterKeyInfoOverrides = (grid) => {
+    let g = patchGridCell_(grid, 0, 1, clientName); // B1
+    g = patchGridCell_(g, 0, 2, clientRef); // C1
+    g = patchGridCell_(g, 0, 3, masterRef); // D1
+    g = patchGridCell_(g, 0, 6, reconRef); // G1
+    g = patchGridCell_(g, 3, 16, accountingTool || "None"); // Q4
+    g = patchGridCell_(g, 7, 16, crmTool || "None"); // Q8
+    g = patchGridCell_(g, 8, 16, crmDrives || "NA"); // Q9
+    return g;
+  };
+
+  // Load any needed snapshots from Supabase first (zero Google Sheets API calls when present)
+  const needsMasterSnapshot = masterMode === "supabase";
+  const needsReconSnapshot = masterMode === "supabase";
+  const needsClientSnapshot = clientMode === "supabase";
+
+  const existingMeta = (await getProvisioningTemplateSnapshotsMeta()) || {};
+
+  let [masterSnap, reconSnap, clientSnap] = await Promise.all([
+    needsMasterSnapshot ? loadRoleSnapshotFromSystemConfig_(supabase, "master", masterTemplateId, existingMeta) : Promise.resolve(null),
+    needsReconSnapshot ? loadRoleSnapshotFromSystemConfig_(supabase, "recon", reconTemplateId, existingMeta) : Promise.resolve(null),
+    needsClientSnapshot ? loadRoleSnapshotFromSystemConfig_(supabase, "client", clientTemplateId, existingMeta) : Promise.resolve(null),
+  ]);
+
+  // Self-warming fallback: if any required snapshot isn't cached in Supabase yet, fetch from Google Sheets once and persist it
+  let snapshotWarmed = false;
+  if (needsMasterSnapshot && !masterSnap && masterTemplateId) {
+    masterSnap = await fetchMasterTemplateSnapshotFromSheets_(sheets, masterTemplateId);
+    await saveTemplateSnapshotRows_(supabase, "master", masterSnap, "System (Auto-Warm)").catch(() => { });
+    snapshotWarmed = true;
+  }
+  if (needsReconSnapshot && !reconSnap && reconTemplateId) {
+    reconSnap = await fetchReconTemplateSnapshotFromSheets_(sheets, reconTemplateId);
+    await saveTemplateSnapshotRows_(supabase, "recon", reconSnap, "System (Auto-Warm)").catch(() => { });
+    snapshotWarmed = true;
+  }
+  if (needsClientSnapshot && !clientSnap && clientTemplateId) {
+    clientSnap = await fetchClientTemplateSnapshotFromSheets_(sheets, clientTemplateId);
+    await saveTemplateSnapshotRows_(supabase, "client", clientSnap, "System (Auto-Warm)").catch(() => { });
+    snapshotWarmed = true;
+  }
+  if (snapshotWarmed) {
+    await saveTemplateMeta_(
+      supabase,
+      {
+        ...existingMeta,
+        syncedAt: new Date().toISOString(),
+        syncedBy: "System (Auto-Warm)",
+        clientTemplateId: clientSnap?.templateId || existingMeta.clientTemplateId || clientTemplateId,
+        masterTemplateId: masterSnap?.templateId || existingMeta.masterTemplateId || masterTemplateId,
+        reconTemplateId: reconSnap?.templateId || existingMeta.reconTemplateId || reconTemplateId,
+        clientTabCount: clientSnap?.tabs?.length || existingMeta.clientTabCount || 0,
+        masterTabCount: masterSnap?.tabs?.length || existingMeta.masterTabCount || 0,
+        reconTabCount: reconSnap?.tabs?.length || existingMeta.reconTabCount || 0,
+        ...(masterSnap ? { masterTabs: masterSnap.tabs.map((t) => t.tabName) } : {}),
+        ...(reconSnap ? { reconTabs: reconSnap.tabs.map((t) => t.tabName) } : {}),
+        ...(clientSnap
+          ? {
+            clientTabs: clientSnap.tabs.map((t) => t.tabName),
+            clientOutNotesMap: clientSnap.outNotesMap || {},
+            clientAnchorFormulas: clientSnap.anchorFormulas || {},
+          }
+          : {}),
+      },
+      "System (Auto-Warm)"
+    ).catch(() => { });
+  }
+
+  // 1. Seed Master & Recon virtual grids from snapshots if masterMode === 'supabase'
+  if (masterMode === "supabase") {
+    if (masterSnap) {
+      let templateInvMode = "Whole";
+      for (const tabRec of masterSnap.tabs) {
+        const tabName = tabRec.tabName;
+        let vGrid = cloneGrid2D_(tabRec.valuesGrid);
+        let fGrid = cloneGrid2D_(tabRec.formulasGrid || tabRec.valuesGrid);
+
+        if (tabName === "KeyInfo") {
+          vGrid = patchMasterKeyInfoOverrides(vGrid);
+          fGrid = patchMasterKeyInfoOverrides(fGrid);
+          const rawMode = String(vGrid[7]?.[6] || "Whole").trim();
+          if (rawMode) templateInvMode = rawMode;
+          await syncStructuredKeyInfoFromGrid_(ctx, vGrid).catch((e) =>
+            console.warn("[seedNewClientTemplatesToSupabase] tenant_key_info sync warning:", e.message)
+          );
+        } else if (tabName === "DataChgAlert") {
+          const invFreq = String(vGrid[1]?.[24] || "").trim();
+          const crmFreq = String(vGrid[2]?.[24] || "").trim();
+          const expFreq = String(vGrid[3]?.[24] || "").trim();
+          try {
+            await supabase
+              .from("sync_schedules")
+              .upsert(
+                {
+                  client_id: clientId,
+                  client_name: clientName,
+                  inv_freq: invFreq || "Not Used",
+                  crm_freq: crmFreq || "Not Used",
+                  exp_freq: expFreq || "Not Used",
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "client_name" }
+              );
+          } catch (_) {
+            // ignore non-critical sync_schedules seed warning
+          }
         }
 
-        if (shouldSyncNormalizedMirrorTables()) {
-          await syncStructuredClientTablesFromGrids_(ctx, grids).catch((e) =>
-            console.warn("[seedNewClientTemplatesToSupabase] Stage 4 relational sync warning:", e.message)
-          );
+        await saveVirtualTabGrid_(ctx, "master", tabName, vGrid, fGrid, {});
+      }
+
+      const seedProps = [
+        ["Key", "Value", "UpdatedAt"],
+        ["INV_LAST_IMPORT_MODE", templateInvMode || "Whole", new Date().toISOString()],
+        ["EXP_LAST_IMPORT_MODE", "Whole", new Date().toISOString()],
+      ];
+      await saveVirtualTabGrid_(ctx, "master", "GasScriptProps", seedProps, seedProps, {});
+    }
+
+    if (reconSnap) {
+      for (const tabRec of reconSnap.tabs) {
+        const tabName = tabRec.tabName;
+        let vGrid = cloneGrid2D_(tabRec.valuesGrid);
+        let fGrid = cloneGrid2D_(tabRec.formulasGrid || tabRec.valuesGrid);
+        if (tabName === "KeyInfo") {
+          vGrid = patchGridCell_(patchGridCell_(vGrid, 0, 2, clientRef), 0, 3, masterRef);
+          fGrid = patchGridCell_(patchGridCell_(fGrid, 0, 2, clientRef), 0, 3, masterRef);
+        }
+        await saveVirtualTabGrid_(ctx, "recon", tabName, vGrid, fGrid, {});
+      }
+    }
+  }
+
+  // Helper to resolve Master -> Client materialized target ranges (KeyInfo, Welcome, YrCalcs)
+  // Uses in-memory masterSnap when masterMode === 'supabase' (ZERO Google Sheets API calls).
+  const buildMaterializedRangesFromMaster = async ({ useMasterSnapshot, sourceMasterId, applyOverrides, clientSourceId, useClientSnapshot }) => {
+    let masterTabsSet = new Set();
+    let masterTabMap = null;
+
+    if (useMasterSnapshot && masterSnap) {
+      masterTabMap = new Map(masterSnap.tabs.map((t) => [t.tabName, t]));
+      masterTabsSet = new Set(masterSnap.tabs.map((t) => t.tabName));
+    } else if (sourceMasterId) {
+      const srcMasterMeta = await sheets.spreadsheets.get({
+        spreadsheetId: sourceMasterId,
+        fields: "sheets.properties.title",
+        _bypassSupabaseVirtualSheet: true,
+        _usePrimaryAccount: true,
+      });
+      masterTabsSet = new Set((srcMasterMeta.data.sheets || []).map((s) => s.properties.title));
+    }
+
+    let clientTabsSet = new Set();
+    let yrFormula = "";
+    let existingClientAnchors = null;
+
+    if (useClientSnapshot && clientSnap) {
+      clientTabsSet = new Set(clientSnap.tabs.map((t) => t.tabName));
+      yrFormula = String(clientSnap.anchorFormulas?.["YrCalcs!A1"] || "");
+      existingClientAnchors = clientSnap.anchorFormulas || {};
+    } else if (clientSourceId) {
+      const srcClientMeta = await sheets.spreadsheets.get({
+        spreadsheetId: clientSourceId,
+        fields: "sheets.properties.title",
+        _bypassSupabaseVirtualSheet: true,
+        _usePrimaryAccount: true,
+      });
+      clientTabsSet = new Set((srcClientMeta.data.sheets || []).map((s) => s.properties.title));
+      if (clientTabsSet.has("YrCalcs")) {
+        const yrAnchorResp = await sheets.spreadsheets.values
+          .get({
+            spreadsheetId: clientSourceId,
+            range: "YrCalcs!A1",
+            valueRenderOption: "FORMULA",
+            _bypassSupabaseVirtualSheet: true,
+            _usePrimaryAccount: true,
+          })
+          .catch(() => null);
+        yrFormula = String(yrAnchorResp?.data?.values?.[0]?.[0] || "");
+      }
+    }
+
+    const targets = [];
+    if (clientTabsSet.has("KeyInfo") && masterTabsSet.has("KeyInfo")) {
+      targets.push(
+        { id: "keyinfo_header", clientRange: "KeyInfo!A1:B1", masterRange: "KeyInfo!A1:B1", mode: "VALUES_ONLY" },
+        { id: "keyinfo_body", clientRange: "KeyInfo!A2:AZ150", masterRange: "KeyInfo!A2:AZ150", mode: "FORMULAS_NO_EXTERNAL" }
+      );
+    }
+    if (clientTabsSet.has("Welcome") && masterTabsSet.has("Welcome")) {
+      targets.push({ id: "welcome_block", clientRange: "Welcome!B3:D26", masterRange: "Welcome!B3:D26", mode: "VALUES_ONLY" });
+    }
+    if (clientTabsSet.has("YrCalcs") && /importrange/i.test(yrFormula)) {
+      const rangeMatch = yrFormula.match(/["']([^"'!]+)!([A-Za-z0-9:$]+)["']/);
+      if (rangeMatch) {
+        const srcTab = rangeMatch[1].replace(/^'|'$/g, "");
+        const srcCoords = rangeMatch[2].replace(/\$/g, "");
+        if (masterTabsSet.has(srcTab)) {
+          targets.push({
+            id: "yrcalcs_block",
+            clientRange: `YrCalcs!${srcCoords}`,
+            masterRange: `${srcTab}!${srcCoords}`,
+            mode: "FORMULAS_NO_EXTERNAL",
+          });
+        }
+      }
+    }
+
+    if (targets.length === 0) return { targets: [], batchWriteData: [], backupMap: {} };
+
+    const anchorRanges = targets.map((t) => {
+      const tab = t.clientRange.split("!")[0];
+      const startCoord = t.clientRange.split("!")[1].split(":")[0];
+      return `${tab}!${startCoord}`;
+    });
+
+    const backupMap = {};
+    if (existingClientAnchors) {
+      targets.forEach((t, idx) => {
+        backupMap[t.id] = {
+          clientRange: t.clientRange,
+          anchorRange: anchorRanges[idx],
+          originalFormula: existingClientAnchors[anchorRanges[idx]] || "",
+        };
+      });
+    } else if (clientSourceId) {
+      const existingAnchorsResp = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientSourceId,
+        ranges: anchorRanges,
+        valueRenderOption: "FORMULA",
+        _bypassSupabaseVirtualSheet: true,
+        _usePrimaryAccount: true,
+      });
+      (existingAnchorsResp.data.valueRanges || []).forEach((vr, idx) => {
+        const t = targets[idx];
+        backupMap[t.id] = {
+          clientRange: t.clientRange,
+          anchorRange: anchorRanges[idx],
+          originalFormula: vr.values?.[0]?.[0] || "",
+        };
+      });
+    }
+
+    let masterValueRanges = [];
+    let masterFormulaRanges = [];
+    if (masterTabMap) {
+      masterValueRanges = targets.map((t) => {
+        const parsed = parseA1Range(t.masterRange);
+        const rec = masterTabMap.get(parsed.tabName);
+        const srcGrid = rec?.formattedGrid || rec?.valuesGrid || [];
+        return { values: sliceGrid2D_(srcGrid, parsed) };
+      });
+      masterFormulaRanges = targets.map((t) => {
+        const parsed = parseA1Range(t.masterRange);
+        const rec = masterTabMap.get(parsed.tabName);
+        const srcGrid = rec?.formulasGrid || rec?.valuesGrid || [];
+        return { values: sliceGrid2D_(srcGrid, parsed) };
+      });
+    } else {
+      const [masterValResp, masterFormResp] = await Promise.all([
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: sourceMasterId,
+          ranges: targets.map((t) => t.masterRange),
+          valueRenderOption: "FORMATTED_VALUE",
+          _bypassSupabaseVirtualSheet: true,
+          _usePrimaryAccount: true,
+        }),
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: sourceMasterId,
+          ranges: targets.map((t) => t.masterRange),
+          valueRenderOption: "FORMULA",
+          _bypassSupabaseVirtualSheet: true,
+          _usePrimaryAccount: true,
+        }),
+      ]);
+      masterValueRanges = masterValResp.data.valueRanges || [];
+      masterFormulaRanges = masterFormResp.data.valueRanges || [];
+    }
+
+    const batchWriteData = [];
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[i];
+      const vals = masterValueRanges[i]?.values || [];
+      const forms = masterFormulaRanges[i]?.values || [];
+      const maxR = Math.max(vals.length, forms.length);
+      const mergedRows = [];
+
+      for (let r = 0; r < maxR; r++) {
+        const vRow = vals[r] || [];
+        const fRow = forms[r] || [];
+        const maxC = Math.max(vRow.length, fRow.length);
+        const outRow = [];
+        for (let c = 0; c < maxC; c++) {
+          const fCell = fRow[c];
+          const vCell = vRow[c] ?? "";
+          if (t.mode === "VALUES_ONLY") {
+            outRow.push(vCell);
+          } else if (
+            typeof fCell === "string" &&
+            /\b(importrange|CRMList!|PLFromApp!|Year0PLFromApp!|PLComp!|InvComp!|DirComp!|CRMComp!|DataFromCRM!)/i.test(fCell)
+          ) {
+            outRow.push(vCell);
+          } else if (typeof fCell === "string" && fCell.startsWith("=")) {
+            outRow.push(fCell);
+          } else {
+            outRow.push(vCell !== "" && vCell !== undefined ? vCell : fCell !== undefined ? fCell : "");
+          }
+        }
+        mergedRows.push(outRow);
+      }
+
+      if (t.id === "keyinfo_body") {
+        for (let r = 0; r < mergedRows.length; r++) {
+          const vRow = vals[r] || [];
+          for (let c = 0; c < Math.max(mergedRows[r].length, vRow.length); c++) {
+            if ((mergedRows[r][c] === undefined || mergedRows[r][c] === "") && vRow[c] !== undefined && vRow[c] !== "") {
+              mergedRows[r][c] = vRow[c];
+            }
+          }
+        }
+        if (applyOverrides) {
+          // Rows in KeyInfo!A2:AZ150 start at sheet row 2 (r=0 -> row 2; Q4 -> r=2, Q8 -> r=6, Q9 -> r=7)
+          while (mergedRows.length <= 7) mergedRows.push([]);
+          for (const [rIdx, val] of [[2, accountingTool || "None"], [6, crmTool || "None"], [7, crmDrives || "NA"]]) {
+            while (mergedRows[rIdx].length <= 16) mergedRows[rIdx].push("");
+            mergedRows[rIdx][16] = val;
+          }
+        }
+      } else if (t.id === "keyinfo_header" && applyOverrides) {
+        while (mergedRows.length < 1) mergedRows.push([]);
+        while (mergedRows[0].length < 2) mergedRows[0].push("");
+        mergedRows[0][1] = clientName;
+      }
+
+      batchWriteData.push({ range: t.clientRange, values: mergedRows });
+    }
+
+    return { targets, batchWriteData, backupMap };
+  };
+
+  // 2. If Client is Google Sheets and Master is Supabase, materialize the Client Google Sheet from Master snapshot
+  if (clientMode === "sheet" && masterMode === "supabase" && clientSheetId && !isVirtualSupabaseSheetId(clientSheetId)) {
+    try {
+      const { batchWriteData, backupMap } = await buildMaterializedRangesFromMaster({
+        useMasterSnapshot: Boolean(masterSnap),
+        sourceMasterId: masterTemplateId,
+        applyOverrides: true,
+        clientSourceId: clientSheetId,
+        useClientSnapshot: false,
+      });
+      if (batchWriteData.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: clientSheetId,
+          requestBody: {
+            valueInputOption: "USER_ENTERED",
+            data: batchWriteData,
+          },
+          _bypassSupabaseVirtualSheet: true,
+        });
+        await supabase
+          .from("tenant_key_info")
+          .update({
+            client_importrange_backup: backupMap,
+            client_materialized_at: new Date().toISOString(),
+          })
+          .eq("client_id", clientId);
+      }
+    } catch (matErr) {
+      console.warn("[seedNewClientTemplatesToSupabase] Client sheet materialization warning:", matErr.message);
+    }
+  }
+
+  // 3. Seed Client virtual grids from Supabase snapshot if clientMode === 'supabase'
+  if (clientMode === "supabase" && clientSnap) {
+    const useMasterSnap = masterMode === "supabase" && Boolean(masterSnap);
+    const sourceMasterId = masterMode === "sheet" && masterSheetId && !isVirtualSupabaseSheetId(masterSheetId)
+      ? masterSheetId
+      : masterTemplateId;
+
+    let materializedRanges = [];
+    if (useMasterSnap || sourceMasterId) {
+      try {
+        const res = await buildMaterializedRangesFromMaster({
+          useMasterSnapshot: useMasterSnap,
+          sourceMasterId,
+          applyOverrides: masterMode === "supabase",
+          clientSourceId: clientTemplateId,
+          useClientSnapshot: true,
+        });
+        materializedRanges = res.batchWriteData || [];
+        if (masterMode === "supabase" && Object.keys(res.backupMap || {}).length > 0) {
+          await supabase
+            .from("tenant_key_info")
+            .update({
+              client_importrange_backup: res.backupMap,
+              client_materialized_at: new Date().toISOString(),
+            })
+            .eq("client_id", clientId);
+        }
+      } catch (e) {
+        console.warn("[seedNewClientTemplatesToSupabase] Virtual client materialize warning:", e.message);
+      }
+    }
+
+    const outNotesMap = clientSnap.outNotesMap || {};
+    const grids = Object.create(null);
+
+    for (const tabRec of clientSnap.tabs) {
+      const tabName = tabRec.tabName;
+      let valuesGrid = cloneGrid2D_(tabRec.valuesGrid);
+      let formulasGrid = cloneGrid2D_(tabRec.formulasGrid || tabRec.valuesGrid);
+      const notesGrid = tabName === "Outgoings" ? outNotesMap : {};
+
+      for (const mat of materializedRanges) {
+        const parsedMat = parseA1Range(mat.range, tabName);
+        if (parsedMat.tabName === tabName) {
+          valuesGrid = applyWriteToGrid2D_(valuesGrid, parsedMat, mat.values, {
+            sheetRole: "client",
+            tabName,
+            valueInputOption: "USER_ENTERED",
+            notesGrid,
+            isFormulaGrid: false,
+          });
+          formulasGrid = applyWriteToGrid2D_(formulasGrid, parsedMat, mat.values, {
+            sheetRole: "client",
+            tabName,
+            valueInputOption: "USER_ENTERED",
+            notesGrid,
+            isFormulaGrid: true,
+          });
         }
       }
 
-      invalidateMasterEngineCache(clientName);
-      return { success: true };
+      if (tabName === "KeyInfo") {
+        valuesGrid = patchGridCell_(patchGridCell_(valuesGrid, 0, 2, clientRef), 0, 3, masterRef);
+        formulasGrid = patchGridCell_(patchGridCell_(formulasGrid, 0, 2, clientRef), 0, 3, masterRef);
+      }
+
+      grids[tabName] = {
+        values: valuesGrid,
+        formulas: formulasGrid,
+        notes: notesGrid,
+      };
+      await saveVirtualTabGrid_(ctx, "client", tabName, valuesGrid, formulasGrid, notesGrid);
     }
+
+    if (shouldSyncNormalizedMirrorTables()) {
+      await syncStructuredClientTablesFromGrids_(ctx, grids).catch((e) =>
+        console.warn("[seedNewClientTemplatesToSupabase] Stage 4 relational sync warning:", e.message)
+      );
+    }
+  }
+
+  invalidateMasterEngineCache(clientName);
+  return { success: true };
+}

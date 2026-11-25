@@ -30,6 +30,7 @@ function normalizeComparisonGridPayload(data) {
         : {},
     staleAgainstClientEdits: Boolean(data.staleAgainstClientEdits),
     updatedAt: data.updatedAt || null,
+    readSource: data.readSource || "grid",
   };
 }
 

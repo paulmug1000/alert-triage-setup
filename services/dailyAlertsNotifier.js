@@ -11,6 +11,11 @@ import { getOpenClientNotesForDigest } from "./pulseNotesService.js";
 import { verifyBridgedClientsParity } from "./clientSheetBridgeService.js";
 import { verifyRelationalJobsParity, verifyRelationalJobsReadParity } from "./relationalJobsService.js";
 import { verifyRelationalInputsParity, verifyRelationalInputsReadParity } from "./relationalInputsService.js";
+import {
+  checkPhase4MasterSchemaStatus,
+  verifyRelationalMasterParity,
+  verifyRelationalMasterReadParity,
+} from "./relationalMasterService.js";
 import { flushPendingClientRecomputes } from "./masterEngineService.js";
 
 /**
@@ -731,7 +736,10 @@ function indexSuiteResultsByClient_(suiteReport) {
 }
 
 async function runFullActiveClientsParityCheck_() {
-  const [sheetReport, jobsDbRep, inputsDbRep, jobsReadRep, inputsReadRep] = await Promise.all([
+  const phase4Schema = await checkPhase4MasterSchemaStatus().catch(() => ({ schemaReady: false }));
+  const phase4Ready = Boolean(phase4Schema?.schemaReady);
+
+  const [sheetReport, jobsDbRep, inputsDbRep, jobsReadRep, inputsReadRep, masterDbRep, masterReadRep] = await Promise.all([
     verifyBridgedClientsParity({
       includePureSupabase: true,
       settleOnMismatch: true,
@@ -741,12 +749,20 @@ async function runFullActiveClientsParityCheck_() {
     verifyRelationalInputsParity({ source: "db" }),
     verifyRelationalJobsReadParity(),
     verifyRelationalInputsReadParity(),
+    phase4Ready
+      ? verifyRelationalMasterParity({ source: "db", onlyIngestionEnabled: true }).catch(() => ({ results: [] }))
+      : Promise.resolve({ results: [] }),
+    phase4Ready
+      ? verifyRelationalMasterReadParity({ source: "db", onlyReadEnabled: true }).catch(() => ({ results: [] }))
+      : Promise.resolve({ results: [] }),
   ]);
 
   const jobsDbMap = indexSuiteResultsByClient_(jobsDbRep);
   const inputsDbMap = indexSuiteResultsByClient_(inputsDbRep);
   const jobsReadMap = indexSuiteResultsByClient_(jobsReadRep);
   const inputsReadMap = indexSuiteResultsByClient_(inputsReadRep);
+  const masterDbMap = indexSuiteResultsByClient_(masterDbRep);
+  const masterReadMap = indexSuiteResultsByClient_(masterReadRep);
 
   const activeNames = (sheetReport?.results || []).map((r) => r?.clientName).filter(Boolean);
   const clientsNeedingSettle = [];
@@ -755,11 +771,15 @@ async function runFullActiveClientsParityCheck_() {
     const iDb = inputsDbMap.get(name);
     const jRead = jobsReadMap.get(name);
     const iRead = inputsReadMap.get(name);
+    const mDb = masterDbMap.get(name);
+    const mRead = masterReadMap.get(name);
     const hasRelIssue =
       (jDb && (jDb.error || !jDb.matched)) ||
       (iDb && (iDb.error || !iDb.matched)) ||
       (jRead && (jRead.error || !jRead.matched)) ||
-      (iRead && (iRead.error || !iRead.matched));
+      (iRead && (iRead.error || !iRead.matched)) ||
+      (mDb && (mDb.error || !mDb.matched)) ||
+      (mRead && (mRead.error || !mRead.matched));
     if (hasRelIssue) {
       clientsNeedingSettle.push(name);
     }
@@ -777,6 +797,8 @@ async function runFullActiveClientsParityCheck_() {
       const iDb = inputsDbMap.get(name);
       const jRead = jobsReadMap.get(name);
       const iRead = inputsReadMap.get(name);
+      const mDb = masterDbMap.get(name);
+      const mRead = masterReadMap.get(name);
 
       if (jDb && (jDb.error || !jDb.matched)) {
         retries.push(
@@ -806,6 +828,20 @@ async function runFullActiveClientsParityCheck_() {
             .catch(() => {})
         );
       }
+      if (mDb && (mDb.error || !mDb.matched)) {
+        retries.push(
+          verifyRelationalMasterParity({ clientName: name, source: "db", onlyIngestionEnabled: true })
+            .then((r) => { if (r?.results?.[0]) masterDbMap.set(name, r.results[0]); })
+            .catch(() => {})
+        );
+      }
+      if (mRead && (mRead.error || !mRead.matched)) {
+        retries.push(
+          verifyRelationalMasterReadParity({ clientName: name, source: "db", onlyReadEnabled: true })
+            .then((r) => { if (r?.results?.[0]) masterReadMap.set(name, r.results[0]); })
+            .catch(() => {})
+        );
+      }
       if (retries.length > 0) await Promise.all(retries);
     }
   }
@@ -818,12 +854,16 @@ async function runFullActiveClientsParityCheck_() {
     const iDb = inputsDbMap.get(name) || null;
     const jRead = jobsReadMap.get(name) || null;
     const iRead = inputsReadMap.get(name) || null;
+    const mDb = masterDbMap.get(name) || null;
+    const mRead = masterReadMap.get(name) || null;
 
     const suites = [
       { label: "Jobs DB", rec: jDb, isRead: false },
       { label: "Inputs DB", rec: iDb, isRead: false },
       { label: "Jobs API read", rec: jRead, isRead: true },
       { label: "Inputs API read", rec: iRead, isRead: true },
+      { label: "Master DB", rec: mDb, isRead: false },
+      { label: "Master SQL read", rec: mRead, isRead: false },
     ];
 
     const relDiffs = [];
@@ -855,6 +895,8 @@ async function runFullActiveClientsParityCheck_() {
       relationalInputsDbMatched: iDb ? Boolean(iDb.matched && !iDb.error) : true,
       relationalJobsReadMatched: jRead ? Boolean(jRead.matched && !jRead.error) : true,
       relationalInputsReadMatched: iRead ? Boolean(iRead.matched && !iRead.error) : true,
+      relationalMasterDbMatched: mDb ? Boolean(mDb.matched && !mDb.error) : true,
+      relationalMasterReadMatched: mRead ? Boolean(mRead.matched && !mRead.error) : true,
       totalMismatchCount,
       sampleMismatches,
     };

@@ -47,11 +47,6 @@ const STAGE4_TABLES = [
 ];
 
 const PAUSED_STAGE2_MIRROR_TABLES = new Set([
-  "accounting_invoices",
-  "accounting_direct_costs",
-  "accounting_pl_lines",
-  "crm_deals_raw",
-  "time_entries_raw",
   "bank_recon_periods",
   "bank_recon_items",
   "bank_recon_learning_map",
@@ -443,7 +438,12 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
         try {
           let { data, error } = await supabase
             .from("clients")
-            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+          if (error && (String(error.message || "").includes("master_ingestion_mode") || String(error.message || "").includes("master_read_mode"))) {
+            ({ data, error } = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"));
+          }
           if (error && (String(error.message || "").includes("inputs_mode") || String(error.message || "").includes("jobs_read_mode"))) {
             ({ data, error } = await supabase
               .from("clients")
@@ -489,6 +489,12 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                   ? "relational"
                   : "grid",
                 inputsReadMode: String(row.inputs_read_mode || row.metadata?.inputs_read_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
+                masterIngestionMode: String(row.master_ingestion_mode || row.metadata?.master_ingestion_mode || "grid").trim().toLowerCase() === "relational"
+                  ? "relational"
+                  : "grid",
+                masterReadMode: String(row.master_read_mode || row.metadata?.master_read_mode || "grid").trim().toLowerCase() === "relational"
                   ? "relational"
                   : "grid",
                 sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
@@ -1792,6 +1798,7 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
         return saveVirtualTabGrid_(ctx, "master", t, grids[t] || [], origRec.formulas_grid, origRec.notes_grid);
       })
     );
+    await syncPhase4MasterIngestionIfEnabled_(ctx, changedMasterTabs);
   }
 
   const mirrorUpdates = [];
@@ -2197,6 +2204,8 @@ async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
   try {
     const { reconcileClientRelationalJobsFromGrids } = await import("./relationalJobsService.js");
     await reconcileClientRelationalJobsFromGrids(ctx, relevant);
+    const { invalidateClientRelationalMasterCache } = await import("./relationalMasterService.js");
+    invalidateClientRelationalMasterCache(ctx.clientName);
   } catch (err) {
     console.warn(`[masterEngineService] Phase 2 relational job reconciliation warning (${ctx.clientName}):`, err?.message);
   }
@@ -2211,8 +2220,50 @@ async function syncPhase3OperatingInputsIfEnabled_(ctx, tabNames = []) {
   try {
     const { reconcileClientOperatingInputsFromGrids } = await import("./relationalInputsService.js");
     await reconcileClientOperatingInputsFromGrids(ctx, relevant);
+    const { invalidateClientRelationalMasterCache } = await import("./relationalMasterService.js");
+    invalidateClientRelationalMasterCache(ctx.clientName);
   } catch (err) {
     console.warn(`[masterEngineService] Phase 3 relational inputs reconciliation warning (${ctx.clientName}):`, err?.message);
+  }
+}
+
+const PHASE4_MASTER_TAB_SET_ = new Set([
+  "InvFromApp",
+  "RevFromApp",
+  "JnlsFromApp",
+  "PLFromApp",
+  "Year0PLFromApp",
+  "DataFromCRM",
+  "DataFromTime",
+  "ProjectsFromTime",
+  "CRMList",
+  "CRMComp",
+  "InvAppList",
+  "InvDashList",
+  "InvComp",
+  "JnlAppList",
+  "DirDashList",
+  "DirComp",
+  "PLComp",
+  "TimeComp",
+]);
+
+async function syncPhase4MasterIngestionIfEnabled_(ctx, tabNames = []) {
+  if (!ctx) return;
+  const list = Array.isArray(tabNames) ? tabNames : [];
+  if (list.includes("KeyInfo")) {
+    import("./relationalMasterService.js")
+      .then(({ invalidateClientRelationalMasterCache }) => invalidateClientRelationalMasterCache(ctx.clientName))
+      .catch(() => { });
+  }
+  if (ctx.masterIngestionMode !== "relational") return;
+  const relevant = [...new Set(list.filter((t) => PHASE4_MASTER_TAB_SET_.has(t)))];
+  if (relevant.length === 0) return;
+  try {
+    const { reconcileClientMasterIngestionFromGrids } = await import("./relationalMasterService.js");
+    await reconcileClientMasterIngestionFromGrids(ctx, relevant);
+  } catch (err) {
+    console.warn(`[masterEngineService] Phase 4 relational master reconciliation warning (${ctx.clientName}):`, err?.message);
   }
 }
 
@@ -2997,10 +3048,36 @@ export async function handleVirtualSheetsCall({
     }
     const isUnformatted = params.valueRenderOption === "UNFORMATTED_VALUE";
     const isFormulaReq = params.valueRenderOption === "FORMULA";
-    const rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi, {
-      valuesOnly: sheetRole === "client" && !isFormulaReq,
-      includeNotes: false,
-    });
+    let rec = null;
+    if (
+      sheetRole === "master" &&
+      ctx.masterReadMode === "relational" &&
+      !isFormulaReq &&
+      PHASE4_MASTER_TAB_SET_.has(parsed.tabName)
+    ) {
+      try {
+        const {
+          preloadClientRelationalMasterBundle,
+          reconstructRelationalMasterTabFromBundle,
+        } = await import("./relationalMasterService.js");
+        const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" });
+        const reconGrid = await reconstructRelationalMasterTabFromBundle(bundle, parsed.tabName, ctx);
+        rec = {
+          values_grid: reconGrid,
+          formulas_grid: reconGrid,
+          notes_grid: {},
+        };
+      } catch (relErr) {
+        console.warn(`[masterEngineService] Relational master read fallback for ${ctx.clientName}/${parsed.tabName}:`, relErr?.message);
+        rec = null;
+      }
+    }
+    if (!rec) {
+      rec = await getOrLoadVirtualTabGrid_(ctx, sheetRole, parsed.tabName, rawSheetsApi, {
+        valuesOnly: sheetRole === "client" && !isFormulaReq,
+        includeNotes: false,
+      });
+    }
     const isFormula =
       isFormulaReq && Array.isArray(rec.formulas_grid) && rec.formulas_grid.length > 0;
     const sourceGrid = isFormula ? rec.formulas_grid : rec.values_grid || [];
@@ -3146,9 +3223,35 @@ export async function handleVirtualSheetsCall({
       }
     } else {
       const clientKeyLower = ctx.clientName.toLowerCase();
+      const relationalPhase4Tabs =
+        sheetRole === "master" && ctx.masterReadMode === "relational" && !isFormulaReq
+          ? uniqueTabs.filter((t) => PHASE4_MASTER_TAB_SET_.has(t))
+          : [];
+      if (relationalPhase4Tabs.length > 0) {
+        try {
+          const {
+            preloadClientRelationalMasterBundle,
+            reconstructRelationalMasterTabFromBundle,
+          } = await import("./relationalMasterService.js");
+          const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" });
+          await Promise.all(
+            relationalPhase4Tabs.map(async (t) => {
+              const reconGrid = await reconstructRelationalMasterTabFromBundle(bundle, t, ctx);
+              byTab.set(t, {
+                values_grid: reconGrid,
+                formulas_grid: reconGrid,
+                notes_grid: {},
+              });
+            })
+          );
+        } catch (relErr) {
+          console.warn(`[masterEngineService] Relational master batchGet fallback for ${ctx.clientName}:`, relErr?.message);
+        }
+      }
       const uncachedTabs = [];
       const inFlightWaits = [];
       for (const t of uniqueTabs) {
+        if (byTab.has(t)) continue;
         const cKey = `${clientKeyLower}::${sheetRole}::${t}`;
         const cached = _gridMemoryCache.get(cKey);
         if (cached && cached.expiresAt > Date.now()) {
@@ -3317,6 +3420,7 @@ export async function handleVirtualSheetsCall({
           console.warn("[masterEngineService] Formula recompute warning:", e.message)
         );
       }
+      await syncPhase4MasterIngestionIfEnabled_(ctx, [parsed.tabName]);
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, [{ range: rangeStr, values: incomingValues }]);
     } else if (sheetRole === "client") {
       if (isNonFormulaKeyInfoOnly) {
@@ -3436,6 +3540,7 @@ export async function handleVirtualSheetsCall({
           console.warn("[masterEngineService] Formula recompute warning:", e.message)
         );
       }
+      await syncPhase4MasterIngestionIfEnabled_(ctx, actuallyChangedTabs);
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, rawSheetsApi, dataItems);
     } else if (sheetRole === "client") {
       const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
@@ -3607,6 +3712,14 @@ export async function handleVirtualSheetsCall({
           console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
         );
       }
+    } else if (sheetRole === "master") {
+      const clearedMasterTabs = [...byTabClears.keys()];
+      if (!params._skipMasterFormulaRecompute && clearedMasterTabs.length > 0) {
+        await recomputeMasterFormulasAfterVirtualWrite_(ctx, clearedMasterTabs, rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Formula recompute warning:", e.message)
+        );
+      }
+      await syncPhase4MasterIngestionIfEnabled_(ctx, clearedMasterTabs);
     }
 
     return {
@@ -5871,13 +5984,39 @@ export async function backfillNormalizedMirrorTablesFromVirtualGrids(clientName 
     clientTabsBackfilled: 0,
   };
 
-  for (const row of masterRes.data || []) {
-    const vGrid = Array.isArray(row.values_grid) ? row.values_grid : [];
-    if (row.tab_name === "InvFromApp") summary.invoicesCount = await syncInvoicesTableFromGrid_(ctx, vGrid);
-    else if (row.tab_name === "JnlsFromApp") summary.directCostsCount = await syncDirectCostsTableFromGrid_(ctx, vGrid);
-    else if (row.tab_name === "PLFromApp") summary.plLinesCount = await syncPLLinesTableFromGrid_(ctx, vGrid);
-    else if (row.tab_name === "DataFromCRM") summary.crmDealsCount = await syncCrmDealsTableFromGrid_(ctx, vGrid);
-    else if (row.tab_name === "TimeComp") summary.timeEntriesCount = await syncTimeEntriesTableFromGrid_(ctx, vGrid);
+  let usedPhase4RelationalBackfill = false;
+  try {
+    const {
+      checkPhase4MasterSchemaStatus,
+      reconcileClientMasterIngestionFromGrids,
+      ALL_PHASE4_MASTER_TABS,
+    } = await import("./relationalMasterService.js");
+    const st = await checkPhase4MasterSchemaStatus();
+    if (st?.schemaReady) {
+      const p4 = await reconcileClientMasterIngestionFromGrids(ctx, ALL_PHASE4_MASTER_TABS, {
+        forceFullUpsert: true,
+        updateBackfillTimestamp: true,
+      });
+      summary.invoicesCount = p4?.counts?.invoices ?? 0;
+      summary.directCostsCount = p4?.counts?.directCosts ?? 0;
+      summary.plLinesCount = p4?.counts?.plLines ?? 0;
+      summary.crmDealsCount = p4?.counts?.crmDeals ?? 0;
+      summary.timeEntriesCount = p4?.counts?.timeEntries ?? 0;
+      usedPhase4RelationalBackfill = true;
+    }
+  } catch (err) {
+    console.warn(`[masterEngineService] Phase 4 relational backfill warning (${ctx.clientName}):`, err?.message);
+  }
+
+  if (!usedPhase4RelationalBackfill) {
+    for (const row of masterRes.data || []) {
+      const vGrid = Array.isArray(row.values_grid) ? row.values_grid : [];
+      if (row.tab_name === "InvFromApp") summary.invoicesCount = await syncInvoicesTableFromGrid_(ctx, vGrid);
+      else if (row.tab_name === "JnlsFromApp") summary.directCostsCount = await syncDirectCostsTableFromGrid_(ctx, vGrid);
+      else if (row.tab_name === "PLFromApp") summary.plLinesCount = await syncPLLinesTableFromGrid_(ctx, vGrid);
+      else if (row.tab_name === "DataFromCRM") summary.crmDealsCount = await syncCrmDealsTableFromGrid_(ctx, vGrid);
+      else if (row.tab_name === "TimeComp") summary.timeEntriesCount = await syncTimeEntriesTableFromGrid_(ctx, vGrid);
+    }
   }
 
   const learningPatterns = new Map();
@@ -5947,11 +6086,6 @@ export async function backfillNormalizedMirrorTablesFromVirtualGrids(clientName 
 }
 
 const ALL_PAUSED_MIRROR_TABLES = [
-  "accounting_invoices",
-  "accounting_direct_costs",
-  "accounting_pl_lines",
-  "crm_deals_raw",
-  "time_entries_raw",
   "bank_recon_periods",
   "bank_recon_items",
   "bank_recon_learning_map",
@@ -6046,6 +6180,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     clockStatus,
     phase2JobsStats,
     phase3InputsStats,
+    phase4MasterStats,
   ] = await Promise.all([
     Promise.all(
       STAGE2_TABLES.map(async (t) => {
@@ -6069,9 +6204,15 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     (() =>
       supabase
         .from("clients")
-        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
         .order("client_name", { ascending: true })
         .then(async (res) => {
+          if (res.error && (String(res.error.message || "").includes("master_ingestion_mode") || String(res.error.message || "").includes("master_read_mode"))) {
+            res = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+              .order("client_name", { ascending: true });
+          }
           if (res.error && (String(res.error.message || "").includes("inputs_mode") || String(res.error.message || "").includes("jobs_read_mode"))) {
             return supabase
               .from("clients")
@@ -6131,6 +6272,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     import("./relationalInputsService.js")
       .then(({ getPhase3RelationalOverviewStats }) =>
         getPhase3RelationalOverviewStats([])
+      )
+      .catch(() => null),
+    import("./relationalMasterService.js")
+      .then(({ getPhase4MasterOverviewStats }) =>
+        getPhase4MasterOverviewStats()
       )
       .catch(() => null),
   ]);
@@ -6237,6 +6383,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         inputsMode: String(c.inputs_mode || c.metadata?.inputs_mode || "grid").trim().toLowerCase(),
         inputsReadMode: String(c.inputs_read_mode || c.metadata?.inputs_read_mode || "grid").trim().toLowerCase(),
         relationalInputsState: c.metadata?.relational_inputs_state || null,
+        masterIngestionMode: String(c.master_ingestion_mode || c.metadata?.master_ingestion_mode || "grid").trim().toLowerCase(),
+        masterReadMode: String(c.master_read_mode || c.metadata?.master_read_mode || "grid").trim().toLowerCase(),
+        relationalMasterState: c.metadata?.relational_master_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,
@@ -6264,6 +6413,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
   let phase3BackfilledCount = 0;
   let inputsModeClientsCount = 0;
   let inputsReadModeClientsCount = 0;
+  let phase4BackfilledCount = 0;
+  let masterIngestionModeClientsCount = 0;
+  let masterReadModeClientsCount = 0;
   for (const c of clientsData || []) {
     if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
     if (String(c?.jobs_mode || c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
@@ -6271,6 +6423,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     if (c?.metadata?.relational_inputs_state?.lastBackfilledAt) phase3BackfilledCount++;
     if (String(c?.inputs_mode || c?.metadata?.inputs_mode || "").trim().toLowerCase() === "relational") inputsModeClientsCount++;
     if (String(c?.inputs_read_mode || c?.metadata?.inputs_read_mode || "").trim().toLowerCase() === "relational") inputsReadModeClientsCount++;
+    if (c?.metadata?.relational_master_state?.lastBackfilledAt) phase4BackfilledCount++;
+    if (String(c?.master_ingestion_mode || c?.metadata?.master_ingestion_mode || "").trim().toLowerCase() === "relational") masterIngestionModeClientsCount++;
+    if (String(c?.master_read_mode || c?.metadata?.master_read_mode || "").trim().toLowerCase() === "relational") masterReadModeClientsCount++;
   }
 
   return {
@@ -6321,6 +6476,26 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         backfilledClientsCount: phase3BackfilledCount,
         inputsModeClientsCount,
         inputsReadModeClientsCount,
+      },
+    phase4Master: phase4MasterStats
+      ? {
+        ...phase4MasterStats,
+        backfilledClientsCount: phase4BackfilledCount,
+        masterIngestionModeClientsCount,
+        masterReadModeClientsCount,
+      }
+      : {
+        schemaReady: false,
+        migrationSql: "",
+        totalInvoices: 0,
+        totalDirectCosts: 0,
+        totalPlLines: 0,
+        totalCrmDeals: 0,
+        totalTimeEntries: 0,
+        totalConfigTabs: 0,
+        backfilledClientsCount: phase4BackfilledCount,
+        masterIngestionModeClientsCount,
+        masterReadModeClientsCount,
       },
   };
 }
@@ -6498,6 +6673,7 @@ export async function getVirtualTabForInspector({
   includeRawValues = false,
   includeNotes = false,
   trimTrailingEmptyRows = false,
+  forceMasterSource = null,
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -6505,6 +6681,7 @@ export async function getVirtualTabForInspector({
   let data = null;
   let error = null;
   let staleAgainstClientEdits = false;
+  let usedRelationalMaster = false;
   if (sheetRole === "client") {
     const clientSelectCols = includeFormulas
       ? "sheet_role, tab_name, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at"
@@ -6577,6 +6754,37 @@ export async function getVirtualTabForInspector({
     } catch (_) {
       staleAgainstClientEdits = false;
     }
+
+    if (sheetRole === "master" && PHASE4_MASTER_TAB_SET_.has(tabName) && forceMasterSource !== "grid") {
+      try {
+        const ctx = await resolveSupabaseSheetContext({ clientName });
+        const shouldUseRelational =
+          forceMasterSource === "relational" || (ctx && ctx.masterReadMode === "relational");
+        if (shouldUseRelational && ctx) {
+          const {
+            preloadClientRelationalMasterBundle,
+            reconstructRelationalMasterTabFromBundle,
+          } = await import("./relationalMasterService.js");
+          const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" });
+          const reconGrid = await reconstructRelationalMasterTabFromBundle(bundle, tabName, ctx);
+          if (Array.isArray(reconGrid)) {
+            const maxColsRecon = reconGrid.reduce((m, row) => Math.max(m, Array.isArray(row) ? row.length : 0), 0);
+            data = {
+              row_count: reconGrid.length,
+              col_count: maxColsRecon,
+              values_grid: reconGrid,
+              formulas_grid: includeFormulas ? data?.formulas_grid || reconGrid : undefined,
+              notes_grid: data?.notes_grid || {},
+              updated_at: data?.updated_at || new Date().toISOString(),
+            };
+            error = null;
+            usedRelationalMaster = true;
+          }
+        }
+      } catch (relErr) {
+        console.warn(`[masterEngineService] Inspector relational master fallback for ${clientName}/${tabName}:`, relErr?.message);
+      }
+    }
   }
 
   if (error) throw new Error(error.message);
@@ -6593,6 +6801,7 @@ export async function getVirtualTabForInspector({
       ...(includeNotes ? { notesGrid: {} } : {}),
       staleAgainstClientEdits: false,
       updatedAt: null,
+      readSource: usedRelationalMaster ? "relational" : "grid",
     };
   }
 
@@ -6660,6 +6869,7 @@ export async function getVirtualTabForInspector({
     ...(includeNotes ? { notesGrid: data.notes_grid || {} } : {}),
     staleAgainstClientEdits,
     updatedAt: data.updated_at,
+    readSource: usedRelationalMaster ? "relational" : "grid",
   };
 }
 
@@ -6727,6 +6937,7 @@ export async function updateVirtualTabCellsFromInspector({
 
   if (sheetRole === "master") {
     await recomputeMasterFormulasAfterVirtualWrite_(ctx, [tabName], sheets);
+    await syncPhase4MasterIngestionIfEnabled_(ctx, [tabName]);
     if (sheets && masterMirrorRanges.length > 0) {
       await mirrorMasterWriteToClientSheetIfNeeded_(ctx, sheets, masterMirrorRanges);
     }

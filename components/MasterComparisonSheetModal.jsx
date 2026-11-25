@@ -96,6 +96,7 @@ export default function MasterComparisonSheetModal({
     notesGrid: {},
     staleAgainstClientEdits: false,
     updatedAt: null,
+    readSource: "grid",
   });
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -722,6 +723,28 @@ export default function MasterComparisonSheetModal({
                     0 discrepancies
                   </span>
                 ) : null}
+                {!loading && (
+                  <span
+                    style={{
+                      padding: "2px 8px",
+                      borderRadius: "4px",
+                      background:
+                        gridData.readSource === "relational"
+                          ? "rgba(16, 185, 129, 0.16)"
+                          : "rgba(148, 163, 184, 0.2)",
+                      border:
+                        gridData.readSource === "relational"
+                          ? "1px solid rgba(52, 211, 153, 0.4)"
+                          : "1px solid rgba(148, 163, 184, 0.35)",
+                      color: gridData.readSource === "relational" ? "#a7f3d0" : "#e2e8f0",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                    }}
+                    title="Active data source serving this comparison view"
+                  >
+                    {gridData.readSource === "relational" ? "Relational SQL" : "Virtual grid"}
+                  </span>
+                )}
               </div>
               <p style={{ margin: "2px 0 0", fontSize: "11px", color: "#cbd5e1" }}>
                 Formatted master comparison view with template conditional highlighting and interactive controls

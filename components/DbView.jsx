@@ -142,8 +142,11 @@ export default function DbView({
   const [relationalParityReport, setRelationalParityReport] = useState(null);
   const [relationalInputsParityReport, setRelationalInputsParityReport] = useState(null);
   const [relationalInputsReadParityReport, setRelationalInputsReadParityReport] = useState(null);
+  const [relationalMasterParityReport, setRelationalMasterParityReport] = useState(null);
+  const [relationalMasterReadParityReport, setRelationalMasterReadParityReport] = useState(null);
   const [copied0012Sql, setCopied0012Sql] = useState(false);
   const [copied0013Sql, setCopied0013Sql] = useState(false);
+  const [copied0014Sql, setCopied0014Sql] = useState(false);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -841,6 +844,146 @@ export default function DbView({
         return {
           type: "success",
           text: `Switched ${targetClient} operating inputs read source to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleBackfillRelationalMaster = (allClients = false, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      allClients ? "backfill_master_all" : `backfill_master_${targetClient}`,
+      allClients
+        ? "Backfilling relational Master ingestion & comparison tables across all clients..."
+        : `Backfilling relational Master ingestion & comparison tables for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "backfill_relational_master",
+            allClients,
+            clientName: targetClient,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 4 relational master backfill failed.");
+        if (data.status) setStage2Data(data.status);
+        const s = data.summary || {};
+        return {
+          type: "success",
+          text: allClients
+            ? `Backfilled Phase 4 master tables across ${s.clientsProcessed || 0} client(s) (${s.invoicesCount || 0} invoices, ${s.directCostsCount || 0} direct costs, ${s.plLinesCount || 0} P&L lines, ${s.crmDealsCount || 0} CRM deals, ${s.timeEntriesCount || 0} time entries).`
+            : `Backfilled ${targetClient}: ${s.counts?.invoices ?? 0} invoices, ${s.counts?.directCosts ?? 0} direct costs, ${s.counts?.plLines ?? 0} P&L lines, ${s.counts?.crmDeals ?? 0} CRM deals, ${s.counts?.timeEntries ?? 0} time entries.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyRelationalMasterParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_master_parity",
+      "Checking 100% parity across all 8 Phase 4 Master ingestion tabs...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_master_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 4 master parity check failed.");
+        const r = data.parityReport || {};
+        setRelationalMasterParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Checked ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientMasterIngestionMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_master_ingestion_mode_${nextMode}`,
+      `Switching ${targetClient} Master ingestion engine to ${nextMode === "relational" ? "relational SQL" : "virtual grid"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_master_ingestion_mode",
+            clientName: targetClient,
+            masterIngestionMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update Master ingestion mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} Master ingestion mode to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyRelationalMasterReadParity = (allClients = true) => {
+    runTrackedOperation(
+      "rel_master_read_parity",
+      "Verifying SQL comparison & config tab reconstruction parity (InvComp, DirComp, PLComp, CRMList, CRMComp, TimeComp)...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_master_read_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 4 comparison read parity check failed.");
+        const r = data.parityReport || {};
+        setRelationalMasterReadParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Comparison SQL read parity verified across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientMasterReadMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_master_read_mode_${nextMode}`,
+      `Switching ${targetClient} Master comparison & ingestion read source to ${nextMode === "relational" ? "relational SQL" : "virtual grid"}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_master_read_mode",
+            clientName: targetClient,
+            masterReadMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update Master read mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} Master read source to ${nextMode}.`,
         };
       }
     );
@@ -4190,6 +4333,380 @@ export default function DbView({
                       }}
                     >
                       {`${r.clientName}: ${r.matched ? `${r.employeesCount || 0}e/${r.outgoingItemsCount || 0}o/${r.contractorEntriesCount || 0}n (${r.source})` : r.error || `${r.totalMismatchCount} diffs`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SECTION 4b: Relational Master Ingestion & Comparison Engine (Phase 4A + 4B) */}
+          <div style={cardStyle}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "12px",
+                flexWrap: "wrap",
+                marginBottom: "10px",
+              }}
+            >
+              <div>
+                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                  Relational master ingestion & comparison engine (Phase 4A + 4B)
+                </h2>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  UUID-keyed relational tables for accounting invoices, direct costs, P&L lines, CRM deals, time tracking, and SQL-backed master comparison views.
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: stage2Data?.phase4Master?.schemaReady ? "#dcfce7" : "#fef3c7",
+                    color: stage2Data?.phase4Master?.schemaReady ? "#166534" : "#92400e",
+                  }}
+                >
+                  {stage2Data?.phase4Master?.schemaReady ? "Schema ready (0014)" : "Migration 0014 required"}
+                </span>
+                {stage2Data?.phase4Master?.schemaReady && (
+                  <span
+                    style={{
+                      padding: "3px 9px",
+                      borderRadius: "999px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      background: "#eff6ff",
+                      color: "#1e40af",
+                    }}
+                  >
+                    {`${stage2Data.phase4Master.masterIngestionModeClientsCount || 0} relational · ${stage2Data.phase4Master.masterReadModeClientsCount || 0} SQL reads · ${stage2Data.phase4Master.backfilledClientsCount || 0}/${allClients.length} backfilled`}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {!stage2Data?.phase4Master?.schemaReady && stage2Data?.phase4Master?.migrationSql && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                  fontSize: "12px",
+                  color: "#92400e",
+                }}
+              >
+                <span>
+                  Run migration 0014 in the Supabase SQL editor to upgrade the 5 Phase 4 ingestion tables, foreign keys, and master sync config table.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.clipboard) {
+                      navigator.clipboard.writeText(stage2Data.phase4Master.migrationSql);
+                      setCopied0014Sql(true);
+                      setTimeout(() => setCopied0014Sql(false), 2500);
+                    }
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #f59e0b",
+                    background: "#ffffff",
+                    color: "#92400e",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copied0014Sql ? "Copied migration 0014 SQL" : "Copy migration 0014 SQL"}
+                </button>
+              </div>
+            )}
+
+            {stage2Data?.phase4Master?.schemaReady && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                  gap: "8px",
+                  marginBottom: "12px",
+                }}
+              >
+                {[
+                  { label: "Accounting invoices", value: stage2Data.phase4Master.totalInvoices || 0 },
+                  { label: "Direct costs", value: stage2Data.phase4Master.totalDirectCosts || 0 },
+                  { label: "P&L lines", value: stage2Data.phase4Master.totalPlLines || 0 },
+                  { label: "CRM deals", value: stage2Data.phase4Master.totalCrmDeals || 0 },
+                  { label: "Time entries", value: stage2Data.phase4Master.totalTimeEntries || 0 },
+                  { label: "Sync configs", value: stage2Data.phase4Master.totalConfigTabs || 0 },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                    }}
+                  >
+                    <div style={{ fontSize: "11px", color: "#64748b" }}>{stat.label}</div>
+                    <div style={{ fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                      {Number(stat.value).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                disabled={!stage2Data?.phase4Master?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalMaster(false, activeClientName)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase4Master?.schemaReady ? "#f3f4f6" : "#ffffff",
+                  color: !stage2Data?.phase4Master?.schemaReady ? "#9ca3af" : "#1e293b",
+                  cursor: !stage2Data?.phase4Master?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === `backfill_master_${activeClientName}` && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill ${activeClientName}`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase4Master?.schemaReady || isBusy}
+                onClick={() => handleBackfillRelationalMaster(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase4Master?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase4Master?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase4Master?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase4Master?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "backfill_master_all" && (
+                  <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill all clients (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyRelationalMasterParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_master_parity" && <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />}
+                <span>{`Verify master parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase4Master?.schemaReady || isBusy}
+                onClick={() =>
+                  handleSetClientMasterIngestionMode(
+                    activeClientObj?.masterIngestionMode === "relational" ? "grid" : "relational",
+                    activeClientName
+                  )
+                }
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase4Master?.schemaReady
+                    ? "#f3f4f6"
+                    : activeClientObj?.masterIngestionMode === "relational"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+                  borderColor: !stage2Data?.phase4Master?.schemaReady
+                    ? "#cbd5e1"
+                    : activeClientObj?.masterIngestionMode === "relational"
+                      ? "#fecaca"
+                      : "#86efac",
+                  color: !stage2Data?.phase4Master?.schemaReady
+                    ? "#9ca3af"
+                    : activeClientObj?.masterIngestionMode === "relational"
+                      ? "#b91c1c"
+                      : "#166534",
+                  cursor: !stage2Data?.phase4Master?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.masterIngestionMode === "relational"
+                    ? `Revert ${activeClientName} to grid master`
+                    : `Switch ${activeClientName} to relational master`}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyRelationalMasterReadParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "rel_master_read_parity" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Verify comparison SQL parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={
+                  !stage2Data?.phase4Master?.schemaReady ||
+                  activeClientObj?.masterIngestionMode !== "relational" ||
+                  isBusy
+                }
+                onClick={() =>
+                  handleSetClientMasterReadMode(
+                    activeClientObj?.masterReadMode === "relational" ? "grid" : "relational",
+                    activeClientName
+                  )
+                }
+                style={{
+                  ...actionBtnBase,
+                  background:
+                    !stage2Data?.phase4Master?.schemaReady || activeClientObj?.masterIngestionMode !== "relational"
+                      ? "#f3f4f6"
+                      : activeClientObj?.masterReadMode === "relational"
+                        ? "#fef2f2"
+                        : "#eff6ff",
+                  borderColor:
+                    !stage2Data?.phase4Master?.schemaReady || activeClientObj?.masterIngestionMode !== "relational"
+                      ? "#cbd5e1"
+                      : activeClientObj?.masterReadMode === "relational"
+                        ? "#fecaca"
+                        : "#93c5fd",
+                  color:
+                    !stage2Data?.phase4Master?.schemaReady || activeClientObj?.masterIngestionMode !== "relational"
+                      ? "#9ca3af"
+                      : activeClientObj?.masterReadMode === "relational"
+                        ? "#b91c1c"
+                        : "#1e40af",
+                  cursor:
+                    !stage2Data?.phase4Master?.schemaReady || activeClientObj?.masterIngestionMode !== "relational"
+                      ? "not-allowed"
+                      : isBusy
+                        ? "wait"
+                        : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.masterReadMode === "relational"
+                    ? `Revert ${activeClientName} to grid reads`
+                    : `Switch ${activeClientName} to SQL comparison reads`}
+                </span>
+              </button>
+            </div>
+
+            {relationalMasterReadParityReport && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${relationalMasterReadParityReport.mismatchClientsCount > 0 || relationalMasterReadParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Relational comparison SQL read parity (${formatTimestamp(relationalMasterReadParityReport.checkedAt)}) — ${relationalMasterReadParityReport.matchedClientsCount || 0} of ${relationalMasterReadParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setRelationalMasterReadParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(relationalMasterReadParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || (r.matched ? `100% match across InvComp, DirComp, PLComp, CRMList, CRMComp, TimeComp (${r.source})` : JSON.stringify(r.sampleMismatches || []))}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `100% match (${r.source})` : r.error || `${r.mismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {relationalMasterParityReport && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${relationalMasterParityReport.mismatchClientsCount > 0 || relationalMasterParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Relational master ingestion parity (${formatTimestamp(relationalMasterParityReport.checkedAt)}) — ${relationalMasterParityReport.matchedClientsCount || 0} of ${relationalMasterParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setRelationalMasterParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(relationalMasterParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || `Invoices: ${r.invoicesCount}, Costs: ${r.directCostsCount}, P&L: ${r.plLinesCount}, CRM: ${r.crmDealsCount}, Time: ${r.timeEntriesCount} (${r.source})`}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `${r.invoicesCount || 0}i/${r.directCostsCount || 0}d/${r.plLinesCount || 0}p/${r.crmDealsCount || 0}c/${r.timeEntriesCount || 0}t (${r.source})` : r.error || `${r.totalMismatchCount} diff(s)`}`}
                     </span>
                   ))}
                 </div>

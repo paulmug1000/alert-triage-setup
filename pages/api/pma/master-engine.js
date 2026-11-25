@@ -63,6 +63,14 @@ import {
   verifyRelationalInputsReadParity,
   setClientInputsReadMode,
 } from "../../../services/relationalInputsService.js";
+import {
+  backfillClientMasterIngestion,
+  backfillAllClientsMasterIngestion,
+  verifyRelationalMasterParity,
+  setClientMasterIngestionMode,
+  verifyRelationalMasterReadParity,
+  setClientMasterReadMode,
+} from "../../../services/relationalMasterService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -454,6 +462,86 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, updated, status });
     }
 
+    if (action === "backfill_relational_master") {
+      const sheets = await getSheetsClient();
+      const summary = req.body?.allClients
+        ? await backfillAllClientsMasterIngestion()
+        : await backfillClientMasterIngestion(cleanClient);
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: req.body?.allClients ? "ALL CLIENTS" : cleanClient,
+        category: "SYSTEM",
+        action: "RELATIONAL_MASTER_BACKFILLED",
+        summary: req.body?.allClients
+          ? `Backfilled relational Master ingestion & comparison tables across ${summary.clientsProcessed || 0} client(s)`
+          : `Backfilled relational Master ingestion & comparison tables for ${cleanClient}`,
+        details: summary,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, summary, status });
+    }
+
+    if (action === "verify_relational_master_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = req.body?.source || "auto";
+      const parityReport = await verifyRelationalMasterParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_master_ingestion_mode") {
+      const masterIngestionMode = String(req.body?.masterIngestionMode || "").trim().toLowerCase();
+      if (masterIngestionMode !== "grid" && masterIngestionMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid masterIngestionMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientMasterIngestionMode(cleanClient, masterIngestionMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_MASTER_INGESTION_MODE_CHANGED",
+        summary: `Switched ${cleanClient} Master ingestion engine to "${masterIngestionMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "verify_relational_master_read_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = req.body?.source || "auto";
+      const parityReport = await verifyRelationalMasterReadParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_master_read_mode") {
+      const masterReadMode = String(req.body?.masterReadMode || "").trim().toLowerCase();
+      if (masterReadMode !== "grid" && masterReadMode !== "relational") {
+        return res.status(400).json({ success: false, error: "Invalid masterReadMode. Expected 'grid' or 'relational'." });
+      }
+      const updated = await setClientMasterReadMode(cleanClient, masterReadMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_MASTER_READ_MODE_CHANGED",
+        summary: `Switched ${cleanClient} Master comparison & ingestion read source to "${masterReadMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
     if (action === "sync_sheet_bridge_outbound") {
       const sheets = await getSheetsClient();
       const syncSummary = await checkAndSyncClientSheetBridge(cleanClient, {
@@ -636,6 +724,7 @@ export default async function handler(req, res) {
         includeRawValues: Boolean(req.body?.includeRawValues),
         includeNotes: Boolean(req.body?.includeNotes),
         trimTrailingEmptyRows: Boolean(req.body?.trimTrailingEmptyRows),
+        forceMasterSource: req.body?.forceMasterSource || null,
       });
       return res.status(200).json({ success: true, ...gridData });
     }

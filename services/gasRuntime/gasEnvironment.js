@@ -2476,6 +2476,21 @@ export async function createGasEnvironment({
         const reconMutatedTabs = upserts.filter((u) => u.sheet_role === "recon").map((u) => u.tab_name);
         if (masterMutatedTabs.length > 0) {
           invalidateMasterEngineCache(ctx.clientName, "master", masterMutatedTabs);
+          if (ctx.masterIngestionMode === "relational") {
+            const { ALL_PHASE4_MASTER_TABS, reconcileClientMasterIngestionFromGrids } = await import(
+              "../relationalMasterService.js"
+            );
+            const phase4Set = new Set(ALL_PHASE4_MASTER_TABS);
+            const phase4Tabs = [...new Set(masterMutatedTabs.filter((t) => phase4Set.has(t)))];
+            if (phase4Tabs.length > 0) {
+              await reconcileClientMasterIngestionFromGrids(ctx, phase4Tabs).catch((err) => {
+                console.warn(
+                  `[gasEnvironment] Phase 4 relational master sync warning for ${ctx.clientName}:`,
+                  err?.message
+                );
+              });
+            }
+          }
         }
         if (reconMutatedTabs.length > 0) {
           invalidateMasterEngineCache(ctx.clientName, "recon", reconMutatedTabs);

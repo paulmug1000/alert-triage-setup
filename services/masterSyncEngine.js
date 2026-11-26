@@ -71,159 +71,159 @@ function attachNativeConnectorHooksToEnv_(env, ctx, dryRun = false) {
   const hooks = {};
   if (ctx.connectorPullMode === "native") {
     Object.assign(hooks, {
-    PullInvoicesBasedOn: async (_args, rt) => {
-      try {
-        const res = await pullNativeAccountingInvoices(ctx, {
-          persistToDb,
-          keyInfoOverride: getKiOverride(),
-          existingGridOverride: env.masterSS?.getSheetByName("InvFromApp")?.valuesGrid || null,
-          scriptPropsOverride: getPropsObj(),
-        });
-        if (!res.success) {
-          rt?.setLastConnectorError?.(res.lastError || "Native invoice pull failed");
+      PullInvoicesBasedOn: async (_args, rt) => {
+        try {
+          const res = await pullNativeAccountingInvoices(ctx, {
+            persistToDb,
+            keyInfoOverride: getKiOverride(),
+            existingGridOverride: env.masterSS?.getSheetByName("InvFromApp")?.valuesGrid || null,
+            scriptPropsOverride: getPropsObj(),
+          });
+          if (!res.success) {
+            rt?.setLastConnectorError?.(res.lastError || "Native invoice pull failed");
+            return { newInvoices: [], updatedInvoices: [] };
+          }
+          if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "InvFromApp", res.nextGrid, dryRun);
+          if (res.importMode) {
+            env.scriptProperties?.set("INV_LAST_IMPORT_MODE", res.importMode);
+          }
+          if (res.dataChanged) {
+            const dca = env.masterSS?.getSheetByName("DataChgAlert");
+            if (dca) {
+              while (dca.valuesGrid.length < 2) dca.valuesGrid.push([]);
+              while (dca.valuesGrid[1].length < 3) dca.valuesGrid[1].push("");
+              dca.valuesGrid[1][1] = "Yes";
+              dca.valuesGrid[1][2] = dateToSerial(new Date());
+            }
+          }
+          env.recomputeMasterFormulasSync?.();
+          return { newInvoices: res.newInvoices || [], updatedInvoices: res.updatedInvoices || [] };
+        } catch (err) {
+          rt?.setLastConnectorError?.(err.message);
           return { newInvoices: [], updatedInvoices: [] };
         }
-        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "InvFromApp", res.nextGrid, dryRun);
-        if (res.importMode) {
-          env.scriptProperties?.set("INV_LAST_IMPORT_MODE", res.importMode);
-        }
-        if (res.dataChanged) {
-          const dca = env.masterSS?.getSheetByName("DataChgAlert");
-          if (dca) {
-            while (dca.valuesGrid.length < 2) dca.valuesGrid.push([]);
-            while (dca.valuesGrid[1].length < 3) dca.valuesGrid[1].push("");
-            dca.valuesGrid[1][1] = "Yes";
-            dca.valuesGrid[1][2] = dateToSerial(new Date());
-          }
-        }
-        env.recomputeMasterFormulasSync?.();
-        return { newInvoices: res.newInvoices || [], updatedInvoices: res.updatedInvoices || [] };
-      } catch (err) {
-        rt?.setLastConnectorError?.(err.message);
-        return { newInvoices: [], updatedInvoices: [] };
-      }
-    },
+      },
 
-    PullCRMBasedOn: async (_args, rt) => {
-      try {
-        const res = await pullNativeCrmDeals(ctx, {
-          persistToDb,
-          keyInfoOverride: getKiOverride(),
-          existingGridOverride: env.masterSS?.getSheetByName("DataFromCRM")?.valuesGrid || null,
-          scriptPropsOverride: getPropsObj(),
-        });
-        if (res.overrideInfo) {
-          rt?.setLastCrmSyncOverrideUsed?.(res.overrideInfo);
-          env.scriptProperties?.delete("CRM_SYNC_SWING_OVERRIDE_ONCE");
-          env.scriptProperties?.delete("CRM_SYNC_SWING_BLOCK_JSON");
-        }
-        if (res.blocked && res.blockInfo) {
-          rt?.setLastCrmSyncBlocked_?.(res.blockInfo);
-          env.scriptProperties?.set("CRM_SYNC_SWING_BLOCK_JSON", JSON.stringify(res.blockInfo));
-          return res;
-        }
-        if (!res.success) {
-          rt?.setLastConnectorError?.(res.lastError || "Native CRM pull failed");
-          return res;
-        }
-        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "DataFromCRM", res.nextGrid, dryRun);
-        if (res.nextBridgeGrid && res.tool === "googlesheet") {
-          syncNativePullGridToVirtualSheet_(env, "CRMGoogleBridge", res.nextBridgeGrid, dryRun);
-        }
-        if (res.nextBridgeGrid && res.tool === "excel") {
-          syncNativePullGridToVirtualSheet_(env, "CRMExcelBridge", res.nextBridgeGrid, dryRun);
-        }
-        if (res.nextExcelCopyGrid && res.tool === "excel") {
-          syncNativePullGridToVirtualSheet_(env, "CRMExcelCopy", res.nextExcelCopyGrid, dryRun);
-        }
-        if (res.tool !== "close" && res.tool !== "googlesheet" && res.tool !== "excel" && res.dataChanged) {
-          const dca = env.masterSS?.getSheetByName("DataChgAlert");
-          if (dca) {
-            while (dca.valuesGrid.length < 2) dca.valuesGrid.push([]);
-            while (dca.valuesGrid[1].length < 9) dca.valuesGrid[1].push("");
-            dca.valuesGrid[1][7] = "Yes";
-            dca.valuesGrid[1][8] = dateToSerial(new Date());
+      PullCRMBasedOn: async (_args, rt) => {
+        try {
+          const res = await pullNativeCrmDeals(ctx, {
+            persistToDb,
+            keyInfoOverride: getKiOverride(),
+            existingGridOverride: env.masterSS?.getSheetByName("DataFromCRM")?.valuesGrid || null,
+            scriptPropsOverride: getPropsObj(),
+          });
+          if (res.overrideInfo) {
+            rt?.setLastCrmSyncOverrideUsed?.(res.overrideInfo);
+            env.scriptProperties?.delete("CRM_SYNC_SWING_OVERRIDE_ONCE");
+            env.scriptProperties?.delete("CRM_SYNC_SWING_BLOCK_JSON");
           }
+          if (res.blocked && res.blockInfo) {
+            rt?.setLastCrmSyncBlocked_?.(res.blockInfo);
+            env.scriptProperties?.set("CRM_SYNC_SWING_BLOCK_JSON", JSON.stringify(res.blockInfo));
+            return res;
+          }
+          if (!res.success) {
+            rt?.setLastConnectorError?.(res.lastError || "Native CRM pull failed");
+            return res;
+          }
+          if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "DataFromCRM", res.nextGrid, dryRun);
+          if (res.nextBridgeGrid && res.tool === "googlesheet") {
+            syncNativePullGridToVirtualSheet_(env, "CRMGoogleBridge", res.nextBridgeGrid, dryRun);
+          }
+          if (res.nextBridgeGrid && res.tool === "excel") {
+            syncNativePullGridToVirtualSheet_(env, "CRMExcelBridge", res.nextBridgeGrid, dryRun);
+          }
+          if (res.nextExcelCopyGrid && res.tool === "excel") {
+            syncNativePullGridToVirtualSheet_(env, "CRMExcelCopy", res.nextExcelCopyGrid, dryRun);
+          }
+          if (res.tool !== "close" && res.tool !== "googlesheet" && res.tool !== "excel" && res.dataChanged) {
+            const dca = env.masterSS?.getSheetByName("DataChgAlert");
+            if (dca) {
+              while (dca.valuesGrid.length < 2) dca.valuesGrid.push([]);
+              while (dca.valuesGrid[1].length < 9) dca.valuesGrid[1].push("");
+              dca.valuesGrid[1][7] = "Yes";
+              dca.valuesGrid[1][8] = dateToSerial(new Date());
+            }
+          }
+          env.recomputeMasterFormulasSync?.();
+          return res;
+        } catch (err) {
+          rt?.setLastConnectorError?.(err.message);
+          return null;
         }
-        env.recomputeMasterFormulasSync?.();
-        return res;
-      } catch (err) {
-        rt?.setLastConnectorError?.(err.message);
-        return null;
-      }
-    },
+      },
 
-    syncAccountingDataToSheet: async (args, rt) => {
-      const isHeadless = Boolean(args?.[0]);
-      try {
-        const res = await pullNativeAccountingDirectCosts(ctx, {
-          persistToDb,
-          keyInfoOverride: getKiOverride(),
-          existingGridOverride: env.masterSS?.getSheetByName("JnlsFromApp")?.valuesGrid || null,
-        });
-        if (!res.success) {
-          rt?.setLastConnectorError?.(res.lastError || "Native direct cost pull failed");
+      syncAccountingDataToSheet: async (args, rt) => {
+        const isHeadless = Boolean(args?.[0]);
+        try {
+          const res = await pullNativeAccountingDirectCosts(ctx, {
+            persistToDb,
+            keyInfoOverride: getKiOverride(),
+            existingGridOverride: env.masterSS?.getSheetByName("JnlsFromApp")?.valuesGrid || null,
+          });
+          if (!res.success) {
+            rt?.setLastConnectorError?.(res.lastError || "Native direct cost pull failed");
+            return { newExpenses: [], updatedExpenses: [] };
+          }
+          if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "JnlsFromApp", res.nextGrid, dryRun);
+          env.recomputeMasterFormulasSync?.();
+          if (typeof rt?.syncExpenseTransactionBreakdownToClientSheet_ === "function" && Array.isArray(res.allExpenseData)) {
+            try {
+              await rt.syncExpenseTransactionBreakdownToClientSheet_(isHeadless, res.allExpenseData);
+            } catch (_) { }
+          }
+          return { newExpenses: res.newExpenses || [], updatedExpenses: res.updatedExpenses || [] };
+        } catch (err) {
+          rt?.setLastConnectorError?.(err.message);
           return { newExpenses: [], updatedExpenses: [] };
         }
-        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "JnlsFromApp", res.nextGrid, dryRun);
-        env.recomputeMasterFormulasSync?.();
-        if (typeof rt?.syncExpenseTransactionBreakdownToClientSheet_ === "function" && Array.isArray(res.allExpenseData)) {
-          try {
-            await rt.syncExpenseTransactionBreakdownToClientSheet_(isHeadless, res.allExpenseData);
-          } catch (_) { }
+      },
+
+      PullPLBasedOn: async (_args, rt) => {
+        try {
+          const res = await pullNativeProfitAndLoss(ctx, { persistToDb, keyInfoOverride: getKiOverride() });
+          if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "PLFromApp", res.nextGrid, dryRun);
+          env.recomputeMasterFormulasSync?.();
+          return res;
+        } catch (err) {
+          rt?.setLastConnectorError?.(err.message);
+          throw err;
         }
-        return { newExpenses: res.newExpenses || [], updatedExpenses: res.updatedExpenses || [] };
-      } catch (err) {
-        rt?.setLastConnectorError?.(err.message);
-        return { newExpenses: [], updatedExpenses: [] };
-      }
-    },
+      },
 
-    PullPLBasedOn: async (_args, rt) => {
-      try {
-        const res = await pullNativeProfitAndLoss(ctx, { persistToDb, keyInfoOverride: getKiOverride() });
-        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "PLFromApp", res.nextGrid, dryRun);
+      PullYear0PLBasedOn: async (_args, rt) => {
+        try {
+          const res = await pullNativeYear0ProfitAndLoss(ctx, { persistToDb, keyInfoOverride: getKiOverride() });
+          if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "Year0PLFromApp", res.nextGrid, dryRun);
+          env.recomputeMasterFormulasSync?.();
+          return res;
+        } catch (err) {
+          rt?.setLastConnectorError?.(err.message);
+          throw err;
+        }
+      },
+
+      refreshAccountingToolChartOfAccounts: async (_args, rt) => {
+        try {
+          const res = await refreshNativeChartOfAccountsDirect(ctx, { persistToDb, keyInfoOverride: getKiOverride() });
+          if (res.keyInfoGrid) syncNativePullGridToVirtualSheet_(env, "KeyInfo", res.keyInfoGrid, dryRun);
+          return res;
+        } catch (err) {
+          rt?.setLastConnectorError?.(err.message);
+          throw err;
+        }
+      },
+
+      fetchSingleMonthPLReport_: async (args) => {
+        return await fetchNativeSingleMonthPLReport(ctx, args?.[0], args?.[1], { keyInfoOverride: getKiOverride() });
+      },
+
+      updateSingleMonthPLInSheet_: async (args) => {
+        const res = await updateNativeSingleMonthPL(ctx, args?.[2], args?.[3], args?.[4], { persistToDb });
+        if (res?.nextGrid) syncNativePullGridToVirtualSheet_(env, "PLFromApp", res.nextGrid, dryRun);
         env.recomputeMasterFormulasSync?.();
         return res;
-      } catch (err) {
-        rt?.setLastConnectorError?.(err.message);
-        throw err;
-      }
-    },
-
-    PullYear0PLBasedOn: async (_args, rt) => {
-      try {
-        const res = await pullNativeYear0ProfitAndLoss(ctx, { persistToDb, keyInfoOverride: getKiOverride() });
-        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "Year0PLFromApp", res.nextGrid, dryRun);
-        env.recomputeMasterFormulasSync?.();
-        return res;
-      } catch (err) {
-        rt?.setLastConnectorError?.(err.message);
-        throw err;
-      }
-    },
-
-    refreshAccountingToolChartOfAccounts: async (_args, rt) => {
-      try {
-        const res = await refreshNativeChartOfAccountsDirect(ctx, { persistToDb, keyInfoOverride: getKiOverride() });
-        if (res.keyInfoGrid) syncNativePullGridToVirtualSheet_(env, "KeyInfo", res.keyInfoGrid, dryRun);
-        return res;
-      } catch (err) {
-        rt?.setLastConnectorError?.(err.message);
-        throw err;
-      }
-    },
-
-    fetchSingleMonthPLReport_: async (args) => {
-      return await fetchNativeSingleMonthPLReport(ctx, args?.[0], args?.[1], { keyInfoOverride: getKiOverride() });
-    },
-
-    updateSingleMonthPLInSheet_: async (args) => {
-      const res = await updateNativeSingleMonthPL(ctx, args?.[2], args?.[3], args?.[4], { persistToDb });
-      if (res?.nextGrid) syncNativePullGridToVirtualSheet_(env, "PLFromApp", res.nextGrid, dryRun);
-      env.recomputeMasterFormulasSync?.();
-      return res;
-    },
+      },
     });
   }
 
@@ -715,7 +715,7 @@ export async function refreshNativeChartOfAccounts(sheets, clientName) {
       executionMeta: { functionName: "refreshAccountingToolChartOfAccounts", triggerSource: "Manual (PMA)" },
     });
     attachNativeConnectorHooksToEnv_(env, ctx, false);
-  const gas = createMasterGasInstance(env);
+    const gas = createMasterGasInstance(env);
     res = await gas.refreshAccountingToolChartOfAccounts(true);
     await env.finalizeExecution({ summary: "Refreshed Chart of Accounts" });
 
@@ -765,7 +765,7 @@ export async function pullLivePLToSupabaseNative(sheets, clientName) {
       executionMeta: { functionName: "PullPLBasedOn", triggerSource: "Manual (PMA)" },
     });
     attachNativeConnectorHooksToEnv_(env, ctx, false);
-  const gas = createMasterGasInstance(env);
+    const gas = createMasterGasInstance(env);
     await gas.PullPLBasedOn(true);
     await env.finalizeExecution({ summary: "Pulled Profit & Loss report" });
     plGrid = env.masterSS.getSheetByName("PLFromApp")?.valuesGrid || [];
@@ -1204,11 +1204,12 @@ async function clearInFlightFlagsSafe_(supabase, clientName, fallbackFlags) {
       latestFlags = data.flags;
     }
   } catch (_) { }
-  await supabase
-    .from("sync_schedules")
-    .update({ flags: { ...latestFlags, in_flight_since: null, in_flight_seqs: null } })
-    .eq("client_name", clientName)
-    .catch(() => { });
+  try {
+    await supabase
+      .from("sync_schedules")
+      .update({ flags: { ...latestFlags, in_flight_since: null, in_flight_seqs: null } })
+      .eq("client_name", clientName);
+  } catch (_) { }
 }
 
 /**
@@ -1441,17 +1442,18 @@ export async function runNativeMasterSync({
         summary: `Error: ${runErr.message}`,
       })
       .catch(() => { });
-    await supabase
-      .from("sync_schedules")
-      .update({
-        flags: {
-          ...baseFlags,
-          in_flight_since: null,
-          in_flight_seqs: null,
-        },
-      })
-      .eq("client_name", ctx.clientName)
-      .catch(() => { });
+    try {
+      await supabase
+        .from("sync_schedules")
+        .update({
+          flags: {
+            ...baseFlags,
+            in_flight_since: null,
+            in_flight_seqs: null,
+          },
+        })
+        .eq("client_name", ctx.clientName);
+    } catch (_) { }
     await invalidateClientActivityCache(ctx.clientName).catch(() => { });
     throw runErr;
   }
@@ -1579,10 +1581,10 @@ export async function dispatchDueNativeMasterSyncs({
       supabase.from("sync_schedules").select("*"),
       hasNonNativeMasterCompute
         ? supabase
-            .from("master_sheet_grids")
-            .select("client_name, values_grid")
-            .eq("sheet_role", "master")
-            .eq("tab_name", "DataChgAlert")
+          .from("master_sheet_grids")
+          .select("client_name, values_grid")
+          .eq("sheet_role", "master")
+          .eq("tab_name", "DataChgAlert")
         : Promise.resolve({ data: [] }),
       supabase
         .from("pulse_master_sync_configs")
@@ -1755,18 +1757,18 @@ export async function dispatchDueNativeMasterSyncs({
       const [{ data: masterMetaRows }, { data: localGridRows }, { data: nativeSyncCfgMeta }, { data: bpUpdatedRows }, { data: reconCfgRows }, { data: reconPeriodRows }] = await Promise.all([
         nonNativeMasterCandidates.length > 0
           ? supabase
-              .from("master_sheet_grids")
-              .select("client_name, tab_name, values_grid")
-              .eq("sheet_role", "master")
-              .in("tab_name", ["KeyInfo", "CRMList"])
-              .in("client_name", nonNativeMasterCandidates)
+            .from("master_sheet_grids")
+            .select("client_name, tab_name, values_grid")
+            .eq("sheet_role", "master")
+            .in("tab_name", ["KeyInfo", "CRMList"])
+            .in("client_name", nonNativeMasterCandidates)
           : Promise.resolve({ data: [] }),
         nonNativeSyncCandidates.length > 0
           ? supabase
-              .from("master_sheet_grids")
-              .select("client_name, sheet_role, tab_name, updated_at")
-              .in("sheet_role", ["client", "recon"])
-              .in("client_name", nonNativeSyncCandidates)
+            .from("master_sheet_grids")
+            .select("client_name, sheet_role, tab_name, updated_at")
+            .in("sheet_role", ["client", "recon"])
+            .in("client_name", nonNativeSyncCandidates)
           : Promise.resolve({ data: [] }),
         supabase
           .from("pulse_master_sync_configs")
@@ -1967,11 +1969,12 @@ export async function dispatchDueNativeMasterSyncs({
 
             if (hasScheduleUpdate) {
               item.flags = nextFlags;
-              await supabase
-                .from("sync_schedules")
-                .update({ ...schedPatch, flags: nextFlags })
-                .eq("client_name", item.clientName)
-                .catch(() => { });
+              try {
+                await supabase
+                  .from("sync_schedules")
+                  .update({ ...schedPatch, flags: nextFlags })
+                  .eq("client_name", item.clientName);
+              } catch (_) { }
             }
           })
         );

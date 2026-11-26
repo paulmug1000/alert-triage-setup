@@ -65,7 +65,11 @@ if (typeof window !== "undefined") {
   throw new Error("SECURITY VIOLATION: services/nativeClientCalcService.js must never run in browser code.");
 }
 
-const PHASE5_SET = new Set(PHASE5_FINANCIAL_TABS);
+let _phase5Set = null;
+function isPhase5Tab_(tabName) {
+  if (!_phase5Set) _phase5Set = new Set(PHASE5_FINANCIAL_TABS);
+  return _phase5Set.has(tabName);
+}
 const NON_FORMULA_TABS = new Set(["Sessions", "AppLog", "Welcome"]);
 const ERROR_CELL_RE = /^#(?:REF!|NAME\?|VALUE!|DIV\/0!|NUM!|N\/A|ERROR!)\b/i;
 
@@ -802,7 +806,7 @@ export async function loadNativeClientTabRecordsBatch(
   const needBudget = reqSet.has("Budget");
   const needCashAdj = reqSet.has("Cash") && !valuesOnly;
   const needAnyInputs = needSalaries || needOutgoings || needOutgNotes || needNb || needBudget || needCashAdj;
-  const needFin = reqTabs.some((t) => PHASE5_SET.has(t));
+  const needFin = reqTabs.some((t) => isPhase5Tab_(t));
 
   let bpByTab;
   let inMemRawGrids = rawGridsOverride || null;
@@ -824,23 +828,23 @@ export async function loadNativeClientTabRecordsBatch(
     if (needJobs && !jobsBundle) {
       const mConf = reqSet.has("Confirmed")
         ? parseTabGridToRelationalModel({
-            clientId: ctx.clientId,
-            clientName: ctx.clientName,
-            tabName: "Confirmed",
-            valuesGrid: inMemRawGrids.Confirmed?.values_grid || [],
-            formulasGrid: inMemRawGrids.Confirmed?.formulas_grid || [],
-            notesGrid: inMemRawGrids.Confirmed?.notes_grid || {},
-          })
+          clientId: ctx.clientId,
+          clientName: ctx.clientName,
+          tabName: "Confirmed",
+          valuesGrid: inMemRawGrids.Confirmed?.values_grid || [],
+          formulasGrid: inMemRawGrids.Confirmed?.formulas_grid || [],
+          notesGrid: inMemRawGrids.Confirmed?.notes_grid || {},
+        })
         : { jobs: [] };
       const mPipe = reqSet.has("Pipeline")
         ? parseTabGridToRelationalModel({
-            clientId: ctx.clientId,
-            clientName: ctx.clientName,
-            tabName: "Pipeline",
-            valuesGrid: inMemRawGrids.Pipeline?.values_grid || [],
-            formulasGrid: inMemRawGrids.Pipeline?.formulas_grid || [],
-            notesGrid: inMemRawGrids.Pipeline?.notes_grid || {},
-          })
+          clientId: ctx.clientId,
+          clientName: ctx.clientName,
+          tabName: "Pipeline",
+          valuesGrid: inMemRawGrids.Pipeline?.values_grid || [],
+          formulasGrid: inMemRawGrids.Pipeline?.formulas_grid || [],
+          notesGrid: inMemRawGrids.Pipeline?.notes_grid || {},
+        })
         : { jobs: [] };
       jobsBundle = {
         jobsByTab: { Confirmed: mConf.jobs, Pipeline: mPipe.jobs },
@@ -851,12 +855,12 @@ export async function loadNativeClientTabRecordsBatch(
     if (needAnyInputs && !inputsBundle) {
       const outItems = needOutgoings
         ? parseOutgoingsTabToItems({
-            clientId: ctx.clientId,
-            clientName: ctx.clientName,
-            valuesGrid: inMemRawGrids.Outgoings?.values_grid || [],
-            formulasGrid: inMemRawGrids.Outgoings?.formulas_grid || [],
-            notesGrid: inMemRawGrids.Outgoings?.notes_grid || {},
-          })
+          clientId: ctx.clientId,
+          clientName: ctx.clientName,
+          valuesGrid: inMemRawGrids.Outgoings?.values_grid || [],
+          formulasGrid: inMemRawGrids.Outgoings?.formulas_grid || [],
+          notesGrid: inMemRawGrids.Outgoings?.notes_grid || {},
+        })
         : [];
       const rowToItem = new Map(outItems.map((it) => [Number(it.sheet_row_num), it]));
       const salG = inMemRawGrids.Salaries || {};
@@ -867,49 +871,49 @@ export async function loadNativeClientTabRecordsBatch(
       inputsBundle = {
         employees: needSalaries
           ? parseSalariesTabToEmployees({
-              clientId: ctx.clientId,
-              clientName: ctx.clientName,
-              valuesGrid: salG.values_grid || [],
-              formulasGrid: salG.formulas_grid || [],
-              notesGrid: salG.notes_grid || {},
-            })
+            clientId: ctx.clientId,
+            clientName: ctx.clientName,
+            valuesGrid: salG.values_grid || [],
+            formulasGrid: salG.formulas_grid || [],
+            notesGrid: salG.notes_grid || {},
+          })
           : [],
         outgoingItems: outItems,
         contractorEntries: needOutgNotes
           ? parseOutgNotesTabToContractorEntries({
-              clientId: ctx.clientId,
-              clientName: ctx.clientName,
-              valuesGrid: inMemRawGrids.OutgNotes?.values_grid || [],
-              formulasGrid: inMemRawGrids.OutgNotes?.formulas_grid || [],
-              outgoingItemByRow: rowToItem,
-            })
+            clientId: ctx.clientId,
+            clientName: ctx.clientName,
+            valuesGrid: inMemRawGrids.OutgNotes?.values_grid || [],
+            formulasGrid: inMemRawGrids.OutgNotes?.formulas_grid || [],
+            outgoingItemByRow: rowToItem,
+          })
           : [],
         nbRecord: needNb
           ? parseNbToFindTabToRecord({
-              clientId: ctx.clientId,
-              clientName: ctx.clientName,
-              valuesGrid: nbG.values_grid || [],
-              formulasGrid: nbG.formulas_grid || [],
-              notesGrid: nbG.notes_grid || {},
-            })
+            clientId: ctx.clientId,
+            clientName: ctx.clientName,
+            valuesGrid: nbG.values_grid || [],
+            formulasGrid: nbG.formulas_grid || [],
+            notesGrid: nbG.notes_grid || {},
+          })
           : null,
         budgetItems: needBudget
           ? parseBudgetTabToItems({
-              clientId: ctx.clientId,
-              clientName: ctx.clientName,
-              valuesGrid: budG.values_grid || [],
-              formulasGrid: budG.formulas_grid || [],
-              notesGrid: budG.notes_grid || {},
-            })
+            clientId: ctx.clientId,
+            clientName: ctx.clientName,
+            valuesGrid: budG.values_grid || [],
+            formulasGrid: budG.formulas_grid || [],
+            notesGrid: budG.notes_grid || {},
+          })
           : [],
         cashAdjustments: needCashAdj
           ? parseCashTabToAdjustments({
-              clientId: ctx.clientId,
-              clientName: ctx.clientName,
-              valuesGrid: cashG.values_grid || [],
-              formulasGrid: cashG.formulas_grid || [],
-              notesGrid: cashG.notes_grid || {},
-            })
+            clientId: ctx.clientId,
+            clientName: ctx.clientName,
+            valuesGrid: cashG.values_grid || [],
+            formulasGrid: cashG.formulas_grid || [],
+            notesGrid: cashG.notes_grid || {},
+          })
           : [],
         rollups: {
           tabHeaders: {
@@ -950,13 +954,13 @@ export async function loadNativeClientTabRecordsBatch(
       needJobs && !jobsBundle ? preloadClientRelationalJobsBundle(ctx) : Promise.resolve(jobsBundle),
       needAnyInputs && !inputsBundle
         ? preloadClientRelationalInputsBundle(ctx, {
-            includeSalaries: needSalaries,
-            includeOutgoings: needOutgoings,
-            includeOutgNotes: needOutgNotes,
-            includeNbToFind: needNb,
-            includeBudget: needBudget,
-            includeCash: needCashAdj,
-          })
+          includeSalaries: needSalaries,
+          includeOutgoings: needOutgoings,
+          includeOutgNotes: needOutgNotes,
+          includeNbToFind: needNb,
+          includeBudget: needBudget,
+          includeCash: needCashAdj,
+        })
         : Promise.resolve(inputsBundle),
       needFin && !finBundle
         ? preloadClientRelationalFinancialsBundle(ctx, { source: "db", includeFormulas: false })
@@ -1204,7 +1208,7 @@ export async function loadNativeClientTabRecordsBatch(
       continue;
     }
 
-    if (PHASE5_SET.has(tabName) && finBundle) {
+    if (isPhase5Tab_(tabName) && finBundle) {
       const finRec = reconstructRelationalFinancialTabFromBundle(finBundle, tabName, {
         includeFormulas: false,
       });
@@ -1389,7 +1393,7 @@ export async function runShadowClientCalcCheck(ctx, changedTabs = [], referenceG
         referenceGrids[t].values,
         referenceGrids[t].formulas,
         referenceGrids[t].notes || {}
-      ).catch(() => {});
+      ).catch(() => { });
     }
   }
 

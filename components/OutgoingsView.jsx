@@ -1030,6 +1030,23 @@ export default function OutgoingsView({
     [outgoingsData, outgoingsMonthOffset]
   );
 
+  const totalMonthsCount = outgoingsData?.months?.length || 0;
+  const maxOutgoingsMonthOffset = Math.max(0, totalMonthsCount - OUTGOINGS_WINDOW);
+  const canScrollMonthsBack = outgoingsMonthOffset > 0;
+  const canScrollMonthsForward = outgoingsMonthOffset < maxOutgoingsMonthOffset;
+
+  const shiftOutgoingsMonths = useCallback((delta) => {
+    setContractorDragRange(null);
+    setContractorContextMenu(null);
+    setOutgoingsMonthOffset(prev => Math.max(0, Math.min(maxOutgoingsMonthOffset, prev + delta)));
+  }, [maxOutgoingsMonthOffset, setOutgoingsMonthOffset]);
+
+  useEffect(() => {
+    if (outgoingsMonthOffset > maxOutgoingsMonthOffset) {
+      setOutgoingsMonthOffset(maxOutgoingsMonthOffset);
+    }
+  }, [outgoingsMonthOffset, maxOutgoingsMonthOffset, setOutgoingsMonthOffset]);
+
   const fmtMonthLabel = (labelOrIso) => {
     if (!labelOrIso) return "";
     const isoMatch = String(labelOrIso).match(/^(\d{4})-(\d{2})/);
@@ -1039,6 +1056,10 @@ export default function OutgoingsView({
     }
     return String(labelOrIso).slice(0, 7);
   };
+
+  const visibleMonthRangeLabel = visibleMonths.length > 0
+    ? `${fmtMonthLabel(visibleMonths[0]?.isoMonth || visibleMonths[0]?.label)} – ${fmtMonthLabel(visibleMonths[visibleMonths.length - 1]?.isoMonth || visibleMonths[visibleMonths.length - 1]?.label)}`
+    : "";
 
   const isCurrentMonth = (labelOrIso) => {
     const now = new Date();
@@ -1499,23 +1520,49 @@ export default function OutgoingsView({
       const curMonthIdx = contractorMonthIndexMap.get(activeContractorCell.colLetter);
 
       if (curRowIdx !== undefined && curMonthIdx !== undefined) {
-        if (e.key === "ArrowRight" && curMonthIdx < visibleMonths.length - 1) {
-          e.preventDefault();
-          setContractorContextMenu(null);
-          setActiveContractorCell({
-            sheetRow: activeContractorCell.sheetRow,
-            colLetter: visibleMonths[curMonthIdx + 1].colLetter,
-          });
-          return;
+        if (e.key === "ArrowRight") {
+          if (curMonthIdx < visibleMonths.length - 1) {
+            e.preventDefault();
+            setContractorContextMenu(null);
+            setActiveContractorCell({
+              sheetRow: activeContractorCell.sheetRow,
+              colLetter: visibleMonths[curMonthIdx + 1].colLetter,
+            });
+            return;
+          }
+          if (canScrollMonthsForward && outgoingsData?.months?.[outgoingsMonthOffset + OUTGOINGS_WINDOW]) {
+            e.preventDefault();
+            setContractorContextMenu(null);
+            const nextCol = outgoingsData.months[outgoingsMonthOffset + OUTGOINGS_WINDOW].colLetter;
+            setOutgoingsMonthOffset(prev => Math.min(maxOutgoingsMonthOffset, prev + 1));
+            setActiveContractorCell({
+              sheetRow: activeContractorCell.sheetRow,
+              colLetter: nextCol,
+            });
+            return;
+          }
         }
-        if (e.key === "ArrowLeft" && curMonthIdx > 0) {
-          e.preventDefault();
-          setContractorContextMenu(null);
-          setActiveContractorCell({
-            sheetRow: activeContractorCell.sheetRow,
-            colLetter: visibleMonths[curMonthIdx - 1].colLetter,
-          });
-          return;
+        if (e.key === "ArrowLeft") {
+          if (curMonthIdx > 0) {
+            e.preventDefault();
+            setContractorContextMenu(null);
+            setActiveContractorCell({
+              sheetRow: activeContractorCell.sheetRow,
+              colLetter: visibleMonths[curMonthIdx - 1].colLetter,
+            });
+            return;
+          }
+          if (canScrollMonthsBack && outgoingsData?.months?.[outgoingsMonthOffset - 1]) {
+            e.preventDefault();
+            setContractorContextMenu(null);
+            const prevCol = outgoingsData.months[outgoingsMonthOffset - 1].colLetter;
+            setOutgoingsMonthOffset(prev => Math.max(0, prev - 1));
+            setActiveContractorCell({
+              sheetRow: activeContractorCell.sheetRow,
+              colLetter: prevCol,
+            });
+            return;
+          }
         }
         if (e.key === "ArrowDown" && curRowIdx < filteredContractors.length - 1) {
           e.preventDefault();
@@ -1639,6 +1686,12 @@ export default function OutgoingsView({
     placeholderChoicePrompt,
     filteredContractors,
     visibleMonths,
+    outgoingsMonthOffset,
+    maxOutgoingsMonthOffset,
+    canScrollMonthsBack,
+    canScrollMonthsForward,
+    outgoingsData,
+    setOutgoingsMonthOffset,
     contractorRowIndexMap,
     contractorMonthIndexMap,
     handleCopyContractorCell,
@@ -2358,10 +2411,10 @@ export default function OutgoingsView({
         const totalAmt = selectedList.reduce((s, e) => s + (e.amount || 0), 0);
         return (
           <div style={{
-            background: "#1a56db", color: "#fff", padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px", borderRadius: "8px",
+            background: "#1a56db", color: "#fff", padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px", fontSize: "13px", borderRadius: "8px",
             margin: isModalOverlay ? "12px 24px 0" : "0 20px 16px",
             boxShadow: "0 4px 14px rgba(26,86,219,0.25)",
-            ...(isModalOverlay ? { position: "sticky", top: "8px", zIndex: 20 } : {})
+            ...(isModalOverlay ? { position: "sticky", top: "8px", zIndex: 40 } : {})
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
               <span style={{ fontWeight: "700", background: "rgba(255,255,255,0.2)", padding: "2px 8px", borderRadius: "10px" }}>
@@ -2374,10 +2427,59 @@ export default function OutgoingsView({
                   : "· Click an expense entry to allocate each item sequentially"}
               </span>
             </div>
-            <button onClick={clearInboxSelection}
-              style={{ background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", borderRadius: "4px", padding: "5px 14px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-              Cancel
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              {effectiveSubTab === "contractors" && totalMonthsCount > OUTGOINGS_WINDOW && (
+                <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "rgba(255,255,255,0.14)", padding: "3px 8px", borderRadius: "6px" }}>
+                  <button
+                    type="button"
+                    disabled={!canScrollMonthsBack}
+                    onClick={() => shiftOutgoingsMonths(-1)}
+                    title="Previous month"
+                    aria-label="Previous month"
+                    style={{
+                      background: "rgba(255,255,255,0.18)",
+                      border: "none",
+                      color: "#ffffff",
+                      borderRadius: "4px",
+                      padding: "2px 8px",
+                      cursor: canScrollMonthsBack ? "pointer" : "not-allowed",
+                      opacity: canScrollMonthsBack ? 1 : 0.4,
+                      fontSize: "12px",
+                      fontWeight: "700",
+                    }}
+                  >
+                    ◀
+                  </button>
+                  <span style={{ fontSize: "12px", fontWeight: "600", whiteSpace: "nowrap" }}>
+                    {visibleMonthRangeLabel}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={!canScrollMonthsForward}
+                    onClick={() => shiftOutgoingsMonths(1)}
+                    title="Next month"
+                    aria-label="Next month"
+                    style={{
+                      background: "rgba(255,255,255,0.18)",
+                      border: "none",
+                      color: "#ffffff",
+                      borderRadius: "4px",
+                      padding: "2px 8px",
+                      cursor: canScrollMonthsForward ? "pointer" : "not-allowed",
+                      opacity: canScrollMonthsForward ? 1 : 0.4,
+                      fontSize: "12px",
+                      fontWeight: "700",
+                    }}
+                  >
+                    ▶
+                  </button>
+                </div>
+              )}
+              <button type="button" onClick={clearInboxSelection}
+                style={{ background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", borderRadius: "4px", padding: "5px 14px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                Cancel
+              </button>
+            </div>
           </div>
         );
       })()}
@@ -2919,15 +3021,91 @@ export default function OutgoingsView({
                     )}
                   </div>
                 )}
-                <button onClick={() => { setContractorDragRange(null); setContractorContextMenu(null); setOutgoingsMonthOffset(Math.max(0, outgoingsMonthOffset - 1)); }}
-                  disabled={outgoingsMonthOffset === 0}
-                  style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsMonthOffset === 0 ? "default" : "pointer", opacity: outgoingsMonthOffset === 0 ? 0.4 : 1 }}>◀</button>
-                <span style={{ fontSize: "13px", color: "#555", minWidth: "140px", textAlign: "center" }}>
-                  {fmtMonthLabel(visibleMonths[0]?.isoMonth || visibleMonths[0]?.label)} – {fmtMonthLabel(visibleMonths[visibleMonths.length - 1]?.isoMonth || visibleMonths[visibleMonths.length - 1]?.label)}
-                </span>
-                <button onClick={() => { setContractorDragRange(null); setContractorContextMenu(null); setOutgoingsMonthOffset(Math.min((outgoingsData.months.length - OUTGOINGS_WINDOW), outgoingsMonthOffset + 1)); }}
-                  disabled={outgoingsMonthOffset >= outgoingsData.months.length - OUTGOINGS_WINDOW}
-                  style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer" }}>▶</button>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "6px", padding: "3px 6px" }}>
+                  <button
+                    type="button"
+                    onClick={() => shiftOutgoingsMonths(-3)}
+                    disabled={!canScrollMonthsBack}
+                    title="Back 3 months"
+                    aria-label="Back 3 months"
+                    style={{
+                      padding: "3px 8px",
+                      background: "#ffffff",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "4px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: canScrollMonthsBack ? "#334155" : "#94a3b8",
+                      cursor: canScrollMonthsBack ? "pointer" : "not-allowed",
+                      opacity: canScrollMonthsBack ? 1 : 0.4,
+                    }}
+                  >
+                    «
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => shiftOutgoingsMonths(-1)}
+                    disabled={!canScrollMonthsBack}
+                    title="Previous month"
+                    aria-label="Previous month"
+                    style={{
+                      padding: "3px 9px",
+                      background: "#ffffff",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "4px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: canScrollMonthsBack ? "#334155" : "#94a3b8",
+                      cursor: canScrollMonthsBack ? "pointer" : "not-allowed",
+                      opacity: canScrollMonthsBack ? 1 : 0.4,
+                    }}
+                  >
+                    ‹
+                  </button>
+                  <span style={{ fontSize: "12.5px", fontWeight: "600", color: "#334155", minWidth: "130px", textAlign: "center", padding: "0 4px" }}>
+                    {visibleMonthRangeLabel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => shiftOutgoingsMonths(1)}
+                    disabled={!canScrollMonthsForward}
+                    title="Next month"
+                    aria-label="Next month"
+                    style={{
+                      padding: "3px 9px",
+                      background: "#ffffff",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "4px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: canScrollMonthsForward ? "#334155" : "#94a3b8",
+                      cursor: canScrollMonthsForward ? "pointer" : "not-allowed",
+                      opacity: canScrollMonthsForward ? 1 : 0.4,
+                    }}
+                  >
+                    ›
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => shiftOutgoingsMonths(3)}
+                    disabled={!canScrollMonthsForward}
+                    title="Forward 3 months"
+                    aria-label="Forward 3 months"
+                    style={{
+                      padding: "3px 8px",
+                      background: "#ffffff",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "4px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: canScrollMonthsForward ? "#334155" : "#94a3b8",
+                      cursor: canScrollMonthsForward ? "pointer" : "not-allowed",
+                      opacity: canScrollMonthsForward ? 1 : 0.4,
+                    }}
+                  >
+                    »
+                  </button>
+                </div>
                 <button onClick={async () => { setOutgoingsLoading(true); await loadOutgoings(outgoingsClient, true); setOutgoingsLoading(false); }}
                   disabled={outgoingsLoading || contractorSaveStatus === "saving"}
                   style={{ padding: "5px 14px", background: outgoingsLoading ? "#e0e0e0" : "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsLoading || contractorSaveStatus === "saving" ? "default" : "pointer", fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "6px" }}>
@@ -3014,12 +3192,132 @@ export default function OutgoingsView({
                 </colgroup>
                 <thead style={{ position: "sticky", top: 0, zIndex: 20 }}>
                   <tr>
-                    <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", top: 0, left: 0, zIndex: 30 }}>Contractor</th>
+                    <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", top: 0, left: 0, zIndex: 30 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                        <span>Contractor</span>
+                        {totalMonthsCount > OUTGOINGS_WINDOW && (
+                          <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                            <button
+                              type="button"
+                              onClick={() => shiftOutgoingsMonths(-1)}
+                              disabled={!canScrollMonthsBack}
+                              title="Previous month"
+                              aria-label="Previous month"
+                              style={{
+                                width: "22px",
+                                height: "22px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                borderRadius: "4px",
+                                border: "1px solid #cbd5e1",
+                                background: "#ffffff",
+                                color: canScrollMonthsBack ? "#334155" : "#cbd5e1",
+                                cursor: canScrollMonthsBack ? "pointer" : "not-allowed",
+                                fontSize: "13px",
+                                fontWeight: "700",
+                                lineHeight: 1,
+                                padding: 0,
+                              }}
+                            >
+                              ‹
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => shiftOutgoingsMonths(1)}
+                              disabled={!canScrollMonthsForward}
+                              title="Next month"
+                              aria-label="Next month"
+                              style={{
+                                width: "22px",
+                                height: "22px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                borderRadius: "4px",
+                                border: "1px solid #cbd5e1",
+                                background: "#ffffff",
+                                color: canScrollMonthsForward ? "#334155" : "#cbd5e1",
+                                cursor: canScrollMonthsForward ? "pointer" : "not-allowed",
+                                fontSize: "13px",
+                                fontWeight: "700",
+                                lineHeight: 1,
+                                padding: 0,
+                              }}
+                            >
+                              ›
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </th>
                     {visibleMonths.map((m, monthIdx) => {
                       const isCurr = isCurrentMonth(m.isoMonth || m.label);
+                      const showLeftArrow = totalMonthsCount > OUTGOINGS_WINDOW && monthIdx === 0;
+                      const showRightArrow = totalMonthsCount > OUTGOINGS_WINDOW && monthIdx === visibleMonths.length - 1;
                       return (
-                        <th key={m.colLetter} style={{ padding: "9px 10px", background: isCurr ? "#e8f0fe" : "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: monthIdx === visibleMonths.length - 1 ? "none" : "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "center", color: isCurr ? "#1a56db" : "#444", position: "sticky", top: 0, zIndex: 20 }}>
-                          {fmtMonthLabel(m.isoMonth || m.label)}
+                        <th key={m.colLetter} style={{ padding: "9px 8px", background: isCurr ? "#e8f0fe" : "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: monthIdx === visibleMonths.length - 1 ? "none" : "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "center", color: isCurr ? "#1a56db" : "#444", position: "sticky", top: 0, zIndex: 20 }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: (showLeftArrow || showRightArrow) ? "space-between" : "center", gap: "4px" }}>
+                            {showLeftArrow ? (
+                              <button
+                                type="button"
+                                onClick={() => shiftOutgoingsMonths(-1)}
+                                disabled={!canScrollMonthsBack}
+                                title="Previous month"
+                                aria-label="Previous month"
+                                style={{
+                                  width: "20px",
+                                  height: "20px",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  borderRadius: "4px",
+                                  border: "1px solid #cbd5e1",
+                                  background: "#ffffff",
+                                  color: canScrollMonthsBack ? "#334155" : "#cbd5e1",
+                                  cursor: canScrollMonthsBack ? "pointer" : "not-allowed",
+                                  fontSize: "12px",
+                                  fontWeight: "700",
+                                  lineHeight: 1,
+                                  padding: 0,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                ‹
+                              </button>
+                            ) : (showRightArrow ? <span style={{ width: "20px", flexShrink: 0 }} /> : null)}
+                            <span style={{ flex: 1, textAlign: "center" }}>
+                              {fmtMonthLabel(m.isoMonth || m.label)}
+                            </span>
+                            {showRightArrow ? (
+                              <button
+                                type="button"
+                                onClick={() => shiftOutgoingsMonths(1)}
+                                disabled={!canScrollMonthsForward}
+                                title="Next month"
+                                aria-label="Next month"
+                                style={{
+                                  width: "20px",
+                                  height: "20px",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  borderRadius: "4px",
+                                  border: "1px solid #cbd5e1",
+                                  background: "#ffffff",
+                                  color: canScrollMonthsForward ? "#334155" : "#cbd5e1",
+                                  cursor: canScrollMonthsForward ? "pointer" : "not-allowed",
+                                  fontSize: "12px",
+                                  fontWeight: "700",
+                                  lineHeight: 1,
+                                  padding: 0,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                ›
+                              </button>
+                            ) : (showLeftArrow ? <span style={{ width: "20px", flexShrink: 0 }} /> : null)}
+                          </div>
                         </th>
                       );
                     })}

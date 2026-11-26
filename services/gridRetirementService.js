@@ -10,10 +10,6 @@
 import fs from "fs";
 import path from "path";
 import { getSupabaseAdmin } from "./supabaseClient.js";
-import { invalidateMasterEngineCache } from "./masterEngineService.js";
-import { invalidateClientRelationalMasterCache } from "./relationalMasterService.js";
-import { invalidateClientRelationalReconCache } from "./relationalReconService.js";
-import { createClientSnapshot } from "./supabaseBackupService.js";
 import { escapeIlikeExact } from "../utils/helpers.js";
 
 if (typeof window !== "undefined") {
@@ -76,11 +72,16 @@ export async function getPhase6eRetirementOverviewStats() {
     };
   }
 
-  const gridCountPromise = supabase
-    .from("master_sheet_grids")
-    .select("id", { count: "exact", head: true })
-    .then((r) => r.count ?? 0)
-    .catch(() => 0);
+  const gridCountPromise = (async () => {
+    try {
+      const r = await supabase
+        .from("master_sheet_grids")
+        .select("id", { count: "exact", head: true });
+      return r.count ?? 0;
+    } catch {
+      return 0;
+    }
+  })();
 
   if (!schema.schemaReady) {
     const remainingGridRows = await gridCountPromise;
@@ -268,10 +269,30 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
     ? "client_id, client_name, sync_orchestrator_backfilled_at, sheet_bridge_baseline"
     : "client_id, client_name, sync_orchestrator_backfilled_at";
 
-  const [{ data: bpRows }, { data: finRows }, { data: syncRows }, gridMetaRows, { data: bridgeRows }] = await Promise.all([
-    supabase.from("pulse_client_tab_blueprints").select("client_id"),
-    supabase.from("pulse_financial_configs").select("client_id"),
-    supabase.from("pulse_master_sync_configs").select(syncSelect),
+  const clientIds = (clients || []).map((c) => c.id).filter(Boolean);
+  const filterByClient = Boolean(clientName && clientIds.length > 0);
+  const cleanClientPattern = clientName ? escapeIlikeExact(String(clientName).trim()) : null;
+
+  let bpQ = supabase.from("pulse_client_tab_blueprints").select("client_id");
+  let finQ = supabase.from("pulse_financial_configs").select("client_id");
+  let syncQ = supabase.from("pulse_master_sync_configs").select(syncSelect);
+  let bridgeQ = supabase
+    .from("master_sheet_grids")
+    .select("client_name")
+    .eq("sheet_role", "master")
+    .eq("tab_name", "SheetBridgeBaseline");
+
+  if (filterByClient) {
+    bpQ = bpQ.in("client_id", clientIds);
+    finQ = finQ.in("client_id", clientIds);
+    syncQ = syncQ.in("client_id", clientIds);
+    if (cleanClientPattern) bridgeQ = bridgeQ.ilike("client_name", cleanClientPattern);
+  }
+
+  const [bpRes, finRes, syncRes, gridMetaRows, bridgeRes] = await Promise.all([
+    bpQ,
+    finQ,
+    syncQ,
     (async () => {
       const all = [];
       for (let from = 0; ; from += 1000) {
@@ -280,20 +301,27 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
           .select("client_name")
           .order("client_name", { ascending: true })
           .range(from, from + 999);
-        if (clientName) gq = gq.ilike("client_name", escapeIlikeExact(String(clientName).trim()));
+        if (cleanClientPattern) gq = gq.ilike("client_name", cleanClientPattern);
         const { data: page, error: gErr } = await gq;
-        if (gErr || !Array.isArray(page) || page.length === 0) break;
+        if (gErr) throw new Error(`verifyZeroGridReadiness master_sheet_grids query failed: ${gErr.message}`);
+        if (!Array.isArray(page) || page.length === 0) break;
         all.push(...page);
         if (page.length < 1000) break;
       }
       return all;
     })(),
-    supabase
-      .from("master_sheet_grids")
-      .select("client_name")
-      .eq("sheet_role", "master")
-      .eq("tab_name", "SheetBridgeBaseline"),
+    bridgeQ,
   ]);
+
+  if (bpRes.error) throw new Error(`verifyZeroGridReadiness blueprints query failed: ${bpRes.error.message}`);
+  if (finRes.error) throw new Error(`verifyZeroGridReadiness financials query failed: ${finRes.error.message}`);
+  if (syncRes.error) throw new Error(`verifyZeroGridReadiness sync configs query failed: ${syncRes.error.message}`);
+  if (bridgeRes.error) throw new Error(`verifyZeroGridReadiness bridge baseline query failed: ${bridgeRes.error.message}`);
+
+  const bpRows = bpRes.data;
+  const finRows = finRes.data;
+  const syncRows = syncRes.data;
+  const bridgeRows = bridgeRes.data;
 
   const bpCountByClient = new Map();
   for (const r of bpRows || []) {
@@ -430,6 +458,7 @@ export async function retireClientGridStorage(
 
   let safetySnapshotId = null;
   if (createSafetyBackup) {
+    const { createClientSnapshot } = await import("./supabaseBackupService.js");
     const snap = await createClientSnapshot({
       clientName: target.clientName,
       triggerType: "pre_grid_retirement",
@@ -478,6 +507,15 @@ export async function retireClientGridStorage(
     }
   }
 
+  const [
+    { invalidateMasterEngineCache },
+    { invalidateClientRelationalMasterCache },
+    { invalidateClientRelationalReconCache },
+  ] = await Promise.all([
+    import("./masterEngineService.js"),
+    import("./relationalMasterService.js"),
+    import("./relationalReconService.js"),
+  ]);
   invalidateMasterEngineCache(target.clientName);
   invalidateClientRelationalMasterCache(target.clientName);
   invalidateClientRelationalReconCache(target.clientName);

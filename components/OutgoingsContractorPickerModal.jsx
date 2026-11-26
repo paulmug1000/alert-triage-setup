@@ -72,7 +72,8 @@ export default function OutgoingsContractorPickerModal({
         targetMonthIdx = (data.months || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));
       }
       if (targetMonthIdx >= 0) {
-        setMonthWindowOffset(Math.max(0, targetMonthIdx - 2));
+        const maxOffset = Math.max(0, (data.months || []).length - 6);
+        setMonthWindowOffset(Math.max(0, Math.min(maxOffset, targetMonthIdx - 2)));
       }
     } catch (err) {
       setError(err.message);
@@ -158,9 +159,18 @@ export default function OutgoingsContractorPickerModal({
 
   // Visible window of months (e.g. 6 months at a time)
   const VISIBLE_MONTHS_COUNT = 6;
+  const maxMonthOffset = Math.max(0, months.length - VISIBLE_MONTHS_COUNT);
+  const canScrollBack = monthWindowOffset > 0;
+  const canScrollForward = monthWindowOffset < maxMonthOffset;
+  const shiftMonths = useCallback((delta) => {
+    setMonthWindowOffset(prev => Math.max(0, Math.min(maxMonthOffset, prev + delta)));
+  }, [maxMonthOffset]);
   const visibleMonths = useMemo(() => {
     return months.slice(monthWindowOffset, monthWindowOffset + VISIBLE_MONTHS_COUNT);
   }, [months, monthWindowOffset]);
+  const visibleMonthRangeLabel = visibleMonths.length > 0
+    ? `${visibleMonths[0]?.label || ""} – ${visibleMonths[visibleMonths.length - 1]?.label || ""}`
+    : "";
 
   if (!isOpen) return null;
 
@@ -288,30 +298,34 @@ export default function OutgoingsContractorPickerModal({
             </button>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
             <button
               type="button"
               className="triage-btn"
-              disabled={monthWindowOffset === 0}
-              onClick={() => setMonthWindowOffset(prev => Math.max(0, prev - 3))}
+              disabled={!canScrollBack}
+              onClick={() => shiftMonths(-3)}
+              title="Back 3 months"
+              aria-label="Back 3 months"
               style={{
-                padding: "6px 10px",
+                padding: "6px 9px",
                 background: "#ffffff",
                 border: "1px solid #cbd5e1",
                 borderRadius: "6px",
                 fontSize: "12px",
                 fontWeight: "600",
-                color: monthWindowOffset === 0 ? "#cbd5e1" : "#334155",
-                cursor: monthWindowOffset === 0 ? "not-allowed" : "pointer"
+                color: !canScrollBack ? "#cbd5e1" : "#334155",
+                cursor: !canScrollBack ? "not-allowed" : "pointer"
               }}
             >
-              ← Earlier Months
+              «
             </button>
             <button
               type="button"
               className="triage-btn"
-              disabled={monthWindowOffset + VISIBLE_MONTHS_COUNT >= months.length}
-              onClick={() => setMonthWindowOffset(prev => Math.min(months.length - VISIBLE_MONTHS_COUNT, prev + 3))}
+              disabled={!canScrollBack}
+              onClick={() => shiftMonths(-1)}
+              title="Previous month"
+              aria-label="Previous month"
               style={{
                 padding: "6px 10px",
                 background: "#ffffff",
@@ -319,11 +333,56 @@ export default function OutgoingsContractorPickerModal({
                 borderRadius: "6px",
                 fontSize: "12px",
                 fontWeight: "600",
-                color: (monthWindowOffset + VISIBLE_MONTHS_COUNT >= months.length) ? "#cbd5e1" : "#334155",
-                cursor: (monthWindowOffset + VISIBLE_MONTHS_COUNT >= months.length) ? "not-allowed" : "pointer"
+                color: !canScrollBack ? "#cbd5e1" : "#334155",
+                cursor: !canScrollBack ? "not-allowed" : "pointer"
               }}
             >
-              Later Months →
+              ‹ Earlier
+            </button>
+            {visibleMonthRangeLabel && (
+              <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569", minWidth: "115px", textAlign: "center" }}>
+                {visibleMonthRangeLabel}
+              </span>
+            )}
+            <button
+              type="button"
+              className="triage-btn"
+              disabled={!canScrollForward}
+              onClick={() => shiftMonths(1)}
+              title="Next month"
+              aria-label="Next month"
+              style={{
+                padding: "6px 10px",
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                fontSize: "12px",
+                fontWeight: "600",
+                color: !canScrollForward ? "#cbd5e1" : "#334155",
+                cursor: !canScrollForward ? "not-allowed" : "pointer"
+              }}
+            >
+              Later ›
+            </button>
+            <button
+              type="button"
+              className="triage-btn"
+              disabled={!canScrollForward}
+              onClick={() => shiftMonths(3)}
+              title="Forward 3 months"
+              aria-label="Forward 3 months"
+              style={{
+                padding: "6px 9px",
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                fontSize: "12px",
+                fontWeight: "600",
+                color: !canScrollForward ? "#cbd5e1" : "#334155",
+                cursor: !canScrollForward ? "not-allowed" : "pointer"
+              }}
+            >
+              »
             </button>
           </div>
         </div>
@@ -344,34 +403,156 @@ export default function OutgoingsContractorPickerModal({
           )}
 
           {!loading && !error && (
-            <div style={{ background: "#ffffff", borderRadius: "8px", border: "1px solid #e2e8f0", overflow: "hidden" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", textAlign: "left" }}>
-                <thead>
-                  <tr style={{ background: "#f1f5f9", borderBottom: "2px solid #cbd5e1" }}>
-                    <th style={{ padding: "10px 14px", fontWeight: "700", color: "#334155", minWidth: "180px", position: "sticky", left: 0, background: "#f1f5f9", zIndex: 2 }}>
-                      Contractor
+            <div style={{ background: "#ffffff", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: "12px", textAlign: "left" }}>
+                <thead style={{ position: "sticky", top: 0, zIndex: 3 }}>
+                  <tr style={{ background: "#f1f5f9" }}>
+                    <th style={{ padding: "10px 14px", fontWeight: "700", color: "#334155", minWidth: "180px", position: "sticky", top: 0, left: 0, background: "#f1f5f9", zIndex: 4, borderBottom: "2px solid #cbd5e1", borderRight: "1px solid #e2e8f0" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                        <span>Contractor</span>
+                        {months.length > VISIBLE_MONTHS_COUNT && (
+                          <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                            <button
+                              type="button"
+                              disabled={!canScrollBack}
+                              onClick={() => shiftMonths(-1)}
+                              title="Previous month"
+                              aria-label="Previous month"
+                              style={{
+                                width: "22px",
+                                height: "22px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                borderRadius: "4px",
+                                border: "1px solid #cbd5e1",
+                                background: "#ffffff",
+                                color: canScrollBack ? "#334155" : "#cbd5e1",
+                                cursor: canScrollBack ? "pointer" : "not-allowed",
+                                fontSize: "13px",
+                                fontWeight: "700",
+                                lineHeight: 1,
+                                padding: 0
+                              }}
+                            >
+                              ‹
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!canScrollForward}
+                              onClick={() => shiftMonths(1)}
+                              title="Next month"
+                              aria-label="Next month"
+                              style={{
+                                width: "22px",
+                                height: "22px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                borderRadius: "4px",
+                                border: "1px solid #cbd5e1",
+                                background: "#ffffff",
+                                color: canScrollForward ? "#334155" : "#cbd5e1",
+                                cursor: canScrollForward ? "pointer" : "not-allowed",
+                                fontSize: "13px",
+                                fontWeight: "700",
+                                lineHeight: 1,
+                                padding: 0
+                              }}
+                            >
+                              ›
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </th>
-                    {visibleMonths.map(m => {
+                    {visibleMonths.map((m, monthIdx) => {
                       const isLikelyMonth = m.colLetter === likelyMonthColLetter;
+                      const showLeftArrow = months.length > VISIBLE_MONTHS_COUNT && monthIdx === 0;
+                      const showRightArrow = months.length > VISIBLE_MONTHS_COUNT && monthIdx === visibleMonths.length - 1;
                       return (
                         <th
                           key={m.colLetter}
                           style={{
-                            padding: "10px 12px",
+                            padding: "10px 8px",
                             fontWeight: "700",
                             textAlign: "center",
                             minWidth: "110px",
                             color: isLikelyMonth ? "#065f46" : "#334155",
-                            background: isLikelyMonth ? "#ecfdf5" : "transparent",
-                            borderLeft: "1px solid #e2e8f0"
+                            background: isLikelyMonth ? "#ecfdf5" : "#f1f5f9",
+                            borderLeft: monthIdx === 0 ? "none" : "1px solid #e2e8f0",
+                            borderBottom: "2px solid #cbd5e1",
+                            position: "sticky",
+                            top: 0,
+                            zIndex: 3
                           }}
                         >
-                          <div>{m.label}</div>
-                          {isLikelyMonth && (
-                            <span style={{ fontSize: "9px", color: "#059669", fontWeight: "700", textTransform: "uppercase" }}>
-                              ★ Expense Month
-                            </span>
-                          )}
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: (showLeftArrow || showRightArrow) ? "space-between" : "center", gap: "4px" }}>
+                            {showLeftArrow ? (
+                              <button
+                                type="button"
+                                disabled={!canScrollBack}
+                                onClick={() => shiftMonths(-1)}
+                                title="Previous month"
+                                aria-label="Previous month"
+                                style={{
+                                  width: "20px",
+                                  height: "20px",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  borderRadius: "4px",
+                                  border: "1px solid #cbd5e1",
+                                  background: "#ffffff",
+                                  color: canScrollBack ? "#334155" : "#cbd5e1",
+                                  cursor: canScrollBack ? "pointer" : "not-allowed",
+                                  fontSize: "12px",
+                                  fontWeight: "700",
+                                  lineHeight: 1,
+                                  padding: 0,
+                                  flexShrink: 0
+                                }}
+                              >
+                                ‹
+                              </button>
+                            ) : (showRightArrow ? <span style={{ width: "20px", flexShrink: 0 }} /> : null)}
+                            <div style={{ flex: 1, textAlign: "center" }}>
+                              <div>{m.label}</div>
+                              {isLikelyMonth && (
+                                <span style={{ fontSize: "9px", color: "#059669", fontWeight: "700", textTransform: "uppercase" }}>
+                                  ★ Expense Month
+                                </span>
+                              )}
+                            </div>
+                            {showRightArrow ? (
+                              <button
+                                type="button"
+                                disabled={!canScrollForward}
+                                onClick={() => shiftMonths(1)}
+                                title="Next month"
+                                aria-label="Next month"
+                                style={{
+                                  width: "20px",
+                                  height: "20px",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  borderRadius: "4px",
+                                  border: "1px solid #cbd5e1",
+                                  background: "#ffffff",
+                                  color: canScrollForward ? "#334155" : "#cbd5e1",
+                                  cursor: canScrollForward ? "pointer" : "not-allowed",
+                                  fontSize: "12px",
+                                  fontWeight: "700",
+                                  lineHeight: 1,
+                                  padding: 0,
+                                  flexShrink: 0
+                                }}
+                              >
+                                ›
+                              </button>
+                            ) : (showLeftArrow ? <span style={{ width: "20px", flexShrink: 0 }} /> : null)}
+                          </div>
                         </th>
                       );
                     })}
@@ -425,7 +606,8 @@ export default function OutgoingsContractorPickerModal({
                             left: 0,
                             background: isLikelyContractor ? "#f0fdf4" : "#ffffff",
                             zIndex: 1,
-                            borderRight: "1px solid #e2e8f0"
+                            borderRight: "1px solid #e2e8f0",
+                            borderBottom: "1px solid #e2e8f0"
                           }}>
                             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                               <span>{c.name}</span>
@@ -458,6 +640,7 @@ export default function OutgoingsContractorPickerModal({
                                   padding: "8px 10px",
                                   textAlign: "center",
                                   borderLeft: "1px solid #e2e8f0",
+                                  borderBottom: "1px solid #e2e8f0",
                                   background: isLikelyCell ? "#fef3c7" : "transparent",
                                   border: isLikelyCell ? "2px solid #f59e0b" : undefined
                                 }}

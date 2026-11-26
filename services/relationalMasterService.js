@@ -1626,16 +1626,21 @@ export async function backfillAllClientsMasterIngestion() {
 // 7. RELATIONAL MASTER BUNDLE LOADER & COMPARISON TAB RECONSTRUCTOR
 // ============================================================================
 
-async function loadInMemoryBundleForClient_(ctx) {
+async function loadInMemoryBundleForClient_(ctx, gridsOverride = null) {
   const gridsMap = {};
-  await Promise.all(
-    [...ALL_PHASE4_MASTER_TABS, "KeyInfo", "DataChgAlert", "PLAdds", "ConfCalcs", "PipeCalcs", "Outgoings", "OutgNotes"].map(
-      async (t) => {
+  const tabsToLoad = [...ALL_PHASE4_MASTER_TABS, "KeyInfo", "DataChgAlert", "PLAdds", "ConfCalcs", "PipeCalcs", "Outgoings", "OutgNotes"];
+  if (gridsOverride && typeof gridsOverride === "object") {
+    for (const t of tabsToLoad) {
+      gridsMap[t] = clone2D_(gridsOverride[t] || []);
+    }
+  } else {
+    await Promise.all(
+      tabsToLoad.map(async (t) => {
         const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null).catch(() => null);
         gridsMap[t] = clone2D_(rec?.values_grid || []);
-      }
-    )
-  );
+      })
+    );
+  }
   const config = extractMasterSyncConfigFromGrids(ctx.clientId, ctx.clientName, gridsMap);
   const invParsed = parseInvFromAppGrid({
     clientId: ctx.clientId,
@@ -1694,7 +1699,7 @@ async function loadInMemoryBundleForClient_(ctx) {
   };
 }
 
-export async function preloadClientRelationalMasterBundle(ctxOrClientName, { source = "db" } = {}) {
+export async function preloadClientRelationalMasterBundle(ctxOrClientName, { source = "db", gridsOverride = null } = {}) {
   const ctx =
     ctxOrClientName && typeof ctxOrClientName === "object" && ctxOrClientName.clientId
       ? ctxOrClientName
@@ -1702,7 +1707,7 @@ export async function preloadClientRelationalMasterBundle(ctxOrClientName, { sou
   if (!ctx?.clientId) return null;
 
   if (source === "in_memory") {
-    return loadInMemoryBundleForClient_(ctx);
+    return loadInMemoryBundleForClient_(ctx, gridsOverride);
   }
 
   const cacheKey = String(ctx.clientName || ctx.clientId).trim().toLowerCase();
@@ -2121,7 +2126,13 @@ export async function verifyRelationalMasterParity({
         // Phase 6E zero-grid: round-trip SQL bundle -> raw tabs -> in-memory model -> raw tabs (zero master_sheet_grids reads)
         const roundTripBundle = await preloadClientRelationalMasterBundle(
           { ...ctx, connectorPullMode: "native" },
-          { source: "in_memory", gridsOverride: relRawTabs }
+          {
+            source: "in_memory",
+            gridsOverride: {
+              ...relRawTabs,
+              KeyInfo: bundle.config?.master_key_info_grid || [],
+            },
+          }
         ).catch(() => null);
         referenceTabs = roundTripBundle ? buildBaseRawMasterTabsFromBundle(roundTripBundle) : relRawTabs;
       } else {

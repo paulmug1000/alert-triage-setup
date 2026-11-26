@@ -963,6 +963,8 @@ export const NATIVE_CONNECTOR_BYPASS_GRID_TABS = new Set([
   "PLFromApp",
   "Year0PLFromApp",
   "DataFromCRM",
+  "DataFromTime",
+  "ProjectsFromTime",
   "CRMGoogleBridge",
   "CRMExcelBridge",
   "CRMExcelCopy",
@@ -1426,7 +1428,7 @@ async function getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi 
         .select("updated_at")
         .eq("client_name", ctx.clientName);
       let metaRow = null;
-              if (sheetRole === "client") {
+      if (sheetRole === "client") {
         const { data: candidates } = await q
           .in("sheet_role", ["client", "master"])
           .in("tab_name", [String(tabName), `Client::${String(tabName)}`]);
@@ -3861,7 +3863,7 @@ export async function handleVirtualSheetsCall({
     const isUnformattedReq = params.valueRenderOption === "UNFORMATTED_VALUE";
     const useValuesOnly = !isFormulaReq;
     const byTab = new Map();
-            if (sheetRole === "client") {
+    if (sheetRole === "client") {
       const clientKeyLower = ctx.clientName.toLowerCase();
       const useRelFinancialsBatch =
         params._forceFinancialsReadMode === "relational" ||
@@ -4638,7 +4640,7 @@ export async function handleVirtualSheetsCall({
       });
     }
 
-            if (sheetRole === "client") {
+    if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
         queuePendingClientTabs_(ctx, [...byTabClears.keys()], {
           isSkippedStep: true,
@@ -4697,7 +4699,7 @@ export async function handleVirtualSheetsCall({
       requestedRanges.length > 0 ? new Set(requestedRanges.map((r) => parseA1Range(r).tabName)) : null;
 
     let allTabs = [];
-            if (sheetRole === "client") {
+    if (sheetRole === "client") {
       if (!includeGridData) {
         if (ctx.clientComputeMode === "native") {
           const { data: bpRows } = await supabase
@@ -5146,7 +5148,7 @@ export async function handleVirtualSheetsCall({
 
     let tabMetaRows = [];
     let usingBlueprintMeta = false;
-            if (sheetRole === "client") {
+    if (sheetRole === "client") {
       if (ctx.clientComputeMode === "native") {
         const { data: bpRows } = await supabase
           .from("pulse_client_tab_blueprints")
@@ -5261,7 +5263,7 @@ export async function handleVirtualSheetsCall({
           nextNotes.__bg_colors = bgColors;
           target.notes_grid = nextNotes;
           dirtyTargets.set(target.tab_name, target);
-                  if (sheetRole === "client") {
+          if (sheetRole === "client") {
             if (target.tab_name === "Outgoings") {
               valueChangedClientTabs.add(target.tab_name);
             } else {
@@ -5292,7 +5294,7 @@ export async function handleVirtualSheetsCall({
           if (isNoteOnly) {
             target.notes_grid = nextNotes;
             dirtyTargets.set(target.tab_name, target);
-                    if (sheetRole === "client") {
+            if (sheetRole === "client") {
               if (target.tab_name === "Outgoings") {
                 valueChangedClientTabs.add(target.tab_name);
               } else {
@@ -5490,7 +5492,7 @@ export async function handleVirtualSheetsCall({
       );
     }
 
-            if (sheetRole === "client") {
+    if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
         if (valueChangedClientTabs.size > 0 || dirtyTargets.size > 0) {
           queuePendingClientTabs_(ctx, [...valueChangedClientTabs, ...dirtyTargets.keys()], {
@@ -7609,12 +7611,17 @@ export async function getStage2Status(targetClientName = "APPTEST") {
           }));
       }
       if (availableTabs.recon.length === 0) {
-        const { data: rcData } = await supabase
-          .from("pulse_recon_configs")
-          .select("tab_list, updated_at")
-          .eq("client_name", targetClientRow.client_name)
-          .maybeSingle()
-          .catch(() => ({ data: null }));
+        let rcData = null;
+        try {
+          const { data } = await supabase
+            .from("pulse_recon_configs")
+            .select("tab_list, updated_at")
+            .eq("client_name", targetClientRow.client_name)
+            .maybeSingle();
+          rcData = data || null;
+        } catch {
+          rcData = null;
+        }
         const reconTabs = Array.from(
           new Set(["KeyInfo", "PLAdds", ...(Array.isArray(rcData?.tab_list) ? rcData.tab_list : [])])
         ).filter(Boolean);

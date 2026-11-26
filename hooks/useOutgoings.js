@@ -28,8 +28,24 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
     }
     return false;
   });
+  const getCurrentMonthIndex = (monthsList = []) => {
+    const now = new Date();
+    const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return (monthsList || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));
+  };
+
+  const computeDefaultMonthOffset = (monthsList = [], windowSize = 7) => {
+    const list = monthsList || [];
+    const currentIdx = getCurrentMonthIndex(list);
+    if (currentIdx < 0) return 0;
+    const maxOffset = Math.max(0, list.length - windowSize);
+    return Math.max(0, Math.min(maxOffset, currentIdx - 3));
+  };
+
   const [outgoingsClient, setOutgoingsClient] = useState(initialClient);
-  const [outgoingsMonthOffset, setOutgoingsMonthOffset] = useState(0);
+  const [outgoingsMonthOffset, setOutgoingsMonthOffset] = useState(() =>
+    outgoingsData?.months ? computeDefaultMonthOffset(outgoingsData.months) : 0
+  );
   const [outgoingsEditCell, setOutgoingsEditCell] = useState(null);
   const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null);
   const [outgoingsInbox, setOutgoingsInbox] = useState(() => {
@@ -119,10 +135,9 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
         directCostsMode: cachedGrid.data.directCostsMode || cachedInbox?.data?.directCostsMode || client?.directCostsMode || "Contractors",
         makingUpCos: cachedGrid.data.makingUpCos || null,
       });
-      const now = new Date();
-      const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-      const currentIdx = (cachedGrid.data.months || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));
-      if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
+      if (getCurrentMonthIndex(cachedGrid.data.months) >= 0) {
+        setOutgoingsMonthOffset(computeDefaultMonthOffset(cachedGrid.data.months));
+      }
       if (!silent) setOutgoingsLoading(false);
     } else if (!silent) {
       setOutgoingsLoading(true);
@@ -167,10 +182,9 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
           };
         });
         if (!silent) {
-          const now = new Date();
-          const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-          const currentIdx = (gridData.months || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));
-          if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
+          if (getCurrentMonthIndex(gridData.months) >= 0) {
+            setOutgoingsMonthOffset(computeDefaultMonthOffset(gridData.months));
+          }
         }
       } else if (!hasGridCached && !silent) {
         setOutgoingsError(gridData?.error || "Failed to load expenses data.");
